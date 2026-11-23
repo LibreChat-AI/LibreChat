@@ -120,6 +120,27 @@ jest.mock('@librechat/api', () => {
       return UPLOAD_EXTRACTED_TEXT_PLANS.documentParser;
     },
   );
+  const withStoredUploadCleanup = async (
+    { stored, resolveDeleteFile, recordExists, req, trackWrite, revert },
+    next,
+  ) => {
+    let writeBegun = trackWrite !== true;
+    try {
+      return await next(() => {
+        writeBegun = true;
+      });
+    } catch (error) {
+      try {
+        if (!writeBegun || !(await recordExists(stored))) {
+          await revert?.().catch(() => {});
+          await resolveDeleteFile()?.(req, stored);
+        }
+      } catch {
+        /* the helper logs cleanup failures; the original error wins */
+      }
+      throw error;
+    }
+  };
   return {
     ...jest.requireActual('../../../../packages/api/src/files/storage'),
     ...jest.requireActual('../../../../packages/api/src/files/operations'),
@@ -174,25 +195,25 @@ jest.mock('@librechat/api', () => {
         if (file.metadata?.codeEnvRef != null) deleters.push(getDeleteFile('execute_code'));
         await Promise.all(deleters.map((deleteFile) => deleteFile?.(req, file)));
       },
-    withStoredUploadCleanup: async (
-      { stored, resolveDeleteFile, recordExists, req, trackWrite },
-      next,
-    ) => {
-      let writeBegun = trackWrite !== true;
-      try {
-        return await next(() => {
-          writeBegun = true;
-        });
-      } catch (error) {
-        try {
-          if (!writeBegun || !(await recordExists(stored))) {
-            await resolveDeleteFile()?.(req, stored);
-          }
-        } catch {
-          /* the helper logs cleanup failures; the original error wins */
+    withStoredUploadCleanup,
+    /** Mirrors the package helper; its own cases live in packages/api. */
+    recordAgentUpload: ({ cleanup, link, addLink, removeLinks, createRecord }) => {
+      const revert = async () => {
+        if (link != null) {
+          const { agent_id, tool_resource, file_id } = link;
+          await removeLinks({ agent_id, files: [{ tool_resource, file_id }] });
         }
-        throw error;
-      }
+      };
+      return withStoredUploadCleanup(
+        { ...cleanup, trackWrite: true, revert },
+        async (beginWrite) => {
+          if (link != null) {
+            await addLink(link);
+          }
+          beginWrite();
+          return createRecord();
+        },
+      );
     },
     resolveStoredUploadTarget: ({ isAssistantUpload, stored, convertedImage, storageMetadata }) => {
       if (!isAssistantUpload) {
@@ -1102,6 +1123,11 @@ describe('processAgentFileUpload', () => {
 
       // The persistence failure must not trigger a second extraction via the built-in parser.
       expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.document_parser);
+      // @scenario:unlink-text-record-failure
+      expect(db.removeAgentResourceFiles).toHaveBeenCalledWith({
+        agent_id: 'agent-abc',
+        files: [{ tool_resource: EToolResources.context, file_id: 'file-uuid-123' }],
+      });
     });
   });
 
@@ -1427,6 +1453,11 @@ describe('processAgentFileUpload', () => {
           metadata: expect.objectContaining({ codeEnvRef: expect.anything() }),
         }),
       );
+      // @scenario:unlink-stored-record-failure
+      expect(db.removeAgentResourceFiles).toHaveBeenCalledWith({
+        agent_id: 'agent-abc',
+        files: [{ tool_resource: EToolResources.execute_code, file_id: 'file-orphan' }],
+      });
     });
 
     it('leaves a promoted code destination for deferred provisioning', async () => {
