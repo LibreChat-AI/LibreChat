@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { getE2EBaseURL } from '../../setup/env';
 import { getAccessToken } from './helpers';
 
 const STATE_PATH =
@@ -35,7 +36,7 @@ function getCatalogURLs() {
   if (REPLICA_COUNT === 1) {
     return ['/api/mcp/tools'];
   }
-  const baseURL = new URL(process.env.E2E_BASE_URL || 'http://localhost:3080');
+  const baseURL = new URL(getE2EBaseURL());
   const basePort = Number(baseURL.port || 80);
   return [1, 2].map((offset) => {
     const replicaURL = new URL('/api/mcp/tools', baseURL);

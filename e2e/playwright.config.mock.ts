@@ -213,7 +213,7 @@ const baseEnv = {
     ? {
         E2E_MCP_APPS: 'true',
         MCP_SANDBOX_FRAME_ANCESTORS:
-          process.env.MCP_SANDBOX_FRAME_ANCESTORS ?? 'http://127.0.0.1:3080',
+          process.env.MCP_SANDBOX_FRAME_ANCESTORS ?? 'http://127.0.0.1:3180',
       }
     : {}),
   /** The Assistants runtime uses the OpenAI SDK directly, outside the agents run hook. */

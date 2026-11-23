@@ -1,7 +1,9 @@
 import crypto from 'crypto';
 import path from 'path';
 
-const DEFAULT_BASE_URL = 'http://localhost:3080';
+/** Off 3080, which a standard LibreChat deployment (`.env.example`, Docker) publishes, so the
+ *  harness can start its own server while a normal instance keeps running. */
+const DEFAULT_BASE_URL = 'http://localhost:3180';
 const DEFAULT_MONGO_URI = 'mongodb://127.0.0.1:27017/LibreChat-e2e';
 const DEFAULT_RUNTIME_ENV_PATH = path.resolve(__dirname, '../specs/.test-results/runtime-env.json');
 const GENERATED_CREDS_KEY = crypto.randomBytes(32).toString('hex');
