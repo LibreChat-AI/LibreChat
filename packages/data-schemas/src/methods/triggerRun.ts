@@ -110,13 +110,13 @@ const columns: Record<Field, string> = {
 
 /**
  * Where a subscription's row holds its subject. Its `scheduleId` is the delivery's key, so
- * the subject is read from the two columns a row of that kind is given instead.
+ * the subject is read from `subject`, which only a row of that kind holds.
  */
-const delivered: Partial<Record<Field, string>> = { subject: 'kind subject' };
+const delivered: Partial<Record<Field, string>> = { subject: 'subject' };
 
 const read: { [K in Field]: (row: Row) => TriggerRun[K] | undefined } = {
   subject: (row) =>
-    row.kind === 'subscription' && row.subject != null
+    row.subject != null
       ? { kind: 'subscription', id: row.subject }
       : { kind: 'schedule', id: row.scheduleId },
   delivery: (row) => ({

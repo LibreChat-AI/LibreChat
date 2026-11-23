@@ -316,6 +316,25 @@ describe('the row of a subscription run that is starting', () => {
   });
 });
 
+describe('a delivery that names a key for a subject of another kind', () => {
+  it('is not a subscription run: nothing is read or written for it', async () => {
+    await runs.reserve(ref('trigger_a'), fresh());
+    const other: TriggerRunRef = {
+      subject: { kind: 'key', id: 'sub_a' },
+      delivery: { key: 'trigger_a', event: { occurredAt: at.getTime() } },
+    };
+    record();
+
+    expect(await runs.get(other, ['status'])).toBeNull();
+    expect(await runs.reserve(other, fresh())).toEqual({ conflict: 'unrecorded' });
+    expect(await runs.finish(other, { status: 'success' })).toBeNull();
+    expect(await runs.remove(other)).toBeUndefined();
+    expect(queries).toEqual([]);
+    mongoose.set('debug', false);
+    expect((await stored()).map((row) => row.status)).toEqual(['started']);
+  });
+});
+
 describe('reading a subscription run', () => {
   beforeEach(async () => {
     await ScheduleRun.create(schedule());
@@ -340,7 +359,6 @@ describe('reading a subscription run', () => {
           { kind: 'subscription', subject: 'sub_a', deliveryKey: 'trigger_a' },
           {
             projection: {
-              kind: 1,
               subject: 1,
               scheduledFor: 1,
               deliveryKey: 1,
