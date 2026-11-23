@@ -102,6 +102,12 @@ export function createRoleMethods(
     updates: Partial<IRole>,
     options?: { id?: string },
   ) => Promise<IRole>;
+  setRolePermissions: (
+    roleName: string,
+    permissionType: string,
+    flags: Record<string, boolean>,
+    options?: { id?: string },
+  ) => Promise<IRole | null>;
   updateAccessPermissions: (
     roleName: string,
     permissionsUpdate: Record<string, Record<string, boolean>>,
@@ -416,6 +422,35 @@ export function createRoleMethods(
       updateError.cause = error;
       throw updateError;
     }
+  }
+
+  /**
+   * Sets the given flags of one permission type on the role named `roleName`, as
+   * {@link updateRoleByName} matches it, each flag by its own path: a concurrent write to another
+   * permission type or flag of the same role is kept. Returns the updated role, or `null` when no
+   * role matches.
+   */
+  async function setRolePermissions(
+    roleName: string,
+    permissionType: string,
+    flags: Record<string, boolean>,
+    options?: { id?: string },
+  ): Promise<IRole | null> {
+    const set: Record<string, boolean> = {};
+    for (const [flag, value] of Object.entries(flags)) {
+      set[`permissions.${permissionType}.${flag}`] = value;
+    }
+    const Role = mongoose.models.Role;
+    const filter = roleDocumentFilter(roleName, 'setRolePermissions', options?.id);
+    const query = Object.keys(set).length
+      ? Role.findOneAndUpdate(filter, { $set: set }, { new: true })
+      : Role.findOne(filter);
+    const role = await query.select('-__v').lean<IRole>().exec();
+    const cache = deps.getCache?.(CacheKeys.ROLES);
+    if (cache) {
+      await cache.set(scopedCacheKey(roleName), role);
+    }
+    return role;
   }
 
   /**
@@ -880,6 +915,7 @@ export function createRoleMethods(
     getPartitionRole,
     findRolesByNames,
     updateRoleByName,
+    setRolePermissions,
     updateAccessPermissions,
     createRoleByName,
     deleteRoleByName,
