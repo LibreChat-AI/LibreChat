@@ -142,6 +142,7 @@ import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
+import { requireAgentBuilderApproval } from '~/agents/builder';
 import { createSafeUser, createSafeAgent } from '~/utils/env';
 import { shareDeferredDefinitions } from '~/agents/deferral';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
@@ -3037,9 +3038,11 @@ export async function createRun({
     mcpToolAliases.map(({ name, aliasName }) => `${name}\u0000${aliasName}`),
   );
   const effectiveToolApprovalPolicy = () =>
-    exemptAskUserQuestionFromApproval(
-      buildEffectiveToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases, toolApprovalAllows),
-      ASK_USER_QUESTION_TOOL_NAME,
+    requireAgentBuilderApproval(
+      exemptAskUserQuestionFromApproval(
+        buildEffectiveToolApprovalPolicy(toolApprovalPolicy, mcpToolAliases, toolApprovalAllows),
+        ASK_USER_QUESTION_TOOL_NAME,
+      ),
     );
   const nativeEditFileAgentIds = collectNativeEditFileAgentIds(agents);
   const agentApprovalSession = createAgentToolApprovalSession({
