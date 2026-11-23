@@ -142,7 +142,10 @@ function continueWithPrincipal(
   tenantContextMiddleware(serverRequest, res, next);
 }
 
-export function createAgentManagementAuth(deps: AgentManagementAuthDeps): RequestHandler {
+export function createAgentManagementAuth(
+  deps: AgentManagementAuthDeps,
+  { requireConversationRead = false }: { requireConversationRead?: boolean } = {},
+): RequestHandler {
   const handler = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const config = await deps.getAppConfig({ baseOnly: true });
@@ -187,6 +190,12 @@ export function createAgentManagementAuth(deps: AgentManagementAuthDeps): Reques
         return;
       }
 
+      if (requireConversationRead && binding.conversationRead !== true) {
+        res
+          .status(403)
+          .json({ error: { code: 'permission_denied', message: 'Permission denied' } });
+        return;
+      }
       const principal = await resolvePrincipal(binding, deps);
       if (principal.status === 'missing') {
         logger.warn('[agentManagementAuth] Client binding has no matching tenant user');

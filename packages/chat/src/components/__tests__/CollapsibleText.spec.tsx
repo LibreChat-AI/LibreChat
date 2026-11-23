@@ -103,6 +103,60 @@ describe('CollapsibleText', () => {
     }
   });
 
+  /**
+   * A message is not laid out at its full height first and clamped after: the thread around
+   * it would be laid out twice, and a thread still mounting rows above a reader takes the
+   * first height as the row's.
+   */
+  describe('before it has been measured', () => {
+    /** Records the region's height limit in a layout effect, which a child runs before the
+     *  component's own measuring one: what the first render put in the document. */
+    function FirstRender({ seen }: { seen: string[] }) {
+      const ref = React.useRef<HTMLSpanElement>(null);
+      React.useLayoutEffect(() => {
+        const region = ref.current?.closest<HTMLElement>('[id]');
+        seen.push(region?.style.maxHeight ?? 'none');
+      }, [seen]);
+      return <span ref={ref}>{plainMessage}</span>;
+    }
+
+    it('holds a long message to the preview height from its first render', () => {
+      const scrollHeight = stubScrollHeight(5000);
+      try {
+        const seen: string[] = [];
+        render(
+          <CollapsibleText enabled>
+            <FirstRender seen={seen} />
+          </CollapsibleText>,
+        );
+        expect(seen).toEqual(['264px']);
+        const region = screen.getByText(plainMessage).closest<HTMLElement>('[id]');
+        expect(region?.style.maxHeight).toBe('256px');
+        expect(screen.getByRole('button', { name: 'com_ui_show_more' })).toBeInTheDocument();
+      } finally {
+        scrollHeight.mockRestore();
+      }
+    });
+
+    it('lets go of a message that fits once it has measured it', () => {
+      const scrollHeight = stubScrollHeight(100);
+      try {
+        const seen: string[] = [];
+        render(
+          <CollapsibleText enabled>
+            <FirstRender seen={seen} />
+          </CollapsibleText>,
+        );
+        expect(seen).toEqual(['264px']);
+        const region = screen.getByText(plainMessage).closest<HTMLElement>('[id]');
+        expect(region?.style.maxHeight).toBe('');
+        expect(region).not.toHaveClass('overflow-hidden');
+      } finally {
+        scrollHeight.mockRestore();
+      }
+    });
+  });
+
   it('reveals the message when focus reaches clipped content', () => {
     // Links and code-block controls below the cutoff stay in the tab order;
     // focusing one must not leave focus inside visually hidden content. jsdom

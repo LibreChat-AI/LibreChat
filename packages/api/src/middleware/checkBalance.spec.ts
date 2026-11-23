@@ -329,6 +329,7 @@ describe('checkBalance', () => {
         refillIntervalValue: 1,
         refillIntervalUnit: 'days',
         refillAmount: 1000,
+        refillAnchor: null,
         lastRefill: expect.any(Date),
       });
     });
@@ -627,6 +628,34 @@ describe('checkBalance', () => {
         lastRefill,
       });
       expect(await methods.getTransactions({ user, context: 'balanceReset' })).toHaveLength(0);
+    });
+
+    it('clears a removed anchor during admission instead of retrying until it fails', async () => {
+      const user = new mongoose.Types.ObjectId().toString();
+      const lastRefill = new Date();
+      const policy = {
+        autoRefillEnabled: true,
+        refillMode: 'reset' as const,
+        refillAmount: 1000,
+        refillIntervalValue: 1,
+        refillIntervalUnit: 'weeks' as const,
+      };
+      await Balance.create({
+        user,
+        ...policy,
+        tokenCredits: 500,
+        lastRefill,
+        refillAnchor: '2026-01-05T00:00:00Z',
+      });
+
+      const reservation = await checkBalance(
+        { req, res, txData: { ...baseTxData, user, amount: 100 } },
+        realDeps({ startBalance: 1000, ...policy }),
+      );
+      await reservation.release();
+
+      const record = await Balance.findOne({ user }).lean();
+      expect(record).toMatchObject({ tokenCredits: 500, refillAnchor: null, lastRefill });
     });
 
     it('lazily initializes a missing record and reserves against it', async () => {

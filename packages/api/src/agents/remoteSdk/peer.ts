@@ -14,15 +14,30 @@ export interface SdkSocket {
   once(event: 'close' | 'error', listener: () => void): this;
 }
 
-export type SdkRpc = (method: string, data: unknown, timeoutMs?: number) => Promise<unknown>;
+/** Cancellation requests remote cleanup; settlement waits for its reply (or the RPC deadline). */
+export type SdkRpc = (
+  method: string,
+  data: unknown,
+  timeoutMs?: number,
+  signal?: AbortSignal,
+) => Promise<unknown>;
 export type SdkFrame =
   | { type: 'call'; id: string; method: string; data: unknown }
+  | { type: 'cancel'; id: string }
   | { type: 'result'; id: string; data: unknown; failed?: boolean }
   | { type: 'event'; name: string; data: unknown; metadata?: Record<string, unknown> }
+  | { type: 'snapshot'; data: unknown }
   | { type: 'done'; data: unknown }
   | { type: 'error' };
 
+export interface SdkPeer {
+  call: SdkRpc;
+  send(frame: SdkFrame): void;
+  close(): void;
+}
+
 const frameSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('cancel'), id: z.string().uuid() }),
   z.object({
     type: z.literal('call'),
     id: z.string().uuid(),
@@ -41,6 +56,7 @@ const frameSchema = z.discriminatedUnion('type', [
     data: z.unknown(),
     metadata: z.record(z.string(), z.unknown()).optional(),
   }),
+  z.object({ type: z.literal('snapshot'), data: z.unknown() }),
   z.object({ type: z.literal('done'), data: z.unknown() }),
   z.object({ type: z.literal('error') }),
 ]);
@@ -57,12 +73,12 @@ export function createSdkPeer(
     onClose: (error: Error) => void;
     onError?: (error: unknown) => void;
   },
-) {
+): SdkPeer {
   const pending = new Map<
     string,
     { resolve: (data: unknown) => void; reject: (error: Error) => void }
   >();
-  const incoming = new Set<string>();
+  const incoming = new Map<string, AbortController>();
   let queue = Promise.resolve();
   let closed = false;
   let queuedBytes = 0;
@@ -89,6 +105,8 @@ export function createSdkPeer(
     closed = true;
     for (const entry of pending.values()) entry.reject(failure());
     pending.clear();
+    for (const controller of incoming.values()) controller.abort();
+    incoming.clear();
     options.onClose(failure());
   };
   socket.on('close', close);
@@ -107,6 +125,12 @@ export function createSdkPeer(
       socket.close(1008);
       return;
     }
+    // Cancel before dispatch as well as during execution, without waiting behind event/hooks.
+    // Unknown/settled IDs are harmless; this cannot cancel another connection's invocation.
+    if (frame.type === 'cancel') {
+      incoming.get(frame.id)?.abort();
+      return;
+    }
     // RPC replies must bypass the event queue: a handler may itself be awaiting this reply.
     if (frame.type === 'result') {
       const entry = pending.get(frame.id);
@@ -122,7 +146,8 @@ export function createSdkPeer(
         socket.close(1008);
         return;
       }
-      incoming.add(frame.id);
+      const controller = new AbortController();
+      incoming.set(frame.id, controller);
       queuedBytes += bytes;
       if (queuedBytes > options.maxBufferedBytes) {
         close();
@@ -133,7 +158,8 @@ export function createSdkPeer(
         Promise.resolve()
           .then(() => {
             if (closed) throw failure();
-            return options.onCall(frame.method, frame.data);
+            controller.signal.throwIfAborted();
+            return options.onCall(frame.method, frame.data, undefined, controller.signal);
           })
           .then(
             (data) => send({ type: 'result', id: frame.id, data }),
@@ -174,27 +200,43 @@ export function createSdkPeer(
         socket.close(1011);
       });
   });
-  const call: SdkRpc = async (method, data, timeoutMs = options.timeoutMs) => {
+  const call: SdkRpc = async (method, data, timeoutMs = options.timeoutMs, signal) => {
+    signal?.throwIfAborted();
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw failure();
     const id = randomUUID();
     return new Promise((resolve, reject) => {
+      const abort = () => {
+        try {
+          send({ type: 'cancel', id });
+        } catch {
+          close();
+          socket.close(1011);
+        }
+      };
+      const cleanup = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+      };
       const timer = setTimeout(() => {
+        cleanup();
         pending.delete(id);
         reject(failure());
       }, timeoutMs);
       timer.unref();
       pending.set(id, {
         resolve: (value) => {
-          clearTimeout(timer);
+          cleanup();
           resolve(value);
         },
         reject: (error) => {
-          clearTimeout(timer);
+          cleanup();
           reject(error);
         },
       });
       try {
         send({ type: 'call', id, method, data });
+        signal?.addEventListener('abort', abort, { once: true });
+        if (signal?.aborted) abort();
       } catch (error) {
         pending.get(id)?.reject(error instanceof Error ? error : failure());
         pending.delete(id);

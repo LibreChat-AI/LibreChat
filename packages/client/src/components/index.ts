@@ -59,6 +59,7 @@ export { default as FileUpload } from './FileUpload';
 export { default as MultiSelect } from './MultiSelect';
 export { default as DropdownPopup } from './DropdownPopup';
 export { default as DelayedRender } from './DelayedRender';
+export { default as CustomIcon } from './CustomIcon';
 export { default as ThemeSelector } from './ThemeSelector';
 export { default as InfoHoverCard } from './InfoHoverCard';
 export { default as ControlCombobox } from './ControlCombobox';

@@ -1,11 +1,21 @@
 import { z } from 'zod';
-import { randomUUID } from 'node:crypto';
+import jwt from 'jsonwebtoken';
 import { createServer, connect } from 'node:net';
+import { request as httpRequest } from 'node:http';
+import { randomUUID, createHash } from 'node:crypto';
 import { tool } from '@librechat/agents/langchain/tools';
 import { setTimeout as delay } from 'node:timers/promises';
+import { ChatGenerationChunk } from '@langchain/core/outputs';
+import { ensureHandler } from '@langchain/core/callbacks/manager';
 import { FakeChatModel as TestModel } from '@langchain/core/utils/testing';
 import { HumanMessage, AIMessageChunk } from '@librechat/agents/langchain/messages';
 import {
+  createHostFileService,
+  HostFileAdmission,
+  createHostProviderTextService,
+  createHostModelService,
+  HostModelAdmission,
+  ProviderTextAdmission,
   Run,
   Providers,
   FakeChatModel,
@@ -13,14 +23,22 @@ import {
   MemorySaver,
   HookRegistry,
 } from '@librechat/agents';
+import type {
+  RunConfig,
+  ToolCallRequest,
+  ToolExecuteBatchRequest,
+  HostFileStageRequest,
+  HostFilePublishRequest,
+} from '@librechat/agents';
 import type { AddressInfo, Socket } from 'node:net';
-import type { RunConfig } from '@librechat/agents';
 import type { RedisTestClient } from '../../../stream/__tests__/helpers/redis';
 import type { RemoteSdkFactoryInput } from '../types';
 import {
   createRedisTestClient,
   clearRedisTestPrefix,
 } from '../../../stream/__tests__/helpers/redis';
+import { createInitialModelBoundAdmissionCallback } from '../../../middleware/modelBoundContent';
+import { createHostModelLifecycle, supportsModelInvocationContext } from '../admission';
 import { createRedisRuntimeJournal } from './redis';
 import { createRemoteSdkServer } from '../server';
 import { createRuntimeRecovery } from './server';
@@ -91,7 +109,11 @@ function hostConfig(handle: () => Promise<void>) {
     },
   };
 }
-async function fixture(makeRun = factory) {
+async function fixture(
+  makeRun = factory,
+  ownerId?: string,
+  authorize: () => boolean | Promise<boolean> = () => true,
+) {
   const createRun = jest.fn(makeRun);
   const errors: unknown[] = [];
   const journalPrefix = `${prefix}:${randomUUID()}`;
@@ -104,6 +126,12 @@ async function fixture(makeRun = factory) {
     maxBatchFrames: 64,
     maxBatchBytes: 1048576,
   });
+  const journalEntries: string[] = [];
+  const append = journal.append.bind(journal);
+  journal.append = (session, lease, id, payloads, terminal) => {
+    journalEntries.push(...payloads);
+    return append(session, lease, id, payloads, terminal);
+  };
   const sessionScopes = new Map<string, string>();
   const read = journal.read.bind(journal);
   journal.read = (session, after, count) => {
@@ -115,8 +143,8 @@ async function fixture(makeRun = factory) {
       runtimeId: identity.runtimeId,
       secret,
       createRun,
-      authorize: () => true,
-      recovery: { journal, maxDisconnectMs: 5000 },
+      authorize,
+      recovery: { journal, maxDisconnectMs: 5000, ownerId },
       onError: (error) => errors.push(error),
     });
   let runtime = makeRuntime();
@@ -162,6 +190,14 @@ async function fixture(makeRun = factory) {
       return false;
     },
     createRun,
+    sessionId: () => {
+      const session = sessionScopes.keys().next();
+      if (sessionScopes.size !== 1 || session.done) {
+        throw new Error('Expected exactly one recovery session');
+      }
+      return session.value;
+    },
+    journalEntries,
     errors,
     connections: () => connections,
     drop: () => {
@@ -170,7 +206,12 @@ async function fixture(makeRun = factory) {
     remote: {
       url: `ws://127.0.0.1:${(proxy.address() as AddressInfo).port}/sdk`,
       secret,
-      recovery: { maxDisconnectMs: 5000, retryDelayMs: 20, maxJournalBytes: 16777216 },
+      recovery: {
+        maxDisconnectMs: 5000,
+        retryDelayMs: 20,
+        maxJournalBytes: 16777216,
+        ...(ownerId ? { routes: { [ownerId]: `ws://127.0.0.1:${port}/sdk` } } : {}),
+      },
     },
     close: async () => {
       for (const socket of sockets) socket.destroy();
@@ -180,6 +221,104 @@ async function fixture(makeRun = factory) {
   };
 }
 describe('live SDK recovery', () => {
+  it('replays worker tool cancellation across a disconnect without repeating the invocation', async () => {
+    const workerCall = new AbortController();
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const resolveTool = jest.fn();
+    const rejectTool = jest.fn();
+    const toolCall: ToolCallRequest = { id: 'cancelled-call', name: 'inspect', args: {} };
+    const runtime = await fixture(async (input) => {
+      const run = await Run.create({
+        ...input.config,
+        tokenCounter: () => 1,
+        returnContent: true,
+        graphConfig: {
+          type: 'standard',
+          agents: [
+            {
+              agentId: input.identity.agentId,
+              provider: Providers.OPENAI,
+              tools: [],
+              toolDefinitions: input.hostTools?.toolDefinitions,
+            },
+          ],
+        },
+      });
+      run.processStream = async () => {
+        await input.config.customHandlers![GraphEvents.ON_TOOL_EXECUTE].handle(
+          GraphEvents.ON_TOOL_EXECUTE,
+          {
+            toolCalls: [toolCall],
+            signal: workerCall.signal,
+            agentId: identity.agentId,
+            resolve: resolveTool,
+            reject: rejectTool,
+          },
+        );
+        return [];
+      };
+      return run;
+    });
+    let calls = 0;
+    let hostSignal: AbortSignal | undefined;
+    try {
+      const config: RunConfig = {
+        ...hostConfig(async () => undefined),
+        graphConfig: {
+          type: 'standard',
+          llmConfig: { provider: Providers.OPENAI },
+          toolDefinitions: [{ name: 'inspect', description: 'Inspect' }],
+        },
+        customHandlers: {
+          [GraphEvents.ON_TOOL_EXECUTE]: {
+            handle: async (_event, data) => {
+              const batch = data as ToolExecuteBatchRequest;
+              calls++;
+              hostSignal = batch.signal;
+              batch.toolCalls[0].codeSessionContext = { session_id: 'retained-session' };
+              started();
+              await new Promise<void>((resolve) =>
+                batch.signal!.addEventListener('abort', () => resolve(), { once: true }),
+              );
+              batch.reject(new Error('cancelled'));
+            },
+          },
+        },
+      };
+      const run = await createRemoteSdkRun({ config, identity, remote: runtime.remote });
+      const completion = run.processStream(
+        { messages: [] },
+        {
+          version: 'v2',
+          configurable: { thread_id: identity.conversationId },
+        },
+      );
+      void completion.catch(() => undefined);
+      await ready;
+      runtime.offline(true);
+      runtime.drop();
+      await delay(50);
+      workerCall.abort();
+      await delay(50);
+      expect(hostSignal?.aborted).toBe(false);
+      runtime.offline(false);
+      await completion;
+      expect(hostSignal?.aborted).toBe(true);
+      expect(calls).toBe(1);
+      expect(runtime.createRun).toHaveBeenCalledTimes(1);
+      expect(runtime.connections()).toBeGreaterThan(1);
+      expect(resolveTool).not.toHaveBeenCalled();
+      expect(rejectTool).toHaveBeenCalledTimes(1);
+      expect(toolCall.codeSessionContext?.session_id).toBe('retained-session');
+    } finally {
+      runtime.offline(false);
+      workerCall.abort();
+      await runtime.close();
+    }
+  });
   it('runs a real SDK graph through the negotiated durable channel', async () => {
     const runtime = await fixture();
     try {
@@ -558,4 +697,561 @@ describe('live SDK recovery', () => {
       }
     },
   );
+});
+
+it('reconnects directly to the allowlisted owner when the front door is unavailable', async () => {
+  const runtime = await fixture(factory, 'worker-a');
+  let dropped = false;
+  try {
+    const run = await createRemoteSdkRun({
+      identity,
+      remote: runtime.remote,
+      config: hostConfig(async () => {
+        if (dropped) return;
+        dropped = true;
+        runtime.offline(true);
+        runtime.drop();
+      }),
+    });
+    const result = await run.processStream(
+      { messages: [new HumanMessage('go')] },
+      { version: 'v2', configurable: { thread_id: identity.conversationId } },
+    );
+    expect(JSON.stringify(result)).toContain(text);
+    expect(runtime.createRun).toHaveBeenCalledTimes(1);
+    expect(runtime.connections()).toBe(1);
+    expect(runtime.errors).toEqual([]);
+  } finally {
+    await runtime.close();
+  }
+});
+
+it('serializes terminal replay admission and cannot evict a replacement session', async () => {
+  const journal = createRedisRuntimeJournal(redis, {
+    prefix,
+    retentionMs: 60000,
+    leaseMs: 3000,
+    maxFrames: 100,
+    maxBytes: 100000,
+    maxBatchFrames: 10,
+    maxBatchBytes: 10000,
+  });
+  const recovery = createRuntimeRecovery({
+    journal,
+    maxDisconnectMs: 5000,
+    maxFrameBytes: 10000,
+    maxBufferedBytes: 20000,
+    ownerId: 'worker-a',
+  });
+  const claim = { sessionId: randomUUID(), after: 0, resume: false };
+  try {
+    const first = await recovery.prepare(identity, 'thread', claim);
+    await first.begin();
+    await first.complete('completed');
+    first.dispose();
+    const [a, b] = await Promise.all([
+      recovery.prepare(identity, 'thread', { ...claim, resume: true }),
+      recovery.prepare(identity, 'thread', { ...claim, resume: true }),
+    ]);
+    expect(a).toBe(b);
+    await expect(
+      recovery.prepare({ ...identity, userId: 'foreign' }, 'thread', claim),
+    ).rejects.toThrow('identity');
+    await expect(
+      recovery.prepare(identity, 'thread', { ...claim, ownerId: 'worker-b' }),
+    ).rejects.toThrow('owner');
+    a.dispose();
+    const replacement = await recovery.prepare(identity, 'thread', { ...claim, resume: true });
+    a.dispose();
+    expect(await recovery.prepare(identity, 'thread', claim)).toBe(replacement);
+    recovery.close();
+    await expect(recovery.prepare(identity, 'thread', claim)).rejects.toThrow('closed');
+  } finally {
+    recovery.close();
+  }
+});
+
+it('rejects unallowlisted owner identities before invoking a graph', async () => {
+  const runtime = await fixture(factory, 'worker-a');
+  try {
+    const run = await createRemoteSdkRun({
+      identity,
+      config: hostConfig(async () => undefined),
+      remote: { ...runtime.remote, recovery: { ...runtime.remote.recovery, routes: {} } },
+    });
+    await expect(
+      run.processStream(
+        { messages: [] },
+        { version: 'v2', configurable: { thread_id: identity.conversationId } },
+      ),
+    ).rejects.toThrow();
+    expect(runtime.createRun).not.toHaveBeenCalled();
+  } finally {
+    await runtime.close();
+  }
+});
+
+it('does not publish a session admitted concurrently with shutdown', async () => {
+  const journal = createRedisRuntimeJournal(redis, {
+    prefix,
+    retentionMs: 60000,
+    leaseMs: 3000,
+    maxFrames: 100,
+    maxBytes: 100000,
+    maxBatchFrames: 10,
+    maxBatchBytes: 10000,
+  });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const read = journal.read.bind(journal);
+  journal.read = async (...args) => {
+    await held;
+    return read(...args);
+  };
+  const recovery = createRuntimeRecovery({
+    journal,
+    maxDisconnectMs: 5000,
+    maxFrameBytes: 10000,
+    maxBufferedBytes: 20000,
+  });
+  const admission = recovery.prepare(identity, 'thread', {
+    sessionId: randomUUID(),
+    after: 0,
+    resume: false,
+  });
+  recovery.close();
+  release();
+  await expect(admission).rejects.toThrow('closed');
+});
+
+it.each(['invalid', 'half-closed'])(
+  'does not cancel an active execution when an authenticated %s reattachment cannot upgrade',
+  async (mode) => {
+    let started!: () => void;
+    const generating = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release!: () => void;
+    const generation = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let workerSignal: AbortSignal | undefined;
+    let authorize = async () => true;
+    let releaseAdmission = () => {};
+    const runtime = await fixture(
+      async (input) => {
+        workerSignal = input.signal;
+        const run = await factory(input);
+        const model = new TestModel({});
+        model._generate = async () => {
+          started();
+          await generation;
+          input.signal.throwIfAborted();
+          return {
+            generations: [
+              { text: 'complete', message: new AIMessageChunk({ content: 'complete' }) },
+            ],
+          };
+        };
+        run.Graph!.overrideModel = model;
+        return run;
+      },
+      undefined,
+      () => authorize(),
+    );
+    let outcome: Promise<unknown> | undefined;
+    try {
+      const run = await createRemoteSdkRun({
+        config: hostConfig(async () => undefined),
+        identity,
+        remote: runtime.remote,
+      });
+      outcome = run
+        .processStream(
+          { messages: [new HumanMessage('hello')] },
+          { version: 'v2', configurable: { thread_id: identity.conversationId } },
+        )
+        .catch((error: Error) => error);
+      await generating;
+      const disconnected = new Promise<void>((resolve) => {
+        runtime.runtime.server.once('connection', (socket) =>
+          socket.once('close', () => resolve()),
+        );
+      });
+      const token = jwt.sign(
+        {
+          protocolVersion: 1,
+          identity,
+          threadId: identity.conversationId,
+          invocationId: randomUUID(),
+          recovery: { sessionId: runtime.sessionId(), after: 0, resume: true },
+        },
+        secret,
+        {
+          algorithm: 'HS256',
+          audience: identity.runtimeId,
+          issuer: 'librechat-sdk',
+          expiresIn: '60s',
+        },
+      );
+      if (mode === 'invalid') {
+        const status = await new Promise<number | undefined>((resolve, reject) => {
+          const req = httpRequest(
+            {
+              host: '127.0.0.1',
+              port: (runtime.runtime.server.address() as AddressInfo).port,
+              path: '/sdk',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                Connection: 'Upgrade',
+                Upgrade: 'websocket',
+                'Sec-WebSocket-Version': '13',
+                'Sec-WebSocket-Key': 'invalid',
+              },
+            },
+            (res) => {
+              res.resume();
+              res.once('end', () => resolve(res.statusCode));
+            },
+          );
+          req.once('error', reject);
+          req.end();
+        });
+        expect(status).toBe(400);
+      } else {
+        let entered!: () => void;
+        const admission = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        const held = new Promise<void>((resolve) => {
+          releaseAdmission = resolve;
+        });
+        authorize = async () => {
+          entered();
+          await held;
+          return true;
+        };
+        const ended = new Promise<void>((resolve) => {
+          runtime.runtime.server.once('connection', (socket) =>
+            socket.once('end', () => resolve()),
+          );
+        });
+        const closed = new Promise<void>((resolve, reject) => {
+          const wire = connect(
+            {
+              host: '127.0.0.1',
+              port: (runtime.runtime.server.address() as AddressInfo).port,
+              allowHalfOpen: true,
+            },
+            () => {
+              wire.end(
+                `GET /sdk HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${token}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`,
+              );
+            },
+          );
+          wire.setTimeout(3000, () => wire.destroy(new Error('Half-closed upgrade retained')));
+          wire.resume();
+          wire.once('close', () => resolve());
+          wire.once('error', reject);
+        });
+        await Promise.all([admission, ended]);
+        releaseAdmission();
+        await closed;
+      }
+      await disconnected;
+      expect(workerSignal?.aborted).toBe(false);
+      release();
+      expect(JSON.stringify(await outcome)).toContain('complete');
+      expect(runtime.createRun).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseAdmission();
+      release();
+      await outcome;
+      await runtime.close();
+    }
+  },
+);
+it('recovers a policy reply after a wire outage without repeating inspection or journaling raw output', async () => {
+  const raw = 'PRIVATE-PROVIDER-CANDIDATE';
+  const runtime = await fixture(async (input) => {
+    const run = await factory(input);
+    run.Graph!.overrideModel = new FakeChatModel({ responses: [raw], sleep: 1 });
+    return run;
+  });
+  const admission = new ProviderTextAdmission({
+    maxConcurrentInspections: 1,
+    maxBufferedBytes: 16384,
+  });
+  const inspect = jest.fn(async () => {
+    runtime.drop();
+    await delay(50);
+    return {
+      version: 1 as const,
+      ok: true as const,
+      value: { content: 'approved prose', replacements: 1, categories: [] },
+    };
+  });
+  const providerText = createHostProviderTextService({
+    identity,
+    admission,
+    inspectionTimeoutMs: 2000,
+    policy: {
+      version: 1,
+      timeoutMs: 10000,
+      maxAttemptBytes: 8192,
+      maxBufferedBytes: 16384,
+      classify: () => 'prose',
+      inspect,
+    },
+  });
+  try {
+    const run = await createRemoteSdkRun({
+      config: hostConfig(async () => undefined),
+      identity,
+      remote: runtime.remote,
+      hostServices: { providerText },
+    });
+    const content = await run.processStream(
+      { messages: [new HumanMessage('go')] },
+      { version: 'v2', configurable: { thread_id: identity.conversationId } },
+    );
+    expect(JSON.stringify(content)).toContain('approved prose');
+    expect(JSON.stringify(run.getRunMessages())).not.toContain(raw);
+    expect(runtime.connections()).toBeGreaterThan(1);
+    expect(runtime.createRun).toHaveBeenCalledTimes(1);
+    expect(inspect).toHaveBeenCalledTimes(1);
+    expect(runtime.journalEntries.join('')).toContain('policy.providerText');
+    expect(runtime.journalEntries.join('')).not.toContain(raw);
+    expect(runtime.errors).toEqual([]);
+    expect(admission.snapshot().inspections).toBe(0);
+  } finally {
+    await runtime.close();
+  }
+});
+
+it.each(['input', 'output', 'combined'] as const)(
+  'resumes host model chunks without repeating the provider (protection=%s)',
+  async (mode) => {
+    const inputAdmission = mode !== 'output';
+    const outputProtection = mode !== 'input';
+    const runtime = await fixture(async (input) => {
+      const run = await factory(input);
+      run.Graph!.overrideModel = input.hostModel;
+      return run;
+    });
+    const native = new TestModel({});
+    let invocations = 0;
+    let hostStarts = 0;
+    const persisted = jest.fn();
+    const initial = createInitialModelBoundAdmissionCallback({
+      agentIds: [identity.agentId],
+      isActive: () => true,
+      onAllowed: persisted,
+    });
+    const modelLifecycle = createHostModelLifecycle(identity.agentId, 64);
+    if (inputAdmission) native.callbacks = modelLifecycle.wrapCallbacks(native.callbacks);
+    native._streamResponseChunks = async function* () {
+      invocations++;
+      yield new ChatGenerationChunk({ text: 'first ', message: new AIMessageChunk('first ') });
+      runtime.drop();
+      await delay(50);
+      yield new ChatGenerationChunk({
+        text: outputProtection ? 'PRIVATE-CANDIDATE ' : 'approved ',
+        message: new AIMessageChunk(outputProtection ? 'PRIVATE-CANDIDATE ' : 'approved '),
+      });
+      yield new ChatGenerationChunk({ text: 'third', message: new AIMessageChunk('third') });
+    };
+    const admission = new HostModelAdmission({ maxConcurrentCalls: 1, maxRequestBytes: 65536 });
+    const model = createHostModelService({
+      identity,
+      model: native,
+      admission,
+      descriptor: {
+        version: 1,
+        reference: 'primary',
+        provider: Providers.OPENAI,
+        model: 'native',
+        streaming: true,
+        tools: [],
+      },
+      limits: { timeoutMs: 5000, maxRequestBytes: 65536, maxResponseBytes: 65536 },
+      config: {
+        callbacks: [
+          {
+            handleChatModelStart: () => {
+              hostStarts++;
+            },
+          },
+        ],
+      },
+    });
+    const providerText = createHostProviderTextService({
+      identity,
+      policy: {
+        version: 1,
+        timeoutMs: 5000,
+        maxAttemptBytes: 65536,
+        maxBufferedBytes: 131072,
+        classify: () => 'prose',
+        inspect: ({ content }) => ({
+          version: 1,
+          ok: true,
+          value: {
+            content: content.replaceAll('PRIVATE-CANDIDATE', 'approved'),
+            replacements: 1,
+            categories: [],
+          },
+        }),
+      },
+    });
+    try {
+      const run = await createRemoteSdkRun({
+        config: hostConfig(async () => {}),
+        identity,
+        remote: runtime.remote,
+        hostServices: {
+          model,
+          ...(inputAdmission && { modelLifecycle }),
+          ...(outputProtection && { providerText }),
+        },
+      });
+      const result = run.processStream(
+        { messages: [new HumanMessage('go')] },
+        {
+          version: 'v2',
+          configurable: { thread_id: identity.conversationId },
+          callbacks: inputAdmission
+            ? [
+                ensureHandler({
+                  ...initial,
+                  handleChatModelStart: (_llm, _messages, id, parent, extra, tags, metadata) =>
+                    initial.handleChatModelStart(undefined, [], id, parent, extra, tags, metadata),
+                }),
+              ]
+            : undefined,
+        },
+      );
+      if (mode === 'combined' && !supportsModelInvocationContext) {
+        await expect(result).rejects.toThrow();
+        expect(invocations).toBe(0);
+        expect(persisted).not.toHaveBeenCalled();
+        expect(runtime.createRun).not.toHaveBeenCalled();
+        return;
+      }
+      const content = await result;
+      expect(JSON.stringify(content)).toContain('first approved third');
+      expect(runtime.journalEntries.join('')).not.toContain('PRIVATE-CANDIDATE');
+      expect(invocations).toBe(1);
+      expect(persisted).toHaveBeenCalledTimes(inputAdmission ? 1 : 0);
+      expect(hostStarts).toBe(1);
+      expect(runtime.connections()).toBeGreaterThan(1);
+      expect(runtime.createRun).toHaveBeenCalledTimes(1);
+      expect(runtime.errors).toEqual([]);
+      expect(admission.snapshot().calls).toBe(0);
+    } finally {
+      await runtime.close();
+    }
+  },
+);
+
+it('recovers file upload chunks and a committed publication receipt without repeating mutations', async () => {
+  const raw = Buffer.from('PRIVATE-FILE-CONTENT-FOR-RECOVERY');
+  const descriptor = {
+    reference: 'input',
+    revision: 'v1',
+    filename: 'input.txt',
+    mediaType: 'text/plain',
+    bytes: raw.length,
+  };
+  let produced = 0;
+  const runtime = await fixture(async (input) => {
+    const files = input.hostFiles;
+    if (!files) throw new Error('Missing file capability');
+    const content = async function* () {
+      for await (const chunk of files.read(files.sources[0], input.signal)) {
+        produced++;
+        yield chunk;
+      }
+    };
+    const staged = await files.stage(
+      { operationId: 'upload', filename: 'output.txt', mediaType: 'text/plain', bytes: raw.length },
+      content(),
+      input.signal,
+    );
+    await files.publish(staged, 'publication', input.signal);
+    return factory(input);
+  });
+  const stage = jest.fn(
+    async (_request: HostFileStageRequest, content: AsyncIterable<Uint8Array>) => {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of content) {
+        chunks.push(chunk);
+        if (chunks.length === 1) {
+          runtime.drop();
+          await delay(60);
+        }
+      }
+      const data = Buffer.concat(chunks);
+      expect(data).toEqual(raw);
+      return {
+        ...descriptor,
+        reference: 'staged',
+        sha256: createHash('sha256').update(data).digest('hex'),
+      };
+    },
+  );
+  const publish = jest.fn(async (request: HostFilePublishRequest) => {
+    const committed = {
+      operationId: request.operationId,
+      file: { ...descriptor, reference: 'published' },
+    };
+    runtime.drop();
+    await delay(60);
+    return committed;
+  });
+  const files = createHostFileService({
+    identity,
+    descriptor: {
+      version: 1,
+      operations: ['read', 'stage', 'publish'],
+      maxFileBytes: 1024,
+      maxChunkBytes: 8,
+    },
+    admission: new HostFileAdmission({ maxConcurrentOperations: 4, maxBufferedBytes: 64 }),
+    timeoutMs: 5000,
+    store: {
+      read: async (request) => ({
+        reference: request.reference,
+        revision: request.revision,
+        offset: request.offset,
+        data: raw.subarray(request.offset, request.offset + request.length),
+      }),
+      stage,
+      publish,
+    },
+  });
+  try {
+    const run = await createRemoteSdkRun({
+      config: hostConfig(async () => undefined),
+      identity,
+      remote: runtime.remote,
+      hostServices: { files: { ...files, sources: [descriptor] } },
+    });
+    await run.processStream(
+      { messages: [new HumanMessage('copy')] },
+      { version: 'v2', configurable: { thread_id: identity.conversationId } },
+    );
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(produced).toBe(Math.ceil(raw.length / 8));
+    expect(runtime.createRun).toHaveBeenCalledTimes(1);
+    expect(runtime.connections()).toBeGreaterThan(1);
+    expect(runtime.errors).toEqual([]);
+    expect(runtime.journalEntries.join('')).not.toContain('PRIVATE-FILE');
+    expect(runtime.journalEntries.join('')).not.toContain(raw.subarray(0, 8).toString('base64'));
+  } finally {
+    await runtime.close();
+  }
 });

@@ -101,13 +101,24 @@ jest.mock('@librechat/api', () => ({
   createAgentManagementReadHandlers: mockCreateAgentManagementReadHandlers,
   createAgentManagementUpdateHandler: mockCreateAgentManagementUpdateHandler,
 }));
-jest.mock('~/server/middleware', () => ({
-  checkBan: mockCheckBan,
-  configMiddleware: mockConfigMiddleware,
-  createFileLimiters: mockCreateFileLimiters,
-  uaParser: mockUaParser,
-  requireTermsAcceptance: (_req, _res, next) => next(),
-}));
+jest.mock('~/server/middleware', () => {
+  const middleware = {
+    checkBan: mockCheckBan,
+    configMiddleware: mockConfigMiddleware,
+    createFileLimiters: mockCreateFileLimiters,
+    uaParser: mockUaParser,
+    requireTermsAcceptance: (_req, _res, next) => next(),
+  };
+  const strictRequests = new WeakSet();
+  return {
+    ...middleware,
+    strictConfigMiddleware: (req, res, next) => {
+      if (strictRequests.has(req)) return next();
+      strictRequests.add(req);
+      return middleware.configMiddleware(req, res, next);
+    },
+  };
+});
 jest.mock('~/server/routes/files/multer', () => ({
   createMulterInstance: mockCreateMulterInstance,
 }));

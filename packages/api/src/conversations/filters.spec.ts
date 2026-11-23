@@ -70,6 +70,31 @@ describe('parseConversationListFilters', () => {
     ).toBe('2026-09-01T10:00:00.000Z');
   });
 
+  it('accepts an hour-only or colonless offset as the same instant', () => {
+    for (const updatedAfter of [
+      '2026-09-01T12:00:00+02',
+      '2026-09-01T12:00:00+0200',
+      '2026-09-01T12:00:00+02:00',
+      '2026-09-01T12:00+02',
+      '2026-09-01 12:00:00+02',
+    ]) {
+      const { filters, error } = parseConversationListFilters({ updatedAfter });
+
+      expect(error).toBeUndefined();
+      expect(filters.updatedAfter?.toISOString()).toBe('2026-09-01T10:00:00.000Z');
+    }
+    expect(
+      parseConversationListFilters({
+        createdAfter: '2026-09-01T12:00:00.250-0530',
+      }).filters.createdAfter?.toISOString(),
+    ).toBe('2026-09-01T17:30:00.250Z');
+    expect(
+      parseConversationListFilters({
+        createdAfter: '2026-09-01T12:00:00-05',
+      }).filters.createdAfter?.toISOString(),
+    ).toBe('2026-09-01T17:00:00.000Z');
+  });
+
   it('accepts fractional seconds finer than milliseconds', () => {
     expect(
       parseConversationListFilters({
@@ -109,6 +134,27 @@ describe('parseConversationListFilters', () => {
     const { filters } = parseConversationListFilters({ endpoints: ['', '  ', 'agents'] });
 
     expect(filters.endpoints).toEqual(['agents']);
+  });
+
+  it('matches an endpoint name as sent, surrounding whitespace included', () => {
+    /** A custom endpoint may be configured as " Ollama " and conversations store it so. */
+    const { filters, error } = parseConversationListFilters({
+      endpoints: [' Ollama ', 'Ollama', ' Ollama '],
+    });
+
+    expect(error).toBeUndefined();
+    expect(filters.endpoints).toEqual([' Ollama ', 'Ollama']);
+  });
+
+  it('counts surrounding whitespace toward the endpoint name limit', () => {
+    /** The sidebar offers only names within the limit as configured, whitespace included. */
+    expect(
+      parseConversationListFilters({ endpoints: ' abc ' }, { maxEndpointNameLength: 5 }).filters
+        .endpoints,
+    ).toEqual([' abc ']);
+    expect(
+      parseConversationListFilters({ endpoints: ' abc ' }, { maxEndpointNameLength: 4 }).error,
+    ).toMatch(/endpoints must be/);
   });
 
   it('treats an all-blank endpoint list as no filter at all', () => {

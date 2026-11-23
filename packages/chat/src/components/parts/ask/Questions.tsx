@@ -165,7 +165,7 @@ export default function AskUserQuestions({
     stepRef,
     () => {
       const current = latestFormRef.current;
-      if (current.locked || current.arrivalFocused || !isFocusIdle()) {
+      if (current.locked || current.arrivalFocused || !isFocusIdle(stepRef.current)) {
         return;
       }
       focusStep({ firstOption: true, preventScroll: true });

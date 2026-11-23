@@ -39,6 +39,8 @@ export const useUpdateScheduleMutation = (
       ...options,
       onSuccess: (...args) => {
         queryClient.invalidateQueries([QueryKeys.schedules]);
+        // An edit ends the grant the schedule had, or replaces it: what it may use changed.
+        queryClient.invalidateQueries([QueryKeys.scheduleMCPConsent, args[1].id]);
         options?.onSuccess?.(...args);
       },
     },

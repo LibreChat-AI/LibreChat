@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { getDefaultStore, useAtom } from 'jotai';
 import { filesFamily, isSubmittingFamily } from '@librechat/chat/react';
 import '@testing-library/jest-dom';
+import axios from 'axios';
 import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
@@ -10,16 +11,18 @@ import { HTML5Backend } from 'react-dnd-html5-backend';
 import { BrowserRouter as Router } from 'react-router-dom';
 import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { act, render, screen, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { TFile, TMessage, TConversation } from 'librechat-data-provider';
 import type { TOptions } from 'i18next';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type BarComponent from '../Composer/Bar';
 import type { ChatFormValues } from '~/common';
+import { createMessageCache } from '~/Providers/ChatHostContext';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { TargetContext } from '~/Providers/TargetContext';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { SteerHostTestProvider } from 'test/steerHost';
+import { startupConfigKey } from '~/data-provider';
 import ChatForm from '../ChatForm';
 
 type BarProps = React.ComponentProps<typeof BarComponent>;
@@ -40,6 +43,22 @@ jest.mock('react-i18next', () => {
       },
     }),
   };
+});
+
+const startupConfig = { interface: { contextUsage: true }, modelSpecs: { list: [] } };
+const originalAdapter = axios.defaults.adapter;
+
+beforeEach(() => {
+  axios.defaults.adapter = async (config) => {
+    if (config.url === '/api/config') {
+      return { data: startupConfig, status: 200, statusText: 'OK', headers: {}, config };
+    }
+    throw new Error('Composer fixture blocks external API requests');
+  };
+});
+
+afterEach(() => {
+  axios.defaults.adapter = originalAdapter;
 });
 
 /** Props of every render of the bar, in order. Written by the probe below. */
@@ -109,6 +128,8 @@ function HistoryProbe() {
 }
 
 function Harness({ conversationId }: { conversationId: string }) {
+  const queryClient = useQueryClient();
+  const messageCache = useMemo(() => createMessageCache(queryClient), [queryClient]);
   const [files, setFiles] = useAtom(filesFamily(0));
   const [isSubmitting] = useAtom(isSubmittingFamily(0));
   const [, setFilesLoading] = useState(false);
@@ -138,9 +159,19 @@ function Harness({ conversationId }: { conversationId: string }) {
         setFilesLoading,
         newConversation: () => undefined,
         handleStopGenerating: () => undefined,
-        stopGenerating: () => undefined,
-        getMessages: () => undefined,
-        setMessages: () => undefined,
+        stopGenerating: () => Promise.resolve(),
+        getMessages: (targetConversationId?: string | null) =>
+          messageCache.read(targetConversationId ?? conversationId),
+        messagesKey: conversationId,
+        latestMessageId: undefined,
+        latestMessageDepth: undefined,
+        subscribeMessages: (onChange: () => void) =>
+          messageCache.subscribe(conversationId, onChange),
+        getMessagesRevision: () => messageCache.revision(conversationId),
+        useLiveAttachments: () => ({}),
+        getMappingOptions: () => ({}),
+        feedbackEnabled: false,
+        setMessages: (messages: TMessage[]) => messageCache.write(conversationId, messages),
         ask: () => undefined,
         regenerate: () => undefined,
         setSiblingIdx: () => undefined,
@@ -152,8 +183,8 @@ function Harness({ conversationId }: { conversationId: string }) {
         setOptionSettings: () => undefined,
         handleRegenerate: () => undefined,
         handleContinue: () => undefined,
-      }) as unknown as React.ContextType<typeof ChatContext>,
-    [conversation, files, setFiles, isSubmitting],
+      }) satisfies React.ContextType<typeof ChatContext>,
+    [conversation, files, setFiles, isSubmitting, messageCache, conversationId],
   );
 
   return (
@@ -179,8 +210,10 @@ function renderComposer({
   submitting = false,
 }: { conversationId?: string; submitting?: boolean } = {}) {
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } },
   });
+  queryClient.setQueryData(startupConfigKey(true), startupConfig);
+  queryClient.setQueryData(startupConfigKey(false), startupConfig);
   queryClient.setQueryData<TFile[]>([QueryKeys.files], []);
   queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.openAI]: { order: 0 } });
   getDefaultStore().set(isSubmittingFamily(0), submitting);

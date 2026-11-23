@@ -9,7 +9,7 @@ import { probeStyle } from './style.helpers';
  * the focus on an input nested inside the wrapper the variant styles, so the focused fill has to
  * follow that input: a keyboard user tabbing to the value sees the field fill in
  * `surface-secondary` and the input's own outline, and both leave with the focus. The probe is
- * the playback rate value on the Speech tab of the settings dialog.
+ * the external speech playback rate value on the Speech tab of the settings dialog.
  */
 test.describe.configure({ timeout: 120_000 });
 test.use({ viewport: { width: 1280, height: 800 } });
@@ -22,6 +22,12 @@ type ThemeChoice = 'clickhouse' | 'default';
  * navigation wants ride in its URL and the script stores or clears the definition.
  */
 async function installThemeBridge(page: Page) {
+  await page.route('**/api/files/speech/config/get', (route) =>
+    route.fulfill({
+      json: { textToSpeech: true, engineTTS: 'external', ttsExternal: true },
+    }),
+  );
+  await page.route('**/api/files/speech/tts/voices', (route) => route.fulfill({ json: ['alloy'] }));
   await page.addInitScript((definition) => {
     const params = new URL(location.href).searchParams;
     const theme = params.get('e2eTheme');
@@ -31,6 +37,7 @@ async function installThemeBridge(page: Page) {
     }
     localStorage.setItem('color-theme', mode);
     localStorage.setItem('textToSpeech', 'true');
+    localStorage.setItem('engineTTS', JSON.stringify('external'));
     localStorage.removeItem('theme-colors');
     localStorage.removeItem('theme-name');
     if (theme === 'clickhouse') {

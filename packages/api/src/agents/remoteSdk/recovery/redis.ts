@@ -8,6 +8,7 @@ import type {
 
 /** Operator-supplied client; no app singleton or credentials cross the runtime boundary. */
 export interface RuntimeJournalRedis {
+  evalsha?(sha: string, numberOfKeys: number, ...args: Array<string | number>): Promise<unknown>;
   eval(script: string, numberOfKeys: number, ...args: Array<string | number>): Promise<unknown>;
 }
 export interface RuntimeJournalLimits {
@@ -116,6 +117,7 @@ if op == 'finish' then
 end
 return fail('closed')
 `;
+const SCRIPT_SHA = createHash('sha1').update(SCRIPT).digest('hex');
 const failures = new Set<RuntimeJournalFailure>([
   'missing',
   'scope_mismatch',
@@ -166,9 +168,7 @@ export function createRedisRuntimeJournal(
     if (!/^[a-f0-9]{64}$/.test(session.scope)) throw new Error('Invalid runtime journal scope');
     if (op !== 'read' && op !== 'purge') id(owner);
     const key = `${limits.prefix}:{${session.sessionId}}`;
-    const raw = await redis.eval(
-      SCRIPT,
-      3,
+    const arguments_: Array<string | number> = [
       `${key}:meta`,
       `${key}:frames`,
       `${key}:receipts`,
@@ -182,7 +182,17 @@ export function createRedisRuntimeJournal(
       limits.maxBytes,
       terminal ?? 0,
       ...args,
-    );
+    ];
+    let raw: unknown;
+    if (redis.evalsha) {
+      try {
+        raw = await redis.evalsha(SCRIPT_SHA, 3, ...arguments_);
+      } catch (error) {
+        // NOSCRIPT guarantees no execution. Never retry an ambiguous network failure.
+        if (!(error instanceof Error) || !/^NOSCRIPT\b/.test(error.message)) throw error;
+        raw = await redis.eval(SCRIPT, 3, ...arguments_);
+      }
+    } else raw = await redis.eval(SCRIPT, 3, ...arguments_);
     if (!Array.isArray(raw)) throw new Error('Invalid runtime journal response');
     if (raw[0] === 0 && failures.has(raw[1])) return { ok: false, error: { code: raw[1] } };
     if (raw[0] !== 1) throw new Error('Invalid runtime journal response');
@@ -191,6 +201,7 @@ export function createRedisRuntimeJournal(
   return {
     leaseMs: limits.leaseMs,
     maxBatchFrames: limits.maxBatchFrames,
+    maxBatchBytes: limits.maxBatchBytes,
     purge: (session) => invoke('purge', session, '', 0, [], () => null),
     create: (session, owner) =>
       invoke('create', session, owner, 0, [], (r) => ({ owner, epoch: integer(r[1]) })),

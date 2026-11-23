@@ -15,6 +15,7 @@ import type {
 import type { Getter, PrimitiveAtom, WritableAtom } from 'jotai';
 import type { SetStateAction } from 'react';
 import type { SubagentAggregatorState, SubagentContentPart, SubagentTickerState } from '../../core';
+import type { SubagentCaller } from './author';
 import type { Family } from '../steer/family';
 import {
   reconcileSubagentMessagePhases,
@@ -331,6 +332,8 @@ export type ActiveSubagentPanel = {
     threadId: string;
     taskId: string;
   };
+  /** The subagent that made this call, when the call sits in a subagent's own thread. */
+  caller?: SubagentCaller;
   event?: {
     actorId: string;
     /** Task-specific live activity identity; the actor thread is reused across turns. */

@@ -56,7 +56,10 @@ export default function ToolCallLimitNotice({
    * Same gate `useGenerationsByLatest` applies to the Continue hover button.
    */
   const canAct =
-    chat?.ask != null && chat.isSubmitting !== true && chat.latestMessageId === message.messageId;
+    chat?.ask != null &&
+    chat.readOnly !== true &&
+    chat.isSubmitting !== true &&
+    chat.latestMessageId === message.messageId;
   /**
    * Empty overrides are authoritative: a recovery prompt is not the user's next
    * compose, so `ask` must not attach or drain files, skills, or quotes already

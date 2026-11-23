@@ -1,8 +1,15 @@
 const { tool } = require('@librechat/agents/langchain/tools');
 const { z } = require('zod');
 const { GraphEvents } = require('@librechat/agents');
-const { Constants, ContentTypes, EModelEndpoint } = require('librechat-data-provider');
-const { GenerationJobManager } = require('@librechat/api');
+const {
+  Constants,
+  ContentTypes,
+  EModelEndpoint,
+  agentsEndpointSchema,
+} = require('librechat-data-provider');
+const { GenerationJobManager, createSdkFileHost } = require('@librechat/api');
+const { promises: fs } = require('node:fs');
+const { Readable } = require('node:stream');
 const AgentClient = require('../client');
 const { ModelEndHandler } = require('../callbacks');
 const db = require('~/models');
@@ -164,6 +171,73 @@ function fixture({
 describe('AgentClient billing through BaseClient and the real runtime', () => {
   afterAll(async () => {
     await GenerationJobManager.destroy();
+  });
+
+  it('settles consumed usage when native SDK snapshot cleanup fails', async () => {
+    const { client, send, requests } = fixture({ reported: true });
+    const file = {
+      file_id: 'billing-input',
+      user: 'user-billing',
+      filepath: '/uploads/input',
+      filename: 'input.txt',
+      bytes: 1,
+      type: 'text/plain',
+      source: 'local',
+      object: 'file',
+      usage: 0,
+      embedded: false,
+    };
+    const host = createSdkFileHost(
+      agentsEndpointSchema.parse({ sdkHostFiles: { maxFileBytes: 1, maxChunkBytes: 1 } })
+        .sdkHostFiles,
+    );
+    const audit = jest.fn();
+    const session = host.createSession({
+      req: client.options.req,
+      audit,
+      getInputs: () => [file],
+      loadFiles: async () => [file],
+      filterFiles: async ({ files }) => files,
+      getStrategyFunctions: () => ({
+        getDownloadStream: async () => Readable.from([Buffer.from('x')]),
+      }),
+    });
+    const identity = {
+      runtimeId: 'fixture',
+      agentId: 'agent-billing',
+      userId: 'user-billing',
+      runId: 'file-run',
+    };
+    const bound = session.bind(identity);
+    const mkdir = jest.spyOn(fs, 'mkdtemp');
+    await bound.service.read({
+      version: 1,
+      identity,
+      reference: bound.sources[0].reference,
+      revision: bound.sources[0].revision,
+      offset: 0,
+      length: 1,
+    });
+    const directory = await mkdir.mock.results[0].value;
+    client.options.sdkFiles = session;
+    const remove = jest.spyOn(fs, 'rm').mockRejectedValue(new Error('private filesystem failure'));
+    try {
+      await send();
+      expect(requests).toHaveLength(1);
+      expect(audit).toHaveBeenCalledWith({ action: 'cleanup_failed' });
+      expect(db.bulkInsertTransactions).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ tokenType: 'prompt', rawAmount: -300000 }),
+          expect.objectContaining({ tokenType: 'completion', rawAmount: -5 }),
+        ]),
+      );
+      expect(client._resolveRun).toBeNull();
+      expect(host.snapshot().snapshots).toEqual({ operations: 1, reservedBytes: 1 });
+    } finally {
+      remove.mockRestore();
+      mkdir.mockRestore();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('does not bill when real pruning rejects every message before model invocation', async () => {

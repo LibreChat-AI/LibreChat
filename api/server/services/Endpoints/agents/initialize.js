@@ -25,6 +25,7 @@ const {
   buildAgentContextAttachmentsByAgentId,
   collectCodeExecutionProfileRoutes,
   getLazySubagentConfigId,
+  createGraphMemberInitializer,
   createRoutedGraphMemberLoader,
   createViewableSubagentLoader,
   resolveAgentCodeFlags,
@@ -40,6 +41,7 @@ const {
   createLazyAgentHistoryResolver,
   resolveToolRoleGrants,
   createChatRunFileBindings,
+  createChatSdkFileSession,
   createAxiosInstance,
   getCodeApiAuthHeaders,
   getCodeExecutionBaseUrl,
@@ -51,9 +53,11 @@ const {
   extractFileContext,
   createScheduleUpstreamTokenProviderResolver,
   initializeWithScheduledMCPBearer,
-  initializeWithScheduleMCPExecution,
+  initializeWithAuthority,
   retainScheduleMCPCompletion,
-  getScheduleMCPExecution,
+  scheduleExecution,
+  scheduleSubject,
+  keySubject,
   getMCPRequestContext,
   createSubagentCodeRouting,
   hasEntityEmbeddings,
@@ -227,6 +231,7 @@ const initializeClientWithProvider = async ({
   res,
   signal,
   endpointOption,
+  executionContext: runContext,
   jobCreatedAt,
   checkpointNamespace,
   foregroundRunId,
@@ -265,17 +270,7 @@ const initializeClientWithProvider = async ({
 
   /** @type {Array<UsageMetadata>} */
   const collectedUsage = [];
-  /**
-   * Vertex Gemini 3 thought signatures captured from `chat_model_end` events,
-   * keyed by `tool_call_id`. Persisted on
-   * `responseMessage.metadata.thoughtSignatures` so subsequent conversation
-   * turns can restore each signature onto the right reconstructed AIMessage's
-   * `additional_kwargs.signatures` and avoid 400s when resuming after a tool
-   * round-trip without a final text reply. Always allocated; capture path
-   * is a no-op for providers that don't emit signatures (OpenAI, Anthropic,
-   * Bedrock, etc.).
-   * @type {Record<string, string>}
-   */
+  /** @type {import('@librechat/api').GoogleThoughtSignatures} */
   const collectedThoughtSignatures = {};
   /** @type {ArtifactPromises} */
   const artifactPromises = [];
@@ -479,7 +474,8 @@ const initializeClientWithProvider = async ({
 
   const invokedSkillIdentities = new Map();
   const toolExecuteOptions = {
-    scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(req, res)),
+    scheduledMCPExecution: scheduleExecution(getMCPRequestContext(req, res)),
+    runContext,
     // Keep foreground cancellation owned by this request even when the agents
     // SDK rebuilds a graph for approval resume. The SDK event's breaker signal
     // is composed with this authoritative job signal by the handler.
@@ -647,6 +643,8 @@ const initializeClientWithProvider = async ({
   const contextUsageSink = { latest: null, count: 0 };
   /** @type {Array<import('librechat-data-provider').TTokenUsageEvent>} */
   const usageEmitSink = [];
+  /** @type {import('@librechat/api').OutputTruncationSink} */
+  const truncationSink = {};
 
   const chatProjectContextPromise = resolveInitializationProjectContext(
     { req, endpointOption, conversationId, conversationPromise: requestConversationPromise },
@@ -836,6 +834,7 @@ const initializeClientWithProvider = async ({
       getUserKey: db.getUserKey,
       getMessages: db.getMessages,
       getConvoFiles: db.getConvoFiles,
+      getConvoExcludedFiles: db.getConvoExcludedFiles,
       getAccessibleMcpServerNames,
       updateFilesUsage: db.updateFilesUsage,
       getUserKeyValues: db.getUserKeyValues,
@@ -933,6 +932,7 @@ const initializeClientWithProvider = async ({
         getUserKey: db.getUserKey,
         getMessages: db.getMessages,
         getConvoFiles: db.getConvoFiles,
+        getConvoExcludedFiles: db.getConvoExcludedFiles,
         getAccessibleMcpServerNames,
         updateFilesUsage: db.updateFilesUsage,
         getUserKeyValues: db.getUserKeyValues,
@@ -1478,6 +1478,7 @@ const initializeClientWithProvider = async ({
             getUserKey: db.getUserKey,
             getMessages: db.getMessages,
             getConvoFiles: db.getConvoFiles,
+            getConvoExcludedFiles: db.getConvoExcludedFiles,
             getAccessibleMcpServerNames,
             updateFilesUsage: db.updateFilesUsage,
             getUserKeyValues: db.getUserKeyValues,
@@ -1654,6 +1655,7 @@ const initializeClientWithProvider = async ({
                   subagentCodeRouting.routesChildren(context.executionId)
                     ? context.executionId
                     : undefined,
+                  true,
                 );
                 return config;
               },
@@ -1711,7 +1713,14 @@ const initializeClientWithProvider = async ({
   };
   const graphMemberLoadsById = new Map();
   const initializeGraphMember = createConcurrencyLimiter(SUBAGENT_GRAPH_LOAD_CONCURRENCY);
-  const loadGraphMemberOnce = async (memberId) => {
+  /** Members a lazy parent resolves are held to the metadata the run's build recorded. */
+  const initializeMember = createGraphMemberInitializer({
+    getPin: (memberId) => lazyMetadataByAgentId.get(memberId),
+    getFlags: getSubagentCodeFlags,
+    initialize: (inputs) =>
+      initializeLoadedSubagent({ ...inputs, lazyChildren: [], viewAccessChecked: true }),
+  });
+  const loadGraphMemberOnce = async (memberId, pinned) => {
     throwIfAborted(signal);
     const cached = graphMemberConfigsById.get(memberId);
     if (cached) return cached;
@@ -1724,15 +1733,7 @@ const initializeClientWithProvider = async ({
       return null;
     }
     try {
-      const config = await initializeLoadedSubagent({
-        agent,
-        agentId: memberId,
-        configId: getLazySubagentConfigId(agent),
-        context: { signal },
-        lazyChildren: [],
-        codeFlags: getSubagentCodeFlags(agent),
-        viewAccessChecked: true,
-      });
+      const config = await initializeMember({ agent, memberId, context: { signal }, pinned });
       graphMemberConfigsById.set(memberId, config);
       return config;
     } catch (error) {
@@ -1744,13 +1745,13 @@ const initializeClientWithProvider = async ({
       return null;
     }
   };
-  const loadGraphMember = async (memberId, graphSignal = signal) => {
+  const loadGraphMember = async (memberId, graphSignal = signal, pinned) => {
     throwIfAborted(graphSignal);
     const cached = graphMemberConfigsById.get(memberId);
     if (cached) return cached;
     let pending = graphMemberLoadsById.get(memberId);
     if (!pending) {
-      pending = loadGraphMemberOnce(memberId);
+      pending = loadGraphMemberOnce(memberId, pinned);
       graphMemberLoadsById.set(memberId, pending);
       pending.then(
         () => {
@@ -1775,21 +1776,17 @@ const initializeClientWithProvider = async ({
     getAgent: (memberId, graphSignal) =>
       waitForAbort(db.getAgentWithVersionCount({ id: memberId }), graphSignal),
     canView: (agent, memberId, graphSignal) => hasSubagentViewAccess(agent, memberId, graphSignal),
-    initialize: ({ agent, memberId, context }) =>
-      initializeLoadedSubagent({
-        agent,
-        agentId: memberId,
-        configId: getLazySubagentConfigId(agent),
-        context,
-        lazyChildren: [],
-        codeFlags: getSubagentCodeFlags(agent),
-        viewAccessChecked: true,
-      }),
+    initialize: (input) => initializeMember({ ...input, pinned: true }),
     isFatal: (error, graphSignal) =>
       isFatalAgentInitializationError(error, { signal: graphSignal }),
   });
 
-  async function resolveGraphSubagentsFor(config, graphSignal = signal, routedParentRunId) {
+  async function resolveGraphSubagentsFor(
+    config,
+    graphSignal = signal,
+    routedParentRunId,
+    pinned = false,
+  ) {
     throwIfAborted(graphSignal);
     const definitions =
       subagentsAvailableForRun && config.subagents?.enabled === true
@@ -1821,7 +1818,7 @@ const initializeClientWithProvider = async ({
             ? config
             : initializeGraphMember(() =>
                 routedParentRunId == null
-                  ? loadGraphMember(memberId, graphSignal)
+                  ? loadGraphMember(memberId, graphSignal, pinned)
                   : loadRoutedGraphMember(memberId, routedParentRunId, graphSignal),
               ),
         ),
@@ -1876,7 +1873,8 @@ const initializeClientWithProvider = async ({
           {
             completionWakeups: completionWakeupsEnabled,
             requestScopedConnections: getMCPRequestContext(req, res),
-            scheduleMCPIdentity: getScheduleMCPExecution(getMCPRequestContext(req, res))?.identity,
+            scheduleMCPIdentity: scheduleExecution(getMCPRequestContext(req, res))?.identity,
+            runContext,
           },
         )
       : undefined;
@@ -2086,6 +2084,7 @@ const initializeClientWithProvider = async ({
     usageCost,
     contextUsageSink,
     usageEmitSink,
+    truncationSink,
     eventChildActivity,
     resolveMcpServerName,
     toolTimingReplayEvents,
@@ -2111,15 +2110,26 @@ const initializeClientWithProvider = async ({
     iconURL: endpointOption.iconURL,
     chatProjectId: endpointOption.chatProjectId,
     attachments: primaryConfig.requestAttachments ?? primaryConfig.attachments,
+    currentRequestAttachments: primaryConfig.currentRequestAttachments,
     agentContextAttachmentsByAgentId,
     endpointType: endpointOption.endpointType,
     resendFiles: primaryConfig.resendFiles ?? true,
+    excludedFiles: primaryConfig.excludedFiles,
     imageDetail: primaryConfig.imageDetail,
     maxContextTokens: primaryConfig.maxContextTokens,
     endpoint: isEphemeralAgentId(primaryConfig.id) ? primaryConfig.endpoint : EModelEndpoint.agents,
     subagentAggregatorsByToolCallId,
     subagentTasks,
     runFiles: runFileBindings.session,
+    sdkFiles: createChatSdkFileSession({
+      audit: (event) => logger.warn('[agents:sdk-files]', event),
+      host: req.app?.locals?.sdkFileHost,
+      req,
+      getInputs: () => primaryConfig.currentRequestAttachments,
+      loadFiles: (ids) => db.getRunFileCandidates(ids, req.user.tenantId, { storageOnly: true }),
+      filterFiles: filterFilesByAgentAccess,
+      getStrategyFunctions,
+    }),
     /** Resolved endpoint token/pricing config so spending and cost reflect
      *  configured rates for custom-endpoint agents instead of defaults. */
     endpointTokenConfig: primaryConfig.endpointTokenConfig,
@@ -2131,6 +2141,7 @@ const initializeClientWithProvider = async ({
      *  them to persist the breakdown + usage rollup on the response message. */
     contextUsageSink,
     usageEmitSink,
+    truncationSink,
     startupTelemetry,
     toolInputValidationErrors,
     jobCreatedAt,
@@ -2160,9 +2171,9 @@ function createInitializeClient(dependencies = {}) {
       params.req,
       dependencies.resolveUpstreamTokenProvider,
       params.signal,
-      params.scheduledTokenContext,
+      params.executionContext,
     );
-    return initializeWithScheduleMCPExecution(
+    return initializeWithAuthority(
       {
         req: params.req,
         signal: params.signal,
@@ -2170,16 +2181,31 @@ function createInitializeClient(dependencies = {}) {
           params.req,
           params.res,
         ),
-        restoredContext: params.scheduledTokenContext,
+        executionContext: params.executionContext,
         restoredJob: params.scheduleJobIdentity,
+        approvedToolCalls: params.approvedToolCalls,
       },
-      () => require('~/server/services/Schedules/consent'),
+      [
+        scheduleSubject(
+          () => require('~/server/services/Schedules/consent'),
+          (identity) =>
+            retainScheduleMCPCompletion(
+              identity,
+              {
+                streamId: params.req._resumableStreamId,
+                createdAt: params.jobCreatedAt,
+              },
+              GenerationJobManager.getJobStore(),
+            ),
+        ),
+        keySubject(() => require('~/server/services/ApiKeys/grants')),
+      ],
       () =>
         initializeWithScheduledMCPBearer(
           {
             req: params.req,
             context: getMCPRequestContext(params.req),
-            restoredContext: params.scheduledTokenContext,
+            executionContext: params.executionContext,
             host: dependencies.scheduledBearerHost,
             signal: params.signal,
             streamId: params.req._resumableStreamId,
@@ -2190,15 +2216,6 @@ function createInitializeClient(dependencies = {}) {
               require('~/server/services/Schedules').registerMCPSettlement(input),
           },
           () => initializeClientWithProvider({ ...params, upstreamTokenProviderResolver }),
-        ),
-      (identity) =>
-        retainScheduleMCPCompletion(
-          identity,
-          {
-            streamId: params.req._resumableStreamId,
-            createdAt: params.jobCreatedAt,
-          },
-          GenerationJobManager.getJobStore(),
         ),
     );
   };

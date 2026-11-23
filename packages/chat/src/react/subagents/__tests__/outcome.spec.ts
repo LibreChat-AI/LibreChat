@@ -36,7 +36,7 @@ it.each(
   ].map((blocks) => ({ blocks })),
 )('recognizes the locked SDK aggregate of serialized blocks %j', ({ blocks }) => {
   Object.assign(globalThis, { File, ReadableStream, TransformStream, WritableStream });
-  const { createContentAggregator, filterSubagentResult, GraphEvents } =
+  const { createContentAggregator, filterSubagentResult, GraphEvents, StepTypes } =
     jest.requireActual<typeof import('@librechat/agents')>('@librechat/agents');
   const { AIMessage } = jest.requireActual<typeof import('@librechat/agents/langchain/messages')>(
     '@librechat/agents/langchain/messages',
@@ -48,9 +48,12 @@ it.each(
       id: 'answer',
       runId: 'provider',
       index: 0,
-      type: 'message_creation',
+      type: StepTypes.MESSAGE_CREATION,
       usage: null,
-      stepDetails: { type: 'message_creation', message_creation: { message_id: 'answer' } },
+      stepDetails: {
+        type: StepTypes.MESSAGE_CREATION,
+        message_creation: { message_id: 'answer' },
+      },
     },
   });
   aggregator.aggregateContent({

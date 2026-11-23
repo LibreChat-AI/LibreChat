@@ -106,6 +106,7 @@ function initialDebitBalance(balance: TxData['balance']): IBalanceUpdate | undef
     refillMode: balance.refillMode ?? 'add',
     refillIntervalValue: balance.refillIntervalValue,
     refillIntervalUnit: balance.refillIntervalUnit,
+    refillAnchor: balance.refillAnchor ?? null,
   };
 }
 
@@ -431,6 +432,7 @@ export function createTransactionMethods(
         refillMode: record.refillMode ?? null,
         refillIntervalValue: record.refillIntervalValue ?? null,
         refillIntervalUnit: record.refillIntervalUnit ?? null,
+        refillAnchor: record.refillAnchor ?? null,
       },
       {
         $set: {
@@ -565,7 +567,8 @@ export function createTransactionMethods(
             ((record.refillMode ?? 'add') !== (refillPolicy.refillMode ?? 'add') ||
               record.refillAmount !== refillPolicy.refillAmount ||
               record.refillIntervalValue !== refillPolicy.refillIntervalValue ||
-              record.refillIntervalUnit !== refillPolicy.refillIntervalUnit)))
+              record.refillIntervalUnit !== refillPolicy.refillIntervalUnit ||
+              (record.refillAnchor ?? null) !== (refillPolicy.refillAnchor ?? null))))
       ) {
         await upsertBalanceRecord(user, refillPolicy);
         continue;

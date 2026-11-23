@@ -19,6 +19,7 @@ import type {
 } from './initialize';
 import type { ValidateAgentModelParams } from './validation';
 import type { ServerRequest } from '~/types';
+import { getHandoffModelSpec, isModelSpecAgentId, loadModelSpecHandoff } from './specs';
 import { validateAgentModel as defaultValidateAgentModel } from './validation';
 import { initializeAgent as defaultInitializeAgent } from './initialize';
 import { createEdgeCollector, resolveReachableGraph } from './edges';
@@ -26,6 +27,7 @@ import { isFatalAgentInitializationError } from './errors';
 import { createConcurrencyLimiter } from '~/utils/promise';
 import { getLookupConcurrency } from '~/utils/concurrency';
 import { createSequentialChainEdges } from './chain';
+import { resolveModelSpecSkillIds } from './skills';
 import { detachOnAbort } from '~/utils/promises';
 
 const SUBAGENT_GRAPH_LOAD_CONCURRENCY = 4;
@@ -210,7 +212,16 @@ async function initializeReferencedAgent(
   params: DiscoverConnectedAgentsParams,
   deps: DiscoverConnectedAgentsDeps,
 ): Promise<{ agent: Agent; config: InitializedAgent } | null> {
-  const agent = await detachOnAbort(deps.getAgent({ id: agentId }), params.signal);
+  const isSpec = isModelSpecAgentId(agentId);
+  // Model specs have no REMOTE_AGENT ACL. Remote execution must not inherit app visibility.
+  if (isSpec && params.resourceType && params.resourceType !== ResourceType.AGENT) {
+    deps.onAgentSkipped?.(agentId);
+    return null;
+  }
+  const agent = await detachOnAbort(
+    isSpec ? loadModelSpecHandoff(agentId, params.req) : deps.getAgent({ id: agentId }),
+    params.signal,
+  );
   if (!agent) {
     logger.warn(`[initializeReferencedAgent] Agent ${agentId} not found, skipping`);
     deps.onAgentSkipped?.(agentId);
@@ -224,16 +235,18 @@ async function initializeReferencedAgent(
     return null;
   }
 
-  const hasAccess = await detachOnAbort(
-    deps.checkPermission({
-      userId,
-      role: params.req.user?.role,
-      resourceType: params.resourceType ?? ResourceType.AGENT,
-      resourceId: agent._id,
-      requiredPermission: PermissionBits.VIEW,
-    }),
-    params.signal,
-  );
+  const hasAccess =
+    isSpec ||
+    (await detachOnAbort(
+      deps.checkPermission({
+        userId,
+        role: params.req.user?.role,
+        resourceType: params.resourceType ?? ResourceType.AGENT,
+        resourceId: agent._id,
+        requiredPermission: PermissionBits.VIEW,
+      }),
+      params.signal,
+    ));
   if (!hasAccess) {
     logger.warn(`[initializeReferencedAgent] User ${userId} lacks VIEW access to agent ${agentId}`);
     deps.onAgentSkipped?.(agentId);
@@ -255,7 +268,22 @@ async function initializeReferencedAgent(
     throw new Error(validation.error?.message);
   }
 
-  const scopedSkillIds = params.computeAccessibleSkillIds?.(agent);
+  let scopedSkillIds = params.computeAccessibleSkillIds?.(agent);
+  const spec = isSpec
+    ? getHandoffModelSpec(agentId, params.req.config?.modelSpecs?.list)
+    : undefined;
+  if (Array.isArray(spec?.skills)) {
+    scopedSkillIds = await detachOnAbort(
+      resolveModelSpecSkillIds({
+        names: spec.skills,
+        accessibleSkillIds: scopedSkillIds ?? [],
+        getSkillByName: deps.db.getSkillByName,
+        appConfig: params.req.config,
+      }),
+      params.signal,
+    );
+    agent.skills = scopedSkillIds.map((id) => id.toString());
+  }
   const initializeAgent = deps.initializeAgent ?? defaultInitializeAgent;
   const config = await detachOnAbort(
     initializeAgent(

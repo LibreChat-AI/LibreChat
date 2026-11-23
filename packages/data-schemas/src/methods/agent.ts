@@ -8,6 +8,7 @@ import {
   SkillsScope,
   actionDelimiter,
   isActionTool,
+  pruneSubagentReferences,
 } from 'librechat-data-provider';
 import type { FilterQuery, Model, PipelineStage, ProjectionType, Types } from 'mongoose';
 import type { AgentSortOption, AgentToolResources } from 'librechat-data-provider';
@@ -265,8 +266,8 @@ export interface RevertAgentVersionOptions {
 
 export class AgentRevisionConflictError extends Error {
   readonly statusCode = 409;
-  constructor() {
-    super('Agent was modified while reverting; reload and try again');
+  constructor(message = 'Agent was modified while reverting; reload and try again') {
+    super(message);
     this.name = 'AgentRevisionConflictError';
   }
 }
@@ -593,13 +594,15 @@ export function pruneEdges(edges: IAgent['edges'], removed: Set<string>): AgentE
 interface GraphEdges {
   _id: Types.ObjectId;
   edges?: IAgent['edges'];
+  agent_ids?: IAgent['agent_ids'];
+  subagents?: IAgent['subagents'];
 }
 
 /**
  * Removes deleted agent references from active graphs in the requested tenant.
  * Graphs are read a page at a time behind an `_id` cursor, and each page's
- * pruned edges are written back behind a compare-and-set on the edges that were
- * read, so a concurrent edit is never overwritten. A graph whose edges changed
+ * active references are written back behind a compare-and-set on the fields that
+ * were read, so a concurrent edit is never overwritten. A graph whose edges changed
  * underneath fails its compare-and-set and is left behind the cursor, so once
  * the cursor is exhausted one more sweep from the top picks up every miss (and
  * any reference added meanwhile); the cleanup ends when a sweep from the top
@@ -618,7 +621,17 @@ async function removeAgentIdsFromEdges(
   const filter: FilterQuery<IAgent> = {
     /** `null` pins the cleanup to tenantless graphs (matches a missing field). */
     ...(tenantId !== undefined ? { tenantId } : {}),
-    $or: [{ 'edges.from': { $in: agentIds } }, { 'edges.to': { $in: agentIds } }],
+    $or: [
+      { 'edges.from': { $in: agentIds } },
+      { 'edges.to': { $in: agentIds } },
+      { agent_ids: { $in: agentIds } },
+      { 'subagents.agent_ids': { $in: agentIds } },
+      { 'subagents.graphs.agent_ids': { $in: agentIds } },
+      { 'subagents.graphs.entry_agent_id': { $in: agentIds } },
+      { 'subagents.graphs.result_agent_id': { $in: agentIds } },
+      { 'subagents.graphs.edges.from': { $in: agentIds } },
+      { 'subagents.graphs.edges.to': { $in: agentIds } },
+    ],
   };
   const removed = new Set(agentIds);
   let stalledPasses = 0;
@@ -628,7 +641,7 @@ async function removeAgentIdsFromEdges(
     const graphs = await Agent.find(after == null ? filter : { ...filter, _id: { $gt: after } })
       .sort({ _id: 1 })
       .limit(EDGE_CLEANUP_BATCH)
-      .select('_id edges')
+      .select('_id edges agent_ids subagents')
       .lean<GraphEdges[]>();
     if (graphs.length === 0) {
       if (after == null) {
@@ -645,12 +658,28 @@ async function removeAgentIdsFromEdges(
     }
     const result = await tenantSafeBulkWrite(
       Agent,
-      graphs.map((graph) => ({
-        updateOne: {
-          filter: { _id: graph._id, edges: graph.edges },
-          update: { $set: { edges: pruneEdges(graph.edges, removed) } },
-        },
-      })),
+      graphs.map((graph) => {
+        const { agent_ids, subagents } = graph;
+        return {
+          updateOne: {
+            filter: {
+              _id: graph._id,
+              edges: graph.edges,
+              ...(agent_ids != null && { agent_ids }),
+              ...(subagents != null && { subagents }),
+            },
+            update: {
+              $set: {
+                edges: pruneEdges(graph.edges, removed),
+                ...(agent_ids != null && { agent_ids: agent_ids.filter((id) => !removed.has(id)) }),
+                ...(subagents != null && {
+                  subagents: pruneSubagentReferences(subagents, removed),
+                }),
+              },
+            },
+          },
+        };
+      }),
       { ordered: false },
     );
     stalledPasses = result.matchedCount === 0 ? stalledPasses + 1 : 0;
@@ -708,6 +737,10 @@ export interface AgentGraphNode {
   agent_ids?: string[];
   edges?: IAgent['edges'];
   subagents?: IAgent['subagents'];
+  /** Whether the agent uses skills, and which: read to tell if it has any to run with. */
+  skills?: IAgent['skills'];
+  skills_enabled?: IAgent['skills_enabled'];
+  skills_scope?: IAgent['skills_scope'];
 }
 
 export interface AgentGraphAccess {
@@ -757,9 +790,13 @@ function extractMCPServerNames(tools: string[] | undefined | null): string[] {
  * ambiguous trailing-segment derivation, which cannot tell a config server's
  * suffix from a real DB server name.
  */
-function rebuildMCPServerNames(tools: string[] | undefined | null, priorNames: string[]): string[] {
+function rebuildMCPServerNames(
+  tools: string[] | undefined | null,
+  priorNames: string[],
+  preserveMCPAccess = false,
+): string[] {
   if (priorNames.length === 0) {
-    return extractMCPServerNames(tools);
+    return preserveMCPAccess ? [] : extractMCPServerNames(tools);
   }
 
   const retained = new Set<string>();
@@ -778,8 +815,10 @@ function rebuildMCPServerNames(tools: string[] | undefined | null, priorNames: s
     }
   }
 
-  for (const name of extractMCPServerNames(unmatched)) {
-    retained.add(name);
+  if (!preserveMCPAccess) {
+    for (const name of extractMCPServerNames(unmatched)) {
+      retained.add(name);
+    }
   }
   return Array.from(retained);
 }
@@ -1110,6 +1149,9 @@ export function createAgentMethods(
       updatingUserId?: string | null;
       forceVersion?: boolean;
       skipVersioning?: boolean;
+      /** Action edits may retain existing MCP grants, but cannot derive new grants from keys. */
+      preserveMCPAccess?: boolean;
+      expectedMCPAccess?: { names: string[]; updatedAt?: Date };
     },
   ) => Promise<IAgent | null>;
   updateAgentAvatar: (params: {
@@ -1409,6 +1451,9 @@ export function createAgentMethods(
         agent_ids: 1,
         edges: 1,
         subagents: 1,
+        skills: 1,
+        skills_enabled: 1,
+        skills_scope: 1,
       },
     ).lean<
       Array<
@@ -1423,6 +1468,9 @@ export function createAgentMethods(
           | 'agent_ids'
           | 'edges'
           | 'subagents'
+          | 'skills'
+          | 'skills_enabled'
+          | 'skills_scope'
         >
       >
     >();
@@ -1442,7 +1490,7 @@ export function createAgentMethods(
       visible = agents.filter((agent) => allowed.has(String(agent._id)));
     }
     return visible.map(
-      ({ id, provider, model, tools, mcpServerNames, agent_ids, edges, subagents }) => ({
+      ({
         id,
         provider,
         model,
@@ -1451,6 +1499,21 @@ export function createAgentMethods(
         agent_ids,
         edges,
         subagents,
+        skills,
+        skills_enabled,
+        skills_scope,
+      }) => ({
+        id,
+        provider,
+        model,
+        tools,
+        mcpServerNames,
+        agent_ids,
+        edges,
+        subagents,
+        ...(skills_enabled != null && { skills_enabled }),
+        ...(skills_scope != null && { skills_scope }),
+        ...(skills != null && skills.length > 0 && { skills }),
       }),
     );
   }
@@ -1500,6 +1563,9 @@ export function createAgentMethods(
       updatingUserId?: string | null;
       forceVersion?: boolean;
       skipVersioning?: boolean;
+      /** Action edits may retain existing MCP grants, but cannot derive new grants from keys. */
+      preserveMCPAccess?: boolean;
+      expectedMCPAccess?: { names: string[]; updatedAt?: Date };
     } = {},
   ): Promise<IAgent | null> {
     const Agent = mongoose.models.Agent as Model<IAgent>;
@@ -1510,6 +1576,11 @@ export function createAgentMethods(
     let suppressedVersionEntry = false;
 
     const currentAgent = await Agent.findOne(searchParameter);
+    if (!currentAgent && (options.preserveMCPAccess || options.expectedMCPAccess)) {
+      throw new AgentRevisionConflictError(
+        'Agent changed during Action update; reload and try again',
+      );
+    }
     const currentRevision = (currentAgent as (IAgent & { updatedAt: Date }) | null)?.updatedAt;
     if (currentAgent) {
       const currentObject = currentAgent.toObject() as unknown as Record<string, unknown>;
@@ -1553,11 +1624,13 @@ export function createAgentMethods(
           | string[]
           | undefined;
         const mcpServerNames =
-          supplied ??
-          rebuildMCPServerNames(
-            (directUpdates as Record<string, unknown>).tools as string[],
-            (currentAgent.mcpServerNames as string[] | undefined) ?? [],
-          );
+          !options.preserveMCPAccess && supplied !== undefined
+            ? supplied
+            : rebuildMCPServerNames(
+                (directUpdates as Record<string, unknown>).tools as string[],
+                (currentAgent.mcpServerNames as string[] | undefined) ?? [],
+                options.preserveMCPAccess,
+              );
         (directUpdates as Record<string, unknown>).mcpServerNames = mcpServerNames;
         updateData.mcpServerNames = mcpServerNames;
       }
@@ -1677,14 +1750,40 @@ export function createAgentMethods(
         }),
       );
     }
+    let updateFilter = searchParameter;
+    if (currentAgent && (nextEnvironmentIds.length > 0 || options.preserveMCPAccess)) {
+      updateFilter = { ...searchParameter, _id: currentAgent._id, updatedAt: currentRevision };
+    }
+    if (currentAgent && options.preserveMCPAccess) {
+      const priorNames = currentAgent.mcpServerNames ?? [];
+      /** Timestamps can collide within a millisecond; bind the actual grants being retained. */
+      updateFilter = {
+        $and: [
+          updateFilter,
+          priorNames.length > 0
+            ? { mcpServerNames: priorNames }
+            : { $or: [{ mcpServerNames: [] }, { mcpServerNames: null }] },
+        ],
+      };
+    }
+    if (options.expectedMCPAccess) {
+      const { names, updatedAt } = options.expectedMCPAccess;
+      updateFilter = {
+        $and: [
+          updateFilter,
+          ...(updatedAt ? [{ updatedAt }] : []),
+          names.length > 0
+            ? { mcpServerNames: names }
+            : { $or: [{ mcpServerNames: [] }, { mcpServerNames: null }] },
+        ],
+      };
+    }
     const updatedAgent = await withCodeEnvironmentReferences(
       mongoose,
       nextEnvironmentIds,
       async () =>
         (await Agent.findOneAndUpdate(
-          currentAgent == null || nextEnvironmentIds.length === 0
-            ? searchParameter
-            : { ...searchParameter, _id: currentAgent._id, updatedAt: currentRevision },
+          updateFilter,
           updateData,
           mongoOptions,
         ).lean()) as IAgent | null,
@@ -1699,6 +1798,12 @@ export function createAgentMethods(
         );
       },
     );
+
+    if (currentAgent && (options.preserveMCPAccess || options.expectedMCPAccess) && !updatedAgent) {
+      throw new AgentRevisionConflictError(
+        'Agent changed during Action update; reload and try again',
+      );
+    }
 
     /** `version` is a response-only field holding the count of `versions`. It is reported
      *  here so a suppressed entry keeps the shape callers saw before the write was fixed.
@@ -1967,9 +2072,9 @@ export function createAgentMethods(
         }),
       ]);
       try {
-        await removeAgentIdsFromEdges(Agent, [deletedAgent.id], deletedAgent.tenantId);
+        await removeAgentIdsFromEdges(Agent, [deletedAgent.id], deletedAgent.tenantId ?? null);
       } catch (error) {
-        logger.error('[deleteAgent] Error removing agent from handoff edges', error);
+        logger.error('[deleteAgent] Error removing agent references', error);
       }
       try {
         const favoritesFilter = {

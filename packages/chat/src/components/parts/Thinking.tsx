@@ -20,8 +20,14 @@ import { classes } from './classes';
  * can land after the pointer has already revealed the bar. So every
  * notification re-measures the header's real position instead of trusting
  * `isIntersecting`, and `recheck` does the same for callers about to reveal.
+ *
+ * The answer only matters while the floating bar could show, which is while the reader is on an
+ * open part. `watching` says so: an observer per reasoning part of a long thread is hundreds of
+ * them, each measuring its header (laying its row out again, if the browser was skipping it)
+ * every time the thread moves, to keep an answer nothing reads. A caller that reveals the bar
+ * calls `recheck` first, so the answer is fresh the moment watching starts.
  */
-export function useInViewport(): {
+export function useInViewport(watching = true): {
   ref: React.RefObject<HTMLDivElement>;
   inViewport: boolean;
   recheck: () => boolean;
@@ -31,7 +37,7 @@ export function useInViewport(): {
 
   useEffect(() => {
     const el = ref.current;
-    if (!el) {
+    if (!el || !watching) {
       return;
     }
     const observer = new IntersectionObserver(() => setInViewport(isRectVisible(el)), {
@@ -40,7 +46,7 @@ export function useInViewport(): {
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [watching]);
 
   const recheck = useCallback(() => {
     const el = ref.current;
@@ -312,7 +318,11 @@ const Thinking: React.ElementType = memo(({ children }: { children: React.ReactN
   const [isExpanded, setIsExpanded] = useState(showThinking);
   const [isBarVisible, setIsBarVisible] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { ref: headerRef, inViewport: headerInViewport, recheck: recheckHeader } = useInViewport();
+  const {
+    ref: headerRef,
+    inViewport: headerInViewport,
+    recheck: recheckHeader,
+  } = useInViewport(isBarVisible && isExpanded);
   const contentId = useId();
   const { ref: expandRef } = useExpandCollapse(isExpanded);
 

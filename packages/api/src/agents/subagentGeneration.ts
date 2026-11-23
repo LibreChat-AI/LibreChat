@@ -4,6 +4,7 @@ import type { Agents, SubagentContentFrame, TMessageContentParts } from 'librech
 import type { GenerationJobManagerClass, TerminalJobClaim } from '~/stream/GenerationJobManager';
 import type { FinalMessageFields, ServerSentEvent } from '~/types';
 import { createSubagentContentFold } from './subagentContent';
+import { describeCreatedTurn } from './turn';
 
 /** Frames waiting on a slow store before the stream is given up, matching the manager's own
  *  early-event ceiling. Merged deltas do not count twice, so only distinct steps reach it. */
@@ -456,6 +457,7 @@ export function createChildGenerationHost(
           created: true,
           message: { ...userMessage, sender: 'User', isCreatedByUser: true },
           streamId: input.threadId,
+          turn: describeCreatedTurn({ responseMessageId }),
         });
         return generation;
       } catch (error) {

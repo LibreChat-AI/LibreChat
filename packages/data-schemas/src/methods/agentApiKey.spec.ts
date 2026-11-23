@@ -30,6 +30,16 @@ afterEach(() => {
 describe('validateAgentApiKey', () => {
   const binding = { kind: 'test-grant', id: 'grant-1' };
 
+  it("marks a key issued to an integration in the owner's list without listing its binding", async () => {
+    const owner = new mongoose.Types.ObjectId();
+    const bound = await methods.createAgentApiKey({ userId: owner, name: 'channel', binding });
+    const personal = await methods.createAgentApiKey({ userId: owner, name: 'mine' });
+    const listed = await methods.listAgentApiKeys(owner);
+    expect(listed.find((key) => key.id === bound.id)).toMatchObject({ bound: true });
+    expect(listed.find((key) => key.id === personal.id)).not.toHaveProperty('bound');
+    expect(listed.every((key) => !('binding' in key))).toBe(true);
+  });
+
   it('persists and returns the exact bound grant with a domain-separated hash', async () => {
     const created = await methods.createAgentApiKey({ userId, name: 'bound', binding });
     const stored = await mongoose.models.AgentApiKey.findById(created.id)

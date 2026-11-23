@@ -24,8 +24,8 @@ import type { OpenAI } from 'openai';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
 import type { OpenAIConfiguration, AzureOptions } from '~/types';
 import { clearToolApprovalHooks, registerToolApprovalHook } from '~/agents/hitl/hooks';
-import { executionFixture } from '~/schedules/authorization/execution.helper';
 import { createRun, isAskUserQuestionAdminDisabled } from '~/agents/run';
+import { executionFixture } from '~/agents/authority/execution.helper';
 import { initializeOpenAI } from '~/endpoints/openai/initialize';
 import { createSecretRebindingGuard } from '~/app/rebinding';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
@@ -3648,6 +3648,62 @@ describe('built-in provider request shaping', () => {
     });
   });
 
+  it.each(['none', 'minimal'])(
+    'normalizes Sol 6.2 summary effort %s after user overrides',
+    async (effort) => {
+      const result = await summarizeWith(
+        { reasoning_effort: effort, temperature: 0.7 },
+        'gpt-6.2-sol',
+      );
+      expect(result).toMatchObject({ firstPartyEndpoint: true, reasoning: { effort: 'low' } });
+      expect(result.temperature).toBeUndefined();
+    },
+  );
+
+  it('clears inherited unsupported controls when switching summaries to Sol 6.2', async () => {
+    const sourceModel = 'gpt-6.1-sol';
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      {
+        streaming: false,
+        modelOptions: {
+          model: sourceModel,
+          reasoning_effort: ReasoningEffort.none,
+          temperature: 0.7,
+        },
+        addParams: { modelKwargs: { reasoning: { effort: 'none' }, temperature: 0.7 } },
+      },
+      EModelEndpoint.openAI,
+    );
+    const agents = await callAndCapture({
+      agents: [makeAgent({ model: sourceModel, model_parameters: llmConfig })],
+      appConfig: makeAppConfig([]),
+      summarizationConfig: {
+        provider: 'openAI',
+        model: 'gpt-6.2-sol',
+        parameters: { reasoning_effort: 'none' },
+      },
+    });
+    const config = agents[0].summarizationConfig;
+    expect(config).toMatchObject({
+      parameters: {
+        reasoning: { effort: 'low' },
+        modelKwargs: { reasoning: { effort: 'low' } },
+      },
+    });
+    expect(config).toHaveProperty('parameters.temperature', undefined);
+    expect(config).not.toHaveProperty('parameters.modelKwargs.temperature');
+    expect(llmConfig.modelKwargs).toHaveProperty('reasoning.effort', 'none');
+  });
+
+  it('keeps Sol gateway summary controls unchanged', async () => {
+    const result = await summarizeWith(
+      { baseURL: 'https://gateway.internal/v1', reasoning_effort: 'none', temperature: 0.7 },
+      'gpt-6.2-sol',
+    );
+    expect(result).toMatchObject({ reasoning: { effort: 'none' }, temperature: 0.7 });
+  });
+
   it('does not claim a first-party endpoint behind a user configuration.baseURL', async () => {
     const parameters = await summarizeWith({
       configuration: { baseURL: 'https://gateway.internal/v1' },
@@ -5553,7 +5609,7 @@ describe('HITL wiring is gated on hitlCapable', () => {
       await createRun({
         agents: [agent] as never,
         signal: new AbortController().signal,
-        scheduledMCPExecution: f.execution,
+        grantExecution: f.execution,
         appConfig: {
           ...hitlAppConfig,
           endpoints: {
@@ -5589,10 +5645,17 @@ describe('HITL wiring is gated on hitlCapable', () => {
     },
   );
 
-  it.each([true, false])(
-    'withholds detached task/wakeup capabilities only for enrolled=%s',
-    async (enrolled) => {
-      const f = await executionFixture();
+  // A schedule's completion turn finds its grant again, so its runs keep these capabilities
+  // with or without a grant. A grant that cannot be found again keeps its runs foreground.
+  it.each([
+    ['a schedule grant', true, true],
+    ['no grant', false, true],
+    ['a grant its completion turn could not find again', true, false],
+  ] as const)(
+    'withholds detached task/wakeup capabilities only under such a grant: %s',
+    async (_name, enrolled, detaches) => {
+      const withheld = enrolled && !detaches;
+      const f = await executionFixture('invoke', undefined, undefined, { detaches });
       if (!enrolled) f.snapshot.enrollment = null;
       const execution = (await f.factory.resolve(f.identity, 'invoke'))!;
       const tasks = {
@@ -5608,7 +5671,7 @@ describe('HITL wiring is gated on hitlCapable', () => {
       await createRun({
         agents: [root] as never,
         signal: new AbortController().signal,
-        scheduledMCPExecution: execution,
+        grantExecution: execution,
         subagentTasks: tasks,
         appConfig: {
           ...hitlAppConfig,
@@ -5616,23 +5679,23 @@ describe('HITL wiring is gated on hitlCapable', () => {
         } as unknown as AppConfig,
       });
       const config = (Run.create as jest.Mock).mock.calls[0][0];
-      expect(config.subagentTasks).toBe(enrolled ? undefined : tasks);
+      expect(config.subagentTasks).toBe(withheld ? undefined : tasks);
       const params = buildSubagentToolParams(config.graphConfig.agents[0].subagentConfigs, {
         background: config.subagentTasks != null,
         threadContinuation: true,
       });
       expect(
         Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'run_in_background'),
-      ).toBe(!enrolled);
+      ).toBe(!withheld);
       expect(
         Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'subagent_thread_id'),
-      ).toBe(!enrolled);
+      ).toBe(!withheld);
       const agent = config.graphConfig.agents[0];
       expect(agent.subagentConfigs).toEqual([
         expect.objectContaining({ type: 'child', allowNested: true }),
       ]);
       const names = (agent.toolDefinitions ?? []).map((tool: { name: string }) => tool.name);
-      expect(names.includes('check_background_task')).toBe(!enrolled);
+      expect(names.includes('check_background_task')).toBe(!withheld);
     },
   );
 
@@ -5644,8 +5707,8 @@ describe('HITL wiring is gated on hitlCapable', () => {
       await createRun({
         agents: [makeAgent({ id: 'root' })] as never,
         signal: new AbortController().signal,
-        scheduledMCPExecution: f.execution,
-        recordScheduledMCPDenial: recorder,
+        grantExecution: f.execution,
+        recordGrantDenial: recorder,
         toolApprovalAllows: remembered ? ['write_action_api'] : undefined,
         appConfig: {
           ...hitlAppConfig,
@@ -5700,7 +5763,7 @@ describe('HITL wiring is gated on hitlCapable', () => {
     await createRun({
       agents: agents as never,
       signal: new AbortController().signal,
-      scheduledMCPExecution: f.execution,
+      grantExecution: f.execution,
       appConfig: {
         ...hitlAppConfig,
         endpoints: { agents: { toolApproval: { enabled: false } } },

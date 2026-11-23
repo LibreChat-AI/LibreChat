@@ -4773,6 +4773,7 @@ describe('getIgnoredConfigOverrides', () => {
   it('reports the stored values of settings read from librechat.yaml or at startup', () => {
     const layer = fakeConfig(
       {
+        roleCache: { enabled: true },
         clientLimits: { refreshMs: 1 },
         telemetry: { rum: { enabled: true } },
         conversationList: { maxEndpointFilters: 500 },
@@ -4787,6 +4788,7 @@ describe('getIgnoredConfigOverrides', () => {
     );
     expect(reasons(getIgnoredConfigOverrides(yaml, layer))).toEqual(
       [
+        'override:roleCache:deployment_only_path',
         'override:clientLimits:deployment_only_path',
         'override:telemetry.rum:deployment_only_path',
         'override:conversationList:deployment_only_path',

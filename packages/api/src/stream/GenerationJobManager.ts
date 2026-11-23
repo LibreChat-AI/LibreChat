@@ -16,6 +16,7 @@ import type {
   TMessageContentParts,
   TContextUsageEvent,
   TTokenUsageEvent,
+  TMessageTrigger,
   Agents,
 } from 'librechat-data-provider';
 import type { StandardGraph } from '@librechat/agents';
@@ -86,7 +87,11 @@ import { InMemoryEventTransport } from './implementations/InMemoryEventTransport
 import { InMemoryJobStore } from './implementations/InMemoryJobStore';
 import { attachAskUserQuestionAnswers, normalizeResumeRunStepIndices } from '~/agents/hitl/resume';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
-import { emitChunkWithReceipt } from './internal/chunkPublication';
+import {
+  readChunkEmission,
+  stampChunkEmission,
+  emitChunkWithReceipt,
+} from './internal/chunkPublication';
 import { resolveCoalesceWindowMs } from './internal/coalescing';
 import {
   REDIS_ABORT_TERMINAL_GRACE_MS,
@@ -319,6 +324,11 @@ function isRecoverableTakeoverSplit(
   );
 }
 
+/** Statuses no provider run can leave: only trailing owner work may still be pending. */
+function isTerminalStatus(status: SerializableJobData['status']): boolean {
+  return status === 'complete' || status === 'error' || status === 'aborted';
+}
+
 /**
  * Name the reason a terminal-state CAS was lost, off the job that now holds the
  * conversation. Losing to natural completion IS a stop; losing to a replacement, or to
@@ -517,6 +527,15 @@ function isCoalescableDeltaEvent(eventType: string | undefined): boolean {
     eventType === 'on_reasoning_delta' ||
     eventType === 'on_run_step_delta'
   );
+}
+
+/**
+ * Deltas a client appends to text it already holds, and that every emitter folds into the
+ * run's content before emitting. Run-step deltas are left out: OAuth and action prompts emit
+ * them without folding, so a content snapshot cannot be assumed to hold one.
+ */
+function isAppendedTextDelta(eventType: string | undefined): boolean {
+  return eventType === 'on_message_delta' || eventType === 'on_reasoning_delta';
 }
 
 function getReplayStepId(event: t.ServerSentEvent): unknown {
@@ -911,6 +930,14 @@ class GenerationJobManagerClass {
 
   /** Jobs actively owned by this process, pinned to their durable creation epoch. */
   private ownedJobs = new Map<string, number>();
+
+  /**
+   * This manager's identity on published chunks, with a count of everything it has emitted.
+   * A resume on the replica that hosts a run copies the run's content at a known count, and
+   * the pair lets it recognise its own deltas up to that count when Pub/Sub hands them back.
+   */
+  private readonly emitterId = randomUUID();
+  private emissionOrdinal = 0;
 
   /** Serializes replay-event read/modify/write updates per stream. */
   private replayEventWriteQueues = new Map<string, Promise<void>>();
@@ -2128,7 +2155,20 @@ class GenerationJobManagerClass {
   /** Deliver every transaction-time predecessor receipt retained by the
    * current creation attempt, then epoch/attempt-fenced acknowledge only the
    * receipts whose provider/client handoff completed. A replacement racing the
-   * acknowledgement inherits the still-unacknowledged chain and retries it. */
+   * acknowledgement inherits the still-unacknowledged chain and retries it.
+   *
+   * A terminal predecessor that stays undrained through `PROVIDER_DRAIN_TIMEOUT_MS`
+   * is acknowledged as lost: a process killed between the terminal status and
+   * the drain mark can never record that drain. The bound runs from the
+   * predecessor's `completedAt`, as terminal host settlement counts it, so an
+   * owner lost longer ago than the bound costs one drain read and no wait. A
+   * receipt without `completedAt` (an older replica wrote it) is bounded from
+   * the start of this handoff. The bound cannot tell a killed process from a
+   * live owner whose trailing work is this slow, which is then no longer waited
+   * for. A running predecessor and a wait that could not read the stores still
+   * fail closed. Schedule-owned generations never reach this
+   * path while undrained; the store refuses to replace a job preserved for
+   * schedule reconciliation. */
   private async processDurableReplacementReceipts(
     streamId: string,
     job: CreatedJobData,
@@ -2164,14 +2204,31 @@ class GenerationJobManagerClass {
           delivered = false;
         } else {
           try {
-            await this.waitForProviderExecutionDrain(
+            const terminal = isTerminalStatus(receipt.status);
+            const bound = Date.now() + PROVIDER_DRAIN_TIMEOUT_MS;
+            const deadline =
+              terminal && receipt.completedAt != null
+                ? Math.min(bound, receipt.completedAt + PROVIDER_DRAIN_TIMEOUT_MS)
+                : bound;
+            const drained = await this.waitForProviderExecutionDrain(
               streamId,
               receipt.createdAt,
               receipt.providerExecutionId,
+              deadline,
             );
+            if (!drained && terminal) {
+              logger.warn(
+                `[GenerationJobManager] Terminal provider owner treated as lost after ${PROVIDER_DRAIN_TIMEOUT_MS}ms undrained: ${streamId}/${receipt.createdAt}`,
+              );
+            } else if (!drained) {
+              logger.error(
+                `[GenerationJobManager] Replaced provider did not drain: ${streamId}/${receipt.createdAt}`,
+              );
+              delivered = false;
+            }
           } catch (error) {
             logger.error(
-              `[GenerationJobManager] Replaced provider did not drain: ${streamId}/${receipt.createdAt}`,
+              `[GenerationJobManager] Failed to confirm replaced provider drain: ${streamId}/${receipt.createdAt}`,
               error,
             );
             delivered = false;
@@ -2312,11 +2369,14 @@ class GenerationJobManagerClass {
         ownsCommittedCreate,
       );
       if (ownsCommittedCreate && !predecessorsDelivered) {
-        await this.terminalizeUnexposedGeneration(
+        const retired = await this.terminalizeUnexposedGeneration(
           streamId,
           currentCommittedJob,
           'Generation predecessor handoff could not be confirmed',
         );
+        if (retired) {
+          await this.releaseUnexposedClaim(streamId, userId, conversationId, options);
+        }
         return null;
       }
     }
@@ -2443,6 +2503,46 @@ class GenerationJobManagerClass {
       'Generation membership could not be recovered after an ambiguous create',
     );
     return null;
+  }
+
+  /** A generation retired because its predecessor handoff failed never left
+   * `createJob`, so no provider began for it. Its started tombstone would still
+   * answer every retry of the same request as an admitted generation, and a
+   * durable delivery retrying its own key would record a turn that never ran.
+   * Release both keys by token, after the job is terminal, so the retry is a
+   * real second start. A key left behind by a failed release keeps the request
+   * a duplicate, which is the outcome this replaces. */
+  private async releaseUnexposedClaim(
+    streamId: string,
+    userId: string,
+    conversationId: string | undefined,
+    options: CreateGenerationJobOptions,
+  ): Promise<void> {
+    const clientRequestId = options.idempotencyClientRequestId;
+    const claimToken = options.idempotencyClaimToken;
+    if (clientRequestId == null || claimToken == null) {
+      return;
+    }
+    const claim: IdempotencyClaimValue = {
+      streamId,
+      conversationId: conversationId ?? streamId,
+      claimToken,
+    };
+    try {
+      await this.jobStore.releaseIdempotencyKey(
+        this.generationClaimKey(userId, clientRequestId, streamId),
+        claim,
+      );
+      await this.jobStore.releaseIdempotencyKey(
+        this.legacyGenerationClaimKey(userId, clientRequestId),
+        claim,
+      );
+    } catch (error) {
+      logger.error(
+        `[GenerationJobManager] Failed to release the claim of unexposed generation ${streamId}:`,
+        getSafeErrorMetadata(error),
+      );
+    }
   }
 
   /** Persist a conservative FINAL for a job whose generation was never exposed
@@ -2836,12 +2936,15 @@ class GenerationJobManagerClass {
     }
 
     if (!(await this.processDurableReplacementReceipts(streamId, jobData, conversationId))) {
-      await this.terminalizeUnexposedGeneration(
+      const retired = await this.terminalizeUnexposedGeneration(
         streamId,
         jobData,
         'Generation predecessor handoff could not be confirmed',
       );
       this.retireStoppedPredecessorRuntime(streamId, jobData.createdAt);
+      if (retired) {
+        await this.releaseUnexposedClaim(streamId, userId, conversationId, options);
+      }
       throw new Error('Generation predecessor handoff could not be confirmed');
     }
 
@@ -3162,6 +3265,7 @@ class GenerationJobManagerClass {
         subagentParentConversationId: jobData.subagentParentConversationId,
         agentEventExpectedAction: jobData.agentEventExpectedAction,
         agentEventSuspension: jobData.agentEventSuspension,
+        trigger: jobData.trigger,
         scheduleId: jobData.scheduleId,
         scheduledFor: jobData.scheduledFor,
         scheduleConfigRevision: jobData.scheduleConfigRevision,
@@ -5103,6 +5207,7 @@ class GenerationJobManagerClass {
               quotes: jobData.userMessage.quotes,
               privacyRevision: jobData.userMessage.privacyRevision,
               isCreatedByUser: true,
+              ...(jobData.userMessage.trigger != null && { trigger: jobData.userMessage.trigger }),
             }
           : null,
         responseMessage: isEarlyAbort
@@ -6441,6 +6546,8 @@ class GenerationJobManagerClass {
       sequence: number;
     }> = [];
     let snapshotFrontier = 0;
+    /** This manager's emission count when a hosted run's content was copied for a Redis client. */
+    let localFrontier: number | undefined;
     let snapshotClassified = this._isRedis;
     const classifyEmission = (event: t.ServerSentEvent, sequence: number): void => {
       if (sequence <= snapshotFrontier) {
@@ -6698,6 +6805,12 @@ class GenerationJobManagerClass {
         if (capturedEventSet.has(event) || snapshotCoveredEventSet.has(event)) {
           return;
         }
+        if (localFrontier != null && isAppendedTextDelta((event as { event?: string }).event)) {
+          const emission = readChunkEmission(event);
+          if (emission?.[0] === this.emitterId && emission[1] <= localFrontier) {
+            return;
+          }
+        }
         onChunk(event);
       };
       subscription = await this.attachSubscription(
@@ -6774,6 +6887,34 @@ class GenerationJobManagerClass {
            * through the durable-only recovery path now reflected in `runtime`. */
           cancelResumeSubscription();
           return this.subscribeWithResume(streamId, onChunk, onDone, onError, options);
+        }
+      }
+
+      /**
+       * On the replica that hosts the run, the snapshot's content is the run's live array.
+       * It was read before the subscription existed and is serialized after it, so every
+       * delta in between reached the client twice: once in the snapshot and once from
+       * Pub/Sub. Replace it with a copy taken now, at a known emission count, and let
+       * delivery skip this manager's text and reasoning deltas up to that count. Everything
+       * else is still delivered: the client applies those events idempotently, and only the
+       * content is exact at the count. The copy, the count and the run steps are all local,
+       * so the sync frame waits on no further read.
+       */
+      if (this._isRedis && resumeState != null && pendingOverflow == null && liveOverflow == null) {
+        const frontier = this.emissionOrdinal;
+        const content = this.jobStore.copyHostContent?.(streamId, runtime.createdAt);
+        if (content != null) {
+          localFrontier = frontier;
+          resumeState.aggregatedContent = attachAskUserQuestionAnswers(
+            content,
+            liveJob.resolvedAskUserQuestions ?? [],
+          );
+          resumeState.runSteps = this.withBufferedRunSteps(
+            streamId,
+            runtime.createdAt,
+            resumeState.runSteps,
+            content,
+          );
         }
       }
       if (!resumeState?.pendingAction) {
@@ -7129,6 +7270,11 @@ class GenerationJobManagerClass {
       return;
     }
     const sequence = ++runtime.emissionSequence;
+    /** Counted in the same synchronous step as the caller's fold into the run's content. */
+    const ordinal = ++this.emissionOrdinal;
+    if (this._isRedis) {
+      stampChunkEmission(event, [this.emitterId, ordinal]);
+    }
     let signalSnapshotReady!: () => void;
     const snapshotReady = new Promise<void>((resolve) => {
       signalSnapshotReady = resolve;
@@ -8319,6 +8465,7 @@ class GenerationJobManagerClass {
       manualSkills?: string[];
       alwaysAppliedSkills?: string[];
       files?: unknown[];
+      trigger?: TMessageTrigger;
     };
     const updates: Partial<SerializableJobData> = {
       createdEventEmitted: true,
@@ -8344,6 +8491,8 @@ class GenerationJobManagerClass {
           extra.alwaysAppliedSkills.length > 0 && {
             alwaysAppliedSkills: extra.alwaysAppliedSkills,
           }),
+        // The server put it on the message it emitted; a resumed stream's row needs it too.
+        ...(extra.trigger != null && { trigger: extra.trigger }),
       },
     };
 
@@ -8691,19 +8840,28 @@ class GenerationJobManagerClass {
     this.openProviderExecutions.clear();
   }
 
+  /** Resolves true once the exact provider segment recorded its drain and false
+   * when `deadline` passes without one. The drain is read at least once, even
+   * when the deadline has already passed. A read failure is not evidence about
+   * the owner: a job store failure rejects at once, and a drain record that is
+   * still unreadable at the deadline rejects instead of reporting a timeout. An
+   * earlier failed poll is retried by the next one. */
   private async waitForProviderExecutionDrain(
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
-  ): Promise<void> {
-    const deadline = Date.now() + PROVIDER_DRAIN_TIMEOUT_MS;
+    deadline = Date.now() + PROVIDER_DRAIN_TIMEOUT_MS,
+  ): Promise<boolean> {
     for (;;) {
-      if (
-        (await this.eventTransport
-          .hasProviderDrain?.(streamId, expectedCreatedAt, providerExecutionId)
-          .catch(() => false)) === true
-      ) {
-        return;
+      let unreadable: { error: unknown } | undefined;
+      const recorded = await this.eventTransport
+        .hasProviderDrain?.(streamId, expectedCreatedAt, providerExecutionId)
+        .catch((error: unknown) => {
+          unreadable = { error };
+          return false;
+        });
+      if (recorded === true) {
+        return true;
       }
       const job = await this.jobStore.getJob(streamId);
       if (
@@ -8711,10 +8869,13 @@ class GenerationJobManagerClass {
         job.providerExecutionId === providerExecutionId &&
         job.providerDrained === true
       ) {
-        return;
+        return true;
       }
       if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for provider execution to drain: ${streamId}`);
+        if (unreadable != null) {
+          throw unreadable.error;
+        }
+        return false;
       }
       await new Promise<void>((resolve) => {
         setTimeout(resolve, PROVIDER_DRAIN_POLL_MS);
@@ -8736,7 +8897,11 @@ class GenerationJobManagerClass {
     // provider can win its exact begin CAS after that read but before the
     // terminal CAS. Re-read the exact segment only after terminal ownership is
     // committed, when no not-yet-started provider can begin anymore.
-    await this.waitForProviderExecutionDrain(streamId, job.createdAt, job.providerExecutionId);
+    if (
+      !(await this.waitForProviderExecutionDrain(streamId, job.createdAt, job.providerExecutionId))
+    ) {
+      throw new Error(`Timed out waiting for provider execution to drain: ${streamId}`);
+    }
   }
 
   /**
@@ -9099,6 +9264,22 @@ class GenerationJobManagerClass {
     this.clearPreemptIds(runtime, runtime.createdAt, steerIds);
   }
 
+  /** Stored run steps under the ones this replica has seen since, indexed against `content`. */
+  private withBufferedRunSteps(
+    streamId: string,
+    createdAt: number,
+    runSteps: Agents.RunStep[],
+    content: Agents.MessageContentComplex[],
+  ): Agents.RunStep[] {
+    const bufferState = this.runStepBuffers?.get(streamId);
+    const bufferedRunSteps = bufferState?.createdAt === createdAt ? bufferState.steps : [];
+    const runStepsById = new Map(runSteps.map((runStep) => [runStep.id, runStep]));
+    for (const runStep of bufferedRunSteps) {
+      runStepsById.set(runStep.id, runStep);
+    }
+    return normalizeResumeRunStepIndices([...runStepsById.values()], content);
+  }
+
   /**
    * Get resume state for reconnecting clients.
    */
@@ -9225,14 +9406,10 @@ class GenerationJobManagerClass {
       }
     }
     const reconstructedContent = result?.content ?? [];
-    const bufferState = this.runStepBuffers?.get(streamId);
-    const bufferedRunSteps = bufferState?.createdAt === jobData.createdAt ? bufferState.steps : [];
-    const runStepsById = new Map(runSteps.map((runStep) => [runStep.id, runStep]));
-    for (const runStep of bufferedRunSteps) {
-      runStepsById.set(runStep.id, runStep);
-    }
-    const effectiveRunSteps = normalizeResumeRunStepIndices(
-      [...runStepsById.values()],
+    const effectiveRunSteps = this.withBufferedRunSteps(
+      streamId,
+      jobData.createdAt,
+      runSteps,
       reconstructedContent,
     );
     let titleEvent: t.ResumeState['titleEvent'];

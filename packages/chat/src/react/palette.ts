@@ -25,9 +25,9 @@ export interface PaletteModeView {
   icon?: ReactNode;
 }
 
-/** Connection state drawn on a row. `tone` is a semantic status class. */
+/** A status dot and, when known, its accessible status text. */
 export interface PaletteStatusView {
-  label: string;
+  label?: string;
   tone: string;
 }
 

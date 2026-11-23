@@ -15,8 +15,12 @@ export * from './share';
 export * from './files';
 export * from './media';
 export * from './greeting';
-export * from './latex';
-export * from './tilde';
+export {
+  singleDollarMath,
+  remarkApproxTilde,
+  normalizeApproxTildes,
+  remarkSingleDollarMath,
+} from '@librechat/chat';
 export * from './morph';
 export * from './forms';
 export * from './roles';
@@ -54,6 +58,7 @@ export * from './favoritesError';
 export {
   getSteerPart,
   applySteerPart,
+  applyReasoningLabel,
   MAX_QUOTE_COUNT,
   dedupeSteersById,
   insertQueuedOrigin,
@@ -62,6 +67,7 @@ export {
   carriedSteerContext,
   appendAppliedSteerIds,
   findSteerMessageIndex,
+  findReasoningLabelMessageIndex,
   collectAppliedSteerIds,
   resolveAbortSteerTarget,
   findResponseMessageIndex,
@@ -74,7 +80,6 @@ export { getChatPane, getFocusedChatPane, isFocusedChatPane } from '@librechat/c
 export * from './agentModelSelection';
 export * from './runStepDuration';
 export * from './documentTitle';
-export * from './reasoningLabels';
 export * from './numbers';
 export { default as cn } from './cn';
 export { default as logger } from './logger';
@@ -127,16 +132,7 @@ export const defaultTextProps =
 export const optionText =
   'p-0 shadow-none text-right pr-1 h-8 border-transparent hover:bg-surface-hover transition-colors';
 
-export const handleDoubleClick: React.MouseEventHandler<HTMLElement> = (event) => {
-  const range = document.createRange();
-  range.selectNodeContents(event.target as Node);
-  const selection = window.getSelection();
-  if (!selection) {
-    return;
-  }
-  selection.removeAllRanges();
-  selection.addRange(range);
-};
+export { selectContents as handleDoubleClick } from '@librechat/chat';
 
 export const extractContent = (
   children: React.ReactNode | { props: { children: React.ReactNode } } | string,

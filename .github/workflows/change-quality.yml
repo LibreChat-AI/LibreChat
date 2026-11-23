@@ -252,6 +252,10 @@ jobs:
       QUALITY_BASE: ${{ needs.request.outputs.base || github.event.pull_request.base.sha || inputs.base || 'origin/dev' }}
       QUALITY_HEAD: ${{ needs.request.outputs.head || github.event.pull_request.head.sha || github.sha }}
       QUALITY_STATIC: ${{ needs.request.outputs.static || inputs.static || 'off' }}
+      # Wall-clock budget for one mutation shard's Stryker run; run.mts validates and defaults it.
+      QUALITY_MUTATION_BUDGET_MINUTES: ${{ vars.QUALITY_MUTATION_BUDGET_MINUTES }}
+      # Wall-clock budget for the api/+risk source-alias pass; run.mts validates and defaults it.
+      QUALITY_ALIAS_BUDGET_MINUTES: ${{ vars.QUALITY_ALIAS_BUDGET_MINUTES }}
       PG_TEST_URL: postgresql://postgres@127.0.0.1:5432/postgres
       REDIS_URI: redis://127.0.0.1:6379
       NODE_OPTIONS: --max-old-space-size=6144
@@ -274,7 +278,9 @@ jobs:
         timeout-minutes: 5
         run: |
           docker run --detach --network host --name quality-redis-cluster \
-            --volume "$PWD:/cluster" --workdir /cluster redis:7 \
+            --volume "$PWD:/cluster:ro" --tmpfs /var/lib/quality-redis \
+            --env REDIS_CLUSTER_RUNTIME_DIR=/var/lib/quality-redis \
+            --workdir /cluster redis:7 \
             bash -c 'bash start-cluster.sh && tail -f /dev/null'
           for attempt in $(seq 1 30); do
             if docker exec quality-redis-cluster redis-cli -p 7001 cluster info | grep -q 'cluster_state:ok'; then
@@ -283,6 +289,7 @@ jobs:
             sleep 1
           done
           docker logs quality-redis-cluster
+          docker exec quality-redis-cluster sh -c 'cat /var/lib/quality-redis/logs/redis-*.log'
           exit 1
       - uses: actions/setup-node@v5
         with:
@@ -317,6 +324,10 @@ jobs:
           QUALITY_WORKSPACE: ${{ matrix.workspace }}
           QUALITY_CHECK: ${{ matrix.task.check }}
           QUALITY_SHARD: ${{ matrix.task.shard }}
+          # The api/+risk run also executes api/'s specs against packages/api/src (coverage.mts's
+          # cross-workspace evidence) through the @librechat/api barrel, which related-test
+          # selection reaches broadly; instrument and run more suites than the job default budgets.
+          NODE_OPTIONS: ${{ matrix.workspace == 'api' && matrix.task.check == 'risk' && '--max-old-space-size=8192' || '--max-old-space-size=6144' }}
         run: |
           args=()
           if [ "$QUALITY_CHECK" = mutation ]; then
@@ -324,16 +335,17 @@ jobs:
           fi
           node ../tooling/scripts/quality/run.mts --base "$QUALITY_BASE" --head "$QUALITY_HEAD" \
             --workspace "$QUALITY_WORKSPACE" --check "$QUALITY_CHECK" --static "${QUALITY_STATIC:-off}" "${args[@]}"
-      # Quality decisions require downloadable reports, so upload failures remain blocking.
+      # Internal: read by the mutation and quality report jobs, never linked from the comment.
+      # Quality decisions require the combined report, so upload failures remain blocking.
       - name: Upload reports
         if: always()
         timeout-minutes: 3
         uses: actions/upload-artifact@v6
         with:
-          name: change-${{ matrix.task.check }}-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}${{ matrix.task.check == 'mutation' && format('-shard-{0}', matrix.task.shard) || '' }}
+          name: quality-internal-${{ matrix.task.check }}-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}${{ matrix.task.check == 'mutation' && format('-shard-{0}', matrix.task.shard) || '' }}
           path: source/coverage/changes/${{ matrix.workspace }}/${{ matrix.task.check }}${{ matrix.task.check == 'mutation' && format('-{0}', matrix.task.shard) || '' }}/
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 1
           overwrite: true
 
       - name: Stop Redis cluster
@@ -345,7 +357,15 @@ jobs:
     needs: [request, select, reports]
     env:
       QUALITY_HEAD: ${{ needs.request.outputs.head || github.event.pull_request.head.sha || github.sha }}
-    if: always() && needs.select.outputs.hasMutations == 'true'
+      QUALITY_BASE: ${{ needs.request.outputs.base || github.event.pull_request.base.sha || '' }}
+      QUALITY_REPOSITORY: ${{ github.repository }}
+      # 0 for a workflow_dispatch run with no pull request to report against.
+      QUALITY_PR: ${{ github.event.pull_request.number || github.event.issue.number || 0 }}
+    # Combine only shards that ran. When verification fails or the run is cancelled, the shard
+    # jobs are skipped or cancelled, so there is nothing to combine and the summary is skipped.
+    if: >-
+      always() && needs.select.outputs.hasMutations == 'true' &&
+      (needs.reports.result == 'success' || needs.reports.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -364,7 +384,7 @@ jobs:
       - run: npm ci
       - uses: actions/download-artifact@v6
         with:
-          pattern: change-mutation-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}-shard-*
+          pattern: quality-internal-mutation-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}-shard-*
           path: coverage/shards
       - name: Verify and combine mutation results
         env:
@@ -373,15 +393,102 @@ jobs:
           node scripts/quality/merge.mts --directory coverage/shards
           --workspace "$QUALITY_WORKSPACE"
           --head "$QUALITY_HEAD"
-          --prefix "change-mutation-$QUALITY_WORKSPACE-$QUALITY_HEAD-"
+          --prefix "quality-internal-mutation-$QUALITY_WORKSPACE-$QUALITY_HEAD-"
+          --repository "$QUALITY_REPOSITORY"
+          --pr "$QUALITY_PR"
+          --base "$QUALITY_BASE"
+      # Internal: the quality report job reads this; a budget-incomplete run (a distinct,
+      # non-zero exit) still reaches this step via always().
       - uses: actions/upload-artifact@v6
         if: always()
         timeout-minutes: 3
         with:
-          name: change-mutation-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}
+          name: quality-internal-mutation-${{ matrix.workspace }}-${{ env.QUALITY_HEAD }}
           path: coverage/changes/${{ matrix.workspace }}/mutation/
           if-no-files-found: warn
+          retention-days: 1
+          overwrite: true
+
+  report:
+    name: Quality report
+    needs: [request, select, reports, mutation-summary]
+    # Not one of the gate's report jobs: a failure here fails the workflow conclusion instead.
+    if: >-
+      always() && needs.select.result == 'success' && needs.select.outputs.hasChanges == 'true' &&
+      (needs.reports.result == 'success' || needs.reports.result == 'failure') &&
+      needs.mutation-summary.result != 'cancelled'
+    env:
+      QUALITY_HEAD: ${{ needs.request.outputs.head || github.event.pull_request.head.sha || github.sha }}
+      QUALITY_BASE: ${{ needs.request.outputs.base || github.event.pull_request.base.sha || '' }}
+      QUALITY_REPOSITORY: ${{ github.repository }}
+      # 0 for a workflow_dispatch run with no pull request to report against.
+      QUALITY_PR: ${{ github.event.pull_request.number || github.event.issue.number || 0 }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Reads report data only: no dependency install, no test run, read-only token.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/quality
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.3'
+      # One exact-name `pattern` per artifact: a pattern that matches nothing succeeds with no
+      # download (an unselected or failed workspace, which the bundle marks unavailable), and a
+      # single match is extracted straight into `path`, so each lands in its own directory.
+      - name: Download change-risk report (data-schemas)
+        uses: actions/download-artifact@v6
+        with:
+          pattern: quality-internal-risk-data-schemas-${{ env.QUALITY_HEAD }}
+          path: coverage/internal/quality-internal-risk-data-schemas-${{ env.QUALITY_HEAD }}
+      - name: Download change-risk report (api)
+        uses: actions/download-artifact@v6
+        with:
+          pattern: quality-internal-risk-api-${{ env.QUALITY_HEAD }}
+          path: coverage/internal/quality-internal-risk-api-${{ env.QUALITY_HEAD }}
+      - name: Download change-risk report (server)
+        uses: actions/download-artifact@v6
+        with:
+          pattern: quality-internal-risk-server-${{ env.QUALITY_HEAD }}
+          path: coverage/internal/quality-internal-risk-server-${{ env.QUALITY_HEAD }}
+      - name: Download mutation report (data-schemas)
+        uses: actions/download-artifact@v6
+        with:
+          pattern: quality-internal-mutation-data-schemas-${{ env.QUALITY_HEAD }}
+          path: coverage/internal/quality-internal-mutation-data-schemas-${{ env.QUALITY_HEAD }}
+      - name: Bundle the quality report
+        env:
+          QUALITY_REPORTS: ${{ needs.select.outputs.reports }}
+          QUALITY_REFACTOR_HINTS: ${{ vars.QUALITY_REFACTOR_HINTS }}
+        run: >-
+          node scripts/quality/bundle.mts --directory coverage/internal
+          --output coverage/quality-report
+          --repository "$QUALITY_REPOSITORY"
+          --pr "$QUALITY_PR"
+          --base "$QUALITY_BASE"
+          --head "$QUALITY_HEAD"
+      # A same-named artifact uploaded by a PR-code job must not stand in for these: overwrite
+      # replaces it, and the comment writer requires these exact steps to have succeeded.
+      - name: Upload quality report
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v6
+        with:
+          name: quality-report
+          path: coverage/quality-report/
+          if-no-files-found: error
           retention-days: 14
+          overwrite: true
+      # Separate and small: the privileged comment writer downloads only this file.
+      - name: Upload report findings
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v6
+        with:
+          name: quality-internal-findings
+          path: coverage/quality-report/findings.json
+          if-no-files-found: error
+          retention-days: 1
           overwrite: true
 
   progress:

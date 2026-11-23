@@ -2,6 +2,8 @@ import { Schema } from 'mongoose';
 import type { IAgentTriggerDeliveryDocument } from '~/types/triggerDelivery';
 import { AGENT_BACKGROUND_TOOL_RESULT_STORAGE_MAX_CHARS } from '~/types/triggerDelivery';
 
+export const BACKGROUND_POLL_INDEX: string = 'trigger_delivery_background_poll';
+
 const failureSchema = new Schema(
   {
     code: { type: String, required: true, maxlength: 128 },
@@ -278,16 +280,19 @@ triggerDeliverySchema.index({ status: 1, updatedAt: -1 });
 /** One user's waiting deliveries, read when that user's generation settles. */
 triggerDeliverySchema.index({ user: 1, status: 1, availableAt: 1 });
 /** Bounded background-result polls by owner, conversation, capability and status. */
-triggerDeliverySchema.index({
-  user: 1,
-  'envelope.event.source.type': 1,
-  'envelope.event.source.id': 1,
-  'envelope.target.conversationId': 1,
-  requiredWorkerCapability: 1,
-  status: 1,
-  updatedAt: -1,
-  _id: -1,
-});
+triggerDeliverySchema.index(
+  {
+    user: 1,
+    'envelope.event.source.type': 1,
+    'envelope.event.source.id': 1,
+    'envelope.target.conversationId': 1,
+    requiredWorkerCapability: 1,
+    status: 1,
+    updatedAt: -1,
+    _id: -1,
+  },
+  { name: BACKGROUND_POLL_INDEX },
+);
 triggerDeliverySchema.index({ 'actorReceipt.resolution': 1 }, { sparse: true });
 triggerDeliverySchema.index({ user: 1, actorActionAdmittedAt: 1 }, { sparse: true });
 triggerDeliverySchema.index({ stagingRecoveryAt: 1 }, { sparse: true });

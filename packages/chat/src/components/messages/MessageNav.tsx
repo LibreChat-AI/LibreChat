@@ -2,7 +2,14 @@ import { memo, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
-import { cn, pxToRem, useLocalize, useRemScale, disabledInkClasses } from '@librechat/client';
+import {
+  cn,
+  pxToRem,
+  useLocalize,
+  useRemScale,
+  disabledInkClasses,
+  usePortalContainer,
+} from '@librechat/client';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { TranslationKeys } from '@librechat/client';
 import { parseWakeupMessage } from '../../core/parts/wakeup';
@@ -187,6 +194,12 @@ function getMessageEntries(root: ParentNode, messagesById: Map<string, TMessage>
 const JUMP_EPS = 4;
 const SCROLL_DURATION = 400;
 const BOTTOM_SNAP_RETRIES = 2;
+/**
+ * How long the thread's width must hold still before the rail measures it again. A width that
+ * changes over many frames (the sidebar sliding, a panel being dragged) moves every row, and
+ * measuring them all on each of those frames is work the next frame throws away.
+ */
+const WIDTH_SETTLE_MS = 120;
 const DRAG_THRESHOLD = 4;
 
 function easeOutCubic(t: number): number {
@@ -427,6 +440,7 @@ function MessageNav({
   conversationId?: string | null;
 }): React.JSX.Element | null {
   const localize = useLocalize();
+  const portals = usePortalContainer();
   const { conversation, isSubmitting } = useChatContext();
   const conversationId = renderedConversationId ?? conversation?.conversationId;
   const messages = useMessagesHost().useConversationMessages(conversationId, isSubmitting);
@@ -1261,6 +1275,9 @@ function MessageNav({
     scrollMarginRef.current = scrollMargin;
 
     let needsRecompute = false;
+    let observedWidth: number | null = null;
+    let widthSettling = false;
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
     let frameId: number | null = null;
     let bottomFrameId: number | null = null;
     let bottomSnapToken = 0;
@@ -1299,6 +1316,10 @@ function MessageNav({
 
     const tick = () => {
       frameId = null;
+      /** Offsets taken mid-slide describe a layout that is already gone. */
+      if (widthSettling) {
+        return;
+      }
       if (needsRecompute) {
         recomputeOffsets();
         needsRecompute = false;
@@ -1402,9 +1423,25 @@ function MessageNav({
     };
 
     const content = container.firstElementChild as HTMLElement | null;
-    const resizeObserver = new ResizeObserver(() => {
+    const resizeObserver = new ResizeObserver((records) => {
       needsRecompute = true;
-      scheduleTick();
+      const width = records[records.length - 1]?.contentRect.width;
+      /** Height alone changes as a reply streams in, and the rail follows that frame by frame. */
+      if (width == null || observedWidth == null || width === observedWidth) {
+        observedWidth = width ?? observedWidth;
+        scheduleTick();
+        return;
+      }
+      observedWidth = width;
+      widthSettling = true;
+      if (settleTimer != null) {
+        clearTimeout(settleTimer);
+      }
+      settleTimer = setTimeout(() => {
+        settleTimer = null;
+        widthSettling = false;
+        scheduleTick();
+      }, WIDTH_SETTLE_MS);
     });
     if (content) {
       resizeObserver.observe(content);
@@ -1417,6 +1454,9 @@ function MessageNav({
       container.removeEventListener('scroll', scheduleTick);
       if (frameId != null) {
         cancelAnimationFrame(frameId);
+      }
+      if (settleTimer != null) {
+        clearTimeout(settleTimer);
       }
       cancelColumnBottomScroll();
       resizeObserver.disconnect();
@@ -1778,7 +1818,7 @@ function MessageNav({
           >
             <p className="line-clamp-3 text-xs">{tipText}</p>
           </div>,
-          document.body,
+          portals ?? document.body,
         )}
     </nav>
   );

@@ -133,6 +133,8 @@ export interface SeedMessage {
   files?: Record<string, unknown>[];
   /** Tool attachments on the turn, such as the web search results behind its sources. */
   attachments?: Record<string, unknown>[];
+  /** What the server recorded about the turn, such as the tokens a reply used. */
+  metadata?: Record<string, unknown>;
 }
 
 /**

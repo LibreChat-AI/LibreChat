@@ -1,8 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 
-const stylesheet = fs.readFileSync(path.resolve(__dirname, 'parts.css'), 'utf8');
-
 /**
  * A host that loads only `@librechat/client` gets `parts.css` through its ThemeProvider and nothing
  * from the app's `style.css`. Every class the composer palette draws its motion with has to be
@@ -193,13 +191,20 @@ describe('subagent card pulse in the app cascade', () => {
   });
 });
 
-describe('shared message body typography', () => {
-  it('ships the message-content rule with the published styles', () => {
-    const rule = stylesheet.match(/^\.message-content \{([^}]*)\}/m);
-    expect(rule).not.toBeNull();
-    const body = rule?.[1] ?? '';
-    expect(body).toMatch(/font-size:\s*var\(--markdown-font-size/);
-    expect(body).toMatch(/line-height:\s*1\.6/);
-    expect(body).toMatch(/max-width:\s*none/);
+describe('shared streaming effects', () => {
+  it.each(['result-thinking', 'result-streaming', 'data-lc-fade', 'lc-dot-breathe', 'lc-fade-in'])(
+    'ships %s in the package and removes the app duplicate',
+    (hook) => {
+      expect(parts).toContain(hook);
+      expect(appStyles).not.toContain(hook);
+    },
+  );
+
+  it('ships the fade and waiting-dot reduced-motion overrides', () => {
+    expect(reducedMotion).toContain('[data-lc-fade]');
+    expect(reducedMotion).toContain('.submitting .result-thinking:empty:last-child:after');
+    expect(parts).toContain('animation-delay: var(--lc-delay, 0ms)');
+    expect(parts).toContain('@supports not (selector(:has(*)))');
+    expect(parts).toContain('background-color: rgb(var(--text-primary))');
   });
 });

@@ -1838,7 +1838,20 @@ export class MCPTokenStorage {
       logger.info(`${logPrefix} Successfully refreshed and stored OAuth tokens`);
       return storedTokens;
     } catch (refreshError) {
-      logger.error(`${logPrefix} Failed to refresh tokens`, getSafeErrorMetadata(refreshError));
+      const errorMessage =
+        refreshError instanceof Error ? refreshError.message : String(refreshError);
+      const normalizedErrorMessage = errorMessage.toLowerCase();
+      /** An expired or revoked grant is routine: the user authorizes again, so it is not an error. */
+      const reauthorize =
+        refreshError instanceof ReauthenticationRequiredError ||
+        (!(refreshError instanceof MCPTokenRefreshUnavailableError) &&
+          (normalizedErrorMessage.includes('unauthorized_client') ||
+            normalizedErrorMessage.includes('invalid_grant') ||
+            isInvalidClientMessage(errorMessage)));
+      logger[reauthorize ? 'warn' : 'error'](
+        `${logPrefix} Failed to refresh tokens`,
+        getSafeErrorMetadata(refreshError),
+      );
       if (
         refreshError instanceof ReauthenticationRequiredError ||
         refreshError instanceof MCPTokenRefreshUnavailableError
@@ -1852,9 +1865,6 @@ export class MCPTokenStorage {
         return null;
       }
       // Check if it's an unauthorized_client error (refresh not supported)
-      const errorMessage =
-        refreshError instanceof Error ? refreshError.message : String(refreshError);
-      const normalizedErrorMessage = errorMessage.toLowerCase();
       if (normalizedErrorMessage.includes('unauthorized_client')) {
         logger.info(
           `${logPrefix} Server does not support refresh tokens for this client. New authentication required.`,

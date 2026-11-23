@@ -1,19 +1,19 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { useAtomValue } from 'jotai';
-import { activeSubagentPanel } from '@librechat/chat/react';
 import { SubagentConversation } from '@librechat/chat/components';
 import { Constants, ContentTypes } from 'librechat-data-provider';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { activeSubagentPanel, MessagePartsHostProvider } from '@librechat/chat/react';
 import type { TAgentsMap, TAttachment } from 'librechat-data-provider';
 import type { ActiveSubagentPanel } from '@librechat/chat/react';
+import { appMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { AgentsMapContext } from '~/Providers/AgentsMapContext';
 import { MessageContext } from '~/Providers/MessageContext';
 import { ShareContext } from '~/Providers/ShareContext';
 import { ChatSurfaceHarness } from 'test/harness';
 import SubagentCall from '../SubagentCall';
-import '~/Providers/MessagePartsHostContext';
 import '~/Providers/SubagentsHostContext';
 import '~/components/Chat/Messages/hosts';
 
@@ -32,7 +32,7 @@ function renderCard(ui: React.ReactElement, share?: { isSharedConvo?: boolean; s
     return null;
   };
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
+  const rendered = render(
     <RecoilRoot>
       <QueryClientProvider client={queryClient}>
         <ChatSurfaceHarness>
@@ -54,7 +54,7 @@ function renderCard(ui: React.ReactElement, share?: { isSharedConvo?: boolean; s
       </QueryClientProvider>
     </RecoilRoot>,
   );
-  return { getSelection: () => selection };
+  return { ...rendered, getSelection: () => selection };
 }
 
 describe('app subagent call adapter', () => {
@@ -124,6 +124,44 @@ describe('app subagent call adapter', () => {
         parentMessageId: 'nested-message',
         toolCallId: 'nested-call',
       }),
+    );
+  });
+
+  it.each([
+    [true, 'running'],
+    [false, 'running'],
+    [true, 'cancelled'],
+    [true, 'completed'],
+  ] as const)('uses the effective host fade policy in a child (%s, %s)', (smooth, status) => {
+    const host = { ...appMessagePartsHost, useSmoothStreaming: () => smooth };
+    const { container } = renderCard(
+      <MessagePartsHostProvider host={host}>
+        <SubagentConversation
+          conversationId="live-child"
+          author={{ name: 'Child', icon: null }}
+          parentAuthor={{ name: 'Parent', icon: null }}
+          turns={[
+            {
+              taskId: 'live-task',
+              trigger: { kind: 'parent_dispatch', summary: '', createdAt: '2026-11-14T12:00:00Z' },
+              activity: {
+                title: 'Child',
+                status,
+                items: [],
+                messageId: 'live-child-message',
+                content: [{ type: ContentTypes.TEXT, text: 'Child streaming words' }],
+              },
+            },
+          ]}
+        />
+      </MessagePartsHostProvider>,
+    );
+    expect(container).toHaveTextContent('Child streaming words');
+    expect(container.querySelectorAll('[data-lc-fade]').length > 0).toBe(
+      smooth && status === 'running',
+    );
+    expect(container.querySelector('.result-streaming') !== null).toBe(
+      !smooth && status === 'running',
     );
   });
 

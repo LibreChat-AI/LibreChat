@@ -1,4 +1,5 @@
 import { Providers } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import {
   isOpenAILikeProvider,
   isBedrockDocumentType,
@@ -22,9 +23,16 @@ import {
   CONTENT_TRAVERSAL_MAX_NODES,
   ContentTraversalLimitError,
 } from '~/protection/adapters/nested';
-import { getFileStream, getConfiguredFileSizeLimit, skipMissingAttachment } from './utils';
-import { validatePdf, validateBedrockDocument } from '~/files/validation';
+import {
+  getFileStream,
+  AttachmentSizeError,
+  skipMissingAttachment,
+  getConfiguredFileSizeLimit,
+} from './utils';
+import { validatePdf, validateBedrockDocument, getBedrockDocumentLimit } from '~/files/validation';
+import { configuredRequestBudget } from '~/utils/timeouts';
 import { someReachableAgent } from '~/agents/traversal';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { runGuardedEncode } from './memoryGuard';
 
 /** The longest document name LibreChat sends to Bedrock. */
@@ -345,22 +353,53 @@ export async function encodeAndFormatDocuments(
     return result;
   }
 
-  const configuredFileSizeLimit = getConfiguredFileSizeLimit(req, { provider, endpoint });
+  /** For Bedrock only a limit the operator set counts, so the inherited 512 MB cannot stand in for it. */
+  const configuredFileSizeLimit = getConfiguredFileSizeLimit(req, {
+    provider,
+    endpoint,
+    explicit: isBedrock,
+  });
+
+  /** Bedrock's limit per document, known before anything is read. Other providers read unbounded. */
+  const readLimits = processableFiles.map((file) =>
+    isBedrock ? getBedrockDocumentLimit(file.type, configuredFileSizeLimit, model) : undefined,
+  );
+  /**
+   * A file attached this turn is refused from its recorded size, before storage is opened. Replayed
+   * history skips this: an object that is gone has to be reported missing and left out, and the
+   * bounded read still refuses one that is present.
+   */
+  for (const [index, file] of onMissingFile ? [] : processableFiles.entries()) {
+    const limit = readLimits[index];
+    if (limit != null && (file.bytes ?? 0) > limit) {
+      throw new AttachmentSizeError(file.file_id, file.filename, limit);
+    }
+  }
 
   const results = await Promise.allSettled(
-    processableFiles.map((file) =>
+    processableFiles.map((file, index) =>
       runGuardedEncode(file.bytes ?? 0, () =>
-        getFileStream(req, file, encodingMethods, getStrategyFunctions),
+        getFileStream(
+          req,
+          file,
+          encodingMethods,
+          getStrategyFunctions,
+          configuredRequestBudget(req.config, 'fileFetchMs'),
+          readLimits[index],
+        ),
       ),
     ),
   );
 
   for (const [index, settledResult] of results.entries()) {
     if (settledResult.status === 'rejected') {
+      if (settledResult.reason instanceof AttachmentSizeError) {
+        throw settledResult.reason;
+      }
       if (skipMissingAttachment(settledResult.reason, processableFiles[index], onMissingFile)) {
         continue;
       }
-      console.error('Document processing failed:', settledResult.reason);
+      logger.error('Document processing failed:', getSafeErrorMetadata(settledResult.reason));
       continue;
     }
 

@@ -1,11 +1,14 @@
 import { EModelEndpoint, getEndpointField } from 'librechat-data-provider';
 import type { TEndpointsConfig, TConfig, TModelSpec } from 'librechat-data-provider';
+import type { TConversation } from 'librechat-data-provider';
 import {
   getAvailableEndpoints,
+  getConvoSwitchLogic,
   getEndpointsFilter,
   getSpecAgentAvatarURL,
   mapEndpoints,
   normalizeModelSpecs,
+  switchesInPlace,
 } from './endpoints';
 
 const mockEndpointsConfig: TEndpointsConfig = {
@@ -146,5 +149,45 @@ describe('getSpecAgentAvatarURL', () => {
   it('returns undefined for an unknown or absent agent', () => {
     expect(getSpecAgentAvatarURL(agentSpec('missing'), agentsMap)).toBeUndefined();
     expect(getSpecAgentAvatarURL(agentSpec(undefined), agentsMap)).toBeUndefined();
+  });
+});
+
+describe('switchesInPlace', () => {
+  const open = (endpoint: string, conversationId = 'c-1') =>
+    ({ conversationId, endpoint }) as TConversation;
+  const decide = (
+    conversation: TConversation | null,
+    newEndpoint: string,
+    modularChat = true,
+  ): boolean =>
+    switchesInPlace(
+      getConvoSwitchLogic({
+        newEndpoint,
+        modularChat,
+        conversation,
+        endpointsConfig: mockEndpointsConfig,
+      }),
+    );
+
+  it('changes an open conversation between endpoints that share a conversation', () => {
+    expect(decide(open(EModelEndpoint.openAI), EModelEndpoint.google)).toBe(true);
+    expect(decide(open(EModelEndpoint.openAI), 'Mistral')).toBe(true);
+    expect(decide(open('Mistral'), EModelEndpoint.agents)).toBe(true);
+  });
+
+  it('changes only within the same endpoint when modular chat is off', () => {
+    expect(decide(open(EModelEndpoint.openAI), EModelEndpoint.openAI, false)).toBe(true);
+    expect(decide(open(EModelEndpoint.openAI), EModelEndpoint.google, false)).toBe(false);
+  });
+
+  it('starts another conversation for an assistant, unless it is the same assistants endpoint', () => {
+    expect(decide(open(EModelEndpoint.openAI), EModelEndpoint.assistants)).toBe(false);
+    expect(decide(open(EModelEndpoint.assistants), EModelEndpoint.openAI)).toBe(false);
+    expect(decide(open(EModelEndpoint.assistants), EModelEndpoint.assistants)).toBe(true);
+  });
+
+  it('has nothing to change before a conversation is saved', () => {
+    expect(decide(null, EModelEndpoint.openAI)).toBe(false);
+    expect(decide(open(EModelEndpoint.openAI, 'new'), EModelEndpoint.openAI)).toBe(false);
   });
 });

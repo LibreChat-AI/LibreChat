@@ -103,6 +103,22 @@ describe('ToolCallLimitNotice', () => {
     );
   });
 
+  it('offers no actions in a conversation the reader takes no turn in', () => {
+    renderNotice({
+      ask: jest.fn(),
+      readOnly: true,
+      isSubmitting: false,
+      latestMessageId: 'response-1',
+    });
+
+    expect(
+      screen.queryByRole('button', { name: TRANSLATIONS.com_ui_tool_call_limit_continue }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: TRANSLATIONS.com_ui_tool_call_limit_answer }),
+    ).toBeNull();
+  });
+
   it('offers no actions with no live chat behind it, as in a shared link or export', () => {
     renderNotice();
 

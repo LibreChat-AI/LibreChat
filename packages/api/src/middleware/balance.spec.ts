@@ -3,7 +3,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { logger, balanceSchema } from '@librechat/data-schemas';
 import type { NextFunction, Request as ServerRequest, Response as ServerResponse } from 'express';
 import type { IBalance, IBalanceUpdate } from '@librechat/data-schemas';
-import { buildBalanceUpdateFields, createSetBalanceConfig } from './balance';
+import { toBalanceResponse, buildBalanceUpdateFields, createSetBalanceConfig } from './balance';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -830,6 +830,32 @@ describe('createSetBalanceConfig', () => {
   });
 });
 
+describe('toBalanceResponse', () => {
+  const record = {
+    _id: 'balance-1',
+    tokenCredits: 100,
+    refillAmount: 500,
+    refillIntervalValue: 1,
+    refillIntervalUnit: 'weeks',
+    refillAnchor: '2026-01-05T00:00:00Z',
+    lastRefill: new Date('2026-07-01T00:00:00.000Z'),
+  };
+  test('returns the refill schedule, anchor included, under auto-refill', () => {
+    const { _id: _, ...rest } = record;
+    expect(toBalanceResponse({ ...record, autoRefillEnabled: true })).toEqual({
+      ...rest,
+      autoRefillEnabled: true,
+    });
+  });
+  test('hides the schedule but keeps the period start without auto-refill', () => {
+    expect(toBalanceResponse({ ...record, autoRefillEnabled: false })).toEqual({
+      tokenCredits: 100,
+      autoRefillEnabled: false,
+      lastRefill: record.lastRefill,
+    });
+  });
+});
+
 describe('balance refill mode synchronization', () => {
   const config = {
     autoRefillEnabled: true,
@@ -845,5 +871,24 @@ describe('balance refill mode synchronization', () => {
   test('restores additive mode when the reset option is removed', () => {
     const record = { ...config, refillMode: 'reset', lastRefill: new Date() } as IBalance;
     expect(buildBalanceUpdateFields(config, record, 'user-1')).toEqual({ refillMode: 'add' });
+  });
+  test('syncs an added anchor and clears a removed one', () => {
+    const refillAnchor = '2026-01-05T00:00:00Z';
+    const record = { ...config, refillMode: 'add', lastRefill: new Date() } as IBalance;
+    expect(buildBalanceUpdateFields({ ...config, refillAnchor }, record, 'user-1')).toEqual({
+      refillAnchor,
+    });
+    const anchored = { ...record, refillAnchor } as IBalance;
+    expect(buildBalanceUpdateFields(config, anchored, 'user-1')).toEqual({ refillAnchor: null });
+  });
+  test('disables auto-refill for an anchor whose interval cannot form boundaries', () => {
+    const record = { ...config, refillMode: 'add', lastRefill: new Date() } as IBalance;
+    expect(
+      buildBalanceUpdateFields(
+        { ...config, refillIntervalValue: 0.5, refillAnchor: '2026-01-05T00:00:00Z' },
+        record,
+        'user-1',
+      ),
+    ).toEqual({ autoRefillEnabled: false });
   });
 });

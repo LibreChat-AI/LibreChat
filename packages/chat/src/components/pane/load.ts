@@ -7,3 +7,9 @@
 export function loadScreenMessages(): Promise<typeof import('./messages')> {
   return import('./messages');
 }
+
+/** The followed conversation's list is `messages` under another chat contract, so it loads the
+ *  same way and shares that chunk. */
+export function loadFollowedThread(): Promise<typeof import('./Followed')> {
+  return import('./Followed');
+}

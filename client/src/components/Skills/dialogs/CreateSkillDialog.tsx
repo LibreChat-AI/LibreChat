@@ -162,7 +162,7 @@ export default function CreateSkillDialog({
       <OGDialogContent className="w-11/12 max-w-5xl overflow-hidden" showCloseButton={false}>
         <form
           onSubmit={handleFormSubmit}
-          className="flex max-h-[80vh] min-w-0 flex-col gap-3 overflow-hidden p-1 sm:gap-4 sm:p-2"
+          className="flex max-h-[85vh] min-w-0 flex-col gap-3 overflow-y-auto p-1 sm:gap-4 sm:p-2"
         >
           <h2 className="text-text-primary text-lg font-bold">
             {localize('com_ui_skill_write_instructions')}
@@ -255,7 +255,7 @@ export default function CreateSkillDialog({
           </div>
 
           {/* Actions */}
-          <div className="flex items-center justify-end gap-2 pt-2">
+          <div className="flex shrink-0 items-center justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={handleClose}>
               {localize('com_ui_cancel')}
             </Button>

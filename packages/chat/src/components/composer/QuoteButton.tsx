@@ -2,7 +2,7 @@ import { memo, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
 import { useSetAtom } from 'jotai';
 import { createPortal } from 'react-dom';
 import { TextQuote } from 'lucide-react';
-import { cn, useLocalize } from '@librechat/client';
+import { cn, useLocalize, usePortalContainer } from '@librechat/client';
 import type { NamedExoticComponent } from 'react';
 import { pendingQuotesByConvoId } from '../../react/composer';
 import { MAX_QUOTE_COUNT } from '../../core/steer/steer';
@@ -323,6 +323,7 @@ type QuoteButtonProps = { conversationId: string };
 
 function QuoteButton({ conversationId }: QuoteButtonProps): React.ReactPortal | null {
   const localize = useLocalize();
+  const portals = usePortalContainer();
   const selectionRef = useRef<SelectionState | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const rangeRef = useRef<Range | null>(null);
@@ -643,7 +644,7 @@ function QuoteButton({ conversationId }: QuoteButtonProps): React.ReactPortal | 
       <TextQuote className="h-4 w-4" aria-hidden="true" />
       {localize('com_ui_add_to_chat')}
     </button>,
-    document.body,
+    portals ?? document.body,
   );
 }
 

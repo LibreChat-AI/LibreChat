@@ -9,7 +9,14 @@ import type { ShardResult, MutationReport } from './merge.mts';
 import type { ShardPlan } from './shards.mts';
 
 import { mergeReports, mutationSummary } from './merge.mts';
-import { assertMutants, mutantKey } from './shards.mts';
+import {
+  assertMutants,
+  describeMutatedScope,
+  isReconstructedShardComplete,
+  mutantKey,
+  mutatedScope,
+} from './shards.mts';
+import { mutationTarget } from './risk.mts';
 
 test('four real Stryker runs preserve the unsharded mutant set, including nested and static code', () => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'quality-shards-')));
@@ -38,7 +45,7 @@ import { mutationTarget } from ${JSON.stringify(new URL('./risk.mts', import.met
 import { planShards, mutantKey, assertMutants, mutationPatterns } from ${JSON.stringify(new URL('./shards.mts', import.meta.url).href)};
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 const source = readFileSync('subject[one].js', 'utf8');
-const target = mutationTarget('subject[one].js', source, [{start: 1, count: 6}], source.replace('> 0', '> 1').replace('enabled: true', 'enabled: false').replace('< 0', '< 1').replace('=== 0', '=== 1'));
+const target = mutationTarget('subject[one].js', source, [{start: 1, count: 6}]);
 const plan = await planShards([target], 'base', 'head', 'fixture');
 writeFileSync('plan.json', JSON.stringify(plan));
 for (const index of [0,1,2,3,4]) {
@@ -213,7 +220,7 @@ test('merging namespaces test references and refuses unfinished or conflicting s
     [['1:0'], ['2:0'], ['3:0'], ['4:0']],
   );
   assert.equal(reports[0].files['shared.js'].mutants[0].id, '0');
-  for (const status of ['Pending', 'RuntimeError', 'Unknown', undefined, null, 0, {}]) {
+  for (const status of ['Pending', 'Unknown', undefined, null, 0, {}]) {
     const unfinished = structuredClone(results);
     Reflect.set(unfinished[0].report!.files['shared.js'].mutants[0], 'status', status);
     assert.throws(() => mergeReports(unfinished), /Incomplete/);
@@ -221,7 +228,17 @@ test('merging namespaces test references and refuses unfinished or conflicting s
   const absent = structuredClone(results);
   Reflect.deleteProperty(absent[0].report!.files['shared.js'].mutants[0], 'status');
   assert.throws(() => mergeReports(absent), /Incomplete/);
-  for (const status of ['Killed', 'Survived', 'Timeout', 'NoCoverage', 'CompileError', 'Ignored']) {
+  // RuntimeError/CompileError ("Invalid") are terminal, same as Killed or Survived: the mutated
+  // program could not be run to a result, but the shard still finished testing it.
+  for (const status of [
+    'Killed',
+    'Survived',
+    'Timeout',
+    'NoCoverage',
+    'CompileError',
+    'RuntimeError',
+    'Ignored',
+  ]) {
     const complete = structuredClone(results);
     Reflect.set(complete[0].report!.files['shared.js'].mutants[0], 'status', status);
     assert.equal(mergeReports(complete).files['shared.js'].mutants[0].status, status);
@@ -240,4 +257,50 @@ test('merging namespaces test references and refuses unfinished or conflicting s
     })),
   );
   assert.match(mutationSummary(empty, 'fixture'), /N\/A/);
+});
+
+test('isReconstructedShardComplete is true only once every planned key finished before the kill', () => {
+  // run.mts's budget-timeout race: the worker's own per-mutant callback had already recorded every
+  // planned mutant in progress.jsonl before the deadline killed it; only the final completion.json
+  // write lost the race. That must read as complete, not a false partial merge.mts would reject.
+  assert.equal(isReconstructedShardComplete(['a', 'b'], new Set(['a', 'b'])), true);
+  // Order and extra finished keys beyond the plan (never produced in practice) don't matter.
+  assert.equal(isReconstructedShardComplete(['a', 'b'], new Set(['b', 'a', 'c'])), true);
+  assert.equal(isReconstructedShardComplete([], new Set()), true);
+  // A genuinely unfinished planned mutant keeps the shard partial.
+  assert.equal(isReconstructedShardComplete(['a', 'b'], new Set(['a'])), false);
+  assert.equal(isReconstructedShardComplete(['a'], new Set()), false);
+});
+
+test('the shard summary counts only functions its ranges touch and names module-level files', () => {
+  const source = [
+    'export const LIMIT = 1;',
+    'export function first(a: number) {',
+    '  return a + LIMIT;',
+    '}',
+    'export function second(a: number) {',
+    '  return a - LIMIT;',
+    '}',
+    '',
+  ].join('\n');
+  const both = mutationTarget('a.ts', source, [
+    { start: 3, count: 1 },
+    { start: 6, count: 1 },
+  ]);
+  assert.equal(both.functions.length, 2);
+  assert.equal(both.mutate.length, 2);
+  // A shard keeps the file's whole function list but only some of its ranges.
+  const shard = { ...both, mutate: [both.mutate[1]] };
+  const moduleOnly = mutationTarget('b.ts', source, [{ start: 1, count: 1 }]);
+  assert.equal(moduleOnly.functions.length, 0);
+  assert.deepEqual(mutatedScope([shard, moduleOnly]), {
+    functions: 1,
+    functionFiles: 1,
+    files: 2,
+  });
+  assert.equal(
+    describeMutatedScope([shard, moduleOnly]),
+    'Changed functions: 1 in 1 file. Mutated files: 2, of which 1 has changes only outside functions.',
+  );
+  assert.equal(describeMutatedScope([both]), 'Changed functions: 2 in 1 file.');
 });

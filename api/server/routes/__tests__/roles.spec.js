@@ -3,7 +3,7 @@ const request = require('supertest');
 const { SystemRoles, roleDefaults } = require('librechat-data-provider');
 
 const mockGetRoleByName = jest.fn();
-const mockUpdateRoleByName = jest.fn();
+const mockSetRolePermissions = jest.fn();
 const mockRecordAuditEntry = jest.fn();
 const mockHasCapability = jest.fn();
 
@@ -18,7 +18,7 @@ jest.mock('~/server/middleware/roles/capabilities', () => ({
 
 jest.mock('~/models', () => ({
   getRoleByName: (...args) => mockGetRoleByName(...args),
-  updateRoleByName: (...args) => mockUpdateRoleByName(...args),
+  setRolePermissions: (...args) => mockSetRolePermissions(...args),
   recordAuditEntry: (...args) => mockRecordAuditEntry(...args),
 }));
 
@@ -199,16 +199,17 @@ describe('GET /api/roles/:roleName — isOwnRole authorization', () => {
 describe('PUT /api/roles/:roleName/prompts', () => {
   it('merges the update and records the permission change', async () => {
     mockGetRoleByName.mockResolvedValue(staffRole);
-    mockUpdateRoleByName.mockImplementation(async (name, updates) => ({ name, ...updates }));
+    mockSetRolePermissions.mockImplementation(async (name, type, flags) => ({
+      name,
+      permissions: { [type]: { ...staffRole.permissions[type], ...flags } },
+    }));
     mockRecordAuditEntry.mockResolvedValue(null);
     const app = createApp({ id: 'u1', _id: 'u1', role: SystemRoles.ADMIN, name: 'Admin' });
 
     const res = await request(app).put('/api/roles/STAFF/prompts').send({ CREATE: true });
 
     expect(res.status).toBe(200);
-    expect(mockUpdateRoleByName).toHaveBeenCalledWith('STAFF', {
-      permissions: { PROMPTS: { USE: true, CREATE: true } },
-    });
+    expect(mockSetRolePermissions).toHaveBeenCalledWith('STAFF', 'PROMPTS', { CREATE: true }, {});
     expect(mockRecordAuditEntry).toHaveBeenCalledWith(
       expect.objectContaining({
         action: 'role.permissions_updated',
@@ -218,6 +219,18 @@ describe('PUT /api/roles/:roleName/prompts', () => {
     );
   });
 
+  it('returns 404 without an audit entry when the role is gone before the write', async () => {
+    mockGetRoleByName.mockResolvedValue(staffRole);
+    mockSetRolePermissions.mockResolvedValue(null);
+    const app = createApp({ id: 'u1', _id: 'u1', role: SystemRoles.ADMIN, name: 'Admin' });
+
+    const res = await request(app).put('/api/roles/STAFF/prompts').send({ CREATE: true });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ message: 'Role not found' });
+    expect(mockRecordAuditEntry).not.toHaveBeenCalled();
+  });
+
   it('returns 400 for an invalid body without writing', async () => {
     const app = createApp({ id: 'u1', role: SystemRoles.ADMIN });
 
@@ -225,6 +238,6 @@ describe('PUT /api/roles/:roleName/prompts', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.message).toBe('Invalid prompt permissions.');
-    expect(mockUpdateRoleByName).not.toHaveBeenCalled();
+    expect(mockSetRolePermissions).not.toHaveBeenCalled();
   });
 });

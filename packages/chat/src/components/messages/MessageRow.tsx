@@ -3,6 +3,12 @@ import { cn } from '@librechat/client';
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactNode, ReactElement } from 'react';
+import {
+  useOffscreenRow,
+  RowReachProvider,
+  OFFSCREEN_ROW_CLASSES,
+} from '../../react/messages/offscreen';
+import { useWidenedRow } from '../../react/messages/useProgressiveRowMount';
 import { useMessagesHost } from '../../react/messages/host';
 import MessageTimestamp from './MessageTimestamp';
 import { getMessageRowWidthClass } from './width';
@@ -104,6 +110,7 @@ export default function MessageRow({
   outlined = false,
 }: MessageRowProps): ReactElement {
   const { renderFiles } = useMessagesHost();
+  const { rowRef, reach } = useOffscreenRow(useWidenedRow());
   // Same column as ChatForm: max-width plus `sm:px-2`, so the body lines
   // up with the composer surface rather than the form's outer box.
   const widthClass = getMessageRowWidthClass({ fullWidth, hasParallelContent });
@@ -130,12 +137,14 @@ export default function MessageRow({
 
   return (
     <div
+      ref={rowRef}
       id={id}
       role="group"
       aria-label={ariaLabel}
       className={cn(
         'message-render group font-theme-ui duration-theme-normal transition-max-width mx-auto flex min-w-0 flex-1 motion-reduce:transition-none',
         'focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:outline-hidden',
+        OFFSCREEN_ROW_CLASSES,
         isUserSide ? 'justify-end' : 'items-start',
         widthClass,
         className,
@@ -217,7 +226,9 @@ export default function MessageRow({
               {children}
             </div>
           )}
-          <div className={cn('w-full', isUserSide && 'flex justify-end')}>{footer}</div>
+          <div className={cn('w-full', isUserSide && 'flex justify-end')}>
+            <RowReachProvider reach={reach}>{footer}</RowReachProvider>
+          </div>
         </div>
       </div>
     </div>

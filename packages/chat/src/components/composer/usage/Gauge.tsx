@@ -38,8 +38,19 @@ function getStrokeClass(percent: number, indeterminate: boolean, tone?: GaugeTon
   return 'stroke-text-secondary';
 }
 
+/**
+ * The ring is drawn in whole percents, the figure its label announces. A live run moves the
+ * figure by a fraction of a percent several times a second, and each new dash offset starts a
+ * transition the browser runs on the main thread: drawing every fraction repaints at the
+ * display's rate for as long as the reply streams, to move the ring by less than a pixel. Any
+ * usage at all still draws its first percent, so a ring is never empty with tokens in it.
+ */
+function drawnPercent(percent: number): number {
+  return percent > 0 ? Math.max(1, Math.round(percent)) : 0;
+}
+
 export default function Gauge({ percent, indeterminate, tone }: GaugeProps): React.JSX.Element {
-  const offset = CIRCUMFERENCE - (percent / 100) * CIRCUMFERENCE;
+  const offset = CIRCUMFERENCE - (drawnPercent(percent) / 100) * CIRCUMFERENCE;
 
   return (
     <svg

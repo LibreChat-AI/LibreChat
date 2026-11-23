@@ -1233,6 +1233,140 @@ describe('S3 CRUD', () => {
     });
   });
 
+  describe('stored content type', () => {
+    const mockReq = { user: { id: 'user123' } } as ServerRequest;
+
+    const mockFetch = (type: string | null, body?: ReadableStream<Uint8Array>) => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        headers: {
+          get: (name: string) =>
+            ({ 'content-length': '8', 'content-type': type })[name.toLowerCase()] ?? null,
+        },
+        body,
+        arrayBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(8)),
+      }) as unknown as typeof fetch;
+    };
+
+    const uploadFile = async (originalname: string, mimetype: string) => {
+      (fs.promises.stat as jest.Mock).mockResolvedValue({ size: 1024 });
+      (fs.createReadStream as jest.Mock).mockReturnValue(new Readable());
+      const { uploadFileToS3 } = await import('../crud');
+      await uploadFileToS3({
+        req: mockReq,
+        file: { path: '/tmp/upload', originalname, mimetype } as Express.Multer.File,
+        file_id: 'file123',
+        basePath: 'images',
+      });
+      return s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.ContentType;
+    };
+
+    it('stores uploaded raster images with their reported type', async () => {
+      expect(await uploadFile('photo.png', 'image/png')).toBe('image/png');
+    });
+
+    it('falls back to the extension when the reported type is generic', async () => {
+      expect(await uploadFile('photo.JPG', 'application/octet-stream')).toBe('image/jpeg');
+    });
+
+    it.each([
+      ['page.html', 'text/html'],
+      ['icon.svg', 'image/svg+xml'],
+      ['notes.txt', 'text/plain'],
+      ['page.html', 'image/svg+xml'],
+    ])('leaves %s reported as %s without a stored type', async (name, type) => {
+      expect(await uploadFile(name, type)).toBeUndefined();
+    });
+
+    it('stores resized buffers with the type of their target extension', async () => {
+      const { saveBufferToS3 } = await import('../crud');
+      await saveBufferToS3({
+        userId: 'user123',
+        buffer: Buffer.from('test'),
+        fileName: 'file123__photo.webp',
+        basePath: 'images',
+      });
+      expect(s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.ContentType).toBe('image/webp');
+    });
+
+    it('does not store a type for non-image buffers', async () => {
+      const { saveBufferToS3 } = await import('../crud');
+      await saveBufferToS3({
+        userId: 'user123',
+        buffer: Buffer.from('<svg/>'),
+        fileName: 'drawing.svg',
+        basePath: 'images',
+      });
+      expect(s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.ContentType).toBeUndefined();
+    });
+
+    it('stores buffered URL saves with the raster type the remote reported', async () => {
+      mockFetch('image/png; charset=binary');
+      const { saveURLToS3 } = await import('../crud');
+      await saveURLToS3({ userId: 'user123', URL: 'https://example.com/a', fileName: 'a.jpg' });
+      expect(s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.ContentType).toBe('image/png');
+    });
+
+    it('does not store an active remote type for URL saves', async () => {
+      mockFetch('text/html');
+      const { saveURLToS3 } = await import('../crud');
+      await saveURLToS3({ userId: 'user123', URL: 'https://example.com/a', fileName: 'a.html' });
+      expect(s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.ContentType).toBeUndefined();
+    });
+
+    it('stores streamed URL saves with their type', async () => {
+      mockFetch(
+        'image/gif',
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(Buffer.from('streamed'));
+            controller.close();
+          },
+        }),
+      );
+      const { saveURLToS3 } = await import('../crud');
+      await saveURLToS3({ userId: 'user123', URL: 'https://example.com/a', fileName: 'a.gif' });
+      expect(s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.ContentType).toBe('image/gif');
+    });
+
+    it('starts multipart URL saves with their type', async () => {
+      const part = Buffer.alloc(5 * 1024 * 1024 + 1, 'a');
+      mockFetch(
+        null,
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(part);
+            controller.close();
+          },
+        }),
+      );
+      const { saveURLToS3 } = await import('../crud');
+      await saveURLToS3({ userId: 'user123', URL: 'https://example.com/a', fileName: 'a.png' });
+      const calls = s3Mock.commandCalls(CreateMultipartUploadCommand);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].args[0].input.ContentType).toBe('image/png');
+    });
+
+    it('signs image URLs with the type of their extension for objects stored without one', async () => {
+      const { getS3URL } = await import('../crud');
+      await getS3URL({ userId: 'user123', fileName: 'file123__photo.png' });
+      expect(getSignedUrl).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          input: expect.objectContaining({ ResponseContentType: 'image/png' }),
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('does not override the response type of non-image URLs', async () => {
+      const { getS3URL } = await import('../crud');
+      await getS3URL({ userId: 'user123', fileName: 'file123__page.html' });
+      const input = (getSignedUrl as jest.Mock).mock.lastCall[1].input;
+      expect(input.ResponseContentType).toBeUndefined();
+    });
+  });
+
   describe('getS3FileStream', () => {
     it('returns a readable stream for a file', async () => {
       const { getS3FileStream } = await import('../crud');

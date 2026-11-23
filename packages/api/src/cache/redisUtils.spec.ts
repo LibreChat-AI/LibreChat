@@ -1,6 +1,7 @@
 import IoRedis from 'ioredis';
 import type { RedisClientType } from '@redis/client';
-import { duplicateIoRedisClient, scanKeys } from './redisUtils';
+import type { Redis, Cluster } from 'ioredis';
+import { createIoRedisSubscriber, duplicateIoRedisClient, scanKeys } from './redisUtils';
 
 describe('duplicateIoRedisClient', () => {
   it('applies overrides to a single-node duplicate', () => {
@@ -77,6 +78,40 @@ describe('duplicateIoRedisClient', () => {
     } finally {
       duplicate.disconnect();
       client.disconnect();
+    }
+  });
+});
+
+describe.each([false, true])('createIoRedisSubscriber (cluster=%s)', (cluster) => {
+  it('retains subscriber commands without changing the publisher retry policy or options', () => {
+    const redisOptions = {
+      maxRetriesPerRequest: 0,
+      autoResendUnfulfilledCommands: false,
+      keyPrefix: 'subscriber-test::',
+    };
+    const publisher = cluster
+      ? new IoRedis.Cluster([{ host: '127.0.0.1', port: 6379 }], {
+          lazyConnect: true,
+          redisOptions,
+        })
+      : new IoRedis({ ...redisOptions, lazyConnect: true });
+    const subscriber = createIoRedisSubscriber(publisher, 'test-subscriber');
+    const options = subscriber.isCluster
+      ? (subscriber as Cluster).options.redisOptions
+      : (subscriber as Redis).options;
+    const publisherOptions = publisher.isCluster
+      ? (publisher as Cluster).options.redisOptions
+      : (publisher as Redis).options;
+    try {
+      expect(options).toMatchObject({
+        maxRetriesPerRequest: null,
+        autoResendUnfulfilledCommands: true,
+        keyPrefix: redisOptions.keyPrefix,
+      });
+      expect(publisherOptions).toMatchObject(redisOptions);
+    } finally {
+      subscriber.disconnect();
+      publisher.disconnect();
     }
   });
 });

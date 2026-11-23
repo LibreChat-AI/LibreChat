@@ -14,6 +14,7 @@ const {
   resolveAvatarRefresh,
   applyCachedAvatarUrl,
   collectEdgeAgentIds,
+  validateHandoffReferences,
   replaceEdgeSourceId,
   mergeDeploymentSkillIds,
   getAgentListAccess,
@@ -369,22 +370,19 @@ const classifyAgentReferences = async (agentIds, userId, userRole) => {
  * @param {Set<string>} [allowedMissingIds]
  * @returns {Promise<{ missing: string[], unauthorized: string[] }>}
  */
-const validateEdgeAgentReferences = async (
+const validateEdgeAgentReferences = (
   edges,
   userId,
   userRole,
   allowedMissingIds = new Set(),
-) => {
-  const { missing, unauthorized } = await classifyAgentReferences(
-    collectEdgeAgentIds(edges),
-    userId,
-    userRole,
-  );
-  return {
-    missing: missing.filter((id) => !allowedMissingIds.has(id)),
-    unauthorized,
-  };
-};
+  specs,
+) =>
+  validateHandoffReferences({
+    edges,
+    specs,
+    allowedMissingIds,
+    classifySavedReferences: (ids) => classifyAgentReferences(ids, userId, userRole),
+  });
 
 /**
  * Collects every saved agent referenced by a spawn target. Graph edge
@@ -832,6 +830,7 @@ const createAgentHandler = async (req, res) => {
         userId,
         userRole,
         new Set([agentData.id]),
+        req.config?.modelSpecs?.list,
       );
       if (missing.length > 0) {
         return res.status(400).json({
@@ -1240,6 +1239,8 @@ const updateAgentHandler = async (req, res) => {
         updateData.edges,
         userId,
         userRole,
+        undefined,
+        req.config?.modelSpecs?.list,
       );
       if (missing.length > 0) {
         return res.status(400).json({
@@ -1353,17 +1354,16 @@ const updateAgentHandler = async (req, res) => {
             }
           }
           updateData.tools = nextTools;
-          /** The agent's MCP tools are retained verbatim here, so carry its resolved
-           *  names across too. Left unset when the agent has none stored, so
-           *  `updateAgent` can still derive rather than being pinned to an empty
-           *  index that would strip agent-scoped access. */
-          if (existingAgent.mcpServerNames?.length) {
-            updateData.mcpServerNames = existingAgent.mcpServerNames;
-          }
+          /** Retained strings alone cannot authorize a previously unindexed server. */
+          updateData.mcpServerNames = existingAgent.mcpServerNames ?? [];
         }
       } else if (hasToolUpdate) {
         const existingToolSet = new Set(existingTools);
-        const newMCPTools = requestedMCPTools.filter((t) => !existingToolSet.has(t));
+        const indexedNames = existingAgent.mcpServerNames ?? [];
+        const newMCPTools = requestedMCPTools.filter((tool) => {
+          const [, name] = splitMCPToolKey(tool, indexedNames);
+          return !existingToolSet.has(tool) || !indexedNames.includes(name);
+        });
         /** Names resolved during authorization of the newly added tools. */
         const resolvedServerNames = new Set();
 
@@ -1405,11 +1405,7 @@ const updateAgentHandler = async (req, res) => {
             }
           }
         }
-        /** Supplying `[]` would pin the index empty and suppress `updateAgent`'s
-         *  derivation, so only assert it when the result is authoritative: either we
-         *  resolved names, or no MCP tool survives and the index genuinely is empty. */
-        const retainsMCPTools = (updateData.tools ?? []).some(isMCPTool);
-        if (resolvedServerNames.size > 0 || !retainsMCPTools) {
+        if (hasToolUpdate) {
           updateData.mcpServerNames = Array.from(resolvedServerNames);
         }
       }
@@ -1429,6 +1425,10 @@ const updateAgentHandler = async (req, res) => {
       Object.keys(updateData).length > 0
         ? await db.updateAgent({ id }, updateData, {
             updatingUserId: req.user.id,
+            expectedMCPAccess: {
+              names: existingAgent.mcpServerNames ?? [],
+              updatedAt: existingAgent.updatedAt,
+            },
           })
         : existingAgent;
 
@@ -1575,6 +1575,7 @@ const duplicateAgentHandler = async (req, res) => {
         userId,
         userRole,
         new Set([newAgentId]),
+        req.config?.modelSpecs?.list,
       );
       if (missing.length > 0) {
         return res.status(400).json({
@@ -2154,6 +2155,8 @@ const revertAgentVersionHandler = async (req, res) => {
         revertEdges,
         req.user.id,
         req.user.role,
+        undefined,
+        req.config?.modelSpecs?.list,
       );
       if (missing.length > 0) {
         return res.status(400).json({

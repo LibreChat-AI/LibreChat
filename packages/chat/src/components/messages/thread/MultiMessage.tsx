@@ -3,7 +3,7 @@ import { useAtom } from 'jotai';
 import type { NamedExoticComponent, ReactElement, ReactNode } from 'react';
 import type { TMessage } from 'librechat-data-provider';
 import type { ThreadMessageProps } from '../../../react/messages/types';
-import { useRowMountWindow } from '../../../react/messages/useProgressiveRowMount';
+import { useRowMounted } from '../../../react/messages/useProgressiveRowMount';
 import { siblingIdxFamily, siblingKey } from '../../../react/thread';
 import { activityParentMessageIds } from '../../../core/activity';
 import { useMessagesHost } from '../../../react/messages/host';
@@ -29,7 +29,11 @@ function MultiMessage({
 }: MultiMessageProps): ReactElement | null {
   const { renderActivity } = useMessagesHost();
   const [siblingIdx, setSiblingIdx] = useAtom(siblingIdxFamily(siblingKey(messageId)));
-  const mountWindow = useRowMountWindow();
+  /** Every message at this level sits at the same depth, whichever sibling is showing. A row
+   *  outside the progressive mount window renders nothing while the recursion continues, so
+   *  descendants keep their atoms, effects, and streaming spine; the window only ever widens,
+   *  so rows never unmount. */
+  const rowMounted = useRowMounted(messagesTree?.[0]?.depth ?? 0);
 
   const setSiblingIdxRev = useCallback(
     (value: number) => {
@@ -173,13 +177,6 @@ function MultiMessage({
     siblingCount: messagesTree.length,
     setSiblingIdx: setSiblingIdxRev,
   };
-
-  /** A row outside the progressive mount window renders nothing while the
-   *  recursion continues, so descendants keep their atoms, effects, and
-   *  streaming spine; the window only ever widens, so rows never unmount. */
-  const rowMounted =
-    mountWindow == null ||
-    ((message.depth ?? 0) >= mountWindow.start && (message.depth ?? 0) <= mountWindow.end);
 
   const row: ReactNode = rowMounted ? <ThreadMessage {...sharedProps} /> : null;
   const activityIds = activityParentMessageIds(

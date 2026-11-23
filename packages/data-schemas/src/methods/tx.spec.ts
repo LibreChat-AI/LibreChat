@@ -3480,6 +3480,7 @@ describe('Sonnet 5.5 pricing', () => {
 
 describe.each([
   ['gpt-6-sol', 2, 0.2, 2.5, 10],
+  ['gpt-6.2-sol', 2, 0.1, 2.5, 10],
   ['gpt-6.1-terra', 1, 0.05, 1.25, 5],
   ['gpt-6-luna', 0.1, 0.01, 0.125, 0.5],
 ] as const)('%s published pricing', (model, input, read, write, output) => {

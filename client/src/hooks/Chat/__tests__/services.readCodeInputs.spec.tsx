@@ -1,6 +1,6 @@
 import { renderHook } from '@testing-library/react';
-import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryKeys, RetentionMode, EModelEndpoint } from 'librechat-data-provider';
 import type { CodeApprovalModeInputs, CodeWorkspaceInputs } from '@librechat/chat';
 import type { TConversation } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
@@ -12,6 +12,8 @@ type ApprovalInputs = Omit<CodeApprovalModeInputs, 'codeEnvironmentMode'>;
 const mockReadWorkspaceInputs = jest.fn<CodeWorkspaceInputs, []>();
 const mockReadApprovalInputs = jest.fn<ApprovalInputs, []>();
 const mockGetLatestConversation = jest.fn<TConversation | null, []>(() => null);
+/** The comparison conversation each code hook was handed on the last render. */
+const mockComparisons: { workspace?: unknown; approval?: unknown } = {};
 
 jest.mock('react-router-dom', () => ({ useNavigate: () => jest.fn() }));
 jest.mock('~/hooks/Files/useSetFilesToDelete', () => () => jest.fn());
@@ -20,11 +22,13 @@ jest.mock('~/Providers/AgentsMapContext', () => ({ useAgentsMapContext: () => ({
 jest.mock('~/hooks/Conversations/useGetConversation', () => () => mockGetLatestConversation);
 /** Each render's reader closes over that render's values, as the real hooks' readers do, so an
  *  adapter holding a reader from an earlier render keeps returning the earlier values. */
-jest.mock('~/hooks/Agents/useCodeWorkspace', () => () => {
+jest.mock('~/hooks/Agents/useCodeWorkspace', () => (_conversation: unknown, added: unknown) => {
+  mockComparisons.workspace = added;
   const rendered = mockReadWorkspaceInputs();
   return { mode: undefined, readInputs: () => rendered };
 });
-jest.mock('~/hooks/Agents/useCodeApprovalMode', () => () => {
+jest.mock('~/hooks/Agents/useCodeApprovalMode', () => (_conversation: unknown, added: unknown) => {
+  mockComparisons.approval = added;
   const rendered = mockReadApprovalInputs();
   return { readInputs: () => rendered };
 });
@@ -94,6 +98,55 @@ describe('useTurnServices readCodeInputs', () => {
       expect(result.current.readCodeInputs().workspace).toBe(firstWorkspace);
     },
   );
+
+  it("keeps the model main chat is compared with out of any other pane's turns", () => {
+    /** A comparison agent that has not loaded: main chat waits for it, a side pane does not. */
+    const comparison = conversation({ endpoint: EModelEndpoint.agents, agent_id: 'agent_compare' });
+    settings = { ...settings, addedConversation: comparison };
+    const submitted = conversation({ endpoint: EModelEndpoint.openAI, model: 'gpt-5' });
+
+    const main = renderHook(() => useTurnServices({ index: 0, conversation: submitted }), {
+      wrapper,
+    });
+    expect(main.result.current.canSubmit?.(submitted)).toBe(false);
+    expect(mockComparisons).toEqual({ workspace: comparison, approval: comparison });
+
+    const side = renderHook(() => useTurnServices({ index: 3, conversation: submitted }), {
+      wrapper,
+    });
+    expect(side.result.current.canSubmit?.(submitted)).toBe(true);
+    expect(mockComparisons).toEqual({ workspace: null, approval: null });
+  });
+
+  it("sends another pane's turns as temporary when its conversation is, not when main chat is", () => {
+    /** The page's setting follows the conversation main chat shows: here, a temporary one. */
+    settings = { ...settings, isTemporary: true };
+    const saved = conversation({ conversationId: 'saved', isTemporary: false });
+    const turns = (index: number, held: TConversation) =>
+      renderHook(() => useTurnServices({ index, conversation: held }), { wrapper }).result.current;
+
+    expect(turns(0, saved).isTemporary).toBe(true);
+    expect(turns(3, saved).isTemporary).toBe(false);
+
+    /** And the other way round: a temporary conversation beside a saved one stays temporary. */
+    settings = { ...settings, isTemporary: false };
+    const temporary = conversation({ conversationId: 'temporary', isTemporary: true });
+    expect(turns(0, saved).isTemporary).toBe(false);
+    expect(turns(3, temporary).isTemporary).toBe(true);
+    /** A record from before the flag was stored carries only its deadline. */
+    const legacy = conversation({
+      conversationId: 'legacy',
+      expiredAt: '2026-12-01T00:00:00.000Z',
+    });
+    expect(turns(3, legacy).isTemporary).toBe(true);
+
+    /** A deployment that keeps nothing makes every pane's turns temporary. */
+    settings = {
+      ...settings,
+      config: { ...settings.config, retentionMode: RetentionMode.EPHEMERAL },
+    };
+    expect(turns(3, saved).isTemporary).toBe(true);
+  });
 
   it('checks the submitted target against current query data, not the rendered conversation', () => {
     const rendered = conversation({ endpoint: EModelEndpoint.openAI, model: 'gpt-5' });

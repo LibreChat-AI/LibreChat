@@ -17,13 +17,16 @@ export type {
   SubagentContentAppendResult,
 } from './subagentContent';
 import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
-import type { ScheduleMCPConsentStorage } from './scheduleConsent';
 import type { ClearFileCodeEnvRefsParams } from '~/types/file';
 import type { FileStorageMethods } from './fileStorage';
 import { createToolApprovalGrantMethods } from './toolApprovalGrant';
-import { createScheduleMCPConsentStorage } from './scheduleConsent';
-export { createScheduleMCPConsentStorage } from './scheduleConsent';
-export type { ScheduleMCPConsentStorage, ScheduleConsentSnapshot } from './scheduleConsent';
+export { createScheduleMCPConsentStorage, createAgentKeyMCPConsentStorage } from './runGrant';
+export type {
+  RunGrantStorage,
+  RunGrantSnapshot,
+  ScheduleMCPConsentStorage,
+  ScheduleConsentSnapshot,
+} from './runGrant';
 import type {
   FileMethods,
   FileOwnerScope,
@@ -153,6 +156,8 @@ import {
   type ParentSubagentThreadRecord,
 } from './conversation';
 import { createChatProjectMethods, type ChatProjectMethods } from './chatProject';
+import { createConversationMetadataMethods } from './conversationMetadata';
+import type { ConversationMetadataMethods } from './conversationMetadata';
 export type {
   AssignConversationToProjectResult,
   ChatProjectSortBy,
@@ -348,6 +353,7 @@ export type AllMethods = PermissionPrincipalStorage &
   ConversationImportMethods &
   MessageMethods &
   ConversationMethods &
+  ConversationMetadataMethods &
   ChatProjectMethods &
   TxMethods &
   TransactionMethods &
@@ -358,7 +364,6 @@ export type AllMethods = PermissionPrincipalStorage &
   SkillLifecycleMethods &
   AgentTriggerDeliveryMethods &
   AgentQueuedTurnMethods &
-  ScheduleMCPConsentStorage &
   ScheduleMethods &
   AgentMethods &
   ConfigMethods &
@@ -385,6 +390,8 @@ export interface CreateMethodsDeps {
   getMCPAppMessageBudget?: () => Promise<number | undefined>;
   /** Recognizes agent skill IDs supplied by an external, non-database registry. */
   isExternalSkillId?: AgentDeps['isExternalSkillId'];
+  /** Whether the deployment serves shared links; omitted means enabled. */
+  allowSharedLinks?: boolean;
 }
 
 /**
@@ -429,6 +436,7 @@ export function createMethods(
   });
 
   const conversationMethods = createConversationMethods(mongoose, {
+    allowSharedLinks: deps.allowSharedLinks,
     getMessages: messageMethods.getMessages,
     deleteMessages: messageMethods.deleteMessages,
     searchMessages: messageMethods.searchMessages,
@@ -604,6 +612,7 @@ export function createMethods(
     ...createConversationImportMethods(mongoose),
     ...messageMethods,
     ...conversationMethods,
+    ...createConversationMetadataMethods(mongoose),
     ...createChatProjectMethods(mongoose),
     /* Tier 3 */
     ...txMethods,
@@ -616,7 +625,6 @@ export function createMethods(
     ...agentTriggerDeliveryMethods,
     ...agentQueuedTurnMethods,
     ...createScheduleMethods(mongoose),
-    ...createScheduleMCPConsentStorage(mongoose),
     /* Tier 5 */
     ...agentMethods,
     /* Config */

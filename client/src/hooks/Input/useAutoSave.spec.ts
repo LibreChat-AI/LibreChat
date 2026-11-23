@@ -691,6 +691,90 @@ describe('useAutoSave — typing as a run finishes', () => {
     mockSetDraft.mockReset();
   });
 
+  /** A send empties the composer before its run starts. Words still in it when a run starts were
+   * not sent: the reader reran a reply from its row, or a run started somewhere else reached this
+   * conversation. Restoring the (empty) pending record over them took them out of the field, and
+   * the end of the run cleared the conversation's record, their only copy. */
+  it('keeps a draft the composer holds when a run it did not send starts', () => {
+    const textAreaRef = makeTextAreaRef();
+    const { rerender } = renderHook(
+      ({ isSubmitting }: { isSubmitting: boolean }) =>
+        useAutoSave({
+          isSubmitting,
+          conversationId: 'convo-1',
+          textAreaRef,
+          files: new Map(),
+          setFiles: jest.fn(),
+        }),
+      { initialProps: { isSubmitting: false } },
+    );
+    act(() => {
+      type(textAreaRef, 'not sent yet');
+      jest.advanceTimersByTime(50);
+    });
+    mockSetValue.mockClear();
+
+    act(() => {
+      rerender({ isSubmitting: true });
+    });
+
+    /** Nothing is put in the field in their place, and they are kept for the run's duration. */
+    expect(mockSetValue).not.toHaveBeenCalled();
+    expect(textAreaRef.current!.value).toBe('not sent yet');
+    expect(actualUtils.getDraft(actualUtils.getPendingDraftId(0))).toBe('not sent yet');
+
+    act(() => {
+      rerender({ isSubmitting: false });
+    });
+
+    /** And they are the conversation's draft again once it ends. */
+    expect(actualUtils.getDraft('convo-1')).toBe('not sent yet');
+    expect(mockSetValue).not.toHaveBeenCalledWith('text', '');
+  });
+
+  it('still restores the pending draft when a run starts under an empty composer', () => {
+    const textAreaRef = makeTextAreaRef();
+    const { rerender } = renderHook(
+      ({ isSubmitting }: { isSubmitting: boolean }) =>
+        useAutoSave({
+          isSubmitting,
+          conversationId: 'convo-1',
+          textAreaRef,
+          files: new Map(),
+          setFiles: jest.fn(),
+        }),
+      { initialProps: { isSubmitting: false } },
+    );
+    mockSetValue.mockClear();
+
+    act(() => {
+      rerender({ isSubmitting: true });
+    });
+
+    expect(mockSetValue).toHaveBeenLastCalledWith('text', '');
+  });
+
+  /** A composer drawn with words already in it, as one beside the chat is when the layout draws
+   * it again, has no earlier conversation those words could belong to. An empty record is not a
+   * draft to put in their place. */
+  it('keeps the words a composer is drawn with when there is no draft to restore', () => {
+    const textAreaRef = makeTextAreaRef();
+    textAreaRef.current!.value = 'handed to it';
+
+    renderHook(() =>
+      useAutoSave({
+        isSubmitting: true,
+        conversationId: 'convo-1',
+        textAreaRef,
+        files: new Map(),
+        setFiles: jest.fn(),
+      }),
+    );
+
+    expect(mockSetValue).not.toHaveBeenCalledWith('text', '');
+    expect(actualUtils.getDraft(actualUtils.getPendingDraftId(0))).toBe('handed to it');
+  });
+
   /** The reported bug. The composer is keyed under PENDING while a run streams and under the
    * conversation once it ends, and the key change tore off whatever the 25ms debounce had not
    * written yet: the pending record still held the previous flush, run end migrated that record,

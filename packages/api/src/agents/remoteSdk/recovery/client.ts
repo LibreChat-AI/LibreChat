@@ -15,10 +15,29 @@ export async function connectRecoveringSdkSocket(options: {
   onError?: (error: unknown) => void;
 }): Promise<RecoverySocket> {
   const { limits, recovery } = options;
-  if (Object.values(recovery).some((v) => !Number.isSafeInteger(v) || v <= 0))
+  if (
+    [recovery.maxDisconnectMs, recovery.retryDelayMs, recovery.maxJournalBytes].some(
+      (v) => !Number.isSafeInteger(v) || v <= 0,
+    )
+  )
     throw new Error('Invalid SDK recovery configuration');
   if (recovery.maxDisconnectMs >= limits.rpcTimeoutMs)
     throw new Error('SDK recovery window must be shorter than the RPC timeout');
+  for (const [owner, route] of Object.entries(recovery.routes ?? {})) {
+    const url = new URL(route);
+    if (
+      !owner ||
+      owner.length > 128 ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      (url.protocol !== 'wss:' &&
+        !(url.protocol === 'ws:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))
+    )
+      throw new Error('Invalid SDK recovery owner route');
+  }
+  let ownerId: string | undefined;
   const sessionId = randomUUID();
   let connected = false;
   let connecting = false;
@@ -82,9 +101,9 @@ export async function connectRecoveringSdkSocket(options: {
   const connect = async () => {
     if (socket.readyState !== WebSocket.OPEN || connecting) return;
     connecting = true;
-    const wire = new WebSocket(options.url, {
+    const wire = new WebSocket(ownerId ? recovery.routes![ownerId] : options.url, {
       headers: {
-        Authorization: `Bearer ${options.token({ sessionId, after: socket.cursor, resume: connected, generation: options.generation })}`,
+        Authorization: `Bearer ${options.token({ sessionId, after: socket.cursor, resume: connected, ownerId, generation: options.generation })}`,
       },
       handshakeTimeout: Math.min(limits.connectTimeoutMs, Math.max(1, deadline - Date.now())),
       maxPayload: limits.maxFrameBytes + RECOVERY_HEADER_BYTES,
@@ -95,57 +114,70 @@ export async function connectRecoveringSdkSocket(options: {
     const early: WebSocket.RawData[] = [];
     let earlyBytes = 0;
     try {
-      const ready = await new Promise<{ connection: string; received: number }>((yes, no) => {
-        const timer = setTimeout(
-          () => no(new Error('SDK recovery handshake timed out')),
-          Math.min(limits.connectTimeoutMs, Math.max(1, deadline - Date.now())),
-        );
-        const cleanup = (keepMessage = false) => {
-          clearTimeout(timer);
-          if (!keepMessage) wire.removeListener('message', message);
-          wire.removeListener('close', closed);
-          wire.removeListener('error', closed);
-        };
-        const closed = () => {
-          cleanup();
-          no(new Error('SDK recovery handshake failed'));
-        };
-        let readySeen = false;
-        const message = (raw: WebSocket.RawData) => {
-          if (readySeen) {
-            earlyBytes += Buffer.byteLength(raw.toString());
-            if (earlyBytes > limits.maxBufferedBytes) wire.terminate();
-            else early.push(raw);
-            return;
-          }
-          try {
-            const frame = z
-              .object({
-                version: z.literal(1),
-                kind: z.literal('ready'),
-                sessionId: z.literal(sessionId),
-                connection: z.string().uuid(),
-                received: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-              })
-              .parse(JSON.parse(raw.toString()));
-            readySeen = true;
-            cleanup(true);
-            handoff = () => wire.removeListener('message', message);
-            yes(frame);
-          } catch {
+      const ready = await new Promise<{ connection: string; received: number; ownerId?: string }>(
+        (yes, no) => {
+          const timer = setTimeout(
+            () => no(new Error('SDK recovery handshake timed out')),
+            Math.min(limits.connectTimeoutMs, Math.max(1, deadline - Date.now())),
+          );
+          const cleanup = (keepMessage = false) => {
+            clearTimeout(timer);
+            if (!keepMessage) wire.removeListener('message', message);
+            wire.removeListener('close', closed);
+            wire.removeListener('error', closed);
+          };
+          const closed = () => {
             cleanup();
-            no(new Error('Invalid SDK recovery handshake'));
-          }
-        };
-        wire.on('message', message);
-        wire.once('close', closed);
-        wire.once('error', closed);
-      });
+            no(new Error('SDK recovery handshake failed'));
+          };
+          let readySeen = false;
+          const message = (raw: WebSocket.RawData) => {
+            if (readySeen) {
+              earlyBytes += Buffer.byteLength(raw.toString());
+              if (earlyBytes > limits.maxBufferedBytes) wire.terminate();
+              else early.push(raw);
+              return;
+            }
+            try {
+              const frame = z
+                .object({
+                  version: z.literal(1),
+                  kind: z.literal('ready'),
+                  ownerId: z.string().min(1).max(128).optional(),
+                  sessionId: z.literal(sessionId),
+                  connection: z.string().uuid(),
+                  received: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+                })
+                .parse(JSON.parse(raw.toString()));
+              readySeen = true;
+              cleanup(true);
+              handoff = () => wire.removeListener('message', message);
+              yes(frame);
+            } catch {
+              cleanup();
+              no(new Error('Invalid SDK recovery handshake'));
+            }
+          };
+          wire.on('message', message);
+          wire.once('close', closed);
+          wire.once('error', closed);
+        },
+      );
       if (wire.readyState !== WebSocket.OPEN) throw new Error('SDK recovery handshake closed');
       if (socket.readyState !== WebSocket.OPEN) {
         wire.terminate();
         return;
       }
+      if (
+        (ownerId && ready.ownerId !== ownerId) ||
+        (ready.ownerId &&
+          !Object.prototype.hasOwnProperty.call(recovery.routes ?? {}, ready.ownerId)) ||
+        (recovery.routes && !ready.ownerId)
+      ) {
+        failed(new Error('SDK recovery owner route unavailable'));
+        return;
+      }
+      ownerId = ready.ownerId;
       connected = true;
       options.signal?.removeEventListener('abort', initialAbort);
       socket.attach(wire, ready.connection, ready.received);

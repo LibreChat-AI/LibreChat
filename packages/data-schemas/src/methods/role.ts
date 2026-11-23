@@ -102,6 +102,12 @@ export function createRoleMethods(
     updates: Partial<IRole>,
     options?: { id?: string },
   ) => Promise<IRole>;
+  setRolePermissions: (
+    roleName: string,
+    permissionType: string,
+    flags: Record<string, boolean>,
+    options?: { id?: string; seed?: Record<string, boolean> },
+  ) => Promise<IRole | null>;
   updateAccessPermissions: (
     roleName: string,
     permissionsUpdate: Record<string, Record<string, boolean>>,
@@ -257,7 +263,8 @@ export function createRoleMethods(
     roleName: string,
     fieldsToSelect: string | string[] | null = null,
   ): Promise<IRole> {
-    const cache = deps.getCache?.(CacheKeys.ROLES);
+    const store = deps.getCache?.(CacheKeys.ROLES);
+    const cache = store?.snapshot ? await store.snapshot() : store;
     try {
       if (cache) {
         const cachedRole = await cache.get(scopedCacheKey(roleName));
@@ -267,6 +274,9 @@ export function createRoleMethods(
       }
       const Role = mongoose.models.Role;
       let query = Role.findOne(roleDocumentFilter(roleName, 'getRoleByName'));
+      if (cache?.primaryReads) {
+        query = query.read('primary');
+      }
       if (fieldsToSelect) {
         query = query.select(fieldsToSelect);
       }
@@ -292,12 +302,14 @@ export function createRoleMethods(
    * The role named exactly `roleName` in the caller's tenant partition (`tenantPartitionFilter`),
    * as the admin roles API addresses it: never a tenant's role of the same name outside that
    * tenant. A system role with no document there is created there, as {@link getRoleByName}
-   * creates it. Reads no cache, so an admin read never returns another partition's cached role.
+   * creates it. Reads no cache, so an admin read never returns another partition's cached role,
+   * and reads the primary, so a read after a write returns what the write committed.
    */
   async function getPartitionRole(roleName: string): Promise<IRole | null> {
     const Role = mongoose.models.Role as Model<IRole>;
     const read = () =>
       Role.findOne(roleDocumentFilter(roleName, 'getPartitionRole'))
+        .read('primary')
         .select('-__v')
         .lean<IRole>()
         .exec();
@@ -412,6 +424,45 @@ export function createRoleMethods(
       updateError.cause = error;
       throw updateError;
     }
+  }
+
+  /**
+   * Sets the given flags of one permission type on the role named `roleName`, as
+   * {@link updateRoleByName} matches it, each flag by its own path: a concurrent write to another
+   * permission type or flag of the same role is kept. `options.seed` (a type's legacy flags) is
+   * written as the type's permissions only while the role has none for it, before the flags, so
+   * concurrent seeds never undo each other's flags. Invalidates the cached role. Returns the
+   * updated role, or `null` when no role matches.
+   */
+  async function setRolePermissions(
+    roleName: string,
+    permissionType: string,
+    flags: Record<string, boolean>,
+    options?: { id?: string; seed?: Record<string, boolean> },
+  ): Promise<IRole | null> {
+    const set: Record<string, boolean> = {};
+    for (const [flag, value] of Object.entries(flags)) {
+      set[`permissions.${permissionType}.${flag}`] = value;
+    }
+    const Role = mongoose.models.Role;
+    const filter = roleDocumentFilter(roleName, 'setRolePermissions', options?.id);
+    const path = `permissions.${permissionType}`;
+    if (options?.seed) {
+      await Role.updateOne(
+        { ...filter, [path]: { $exists: false } },
+        { $set: { [path]: options.seed } },
+      );
+    }
+    const query = Object.keys(set).length
+      ? Role.findOneAndUpdate(filter, { $set: set }, { new: true })
+      : Role.findOne(filter);
+    const role = await query.select('-__v').lean<IRole>().exec();
+    const cache = deps.getCache?.(CacheKeys.ROLES);
+    if (cache) {
+      /** Invalidate rather than publish: a slower concurrent write would cache a stale role. */
+      await cache.set(scopedCacheKey(roleName), null);
+    }
+    return role;
   }
 
   /**
@@ -876,6 +927,7 @@ export function createRoleMethods(
     getPartitionRole,
     findRolesByNames,
     updateRoleByName,
+    setRolePermissions,
     updateAccessPermissions,
     createRoleByName,
     deleteRoleByName,

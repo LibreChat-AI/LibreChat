@@ -1,5 +1,17 @@
 /** Themed message and part components. Populated as the components move in. */
 export { Part } from './components/Part';
+export { partRenderers, extendPartRenderers } from './components/partRenderers';
+export { ParallelColumns, ParallelContentRenderer } from './components/Parallel';
+export {
+  withFullToolCall,
+  PreviewedToolCallPart,
+  isPreviewedToolCallPart,
+} from './components/parts/hydration';
+export type {
+  ParallelColumnsProps,
+  ParallelColumnHeaderProps,
+  ParallelContentRendererProps,
+} from './components/Parallel';
 export { default as Text } from './components/Text';
 export { default as Summary } from './components/Summary';
 export { default as EmptyText } from './components/EmptyText';
@@ -14,7 +26,17 @@ export type {
   PartRenderers,
   PartRenderProps,
   ToolRenderProps,
-} from './components/Part';
+} from './components/partTypes';
+
+export {
+  AnimatedText,
+  createFadePlugin,
+  FADE_DURATION_MS,
+  FADE_STAGGER_MS,
+  FADE_STAGGER_MAX_MS,
+  FADE_HYDRATION_THRESHOLD,
+} from './components/fade';
+export type { FadePlugin } from './components/fade';
 
 /** Composer: the chat input, its controls and the steering queue. */
 export { default as BrowserAudio } from './components/composer/Audio';
@@ -129,6 +151,8 @@ export { getMessageAriaLabel, getHeaderPrefixForScreenReader } from './component
 export { default as PhaseLabel, FOLD_EASING } from './components/parts/PhaseLabel';
 export { default as ToolGroupHeader } from './components/parts/group/Header';
 export type { ToolGroupHeaderProps } from './components/parts/group/Header';
+export { default as ToolGroupBody } from './components/parts/group/Body';
+export type { ToolGroupBodyProps } from './components/parts/group/Body';
 
 /** Parts: the leaf components and row classes tool cards share. */
 export { default as Stdout } from './components/parts/Stdout';
@@ -174,6 +198,35 @@ export type { DiffLine, ParsedDiff, TextEditPreview } from './components/parts/D
 export { default as Container } from './components/parts/Container';
 export { default as MemoryInfo } from './components/parts/MemoryInfo';
 export { default as DialogImage } from './components/parts/DialogImage';
+export { default as Image } from './components/parts/Image';
+export { default as CodeAnalyze } from './components/parts/CodeAnalyze';
+export { default as ImageGen } from './components/parts/ImageGen';
+export type { ImageGenProps } from './components/parts/ImageGen';
+export type { CodeAnalyzeProps } from './components/parts/CodeAnalyze';
+export { default as CodeBlock } from './components/parts/CodeBlock';
+export { default as CodeBar } from './components/parts/CodeBar';
+export { default as DownloadButton } from './components/parts/DownloadButton';
+export { default as useCopyCode } from './components/parts/useCopyCode';
+export { default as useDownloadCode } from './components/parts/useDownloadCode';
+export type { CodeBlockProps } from './components/parts/CodeBlock';
+export type { CodeBarProps, RunCodeProps } from './components/parts/CodeBar';
+export { markdownElements, markdownPreviewElements } from './components/markdown/elements';
+export { default as MarkdownBlocks } from './components/markdown/Blocks';
+export { default as MarkdownLite } from './components/markdown/Lite';
+export { default as MarkdownErrorBoundary } from './components/markdown/Boundary';
+export { default as Markdown } from './components/markdown/Markdown';
+export {
+  BASE_REMARK,
+  MATH_REMARK,
+  rehypeList,
+  replyRemark,
+  remarkSupersub,
+} from './components/markdown/plugins';
+export type { MarkdownProps } from './components/markdown/Markdown';
+export type { MarkdownBlocksProps } from './components/markdown/Blocks';
+export type { MarkdownLiteProps } from './components/markdown/Lite';
+export type { MarkdownErrorBoundaryProps } from './components/markdown/Boundary';
+export type { ImageProps } from './components/parts/Image';
 export { default as PendingSkillCall } from './components/parts/PendingSkillCall';
 export { default as ToolCallLimitNotice } from './components/parts/ToolCallLimitNotice';
 export { default as ToolCall } from './components/parts/ToolCall';
@@ -251,7 +304,8 @@ export type { ChatPaneView, ChatPaneColumn } from './components/pane/view';
 export { default as ChatScreen } from './components/pane/Screen';
 export { default as ChatStarters } from './components/pane/starters';
 export { getChatPaneChrome } from './components/pane/chrome';
-export { loadScreenMessages } from './components/pane/load';
+export { loadScreenMessages, loadFollowedThread } from './components/pane/load';
+export type { FollowedThreadProps } from './components/pane/Followed';
 export type {
   ChatScreenProps,
   ChatScreenComposerProps,
@@ -294,6 +348,7 @@ export {
 export { default as SubagentConversation } from './components/subagents/conversation';
 export { default as SharedSubagentActivityDialog } from './components/subagents/shared';
 export { loadSubagentThreadPanel } from './components/subagents/load';
+export { loadSideChatPanel } from './components/side/load';
 
 /** Part helpers moved from the app: copy and action buttons, language icons, expand/collapse. */
 export {
@@ -304,9 +359,54 @@ export {
 export { default as CopyButton } from './components/parts/CopyButton';
 export { default as ActionButton } from './components/parts/ActionButton';
 export { default as LangIcon, hasLangIcon } from './components/parts/LangIcon';
+export {
+  default as ToolIcon,
+  getToolIconType,
+  getMCPServerName,
+} from './components/parts/ToolIcon';
+export type { ToolIconType, ToolIconProps } from './components/parts/ToolIcon';
+export { default as StackedToolIcons } from './components/parts/StackedToolIcons';
+export { default as ActivityPhaseGroup } from './components/parts/ActivityPhaseGroup';
+export type { ActivityPhaseGroupProps } from './components/parts/ActivityPhaseGroup';
+export { default as ToolCallGroup } from './components/parts/ToolCallGroup';
+export type {
+  ToolCallGroupProps,
+  ToolCallGroupExpansionState,
+} from './components/parts/ToolCallGroup';
+export type { StackedToolIconsProps } from './components/parts/StackedToolIcons';
+export { default as FaviconImage } from './components/parts/Favicon';
+export { default as OutputRenderer } from './components/parts/OutputRenderer';
+export type { OutputRendererProps, OutputSegment } from './components/parts/OutputRenderer';
+export { default as ToolCallInfo } from './components/parts/ToolCallInfo';
+export { default as CommandTime, useCommandClock } from './components/parts/CommandTime';
+export { default as CodeWindowHeader } from './components/parts/CodeWindowHeader';
+export type { CodeWindowHeaderProps } from './components/parts/CodeWindowHeader';
+export { default as MemoryCall } from './components/parts/MemoryCall';
+export { default as MemoryArtifacts, hasMemoryArtifacts } from './components/parts/MemoryArtifacts';
+export { default as SkillCall } from './components/parts/SkillCall';
+export { default as AgentHandoff } from './components/parts/AgentHandoff';
+export { default as ReadFileCall, langFromPath } from './components/parts/ReadFileCall';
+export { default as FileAuthoringCall } from './components/parts/FileAuthoringCall';
+export { default as PtcToolTrace } from './components/parts/PtcToolTrace';
+export { default as BashCall } from './components/parts/BashCall';
+export { default as BackgroundTaskCard } from './components/parts/BackgroundTaskCard';
+export { default as BackgroundTaskCall } from './components/parts/BackgroundTaskCall';
+export {
+  default as ExecuteCode,
+  useParseArgs,
+  ERROR_PATTERNS,
+} from './components/parts/ExecuteCode';
+export {
+  default as useLazyHighlight,
+  HIGHLIGHT_THROTTLE_MS,
+  CodeHighlightThrottleContext,
+  normalizeCodeHighlightThrottleMs,
+} from './components/parts/useLazyHighlight';
+export { default as useToolCallState } from './components/parts/useToolCallState';
+export type { ToolCallState, UseToolCallStateInput } from './components/parts/useToolCallState';
 export { default as Attachment, AttachmentGroup } from './components/parts/Attachment';
 export { default as RetrievalCall } from './components/parts/Retrieval';
-export type { RetrievalCallProps, RetrievalProgress } from './components/parts/Retrieval';
+export type { RetrievalCallProps } from './components/parts/Retrieval';
 export {
   bySalience,
   byEntrySalience,
@@ -353,14 +453,29 @@ export {
   StreamingThoughtPeek,
 } from './components/parts/Reasoning';
 export { default as WebSearch } from './components/parts/WebSearch';
-export type {
-  WebSearchFailedCall,
-  WebSearchFaviconProps,
-  WebSearchStackProps,
-} from './components/parts/WebSearch';
+export type { WebSearchFailedCall, WebSearchStackProps } from './components/parts/WebSearch';
 export {
   collectSources,
   getCleanDomain,
   getSourceDomains,
   getUniqueDomainSources,
 } from './components/parts/sources';
+
+export { HiddenAttachmentsContext, useVisibleAttachments } from './components/parts/media';
+/** Phase header presentation; hosts retain live activity and fold state. */
+export { default as PhaseMarker, PhaseGlyph } from './components/parts/phase/Marker';
+export type { PhaseMarkerProps, PhaseGlyphProps } from './components/parts/phase/Marker';
+export { default as LivePhaseHeader } from './components/parts/phase/Live';
+export type { LivePhaseHeaderProps } from './components/parts/phase/Live';
+export {
+  getLiveActivity,
+  blocksLiveFold,
+  getSpanIconNames,
+  LIVE_ACTIVITY_THROTTLE_MS,
+  LIVE_REASONING_HOLD_MS,
+} from './components/parts/phase/activity';
+export type { LiveActivity } from './components/parts/phase/activity';
+/** Which calls each fold holds, so a reader can open the fold around one call. */
+export { recordFold, useFoldParts, foldHolds } from './components/parts/fold';
+export { HeaderActionSlotContext } from './components/parts/slot';
+export { default as SearchVerticals } from './components/parts/verticals';

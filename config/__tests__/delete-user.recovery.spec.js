@@ -231,14 +231,14 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
             itemType: 'tool',
             itemId: 'after-recovery',
           });
-        const add =
+        const add = () =>
           origin === 'tenant'
             ? schemas.tenantStorage.run({ tenantId: 'tenant-a' }, addFavorite)
             : addFavorite();
         if (outcome === 'cancel') {
           expect((await owned(id)).agentTriggerDeletionStartedAt).toBeUndefined();
           expect((await owned(id)).agentTriggerDeletionAttemptId).toBeUndefined();
-          await expect(add).resolves.toEqual({ ok: true, added: true });
+          await expect(add()).resolves.toEqual({ ok: true, added: true });
           expect(
             (
               await db.query(
@@ -249,7 +249,7 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
           ).toEqual([]);
         } else {
           expect(await owned(id)).toBeNull();
-          await expect(add).rejects.toThrow('erasure');
+          await expect(add()).rejects.toThrow('erasure');
         }
       } finally {
         await restarted.close();

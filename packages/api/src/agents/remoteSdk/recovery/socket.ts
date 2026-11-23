@@ -34,6 +34,9 @@ const header = z.discriminatedUnion('kind', [
 ]);
 export interface RecoveryLog {
   append(id: string, payload: string): Promise<number>;
+  appendBatch?(id: string, payloads: string[]): Promise<{ first: number; last: number }>;
+  maxBatchFrames?: number;
+  maxBatchBytes?: number;
   read(after: number): Promise<Array<{ sequence: number; payload: string }>>;
   acknowledge(sequence: number): Promise<void>;
   head(): number;
@@ -71,7 +74,16 @@ export class RecoverySocket extends EventEmitter {
   private wire?: WebSocket;
   private connection?: string;
   private tail = Promise.resolve();
-  private incoming = Promise.resolve();
+  private pendingFrames: Array<{
+    kind: 'data' | 'end';
+    payload: string;
+    encoded: string;
+    bytes: number;
+  }> = [];
+
+  private scheduled = false;
+  private acknowledgement?: Promise<void>;
+  private requestedAck = 0;
   private received = 0;
   private acknowledged = 0;
   private queuedBytes = 0;
@@ -140,26 +152,76 @@ export class RecoverySocket extends EventEmitter {
     this.wire!.send(data);
   }
 
-  private queue(kind: 'data' | 'end', payload: string): void {
-    const bytes = Buffer.byteLength(payload);
-    if (
-      bytes > this.options.maxFrameBytes ||
-      this.bufferedAmount + bytes > this.options.maxBufferedBytes
-    ) {
-      throw new Error('SDK recovery frame capacity exceeded');
-    }
-    this.queuedBytes += bytes;
-    const id = randomUUID();
+  private scheduleFlush(): void {
+    if (this.scheduled || this.closed || !this.pendingFrames.length) return;
+    this.scheduled = true;
     this.tail = this.tail
       .then(async () => {
-        const sequence = await this.options.log.append(id, JSON.stringify({ kind, payload }));
-        if (kind === 'end') this.endSequence = sequence;
-        if (!this.replaying) this.publish(kind, sequence, payload);
+        const maxFrames = this.options.log.appendBatch ? (this.options.log.maxBatchFrames ?? 1) : 1;
+        const maxBytes = this.options.log.maxBatchBytes ?? this.options.maxBufferedBytes;
+        let count = 0;
+        let bytes = 0;
+        for (const frame of this.pendingFrames) {
+          if (count >= maxFrames || (count > 0 && bytes + frame.bytes > maxBytes)) break;
+          count++;
+          bytes += frame.bytes;
+        }
+        const batch = this.pendingFrames.splice(0, count);
+        if (!batch.length) return;
+        try {
+          const id = randomUUID();
+          const range = this.options.log.appendBatch
+            ? await this.options.log.appendBatch(
+                id,
+                batch.map((f) => f.encoded),
+              )
+            : { first: await this.options.log.append(id, batch[0].encoded) };
+          for (let index = 0; index < batch.length; index++) {
+            const frame = batch[index];
+            const sequence = range.first + index;
+            if (frame.kind === 'end') this.endSequence = sequence;
+            if (!this.replaying) this.publish(frame.kind, sequence, frame.payload);
+          }
+        } finally {
+          this.queuedBytes -= bytes;
+        }
+      })
+      .catch(this.fail)
+      .finally(() => {
+        this.scheduled = false;
+        this.scheduleFlush();
+      });
+  }
+
+  private queue(kind: 'data' | 'end', payload: string): void {
+    const encoded = JSON.stringify({ kind, payload });
+    const bytes = Buffer.byteLength(encoded);
+    if (
+      Buffer.byteLength(payload) > this.options.maxFrameBytes ||
+      this.bufferedAmount + bytes > this.options.maxBufferedBytes
+    )
+      throw new Error('SDK recovery frame capacity exceeded');
+    this.queuedBytes += bytes;
+    this.pendingFrames.push({ kind, payload, encoded, bytes });
+    this.scheduleFlush();
+  }
+
+  private persistAcknowledgement(): void {
+    if (this.acknowledgement || this.closed || this.requestedAck <= this.acknowledged) return;
+    this.acknowledgement = Promise.resolve()
+      .then(async () => {
+        const sequence = this.requestedAck;
+        await this.options.log.acknowledge(sequence);
+        this.acknowledged = sequence;
+        if (this.endSequence != null && sequence >= this.endSequence) this.terminate();
+      })
+      .catch((error) => {
+        if (!this.closed) this.fail(error);
       })
       .finally(() => {
-        this.queuedBytes -= bytes;
-      })
-      .catch(this.fail);
+        this.acknowledgement = undefined;
+        this.persistAcknowledgement();
+      });
   }
 
   send(data: string): void {
@@ -181,6 +243,8 @@ export class RecoverySocket extends EventEmitter {
   terminate(): void {
     if (this.closed) return;
     this.closed = true;
+    for (const frame of this.pendingFrames) this.queuedBytes -= frame.bytes;
+    this.pendingFrames.length = 0;
     this.generation++;
     this.wire?.terminate();
     this.wire = undefined;
@@ -189,7 +253,9 @@ export class RecoverySocket extends EventEmitter {
   }
 
   async flush(): Promise<void> {
-    await this.tail;
+    do {
+      await this.tail;
+    } while (!this.closed && (this.scheduled || this.pendingFrames.length));
     if (this.failure) throw this.failure;
   }
 
@@ -217,55 +283,55 @@ export class RecoverySocket extends EventEmitter {
     wire.once('error', detached);
     wire.on('message', (raw) => {
       if (generation !== this.generation || this.closed) return;
-      this.incoming = this.incoming
-        .then(async () => {
-          if (generation !== this.generation || this.closed) return;
-          const text = raw.toString();
-          const split = text.indexOf('\n');
-          if (split < 0 || Buffer.byteLength(text.slice(0, split)) > RECOVERY_HEADER_BYTES)
-            throw new Error('Invalid SDK recovery envelope');
-          const frame = header.parse(JSON.parse(text.slice(0, split)));
-          const payload = text.slice(split + 1);
-          if (
-            frame.connection !== this.connection ||
-            Buffer.byteLength(payload) > this.options.maxFrameBytes
-          )
-            throw new Error('Invalid SDK recovery frame');
-          if (frame.kind === 'failure') {
-            if (frame.sequence !== this.received)
-              throw new Error('SDK recovery terminal cursor mismatch');
-            this.emit('message', Buffer.from('{"type":"error"}'));
-            return;
-          }
-          if (frame.kind === 'ack') {
-            if (frame.sequence > this.options.log.head())
-              throw new Error('SDK recovery cursor is ahead');
-            if (frame.sequence > this.acknowledged) {
-              await this.options.log.acknowledge(frame.sequence);
-              this.acknowledged = frame.sequence;
-            }
-            if (this.endSequence != null && frame.sequence >= this.endSequence) this.terminate();
-            return;
-          }
-          if (frame.sequence <= this.received) {
-            this.publish('ack', this.received);
-            return;
-          }
-          if (frame.sequence !== this.received + 1) throw new Error('SDK recovery sequence gap');
-          this.received = frame.sequence;
-          if (frame.kind === 'end') {
-            this.publish('ack', this.received);
-            // Allow the acknowledgement to leave before closing the physical connection.
-            this.closed = true;
-            this.endResolve?.();
-            this.emit('close');
-            wire.close(1000);
-          } else {
-            this.emit('message', Buffer.from(payload));
-            this.publish('ack', this.received);
-          }
-        })
-        .catch(this.fail);
+      // No async receive queue: durable ACK bookkeeping must not retain raw frames or
+      // delay cancellation. The SDK peer bounds outstanding event/RPC handler work.
+      try {
+        const text = raw.toString();
+        if (Buffer.byteLength(text) > this.options.maxBufferedBytes)
+          throw new Error('SDK recovery receive capacity exceeded');
+        const split = text.indexOf('\n');
+        if (split < 0 || Buffer.byteLength(text.slice(0, split)) > RECOVERY_HEADER_BYTES)
+          throw new Error('Invalid SDK recovery envelope');
+        const frame = header.parse(JSON.parse(text.slice(0, split)));
+        const payload = text.slice(split + 1);
+        if (
+          frame.connection !== this.connection ||
+          Buffer.byteLength(payload) > this.options.maxFrameBytes
+        )
+          throw new Error('Invalid SDK recovery frame');
+        if (frame.kind === 'failure') {
+          if (frame.sequence !== this.received)
+            throw new Error('SDK recovery terminal cursor mismatch');
+          this.emit('message', Buffer.from('{"type":"error"}'));
+          return;
+        }
+        if (frame.kind === 'ack') {
+          if (frame.sequence > this.options.log.head())
+            throw new Error('SDK recovery cursor is ahead');
+          this.requestedAck = Math.max(this.requestedAck, frame.sequence);
+          this.persistAcknowledgement();
+          return;
+        }
+        if (frame.sequence <= this.received) {
+          this.publish('ack', this.received);
+          return;
+        }
+        if (frame.sequence !== this.received + 1) throw new Error('SDK recovery sequence gap');
+        this.received = frame.sequence;
+        if (frame.kind === 'end') {
+          this.publish('ack', this.received);
+          // Allow the acknowledgement to leave before closing the physical connection.
+          this.closed = true;
+          this.endResolve?.();
+          this.emit('close');
+          wire.close(1000);
+        } else {
+          this.emit('message', Buffer.from(payload));
+          this.publish('ack', this.received);
+        }
+      } catch (error) {
+        this.fail(error);
+      }
     });
     if (ready) wire.send(ready);
     // Serialize replay with publication so new live frames cannot overtake its prefix.
@@ -275,7 +341,7 @@ export class RecoverySocket extends EventEmitter {
         let cursor = after;
         while (generation === this.generation && this.hasWire) {
           const frames = await this.options.log.read(cursor);
-          if (!frames.length) break;
+          if (generation !== this.generation || !this.hasWire || !frames.length) break;
           for (const frame of frames) {
             const entry = z
               .object({ kind: z.enum(['data', 'end']), payload: z.string() })

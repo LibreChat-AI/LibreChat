@@ -160,7 +160,7 @@ function ToolCardImpl({
                   aria-hidden="true"
                   className={cn('size-2 shrink-0 rounded-full', status.tone)}
                 />
-                <span className="truncate">{status.label}</span>
+                {status.label && <span className="truncate">{status.label}</span>}
               </p>
             ) : (
               <p className="text-text-secondary text-2xs truncate tracking-wide uppercase">

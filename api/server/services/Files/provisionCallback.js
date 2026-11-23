@@ -1,5 +1,9 @@
 const { createProvisionFilesCallback: createCallback } = require('@librechat/api');
-const { provisionToCodeEnv, provisionToVectorDB } = require('~/server/services/Files/provision');
+const {
+  provisionToCodeEnv,
+  provisionBatchToCodeEnv,
+  provisionToVectorDB,
+} = require('~/server/services/Files/provision');
 const db = require('~/models');
 const { getFileStorage } = require('~/server/services/Files/operations');
 
@@ -18,6 +22,7 @@ function createProvisionFilesCallback({
     resolveExecutionContext,
     fileStorage: getFileStorage(),
     provisionToCodeEnv,
+    provisionBatchToCodeEnv,
     provisionToVectorDB,
     updateFile: db.updateFile,
     updateCodeEnvRef: db.updateFileCodeEnvRef,

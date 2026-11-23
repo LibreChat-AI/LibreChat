@@ -272,4 +272,87 @@ describe('getMessagesByCursor', () => {
       expect(winning.includes('COLLSCAN')).toBe(false);
     }
   });
+
+  describe('with a byte budget', () => {
+    /** Rows a second apart, oldest first, each holding `bytes` of text. */
+    async function seedSized(conversationId: string, sizes: number[]): Promise<string[]> {
+      const rows = sizes.map((bytes, index) => ({
+        messageId: `m-${index}-${uuid()}`,
+        conversationId,
+        user: 'user-1',
+        text: 'x'.repeat(bytes),
+        isCreatedByUser: false,
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)),
+        updatedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)),
+      }));
+      await mongoose.models.Message.collection.insertMany(rows);
+      return rows.map((row) => row.messageId);
+    }
+    const KB = 1024;
+
+    it('stops a page before the row that would pass the budget, and pages on without skips', async () => {
+      const conversationId = uuid();
+      const seeded = await seedSized(conversationId, Array(7).fill(200 * KB));
+      const pages: string[][] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < 20; page++) {
+        const result = await methods.getMessagesByCursor(
+          { conversationId, user: 'user-1' },
+          { limit: 50, cursor, select: CLIENT_MESSAGE_SELECT, maxBytes: 500 * KB },
+        );
+        pages.push(result.messages.map((message) => message.messageId));
+        if (result.nextCursor == null) {
+          break;
+        }
+        cursor = result.nextCursor;
+      }
+
+      /** Two rows of 200 KB fit 500 KB; a third does not. Newest first, nothing skipped. */
+      expect(pages.map((page) => page.length)).toEqual([2, 2, 2, 1]);
+      expect(pages.flat()).toEqual([...seeded].reverse());
+    });
+
+    it('returns one row that is itself over the budget, and says more follow', async () => {
+      const conversationId = uuid();
+      const seeded = await seedSized(conversationId, [10 * KB, 900 * KB]);
+
+      const first = await methods.getMessagesByCursor(
+        { conversationId, user: 'user-1' },
+        { limit: 50, maxBytes: 100 * KB },
+      );
+      expect(first.messages.map((message) => message.messageId)).toEqual([seeded[1]]);
+      expect(first.nextCursor).not.toBeNull();
+
+      const rest = await methods.getMessagesByCursor(
+        { conversationId, user: 'user-1' },
+        { limit: 50, maxBytes: 100 * KB, cursor: first.nextCursor },
+      );
+      expect(rest.messages.map((message) => message.messageId)).toEqual([seeded[0]]);
+      expect(rest.nextCursor).toBeNull();
+    });
+
+    it('still stops at the row limit when the budget has room', async () => {
+      const conversationId = uuid();
+      await seedSized(conversationId, Array(5).fill(KB));
+
+      const page = await methods.getMessagesByCursor(
+        { conversationId, user: 'user-1' },
+        { limit: 3, maxBytes: 500 * KB },
+      );
+      expect(page.messages).toHaveLength(3);
+      expect(page.nextCursor).not.toBeNull();
+    });
+
+    it('reads a conversation whole when it fits both bounds', async () => {
+      const conversationId = uuid();
+      const seeded = await seedSized(conversationId, Array(4).fill(KB));
+
+      const page = await methods.getMessagesByCursor(
+        { conversationId, user: 'user-1' },
+        { limit: 50, maxBytes: 500 * KB },
+      );
+      expect(page.messages.map((message) => message.messageId)).toEqual([...seeded].reverse());
+      expect(page.nextCursor).toBeNull();
+    });
+  });
 });

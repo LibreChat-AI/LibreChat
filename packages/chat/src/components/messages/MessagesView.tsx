@@ -6,9 +6,12 @@ import type { TMessage } from 'librechat-data-provider';
 import type { MessagesScrollButtonProps } from './ScrollButton';
 import type { MessagesThreadProps } from './thread/Thread';
 import {
+  createRowGates,
   RowMountProvider,
   useProgressiveRowMount,
+  pinsByHand,
 } from '../../react/messages/useProgressiveRowMount';
+import { OffscreenRowsProvider, useOffscreenRows } from '../../react/messages/offscreen';
 import useMessageScrolling from '../../react/messages/useMessageScrolling';
 import useConversationSeen from '../../react/messages/useConversationSeen';
 import useScrollbarGutter from '../../react/messages/useScrollbarGutter';
@@ -33,6 +36,12 @@ export type MessagesViewProps = {
   maximizeChatSpace: boolean;
   /** Renders the thread as a flat row list (the default) or, when `false`, as a recursive tree. */
   flatThread?: boolean;
+  /**
+   * Whether this is the page's main list, which owns the `messages-end` id and the screenshot
+   * target that the app and its tests look up page-wide. A list mounted beside it passes `false`
+   * and leaves both to the main one.
+   */
+  primary?: boolean;
   /** Renders the conversation's rows; the package thread by default. */
   renderThread?: (props: MessagesThreadProps) => ReactNode;
   /** Renders the turn the reader just sent, ahead of its reply, at the thread's tail. */
@@ -97,6 +106,7 @@ export default function MessagesView({
   showScrollButton,
   maximizeChatSpace,
   flatThread,
+  primary = true,
   renderThread = renderDefaultThread,
   renderPendingTurn: renderPendingTurnSlot,
   renderPendingSteers: renderPendingSteersSlot,
@@ -135,6 +145,7 @@ export default function MessagesView({
     handleSmoothToRef,
     debouncedHandleScroll,
     handleNearBottomChange,
+    handleInsertAbove,
   } = useMessageScrolling({
     messagesTree,
     conversationId,
@@ -145,6 +156,7 @@ export default function MessagesView({
   });
 
   useScrollbarGutter(scrollableRef);
+  const observeRow = useOffscreenRows(scrollableRef);
 
   /** Re-arm from the conversation that owns the RENDERED tree: the app's conversation id lags
    *  the route during warm-cache navigation, and keying off it would first mount the new tree
@@ -200,12 +212,15 @@ export default function MessagesView({
     [handleNearBottomChange, reportNearBottom],
   );
 
+  const [gates] = useState(createRowGates);
   const mountWindow = useProgressiveRowMount({
     tailDepth: latestMessageDepth,
     anchorBottom: autoScroll || isSubmitting,
     isSubmitting,
     conversationId: treeConversationId,
     scrollableRef,
+    gates,
+    onInsertAbove: handleInsertAbove,
   });
   useEffect(() => {
     const isNearBottom = measureNearBottom();
@@ -222,12 +237,13 @@ export default function MessagesView({
   return (
     <div className="relative flex-1 overflow-hidden overflow-y-auto">
       <div className="relative h-full">
-        {/* The mount hook pins the anchor row itself (document-space measurement); native
-            scroll anchoring reacting to the same insertions would double-correct. */}
+        {/* While the mount hook pins the anchor row itself (document-space measurement), the
+            browser's scroll anchoring is off: the two reacting to the same insertions would
+            double-correct. Otherwise the browser holds the reader and the hook stands down. */}
         <div
           className={cn(
             'h-full w-full scrollbar-gutter-stable overflow-y-auto',
-            mountWindow != null && '[overflow-anchor:none]',
+            mountWindow != null && pinsByHand(isSubmitting) && '[overflow-anchor:none]',
           )}
           onScroll={debouncedHandleScroll}
           ref={scrollableRef}
@@ -246,19 +262,21 @@ export default function MessagesView({
               <>
                 <div
                   key={treeConversationId}
-                  ref={screenshotTargetRef}
+                  ref={primary ? screenshotTargetRef : undefined}
                   data-conversation-id={treeConversationId}
-                  data-testid="screenshot-target"
+                  data-testid={primary ? 'screenshot-target' : undefined}
                 >
-                  <RowMountProvider mountWindow={mountWindow}>
-                    {renderThread({
-                      messagesTree,
-                      messages,
-                      conversationId: treeConversationId,
-                      flat,
-                      currentEditId,
-                      setCurrentEditId,
-                    })}
+                  <RowMountProvider mountWindow={mountWindow} gates={gates}>
+                    <OffscreenRowsProvider observe={observeRow}>
+                      {renderThread({
+                        messagesTree,
+                        messages,
+                        conversationId: treeConversationId,
+                        flat,
+                        currentEditId,
+                        setCurrentEditId,
+                      })}
+                    </OffscreenRowsProvider>
                   </RowMountProvider>
                 </div>
                 {renderPendingTurn?.({ scrollableRef, messages, maximizeChatSpace })}
@@ -278,7 +296,11 @@ export default function MessagesView({
                 index,
                 fullWidth: maximizeChatSpace,
               })}
-            <div id="messages-end" className="group h-0 w-full shrink-0" ref={messagesEndRef} />
+            <div
+              id={primary ? 'messages-end' : undefined}
+              className="group h-0 w-full shrink-0"
+              ref={messagesEndRef}
+            />
           </div>
         </div>
 

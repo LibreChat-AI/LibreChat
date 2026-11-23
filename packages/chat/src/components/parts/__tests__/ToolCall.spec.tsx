@@ -16,6 +16,33 @@ import { MessagePartsHostProvider } from '../../../react/host';
 import { ToolAuthWarningContext } from '../auth';
 import ToolCall from '../ToolCall';
 
+jest.mock('../ProgressText', () => ({
+  __esModule: true,
+  default: ({
+    onClick,
+    inProgressText,
+    finishedText,
+    subtitle,
+  }: {
+    onClick?: () => void;
+    inProgressText?: string;
+    finishedText?: string;
+    subtitle?: string;
+  }) => (
+    <div data-testid="progress-text" onClick={onClick}>
+      {finishedText || inProgressText}
+      {subtitle ? <span data-testid="subtitle">{subtitle}</span> : null}
+    </div>
+  ),
+}));
+
+jest.mock('../ToolCallInfo', () => ({
+  __esModule: true,
+  default: (props: { input: string; output?: string | null }) => (
+    <div data-testid="tool-call-info">{JSON.stringify(props)}</div>
+  ),
+}));
+
 jest.mock('@librechat/client', () => {
   const { translate: localize } = jest.requireActual(
     '../../../__fixtures__/toolCallLocale',
@@ -41,29 +68,6 @@ function openUrl(url: string): void {
   link.remove();
 }
 
-function ProgressStub({
-  onClick,
-  inProgressText,
-  finishedText,
-  subtitle,
-}: {
-  onClick?: () => void;
-  inProgressText?: string;
-  finishedText?: string;
-  subtitle?: string;
-}) {
-  return (
-    <div data-testid="progress-text" onClick={onClick}>
-      {finishedText || inProgressText}
-      {subtitle ? <span data-testid="subtitle">{subtitle}</span> : null}
-    </div>
-  );
-}
-
-function InfoStub(props: { input: string; output?: string | null }) {
-  return <div data-testid="tool-call-info">{JSON.stringify(props)}</div>;
-}
-
 function AttachmentStub({ attachments }: { attachments?: unknown }) {
   return <div data-testid="attachment-group">{JSON.stringify(attachments)}</div>;
 }
@@ -76,9 +80,6 @@ const chrome: ToolCallChrome = {
   bindActionOAuth,
   openUrl,
   logError,
-  renderProgress: (props) => <ProgressStub {...props} />,
-  renderInfo: (props) => <InfoStub input={props.input} output={props.output} />,
-  renderIcon: () => null,
   renderAttachments: (attachments) => <AttachmentStub attachments={attachments} />,
 };
 

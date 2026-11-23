@@ -3,6 +3,7 @@ import { cn, useLocalize } from '@librechat/client';
 import type { TMessage } from 'librechat-data-provider';
 import type { NamedExoticComponent } from 'react';
 import type { SteerReceiptState } from '../composer/steering/Receipt';
+import { renderMarkdown as defaultRenderMarkdown } from '../renderers';
 import MessageTimestamp from '../messages/MessageTimestamp';
 import SteerReceipt from '../composer/steering/Receipt';
 import { useMessagePartsHost } from '../../react/host';
@@ -50,8 +51,13 @@ const SteerPart: NamedExoticComponent<SteerPartProps> = memo(function SteerPart(
   onExpand,
 }: SteerPartProps) {
   const localize = useLocalize();
-  const { useUser, useShare, renderMarkdown, useUserTextPreferences, useLiveAppliedSteer } =
-    useMessagePartsHost();
+  const {
+    useUser,
+    useShare,
+    useLiveAppliedSteer,
+    useUserTextPreferences,
+    renderMarkdown = defaultRenderMarkdown,
+  } = useMessagePartsHost();
   const user = useUser();
   const { isSharedConvo } = useShare();
   const { usernameDisplay, enableUserMsgMarkdown, collapseLongUserMessages } =

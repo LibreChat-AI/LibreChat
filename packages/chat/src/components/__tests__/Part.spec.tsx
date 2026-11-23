@@ -4,7 +4,7 @@
 import { render, screen } from '@testing-library/react';
 import { ContentTypes, ToolCallTypes } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
-import type { PartRenderers, ToolRenderer } from '../Part';
+import type { PartRenderers, ToolRenderer } from '../partTypes';
 import { MessageContext } from '../../react/message';
 import { Part } from '../Part';
 

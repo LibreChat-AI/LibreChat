@@ -4,6 +4,7 @@ import type { LeaseHarness } from '~/contracts/lease';
 import { createResourceLockModel } from '~/models/resourceLock';
 import { describeLeaseConformance } from '~/contracts/lease';
 import { createResourceLockMethods } from './resourceLock';
+import logger from '~/config/winston';
 
 const instances = Array.from({ length: 3 }, () => new mongoose.Mongoose());
 const models = instances.map((instance) => {
@@ -171,8 +172,13 @@ describe('resource lease Mongo adapter', () => {
     const lock = { key: 'peer-build', ownerId: 'a', ttlMs: 30_000, readyWaitMs: 25 };
     try {
       const attempt = methods.acquireResourceLock(lock);
-      await jest.advanceTimersByTimeAsync(25);
-      expect(await attempt).toBe(false);
+      await Promise.all([
+        expect(attempt).rejects.toMatchObject({
+          code: 'RESOURCE_LOCK_INDEXES_NOT_READY',
+          waitMs: 25,
+        }),
+        jest.advanceTimersByTimeAsync(25),
+      ]);
       // The retry helper polls every five seconds; the second conflict is past the lease deadline.
       await jest.advanceTimersByTimeAsync(5_000);
       expect(build).toHaveBeenCalledTimes(2);
@@ -181,11 +187,11 @@ describe('resource lease Mongo adapter', () => {
       jest.useRealTimers();
     }
     expect(await harness.read(lock.key)).toBeNull();
-    expect(await methods.acquireResourceLock(lock)).toBe(true);
+    expect(await methods.acquireResourceLock({ ...lock, readyWaitMs: 2_000 })).toBe(true);
     expect(build).toHaveBeenCalledTimes(3);
   });
 
-  it('returns false at the readiness deadline without writing, then can acquire after readiness', async () => {
+  it('reports a readiness timeout without writing, then can acquire after readiness', async () => {
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
     let finish!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -194,17 +200,30 @@ describe('resource lease Mongo adapter', () => {
     jest.spyOn(models[0], 'createIndexes').mockReturnValueOnce(gate);
     const methods = createResourceLockMethods(instances[0]);
     const lock = { key: 'deadline', ownerId: 'a', ttlMs: 30_000, readyWaitMs: 25 };
+    const log = jest.spyOn(logger, 'error');
+    const insert = jest.spyOn(models[0].collection, 'insertOne');
     const attempt = methods.acquireResourceLock(lock);
+    let settled = false;
+    const settle = () => {
+      settled = true;
+    };
+    void attempt.then(settle, settle);
     try {
       await jest.advanceTimersByTimeAsync(24);
-      let settled = false;
-      void attempt.then(() => {
-        settled = true;
-      });
-      await Promise.resolve();
       expect(settled).toBe(false);
-      await jest.advanceTimersByTimeAsync(1);
-      expect(await attempt).toBe(false);
+      await Promise.all([
+        expect(attempt).rejects.toMatchObject({
+          code: 'RESOURCE_LOCK_INDEXES_NOT_READY',
+          waitMs: 25,
+        }),
+        jest.advanceTimersByTimeAsync(1),
+      ]);
+      expect(insert).not.toHaveBeenCalled();
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('25ms'), {
+        code: 'RESOURCE_LOCK_INDEXES_NOT_READY',
+        waitMs: 25,
+      });
+      expect(jest.getTimerCount()).toBe(0);
     } finally {
       finish();
       jest.useRealTimers();
@@ -224,8 +243,13 @@ describe('resource lease Mongo adapter', () => {
     const lock = { key: 'bounded', ownerId: 'a', ttlMs: 30_000, readyWaitMs: 60_000 };
     try {
       const attempt = methods.acquireResourceLock(lock);
-      await jest.advanceTimersByTimeAsync(2_000);
-      expect(await attempt).toBe(false);
+      await Promise.all([
+        expect(attempt).rejects.toMatchObject({
+          code: 'RESOURCE_LOCK_INDEXES_NOT_READY',
+          waitMs: 2_000,
+        }),
+        jest.advanceTimersByTimeAsync(2_000),
+      ]);
     } finally {
       finish();
       jest.useRealTimers();

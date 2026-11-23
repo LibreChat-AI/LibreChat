@@ -6,6 +6,7 @@ import agentCategorySchema from '~/schema/agentCategory';
 import { buildIndexWithRetry } from '~/utils/retry';
 import accessRoleSchema from '~/schema/accessRole';
 import mcpServerSchema from '~/schema/mcpServer';
+import { mcpNameSchema } from '~/models/mcpName';
 import messageSchema from '~/schema/message';
 import presetSchema from '~/schema/preset';
 import agentSchema from '~/schema/agent';
@@ -27,6 +28,7 @@ const TENANT_SCHEMAS = {
   accessroles: accessRoleSchema,
   conversationtags: conversationTagSchema,
   mcpservers: mcpServerSchema,
+  mcpnames: mcpNameSchema,
   files: fileSchema,
   groups: groupSchema,
   skillsyncstatuses: skillSyncStatusSchema,
@@ -64,6 +66,7 @@ const SUPERSEDED_INDEXES: Record<string, string[]> = {
   accessroles: ['accessRoleId_1'],
   conversationtags: ['tag_1_user_1'],
   mcpservers: ['serverName_1'],
+  mcpnames: ['name_1'],
   files: ['filename_1_conversationId_1_context_1'],
   groups: ['idOnTheSource_1_source_1'],
   skillsyncstatuses: ['provider_1_sourceId_1'],

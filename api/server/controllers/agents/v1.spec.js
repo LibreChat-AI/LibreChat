@@ -4952,6 +4952,66 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(response.agent_ids).toContain(targetAgent.id);
     });
 
+    test.each(['direct', 'team'])(
+      'allows a parent update after deleting its %s subagent',
+      async (kind) => {
+        const parentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: parentId,
+          author: mockReq.user.id,
+          name: 'Parent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          subagents: {
+            enabled: true,
+            allowSelf: false,
+            agent_ids: kind === 'direct' ? [targetAgent.id] : [],
+            graphs:
+              kind === 'team'
+                ? [
+                    {
+                      type: 'team',
+                      name: 'Team',
+                      description: 'Team',
+                      agent_ids: [targetAgent.id],
+                      edges: [],
+                      entry_agent_id: targetAgent.id,
+                      result_agent_id: targetAgent.id,
+                    },
+                  ]
+                : [],
+          },
+        });
+
+        await db.deleteAgent({ id: targetAgent.id });
+        const parent = await Agent.findOne({ id: parentId }).lean();
+        mockReq.config = { endpoints: { agents: { capabilities: ['subagents'] } } };
+        const app = express();
+        app.use(express.json());
+        app.use((req, _res, next) => {
+          req.user = mockReq.user;
+          req.config = mockReq.config;
+          next();
+        });
+        app.patch('/api/agents/:id', updateAgentHandler);
+        const response = await request(app)
+          .patch(`/api/agents/${parentId}`)
+          .send({ name: 'Renamed parent', subagents: parent.subagents });
+
+        expect(response.status).toBe(200);
+        expect(response.body.name).toBe('Renamed parent');
+        const saved = await Agent.findOne({ id: parentId }).lean();
+        expect(saved.name).toBe('Renamed parent');
+        expect(saved.subagents).toEqual({
+          enabled: true,
+          allowSelf: false,
+          agent_ids: [],
+          graphs: [],
+        });
+      },
+    );
+
     test('createAgentHandler should reject a missing graph-subagent member', async () => {
       const missingMemberId = 'agent_missing_graph_member';
       mockReq.config = {
