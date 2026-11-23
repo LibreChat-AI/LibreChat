@@ -144,6 +144,19 @@ html[data-input-modality='pointer'] .lc-field.webkit-dark-styles:focus-visible {
   }
 }
 
+/* The floored text needs a field tall enough to hold it. At a small UI scale the field height roles
+   shrink with the root font size (20px at 0.5) while the text above stays at 16px and fills the
+   field edge to edge, so on touch devices the roles (`h-theme-field`, `h-theme-field-lg`,
+   `h-theme-auth-field`) never draw under one 16px line at a 1.5 line height, 24px, the floor the
+   Button height already keeps. A field beside a Button stays one height with it. The floor sits on
+   the roles rather than as a minimum on the field, so a field a caller sizes to share a row (the
+   `inline` variant, an explicit height beside icon buttons) keeps that row's height. */
+@media (any-pointer: coarse) {
+  :root {
+    --lc-field-floor: 24px;
+  }
+}
+
 /* The browser's own number stepper is a light control the dark theme cannot restyle. It is
    hidden on the shared field; the field stays a number input, so the arrow keys, the mobile
    numeric keyboard and validation are unchanged. */

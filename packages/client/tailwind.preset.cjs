@@ -27,11 +27,14 @@ module.exports = {
         'theme-button-xs': 'var(--theme-button-height-xs, 1.75rem)',
         'theme-button-lg': 'var(--theme-button-height-lg, 2.75rem)',
         'theme-button-compact': 'var(--theme-button-height-compact, 2rem)',
-        /** A form field's height, and the large `title` field's. */
-        'theme-field': 'var(--theme-field-height, 2.5rem)',
-        'theme-field-lg': 'var(--theme-field-height-lg, 3rem)',
-        /** The sign-in form's floating-label field and submit button. */
-        'theme-auth-field': 'var(--theme-auth-field-height, 2.75rem)',
+        /** A form field's height, and the large `title` field's. Held at `--lc-field-floor`, which
+         *  the package's field stylesheet sets on touch devices only, so text floored at 16px there
+         *  keeps a line of room at a small UI scale. */
+        'theme-field': 'max(var(--theme-field-height, 2.5rem), var(--lc-field-floor, 0px))',
+        'theme-field-lg': 'max(var(--theme-field-height-lg, 3rem), var(--lc-field-floor, 0px))',
+        /** The sign-in form's floating-label field, held at the same floor, and submit button. */
+        'theme-auth-field':
+          'max(var(--theme-auth-field-height, 2.75rem), var(--lc-field-floor, 0px))',
         'theme-auth-button': 'var(--theme-auth-button-height, 3rem)',
         'theme-auth-action': 'var(--theme-auth-action-height, 2.5rem)',
         /** WCAG 2.5.8's 24px target minimum, fixed so a theme can draw controls larger, never
