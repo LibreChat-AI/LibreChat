@@ -350,6 +350,7 @@ export type {
 export {
   RowMountProvider,
   useProgressiveRowMount,
+  finishProgressiveRowMounts,
   completeProgressiveRowMounts,
 } from './react/messages/useProgressiveRowMount';
 export type { RowMountWindow } from './react/messages/useProgressiveRowMount';

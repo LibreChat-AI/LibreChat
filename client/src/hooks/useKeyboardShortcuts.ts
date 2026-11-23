@@ -3,8 +3,8 @@ import { useSetAtom } from 'jotai';
 import copy from 'copy-to-clipboard';
 import { useToastContext } from '@librechat/client';
 import { useMatch, useNavigate } from 'react-router-dom';
-import { reachRow, useIsSubmitting } from '@librechat/chat/react';
 import { useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
+import { reachRow, useIsSubmitting, finishProgressiveRowMounts } from '@librechat/chat/react';
 import { PermissionTypes, Permissions, isForcedTemporaryRetention } from 'librechat-data-provider';
 import {
   bindingDisplayString,
@@ -609,16 +609,18 @@ export function useShortcutActions(): ShortcutAction[] {
   }, []);
 
   const handleCopyLastCode = useCallback(() => {
-    const blocks = document.querySelectorAll('.agent-turn pre code');
-    if (blocks.length === 0) {
-      return false;
-    }
-    const last = blocks[blocks.length - 1];
-    const text = last.textContent ?? '';
-    if (!text.trim()) {
-      return false;
-    }
-    return copy(text.trim(), { format: 'text/plain' });
+    const copyLast = () => {
+      const blocks = document.querySelectorAll('.agent-turn pre code');
+      const text = blocks[blocks.length - 1]?.textContent?.trim() ?? '';
+      return text !== '' && copy(text, { format: 'text/plain' });
+    };
+    /**
+     * A long thread mounts from its end, so a block among the rows already in is the last one.
+     * With none there, the last block may be in a row that is still waiting: bring the rest of
+     * the thread in within this key press and look again, so the shortcut claims the press only
+     * for a real copy and makes it while the browser still allows one.
+     */
+    return copyLast() || (finishProgressiveRowMounts() && copyLast());
   }, []);
 
   const handleStopGenerating = useCallback(() => {
