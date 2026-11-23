@@ -83,7 +83,9 @@ afterAll(async () => {
 }, DB_SETUP_TIMEOUT_MS);
 
 beforeEach(async () => {
-  // Built for each test, so a test that reads through the store also covers how it is made.
+  // Built for each test, model included, so a test that reads through the store also covers
+  // how the store and the collection's schema are made.
+  if (mongoose.models.AgentEventSubscription) mongoose.deleteModel('AgentEventSubscription');
   subscriptions = createSubscriptions(mongoose);
   Rows = mongoose.models.AgentEventSubscription as Model<SubscriptionRecord>;
   await runAsSystem(async () => Rows.deleteMany({}));
@@ -110,6 +112,7 @@ describe('create', () => {
     });
     const rows = await stored();
     expect(rows).toHaveLength(1);
+    expect(rows[0].user).toBeInstanceOf(mongoose.Types.ObjectId);
     expect(String(rows[0].user)).toBe(owner);
     expect(rows[0]).toMatchObject({ id: subscription.id, tenantId: TENANT_A, revision: 0 });
   });
@@ -161,6 +164,8 @@ describe('create', () => {
 
   it.each<[string, Partial<Record<keyof SubscriptionDraft, unknown>>, RegExp]>([
     ['no events', { events: [] }, /events/],
+    ['no event list', { events: undefined }, /events/],
+    ['no target', { target: undefined }, /target/],
     [
       'more events than a row may hold',
       { events: Array.from({ length: SUBSCRIPTION_EVENTS_MAX + 1 }, (_, index) => `e.${index}`) },
@@ -207,6 +212,26 @@ describe('create', () => {
       await manual.connection.dropDatabase();
       await manual.disconnect();
     }
+  });
+});
+
+describe('the collection', () => {
+  const row = {
+    id: 'sub_1',
+    user: owner,
+    ...draft(),
+    revision: 0,
+  };
+
+  it('accepts a whole row', async () => {
+    await expect(new Rows(row).validate()).resolves.toBeUndefined();
+  });
+
+  // The store always supplies these, so only a write that goes around it can leave one out.
+  it.each(['id', 'user', 'revision'] as const)('refuses a row with no %s', async (field) => {
+    await expect(new Rows({ ...row, [field]: undefined }).validate()).rejects.toThrow(
+      new RegExp(`\\b${field}\\b`),
+    );
   });
 });
 

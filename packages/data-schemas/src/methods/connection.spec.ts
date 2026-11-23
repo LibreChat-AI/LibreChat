@@ -54,7 +54,9 @@ afterAll(async () => {
 }, DB_SETUP_TIMEOUT_MS);
 
 beforeEach(async () => {
-  // Built for each test, so a test that reads through the store also covers how it is made.
+  // Built for each test, model included, so a test that reads through the store also covers
+  // how the store and the collection's schema are made.
+  if (mongoose.models.AgentEventConnection) mongoose.deleteModel('AgentEventConnection');
   connections = createConnections(mongoose);
   Connection = mongoose.models.AgentEventConnection as Model<ConnectionRecord>;
   await runAsSystem(async () => Connection.deleteMany({}));
@@ -199,6 +201,7 @@ describe('bind', () => {
 
   it.each([
     ['a provider it does not know', install({ provider: 'linear' as 'github' }), /provider/],
+    ['a bind with no provider', install({ provider: undefined }), /provider/],
     ['an install with no id', install({ installation: '' }), /installation/],
     ['an account with no id', install({ account: { id: '', name: 'octo' } }), /account\.id/],
     ['an account with no name', install({ account: { id: '77', name: '' } }), /account\.name/],
@@ -227,6 +230,28 @@ describe('bind', () => {
       await manual.connection.dropDatabase();
       await manual.disconnect();
     }
+  });
+});
+
+describe('the collection', () => {
+  const row = {
+    id: 'conn_1',
+    provider: 'github',
+    installation: '1001',
+    account: { id: '77', name: 'octo' },
+    status: 'active',
+    createdBy: 'user-1',
+  };
+
+  it('accepts a whole row', async () => {
+    await expect(new Connection(row).validate()).resolves.toBeUndefined();
+  });
+
+  // The store always supplies these, so only a write that goes around it can leave one out.
+  it.each(['id', 'status'] as const)('refuses a row with no %s', async (field) => {
+    await expect(new Connection({ ...row, [field]: undefined }).validate()).rejects.toThrow(
+      new RegExp(`\\b${field}\\b`),
+    );
   });
 });
 
@@ -274,6 +299,19 @@ describe('list', () => {
 
     expect(await as(TENANT_A, async () => connections.list())).toEqual([newer, older]);
     expect(await as(TENANT_B, async () => connections.list())).toHaveLength(1);
+  });
+
+  it('orders by its own sort, not by the index that happens to serve it', async () => {
+    const older = await bound(TENANT_A, install({ installation: '1' }));
+    const newer = await bound(TENANT_A, install({ installation: '2' }));
+    await Connection.collection.updateOne(
+      { id: older.id },
+      { $set: { createdAt: new Date('2026-01-01T00:00:00Z') } },
+    );
+    await Connection.init();
+    await Connection.collection.dropIndex('tenantId_1_createdAt_-1');
+
+    expect(await as(TENANT_A, async () => connections.list())).toEqual([newer, older]);
   });
 
   it('is empty for a tenant with none', async () => {
@@ -326,7 +364,9 @@ describe('resolve', () => {
       const held = await bound(TENANT_A);
 
       expect(await connections.resolve({ id: held.id })).toEqual(held);
-      await expect(connections.get(held.id)).rejects.toThrow(/without tenant context/);
+      await expect(connections.get(held.id)).rejects.toThrow(
+        /Connection attempted without tenant context/,
+      );
     });
   });
 });

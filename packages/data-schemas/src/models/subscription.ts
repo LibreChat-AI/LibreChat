@@ -33,7 +33,8 @@ export function createAgentEventSubscriptionModel(
       tenantId: String,
       connection: { type: String, required: true },
       agentId: { type: String, required: true },
-      events: { type: [String], required: true, validate: within(subscriptionEventsSchema) },
+      // An array path is never absent, so the list's own bounds are what require an entry.
+      events: { type: [String], validate: within(subscriptionEventsSchema) },
       filters: {
         type: Schema.Types.Mixed,
         default: undefined,
