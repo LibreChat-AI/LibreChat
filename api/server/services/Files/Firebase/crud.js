@@ -3,9 +3,7 @@ const fetch = require('node-fetch');
 const { logger } = require('@librechat/data-schemas');
 const {
   deleteRagFile,
-  getFirebaseURL,
-  uploadFileToFirebase,
-  saveBufferToFirebase,
+  createFirebaseUploads,
   createOwnedBlobFileDeleter,
   extractFirebaseBlobPath,
   getFirebaseStorage,
@@ -18,6 +16,10 @@ const {
 } = require('@librechat/api');
 const { ref, uploadBytes, deleteObject } = require('firebase/storage');
 const { getBufferMetadata } = require('~/server/utils');
+
+const { getFirebaseURL, saveBufferToFirebase, uploadFileToFirebase } = createFirebaseUploads({
+  getStorage: getFirebaseStorage,
+});
 
 /**
  * Deletes a file from Firebase Storage.

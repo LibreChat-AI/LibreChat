@@ -1,16 +1,11 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import type { FirebaseStorage } from 'firebase/storage';
 import type { ServerRequest } from '~/types';
-
-const mockStorage = { name: 'storage' };
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), debug: jest.fn(), info: jest.fn(), warn: jest.fn() },
-}));
-
-jest.mock('~/cdn/firebase', () => ({
-  getFirebaseStorage: jest.fn(() => mockStorage),
 }));
 
 jest.mock('firebase/storage', () => ({
@@ -23,9 +18,11 @@ jest.mock('firebase/storage', () => ({
 }));
 
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { uploadFileToFirebase } from '../crud';
+import { createFirebaseUploads } from '../crud';
 
+const storage = { app: { name: 'test' } } as unknown as FirebaseStorage;
 const req = { user: { id: 'user-1' } } as unknown as ServerRequest;
+const { uploadFileToFirebase } = createFirebaseUploads({ getStorage: () => storage });
 
 describe('uploadFileToFirebase', () => {
   let dir: string;
@@ -51,7 +48,7 @@ describe('uploadFileToFirebase', () => {
       basePath: 'uploads',
     });
 
-    expect(ref).toHaveBeenCalledWith(mockStorage, 'uploads/user-1/file-1__report.pdf');
+    expect(ref).toHaveBeenCalledWith(storage, 'uploads/user-1/file-1__report.pdf');
     expect(result).toEqual({
       filepath: 'https://firebasestorage.googleapis.com/uploads/user-1/file-1__report.pdf',
       bytes: Buffer.byteLength('pdf bytes'),
@@ -61,7 +58,7 @@ describe('uploadFileToFirebase', () => {
   it('falls back to images when no basePath is passed', async () => {
     await uploadFileToFirebase({ req, file, file_id: 'file-1' });
 
-    expect(ref).toHaveBeenCalledWith(mockStorage, 'images/user-1/file-1__report.pdf');
+    expect(ref).toHaveBeenCalledWith(storage, 'images/user-1/file-1__report.pdf');
   });
 
   it('removes the temp file and rethrows when the upload fails', async () => {
@@ -81,5 +78,14 @@ describe('uploadFileToFirebase', () => {
       uploadFileToFirebase({ req, file, file_id: 'file-1', basePath: 'uploads' }),
     ).rejects.toThrow('Firebase returned no download URL');
     await expect(fs.promises.access(file.path)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects without touching Firebase when storage is not configured', async () => {
+    const uploads = createFirebaseUploads({ getStorage: () => null });
+
+    await expect(
+      uploads.uploadFileToFirebase({ req, file, file_id: 'file-1', basePath: 'uploads' }),
+    ).rejects.toThrow('Firebase is not initialized');
+    expect(uploadBytes).not.toHaveBeenCalled();
   });
 });
