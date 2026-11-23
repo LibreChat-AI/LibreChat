@@ -121,6 +121,7 @@ jest.mock('@librechat/api', () => ({
     pending: new Map(),
     cleanupStarted: false,
   })),
+  isRedisStreamInterrupted: jest.fn(() => false),
   filterPersistableAbortContent: (...args) => mockFilterPersistableAbortContent(...args),
   cleanupMCPRequestContextForReq: jest.fn(),
   decrementPendingRequest: (...args) => mockDecrementPendingRequest(...args),

@@ -779,6 +779,8 @@ export interface JobStatusTransition {
   expectCreatedAt?: number;
   /** Fence an old provider segment after the same generation has resumed. */
   expectProviderExecutionId?: string;
+  /** Allow the Redis store to resume this exact persistence-owning terminal CAS. */
+  recoverRedis?: boolean;
   /**
    * Additional guard: reject the transition when the store's clock has reached
    * this absolute deadline. The comparison is part of the same atomic operation
@@ -1923,6 +1925,7 @@ export interface IEventTransport {
     streamId: string,
     generationId: number,
     providerExecutionId: string,
+    recoverRedis?: true,
   ): Promise<boolean>;
   hasProviderDrain?(
     streamId: string,

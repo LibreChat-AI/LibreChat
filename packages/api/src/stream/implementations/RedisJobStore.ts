@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
 import { createContentAggregator } from '@librechat/agents';
 import {
@@ -69,6 +70,7 @@ import { parseTerminalPersistenceOwner } from '~/stream/metadata';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
 import { createToolTimingTracker } from '~/agents/toolTiming';
 import { parseRunTrigger } from '~/agents/authority/trigger';
+import { retryRedisFinalization } from '../redisOutage';
 import { evalScript } from '~/cache/redisScript';
 
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/;
@@ -151,6 +153,7 @@ function assertCreateIdempotencyArguments(
  *     steerReceiptTtl (0 to leave unchanged),
  *     returnDrainedSteers,
  *     expectProviderExecutionId | "",
+ *     terminalAttemptId | "",
  *     hdelCount,
  *     ...hdelFields,
  *     ...hsetPairs
@@ -159,10 +162,13 @@ function assertCreateIdempotencyArguments(
 const JOB_CAS_LUA =
   SCHEDULE_MCP_RECEIPT_LUA +
   SCHEDULE_MEMBERSHIP_INVALIDATE_LUA +
-  'if redis.call("HGET", KEYS[1], "status") ~= ARGV[1] then return 0 end ' +
-  'if ARGV[2] ~= "" and redis.call("HGET", KEYS[1], "pendingActionId") ~= ARGV[2] then return 0 end ' +
   'if ARGV[3] ~= "" and redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[3] then return 0 end ' +
   'if ARGV[13] ~= "" and redis.call("HGET", KEYS[1], "providerExecutionId") ~= ARGV[13] then return 0 end ' +
+  'if ARGV[14] ~= "" and redis.call("HGET", KEYS[1], "__terminalAttemptId") == ARGV[14] ' +
+  'and redis.call("HGET", KEYS[1], "terminalPersistencePending") == "1" then ' +
+  'return redis.call("HGET", KEYS[1], "__terminalAttemptSteers") or "[]" end ' +
+  'if redis.call("HGET", KEYS[1], "status") ~= ARGV[1] then return 0 end ' +
+  'if ARGV[2] ~= "" and redis.call("HGET", KEYS[1], "pendingActionId") ~= ARGV[2] then return 0 end ' +
   'if ARGV[4] ~= "" then local now = redis.call("TIME") ' +
   'local nowMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000) ' +
   'if nowMs >= tonumber(ARGV[4]) then return -1 end end ' +
@@ -206,9 +212,9 @@ const JOB_CAS_LUA =
   'or (item.recoveringCreatedAt and (type(item.recoveringCreatedAt) ~= "number" or item.recoveringCreatedAt < 0)) then return 0 end ' +
   'validatedPrior[#validatedPrior + 1] = item end end end ' +
   'local currentReceipt = redis.call("HGET", KEYS[1], "scheduleOutcomeError") ' +
-  'local clearReceipt = false local hdelCount = tonumber(ARGV[14]) ' +
-  'for i = 15, 14 + hdelCount do if ARGV[i] == "scheduleOutcome" or ARGV[i] == "scheduleOutcomeError" then clearReceipt = true end end ' +
-  'local idx = 15 ' +
+  'local clearReceipt = false local hdelCount = tonumber(ARGV[15]) ' +
+  'for i = 16, 15 + hdelCount do if ARGV[i] == "scheduleOutcome" or ARGV[i] == "scheduleOutcomeError" then clearReceipt = true end end ' +
+  'local idx = 16 ' +
   'for i = 1, hdelCount do redis.call("HDEL", KEYS[1], ARGV[idx]) idx = idx + 1 end ' +
   'local hset = {} ' +
   'for i = idx, #ARGV do hset[#hset + 1] = ARGV[i] end ' +
@@ -275,7 +281,10 @@ const JOB_CAS_LUA =
   'redis.call("DEL", KEYS[5], KEYS[6]) ' +
   'if chunksTtl == 0 then redis.call("DEL", KEYS[3]) else redis.call("EXPIRE", KEYS[3], chunksTtl) end ' +
   'if runStepsTtl == 0 then redis.call("DEL", KEYS[4]) else redis.call("EXPIRE", KEYS[4], runStepsTtl) end ' +
-  'if ARGV[12] == "1" then if #items == 0 then return "[]" end return cjson.encode(items) end ' +
+  'if ARGV[12] == "1" then local drained = #items == 0 and "[]" or cjson.encode(items) ' +
+  'if ARGV[14] ~= "" then redis.call("HSET", KEYS[1], "__terminalAttemptId", ARGV[14]) ' +
+  'if #items > 0 then redis.call("HSET", KEYS[1], "__terminalAttemptSteers", drained) end end ' +
+  'return drained end ' +
   'else ' +
   'redis.call("EXPIRE", KEYS[3], ttl) ' +
   'redis.call("EXPIRE", KEYS[4], ttl) ' +
@@ -782,6 +791,7 @@ const TERMINAL_PERSISTENCE_FINALIZE_LUA =
   'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
   'if redis.call("HGET", KEYS[1], "terminalPersistencePending") ~= "1" then return 0 end ' +
   'redis.call("HSET", KEYS[1], "terminalPersistencePending", "0", "finalEvent", ARGV[2]) ' +
+  'redis.call("HDEL", KEYS[1], "__terminalAttemptId", "__terminalAttemptSteers") ' +
   'return 1';
 
 /**
@@ -3109,7 +3119,15 @@ export class RedisJobStore implements IJobStoreV2 {
     if (this.statusSetKey(args.to) !== null) {
       throw new Error('Steer-draining status transitions must be terminal');
     }
-    const result = await this.transitionStatusInternal(streamId, args, true);
+    const attempt =
+      args.recoverRedis === true &&
+      args.expectCreatedAt != null &&
+      args.expectProviderExecutionId != null &&
+      args.patch?.terminalPersistencePending === true
+        ? randomUUID()
+        : undefined;
+    const run = () => this.transitionStatusInternal(streamId, args, true, attempt);
+    const result = attempt == null ? await run() : await retryRedisFinalization(run);
     return Array.isArray(result) ? result : null;
   }
 
@@ -3117,6 +3135,7 @@ export class RedisJobStore implements IJobStoreV2 {
     streamId: string,
     args: JobStatusTransition,
     returnDrainedSteers: boolean,
+    attempt?: string,
   ): Promise<true | SteerQueueItem[] | null> {
     const { from, to, patch, clear, expectActionId, expectCreatedAt, notAfterMs } = args;
     const key = KEYS.job(streamId);
@@ -3232,6 +3251,7 @@ export class RedisJobStore implements IJobStoreV2 {
       String(args.steerReceiptTtlSeconds ?? 0),
       returnDrainedSteers ? '1' : '0',
       args.expectProviderExecutionId ?? '',
+      attempt ?? '',
       String(clearFields.length),
       ...clearFields,
       ...fields,

@@ -22,6 +22,7 @@ const {
   createConvoPersistenceSignal,
   recoverTurnMessageReference,
   filterPersistableAbortContent,
+  isRedisStreamInterrupted,
   decrementPendingRequest,
   sanitizeMessageForTransmit,
   checkAndIncrementPendingRequest,
@@ -391,6 +392,7 @@ async function saveErrorTurn(
     errorText,
     liveUserMessage,
     liveResponseMessageId,
+    receivedContent,
     runCreated = false,
     sender,
     initialAgentId,
@@ -554,6 +556,7 @@ async function saveErrorTurn(
         unfinished: false,
         isCreatedByUser: false,
         ...resolveFailedTurnContent(req.body, errorText),
+        ...(receivedContent?.length > 0 && { content: receivedContent }),
       },
       { context },
     );
@@ -1847,6 +1850,8 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         streamId,
         jobCreatedAt,
         providerExecutionId,
+        undefined,
+        GenerationJobManager.isRedis,
       ))
     ) {
       throw Object.assign(new Error('Generation stopped before provider startup'), {
@@ -2276,7 +2281,12 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
      * response write. A lost claim returns false, and BaseClient skips that
      * stale `unfinished:false` write entirely. The fallback invocation below
      * supports test/custom clients that do not derive from BaseClient. */
-    const claimBeforeResponsePersistence = async () => {
+    const providerTerminal = GenerationJobManager.isRedis &&
+      providerExecutionId && {
+        expectedProviderExecutionId: providerExecutionId,
+        recoverRedis: true,
+      };
+    const claimBeforeResponsePersistence = async (response) => {
       if (terminalPersistenceChecked) {
         return terminalClaim != null;
       }
@@ -2289,6 +2299,15 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         return false;
       }
       terminalWasAborted = job.abortController.signal.aborted;
+      const interrupted = isRedisStreamInterrupted(job.abortController.signal);
+      if (
+        interrupted &&
+        response &&
+        !response.text &&
+        filterPersistableAbortContent(response.content ?? []).length === 0
+      ) {
+        throw job.abortController.signal.reason;
+      }
       const preemptStats = client?.run?.getPreemptStats?.();
       preemptIncomplete =
         (preemptStats?.emptyBoundaries ?? 0) > 0 ||
@@ -2299,8 +2318,11 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         terminalWasAborted ? 'aborted' : 'complete',
         undefined,
         jobCreatedAt,
-        { persistencePending: true },
+        { persistencePending: true, ...providerTerminal },
       );
+      if (terminalClaim && response && interrupted) {
+        response.unfinished = true;
+      }
       return terminalClaim != null;
     };
     const disposeBackgroundClient = () => {
@@ -3016,7 +3038,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         // BaseClient invokes this before starting its response write. Custom
         // clients/tests may return a database promise directly, so keep the
         // controller-side fallback before awaiting that promise.
-        await claimBeforeResponsePersistence();
+        await claimBeforeResponsePersistence(response);
 
         const endpoint = endpointOption.endpoint;
         response.endpoint = endpoint;
@@ -3435,7 +3457,10 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             error,
           );
           startupTelemetry?.end('error', error);
-        } else if (job.abortController.signal.aborted || error.message?.includes('abort')) {
+        } else if (
+          !isRedisStreamInterrupted(job.abortController.signal) &&
+          (job.abortController.signal.aborted || error.message?.includes('abort'))
+        ) {
           ownsScheduledFailure = true;
           logger.debug(`[ResumableAgentController] Generation aborted for ${streamId}`);
           startupTelemetry?.end('aborted');
@@ -3452,6 +3477,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             // steers, then publishes. A competing abort/pause emits nothing.
             ownsScheduledFailure =
               (await GenerationJobManager.completeJob(streamId, generationError, jobCreatedAt, {
+                ...providerTerminal,
                 beforeErrorPublication: () =>
                   savePrivateTextErrorTurn(req, error, () =>
                     saveErrorTurn(req, {
@@ -3461,6 +3487,9 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                       errorText: generationError,
                       liveUserMessage: userMessage,
                       liveResponseMessageId,
+                      receivedContent: isRedisStreamInterrupted(job.abortController.signal)
+                        ? filterPersistableAbortContent(client?.contentParts ?? [])
+                        : undefined,
                       runCreated: client?.run != null,
                       sender: client?.sender,
                       initialAgentId: verifiedInitialAgentId,
@@ -3553,14 +3582,17 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       })
       .finally(async () => {
         await Promise.allSettled([immediateTitlePromise, trailingWritePromise].filter(Boolean));
-        if (providerExecutionId) {
-          await GenerationJobManager.markProviderExecutionDrained?.(
-            streamId,
-            jobCreatedAt,
-            providerExecutionId,
-          );
+        try {
+          if (providerExecutionId) {
+            await GenerationJobManager.markProviderExecutionDrained?.(
+              streamId,
+              jobCreatedAt,
+              providerExecutionId,
+            );
+          }
+        } finally {
+          await releaseEventChildLease?.();
         }
-        await releaseEventChildLease?.();
       })
       .catch((drainError) => {
         logger.warn(

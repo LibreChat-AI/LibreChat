@@ -22,6 +22,7 @@ import {
 import { GenerationPublicationFencedError } from '~/stream/interfaces/IJobStore';
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 import { PUBLISH_REPLAY_LUA, READ_REPLAY_LUA } from '../internal/replay';
+import { retryRedisFinalization } from '../redisOutage';
 
 /**
  * Redis key prefixes for pub/sub channels
@@ -1750,14 +1751,17 @@ export class RedisEventTransport implements IEventTransport {
     streamId: string,
     generationId: number,
     providerExecutionId: string,
+    recoverRedis?: true,
   ): Promise<boolean> {
     try {
-      await this.publisher.set(
-        KEYS.providerDrain(streamId, generationId, providerExecutionId),
-        '1',
-        'EX',
-        PROVIDER_DRAIN_TTL_SECONDS,
-      );
+      const record = () =>
+        this.publisher.set(
+          KEYS.providerDrain(streamId, generationId, providerExecutionId),
+          '1',
+          'EX',
+          PROVIDER_DRAIN_TTL_SECONDS,
+        );
+      await (recoverRedis ? retryRedisFinalization(record) : record());
       return true;
     } catch (error) {
       logger.error(`[RedisEventTransport] Failed to persist provider drain proof:`, error);
