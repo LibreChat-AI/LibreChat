@@ -44,6 +44,7 @@ const {
   isFileAuthoringToolDefinition,
   normalizeActionToolName,
   ASK_USER_QUESTION_TOOL_NAME,
+  MANAGE_AGENT_TOOL_NAME,
   splitMCPToolKey,
   buildServerNameAliases,
   findShadowedServerNames,
@@ -791,6 +792,7 @@ const nativeTools = new Set([
   Tools.file_search,
   Tools.web_search,
   Tools.memory,
+  MANAGE_AGENT_TOOL_NAME,
 ]);
 
 const mcpServerPinPrefix = `${Constants.mcp_server}${Constants.mcp_delimiter}`;
@@ -939,6 +941,9 @@ async function loadToolDefinitionsWrapper({
     }
     if (tool === ASK_USER_QUESTION_TOOL_NAME) {
       return checkCapability(AgentCapabilities.ask_user_question);
+    }
+    if (tool === MANAGE_AGENT_TOOL_NAME) {
+      return checkCapability(AgentCapabilities.manage_agent);
     }
     if (isActionTool(tool)) {
       return actionsEnabled;
@@ -1738,6 +1743,8 @@ async function loadAgentTools({
       return checkCapability(AgentCapabilities.memory);
     } else if (tool === ASK_USER_QUESTION_TOOL_NAME) {
       return checkCapability(AgentCapabilities.ask_user_question);
+    } else if (tool === MANAGE_AGENT_TOOL_NAME) {
+      return checkCapability(AgentCapabilities.manage_agent);
     } else if (isActionTool(tool)) {
       return actionsEnabled;
     } else if (tool?.includes(Constants.mcp_delimiter)) {

@@ -38,6 +38,7 @@ const {
   handleJsonParseError,
   initializeFileStorage,
   loadToolApprovalHooks,
+  registerManageAgentApproval,
   maybeInjectQueryDevtoolsBootstrap,
   injectConfiguredFooterBootstrap,
   injectColorModeHandoff,
@@ -565,6 +566,7 @@ if (cluster.isMaster) {
     await loadToolApprovalHooks(toolApproval?.enabled ? toolApproval.hooks : undefined, {
       basePath: path.resolve(__dirname, '../..'),
     });
+    registerManageAgentApproval();
     expiredFileSweep.configure({ appConfig, loadAppConfig: getAppConfig });
     await runAsSystem(async () => {
       await performStartupChecks(appConfig);

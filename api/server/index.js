@@ -45,6 +45,7 @@ const {
   hasDeploymentPluginToolApprovalHooks,
   setPluginHookSource,
   loadToolApprovalHooks,
+  registerManageAgentApproval,
   maybeInjectQueryDevtoolsBootstrap,
   injectConfiguredFooterBootstrap,
   injectColorModeHandoff,
@@ -321,6 +322,7 @@ const startServer = async () => {
   await loadToolApprovalHooks(toolApproval?.enabled ? toolApproval.hooks : undefined, {
     basePath: path.resolve(__dirname, '../..'),
   });
+  registerManageAgentApproval();
   await runAsSystem(async () => {
     await performStartupChecks(appConfig);
     await updateInterfacePermissions({

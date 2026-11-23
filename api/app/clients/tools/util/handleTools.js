@@ -23,6 +23,9 @@ const {
   SET_MEMORY_TOOL_NAME,
   buildWebSearchContext,
   DELETE_MEMORY_TOOL_NAME,
+  isHITLEnabled,
+  createManageAgentTool,
+  MANAGE_AGENT_TOOL_NAME,
   createAskUserQuestionTool,
   ASK_USER_QUESTION_TOOL_NAME,
   resolveWebSearchSSRFAgents,
@@ -429,6 +432,20 @@ const loadTools = async ({
       continue;
     } else if (tool === ASK_USER_QUESTION_TOOL_NAME) {
       requestedTools[tool] = async () => createAskUserQuestionTool();
+      continue;
+    } else if (tool === MANAGE_AGENT_TOOL_NAME) {
+      /** Deferred require: the handlers load the agents controller, which loads tool services. */
+      const {
+        readHandlers,
+        createHandler,
+        updateHandler,
+      } = require('~/server/services/Agents/management');
+      requestedTools[tool] = async () =>
+        createManageAgentTool({
+          req: options.req,
+          handlers: { ...readHandlers, create: createHandler, update: updateHandler },
+          approvalEnabled: isHITLEnabled(options.req?.config?.endpoints?.agents?.toolApproval),
+        });
       continue;
     } else if (tool === SET_MEMORY_TOOL_NAME || tool === DELETE_MEMORY_TOOL_NAME) {
       requestedTools[tool] = () =>

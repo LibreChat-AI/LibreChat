@@ -907,6 +907,8 @@ export enum AgentCapabilities {
   ocr = 'ocr',
   run_in_background = 'run_in_background',
   tool_intents = 'tool_intents',
+  /** The `manage_agent` tool: list, read, create and update agents. Default off. */
+  manage_agent = 'manage_agent',
 }
 
 export const defaultAssistantsVersion = {

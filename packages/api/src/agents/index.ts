@@ -7,6 +7,7 @@ export * from './config';
 export * from './checkpointer';
 export * from './checkpoints/deletion';
 export * from './compatibility';
+export * from './builder';
 export * from './compaction';
 export * from './contact';
 export * from './context';
