@@ -100,6 +100,26 @@ test.describe('shift over the sidebar', () => {
     await expect(history.getByRole('button', { name: 'Archive' })).toHaveCount(0);
   });
 
+  test('shift held in a new chat, with no open row, is known to the row opened next @scenario:shift-held-before-any-conversation-is-open', async ({
+    page,
+  }) => {
+    await page.goto('/c/new');
+    const history = page.getByRole('region', { name: 'Chat History' });
+    const rows = history.getByTestId('convo-item');
+    await expect(rows).toHaveCount(CHATS);
+    const next = rows.filter({ hasText: chats[2].title });
+
+    /** No row answers to the key here, so none reads it: it has to be tracked all the same. */
+    await page.keyboard.down('Shift');
+    await expect(history.getByRole('button', { name: 'Archive' })).toHaveCount(0);
+    await next.click();
+    await expect(page).toHaveURL(new RegExp(`/c/${chats[2].conversationId}`));
+
+    await expect(next.getByRole('button', { name: 'Archive' })).toBeVisible();
+    await page.keyboard.up('Shift');
+    await expect(history.getByRole('button', { name: 'Archive' })).toHaveCount(0);
+  });
+
   test('the list listens for the key once, however many conversations it holds @scenario:sidebar-listens-for-shift-once', async ({
     page,
   }) => {

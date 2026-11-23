@@ -8,9 +8,6 @@ import { atom, useAtomValue, useStore } from 'jotai';
 const shiftAtom = atom(false);
 
 shiftAtom.onMount = (set) => {
-  /** The key may have been released while nothing listened. */
-  set(false);
-
   const handleKeyDown = (e: KeyboardEvent) => {
     // Only set shift if Alt is not pressed (Alt+Shift is used for a11y)
     if (e.key === 'Shift' && !e.altKey) {
@@ -41,13 +38,13 @@ shiftAtom.onMount = (set) => {
     window.removeEventListener('keydown', handleKeyDown);
     window.removeEventListener('keyup', handleKeyUp);
     window.removeEventListener('blur', handleBlur);
+    /** The key may be released while nothing listens: the next caller must not read it as held. */
+    set(false);
   };
 };
 
 /** What a caller that is not enabled reads: the key up, and never a change. */
 const upAtom = atom(() => false);
-
-const ignore = (): void => {};
 
 /**
  * Hook to track whether the shift key is currently being held down.
@@ -62,7 +59,11 @@ const ignore = (): void => {};
  */
 export default function useShiftKey(enabled = true): boolean {
   const store = useStore();
-  /** Every caller keeps the key tracked, enabled or not; only an enabled one reads it. */
-  useEffect(() => store.sub(shiftAtom, ignore), [store]);
+  /**
+   * Every caller keeps the key tracked, enabled or not; only an enabled one reads it. The
+   * callback is this caller's own: a store holds its subscribers as a set, so callers sharing
+   * one function would be one subscriber, and the first to unmount would stop the tracking.
+   */
+  useEffect(() => store.sub(shiftAtom, () => {}), [store]);
   return useAtomValue(enabled ? shiftAtom : upAtom);
 }

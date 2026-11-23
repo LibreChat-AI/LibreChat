@@ -1,4 +1,7 @@
+import { StrictMode } from 'react';
+import { Provider, createStore } from 'jotai';
 import { act, fireEvent, renderHook } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import useShiftKey from '../useShiftKey';
 
 const press = (key: string, init: KeyboardEventInit = {}) =>
@@ -76,6 +79,20 @@ describe('useShiftKey', () => {
     expect(forget.mock.calls.map(([type]) => type)).toEqual(['keydown', 'keyup', 'blur']);
   });
 
+  it('keeps tracking the key while any caller is left, enabled or not', () => {
+    const forget = jest.spyOn(window, 'removeEventListener');
+    /** A list with no open row: nothing reads the key, and rows come and go as it scrolls. */
+    const gone = reader(false);
+    const left = reader(false);
+
+    gone.unmount();
+    expect(forget).not.toHaveBeenCalled();
+
+    press('Shift');
+    left.rerender({ enabled: true });
+    expect(left.result.current).toBe(true);
+  });
+
   it('reads the key as up, and is not rendered for it, while it is not enabled', () => {
     const active = reader(true);
     const idle = reader(false);
@@ -104,13 +121,57 @@ describe('useShiftKey', () => {
     expect(second.result.current).toBe(false);
   });
 
+  it('does not render its reader again for a key that repeats', () => {
+    const active = reader(true);
+    press('Shift');
+    const before = active.renders();
+
+    press('Shift', { repeat: true });
+    press('Shift', { repeat: true });
+
+    expect(active.renders()).toBe(before);
+    expect(active.result.current).toBe(true);
+  });
+
+  it('follows the key where effects run twice', () => {
+    const listen = jest.spyOn(window, 'addEventListener');
+    const forget = jest.spyOn(window, 'removeEventListener');
+    const { result, unmount } = renderHook(() => useShiftKey(), { wrapper: StrictMode });
+
+    press('Shift');
+    expect(result.current).toBe(true);
+
+    unmount();
+    expect(forget.mock.calls.length).toBe(listen.mock.calls.length);
+  });
+
+  it('tracks the key in the store its caller reads from', () => {
+    const store = createStore();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <Provider store={store}>{children}</Provider>
+    );
+    const inside = renderHook(() => useShiftKey(), { wrapper });
+    const outside = renderHook(() => useShiftKey());
+
+    press('Shift');
+
+    expect(inside.result.current).toBe(true);
+    expect(outside.result.current).toBe(true);
+  });
+
   it('forgets a key that was down when the last caller went away', () => {
     const first = renderHook(() => useShiftKey());
     press('Shift');
     first.unmount();
 
-    const { result } = renderHook(() => useShiftKey());
+    /** Every value the next caller reads, its first render included. */
+    const read: boolean[] = [];
+    renderHook(() => {
+      const isShiftHeld = useShiftKey();
+      read.push(isShiftHeld);
+      return isShiftHeld;
+    });
 
-    expect(result.current).toBe(false);
+    expect(read).not.toContain(true);
   });
 });
