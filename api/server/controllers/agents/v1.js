@@ -966,7 +966,7 @@ const createAgentHandler = async (req, res) => {
  * @returns {Promise<Agent>} 200 - success response - application/json
  * @returns {Error} 404 - Agent not found
  */
-const getAgentHandler = async (req, res, expandProperties = false) => {
+const getAgentHandler = async (req, res, expandProperties) => {
   try {
     const id = req.params.id;
     const author = req.user.id;
@@ -2338,7 +2338,8 @@ const getAgentCategories = async (_req, res) => {
 };
 module.exports = {
   createAgent: createAgentHandler,
-  getAgent: getAgentHandler,
+  getAgent: (req, res) => getAgentHandler(req, res, false),
+  getAgentExpanded: (req, res) => getAgentHandler(req, res, true),
   getAgentVersions: getAgentVersionsHandler,
   updateAgent: updateAgentHandler,
   duplicateAgent: duplicateAgentHandler,

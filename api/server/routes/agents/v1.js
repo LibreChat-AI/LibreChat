@@ -84,7 +84,7 @@ router.get(
     requiredPermission: PermissionBits.EDIT,
     resourceIdParam: 'id',
   }),
-  (req, res) => v1.getAgent(req, res, true), // Expanded version
+  v1.getAgentExpanded,
 );
 
 /**

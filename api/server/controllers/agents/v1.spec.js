@@ -96,6 +96,7 @@ jest.mock('~/cache', () => ({
 const {
   createAgent: createAgentHandler,
   getAgent: getAgentHandler,
+  getAgentExpanded,
   getAgentVersions: getAgentVersionsHandler,
   duplicateAgent: duplicateAgentHandler,
   revertAgentVersion: revertAgentVersionHandler,
@@ -1472,11 +1473,13 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
   });
 
   describe('getAgentHandler', () => {
-    test('should return the safe Responses API flag in the basic VIEW response', async () => {
+    test('returns only safe VIEW fields when Express supplies a next callback', async () => {
       const agent = await Agent.create({
         id: `agent_${uuidv4()}`,
         name: 'Azure Agent',
         description: 'Uses Responses API',
+        instructions: 'Editor-only instructions',
+        tool_resources: { file_search: { file_ids: ['editor-only-file'] } },
         provider: 'azureOpenAI',
         model: 'gpt-5.5',
         author: mockReq.user.id,
@@ -1489,10 +1492,13 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       mockReq.params = { id: agent.id };
 
-      await getAgentHandler(mockReq, mockRes);
+      await getAgentHandler(mockReq, mockRes, jest.fn());
 
       expect(mockRes.status).toHaveBeenCalledWith(200);
       const response = mockRes.json.mock.calls[0][0];
+      expect(response.name).toBe('Azure Agent');
+      expect(response).not.toHaveProperty('instructions');
+      expect(response).not.toHaveProperty('tool_resources');
       expect(response.model_parameters).toEqual({ useResponsesApi: true });
       expect(response.model_parameters.temperature).toBeUndefined();
       expect(response.model_parameters.apiKey).toBeUndefined();
@@ -6315,7 +6321,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
         mockReq.params = { id: agent.id };
 
-        await getAgentHandler(mockReq, mockRes, true);
+        await getAgentExpanded(mockReq, mockRes, jest.fn());
 
         expect(mockRes.status).toHaveBeenCalledWith(200);
         const response = mockRes.json.mock.calls[0][0];
@@ -6342,7 +6348,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
         mockReq.params = { id: agent.id };
 
-        await getAgentHandler(mockReq, mockRes, true);
+        await getAgentExpanded(mockReq, mockRes, jest.fn());
 
         const response = mockRes.json.mock.calls[0][0];
         expect(response.instructionsPrompt).toEqual(instructionsPrompt);
@@ -7919,7 +7925,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
         mockReq.params = { id: agent.id };
 
-        await getAgentHandler(mockReq, mockRes, true);
+        await getAgentExpanded(mockReq, mockRes, jest.fn());
 
         expect(mockRes.status).toHaveBeenCalledWith(200);
         const response = mockRes.json.mock.calls[0][0];
