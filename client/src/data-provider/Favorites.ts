@@ -46,6 +46,37 @@ const sameFavorite = (a: TToolFavorite, b: TToolFavorite) =>
 const agentIdSet = (favorites: FavoritesState | undefined) =>
   new Set((favorites ?? []).map((f) => f.agentId).filter((id): id is string => !!id));
 
+/** An absent prior snapshot is an unknown change, not an empty one: the favorites
+ *  query may still be pending or failed, and reading that as "nothing changed"
+ *  would leave a stale popular page ranked by a pin that is gone. */
+const agentFavoritesChanged = (
+  previous: FavoritesState | undefined,
+  next: FavoritesState | undefined,
+) => {
+  if (previous === undefined) {
+    return true;
+  }
+  const previousIds = agentIdSet(previous);
+  const nextIds = agentIdSet(next);
+  return previousIds.size !== nextIds.size || [...previousIds].some((id) => !nextIds.has(id));
+};
+
+/** Only the 'popular' marketplace sort depends on favorite/pin counts: 'newest',
+ *  'oldest', and 'author' don't change when one user pins or unpins an agent.
+ *  Those cached pages are marked stale without refetching, because an immediate
+ *  refetch would re-sort the list out from under a user who is mid-scroll. */
+const invalidatePopular = (queryClient: QueryClient) =>
+  queryClient.invalidateQueries({
+    predicate: (query) => {
+      const [key, params] = query.queryKey;
+      return (
+        key === QueryKeys.marketplaceAgents &&
+        (params as { sort?: string } | undefined)?.sort === 'popular'
+      );
+    },
+    refetchType: 'none',
+  });
+
 export const useGetFavoritesQuery = (
   config?: Omit<UseQueryOptions<FavoritesState, Error>, 'queryKey' | 'queryFn'>,
 ) => {
@@ -56,7 +87,24 @@ export const useGetFavoritesQuery = (
   const reconcile = reconcileWhenIdle(queryClient, MutationKeys.updateFavorites);
   return useQuery<FavoritesState, Error>(
     [QueryKeys.favorites],
-    () => dataService.getFavorites() as Promise<FavoritesState>,
+    /* A pin made in another tab reaches this one only through this read, and no
+     * mutation runs here to invalidate the popular ranking for it. Compared in
+     * the query function, which runs once per fetch, rather than in `onSuccess`,
+     * which runs once per observer after the cache already holds the new list.
+     * A first read has no earlier list to differ from, and the popular pages
+     * fetched beside it were ranked from the same server state; a read after a
+     * failed one is reconciling against an unknown list. */
+    async () => {
+      const favorites = (await dataService.getFavorites()) as FavoritesState;
+      const state = queryClient.getQueryState<FavoritesState, Error>([QueryKeys.favorites]);
+      /* `status` is back to 'loading' once a refetch with no data starts, so an
+       * earlier failure is read from its timestamp. */
+      const reconciling = state?.data !== undefined || (state?.errorUpdatedAt ?? 0) > 0;
+      if (reconciling && agentFavoritesChanged(state?.data, favorites)) {
+        void invalidatePopular(queryClient);
+      }
+      return favorites;
+    },
     {
       ...reconcile,
       ...config,
@@ -86,37 +134,10 @@ export const useUpdateFavoritesMutation = () => {
           queryClient.setQueryData([QueryKeys.favorites], context.previousFavorites);
         }
       },
-      // Only the 'popular' marketplace sort depends on favorite/pin counts —
-      // 'newest', 'oldest', and 'author' don't change when one user pins or
-      // unpins an agent. Mark those cached pages stale without refetching:
-      // an immediate refetch would re-sort the list out from under a user
-      // who is mid-scroll.
       onSuccess: (_data, newFavorites, context) => {
-        const previousAgentIds = agentIdSet(context?.previousFavorites);
-        const nextAgentIds = agentIdSet(newFavorites);
-        /* An absent prior snapshot is an unknown change, not an empty one: the favorites
-           query may still be pending or failed while a restored pin is being removed, and
-           reading that as "nothing changed" would leave a stale popular page ranked by the
-           pin the user just dropped. */
-        const agentFavoritesChanged =
-          context?.previousFavorites === undefined ||
-          previousAgentIds.size !== nextAgentIds.size ||
-          [...previousAgentIds].some((id) => !nextAgentIds.has(id));
-
-        if (!agentFavoritesChanged) {
-          return;
+        if (agentFavoritesChanged(context?.previousFavorites, newFavorites)) {
+          invalidatePopular(queryClient);
         }
-
-        queryClient.invalidateQueries({
-          predicate: (query) => {
-            const [key, params] = query.queryKey;
-            return (
-              key === QueryKeys.marketplaceAgents &&
-              (params as { sort?: string } | undefined)?.sort === 'popular'
-            );
-          },
-          refetchType: 'none',
-        });
       },
       onSettled: () => {
         if (
