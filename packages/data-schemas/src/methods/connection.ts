@@ -68,25 +68,21 @@ export function createConnections(mongoose: typeof import('mongoose')): Connecti
     }
     const install = { provider: binding.provider, installation: binding.installation };
     const account = { id: binding.account.id, name: binding.account.name };
-    const fresh = { id: `conn_${randomUUID()}`, status: 'active', createdBy: binding.createdBy };
-    // An upsert takes the install from its filter, which no update validator sees, so the
-    // row it would insert is checked whole first.
-    await new Model({ ...install, ...fresh, account }).validate();
     await indexed();
     try {
-      // The calling tenant is part of the filter, so an install another tenant holds is not
-      // matched and the insert that follows is refused by the install index.
-      const row = await Model.findOneAndUpdate(
-        install,
-        { $set: { account }, $setOnInsert: fresh },
-        { upsert: true, new: true },
-      ).lean<ConnectionRecord>();
-      return { ok: true, value: view(row) };
+      const doc = await Model.create({
+        ...install,
+        account,
+        id: `conn_${randomUUID()}`,
+        status: 'active',
+        createdBy: binding.createdBy,
+      });
+      return { ok: true, value: view(doc.toObject()) };
     } catch (error) {
       if ((error as { code?: number }).code !== DUPLICATE_KEY) throw error;
     }
-    // Refused by the index: either this tenant's own concurrent bind won the insert, or
-    // another tenant holds the install. Only the first leaves a row this tenant can see.
+    // The install index refused the insert, so some tenant already holds this install. The
+    // calling tenant is part of this filter: its own row is refreshed, another's is not seen.
     const row = await Model.findOneAndUpdate(
       install,
       { $set: { account } },

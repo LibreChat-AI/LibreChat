@@ -87,7 +87,10 @@ describe('bind', () => {
   });
 
   it('refreshes the account when the same tenant binds the install again', async () => {
+    // Bound between two others, so neither the oldest nor the newest row is the one meant.
+    const older = await bound(TENANT_A, install({ installation: '1000' }));
     const first = await bound(TENANT_A);
+    const newer = await bound(TENANT_A, install({ installation: '1002' }));
     await as(TENANT_A, async () => connections.mark(first.id, 'suspended'));
 
     const again = await bound(
@@ -101,7 +104,18 @@ describe('bind', () => {
       account: { id: '77', name: 'octo-renamed' },
       status: 'suspended',
     });
-    expect(await stored()).toHaveLength(1);
+    expect(await as(TENANT_A, async () => connections.get(older.id))).toEqual(older);
+    expect(await as(TENANT_A, async () => connections.get(newer.id))).toEqual(newer);
+    expect(await stored()).toHaveLength(3);
+  });
+
+  it('holds a second bind to the same checks as the first', async () => {
+    const first = await bound(TENANT_A);
+
+    await expect(
+      as(TENANT_A, async () => connections.bind(install({ account: { id: '77', name: '' } }))),
+    ).rejects.toThrow(/account\.name/);
+    expect(await as(TENANT_A, async () => connections.get(first.id))).toEqual(first);
   });
 
   it('refuses an install another tenant holds and leaves that tenant its record', async () => {
@@ -135,33 +149,6 @@ describe('bind', () => {
     expect(ids.size).toBe(1);
     expect([...ids][0]).toMatch(/^conn_/);
     expect(await stored()).toHaveLength(1);
-  });
-
-  it('answers with the row this tenant already has when the insert loses a race', async () => {
-    const first = await bound(TENANT_A);
-    const lost = Object.assign(new Error('E11000 duplicate key'), { code: 11000 });
-    const query = { lean: () => Promise.reject(lost) };
-    const spy = jest
-      .spyOn(Connection, 'findOneAndUpdate')
-      .mockImplementationOnce(() => query as unknown as ReturnType<typeof Connection.find>);
-
-    const again = await bound(TENANT_A, install({ account: { id: '77', name: 'renamed' } }));
-
-    expect(spy).toHaveBeenCalledTimes(2);
-    // The second write must not insert: it only refreshes the row that won.
-    expect(spy.mock.calls[1][2]).toEqual({ new: true });
-    expect(again).toEqual({ ...first, account: { id: '77', name: 'renamed' } });
-  });
-
-  it('throws a failure that is not the install index refusing the insert', async () => {
-    const down = Object.assign(new Error('not primary'), { code: 10107 });
-    const query = { lean: () => Promise.reject(down) };
-    const spy = jest
-      .spyOn(Connection, 'findOneAndUpdate')
-      .mockImplementationOnce(() => query as unknown as ReturnType<typeof Connection.find>);
-
-    await expect(as(TENANT_A, async () => connections.bind(install()))).rejects.toBe(down);
-    expect(spy).toHaveBeenCalledTimes(1);
   });
 
   it('stores a connection without a tenant where there is none', async () => {

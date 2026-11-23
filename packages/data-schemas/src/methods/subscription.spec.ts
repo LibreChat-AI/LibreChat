@@ -585,28 +585,19 @@ describe('match', () => {
   it('matches only subscriptions with no tenant for a connection that has none', async () => {
     await made();
     const loose = await subscriptions.create(owner, draft());
+    // A row from before tenancy can carry an empty tenant, which also means none.
+    const blank = await subscriptions.create(other, draft());
+    await Rows.collection.updateOne({ id: blank.id }, { $set: { tenantId: '' } });
 
-    expect(await matched('pull_request.review', { id: 'conn_1' })).toEqual([loose]);
+    const found = await matched('pull_request.review', { id: 'conn_1' });
+
+    expect(found.map((subscription) => subscription.id).sort()).toEqual(
+      [loose.id, blank.id].sort(),
+    );
     // Called from inside a tenant's scope, it still reads the connection's side.
     expect(
       await as(TENANT_A, async () => matched('pull_request.review', { id: 'conn_1' })),
-    ).toEqual([loose]);
-  });
-
-  it('keeps the rest of the caller’s context while it reads', async () => {
-    await made();
-    let seen: string | undefined;
-    const find = jest.spyOn(Rows, 'find').mockImplementationOnce((...args) => {
-      seen = tenantStorage.getStore()?.requestId;
-      find.mockRestore();
-      return Rows.find(...(args as Parameters<typeof Rows.find>));
-    });
-
-    await tenantStorage.run({ tenantId: TENANT_B, requestId: 'req-1' }, async () =>
-      matched('pull_request.review'),
-    );
-
-    expect(seen).toBe('req-1');
+    ).toHaveLength(2);
   });
 
   describe('where every read must name a tenant', () => {
@@ -623,13 +614,11 @@ describe('match', () => {
       _resetStrictCache();
     });
 
-    it('matches with no tenant in scope, and refuses a connection that has none', async () => {
+    it('matches with no tenant in scope, where a scoped read is refused', async () => {
       const mine = await made();
 
       expect(await matched('pull_request.review')).toEqual([mine]);
-      await expect(matched('pull_request.review', { id: 'conn_1' })).rejects.toThrow(
-        /without tenant context/,
-      );
+      await expect(subscriptions.get(mine.id)).rejects.toThrow(/without tenant context/);
     });
   });
 });

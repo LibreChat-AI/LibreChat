@@ -4,7 +4,7 @@ import type { SubscriptionRecord } from '~/models/subscription';
 import { createAgentEventSubscriptionModel } from '~/models/subscription';
 import { tenantPartitionFilter } from '~/models/plugins/tenantIsolation';
 import { createChannelIndexGate } from './channelIndexes';
-import { tenantStorage } from '~/config/tenantContext';
+import { runAsSystem } from '~/config/tenantContext';
 
 /** What an owner may edit. The connection and the agent are fixed when it is created. */
 const EDITABLE = [
@@ -168,14 +168,16 @@ export function createSubscriptions(mongoose: typeof import('mongoose')): Subscr
     connection: Pick<Connection, 'id' | 'tenantId'>,
     event: string,
   ): Promise<Subscription[]> {
-    const scope = { ...tenantStorage.getStore(), tenantId: connection.tenantId };
-    return tenantStorage.run(scope, async () => {
+    // The caller's scope is set aside and the connection's tenant is named in the filter. A
+    // connection with no tenant reads only rows with none, not every tenant's.
+    return runAsSystem(async () => {
       const rows = await Model.find({
         connection: connection.id,
         enabled: true,
         events: event,
-        // A connection with no tenant reads only rows with none, not every tenant's.
-        $and: [tenantPartitionFilter('Subscription match')],
+        ...(connection.tenantId
+          ? { tenantId: connection.tenantId }
+          : tenantPartitionFilter('Subscription match')),
       }).lean<SubscriptionRecord[]>();
       return rows.map(view);
     });
