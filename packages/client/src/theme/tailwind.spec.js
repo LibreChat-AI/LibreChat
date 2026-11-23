@@ -311,6 +311,19 @@ describe('LibreChat Tailwind preset', () => {
       `width: max(var(--theme-button-height, ${defaultAppearance.buttonHeight}), 24px)`,
     );
 
+    /** The field heights hold the floor the field stylesheet sets on touch devices, and draw the
+     *  theme's own height wherever that floor is unset. */
+    const fields = await generate(['h-theme-field', 'h-theme-field-lg', 'h-theme-auth-field']);
+    [
+      ['--theme-field-height', defaultAppearance.fieldHeight],
+      ['--theme-field-height-lg', defaultAppearance.fieldHeightLg],
+      ['--theme-auth-field-height', defaultAppearance.authFieldHeight],
+    ].forEach(([property, fallback]) =>
+      expect(fields).toContain(
+        `height: max(var(${property}, ${fallback}), var(--lc-field-floor, 0px))`,
+      ),
+    );
+
     /** A stylesheet that predates the control spacing roles pads controls with the shared
      *  spacing they read before. */
     expect(rule(css, 'px-theme-control-x')).toContain(
