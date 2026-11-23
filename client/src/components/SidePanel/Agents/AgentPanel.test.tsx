@@ -3,8 +3,8 @@
  */
 import * as React from 'react';
 import userEvent from '@testing-library/user-event';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { QueryClient, QueryObserver, QueryClientProvider } from '@tanstack/react-query';
 import type { Agent, TAgentsEndpoint } from 'librechat-data-provider';
 import type { UseFormReturn } from 'react-hook-form';
 import type { useModelCatalog } from '~/data-provider/Endpoints/models';
@@ -702,13 +702,17 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
     it('offers a retry when the basic agent request fails before hydration', async () => {
       const { mockUseGetAgentByIdQuery } = setupMocks();
       mockFormDefaults = { id: '' };
-      const refetch = jest.fn();
-      mockUseGetAgentByIdQuery.mockReturnValue({
-        data: undefined,
-        isError: true,
-        isInitialLoading: false,
-        refetch,
-      } as ReturnType<typeof useGetAgentByIdQuery>);
+      const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const query = {
+        queryKey: ['agent', 'agent-123'],
+        queryFn: async (): Promise<Agent> => {
+          throw new Error('Agent unavailable');
+        },
+      };
+      await expect(cache.fetchQuery(query)).rejects.toThrow('Agent unavailable');
+      const result = new QueryObserver(cache, query).getCurrentResult();
+      const refetch = jest.fn().mockResolvedValue(result);
+      mockUseGetAgentByIdQuery.mockReturnValue({ ...result, refetch });
 
       render(<AgentPanel />, { wrapper: createWrapper() });
 
@@ -716,6 +720,7 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
       expect(screen.queryByText('Loading...')).toBeNull();
       fireEvent.click(screen.getByRole('button', { name: 'Retry agent load' }));
       expect(refetch).toHaveBeenCalledTimes(1);
+      cache.clear();
     });
 
     it('keeps instructions controls loading for an admin without ACL EDIT until the expanded agent arrives', async () => {
