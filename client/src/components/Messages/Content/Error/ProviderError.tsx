@@ -98,11 +98,16 @@ export default function ProviderError({ json, message }: ErrorRendererProps) {
         });
   }
 
-  /** Classified LangChain failures: a gateway may explain the limit or the model in `info`. */
+  /**
+   * Classified LangChain failures: a gateway may explain the limit or the model in `info`, often
+   * with what to do next (where to ask for budget, which models are allowed), so it stays in view
+   * at any length rather than collapsing. The server caps it at `maxProviderErrorChars`.
+   */
   const classifiedKey = errorKey != null ? langChainErrorCopy[errorKey] : undefined;
   if (classifiedKey != null) {
     return (
       <ErrorWithDetail
+        inline
         headline={localize(classifiedKey)}
         detail={readString(json, 'info')}
         label={localize('com_error_details_provider')}

@@ -126,9 +126,11 @@ const ASK_USER_LONG_QUESTIONS_MARKER = 'E2E_ASK_USER_LONG_QUESTIONS:';
 const RESUME_ICON_REPLY_MARKER = 'E2E_RESUME_ICON_REPLY:';
 const FORCED_ERROR_MARKER = 'E2E_FORCED_ERROR:';
 /** `<CODE>:<label>`: throws mid-stream the way LangChain classifies a provider failure, with a
- *  gateway's explanation after the status code (the `BARE` variant carries the status alone). */
+ *  gateway's explanation after the status code (the `BARE` variant carries the status alone, the
+ *  `LONG` one a multi-line explanation with a link, past a sentence's length). */
 const GATEWAY_ERROR_MARKER = 'E2E_GATEWAY_ERROR:';
 const BARE_GATEWAY_ERROR_MARKER = 'E2E_BARE_GATEWAY_ERROR:';
+const LONG_GATEWAY_ERROR_MARKER = 'E2E_LONG_GATEWAY_ERROR:';
 const GATEWAY_ERROR_STATUS = { MODEL_RATE_LIMIT: 429, MODEL_NOT_FOUND: 404 };
 const MARKDOWN_REPLY_MARKER = 'E2E_MARKDOWN_REPLY';
 /** Display and inline math, so a spec can tell KaTeX rendered (it loads on first need). */
@@ -857,12 +859,17 @@ function replyResponses(text) {
   }
 
   const gatewayError =
-    getMarkerValue(text, GATEWAY_ERROR_MARKER) || getMarkerValue(text, BARE_GATEWAY_ERROR_MARKER);
+    getMarkerValue(text, GATEWAY_ERROR_MARKER) ||
+    getMarkerValue(text, BARE_GATEWAY_ERROR_MARKER) ||
+    getMarkerValue(text, LONG_GATEWAY_ERROR_MARKER);
   if (gatewayError) {
     const [code, label = ''] = gatewayError.split(':');
-    const explanation = text.includes(BARE_GATEWAY_ERROR_MARKER)
-      ? ''
-      : ` Gateway budget for ${label} is spent. Waiting will not help; ask an administrator for more.`;
+    let explanation = ` Gateway budget for ${label} is spent. Waiting will not help; ask an administrator for more.`;
+    if (text.includes(BARE_GATEWAY_ERROR_MARKER)) {
+      explanation = '';
+    } else if (text.includes(LONG_GATEWAY_ERROR_MARKER)) {
+      explanation = ` Gateway budget for ${label} is spent for this month and resets on the first day of the next one.\nWaiting a few minutes will not help. To keep working now, open a request for a higher budget at https://service.example.com/ai/budget and include your user id, the model you were using and the reason you need more.`;
+    }
     return {
       responses: [`E2E gateway error prelude ${label}`],
       thrownError: `${GATEWAY_ERROR_STATUS[code] ?? 400}${explanation}\n\nTroubleshooting URL: https://docs.langchain.com/oss/javascript/langchain/errors/${code}/\n`,
