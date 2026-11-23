@@ -4061,6 +4061,41 @@ describe('GenerationJobManager Integration Tests', () => {
       bystanderSubscription?.unsubscribe();
     }, 40000);
 
+    test('a create retired before exposure releases its request claim on both keys', async () => {
+      const ownerSubscriber = (ioredisClient as Redis).duplicate();
+      const owner = createReplica(ownerSubscriber);
+      const router = createReplica();
+      const streamId = `${testPrefix}-unexposed-claim-${Date.now()}`;
+      const clientRequestId = `req-unexposed-claim-${Date.now()}`;
+
+      await owner.createJob(streamId, 'user-1', streamId, {
+        initialMetadata: { generationProtocolVersion: 2 },
+      });
+      ownerSubscriber.disconnect();
+
+      const claim = await router.claimGeneration('user-1', clientRequestId, streamId, streamId, 2);
+      await expect(
+        router.createJob(streamId, 'user-1', streamId, {
+          idempotencyClientRequestId: clientRequestId,
+          idempotencyClaimToken: claim.existing!.claimToken,
+          initialMetadata: { generationProtocolVersion: 2 },
+        }),
+      ).rejects.toThrow('predecessor handoff could not be confirmed');
+
+      expect(await router.getJobStore().getJob(streamId)).toMatchObject({
+        status: 'error',
+        error: 'Generation predecessor handoff could not be confirmed',
+        idempotencyClientRequestId: clientRequestId,
+      });
+      await expect(
+        router.getGenerationAdmissionEvidence('user-1', clientRequestId, streamId),
+      ).resolves.toBeNull();
+      await expect(router.hasGenerationClaim('user-1', clientRequestId)).resolves.toBe(false);
+      const retry = await router.claimGeneration('user-1', clientRequestId, streamId, streamId, 2);
+      expect(retry.claimed).toBe(true);
+      expect(retry.existing?.startedAt).toBeUndefined();
+    }, 40000);
+
     test('a steer routed to a non-owning replica arms the owner and flips its poll', async () => {
       const owner = createReplica();
       const router = createReplica();

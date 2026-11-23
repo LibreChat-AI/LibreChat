@@ -2334,11 +2334,14 @@ class GenerationJobManagerClass {
         ownsCommittedCreate,
       );
       if (ownsCommittedCreate && !predecessorsDelivered) {
-        await this.terminalizeUnexposedGeneration(
+        const retired = await this.terminalizeUnexposedGeneration(
           streamId,
           currentCommittedJob,
           'Generation predecessor handoff could not be confirmed',
         );
+        if (retired) {
+          await this.releaseUnexposedClaim(streamId, userId, conversationId, options);
+        }
         return null;
       }
     }
@@ -2465,6 +2468,46 @@ class GenerationJobManagerClass {
       'Generation membership could not be recovered after an ambiguous create',
     );
     return null;
+  }
+
+  /** A generation retired because its predecessor handoff failed never left
+   * `createJob`, so no provider began for it. Its started tombstone would still
+   * answer every retry of the same request as an admitted generation, and a
+   * durable delivery retrying its own key would record a turn that never ran.
+   * Release both keys by token, after the job is terminal, so the retry is a
+   * real second start. A key left behind by a failed release keeps the request
+   * a duplicate, which is the outcome this replaces. */
+  private async releaseUnexposedClaim(
+    streamId: string,
+    userId: string,
+    conversationId: string | undefined,
+    options: CreateGenerationJobOptions,
+  ): Promise<void> {
+    const clientRequestId = options.idempotencyClientRequestId;
+    const claimToken = options.idempotencyClaimToken;
+    if (clientRequestId == null || claimToken == null) {
+      return;
+    }
+    const claim: IdempotencyClaimValue = {
+      streamId,
+      conversationId: conversationId ?? streamId,
+      claimToken,
+    };
+    try {
+      await this.jobStore.releaseIdempotencyKey(
+        this.generationClaimKey(userId, clientRequestId, streamId),
+        claim,
+      );
+      await this.jobStore.releaseIdempotencyKey(
+        this.legacyGenerationClaimKey(userId, clientRequestId),
+        claim,
+      );
+    } catch (error) {
+      logger.error(
+        `[GenerationJobManager] Failed to release the claim of unexposed generation ${streamId}:`,
+        getSafeErrorMetadata(error),
+      );
+    }
   }
 
   /** Persist a conservative FINAL for a job whose generation was never exposed
@@ -2858,12 +2901,15 @@ class GenerationJobManagerClass {
     }
 
     if (!(await this.processDurableReplacementReceipts(streamId, jobData, conversationId))) {
-      await this.terminalizeUnexposedGeneration(
+      const retired = await this.terminalizeUnexposedGeneration(
         streamId,
         jobData,
         'Generation predecessor handoff could not be confirmed',
       );
       this.retireStoppedPredecessorRuntime(streamId, jobData.createdAt);
+      if (retired) {
+        await this.releaseUnexposedClaim(streamId, userId, conversationId, options);
+      }
       throw new Error('Generation predecessor handoff could not be confirmed');
     }
 
