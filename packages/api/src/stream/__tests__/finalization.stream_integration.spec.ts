@@ -127,7 +127,7 @@ test('recovers a lost terminal CAS acknowledgement without stealing another clai
   const { job, provider, options } = await start(id);
   await store.enqueueSteer(
     id,
-    { steerId: 'steer-1', text: 'keep this steer', createdAt: Date.now() },
+    { steerId: 'steer-1', userId: 'user', text: 'keep this steer', createdAt: Date.now() },
     job.createdAt,
   );
   const script = redis.eval.bind(redis);
