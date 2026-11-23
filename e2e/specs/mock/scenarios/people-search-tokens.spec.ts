@@ -145,6 +145,52 @@ test.describe('people search over word-prefix tokens', () => {
     }
   });
 
+  test('@scenario:people-search-keeps-exact-match-past-prefix-window an exact name match saved after more prefix matches than the search limit is still returned, ranked first', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const id = suffix();
+    const exact = { name: `Rank${id}`, email: `${uniqueName('rank-exact')}@search.test` };
+    const prefixes = Array.from({ length: 25 }, (_, i) => {
+      const member = `member${String(i).padStart(2, '0')}`;
+      return {
+        name: `Rank${id} ${member}`,
+        email: `${uniqueName(member)}@search.test`,
+        tokens: [`rank${id}`, member],
+      };
+    });
+    const emails = [exact.email, ...prefixes.map((user) => user.email)];
+    try {
+      await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+      /** Saved in this order, so a prefix window read in index order holds only the longer names. */
+      await withMongo(async (db) => {
+        const primary = await db.collection('users').findOne({}, { sort: { createdAt: 1 } });
+        const now = new Date();
+        const doc = (name: string, email: string, tokens: string[]) => ({
+          name,
+          email,
+          tenantId: primary?.tenantId,
+          nameTokens: tokens,
+          emailTokens: [email],
+          usernameTokens: [],
+          createdAt: now,
+          updatedAt: now,
+        });
+        await db
+          .collection('users')
+          .insertMany(prefixes.map(({ name, email, tokens }) => doc(name, email, tokens)));
+        await db.collection('users').insertOne(doc(exact.name, exact.email, [`rank${id}`]));
+      });
+
+      const token = await getAccessToken(page);
+      const results = await search(page, token, `rank${id}`);
+      expect(results).toHaveLength(20);
+      expect(results[0]?.name).toBe(exact.name);
+    } finally {
+      await deleteUsers(emails);
+    }
+  });
+
   test('@scenario:backfill-repairs-missing-and-stale-tokens a user saved without tokens is still found, a user whose tokens went stale is found under the new name once the backfill runs', async ({
     page,
   }) => {

@@ -316,6 +316,53 @@ export function buildSearchTokenFilter(
   return clauses.length === 1 ? clauses[0] : { $and: clauses };
 }
 
+/**
+ * Builds the filter for the documents `scoreSearchMatch` scores 100, a field
+ * holding exactly the query's words in any order, or `null` when the query has
+ * no words. A prefix search fetches a bounded window in index order, so an
+ * exact match can sit past it; callers fetch this filter beside it so that
+ * match is never cut.
+ *
+ * It stays index-bound: `$all` seeks one query word by equality and `$size`
+ * pins the token array to the query's words, plus the whole value that email
+ * and handle fields also store. An email query also matches the whole stored
+ * address, since a domain part with a hyphen adds a token of its own. A value
+ * that repeats a word can match without scoring 100, so callers still score
+ * what comes back. Documents written before the token fields existed are left
+ * to the prefix filter's fallback.
+ */
+export function buildSearchExactFilter(
+  fields: readonly SearchTokenField[],
+  query: string,
+): Record<string, unknown> | null {
+  const normalized = normalizeSearchText(query.trim());
+  const queryTokens = [...new Set(words(normalized))];
+  if (queryTokens.length === 0 || queryTokens.length > MAX_SEARCH_QUERY_TOKENS) {
+    return null;
+  }
+
+  const whole = truncate(normalized, MAX_SEARCH_VALUE_LENGTH);
+  const clauses: Record<string, unknown>[] = [];
+  for (const field of fields) {
+    clauses.push({ [field.tokens]: { $all: queryTokens, $size: queryTokens.length } });
+    if (field.kind === 'words') {
+      continue;
+    }
+    clauses.push({ [field.tokens]: { $all: queryTokens, $size: queryTokens.length + 1 } });
+    /** Only a whole stored address contains "@", so this cannot match a word token. */
+    if (field.kind === 'email' && whole.includes('@')) {
+      clauses.push({ [field.tokens]: whole });
+    }
+  }
+  return { $or: clauses };
+}
+
+/** `first`, then the documents of `rest` it does not already hold, compared by `_id`. */
+export function mergeSearchResults<T extends { _id?: unknown }>(first: T[], rest: T[]): T[] {
+  const seen = new Set(first.map((doc) => String(doc._id)));
+  return [...first, ...rest.filter((doc) => doc._id == null || !seen.has(String(doc._id)))];
+}
+
 export function buildUserSearchFilter(
   query: string,
   options?: SearchFilterOptions,
@@ -323,6 +370,14 @@ export function buildUserSearchFilter(
   return buildSearchTokenFilter(USER_SEARCH_TOKEN_FIELDS, query, options);
 }
 
+export function buildUserExactFilter(query: string): Record<string, unknown> | null {
+  return buildSearchExactFilter(USER_SEARCH_TOKEN_FIELDS, query);
+}
+
 export function buildGroupSearchFilter(query: string): Record<string, unknown> | null {
   return buildSearchTokenFilter(GROUP_SEARCH_TOKEN_FIELDS, query);
+}
+
+export function buildGroupExactFilter(query: string): Record<string, unknown> | null {
+  return buildSearchExactFilter(GROUP_SEARCH_TOKEN_FIELDS, query);
 }
