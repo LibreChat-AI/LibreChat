@@ -1,12 +1,15 @@
+import { ContentParts } from '@librechat/chat/components';
 import { setAppContentParts } from './Parts/slots';
-import ContentParts from './ContentParts';
+import { contentSlots } from './ContentParts';
 
-/** Fills the parts host's content slot with the app's renderer. Omitted row fields take an
- *  assistant reply's defaults: not the user's, the last row, latest while it is submitting. */
+/** Fills the parts host's content slot with the chat package's renderer and this app's slots.
+ *  Omitted row fields take an assistant reply's defaults: not the user's, the last row, latest
+ *  while it is submitting. */
 setAppContentParts(
   ({ isCreatedByUser = false, isLast = true, isLatestMessage, isSubmitting, ...props }) => (
     <ContentParts
       {...props}
+      slots={contentSlots}
       isCreatedByUser={isCreatedByUser}
       isLast={isLast}
       isSubmitting={isSubmitting}

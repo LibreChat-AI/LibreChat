@@ -6,6 +6,8 @@ import type {
   TAttachment,
   FullToolCall,
   TMessageContentParts,
+  SubagentAttachmentFile,
+  SubagentAttachmentCallsParams,
   SubagentAttachmentCallsResponse,
 } from 'librechat-data-provider';
 import type { Context } from 'react';
@@ -328,4 +330,36 @@ export function routeStoredSubagentHints(
     }
   });
   return byIndex.size > 0 ? byIndex : NO_LIVE_CALLS;
+}
+
+/**
+ * Child calls of the stored transcripts of the previewed subagent calls in `content`, for the
+ * files whose owner is in doubt, keyed by the call's index in `content`. A file a background task
+ * delivers after the message loaded names a child call the cached preview never hinted; while
+ * `files` is not empty, `useCalls` (the host's query hook) asks the server which transcript holds
+ * each. The hook is called on every render and must stay the same one.
+ */
+export function useStoredSubagentHints(
+  content: ReadonlyArray<TMessageContentParts | undefined> | undefined,
+  files: SubagentAttachmentFile[],
+  conversationId: string | null | undefined,
+  messageId: string,
+  useCalls: (
+    params: SubagentAttachmentCallsParams,
+    enabled: boolean,
+  ) => ReadonlyArray<{ data?: SubagentAttachmentCallsResponse }>,
+): ReadonlyMap<number, NestedCall[]> {
+  const previewed = useMemo(() => hasOmittedSubagentContent(content), [content]);
+  const results = useCalls(
+    { conversationId: conversationId ?? '', messageId, files },
+    previewed && files.length > 0 && !!conversationId && !!messageId,
+  );
+  /** A string, so the routing changes only when an answer does. */
+  const answers = JSON.stringify(results.map((result) => result.data?.parts ?? null));
+  return useMemo(() => {
+    const parts = (
+      JSON.parse(answers) as Array<SubagentAttachmentCallsResponse['parts'] | null>
+    ).flatMap((batch) => batch ?? []);
+    return routeStoredSubagentHints(previewed ? content : undefined, parts);
+  }, [answers, previewed, content]);
 }

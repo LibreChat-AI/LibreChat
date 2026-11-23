@@ -64,7 +64,9 @@ jest.mock('~/Providers/MCPAppsPolicyContext', () => ({
 
 jest.mock('~/components/MCPUIResource', () => {
   const ReactActual = jest.requireActual('react') as typeof React;
-  const MCPAppSuppressionContext = ReactActual.createContext<ReadonlySet<TAttachment> | null>(null);
+  /** The package's context: its content renderer is what provides the suppressed set. */
+  const { AppSuppressionContext: MCPAppSuppressionContext } =
+    jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
   return {
     MCPAppSuppressionContext,
     MCPAppViews: ({
@@ -283,6 +285,15 @@ jest.mock('@librechat/chat/dist/components/parts/Image.cjs', () => ({
   __esModule: true,
   default: () => <div data-testid="image" />,
 }));
+jest.mock('@librechat/chat/dist/components/parts/Attachment.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/Attachment.cjs'),
+  AttachmentGroup: mockCards().AttachmentGroup,
+}));
+jest.mock('@librechat/chat/dist/components/parts/MemoryArtifacts.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/MemoryArtifacts.cjs'),
+  __esModule: true,
+  default: () => <div data-testid="memory-artifacts" />,
+}));
 jest.mock('@librechat/chat/dist/components/parts/Container.cjs', () => ({
   __esModule: true,
   default: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
@@ -303,11 +314,6 @@ jest.mock('~/components/Web/Sources', () => ({
       />
     );
   },
-}));
-
-jest.mock('../MemoryArtifacts', () => ({
-  __esModule: true,
-  default: () => <div data-testid="memory-artifacts" />,
 }));
 
 jest.mock('../WebSearch', () => ({

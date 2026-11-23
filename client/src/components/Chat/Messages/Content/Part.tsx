@@ -22,7 +22,7 @@ import './toolCallSlots';
  * app's state (a paused question, approval controls, a subagent's agents, search results) and
  * its error message. Every other part is the package's to draw.
  */
-const renderers: PartRenderers = extendPartRenderers({
+export const renderers: PartRenderers = extendPartRenderers({
   claim: ({ part }) => {
     const askUserQuestion = getAskUserQuestionPart(part);
     if (!askUserQuestion) {
