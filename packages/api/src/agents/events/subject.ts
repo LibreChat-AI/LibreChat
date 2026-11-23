@@ -85,6 +85,12 @@ export function createSubscriptionHost(deps: {
   canUseAgent: (agentId: string, user: IUser) => Promise<boolean>;
   /** Whether a run of this owner can pause for approval. Absent, it cannot. */
   canPauseRuns?: (user: IUser) => Promise<boolean>;
+  /**
+   * The longest a grant this owner makes may last, in hours, as the deployment sets it.
+   * Absent, the default every grant has. It bounds the grant only: no value lifts the need
+   * for one.
+   */
+  getMaxLifetimeHours?: (user: IUser) => Promise<number>;
   /** The owner and whether they may run the agent are supplied by this host. */
   enrollment: Omit<RunGrantOfferDeps, 'findUser' | 'canUseRoot' | 'canUseMCP'>;
 }): SubscriptionHost {
@@ -117,11 +123,16 @@ export function createSubscriptionHost(deps: {
     return createRunGrantService<SubscriptionIdentity>({
       storage: deps.storage,
       // A subscription always needs its grant, from the moment it is created.
-      getLimits: async () => ({
-        enabled: true,
-        maxLifetimeHours: DEFAULT_RUN_GRANT_LIFETIME_HOURS,
-        requireAfterMs: 0,
-      }),
+      getLimits: async (identity) => {
+        const user = deps.getMaxLifetimeHours && (await loadOwner(identity, source.findUser));
+        return {
+          enabled: true,
+          maxLifetimeHours: user
+            ? await deps.getMaxLifetimeHours!(user)
+            : DEFAULT_RUN_GRANT_LIFETIME_HOURS,
+          requireAfterMs: 0,
+        };
+      },
       canUse: async (identity) => {
         const user = await loadOwner(identity, source.findUser);
         return user != null && (await deps.canUseAgent(identity.agentId, user));

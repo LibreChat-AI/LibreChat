@@ -4,12 +4,26 @@ import request from 'supertest';
 import { Constants } from '@librechat/agents';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import {
+  Permissions,
+  PermissionTypes,
+  AgentCapabilities,
+  DEFAULT_RUN_GRANT_LIFETIME_HOURS,
+} from 'librechat-data-provider';
+import {
   tenantStorage,
   createConnections,
   createSubscriptions,
   createSubscriptionGrantStorage,
 } from '@librechat/data-schemas';
-import type { Connections, Subscriptions, RunGrantStorage, IUser } from '@librechat/data-schemas';
+import type {
+  AgentGraphAccessContext,
+  RunGrantStorage,
+  Subscriptions,
+  Connections,
+  AppConfig,
+  IRole,
+  IUser,
+} from '@librechat/data-schemas';
 import type { RunGrant, Subscription, SubscriptionIdentity } from 'librechat-data-provider';
 import type { ExecutionContext, SavedRun } from '~/agents/authority/context';
 import type { SubscriptionHost, SubscriptionInput } from './subject';
@@ -49,6 +63,28 @@ let connectionId: string;
 const unused = async (): Promise<never> => {
   throw new Error('not read by a run that calls no tool');
 };
+
+type HostDeps = Parameters<typeof createSubscriptionHost>[0];
+
+/** The host over the real stores, with nothing of the owner's configuration readable. */
+const build = (overrides: Partial<HostDeps> = {}): SubscriptionHost =>
+  createSubscriptionHost({
+    storage,
+    getSubscription: subscriptions.get,
+    getConnection: connections.get,
+    findUser,
+    getRoleByName: unused,
+    canUseAgent,
+    enrollment: {
+      getAppConfig,
+      resolveGraphAccess: unused,
+      getNodes: unused,
+      getModelsConfig: unused,
+      ensureConfigServers: unused,
+      getServers: unused,
+    },
+    ...overrides,
+  });
 
 type TriggerRequest = NonNullable<Parameters<typeof createTriggerExecutionContext>[0]> & {
   user: { id: string; tenantId?: string };
@@ -169,22 +205,7 @@ beforeEach(async () => {
   canUseAgent = jest.fn<Promise<boolean>, [string, IUser]>(async () => true);
   findUser = jest.fn(async (id: string) => ({ id, role: 'USER' }) as IUser);
   getAppConfig = jest.fn(unused);
-  host = createSubscriptionHost({
-    storage,
-    getSubscription: subscriptions.get,
-    getConnection: connections.get,
-    findUser,
-    getRoleByName: unused,
-    canUseAgent,
-    enrollment: {
-      getAppConfig,
-      resolveGraphAccess: unused,
-      getNodes: unused,
-      getModelsConfig: unused,
-      ensureConfigServers: unused,
-      getServers: unused,
-    },
-  });
+  host = build();
 });
 
 describe('the context of a delivery a subscription matched', () => {
@@ -594,43 +615,13 @@ describe('a subscription that is not live', () => {
 
   it("refuses another owner's subscription even where the lookup ignores the owner", async () => {
     const subscription = await made(OTHER);
-    host = createSubscriptionHost({
-      storage,
-      getSubscription: (id) => subscriptions.get(id),
-      getConnection: connections.get,
-      findUser,
-      getRoleByName: unused,
-      canUseAgent,
-      enrollment: {
-        getAppConfig,
-        resolveGraphAccess: unused,
-        getNodes: unused,
-        getModelsConfig: unused,
-        ensureConfigServers: unused,
-        getServers: unused,
-      },
-    });
+    host = build({ getSubscription: (id) => subscriptions.get(id) });
     expect(await outcome(inputFor(delivery(subscription.id)))).toBe('binding_mismatch');
   });
 
   it('refuses when the subscription is deleted before the run is put under it', async () => {
     const subscription = await made();
-    host = createSubscriptionHost({
-      storage: { ...storage, readRunGrant: async () => null },
-      getSubscription: subscriptions.get,
-      getConnection: connections.get,
-      findUser,
-      getRoleByName: unused,
-      canUseAgent,
-      enrollment: {
-        getAppConfig,
-        resolveGraphAccess: unused,
-        getNodes: unused,
-        getModelsConfig: unused,
-        ensureConfigServers: unused,
-        getServers: unused,
-      },
-    });
+    host = build({ storage: { ...storage, readRunGrant: async () => null } });
     const input = inputFor(delivery(subscription.id));
     expect(await outcome(input)).toBe('binding_mismatch');
     expect(grantExecution(input.context)).toBeUndefined();
@@ -640,6 +631,143 @@ describe('a subscription that is not live', () => {
     const subscription = await made();
     canUseAgent.mockRejectedValueOnce(new Error('acl store down'));
     await expect(place(inputFor(delivery(subscription.id)))).rejects.toThrow('acl store down');
+  });
+});
+
+describe("the owner's grant, made through the consent service", () => {
+  /** A deployment with one MCP server, which nothing declares for subscriptions. */
+  const served = (overrides: Partial<HostDeps> = {}): SubscriptionHost =>
+    build({
+      getRoleByName: async () =>
+        ({ permissions: { [PermissionTypes.MCP_SERVERS]: { [Permissions.USE]: true } } }) as IRole,
+      enrollment: {
+        getAppConfig: async () =>
+          ({
+            // What schedules may be granted says nothing about subscriptions.
+            interfaceConfig: {
+              schedules: {
+                mcpConsent: {
+                  enabled: false,
+                  resources: {
+                    warehouse: {
+                      url: 'https://warehouse.example/mcp',
+                      credentialMode: 'anonymous',
+                      issuer: null,
+                      audience: null,
+                      scopes: [],
+                    },
+                  },
+                },
+              },
+            },
+            endpoints: { agents: { capabilities: [AgentCapabilities.tools] } },
+            mcpConfig: {
+              warehouse: { type: 'streamable-http', url: 'https://warehouse.example/mcp' },
+            },
+          }) as unknown as AppConfig,
+        getModelsConfig: async () => ({ test: ['test'] }),
+        ensureConfigServers: async () => ({}),
+        getServers: async () => ({
+          warehouse: { type: 'streamable-http' as const, url: 'https://warehouse.example/mcp' },
+        }),
+        getNodes: async (ids: string[]) =>
+          ids.map((id) => ({
+            id,
+            provider: 'test',
+            model: 'test',
+            tools: ['web_search', 'query_mcp_warehouse'],
+            agent_ids: [],
+          })),
+        resolveGraphAccess: async () => ({}) as AgentGraphAccessContext,
+      },
+      ...overrides,
+    });
+
+  it('offers the whole agent or its tools one by one, and says the grant is required', async () => {
+    host = served();
+    const subscription = await made();
+    const view = await host.service.view(identityOf(subscription));
+    expect(view).toMatchObject({
+      state: 'missing',
+      required: true,
+      requireAfterMs: null,
+      // No server is declared for subscriptions, so none is offered as a recipient.
+      targets: [],
+      tools: { offered: ['query_mcp_warehouse', 'web_search'], allowed: [] },
+      offer: { maxLifetimeHours: DEFAULT_RUN_GRANT_LIFETIME_HOURS, everything: true },
+    });
+  });
+
+  it('stores what the owner confirms, and the next delivery runs under it', async () => {
+    host = served();
+    const subscription = await made();
+    const identity = identityOf(subscription);
+    const offered = await host.service.view(identity);
+    const confirmed = await host.service.confirm(identity, {
+      offerDigest: offered.offer!.digest,
+      expectedRevision: offered.revision,
+      lifetimeHours: 1,
+      allow: {},
+      tools: ['web_search'],
+    });
+    expect(confirmed).toMatchObject({
+      state: 'active',
+      required: false,
+      tools: { allowed: ['web_search'] },
+    });
+    const input = inputFor(delivery(subscription.id));
+    await place(input);
+    expect(grantExecution(input.context)!.narrow(AGENT, TOOLS)).toEqual([
+      'web_search',
+      Constants.SUBAGENT,
+    ]);
+    // Withdrawn, the grant allows nothing again.
+    await host.service.revoke(identity, confirmed.revision!);
+    const after = inputFor(delivery(subscription.id));
+    await place(after);
+    expect(grantExecution(after.context)!.grantsTool(AGENT, 'web_search')).toBe(false);
+  });
+
+  it('reports a grant the subscription was edited after as changed', async () => {
+    host = served();
+    const subscription = await made();
+    const identity = identityOf(subscription);
+    const offered = await host.service.view(identity);
+    await host.service.confirm(identity, {
+      offerDigest: offered.offer!.digest,
+      expectedRevision: offered.revision,
+      lifetimeHours: 1,
+      allow: {},
+      everything: true,
+    });
+    await subscriptions.update(subscription.id, OWNER, { prompt: 'Do something else.' });
+    expect(await host.service.view(identity)).toMatchObject({ state: 'changed' });
+  });
+
+  it('bounds the lifetime by what the deployment sets, and by the default without it', async () => {
+    const getMaxLifetimeHours = jest.fn(async () => 2);
+    host = served({ getMaxLifetimeHours });
+    const subscription = await made();
+    const identity = identityOf(subscription);
+    const offered = await host.service.view(identity);
+    expect(offered.offer).toMatchObject({ maxLifetimeHours: 2 });
+    expect(offered.required).toBe(true);
+    expect(getMaxLifetimeHours).toHaveBeenCalledWith(expect.objectContaining({ id: OWNER }));
+    const choice = {
+      offerDigest: offered.offer!.digest,
+      expectedRevision: offered.revision,
+      allow: {},
+      everything: true as const,
+    };
+    await expect(host.service.confirm(identity, { ...choice, lifetimeHours: 3 })).rejects.toThrow(
+      'consent_invalid',
+    );
+    await expect(
+      host.service.confirm(identity, { ...choice, lifetimeHours: 2 }),
+    ).resolves.toMatchObject({ state: 'active' });
+    // An owner who is gone has no setting to read: the default bounds what is shown.
+    findUser.mockResolvedValue(null);
+    await expect(host.service.view(identity)).resolves.toMatchObject({ offer: null });
   });
 });
 
