@@ -324,6 +324,20 @@ describe('resolveCheckpointMessage', () => {
     });
   });
 
+  it('drops the stored count of a legacy summary row without its own count', () => {
+    const checkpoint = resolveCheckpointMessage({ summary: 'Legacy', tokenCount: 30 });
+
+    expect(checkpoint).toEqual({
+      summary: 'Legacy',
+      role: 'system',
+      content: [{ type: ContentTypes.TEXT, text: 'Legacy' }],
+    });
+    expect(checkpoint).toHaveProperty('tokenCount', undefined);
+    expect(
+      resolveCheckpointMessage({ summary: 'Legacy', summaryTokenCount: null, tokenCount: 30 }),
+    ).toHaveProperty('tokenCount', undefined);
+  });
+
   it('is null for a row that is no checkpoint', () => {
     expect(resolveCheckpointMessage({ content: [{ ...summaryPart, failed: true }] })).toBeNull();
     expect(
