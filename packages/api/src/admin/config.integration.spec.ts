@@ -71,7 +71,7 @@ function handlersFor(
     listAllConfigs: methods.listAllConfigs,
     findConfigByPrincipal: methods.findConfigByPrincipal,
     writeConfigDocument: methods.writeConfigDocument,
-    unsetConfigField: methods.unsetConfigField,
+    unsetConfigFieldTracked: methods.unsetConfigFieldTracked,
     deleteConfig: methods.deleteConfig,
     toggleConfigActiveTracked: methods.toggleConfigActiveTracked,
     hasConfigCapability,
@@ -92,21 +92,28 @@ async function readStored(principalId: string): Promise<StoredConfig | null> {
   return doc as StoredConfig | null;
 }
 
+const LIFECYCLE_TIMEOUT_MS = 180_000;
+
 beforeAll(async () => {
-  jest.resetModules();
-  const dataSchemas = await import('@librechat/data-schemas');
+  const [dataSchemas, handlersModule, capabilitiesModule, server] = await Promise.all([
+    import('@librechat/data-schemas'),
+    import('./config'),
+    import('~/middleware/capabilities'),
+    MongoMemoryServer.create(),
+  ]);
+  mongoServer = server;
   jest.spyOn(dataSchemas.logger, 'error').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'warn').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'info').mockReturnValue(dataSchemas.logger);
   ({ mergeConfigOverrides } = dataSchemas);
-  ({ createAdminConfigHandlers } = await import('./config'));
-  ({ generateCapabilityCheck } = await import('~/middleware/capabilities'));
+  ({ createAdminConfigHandlers } = handlersModule);
+  ({ generateCapabilityCheck } = capabilitiesModule);
 
-  mongoServer = await MongoMemoryServer.create();
   await mongoose.connect(mongoServer.getUri());
   dataSchemas.createModels(mongoose);
+  await mongoose.models.Config.init();
   methods = dataSchemas.createMethods(mongoose);
-});
+}, LIFECYCLE_TIMEOUT_MS);
 
 afterEach(async () => {
   await Promise.all([
@@ -117,8 +124,8 @@ afterEach(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
-});
+  await mongoServer?.stop();
+}, LIFECYCLE_TIMEOUT_MS);
 
 describe('admin config writes against a real Config collection', () => {
   describe('top-level sections outside configSchema', () => {
@@ -204,6 +211,80 @@ describe('admin config writes against a real Config collection', () => {
         tombstones: [],
       });
       expect((await readStored('legacy'))?.overrides).not.toHaveProperty('paths');
+    });
+  });
+
+  describe('fields the server derives', () => {
+    const stale = { projectId: 'x', serviceKeyFile: 'http://169.254.169.254/latest' };
+    const params = { principalType: ROLE, principalId: 'derived' };
+
+    it('leaves them out of a whole-document write, a field write and a tombstone', async () => {
+      const handlers = handlersFor(async () => true);
+      const put = mockRes();
+      await handlers.upsertConfigOverrides(
+        mockReq({
+          params,
+          body: {
+            overrides: {
+              endpoints: { anthropic: { titleModel: 'claude-haiku-4-5', vertexConfig: stale } },
+            },
+          },
+        }),
+        put,
+      );
+      expect(put.statusCode).toBe(201);
+      expect((await readStored('derived'))?.overrides).toEqual({
+        endpoints: { anthropic: { titleModel: 'claude-haiku-4-5' } },
+      });
+
+      const patched = mockRes();
+      await handlers.patchConfigField(
+        mockReq({
+          params,
+          body: {
+            entries: [
+              { fieldPath: 'endpoints.anthropic.vertexConfig', value: stale },
+              {
+                fieldPath: 'endpoints.anthropic',
+                value: { titleModel: 'claude-sonnet-4-6', vertexConfig: stale },
+              },
+              { fieldPath: 'endpoints.google', value: { vertexConfig: stale } },
+            ],
+          },
+        }),
+        patched,
+      );
+      expect(patched.statusCode).toBe(200);
+      expect((await readStored('derived'))?.overrides).toEqual({
+        endpoints: {
+          anthropic: { titleModel: 'claude-sonnet-4-6' },
+          google: { vertexConfig: stale },
+        },
+      });
+
+      const tombstoned = mockRes();
+      await handlers.tombstoneConfigField(
+        mockReq({ params, body: { fieldPath: 'endpoints.anthropic.vertexConfig' } }),
+        tombstoned,
+      );
+      expect(tombstoned.statusCode).toBe(200);
+      expect((await readStored('derived'))?.tombstones ?? []).toEqual([]);
+    });
+
+    it('stores nothing from a whole-document write that holds only a derived field', async () => {
+      const handlers = handlersFor(async () => true);
+      const put = mockRes();
+      await handlers.upsertConfigOverrides(
+        mockReq({
+          params,
+          body: { overrides: { endpoints: { anthropic: { vertexConfig: stale } } } },
+        }),
+        put,
+      );
+
+      expect(put.statusCode).toBe(200);
+      expect(put.body?.message).toBe('No actionable override sections provided');
+      expect(await readStored('derived')).toBeNull();
     });
   });
 

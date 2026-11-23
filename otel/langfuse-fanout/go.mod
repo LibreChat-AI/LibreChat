@@ -1,6 +1,6 @@
 module github.com/danny-avila/librechat/otel/langfuse-fanout
 
-go 1.25.0
+go 1.26.10
 
 require (
 	github.com/prometheus/client_golang v1.23.2

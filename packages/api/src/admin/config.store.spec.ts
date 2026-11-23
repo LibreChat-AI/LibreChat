@@ -56,7 +56,7 @@ function createHandlers(overrides: Partial<AdminConfigDeps> = {}): AdminConfigHa
     listAllConfigs: methods.listAllConfigs,
     findConfigByPrincipal: methods.findConfigByPrincipal,
     writeConfigDocument: methods.writeConfigDocument,
-    unsetConfigField: methods.unsetConfigField,
+    unsetConfigFieldTracked: methods.unsetConfigFieldTracked,
     deleteConfig: methods.deleteConfig,
     toggleConfigActiveTracked: methods.toggleConfigActiveTracked,
     hasConfigCapability: async () => true,
@@ -651,7 +651,10 @@ describe('segment addressing on the field routes', () => {
 
     expect(both.statusCode).toBe(400);
     expect(duplicate.statusCode).toBe(400);
-    expect(duplicate.body).toEqual({ error: 'Duplicate field path segments' });
+    expect(duplicate.body).toEqual({
+      error: 'Duplicate field path segments',
+      code: 'DUPLICATE_FIELD_PATH',
+    });
     expect(await raw().countDocuments({ principalId: params.principalId })).toBe(0);
   });
 

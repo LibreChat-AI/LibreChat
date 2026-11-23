@@ -1,19 +1,19 @@
 const mongoose = require('mongoose');
-const { AccessControlService, isEnabled, ensureDirectoryPrincipalUser } = require('@librechat/api');
+const { AccessControlService, isEnabled, createPrincipalService } = require('@librechat/api');
 const {
   tenantStorage,
   getTenantId,
   logger,
   runAfterTransaction,
 } = require('@librechat/data-schemas');
+const { RetryHandlerOptions } = require('@microsoft/microsoft-graph-client');
 const { ResourceType, PrincipalType } = require('librechat-data-provider');
 const {
   entraIdPrincipalFeatureEnabled,
   getUserOwnedEntraGroups,
   getUserEntraGroups,
   getEntraGroupDetailsBatch,
-  getGroupMembers,
-  getGroupOwners,
+  createGraphClient,
 } = require('~/server/services/GraphApiService');
 const db = require('~/models');
 
@@ -27,22 +27,6 @@ const validateResourceType = (resourceType) => {
   if (!validTypes.includes(resourceType)) {
     throw new Error(`Invalid resourceType: ${resourceType}. Valid types: ${validTypes.join(', ')}`);
   }
-};
-
-const ensureLocalUserPrincipalExists = async (principalId) => {
-  const user = await db.findUser({ _id: principalId }, '_id');
-  if (!user) {
-    throw new Error('User principal not found');
-  }
-  return user._id.toString();
-};
-
-const ensureLocalGroupPrincipalExists = async (principalId) => {
-  const group = await db.findGroupById(principalId, { _id: 1 });
-  if (!group) {
-    throw new Error('Group principal not found');
-  }
-  return group._id.toString();
 };
 
 /**
@@ -315,171 +299,20 @@ const getAvailableRoles = async ({ resourceType }) => {
   return await db.findRolesByResourceType(resourceType);
 };
 
-/**
- * Ensures a principal exists in the database based on TPrincipal data
- * Creates user if it doesn't exist locally (for Entra ID users)
- * @param {Object} principal - TPrincipal object from frontend
- * @param {string} principal.type - PrincipalType.USER, PrincipalType.GROUP, or PrincipalType.PUBLIC
- * @param {string} [principal.id] - Local database ID (null for Entra ID principals not yet synced)
- * @param {string} principal.name - Display name
- * @param {string} [principal.email] - Email address
- * @param {string} [principal.source] - 'local' or 'entra'
- * @param {string} [principal.idOnTheSource] - Entra ID object ID for external principals
- * @returns {Promise<string|null>} Returns the principalId for database operations, null for public
- */
-const ensurePrincipalExists = async function (principal) {
-  if (principal.type === PrincipalType.PUBLIC) {
-    return null;
-  }
-
-  if (principal.type === PrincipalType.USER && principal.id) {
-    return await ensureLocalUserPrincipalExists(principal.id);
-  }
-
-  if (principal.type === PrincipalType.USER && principal.source === 'entra') {
-    return ensureDirectoryPrincipalUser(principal, {
-      findUserBySourceId: async (idOnTheSource) => {
-        const user = await db.findUser({ idOnTheSource });
-        return user ? { id: user._id.toString() } : null;
-      },
-      findUserByEmail: async (email) => {
-        const user = await db.findUser({ email });
-        return user ? { id: user._id.toString() } : null;
-      },
-      createUser: async (userData) => {
-        const userId = await db.createUser(userData, true, true);
-        return userId.toString();
-      },
-    });
-  }
-
-  if (principal.type === PrincipalType.GROUP) {
-    throw new Error('Group principals should be handled by group-specific methods');
-  }
-
-  throw new Error(`Unsupported principal type: ${principal.type}`);
-};
-
-/**
- * Ensures a group principal exists in the database based on TPrincipal data
- * Creates group if it doesn't exist locally (for Entra ID groups)
- * For Entra ID groups, always synchronizes member IDs when authentication context is provided
- * @param {Object} principal - TPrincipal object from frontend
- * @param {string} principal.type - Must be PrincipalType.GROUP
- * @param {string} [principal.id] - Local database ID (null for Entra ID principals not yet synced)
- * @param {string} principal.name - Display name
- * @param {string} [principal.email] - Email address
- * @param {string} [principal.description] - Group description
- * @param {string} [principal.source] - 'local' or 'entra'
- * @param {string} [principal.idOnTheSource] - Entra ID object ID for external principals
- * @param {Object} [authContext] - Optional authentication context for fetching member data
- * @param {string} [authContext.accessToken] - Access token for Graph API calls
- * @param {string} [authContext.sub] - Subject identifier
- * @returns {Promise<string>} Returns the groupId for database operations
- */
-const ensureGroupPrincipalExists = async function (principal, authContext = null) {
-  if (principal.type !== PrincipalType.GROUP) {
-    throw new Error(`Invalid principal type: ${principal.type}. Expected '${PrincipalType.GROUP}'`);
-  }
-
-  if (principal.id && principal.source !== 'entra') {
-    return await ensureLocalGroupPrincipalExists(principal.id);
-  }
-
-  if (principal.source === 'entra') {
-    if (!principal.name || !principal.idOnTheSource) {
-      throw new Error('Entra ID group principals must have name and idOnTheSource');
-    }
-
-    let memberIds = [];
-    if (authContext && authContext.accessToken && authContext.sub) {
-      try {
-        memberIds = await getGroupMembers(
-          authContext.accessToken,
-          authContext.sub,
-          principal.idOnTheSource,
-        );
-
-        // Include group owners as members if feature is enabled
-        if (isEnabled(process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS)) {
-          const ownerIds = await getGroupOwners(
-            authContext.accessToken,
-            authContext.sub,
-            principal.idOnTheSource,
-          );
-          if (ownerIds && ownerIds.length > 0) {
-            memberIds.push(...ownerIds);
-            // Remove duplicates
-            memberIds = [...new Set(memberIds)];
-          }
-        }
-      } catch (error) {
-        logger.error('Failed to fetch group members from Graph API:', error);
-      }
-    }
-
-    let existingGroup = await db.findGroupByExternalId(principal.idOnTheSource, 'entra');
-
-    if (!existingGroup && principal.email) {
-      existingGroup = await db.findGroupByQuery({ email: principal.email.toLowerCase() });
-    }
-
-    if (existingGroup) {
-      const updateData = {};
-      let needsUpdate = false;
-
-      if (!existingGroup.idOnTheSource && principal.idOnTheSource) {
-        updateData.idOnTheSource = principal.idOnTheSource;
-        updateData.source = 'entra';
-        needsUpdate = true;
-      }
-
-      if (principal.description && existingGroup.description !== principal.description) {
-        updateData.description = principal.description;
-        needsUpdate = true;
-      }
-
-      if (principal.email && existingGroup.email !== principal.email.toLowerCase()) {
-        updateData.email = principal.email.toLowerCase();
-        needsUpdate = true;
-      }
-
-      if (authContext && authContext.accessToken && authContext.sub) {
-        updateData.memberIds = memberIds;
-        needsUpdate = true;
-      }
-
-      if (needsUpdate) {
-        await db.updateGroupById(existingGroup._id, updateData);
-      }
-
-      return existingGroup._id.toString();
-    }
-
-    const groupData = {
-      name: principal.name,
-      source: 'entra',
-      idOnTheSource: principal.idOnTheSource,
-      memberIds: memberIds, // Store idOnTheSource values of group members (empty if no auth context)
-    };
-
-    if (principal.email) {
-      groupData.email = principal.email.toLowerCase();
-    }
-
-    if (principal.description) {
-      groupData.description = principal.description;
-    }
-
-    const newGroup = await db.createGroup(groupData);
-    return newGroup._id.toString();
-  }
-  if (principal.id && authContext == null) {
-    return principal.id;
-  }
-
-  throw new Error(`Unsupported group principal source: ${principal.source}`);
-};
+const principalService = createPrincipalService({
+  findPermissionUser: (...args) => db.findPermissionUser(...args),
+  findPermissionGroup: (...args) => db.findPermissionGroup(...args),
+  persistPermissionPrincipals: (...args) => db.persistPermissionPrincipals(...args),
+  createClient: createGraphClient,
+  retryOptions: [new RetryHandlerOptions(0, 0)],
+  get includeOwners() {
+    return isEnabled(process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS);
+  },
+  logger,
+});
+const ensurePrincipalExists = principalService.ensureUser;
+const ensureGroupPrincipalExists = principalService.ensureGroup;
+const preparePermissionPrincipals = principalService.prepare;
 
 /**
  * Sync user's Entra ID group memberships with auto-creation of missing groups
@@ -736,6 +569,7 @@ module.exports = {
   hasPublicPermission,
   getAvailableRoles,
   bulkUpdateResourcePermissions,
+  preparePermissionPrincipals,
   ensurePrincipalExists,
   ensureGroupPrincipalExists,
   syncUserEntraGroupMemberships,

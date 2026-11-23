@@ -1,3 +1,4 @@
+import type { ClassValue } from 'clsx';
 import { disabledFillClasses } from './theme';
 import { cn } from './utils';
 
@@ -11,6 +12,14 @@ export const composerSurfaceClasses = (): string =>
   cn(
     'border border-border-light bg-surface-composer text-text-primary transition-all duration-200',
   );
+
+/**
+ * The composer's travel between placements: `margin-bottom` eases with `max-width`, carrying the
+ * composer between the landing clearance and the conversation one on the same form node, so the
+ * band slides instead of jumping. Reduced motion takes the new position outright.
+ */
+export const composerPlacementTransition = (): string =>
+  cn('transition-[max-width,margin-bottom] duration-300 motion-reduce:transition-none');
 
 /** Elevation states for the composer surface. `within` is the CSS-only
  *  equivalent of the managed focused/blurred pair for surfaces that do not
@@ -62,3 +71,10 @@ export const composerControlClasses = (): string =>
      *  surface is under 1.2:1 and would leave the control with no visible boundary. */
     'hover:bg-surface-hover',
   );
+
+/**
+ * Merges composer class names so a later utility replaces one from the same theme group
+ * (`h-8` takes the place of `h-theme-control`, `gap-1.5` of `gap-theme-control-gap`).
+ * Chat components call this where they extend `composerControlClasses()`.
+ */
+export const mergeComposerClasses = (...inputs: ClassValue[]): string => cn(...inputs);

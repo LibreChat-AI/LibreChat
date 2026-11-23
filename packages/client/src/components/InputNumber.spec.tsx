@@ -19,6 +19,24 @@ describe('InputNumber', () => {
     expect(container.firstElementChild).toHaveClass('theme-disabled-within:opacity-100');
   });
 
+  /** The parts' disabled ink is a class the component adds while it is disabled, not a
+   *  `:has(:disabled) *` rule: a `:has()` whose subject is every descendant makes a `disabled`
+   *  flip anywhere re-style the whole subtree of every `:has()` anchor above it. */
+  it('restyles its parts for a fill theme only while it is disabled, without a :has() over every descendant', () => {
+    const parts = [
+      'theme-disabled-fill:[&_*]:border-border-disabled',
+      'theme-disabled-fill:[&_*]:text-text-disabled',
+    ];
+    const disabled = render(<InputNumber disabled defaultValue={1} aria-label="Off" />);
+    expect(disabled.container.firstElementChild).toHaveClass(...parts);
+    disabled.unmount();
+
+    const enabled = render(<InputNumber defaultValue={1} aria-label="On" />);
+    const wrapper = enabled.container.firstElementChild as HTMLElement;
+    expect(wrapper).not.toHaveClass(...parts);
+    expect(wrapper.className).not.toContain('theme-disabled-within:[&_*]');
+  });
+
   it('keeps the bordered field by default', () => {
     render(<InputNumber aria-label="count" />);
     const wrapper = screen.getByRole('spinbutton').closest('.rc-input-number');

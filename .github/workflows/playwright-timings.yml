@@ -1,0 +1,101 @@
+name: Playwright Shard Timings
+
+# Keeps the Playwright shard plan current without a commit. playwright-mock.yml splits the mock
+# suite across its shards by each spec file's recorded seconds, and the run waits for the
+# slowest shard, so the plan is only as good as the record: nine days after the committed
+# e2e/timings.mock.json was last rebuilt by hand, 61 of 487 spec files had no recorded time and
+# a run planned at 915 s per shard measured 665 s to 922 s of tests across them (run
+# 43419115343, 2026-11-13). Planned from another green run's timings, the same run spans 745 s
+# to 831 s.
+#
+# On each push to dev this rebuilds the timings from the three most recent green runs of that
+# workflow on dev, with the `record` command e2e/README.md documents for doing it by hand, and
+# saves them as a cache entry. The `Shard timings` job of a later Playwright run hands the
+# newest entry to every shard; a pull request reads dev's entries as its base branch.
+#
+# A push records the runs that finished before it, not its own: the suite it starts ends about
+# 18 minutes later, and the next push picks that run up. Only green push runs on dev count.
+# They run the whole memory suite with nothing skipped, and under failOnFlakyTests a green run
+# has no retried attempt inflating a file. No job reads this workflow's result, and a run with
+# nothing to record ends green: the previous entry, or the committed file, stays in use.
+#
+# A pull request that changes this file or the planner runs everything except the save.
+
+on:
+  push:
+    branches:
+      - dev
+  pull_request:
+    paths:
+      - '.github/workflows/playwright-timings.yml'
+      - '.github/scripts/playwright-shards.mjs'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: playwright-timings-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  record:
+    name: Record shard timings
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Find the three most recent green runs on dev
+        id: runs
+        run: |
+          RUNS=$(gh run list --workflow playwright-mock.yml --branch dev --event push \
+            --status success --limit 3 --json databaseId --jq 'map(.databaseId) | join(" ")')
+          echo "ids=$RUNS" >> "$GITHUB_OUTPUT"
+          echo "newest=${RUNS%% *}" >> "$GITHUB_OUTPUT"
+          echo "green runs on dev: ${RUNS:-none}"
+
+      # The entry is keyed by the newest run it was built from, so a push that finds no newer
+      # green run than the last recording has nothing to do.
+      - name: Check whether the newest run is already recorded
+        id: recorded
+        if: steps.runs.outputs.newest != ''
+        uses: actions/cache/restore@v5
+        with:
+          path: e2e/.generated/shard-timings.json
+          key: e2e-shard-timings-${{ steps.runs.outputs.newest }}
+          lookup-only: true
+
+      # Reports expire after seven days and an upload may have failed, so a run or a shard with
+      # no report is passed over: a spec measured by fewer runs is recorded at their mean, and
+      # one measured by none is estimated from its test count when the shards plan.
+      - name: Rebuild the timings from those runs
+        id: build
+        if: >-
+          steps.runs.outputs.newest != '' &&
+          (github.event_name == 'pull_request' || steps.recorded.outputs.cache-hit != 'true')
+        env:
+          RUNS: ${{ steps.runs.outputs.ids }}
+        run: |
+          for run in $RUNS; do
+            gh run download "$run" --pattern 'playwright-report-memory-*' \
+              --dir "e2e/.generated/reports/$run" ||
+              echo "::warning::run $run has no shard reports left to download"
+          done
+          if ! find e2e/.generated/reports -name results.json 2>/dev/null | grep -q .; then
+            echo "no shard reports to record"
+            exit 0
+          fi
+          node .github/scripts/playwright-shards.mjs record \
+            --out e2e/.generated/shard-timings.json e2e/.generated/reports/*
+          echo "built=true" >> "$GITHUB_OUTPUT"
+
+      - name: Save the timings for later runs
+        if: github.event_name == 'push' && steps.build.outputs.built == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: e2e/.generated/shard-timings.json
+          key: e2e-shard-timings-${{ steps.runs.outputs.newest }}

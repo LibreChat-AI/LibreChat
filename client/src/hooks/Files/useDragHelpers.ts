@@ -91,10 +91,19 @@ export default function useDragHelpers() {
   const [{ canDrop, isOver }, drop] = useDrop(
     () => ({
       accept: [NativeTypes.FILE],
-      drop: handleDrop,
+      /**
+       * A drop belongs to the innermost target under it: a conversation open beside the chat
+       * has its own, inside the page's. The page's target neither takes such a drop nor lights
+       * up for it.
+       */
+      drop: (item: { files: File[] }, monitor: DropTargetMonitor) => {
+        if (!monitor.didDrop()) {
+          handleDrop(item);
+        }
+      },
       canDrop: () => true,
       collect: (monitor: DropTargetMonitor) => ({
-        isOver: monitor.isOver(),
+        isOver: monitor.isOver({ shallow: true }),
         canDrop: monitor.canDrop(),
       }),
     }),

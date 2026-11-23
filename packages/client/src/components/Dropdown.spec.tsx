@@ -1,4 +1,5 @@
-import { render, screen } from '@testing-library/react';
+import React from 'react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import Dropdown from './Dropdown';
 
 jest.mock('react-i18next', () => ({
@@ -147,5 +148,35 @@ describe('Dropdown icon-only trigger', () => {
       'min-h-theme-target',
       'min-w-theme-target',
     );
+  });
+});
+
+describe('Dropdown list positioning', () => {
+  const openList = async (props: Partial<React.ComponentProps<typeof Dropdown>>) => {
+    render(
+      <Dropdown
+        value="a"
+        onChange={jest.fn()}
+        ariaLabel="Positioning"
+        options={[{ value: 'a', label: 'Alpha' }]}
+        {...props}
+      />,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('combobox', { name: /Positioning/ }));
+    });
+    return screen.findByRole('listbox');
+  };
+
+  it('caps a minimum width to the space the list has, as DropdownPopup does', async () => {
+    const listbox = await openList({ minWidth: '12rem' });
+    expect(listbox.style.minWidth).toBe(
+      'min(12rem, calc(100vw - 1rem), var(--popover-available-width, 100vw))',
+    );
+  });
+
+  it('leaves the minimum width to the stylesheet when none is given', async () => {
+    const listbox = await openList({});
+    expect(listbox.style.minWidth).toBe('');
   });
 });

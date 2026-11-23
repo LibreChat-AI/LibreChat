@@ -71,13 +71,12 @@ const PresetsMenu: FC = () => {
           render={
             <Button
               size="icon"
-              variant="outline"
-              shape="theme"
+              variant="header-action"
               tabIndex={0}
               id="presets-button"
               data-testid="presets-button"
               aria-label={localize('com_endpoint_examples')}
-              className="bg-presentation h-9 w-9 shrink-0 duration-0"
+              className="size-9 shrink-0"
             >
               <BookCopy className="icon-md" aria-hidden="true" />
             </Button>

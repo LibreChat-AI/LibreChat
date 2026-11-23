@@ -16,16 +16,25 @@ function control(label) {
   }
   const directory = path.join(STATE_ROOT, label);
   const signalPath = (name) => {
-    if (!['ready', 'advance', 'live', 'complete', 'done'].includes(name)) {
+    if (!['ready', 'advance', 'live', 'complete', 'done', 'failed'].includes(name)) {
       throw new Error('Invalid subagent history fixture signal');
     }
     return path.join(directory, name);
   };
   return {
     directory,
-    async signal(name) {
+    async signal(name, detail = '1') {
       await fs.mkdir(directory, { recursive: true });
-      await fs.writeFile(signalPath(name), '1');
+      await fs.writeFile(signalPath(name), detail);
+    },
+    /** Why the scripted model gave up, so a waiter reports that instead of its own timeout. */
+    async failure() {
+      try {
+        return await fs.readFile(signalPath('failed'), 'utf8');
+      } catch (error) {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      }
     },
     async has(name) {
       try {
@@ -40,6 +49,10 @@ function control(label) {
       const deadline = Date.now() + timeoutMs;
       while (!(await this.has(name))) {
         signal?.throwIfAborted();
+        const failure = await this.failure();
+        if (failure != null) {
+          throw new Error(`Subagent history fixture failed before ${name}: ${failure}`);
+        }
         if (Date.now() >= deadline) {
           throw new Error(`Subagent history fixture timed out waiting for ${name}: ${label}`);
         }
@@ -67,13 +80,29 @@ const output = (label, index) => `E2E slow echo: ${payload(label, index)}`;
 const prompt = (label, childId = 'main') => `${MARKER}${childId}:${label}`;
 
 /** Only the model is scripted. Every output must come back through the real MCP tool node. */
-function responsesForText(text, { getLatestUserText, messageType, getContentText }) {
+function responsesForText(text, { messageType, getContentText }) {
   const match = text.match(/E2E_SUBAGENT_HISTORY:([\w-]+):([a-z0-9-]{1,96})(?:\s|$)/);
   if (!match) return null;
   const [, childId, label] = match;
   const gates = control(label);
   const childPrompt = `${CHILD_MARKER}${label}`;
   const verifiedBatches = new Set();
+  const fail = async (reason) => {
+    await gates.signal('failed', reason);
+    throw new Error(reason);
+  };
+  /** A missing result and a shortened one both stop the task: neither is retained history. */
+  const lostResult = (results, indices) => {
+    for (const index of indices) {
+      const returned = results.get(callId(label, index));
+      const expected = output(label, index);
+      if (returned?.includes(expected)) continue;
+      return returned == null
+        ? `call ${index} returned nothing`
+        : `call ${index} returned ${returned.length} characters without its ${expected.length}-character output`;
+    }
+    return null;
+  };
   const toolCall = (index) => ({
     id: callId(label, index),
     name: TOOL_NAME,
@@ -92,7 +121,12 @@ function responsesForText(text, { getLatestUserText, messageType, getContentText
           .filter((message) => messageType(message) === 'tool')
           .map((message) => [message.tool_call_id, getContentText(message.content)]),
       );
-      if (childId !== 'main' && !getLatestUserText(messages).includes(childPrompt)) {
+      const isChild = (messages ?? []).some(
+        (message) =>
+          ['human', 'user'].includes(messageType(message)) &&
+          getContentText(message.content).includes(childPrompt),
+      );
+      if (childId !== 'main' && !isChild) {
         if (results.has(dispatchId(label))) {
           return { response: `E2E history child dispatched ${label}` };
         }
@@ -123,11 +157,11 @@ function responsesForText(text, { getLatestUserText, messageType, getContentText
             toolCalls: indices.map(toolCall),
           };
         }
-        if (
-          returned.length !== BATCH_SIZE ||
-          indices.some((index) => !results.get(callId(label, index)).includes(output(label, index)))
-        ) {
-          throw new Error(`Subagent history fixture lost MCP results: ${label} batch ${start}`);
+        const lost = lostResult(results, indices);
+        if (lost) {
+          await fail(
+            `Subagent history fixture lost MCP results: ${label} batch ${start} (${lost})`,
+          );
         }
         // Old provider context can be pruned after the actual tool result was verified.
         verifiedBatches.add(start);
@@ -138,8 +172,9 @@ function responsesForText(text, { getLatestUserText, messageType, getContentText
       if (!results.has(callId(label, CALL_COUNT))) {
         return { response: liveText(label), toolCalls: [toolCall(CALL_COUNT)] };
       }
-      if (!results.get(callId(label, CALL_COUNT)).includes(output(label, CALL_COUNT))) {
-        throw new Error(`Subagent history fixture lost the live MCP result: ${label}`);
+      const lostLive = lostResult(results, [CALL_COUNT]);
+      if (lostLive) {
+        await fail(`Subagent history fixture lost the live MCP result: ${label} (${lostLive})`);
       }
       await gates.signal('live');
       await gates.wait('complete', { signal: options?.signal });

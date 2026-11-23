@@ -106,11 +106,23 @@ export function createErasureResolver(deps: ErasureResolverDeps) {
         ...deps.db,
         openCheckpointDeletion: deps.openCheckpointDeletion,
         deleteSharedLinks: deps.deleteSharedLinks,
+        deleteUserToolFavorites: (userId, deletionAttemptId) =>
+          inTargetTenant(async () =>
+            deletionAttemptId === undefined
+              ? deps.db.deleteUserToolFavorites(userId)
+              : deps.db.deleteUserToolFavorites(userId, deletionAttemptId),
+          ),
+        cancelUserToolFavoriteDeletion: (userId, deletionAttemptId) =>
+          inTargetTenant(async () =>
+            deps.db.cancelUserToolFavoriteDeletion?.(userId, deletionAttemptId),
+          ),
         deleteUserAgents: (userId) => inTargetTenant(async () => deps.db.deleteUserAgents(userId)),
         findMCPServerOAuthTokenUserIds: (serverName) =>
           inTargetTenant(async () => deps.db.findMCPServerOAuthTokenUserIds(serverName)),
         findMCPServerViewerEntries: (serverId) =>
           inTargetTenant(async () => deps.db.findMCPServerViewerEntries(serverId)),
+        findMCPServerViewerUserIds: (entries) =>
+          inTargetTenant(async () => deps.db.findMCPServerViewerUserIds(entries)),
         deleteStoredFiles: (files) =>
           inTargetTenant(async () => deps.processDeleteRequest({ req: fileRequest, files })),
         invalidateMCPServerTools: (serverName) =>
@@ -131,9 +143,15 @@ export function createErasureResolver(deps: ErasureResolverDeps) {
             inTargetTenant(async () =>
               oauth.getRegistry().resolveAllowlists({ userId: candidateId }),
             ),
-          uninstallOAuthMCP: (candidateId, pluginKey, cleanupConfig, serverConfig) =>
+          uninstallOAuthMCP: (candidateId, pluginKey, cleanupConfig, serverConfig, teardown) =>
             inTargetTenant(async () =>
-              oauth.uninstallOAuthMCP(candidateId, pluginKey, cleanupConfig, serverConfig),
+              oauth.uninstallOAuthMCP(
+                candidateId,
+                pluginKey,
+                cleanupConfig,
+                serverConfig,
+                teardown,
+              ),
             ),
           invalidateUserTools: (candidateId, serverName) =>
             inTargetTenant(async () =>

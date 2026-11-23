@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
+import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { ScheduleEngineDeps, ScheduleLimits, FireResult, FireableSchedule } from './types';
 import type { AgentTriggerEnvelope } from '../agents/triggers/envelope';
 import type { JsonValue } from '../agents/json';
@@ -11,8 +12,9 @@ import {
 import { AgentTriggerServiceUnavailableError } from '../agents/triggers/service';
 import { AgentTriggerDeliveryError } from '../agents/triggers/delivery';
 import { computeNextRunAt, cadenceIntervalMinutes } from './cadence';
+import { PreflightError } from '~/agents/authority/preflight';
 import { resolveScheduleProjectId } from './types';
-import { ScheduleMCPError } from './mcp';
+import { skippedMCPServers } from './trigger';
 
 /** Consecutive balance skips (pre-fire or mid-generation) before auto-disable. */
 export const BALANCE_SKIP_DISABLE_THRESHOLD: number = 5;
@@ -54,6 +56,8 @@ function buildScheduleTriggerEnvelope(
   conversationId: string,
   manual: boolean,
   chatProjectId?: string,
+  /** MCP servers that were not ready, which the run is started without, among those checked. */
+  skipped: { skip: string[]; servers: string[] } = { skip: [], servers: [] },
 ): AgentTriggerEnvelope {
   const occurrenceId = buildFireClientRequestId(schedule.id, scheduledFor);
   const triggerFiles: JsonValue[] = files.map((file) => {
@@ -94,9 +98,35 @@ function buildScheduleTriggerEnvelope(
         ...(typeof schedule.configRevision === 'number' && {
           configRevision: schedule.configRevision,
         }),
+        ...(skipped.skip.length > 0 && { skip: skipped.skip, servers: skipped.servers }),
       },
     },
   });
+}
+
+/**
+ * How a server that was not ready is recorded on a run that starts without it: where, why
+ * and what its owner can do about it, marked as skipped.
+ *
+ * `automaticReplay` and `detail` are left off. A run row that carries `automaticReplay:
+ * false` beside a reason, or `detail`, is a denial of the run: it is settled as an error and
+ * its schedule suspended, by replicas from before this mark existed as well. The reason is
+ * kept, since the owner's way out depends on it (authorize the schedule, not reconnect the
+ * server), and the unattended-auth diagnosis is kept as the reason it amounts to.
+ */
+function skipUnready(outcome: ScheduleMCPOutcome): ScheduleMCPOutcome {
+  if (outcome.status === 'ready') return outcome;
+  const reason =
+    outcome.reason ??
+    (outcome.detail === 'unattended_auth_required' ? ('provider_missing' as const) : undefined);
+  return {
+    server: outcome.server,
+    ...(outcome.agentId != null && { agentId: outcome.agentId }),
+    ...(reason != null && { reason }),
+    ...(outcome.recovery != null && { recovery: outcome.recovery }),
+    status: outcome.status,
+    skipped: true,
+  };
 }
 
 async function enqueueScheduleTrigger(
@@ -295,6 +325,22 @@ export async function fireSchedule(
       return { fired: false, skipped: 'permission_revoked' as const };
     }
 
+    // The deployment requires the terms of service and this owner has not accepted them (never,
+    // or the acceptance was reset). The HTTP gate refuses the loopback dispatch of such an owner,
+    // which dead-letters the delivery and walks the schedule toward `too_many_failures`, so
+    // refuse here instead, ahead of the MCP preflight, the balance write, a capacity slot and
+    // the run row. A skip rather than a disable: accepting is the owner's own remedy, and a
+    // disabled schedule would then wait for a manual re-enable. Like the deletion barrier it
+    // leaves no run row, so the failure streak is untouched. A config lookup failure throws and
+    // the occurrence is retried, never run unchecked.
+    if (await deps.isTermsBlocked(user)) {
+      logger.debug(
+        `[schedules] skipped ${schedule.id}: owner has not accepted the terms of service`,
+      );
+      await advance();
+      return { fired: false, skipped: 'terms_not_accepted' as const };
+    }
+
     // The owner-config generation this occurrence was CLAIMED under, stamped onto every
     // run row (fired or skipped) so bookkeeping can derive its fence from the row.
     const claimedRevision =
@@ -441,7 +487,7 @@ export async function fireSchedule(
     // durable started row or a global generation slot so a slow MCP endpoint cannot
     // consume the capacity healthy ready schedules need to dispatch.
     let mcp: Awaited<ReturnType<ScheduleEngineDeps['preflightMCP']>> = [];
-    let mcpFailure: { error: ScheduleMCPError | null; message: string } | null = null;
+    let mcpFailure: { error: PreflightError | null; message: string } | null = null;
     try {
       const leaseDeadline = schedule.leaseUntil?.getTime() ?? Number.POSITIVE_INFINITY;
       const preflightDeadline =
@@ -467,8 +513,16 @@ export async function fireSchedule(
       ) {
         return stepAsideSuperseded();
       }
-      const failure = error instanceof ScheduleMCPError ? error : null;
-      mcpFailure = { error: failure, message: failure?.message ?? 'MCP preflight unavailable' };
+      const failure = error instanceof PreflightError ? error : null;
+      // Unless its owner asked for every server to be ready, a schedule runs without the
+      // ones that are not: each is marked as skipped, which records why without failing the
+      // run or suspending the schedule. With no outcome there is no server to leave out, and
+      // a check that could not be made at all says nothing about any of them.
+      if (failure && schedule.mcpStrict !== true && failure.outcomes.length > 0) {
+        mcp = failure.outcomes.map(skipUnready);
+      } else {
+        mcpFailure = { error: failure, message: failure?.message ?? 'MCP preflight unavailable' };
+      }
     }
 
     if (options?.signal?.aborted) {
@@ -499,6 +553,7 @@ export async function fireSchedule(
         conversationId,
         options?.manual === true,
         chatProjectId,
+        skippedMCPServers(mcp),
       );
     } catch (envelopeError) {
       logger.error(`[schedules] trigger envelope build failed for ${schedule.id}:`, envelopeError);
@@ -525,13 +580,16 @@ export async function fireSchedule(
         conversationId,
         firedAt: new Date(),
         ...(capacitySlot != null ? { capacitySlot } : {}),
+        // The readiness outcomes are on the row before the run can start: a resumed run reads
+        // from it the servers this occurrence goes without, and the write that follows the
+        // enqueue is allowed to fail.
         ...(admissionFailure
           ? {
               admissionOnly: true,
               error: admissionFailure.error,
               ...(admissionFailure.mcp ? { mcp: admissionFailure.mcp } : {}),
             }
-          : {}),
+          : { ...(mcp.length > 0 ? { mcp } : {}) }),
         deliveryKey,
         // The destination THIS occurrence used. The schedule-level value can move on
         // (a pin redirects later fires, and a paused run does not block them), so a

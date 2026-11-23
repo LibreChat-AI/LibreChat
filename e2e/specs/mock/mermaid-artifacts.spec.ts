@@ -91,7 +91,7 @@ test.describe('Mermaid Artifact resource boundary', () => {
     expect(response.ok()).toBeTruthy();
 
     const artifactButton = messagesView(page).getByRole('button', {
-      name: 'E2E HTML Artifact HTML Opens as a rendered preview Click to open',
+      name: 'Open artifact: E2E HTML Artifact. Opens as a rendered preview',
       exact: true,
     });
     await expect(artifactButton).toBeVisible();

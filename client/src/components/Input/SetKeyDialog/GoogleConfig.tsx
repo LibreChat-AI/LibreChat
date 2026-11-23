@@ -2,8 +2,8 @@ import React from 'react';
 import { object, string } from 'zod';
 import { Label } from '@librechat/client';
 import { AuthKeys } from 'librechat-data-provider';
+import { FileUpload } from '@librechat/chat/components';
 import type { TConfigProps } from '~/common';
-import FileUpload from '~/components/Chat/Input/Files/FileUpload';
 import { useLocalize, useMultipleKeys } from '~/hooks';
 import InputWithLabel from './InputWithLabel';
 
@@ -36,7 +36,6 @@ const GoogleConfig = ({ userKey, setUserKey }: Pick<TConfigProps, 'userKey' | 's
       <FileUpload
         id={AuthKeys.GOOGLE_SERVICE_KEY}
         className="w-full"
-        containerClassName="bg-surface-secondary h-10 max-h-10 w-full resize-none py-2"
         text={localize('com_endpoint_config_key_import_json_key')}
         successText={localize('com_endpoint_config_key_import_json_key_success')}
         invalidText={localize('com_endpoint_config_key_import_json_key_invalid')}

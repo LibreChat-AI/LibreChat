@@ -1,7 +1,9 @@
 import {
+  Constants,
   Providers,
   getModelReasoning,
   effectiveModelReasoning,
+  getReasoningParamDefinitions,
   hasExplicitReasoningEffort,
   ReasoningEffort,
   isReasoningOverrideSupported,
@@ -13,7 +15,16 @@ import {
   type TReasoningCapabilityMap,
 } from 'librechat-data-provider';
 import type { AgentContinuationAdmissionSource } from '~/agents/triggers/host';
+import type { BranchLinkRow, BranchLinks } from '~/messages/history';
 import type { ReasoningCapabilityResult } from '~/types';
+import { walkBranch } from '~/messages/history';
+
+/** Override keys whose level also turns thinking on. */
+const THINKING_LEVEL_KEYS: ReadonlySet<string> = new Set([
+  'effort',
+  'thinkingLevel',
+  'thinkingBudget',
+]);
 
 export type ReasoningOverrideRequest =
   | { ok: true; reasoningOverride?: TReasoningOverride }
@@ -141,7 +152,10 @@ export async function resolveReasoningOverride({
     model: effectiveModel,
     isAgent,
     defaultParamsEndpoint: customParams?.defaultParamsEndpoint ?? defaultParamsEndpoint,
-    paramDefinitions: customParams?.paramDefinitions,
+    paramDefinitions: getReasoningParamDefinitions(
+      endpointsConfig?.[customEndpointKey],
+      effectiveModel,
+    ),
     reasoningFormat: customParams?.reasoningFormat,
     blockedReasoningKeys: new Set([...appliedModelSpecPrivateFields, ...enforcedModelSpecFields]),
     modelReasoning,
@@ -151,10 +165,7 @@ export async function resolveReasoningOverride({
     return { ok: false, reason: 'invalid-reasoning-override' };
   }
 
-  const enablesThinking =
-    reasoningOverride.key === 'effort' ||
-    reasoningOverride.key === 'thinkingLevel' ||
-    reasoningOverride.key === 'thinkingBudget';
+  const enablesThinking = THINKING_LEVEL_KEYS.has(reasoningOverride.key);
   const nextBase =
     existingBase?.key === reasoningOverride.key
       ? existingBase
@@ -228,7 +239,68 @@ export type RequestReasoningOverrideInput = Omit<
   loadReasoningCapabilities?: (endpoint: string) => Promise<ReasoningCapabilityResult>;
   /** The raw request field; validated here, so the caller passes it unparsed. */
   reasoningOverride?: unknown;
+  /**
+   * Reads the conversation's link rows, for a request that picks no level: the level the branch a
+   * fresh turn extends last ran at is found in them. They stay on the request, so the turn's
+   * history read can fetch that branch alone instead of reading the conversation again.
+   */
+  getBranchLinks?: (params: {
+    user: string;
+    conversationId: string;
+  }) => Promise<readonly BranchLinkRow[]>;
 };
+
+type BranchReasoningRequest = {
+  resumeReplayed?: boolean;
+  branchLinks?: BranchLinks;
+  user?: { id?: string };
+  body: {
+    conversationId?: unknown;
+    parentMessageId?: unknown;
+    isEdited?: unknown;
+    editedContent?: unknown;
+    isRegenerate?: unknown;
+    isContinued?: unknown;
+  };
+};
+
+/**
+ * The level a turn without its own pick inherits: the one the branch it extends last ran at, so a
+ * composer choice holds for the rest of the conversation until the user picks another. Only a fresh
+ * turn inherits: a resume replays its own parameters, and an edit, regeneration or continuation
+ * replays a turn that already ran, with the override the client sends for it.
+ */
+async function loadBranchReasoningOverride(
+  req: BranchReasoningRequest,
+  getBranchLinks: RequestReasoningOverrideInput['getBranchLinks'],
+): Promise<TReasoningOverride | undefined> {
+  const { conversationId, parentMessageId, isEdited, editedContent, isRegenerate, isContinued } =
+    req.body;
+  if (
+    getBranchLinks == null ||
+    req.resumeReplayed === true ||
+    isEdited === true ||
+    editedContent != null ||
+    isRegenerate === true ||
+    isContinued === true ||
+    req.user?.id == null ||
+    typeof conversationId !== 'string' ||
+    conversationId === '' ||
+    conversationId === Constants.NEW_CONVO ||
+    typeof parentMessageId !== 'string' ||
+    parentMessageId === Constants.NO_PARENT
+  ) {
+    return undefined;
+  }
+  const user = req.user.id;
+  const rows = await getBranchLinks({ user, conversationId });
+  req.branchLinks = { user, conversationId, parentMessageId, rows };
+  const nearest = walkBranch(rows, parentMessageId).find(
+    (row) => row.isCreatedByUser === true && row.reasoningOverride != null,
+  );
+  const parsed = reasoningOverrideSchema.safeParse(nearest?.reasoningOverride);
+  return parsed.success ? parsed.data : undefined;
+}
 
 /**
  * Validates a request's reasoning override, applies it to the built endpoint
@@ -246,15 +318,22 @@ export type RequestReasoningOverrideInput = Omit<
 export async function applyRequestReasoningOverride<T extends EndpointOption>(
   req: {
     reasoningOverrideBase?: ReasoningOverrideBase;
+    branchLinks?: BranchLinks;
     resumeReplayed?: boolean;
     _isAgentTrigger?: boolean;
-    body: {
+    user?: { id?: string };
+    body: BranchReasoningRequest['body'] & {
       endpointOption: T;
       reasoningOverride?: unknown;
       agentContinuationAdmission?: AgentContinuationAdmissionSource;
     };
   },
-  { reasoningOverride: raw, loadReasoningCapabilities, ...input }: RequestReasoningOverrideInput,
+  {
+    reasoningOverride: raw,
+    loadReasoningCapabilities,
+    getBranchLinks,
+    ...input
+  }: RequestReasoningOverrideInput,
 ): Promise<boolean> {
   const stripReplayedOverride = (): boolean => {
     delete req.body.reasoningOverride;
@@ -295,23 +374,44 @@ export async function applyRequestReasoningOverride<T extends EndpointOption>(
   if (!request.ok) {
     return replayed ? stripReplayedOverride() : false;
   }
-  if (request.reasoningOverride == null) {
+  const inherited = request.reasoningOverride == null;
+  const reasoningOverride =
+    request.reasoningOverride ?? (await loadBranchReasoningOverride(req, getBranchLinks));
+  if (reasoningOverride == null) {
+    return true;
+  }
+  /* Thinking switched off for the conversation wins over a level the turn only inherited: applying
+     it would turn thinking back on behind the switch. A level picked for this turn still does. */
+  if (
+    inherited &&
+    THINKING_LEVEL_KEYS.has(reasoningOverride.key) &&
+    req.body.endpointOption.model_parameters?.thinking === false
+  ) {
     return true;
   }
   const resolution = await resolveReasoningOverride({
     ...input,
     reasoningCapabilities: await loadCapabilitiesFor(
-      request.reasoningOverride,
+      reasoningOverride,
       req.body.endpointOption,
       input,
       loadReasoningCapabilities,
     ),
-    reasoningOverride: request.reasoningOverride,
+    reasoningOverride,
     endpointOption: req.body.endpointOption,
     reasoningOverrideBase: req.reasoningOverrideBase,
   });
+  /* An inherited level the target no longer takes (a model switch, an enforced spec, an
+     unknown catalog) is skipped rather than refused: the user asked for nothing this turn. */
   if (!resolution.ok) {
+    if (inherited) {
+      return true;
+    }
     return replayed ? stripReplayedOverride() : false;
+  }
+  if (inherited) {
+    /* Recorded on the turn like a pick, so the level keeps riding the branch. */
+    req.body.reasoningOverride = reasoningOverride;
   }
   req.reasoningOverrideBase = resolution.reasoningOverrideBase;
   req.body.endpointOption = {

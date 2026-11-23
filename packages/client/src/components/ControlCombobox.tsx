@@ -23,12 +23,18 @@ interface ControlComboboxProps {
   selectedValue: string;
   displayValue?: string;
   items: OptionWithIcon[];
+  /** Custom option content; the string label still supplies searchable text. */
+  renderOption?: (item: OptionWithIcon) => React.ReactNode;
+  /** Fixed virtualized row height, before UI scaling. */
+  optionHeight?: number;
   setValue: (value: string) => void;
   onBlur?: React.FocusEventHandler<HTMLButtonElement>;
   ariaLabel: string;
   ariaInvalid?: boolean;
   ariaDescribedBy?: string;
   searchPlaceholder?: string;
+  /** Optional controls beside the search field, outside the option list. */
+  searchActions?: React.ReactNode;
   selectPlaceholder?: string;
   isCollapsed: boolean;
   SelectIcon?: React.ReactNode;
@@ -73,12 +79,15 @@ function ControlCombobox({
   selectedValue,
   displayValue,
   items,
+  renderOption,
+  optionHeight = ROW_HEIGHT,
   setValue,
   onBlur,
   ariaLabel,
   ariaInvalid,
   ariaDescribedBy,
   searchPlaceholder,
+  searchActions,
   selectPlaceholder,
   containerClassName,
   isCollapsed,
@@ -282,8 +291,8 @@ function ControlCombobox({
           minWidth: matchTriggerWidth ? undefined : 'min(16rem, 90vw)',
         }}
       >
-        <div className="shrink-0 py-1.5">
-          <div className="relative">
+        <div className="flex shrink-0 items-center gap-2 py-1.5">
+          <div className="relative min-w-0 flex-1">
             <Search className="text-text-primary absolute inset-s-3 top-1/2 h-4 w-4 -translate-y-1/2" />
             <Ariakit.Combobox
               store={combobox}
@@ -292,6 +301,7 @@ function ControlCombobox({
               className="bg-surface-secondary text-text-primary w-full rounded-md py-2 ps-9 pe-3 text-sm focus:outline-hidden"
             />
           </div>
+          {searchActions != null && <div className="shrink-0 pe-2">{searchActions}</div>}
         </div>
         <div
           className={cn(
@@ -304,7 +314,7 @@ function ControlCombobox({
             <SelectRenderer
               store={select}
               items={matches}
-              itemSize={ROW_HEIGHT * remScale}
+              itemSize={optionHeight * remScale}
               overscan={5}
             >
               {({ value, icon, label, ...item }) => (
@@ -313,15 +323,17 @@ function ControlCombobox({
                   {...item}
                   className={cn(
                     'flex w-full cursor-pointer items-center px-3 text-sm',
-                    'text-text-primary hover:bg-surface-tertiary',
-                    'data-[active-item]:bg-surface-tertiary',
+                    'text-text-primary hover:bg-surface-hover',
+                    'data-[active-item]:bg-surface-hover',
                   )}
                   render={<Ariakit.SelectItem value={value} />}
                 >
                   {icon != null && iconSide === 'left' && (
                     <div className={optionIconClassName}>{icon}</div>
                   )}
-                  <span className="grow truncate text-start">{label}</span>
+                  <span className={cn('min-w-0 grow text-start', !renderOption && 'truncate')}>
+                    {renderOption ? renderOption({ value: value ?? null, icon, label }) : label}
+                  </span>
                   {icon != null && iconSide === 'right' && (
                     <div className={optionIconClassName}>{icon}</div>
                   )}

@@ -12,7 +12,7 @@ const { loginSchema } = require('./validators');
 
 async function validateLoginRequest(req) {
   const { error } = loginSchema.safeParse(req.body);
-  return error ? errorsToString(error.errors) : null;
+  return error ? errorsToString(error.issues) : null;
 }
 
 async function passportLogin(req, email, password, done) {

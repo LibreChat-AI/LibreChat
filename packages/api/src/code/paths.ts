@@ -54,6 +54,11 @@ function describeUnusablePath(operation: WorkspacePathOperation, displayPath: st
   return `The worker could not open ${quoted}. The file may not exist yet (a command may still be writing it), or the path is a directory or a symlink, or passes through one. List its directory to check before retrying.`;
 }
 
+/** Whether the worker reported the path absent, in either the current or the legacy shape. */
+export function isWorkspacePathMissing(error: WorkspaceToolHttpError): boolean {
+  return getWorkspacePathRejection(error) === 'missing';
+}
+
 /**
  * Appends a short explanation to a worker's path rejection so the model can tell a file that
  * does not exist yet from a malformed path. Other rejections are returned unchanged.

@@ -395,6 +395,19 @@ describe('createSSETransport().reconnectToStream', () => {
     expect(events).toEqual([{ type: 'error', status: 404, data: undefined }]);
   });
 
+  it('does not call a response that answered with a failure an open stream', () => {
+    /** A gateway answering in the server's place, and a generation the server no longer has. */
+    for (const status of [502, 404]) {
+      events = [];
+      attach();
+      current().status = status;
+      current().receiveHeaders();
+      current().write('<html>no stream here</html>');
+
+      expect(events).toEqual([{ type: 'error', status, data: undefined }]);
+    }
+  });
+
   it('reports a cancel the caller did not issue as a dropped connection', () => {
     const connection = attach();
     current().receiveHeaders();

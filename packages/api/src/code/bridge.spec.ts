@@ -177,6 +177,49 @@ describe('getCodeBridgeWorkerStatus', () => {
     expect(status.editFileFeatures).toEqual(['tolerant_match', 'replace_all']);
   });
 
+  test.each<[string, string[] | string | undefined, string[] | undefined]>([
+    ['the advertised feature', ['detached'], ['detached']],
+    ['only the names it knows', ['future_feature', 'detached'], ['detached']],
+    ['nothing from unknown names', ['future_feature'], undefined],
+    ['nothing from a malformed list', 'detached', undefined],
+    ['nothing from an absent list', undefined, undefined],
+  ])('carries negotiated command features: %s', async (_case, commandFeatures, expected) => {
+    const fetchImpl = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          workerId: 'personal-vm',
+          online: true,
+          ready: true,
+          leaseExpiresInMs: 45_000,
+          capabilities: {
+            statefulWorkspace: true,
+            sandboxProfile: 'native-srt',
+            runtimes: ['bash'],
+            workspaceTools: {
+              protocolVersion: 1,
+              operations: ['read_file', 'execute_command'],
+              workspaces: [{ id: 'project-a' }],
+              commandFeatures,
+            },
+          },
+        }),
+      ),
+    );
+
+    const status = await getCodeBridgeWorkerStatus({
+      baseURL: 'https://code.example.com/v1/',
+      token: 'administrator-token',
+      workerId: 'personal-vm',
+      fetchImpl,
+    });
+
+    expect(status.status).toBe('ready');
+    expect(status.operations).toEqual(['read_file', 'execute_command']);
+    expect(status.commandFeatures).toEqual(expected);
+    expect('commandFeatures' in status).toBe(expected !== undefined);
+  });
+
   test('keeps legacy worker status readable without inventing a primary workspace', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(
       new Response(

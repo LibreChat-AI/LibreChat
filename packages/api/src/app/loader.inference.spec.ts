@@ -6,6 +6,7 @@ import { createCustomConfigLoader, ConfigReloadError } from './loader';
 import { resolveAgentInferenceParameters } from '../agents/inference';
 import { getOpenAIConfig } from '../endpoints/openai/config';
 import { parseAgentInferenceInput } from '../agents/input';
+import { expandCustomEndpoint } from './params';
 
 type Definition = NonNullable<NonNullable<TEndpoint['customParams']>['paramDefinitions']>[number];
 
@@ -55,7 +56,10 @@ describe('typed inference declarations in YAML', () => {
     async (mode) => {
       const config = await load(definitions, mode);
       expect(config).not.toBeNull();
-      const endpoint = endpointSchema.parse(config?.endpoints?.custom?.[0]);
+      const loaded = config?.endpoints?.custom?.[0];
+      const endpoint = loaded
+        ? endpointSchema.parse(expandCustomEndpoint(loaded as TEndpoint))
+        : undefined;
       expect(endpoint?.customParams?.paramDefinitions).toMatchObject(
         definitions.map((definition) => ({ ...definition, optionType: 'custom' })),
       );
@@ -128,9 +132,13 @@ describe('typed inference declarations in YAML', () => {
     ).rejects.toThrow('invalid key');
   });
 
-  it('preserves existing shorthand parameter declarations', async () => {
+  it('keeps shorthand parameter declarations as written, and serves them expanded', async () => {
     const config = await load([{ key: 'temperature', default: 0.3 }]);
-    expect(config?.endpoints?.custom?.[0].customParams?.paramDefinitions?.[0]).toMatchObject({
+    const loaded = config?.endpoints?.custom?.[0];
+    expect(loaded?.customParams?.paramDefinitions).toEqual([{ key: 'temperature', default: 0.3 }]);
+    expect(
+      loaded && expandCustomEndpoint(loaded as TEndpoint).customParams?.paramDefinitions?.[0],
+    ).toMatchObject({
       key: 'temperature',
       type: 'number',
       default: 0.3,

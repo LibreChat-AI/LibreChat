@@ -10,6 +10,8 @@ import type { ServerRequest } from '~/types/http';
 process.env.CREDS_KEY =
   process.env.CREDS_KEY ?? '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 process.env.CREDS_IV = process.env.CREDS_IV ?? '0123456789abcdef0123456789abcdef';
+/** An Azure group a write stores must resolve, its `${AZURE_API_KEY}` included. */
+process.env.AZURE_API_KEY = process.env.AZURE_API_KEY ?? 'test-azure-key';
 
 type DataSchemas = typeof import('@librechat/data-schemas');
 type Doc = Record<string, unknown>;
@@ -26,29 +28,35 @@ const ARN =
   'arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-4-6';
 const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const API_KEY = 'sk-gateway-literal-0123456789';
+const LIFECYCLE_TIMEOUT_MS = 180_000;
 
 /**
  * The request path of `api/server/index.js` and `routes/admin/config.js`: app-level sanitizer,
  * authentication, the unsafe-key guard, then the real handlers over the real config methods.
  */
 beforeAll(async () => {
-  jest.resetModules();
-  const dataSchemas = await import('@librechat/data-schemas');
+  const [dataSchemas, handlersModule, sanitizerModule, server] = await Promise.all([
+    import('@librechat/data-schemas'),
+    import('./config'),
+    import('~/middleware/sanitize'),
+    MongoMemoryServer.create(),
+  ]);
+  mongoServer = server;
   ({ decryptV3, mergeConfigOverrides, logger } = dataSchemas);
   jest.spyOn(dataSchemas.logger, 'warn').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'info').mockReturnValue(dataSchemas.logger);
-  const { createAdminConfigHandlers } = await import('./config');
-  const { createRequestSanitizer, rejectUnsafeConfigKeys } = await import('~/middleware/sanitize');
+  const { createAdminConfigHandlers } = handlersModule;
+  const { createRequestSanitizer, rejectUnsafeConfigKeys } = sanitizerModule;
 
-  mongoServer = await MongoMemoryServer.create();
   await mongoose.connect(mongoServer.getUri());
   dataSchemas.createModels(mongoose);
+  await mongoose.models.Config.init();
   const methods = dataSchemas.createMethods(mongoose);
   const handlers = createAdminConfigHandlers({
     listAllConfigs: methods.listAllConfigs,
     findConfigByPrincipal: methods.findConfigByPrincipal,
     writeConfigDocument: methods.writeConfigDocument,
-    unsetConfigField: methods.unsetConfigField,
+    unsetConfigFieldTracked: methods.unsetConfigFieldTracked,
     deleteConfig: methods.deleteConfig,
     toggleConfigActiveTracked: methods.toggleConfigActiveTracked,
     hasConfigCapability: async () => true,
@@ -82,12 +90,12 @@ beforeAll(async () => {
   });
   app.use(createRequestSanitizer(mongoSanitize));
   app.use('/api/admin/config', router);
-});
+}, LIFECYCLE_TIMEOUT_MS);
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
-});
+  await mongoServer?.stop();
+}, LIFECYCLE_TIMEOUT_MS);
 
 let principalCounter = 0;
 function nextRole(): string {
@@ -151,7 +159,16 @@ describe('admin config writes keep dotted record keys (real sanitizer, handlers 
     await putOverrides(role, {
       endpoints: {
         azureOpenAI: {
-          groups: [{ group: 'eastus', apiKey: '${AZURE_API_KEY}', instanceName: 'east', models }],
+          groups: [
+            {
+              group: 'eastus',
+              apiKey: '${AZURE_API_KEY}',
+              instanceName: 'east',
+              deploymentName: 'gpt-41',
+              version: '2024-10-21',
+              models,
+            },
+          ],
         },
       },
     }).expect(201);
@@ -286,6 +303,7 @@ describe('admin config writes refuse keys that cannot be config', () => {
         path: `endpoints.bedrock.inferenceProfiles.${PROFILE}`,
         segments: ['endpoints', 'bedrock', 'inferenceProfiles', PROFILE],
         code: 'invalid_type',
+        params: { expected: 'string', received: 'number' },
       },
     ]);
     expect(await readRaw(role)).toBeNull();
@@ -371,7 +389,14 @@ describe('admin config writes on an engine that cannot store dotted keys', () =>
           endpoints: {
             azureOpenAI: {
               groups: [
-                { group: 'eastus', apiKey: '${AZURE_API_KEY}', models: { 'gpt-4.1': true } },
+                {
+                  group: 'eastus',
+                  apiKey: '${AZURE_API_KEY}',
+                  instanceName: 'east',
+                  deploymentName: 'gpt-41',
+                  version: '2024-10-21',
+                  models: { 'gpt-4.1': true },
+                },
               ],
             },
           },

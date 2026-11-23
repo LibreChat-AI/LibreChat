@@ -8,15 +8,16 @@
  * whose own signatures could otherwise widen or narrow away from the contract, and the context
  * types consumers read.
  */
+import type { ChatHost, useChatHelpers } from '@librechat/chat/react';
 import type { ContextType } from 'react';
 import type { ChatContract, AddedChatContract, ChatSettings, Transport } from './contract';
 import type { ChatTransportContext } from '~/Providers/ChatTransportContext';
 import type { ChatSettingsContext } from '~/Providers/ChatSettingsContext';
 import type useAddedResponse from '~/hooks/Conversations/useAddedResponse';
 import type { AddedChatContext } from '~/Providers/AddedChatContext';
+import type { appChatHost } from '~/Providers/ChatHostContext';
 import type { ChatContext } from '~/Providers/ChatContext';
 import type useChatFunctions from './useChatFunctions';
-import type useChatHelpers from './useChatHelpers';
 import type useNewConvo from '../useNewConvo';
 
 type Equal<A, B> =
@@ -32,6 +33,9 @@ export type ChatContractChecks = [
   Expect<Equal<ChatFunctions['regenerate'], ChatContract['regenerate']>>,
   Expect<Equal<ReturnType<typeof useNewConvo>['newConversation'], ChatContract['newConversation']>>,
 ];
+
+/** The app's host backs every member the chat helpers read, with the signatures they expect. */
+export type ChatHostChecks = [Expect<Equal<typeof appChatHost, ChatHost>>];
 
 export type AddedChatContractChecks = [
   Expect<Equal<ReturnType<typeof useAddedResponse>, AddedChatContract>>,

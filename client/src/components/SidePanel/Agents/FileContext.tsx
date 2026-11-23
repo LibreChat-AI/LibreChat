@@ -126,10 +126,9 @@ function FileContext({
     />
   ) : (
     <Button
-      variant="ghost"
+      variant="section-add"
       disabled={disabledUploadButton}
       aria-label={addLabel}
-      className={addButtonClassName}
       onClick={handleLocalFileClick}
     >
       <Plus className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />

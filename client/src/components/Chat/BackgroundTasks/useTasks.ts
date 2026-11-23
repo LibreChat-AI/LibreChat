@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { v4 } from 'uuid';
+import { parseJsonField } from '@librechat/chat';
 import { useQuery, useQueries } from '@tanstack/react-query';
 import { QueryKeys, dataService } from 'librechat-data-provider';
+import { getToolCallIntent, useParentSubagents } from '@librechat/chat/react';
 import type { TMessage, ParentSubagentSummary } from 'librechat-data-provider';
 import type { TaskRow, ToolCallArgs } from './rows';
 import {
@@ -17,12 +19,10 @@ import {
   useSubagentControlMutation,
   useCancelBackgroundTasksMutation,
 } from '~/data-provider';
-import { useParentSubagents } from '~/components/Chat/Subagents/ParentSubagentsProvider';
-import parseJsonField from '~/components/Chat/Messages/Content/Parts/parseJsonField';
-import { getToolCallIntent } from '~/components/Chat/Messages/Content/Parts/intent';
 
 const noThreads: ReadonlyMap<string, ParentSubagentSummary> = new Map();
 const noRefresh = async () => undefined;
+const noArgs: Record<string, ToolCallArgs> = {};
 
 export type BackgroundTasksView = {
   rows: TaskRow[];
@@ -57,15 +57,19 @@ const describeToolCall = (args: ToolCallArgs): Pick<TaskRow, 'title' | 'detail'>
 /**
  * Joins ordinary background tools (process registry) with detached subagents
  * (durable index) for one conversation, and stops one or every running task.
+ * A reader that only counts passes `details: false` and skips the scan of the
+ * loaded messages that titles each tool row.
  */
 export default function useBackgroundTasks({
   conversationId,
   isSubmitting,
   now,
+  details = true,
 }: {
   conversationId: string;
   isSubmitting: boolean;
   now: number;
+  details?: boolean;
 }): BackgroundTasksView {
   const parent = useParentSubagents();
   // The URL can advance before the host conversation context during navigation.
@@ -151,8 +155,9 @@ export default function useBackgroundTasks({
   /** Observe existing message data without fetching. Structural sharing of the
    * selected record ignores unrelated streaming text but includes late restoration. */
   const selectArgs = useCallback(
-    (messages: TMessage[]) => Object.fromEntries(findToolCallArgs(messages, data?.tasks ?? [])),
-    [data?.tasks],
+    (messages: TMessage[]) =>
+      details ? Object.fromEntries(findToolCallArgs(messages, data?.tasks ?? [])) : noArgs,
+    [details, data?.tasks],
   );
   const { data: selectedArgs } = useQuery<TMessage[], unknown, Record<string, ToolCallArgs>>({
     queryKey: [QueryKeys.messages, conversationId],

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { findSharedLinkById } = require('~/models');
 const express = require('express');
 const {
   AccessRoleIds,
@@ -137,20 +138,22 @@ const checkShareAccessUnlessAgentAdmin = (req, res, next) => {
 };
 
 /**
- * Resources whose owner is fixed by the resource itself (its `user` field), not by an ACL
- * grant. Their owner role cannot be granted to anyone else, and the owner's own entry cannot
- * be changed or removed, so a grantee can never take sharing control away from the owner.
+ * Resources whose owner is fixed by the resource itself (its `user` field, read through each
+ * entry's `findOwner`), not by an ACL grant. Their owner role cannot be granted to anyone
+ * else, and the owner's own entry cannot be changed or removed, so a grantee can never take
+ * sharing control away from the owner.
  */
 const FIXED_OWNER_RESOURCES = {
   [ResourceType.SHARED_LINK]: {
     ownerRoleId: AccessRoleIds.SHARED_LINK_OWNER,
-    model: 'SharedLink',
+    findOwner: async (resourceId) => (await findSharedLinkById(resourceId))?.user,
     message: 'Shared link owner permissions cannot be changed',
     failure: 'Failed to validate shared link owner permissions',
   },
   [ResourceType.CHAT_PROJECT]: {
     ownerRoleId: AccessRoleIds.CHAT_PROJECT_OWNER,
-    model: 'ChatProject',
+    findOwner: async (resourceId) =>
+      (await mongoose.models.ChatProject.findById(resourceId, 'user').lean())?.user,
     message: 'Project owner permissions cannot be changed',
     failure: 'Failed to validate project owner permissions',
   },
@@ -185,9 +188,8 @@ const rejectFixedOwnerPermissionChanges = async (req, res, next) => {
   }
 
   try {
-    const Model = mongoose.models[fixedOwner.model];
-    const resource = await Model.findById(req.params.resourceId, 'user').lean();
-    const ownerId = resource?.user?.toString();
+    const owner = await fixedOwner.findOwner(req.params.resourceId);
+    const ownerId = owner?.toString();
     const touchesOwner = ownerId
       ? userMutations.some((principal) => principal.id?.toString() === ownerId)
       : false;

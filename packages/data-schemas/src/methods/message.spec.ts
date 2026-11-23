@@ -106,7 +106,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 describe('Message Operations', () => {
@@ -3039,6 +3039,51 @@ describe('Message Operations', () => {
   });
 
   describe('CLIENT_MESSAGE_SELECT projection', () => {
+    it('returns what started a turn to the client read and to no other', async () => {
+      const conversationId = uuidv4();
+      const trigger = {
+        event: { type: 'subagent.completion', occurredAt: '2026-11-20T10:00:00.000Z' },
+        subject: { kind: 'schedule', id: 'schedule-1' },
+        origin: {
+          event: { type: 'schedule.occurrence', occurredAt: '2026-11-20T09:00:00.000Z' },
+        },
+      };
+      const row = { conversationId, user: 'user123', isCreatedByUser: true };
+      await saveMessage(mockCtx, {
+        ...row,
+        messageId: 'triggered',
+        text: 'wake',
+        trigger,
+      } as never);
+      await saveMessage(mockCtx, { ...row, messageId: 'typed', text: 'hello' });
+      const wire = (messages: unknown) =>
+        JSON.parse(JSON.stringify(messages)) as Array<Record<string, unknown>>;
+      const filter = { conversationId, user: 'user123' };
+
+      const listed = wire(await getMessages(filter, CLIENT_MESSAGE_SELECT));
+      const paged = wire(
+        (
+          await createMessageMethods(mongoose).getMessagesByCursor(filter, {
+            sortOrder: 1,
+            select: CLIENT_MESSAGE_SELECT,
+          })
+        ).messages,
+      );
+      for (const messages of [listed, paged]) {
+        expect(messages.map((message) => message.messageId)).toEqual(['triggered', 'typed']);
+        expect(messages[0].trigger).toEqual(trigger);
+        expect(messages[0]).not.toHaveProperty('_id');
+        expect(messages[1]).not.toHaveProperty('trigger');
+      }
+
+      for (const message of wire(await getMessages(filter))) {
+        expect(message).not.toHaveProperty('trigger');
+      }
+      for (const message of wire(await getMessages(filter, 'text messageId'))) {
+        expect(message).not.toHaveProperty('trigger');
+      }
+    });
+
     it('strips server-internal fields and dead SERP verticals, keeping rendered data', async () => {
       const conversationId = uuidv4();
       await Message.create({
@@ -3643,8 +3688,8 @@ describe('Message Operations', () => {
           ),
       );
       for (const receipt of message.subagentTask?.controlReceipts ?? []) {
-        expect(Buffer.byteLength(receipt.message ?? '', 'utf8')).toBeLessThanOrEqual(512);
-        expect(receipt.messageTruncated).toBe(true);
+        expect(receipt.message).toHaveLength(4_096);
+        expect(receipt.messageTruncated).not.toBe(true);
         expect(receipt).not.toHaveProperty('fingerprint');
       }
       expect(message.subagentTask).not.toHaveProperty('attemptKey');
@@ -3761,6 +3806,113 @@ describe('Message Operations', () => {
       expect(messages[0].subagentTranscriptProjectionTruncated).toBe(true);
     });
 
+    it.each([1, 2] as const)(
+      'uses projection version %s with steering-aware legacy catch-up',
+      async (version) => {
+        const conversationId = uuidv4();
+        const transcript = JSON.stringify([
+          { type: 'human', data: { content: 'Initial task' } },
+          { type: 'ai', data: { content: 'Before guidance' } },
+          {
+            type: 'human',
+            data: { content: 'Guidance', additional_kwargs: { injected: true, source: 'steer' } },
+          },
+          { type: 'ai', data: { content: 'After guidance' } },
+        ]);
+        const projection = JSON.stringify([
+          { type: 'writing', text: 'Earlier incomplete projection' },
+        ]);
+        await saveMessage(mockCtx, {
+          messageId: 'task-steering:assistant',
+          conversationId,
+          user: 'user123',
+          text: 'Final',
+          subagentTranscript: {
+            taskId: 'task-steering',
+            mode: 'replace',
+            messagesJson: transcript,
+          },
+          subagentActivityProjection: {
+            taskId: 'task-steering',
+            version,
+            activityJson: projection,
+            truncated: false,
+          },
+        });
+        const [message] = await getMessagesForSubagentThreadView({
+          user: 'user123',
+          conversationId,
+          selectedTaskId: 'task-steering',
+          limit: 1,
+          textCodePointLimit: 8192,
+        });
+        if (version === 1) {
+          expect(message.subagentTranscript?.messagesJson).toBe(transcript);
+          expect(message.subagentActivityProjectionJson).toBe(projection);
+        } else {
+          expect(message.subagentActivityProjectionJson).toBe(projection);
+          expect(message.subagentTranscript).toBeUndefined();
+        }
+      },
+    );
+
+    it.each([undefined, 'task-long'] as const)(
+      'retains the legacy fallback beside bounded steering history with selected task %s',
+      async (selectedTaskId) => {
+        const conversationId = uuidv4();
+        const prompt = 'Long current task. '.repeat(575);
+        const projection = JSON.stringify([
+          { type: 'reasoning', text: 'Retained current reasoning.' },
+          { type: 'writing', text: 'Retained current activity.' },
+        ]);
+        const transcript = JSON.stringify([
+          { type: 'human', data: { content: 'Previous task.' } },
+          {
+            type: 'human',
+            data: {
+              content: 'Previous guidance.',
+              additional_kwargs: { injected: true, source: 'steer' },
+            },
+          },
+          { type: 'human', data: { content: prompt } },
+          { type: 'ai', data: { content: 'Current activity.' } },
+        ]);
+        await saveMessage(mockCtx, {
+          messageId: 'task-long:user',
+          conversationId,
+          user: 'user123',
+          text: prompt,
+          isCreatedByUser: true,
+        });
+        await saveMessage(mockCtx, {
+          messageId: 'task-long:assistant',
+          parentMessageId: 'task-long:user',
+          conversationId,
+          user: 'user123',
+          text: 'Result',
+          subagentTranscript: { taskId: 'task-long', mode: 'replace', messagesJson: transcript },
+          subagentActivityProjection: {
+            taskId: 'task-long',
+            version: 1,
+            activityJson: projection,
+            truncated: false,
+          },
+        });
+        const records = await getMessagesForSubagentThreadView({
+          user: 'user123',
+          conversationId,
+          selectedTaskId,
+          limit: 3,
+          textCodePointLimit: 8192,
+        });
+        const input = records.find((message) => message.messageId === 'task-long:user');
+        const assistant = records.find((message) => message.messageId === 'task-long:assistant');
+        expect(input?.textProjectionTruncated).toBe(true);
+        expect(assistant?.subagentActivityProjectionJson).toBe(projection);
+        expect(assistant?.subagentTranscript?.messagesJson).toBe(transcript);
+      },
+    );
+
     it('prefers the bounded settlement projection without materializing its private transcript', async () => {
       const conversationId = uuidv4();
       await saveMessage(mockCtx, {
@@ -3853,6 +4005,76 @@ describe('Message Operations', () => {
           status: 'running',
           statusDerived: true,
         }),
+      ]);
+    });
+
+    /**
+     * A task is two rows: its brief, written when it is dispatched, and its reply, written when
+     * it ends. Once the reply exists it is the task's newest row, so its time alone says when the
+     * task finished and nothing of how long it ran.
+     */
+    it('reports when each task was dispatched beside when its newest row was written', async () => {
+      const conversationId = uuidv4();
+      await Message.create([
+        {
+          user: 'user123',
+          messageId: 'task-done:user',
+          conversationId,
+          isCreatedByUser: true,
+          createdAt: new Date('2026-08-21T10:00:00.000Z'),
+        },
+        {
+          user: 'user123',
+          messageId: 'task-done:assistant',
+          conversationId,
+          isCreatedByUser: false,
+          createdAt: new Date('2026-08-21T10:04:30.000Z'),
+        },
+        {
+          user: 'user123',
+          messageId: 'task-live:user',
+          conversationId,
+          isCreatedByUser: true,
+          createdAt: new Date('2026-08-21T10:05:00.000Z'),
+        },
+        {
+          user: 'user123',
+          messageId: 'task-briefless:assistant',
+          conversationId,
+          isCreatedByUser: false,
+          createdAt: new Date('2026-08-21T09:00:00.000Z'),
+        },
+      ]);
+
+      const times = (record: {
+        tasks: Array<{ messageId: string; createdAt?: Date; startedAt?: Date | null }>;
+      }) =>
+        record.tasks.map((task) => [
+          task.messageId,
+          task.createdAt?.toISOString(),
+          task.startedAt?.toISOString(),
+        ]);
+
+      const [record] = await listSubagentTasksForThreads({
+        user: 'user123',
+        conversationIds: [conversationId],
+        limitPerThread: 5,
+      });
+      expect(times(record)).toEqual([
+        ['task-live:user', '2026-08-21T10:05:00.000Z', '2026-08-21T10:05:00.000Z'],
+        ['task-done:assistant', '2026-08-21T10:04:30.000Z', '2026-08-21T10:00:00.000Z'],
+        /** A reply whose brief is not among the rows read has no start to report. */
+        ['task-briefless:assistant', '2026-08-21T09:00:00.000Z', undefined],
+      ]);
+
+      /** The one newest task per child comes from its own read, and carries its start too. */
+      const [newest] = await listSubagentTasksForThreads({
+        user: 'user123',
+        conversationIds: [conversationId],
+        limitPerThread: 1,
+      });
+      expect(times(newest)).toEqual([
+        ['task-live:user', '2026-08-21T10:05:00.000Z', '2026-08-21T10:05:00.000Z'],
       ]);
     });
 
@@ -5078,6 +5300,39 @@ describe('Message Operations', () => {
         },
       });
     };
+
+    it('keeps expired receipt replay private while denying public body reads', async () => {
+      const conversationId = uuidv4();
+      await createTaskInput(conversationId);
+      await recordSubagentTaskControlReceipt({
+        userId: 'user123',
+        conversationId,
+        taskId: 'task-1',
+        receipt: {
+          invocationId: 'expired-read',
+          fingerprint: 'private',
+          controlId: 'control',
+          action: 'steer',
+          status: 'accepted',
+          message: 'retained body',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+      const identity = {
+        userId: 'user123',
+        conversationId,
+        taskId: 'task-1',
+        invocationId: 'expired-read',
+      };
+      expect(await getSubagentTaskControlReceipt({ ...identity, activeOnly: true })).not.toBeNull();
+      await Message.updateOne(
+        { user: 'user123', conversationId, messageId: 'task-1:user' },
+        { $set: { expiredAt: new Date(Date.now() - 1000) } },
+      );
+      expect(await getSubagentTaskControlReceipt({ ...identity, activeOnly: true })).toBeNull();
+      expect(await getSubagentTaskControlReceipt(identity)).not.toBeNull();
+    });
 
     it('advances one invocation monotonically and enforces ownership', async () => {
       const conversationId = uuidv4();

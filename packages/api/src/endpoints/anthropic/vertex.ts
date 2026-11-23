@@ -125,44 +125,7 @@ function filterVertexHeaders(headers?: Record<string, string>): Record<string, s
   return Object.keys(filteredHeaders).length > 0 ? filteredHeaders : undefined;
 }
 
-/**
- * Gets the deployment name for a given model name from the Vertex AI configuration.
- * Maps visible model names to actual deployment names (model IDs).
- * @param modelName - The visible model name (e.g., "Claude Opus 4.5")
- * @param vertexConfig - The Vertex AI configuration with model mappings
- * @returns The deployment name to use with the API (e.g., "claude-opus-4-5@20251101")
- */
-export function getVertexDeploymentName(
-  modelName: string,
-  vertexConfig?: VertexAIConfigInput,
-): string {
-  if (!vertexConfig?.models) {
-    // No models configuration, return model name as-is
-    return modelName;
-  }
-
-  // If models is an array, check if modelName is in the array
-  if (Array.isArray(vertexConfig.models)) {
-    // Legacy format - no deployment mapping
-    return modelName;
-  }
-
-  // If models is an object, look up the deployment name
-  const modelConfig = vertexConfig.models[modelName];
-
-  if (!modelConfig) {
-    // Model not found in config, return as-is
-    return modelName;
-  }
-
-  if (typeof modelConfig === 'boolean') {
-    // Model is true/false - use default deployment name or model name
-    return vertexConfig.deploymentName || modelName;
-  }
-
-  // Model has its own deployment name
-  return modelConfig.deploymentName || vertexConfig.deploymentName || modelName;
-}
+export { getVertexDeploymentName } from 'librechat-data-provider';
 
 /**
  * Creates and configures a Vertex AI client for Anthropic.

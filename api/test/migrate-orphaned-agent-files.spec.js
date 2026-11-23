@@ -42,7 +42,7 @@ describe('migrate-orphaned-agent-files (issue #12776)', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(async () => {

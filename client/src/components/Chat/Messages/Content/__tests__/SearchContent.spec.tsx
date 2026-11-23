@@ -1,6 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { render, screen } from '@testing-library/react';
+import { render as rtlRender, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ContentTypes, ErrorTypes, ViolationTypes } from 'librechat-data-provider';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import SearchContent, {
@@ -12,11 +13,10 @@ jest.mock('~/hooks', () => ({
 }));
 
 /** `Container` reads message context for sequential-agent layout; not under test. */
-jest.mock('../Container', () => ({
-  __esModule: true,
-  default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  Container: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
-
 /**
  * Stands in for the dispatcher so this spec asserts routing; its copy is `Error.spec.tsx`'s. It
  * reports both identities it could render with: the row it was handed and the surrounding source.
@@ -48,6 +48,11 @@ jest.mock('../MarkdownLite', () => ({
 
 const message = (overrides: Partial<TMessage> = {}): TMessage =>
   ({ messageId: 'm', text: 'hi', ...overrides }) as TMessage;
+
+function render(ui: React.ReactElement) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return rtlRender(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 
 describe('rendersMarkdownLite', () => {
   it('is true when there are no content parts to render', () => {

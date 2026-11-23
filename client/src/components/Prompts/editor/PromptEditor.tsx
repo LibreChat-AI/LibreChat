@@ -1,19 +1,22 @@
 import { useRef, useMemo, memo } from 'react';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
 import supersub from 'remark-supersub';
 import ReactMarkdown from 'react-markdown';
-import rehypeHighlight from 'rehype-highlight';
 import { EditIcon, Check } from 'lucide-react';
-import { Controller, useFormContext } from 'react-hook-form';
+import { Controller, useFormContext, useWatch } from 'react-hook-form';
 import { TextareaAutosize, Button, TooltipAnchor } from '@librechat/client';
 import type { PluggableList } from 'unified';
+import {
+  DETECT_HIGHLIGHT,
+  toRehypePlugins,
+  useRehypeModules,
+} from '~/components/Chat/Messages/Content/rehype';
 import { codeNoExecution } from '~/components/Chat/Messages/Content/MarkdownComponents';
 import VariablesDropdown from './VariablesDropdown';
 import { PromptVariableGfm } from './Markdown';
-import { cn, langSubset } from '~/utils';
 import { useLocalize } from '~/hooks';
+import { cn } from '~/utils';
 
 type Props = {
   name: string;
@@ -30,17 +33,11 @@ const PromptEditor: React.FC<Props> = ({ name, isEditing, setIsEditing }) => {
     return isEditing ? Check : EditIcon;
   }, [isEditing]);
 
-  const rehypePlugins: PluggableList = [
-    [rehypeKatex],
-    [
-      rehypeHighlight,
-      {
-        detect: true,
-        ignoreMissing: true,
-        subset: langSubset,
-      },
-    ],
-  ];
+  const value = useWatch({ control, name }) as string | undefined;
+  const rehypePlugins: PluggableList = toRehypePlugins(
+    useRehypeModules(value ?? '', true),
+    DETECT_HIGHLIGHT,
+  );
 
   return (
     <div className="flex max-h-[85vh] flex-col sm:max-h-[85vh]">

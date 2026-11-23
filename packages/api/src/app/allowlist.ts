@@ -1,6 +1,6 @@
 import isPlainObject from 'lodash/isPlainObject';
 import { EModelEndpoint, isSensitiveEnvVar } from 'librechat-data-provider';
-import { loadOCRConfig, loadWebSearchConfig } from '@librechat/data-schemas';
+import { getAtPath, loadOCRConfig, loadWebSearchConfig } from '@librechat/data-schemas';
 import type { ConfigOverrideIssue } from '@librechat/data-schemas';
 import type { TCustomConfig } from 'librechat-data-provider';
 import {
@@ -153,6 +153,38 @@ function isAzureURLTemplate(name: string, segments: readonly string[]): boolean 
   );
 }
 
+/**
+ * Vertex AI's settings, which the merge resolves while deriving `vertexConfig`: admin reads of the
+ * served config return its project ID, region and deployment names resolved, so a reference
+ * there would show the variable's value. Only the names librechat.yaml's own Vertex AI settings
+ * reference may be referenced there: values the operator set for these settings, which reads
+ * show wherever Vertex AI is on, including where a profile turns on the Vertex AI librechat.yaml
+ * configures off.
+ */
+export const ENV_VERTEX_SETTINGS_PATH: readonly string[] = [
+  'endpoints',
+  EModelEndpoint.anthropic,
+  'vertex',
+];
+
+/** The Vertex AI key file, which reads never return resolved; the merge keeps librechat.yaml's. */
+const VERTEX_KEY_FILE = 'serviceKeyFile';
+
+function isVertexSettingsPath(segments: readonly string[]): boolean {
+  return (
+    segments.length > ENV_VERTEX_SETTINGS_PATH.length &&
+    ENV_VERTEX_SETTINGS_PATH.every((segment, index) => segments[index] === segment)
+  );
+}
+
+function isVertexKeyFilePath(segments: readonly string[]): boolean {
+  return (
+    segments.length === ENV_VERTEX_SETTINGS_PATH.length + 1 &&
+    isVertexSettingsPath(segments) &&
+    segments[ENV_VERTEX_SETTINGS_PATH.length] === VERTEX_KEY_FILE
+  );
+}
+
 /** Splits `CONFIG_OVERRIDE_ENV_ALLOWLIST`: env names separated by commas or whitespace. */
 export function parseEnvAllowlist(value?: string | null): string[] {
   return (value ?? '').split(/[\s,]+/).filter((name) => name !== '');
@@ -202,6 +234,45 @@ export function collectEnvReferenceNames(value: unknown): Set<string> {
   return names;
 }
 
+/** The names librechat.yaml's Vertex AI settings reference: in its key file, and elsewhere. */
+interface VertexReferences {
+  keyFile: Set<string>;
+  settings: Set<string>;
+}
+
+function collectVertexReferences(config: unknown): VertexReferences {
+  const references: VertexReferences = { keyFile: new Set(), settings: new Set() };
+  let vertex: unknown = config;
+  for (const segment of ENV_VERTEX_SETTINGS_PATH) {
+    vertex = isPlainObject(vertex) ? (vertex as Record<string, unknown>)[segment] : undefined;
+  }
+  visitExpandedStrings(
+    vertex,
+    (text, segments) => {
+      const held = isVertexKeyFilePath(segments) ? references.keyFile : references.settings;
+      referencedNames(text, segments).forEach((name) => held.add(name));
+    },
+    ENV_VERTEX_SETTINGS_PATH,
+  );
+  return references;
+}
+
+/**
+ * Every env name `value` references where a reader expands it (as {@link collectEnvReferenceNames}
+ * finds them), with the top-level sections it is referenced in.
+ */
+export function collectEnvReferenceSections(value: unknown): Map<string, Set<string>> {
+  const sections = new Map<string, Set<string>>();
+  visitExpandedStrings(value, (text, segments) => {
+    for (const name of referencedNames(text, segments)) {
+      const held = sections.get(name) ?? new Set<string>();
+      held.add(segments[0]);
+      sections.set(name, held);
+    }
+  });
+  return sections;
+}
+
 /** Joins segments so that a key containing a dot never spells another location. */
 function locationKey(segments: readonly string[]): string {
   return segments.join('\u0000');
@@ -247,11 +318,32 @@ function collectLoadedReferences(config: unknown): Map<string, Set<string>> {
 }
 
 /**
+ * The env names loading librechat.yaml references where the YAML leaves a value unset (OCR's key,
+ * the web search defaults such as `${SEARXNG_INSTANCE_URL}`), with their sections.
+ */
+export function collectDefaultEnvReferenceSections(config: unknown): Map<string, Set<string>> {
+  const sections = new Map<string, Set<string>>();
+  visitExpandedStrings(loadSectionsWithReferences(config), (text, segments) => {
+    if (getAtPath(config, segments) !== undefined) {
+      return;
+    }
+    for (const name of referencedNames(text, segments)) {
+      const held = sections.get(name) ?? new Set<string>();
+      held.add(segments[0]);
+      sections.set(name, held);
+    }
+  });
+  return sections;
+}
+
+/**
  * The allowlist: names librechat.yaml references (`config` is the raw YAML config), the
  * built-in endpoints' credential names and the operator's extra names, anywhere; and each
  * reference loading librechat.yaml introduces, at its own location
- * ({@link collectLoadedReferences}). Infrastructure secrets `extractEnvVariable` never expands
- * (`CREDS_KEY`, `JWT_SECRET`, ...) stay out whatever lists them.
+ * ({@link collectLoadedReferences}). Vertex AI's settings ({@link ENV_VERTEX_SETTINGS_PATH})
+ * allow only the names librechat.yaml's own Vertex AI settings reference, its key file's only in
+ * the key file. Infrastructure secrets `extractEnvVariable` never expands (`CREDS_KEY`,
+ * `JWT_SECRET`, ...) stay out whatever lists them.
  */
 export function createEnvReferencePolicy(options: {
   config?: unknown;
@@ -262,10 +354,17 @@ export function createEnvReferencePolicy(options: {
     names.add(name);
   }
   const loaded = collectLoadedReferences(options.config);
+  const vertex = collectVertexReferences(options.config);
+  const allowsAt = (name: string, segments: readonly string[]): boolean => {
+    if (isVertexSettingsPath(segments)) {
+      return (
+        vertex.settings.has(name) || (isVertexKeyFilePath(segments) && vertex.keyFile.has(name))
+      );
+    }
+    return names.has(name) || loaded.get(locationKey(segments))?.has(name) === true;
+  };
   return {
-    allows: (name, segments) =>
-      !isSensitiveEnvVar(name) &&
-      (names.has(name) || loaded.get(locationKey(segments))?.has(name) === true),
+    allows: (name, segments) => !isSensitiveEnvVar(name) && allowsAt(name, segments),
   };
 }
 

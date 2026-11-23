@@ -3,6 +3,7 @@ import type { SaveBufferParams } from '~/storage/types';
 import { extractKeyFromS3Url, getS3Key, parseS3Key } from '~/storage/s3/crud';
 import { extractFirebaseBlobPath } from '~/storage/ownedBlobDelete';
 import { getStorageMetadata } from '~/storage/metadata';
+import { toLocalUrlPath } from '~/storage/path';
 
 type FutureURL = (params: {
   userId: string;
@@ -140,7 +141,11 @@ export async function reserveSkillBlob(params: {
   }
   const writeLocation: WriteLocation = { userId, fileName, basePath: 'uploads', tenantId };
   if (source === FileSources.local) {
-    return freezeReservation({ source, filepath: `/uploads/${userId}/${fileName}`, writeLocation });
+    return freezeReservation({
+      source,
+      filepath: toLocalUrlPath('uploads', userId, fileName),
+      writeLocation,
+    });
   }
   if (source === FileSources.firebase) {
     const key = `uploads/${userId}/${fileName}`;

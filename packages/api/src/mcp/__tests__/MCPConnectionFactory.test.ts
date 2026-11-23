@@ -9,7 +9,11 @@ import {
   OboTokenResolutionError,
   ReauthenticationRequiredError,
 } from '~/mcp/oauth';
-import { MCPAuthenticationRejectedError, ScheduledMCPBearerError } from '~/mcp/errors';
+import {
+  MCPAuthenticationRejectedError,
+  ScheduledMCPBearerError,
+  MCPOAuthDeferredError,
+} from '~/mcp/errors';
 import { PENDING_STALE_MS, FlowStateNotFoundError } from '~/flow/manager';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
 import { getMCPServerGeneration } from '~/mcp/oauth/cleanup';
@@ -168,6 +172,14 @@ describe('MCPConnectionFactory', () => {
       completeFlow: jest.fn().mockResolvedValue(true),
       deleteFlow: jest.fn().mockResolvedValue(true),
     } as unknown as jest.Mocked<FlowStateManager<MCPOAuthTokens | null>>;
+    mockFlowManager.initFlow.mockImplementation(async (_flowId, type, metadata = {}) => {
+      mockFlowManager.getFlowState.mockResolvedValueOnce({
+        type,
+        status: 'PENDING',
+        metadata,
+        createdAt: Date.now(),
+      });
+    });
 
     mockConnectionInstance = {
       connect: jest.fn(),
@@ -1302,7 +1314,10 @@ describe('MCPConnectionFactory', () => {
       );
       expect(result?.tokens).toEqual(freshTokens);
       expect(mockMCPOAuthHandler.initiateOAuthFlow).toHaveBeenCalled();
-      expect(oauthStart).toHaveBeenCalledWith('https://auth.example.com/fresh-authorize');
+      expect(oauthStart).toHaveBeenCalledWith('https://auth.example.com/fresh-authorize', {
+        expiresAt: expect.any(Number),
+        onPublished: expect.any(Function),
+      });
       expect(oauthStart).not.toHaveBeenCalledWith(
         expect.stringContaining('resource='),
         expect.anything(),
@@ -1401,7 +1416,10 @@ describe('MCPConnectionFactory', () => {
           mockFlowManager,
         );
         expect(mockMCPOAuthHandler.initiateOAuthFlow).toHaveBeenCalled();
-        expect(oauthStart).toHaveBeenCalledWith('https://auth.example.com/fresh-authorize');
+        expect(oauthStart).toHaveBeenCalledWith('https://auth.example.com/fresh-authorize', {
+          expiresAt: expect.any(Number),
+          onPublished: expect.any(Function),
+        });
         expect(oauthStart).not.toHaveBeenCalledWith(
           'https://auth.example.com/old-authorize',
           expect.anything(),
@@ -1473,7 +1491,83 @@ describe('MCPConnectionFactory', () => {
       mockConnectionInstance.connect.mockRejectedValue(new Error('OAuth authentication required'));
     });
 
+    it.each(['current', 'missing', 'expired', 'superseded', 'cancelled'])(
+      'publishes only the exact stored fresh-flow deadline when the flow is %s',
+      async (state) => {
+        const oauthStart = jest.fn();
+        const controller = new AbortController();
+        const storedAt = Date.now() - 3 * 60_000;
+        const authorizationUrl = 'https://auth.example.com/fresh';
+        mockMCPOAuthHandler.initiateOAuthFlow.mockResolvedValue({
+          authorizationUrl,
+          flowId: 'fresh-deadline-flow',
+          flowMetadata: {
+            serverName: 'test-server',
+            userId: 'user123',
+            serverUrl: 'https://api.example.com',
+            state: 'fresh-state',
+            clientInfo: { client_id: 'client123' },
+          },
+        });
+        mockFlowManager.initFlow.mockImplementation(async (_flowId, type, metadata = {}) => {
+          if (state === 'cancelled') controller.abort();
+          mockFlowManager.getFlowState.mockResolvedValueOnce(
+            state === 'missing'
+              ? null
+              : {
+                  type,
+                  status: 'PENDING',
+                  createdAt: state === 'expired' ? Date.now() - PENDING_STALE_MS : storedAt,
+                  metadata: {
+                    ...metadata,
+                    authorizationUrl:
+                      state === 'superseded'
+                        ? 'https://auth.example.com/replaced'
+                        : authorizationUrl,
+                  },
+                },
+          );
+        });
+        mockFlowManager.createFlow.mockResolvedValue(null);
+        const factory = new InspectableMCPConnectionFactory(
+          {
+            serverName: 'test-server',
+            serverConfig: { type: 'sse', url: 'https://api.example.com' },
+            skipEnvProcessing: true,
+          },
+          {
+            useOAuth: true,
+            user: mockUser,
+            flowManager: mockFlowManager,
+            oauthStart,
+            signal: controller.signal,
+          },
+        );
+        await factory.handleOAuthRequiredForTest();
+        if (state === 'current') {
+          expect(oauthStart).toHaveBeenCalledWith(authorizationUrl, {
+            expiresAt: storedAt + PENDING_STALE_MS,
+            onPublished: expect.any(Function),
+          });
+          expect(storedAt + PENDING_STALE_MS).toBeGreaterThan(Date.now());
+        } else expect(oauthStart).not.toHaveBeenCalled();
+        expect(mockFlowManager.getFlowState).toHaveBeenCalledWith(
+          'fresh-deadline-flow',
+          'mcp_oauth',
+        );
+      },
+    );
+
     it('should handle oauthRequired event for returnOnOAuth scenario', async () => {
+      const persistedCreatedAt = Date.now() - 30_000;
+      mockFlowManager.initFlow.mockImplementation(async (_flowId, type, metadata = {}) => {
+        mockFlowManager.getFlowState.mockResolvedValueOnce({
+          type,
+          status: 'PENDING',
+          metadata,
+          createdAt: persistedCreatedAt,
+        });
+      });
       const basicOptions = {
         serverName: 'test-server',
         serverConfig: {
@@ -1558,12 +1652,19 @@ describe('MCPConnectionFactory', () => {
         .invocationCallOrder[0];
       expect(initCallOrder).toBeLessThan(oauthStartCallOrder);
 
-      expect(oauthOptions.oauthStart).toHaveBeenCalledWith('https://auth.example.com');
+      expect(oauthOptions.oauthStart).toHaveBeenCalledWith('https://auth.example.com', {
+        expiresAt: persistedCreatedAt + PENDING_STALE_MS,
+        onPublished: expect.any(Function),
+      });
       expect(mockConnectionInstance.emit).toHaveBeenCalledWith(
         'oauthFailed',
         expect.objectContaining({
           message: 'OAuth flow initiated - return early',
         }),
+      );
+      expect(mockConnectionInstance.emit).toHaveBeenCalledWith(
+        'oauthFailed',
+        expect.any(MCPOAuthDeferredError),
       );
     });
 
@@ -1692,6 +1793,10 @@ describe('MCPConnectionFactory', () => {
       expect(mockConnectionInstance.emit).toHaveBeenCalledWith(
         'oauthFailed',
         expect.objectContaining({ message: 'Pending OAuth flow reused - return early' }),
+      );
+      expect(mockConnectionInstance.emit).toHaveBeenCalledWith(
+        'oauthFailed',
+        expect.any(MCPOAuthDeferredError),
       );
     });
 
@@ -1881,7 +1986,10 @@ describe('MCPConnectionFactory', () => {
 
       // initFlow should have succeeded and redirect should have happened
       expect(mockFlowManager.initFlow).toHaveBeenCalled();
-      expect(oauthOptions.oauthStart).toHaveBeenCalledWith('https://auth.example.com');
+      expect(oauthOptions.oauthStart).toHaveBeenCalledWith('https://auth.example.com', {
+        expiresAt: expect.any(Number),
+        onPublished: expect.any(Function),
+      });
       // The background monitor error should be logged, not silently swallowed
       expect(mockLogger.debug).toHaveBeenCalledWith(
         '[MCP][User: user123] OAuth flow monitor ended',
@@ -2387,7 +2495,10 @@ describe('MCPConnectionFactory', () => {
           expect.objectContaining({ accessToken: 'renewed-access', credentialSetId: 'grant-1' }),
         );
         expect(mockConnectionInstance.emit).toHaveBeenCalledWith('oauthHandled', 'silent-refresh');
-        expect(oauthStart).toHaveBeenCalledWith('https://auth.example.com');
+        expect(oauthStart).toHaveBeenCalledWith('https://auth.example.com', {
+          expiresAt: expect.any(Number),
+          onPublished: expect.any(Function),
+        });
         expect(mockConnectionInstance.emit).toHaveBeenCalledWith(
           'oauthFailed',
           expect.objectContaining({ message: 'OAuth flow initiated - return early' }),
@@ -3807,7 +3918,10 @@ describe('MCPConnectionFactory', () => {
       await liveStarted;
 
       expect(staleOAuthStart).not.toHaveBeenCalled();
-      expect(liveOAuthStart).toHaveBeenCalledWith('https://auth.example.com');
+      expect(liveOAuthStart).toHaveBeenCalledWith('https://auth.example.com', {
+        expiresAt: expect.any(Number),
+        onPublished: expect.any(Function),
+      });
       expect(handlers.oauthReauthenticationRequired.length).toBe(1);
 
       cleanup();
@@ -4323,6 +4437,7 @@ describe('MCPConnectionFactory', () => {
     });
 
     it('should invalidate mcp_get_tokens cache after interactive OAuth stores fresh tokens', async () => {
+      mockFlowManager.initFlow.mockResolvedValue(undefined);
       // Regression for the Codex finding "Invalidate token cache after
       // interactive fallback": when silent refresh fails but interactive OAuth
       // succeeds, the old `mcp_get_tokens` flow cache could otherwise re-serve
@@ -4380,6 +4495,12 @@ describe('MCPConnectionFactory', () => {
       mockFlowManager.getFlowState
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          status: 'PENDING',
+          type: 'mcp_oauth',
+          metadata: { authorizationUrl: 'https://auth.example.com' },
+          createdAt: Date.now(),
+        })
         .mockResolvedValueOnce({
           status: 'COMPLETED' as const,
           type: 'mcp_get_tokens',
@@ -4738,6 +4859,7 @@ describe('MCPConnectionFactory', () => {
     });
 
     it('should complete PENDING token waiters with the persisted interactive credential generation', async () => {
+      mockFlowManager.initFlow.mockResolvedValue(undefined);
       const sseConfig = {
         ...mockServerConfig,
         url: 'https://api.example.com',
@@ -4783,6 +4905,12 @@ describe('MCPConnectionFactory', () => {
       mockFlowManager.getFlowState
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          status: 'PENDING',
+          type: 'mcp_oauth',
+          metadata: { authorizationUrl: 'https://auth.example.com' },
+          createdAt: Date.now(),
+        })
         .mockResolvedValueOnce({
           status: 'PENDING' as const,
           type: 'mcp_get_tokens',

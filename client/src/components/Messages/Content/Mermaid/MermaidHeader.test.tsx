@@ -10,11 +10,11 @@ jest.mock('~/hooks', () => ({
       key,
 }));
 
-jest.mock('~/components/Messages/Content/CopyButton', () => {
+jest.mock('@librechat/chat/components', () => {
   const ReactModule = jest.requireActual<typeof import('react')>('react');
   return {
-    __esModule: true,
-    default: ReactModule.forwardRef<HTMLButtonElement>(() => null),
+    ...jest.requireActual('@librechat/chat/components'),
+    CopyButton: ReactModule.forwardRef<HTMLButtonElement>(() => null),
   };
 });
 

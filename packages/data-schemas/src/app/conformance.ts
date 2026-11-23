@@ -232,6 +232,18 @@ export function describeConfigStoreConformance(harness: ConfigStoreHarness): voi
         expect((await store.read(role('hidden')))?.tombstones).toEqual(tombstones);
       });
 
+      it('keeps keyed tombstones as written, whatever the entry key holds', async () => {
+        const tombstones = [
+          'endpoints.custom["api.example.com"]',
+          'endpoints.custom["$cost ~ \\"quoted\\" [x]"].headers.X-Key',
+          'endpoints.custom["名前 🚀"].addParams.anthropicApiUrl',
+        ];
+
+        await store.write(role('keyed'), draft({}, { tombstones }), ABSENT_CONFIG_REVISION);
+
+        expect((await store.read(role('keyed')))?.tombstones).toEqual(tombstones);
+      });
+
       it('reads inactive documents', async () => {
         await store.write(role('off'), draft({}, { isActive: false }), ABSENT_CONFIG_REVISION);
 
@@ -488,14 +500,60 @@ export function describeConfigStoreConformance(harness: ConfigStoreHarness): voi
         expect(hidden.tombstones).toEqual(['mcpServers.github', 'memory.agent']);
 
         const reset = await operations.unsetFields(role('ops'), 'balance.enabled');
-        expect(reset?.overrides).toEqual({});
-        expect(reset?.tombstones).toEqual(['mcpServers.github', 'memory.agent']);
+        expect(reset?.changed).toBe(true);
+        expect(reset?.config.overrides).toEqual({});
+        expect(reset?.config.tombstones).toEqual(['mcpServers.github', 'memory.agent']);
 
         const shown = await operations.setFields(role('ops'), PrincipalModel.ROLE, {
           'mcpServers.github.title': 'Again',
         });
         expect(shown.tombstones).toEqual(['memory.agent']);
         expect(shown.configVersion).toBe(4);
+      });
+
+      it('a field write or a removal that changes nothing leaves the version as it is', async () => {
+        const operations = createConfigOperations(store);
+        const written = await operations.setFields(role('same'), PrincipalModel.ROLE, {
+          'balance.enabled': true,
+        });
+
+        const again = await operations.setFields(role('same'), PrincipalModel.ROLE, {
+          'balance.enabled': true,
+        });
+        expect(again.configVersion).toBe(written.configVersion);
+
+        const absent = await operations.unsetFields(role('same'), 'memory.agent');
+        expect(absent?.changed).toBe(false);
+        expect(absent?.config.configVersion).toBe(written.configVersion);
+        expect((await store.read(role('same')))?.configVersion).toBe(written.configVersion);
+      });
+
+      it('keyed tombstones hide an entry by its key, and an entry write or a reset clears them', async () => {
+        const operations = createConfigOperations(store);
+        await operations.setFields(role('keyed-ops'), PrincipalModel.ROLE, {
+          'endpoints.custom': [{ name: 'a.b', baseURL: 'https://a', headers: { X: 'x', Y: 'y' } }],
+        });
+
+        const hidden = await operations.tombstoneFields(role('keyed-ops'), PrincipalModel.ROLE, [
+          'endpoints.custom["a.b"].headers.X',
+          'endpoints.custom["yaml one"]',
+        ]);
+        expect(hidden.overrides).toEqual({
+          endpoints: { custom: [{ name: 'a.b', baseURL: 'https://a', headers: { Y: 'y' } }] },
+        });
+        expect(hidden.tombstones).toEqual([
+          'endpoints.custom["a.b"].headers.X',
+          'endpoints.custom["yaml one"]',
+        ]);
+
+        const shown = await operations.setFields(role('keyed-ops'), PrincipalModel.ROLE, {
+          'endpoints.custom': [{ name: 'yaml one', titleModel: 't' }],
+        });
+        expect(shown.tombstones).toEqual(['endpoints.custom["a.b"].headers.X']);
+
+        const reset = await operations.unsetFields(role('keyed-ops'), 'endpoints.custom');
+        expect(reset?.config.overrides).toEqual({});
+        expect(reset?.config.tombstones).toEqual([]);
       });
 
       it('lists the active documents tombstoned at or below a path, in store order, without overrides', async () => {

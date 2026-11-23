@@ -36,8 +36,10 @@ import { isSSRFTarget, resolveHostnameSSRF, isOAuthUrlAllowed } from '~/auth';
 import { MCPTokenStorage, MCPTokenRefreshUnavailableError } from './tokens';
 import { probeResourceMetadataHint } from './resourceHint';
 import { createHardenedOAuthFetch } from './hardenedFetch';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { sanitizeUrlForLogging } from '~/mcp/utils';
 import { getOAuthCallbackUrl } from '~/oauth/url';
+import { getSafeOAuthError } from './errors';
 import { getOAuthUrlPort } from './url';
 
 /** Type for the OAuth metadata from the SDK */
@@ -61,6 +63,14 @@ type PreconfiguredOAuthDiscoveryResult = {
 
 const PRECONFIGURED_DISCOVERY_TIMEOUT_MS = 5_000;
 const OAUTH_REVOCATION_TIMEOUT_MS = 5_000;
+
+/** The token endpoint refused the refresh grant without an outage status; a new authorization can recover. */
+class MCPTokenRefreshRejectedError extends Error {
+  constructor(status: number, statusText: string, body: string) {
+    super(`Token refresh failed: ${status} ${statusText} - ${body}`);
+    this.name = 'MCPTokenRefreshRejectedError';
+  }
+}
 
 export class MCPOAuthHandler {
   private static readonly FLOW_TYPE = 'mcp_oauth';
@@ -217,7 +227,10 @@ export class MCPOAuthHandler {
       token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
     };
 
-    logger.debug(`[MCPOAuth] Using fallback metadata:`, fallbackMetadata);
+    logger.debug('[MCPOAuth] Using fallback authorization capabilities', {
+      grant_types_supported: fallbackMetadata.grant_types_supported,
+      token_endpoint_auth_methods_supported: fallbackMetadata.token_endpoint_auth_methods_supported,
+    });
     return {
       metadata: fallbackMetadata,
       resourceMetadata,
@@ -268,7 +281,7 @@ export class MCPOAuthHandler {
       } catch (error) {
         logger.warn(
           `[MCPOAuth] Rejecting untrusted resource_metadata hint from ${sanitizeUrlForLogging(serverUrl)}; falling back to path-aware discovery`,
-          { error },
+          { error: getSafeErrorMetadata(error) },
         );
       }
     }
@@ -284,7 +297,7 @@ export class MCPOAuthHandler {
       );
     } catch (error) {
       logger.debug('[MCPOAuth] Resource metadata discovery failed, continuing with server URL', {
-        error,
+        error: getSafeErrorMetadata(error),
       });
     }
 
@@ -310,7 +323,7 @@ export class MCPOAuthHandler {
         );
         const authServerUrl = new URL(discoveredAuthServer);
         logger.debug(
-          `[MCPOAuth] Found authorization server from resource metadata: ${authServerUrl}`,
+          `[MCPOAuth] Found authorization server from resource metadata: ${sanitizeUrlForLogging(authServerUrl)}`,
         );
         return { resourceMetadata, authServerUrl };
       } else {
@@ -415,7 +428,7 @@ export class MCPOAuthHandler {
           } catch (error) {
             logger.warn(
               `[MCPOAuth] Authorization server metadata discovery failed for pre-configured client; using configured endpoints and defaults`,
-              { error },
+              { error: getSafeErrorMetadata(error) },
             );
             return partialResult;
           }
@@ -452,7 +465,7 @@ export class MCPOAuthHandler {
       const baseUrl = new URL(serverUrl.origin);
       logger.debug(
         `[MCPOAuth] Discovery threw for path URL, trying base URL: ${sanitizeUrlForLogging(baseUrl)}`,
-        { error: err },
+        { error: getSafeErrorMetadata(err) },
       );
       return discoverAuthorizationServerMetadata(baseUrl, { fetchFn });
     }
@@ -737,7 +750,7 @@ export class MCPOAuthHandler {
     if (supportedGrantTypes.includes('refresh_token')) {
       requestedGrantTypes.push('refresh_token');
       logger.debug(
-        `[MCPOAuth] Server ${serverUrl} supports \`refresh_token\` grant type, adding to request`,
+        `[MCPOAuth] Server ${sanitizeUrlForLogging(serverUrl)} supports \`refresh_token\` grant type, adding to request`,
       );
     } else {
       logger.debug(
@@ -813,7 +826,7 @@ export class MCPOAuthHandler {
     const flowId = this.generateFlowId(userId, serverName, tenantId);
     const state = this.generateState();
 
-    logger.debug(`[MCPOAuth] Generated flowId: ${flowId}, state: ${state}`);
+    logger.debug(`[MCPOAuth] Generated flowId: ${flowId}`);
 
     try {
       this.assertNoUnpinnedClientSecret(config);
@@ -882,7 +895,7 @@ export class MCPOAuthHandler {
           /** Preserve compatibility with OAuth providers that do not publish metadata. */
           logger.warn(
             `[MCPOAuth] OAuth metadata discovery failed for pre-configured client ${serverName}; using configured endpoints and defaults`,
-            { error },
+            { error: getSafeErrorMetadata(error) },
           );
         }
 
@@ -949,7 +962,7 @@ export class MCPOAuthHandler {
             config.revocation_endpoint_auth_methods_supported ??
             discoveredMetadata?.revocation_endpoint_auth_methods_supported,
         };
-        logger.debug(`[MCPOAuth] metadata for "${serverName}": ${JSON.stringify(metadata)}`);
+        logger.debug(`[MCPOAuth] OAuth metadata resolved for "${serverName}"`);
         const redirectUri = this.getDefaultRedirectUri(serverName);
         const clientInfo: OAuthClientInformation = {
           client_id: config.client_id,
@@ -1011,9 +1024,13 @@ export class MCPOAuthHandler {
           ...(tenantId && { tenantId }),
         };
 
-        logger.debug(
-          `[MCPOAuth] Authorization URL generated: ${sanitizeUrlForLogging(authorizationUrl.toString())}`,
-        );
+        logger.debug('[MCPOAuth] Authorization flow ready', {
+          flowId,
+          serverName,
+          clientSource: flowMetadata.clientSource,
+          hasClientSecret: Boolean(clientInfo.client_secret),
+          hasResourceMetadata: Boolean(resourceMetadata),
+        });
         return {
           authorizationUrl: authorizationUrl.toString(),
           flowId,
@@ -1109,7 +1126,7 @@ export class MCPOAuthHandler {
         } catch (error) {
           logger.warn(
             `[MCPOAuth] Failed to look up existing client registration, falling back to new registration`,
-            { error, serverName, userId },
+            { ...getSafeErrorMetadata(error), serverName, userId },
           );
         }
       }
@@ -1153,9 +1170,6 @@ export class MCPOAuthHandler {
         codeVerifier = authResult.codeVerifier;
 
         logger.debug(`[MCPOAuth] startAuthorization completed successfully`);
-        logger.debug(
-          `[MCPOAuth] Authorization URL: ${sanitizeUrlForLogging(authorizationUrl.toString())}`,
-        );
 
         /** Add cryptographic state parameter to the authorization URL */
         authorizationUrl.searchParams.set('state', state);
@@ -1202,7 +1216,7 @@ export class MCPOAuthHandler {
           logger.debug(`[MCPOAuth] Added audience parameter (discovered flow): ${config.audience}`);
         }
       } catch (error) {
-        logger.error(`[MCPOAuth] startAuthorization failed:`, error);
+        logger.error(`[MCPOAuth] startAuthorization failed:`, getSafeErrorMetadata(error));
         throw error;
       }
 
@@ -1225,23 +1239,26 @@ export class MCPOAuthHandler {
         ...(tenantId && { tenantId }),
       };
 
-      logger.debug(
-        `[MCPOAuth] Authorization URL generated for ${serverName}: ${authorizationUrl.toString()}`,
-      );
-
       const result = {
         authorizationUrl: authorizationUrl.toString(),
         flowId,
         flowMetadata,
       };
 
-      logger.debug(
-        `[MCPOAuth] Returning from initiateOAuthFlow with result ${flowId} for ${serverName}`,
-        result,
-      );
+      logger.debug('[MCPOAuth] Authorization flow ready', {
+        flowId,
+        serverName,
+        clientSource,
+        hasClientSecret: Boolean(clientInfo.client_secret),
+        hasResourceMetadata: Boolean(resourceMetadata),
+      });
       return result;
     } catch (error) {
-      logger.error('[MCPOAuth] Failed to initiate OAuth flow', { error, serverName, userId });
+      logger.error('[MCPOAuth] Failed to initiate OAuth flow', {
+        error: getSafeErrorMetadata(error),
+        serverName,
+        userId,
+      });
       throw error;
     }
   }
@@ -1310,7 +1327,9 @@ export class MCPOAuthHandler {
           );
         } else if (metadata.resourceMetadata.resource) {
           resource = new URL(metadata.resourceMetadata.resource);
-          logger.debug(`[MCPOAuth] Resource URL for flow ${flowId}: ${resource.toString()}`);
+          logger.debug(
+            `[MCPOAuth] Resource URL for flow ${flowId}: ${sanitizeUrlForLogging(resource)}`,
+          );
         }
       }
 
@@ -1339,6 +1358,8 @@ export class MCPOAuthHandler {
           metadata.allowedDomains,
           metadata.allowedAddresses,
         ),
+      }).catch((error: unknown) => {
+        throw getSafeOAuthError(error, 'OAuth token exchange failed');
       });
 
       logger.debug('[MCPOAuth] Token exchange successful', {
@@ -1401,7 +1422,10 @@ export class MCPOAuthHandler {
 
       return mcpTokens;
     } catch (error) {
-      logger.error('[MCPOAuth] Failed to complete OAuth flow', { error, flowId });
+      logger.error('[MCPOAuth] Failed to complete OAuth flow', {
+        error: getSafeErrorMetadata(error),
+        flowId,
+      });
       if (observedFlowState) {
         const observedMetadata = observedFlowState.metadata as MCPOAuthFlowMetadata | undefined;
         await flowManager.failFlowIfCurrent(
@@ -1774,9 +1798,7 @@ export class MCPOAuthHandler {
     /** Body is consumed here, so this branch must either retry or throw — never fall through. */
     const errorText = await response.text();
     if (!this.isScopeParameterRejection(response.status, errorText)) {
-      throw new Error(
-        `Token refresh failed: ${response.status} ${response.statusText} - ${errorText}`,
-      );
+      throw new MCPTokenRefreshRejectedError(response.status, response.statusText, errorText);
     }
 
     logger.warn(
@@ -2050,9 +2072,7 @@ export class MCPOAuthHandler {
 
         if (!response.ok) {
           const errorText = await response.text();
-          throw new Error(
-            `Token refresh failed: ${response.status} ${response.statusText} - ${errorText}`,
-          );
+          throw new MCPTokenRefreshRejectedError(response.status, response.statusText, errorText);
         }
 
         const tokens = await response.json();
@@ -2139,9 +2159,7 @@ export class MCPOAuthHandler {
 
         if (!response.ok) {
           const errorText = await response.text();
-          throw new Error(
-            `Token refresh failed: ${response.status} ${response.statusText} - ${errorText}`,
-          );
+          throw new MCPTokenRefreshRejectedError(response.status, response.statusText, errorText);
         }
 
         const tokens = await response.json();
@@ -2210,15 +2228,17 @@ export class MCPOAuthHandler {
       await this.assertRefreshEndpointAvailable(response, metadata.serverName);
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(
-          `Token refresh failed: ${response.status} ${response.statusText} - ${errorText}`,
-        );
+        throw new MCPTokenRefreshRejectedError(response.status, response.statusText, errorText);
       }
 
       const tokens = await response.json();
       return this.processRefreshResponse(tokens, metadata.serverName, 'auto-discovered OAuth');
     } catch (error) {
-      logger.error(`[MCPOAuth] Failed to refresh tokens for ${metadata.serverName}`, error);
+      /** A rejected grant sends the user back through authorization; outages stay errors. */
+      logger[error instanceof MCPTokenRefreshRejectedError ? 'warn' : 'error'](
+        `[MCPOAuth] Failed to refresh tokens for ${metadata.serverName}`,
+        getSafeErrorMetadata(error),
+      );
       throw error;
     }
   }

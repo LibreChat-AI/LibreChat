@@ -1,4 +1,5 @@
 import sharp from 'sharp';
+import { createHash } from 'node:crypto';
 import { convertImageBuffer } from './format';
 
 const jpeg = async (): Promise<Buffer> =>
@@ -8,8 +9,9 @@ const jpeg = async (): Promise<Buffer> =>
 
 describe('convertImageBuffer', () => {
   it('converts JPEG bytes with a PNG filename into an actual PNG', async () => {
+    const input = await jpeg();
     const image = await convertImageBuffer({
-      buffer: await jpeg(),
+      buffer: input,
       type: 'image/jpeg',
       fileName: 'photo.png',
       outputType: 'png',
@@ -17,6 +19,8 @@ describe('convertImageBuffer', () => {
 
     expect(image.fileName).toBe('photo.png');
     expect((await sharp(image.buffer).metadata()).format).toBe('png');
+    expect(image.sha256).toBe(createHash('sha256').update(image.buffer).digest('hex'));
+    expect(image.sha256).not.toBe(createHash('sha256').update(input).digest('hex'));
   });
 
   it('preserves the buffer when both its type and filename match', async () => {
@@ -28,7 +32,11 @@ describe('convertImageBuffer', () => {
       outputType: 'jpeg',
     });
 
-    expect(image).toEqual({ buffer, fileName: 'photo.JPEG' });
+    expect(image).toEqual({
+      buffer,
+      fileName: 'photo.JPEG',
+      sha256: createHash('sha256').update(buffer).digest('hex'),
+    });
     expect(image.buffer).toBe(buffer);
   });
 

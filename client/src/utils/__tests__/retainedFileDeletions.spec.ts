@@ -1,4 +1,4 @@
-import { FileSources } from 'librechat-data-provider';
+import { FileSources, LocalStorageKeys } from 'librechat-data-provider';
 
 const RETAINED_KEY = 'librechat-retained-file-deletions';
 
@@ -195,5 +195,173 @@ describe('retained file deletions', () => {
     const reloaded = await import('../files');
     expect(reloaded.isPastedTextFileMarked('paste-upload-id')).toBe(true);
     expect(reloaded.isPastedTextFileMarked('other-paste-id')).toBe(false);
+  });
+});
+
+describe('bounded file deletion retries', () => {
+  beforeEach(() => {
+    jest.resetModules();
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+
+  it.each(['partial failure', 'rejection'])(
+    'stops and clears storage after five automatic attempts (%s)',
+    async (mode) => {
+      jest.useFakeTimers();
+      const queue = await import('../files');
+      try {
+        queue.retainFileDeletion(record);
+        const request = jest.fn(async () => {
+          const batch = queue.claimFileDeletionRetries(queue.takeRetainedFileDeletions());
+          try {
+            const result = await (mode === 'rejection'
+              ? Promise.reject(new Error('offline'))
+              : Promise.resolve({ message: 'partial failure', failedFileIds: [record.file_id] }));
+            queue.settleFileDeletionRetries(batch, new Set(queue.failedFileIdsFrom(result)));
+          } catch {
+            queue.settleFileDeletionRetries(batch, new Set(batch.map((file) => file.file_id)));
+          }
+          queue.scheduleRetainedFileDeletionRetry();
+        });
+        const unsubscribe = queue.subscribeRetainedFileDeletions(request);
+        queue.scheduleRetainedFileDeletionRetry();
+        await jest.runAllTimersAsync();
+        expect(request).toHaveBeenCalledTimes(5);
+        expect(queue.takeRetainedFileDeletions()).toEqual([]);
+        expect(sessionStorage.getItem(RETAINED_KEY)).toBeNull();
+        expect(jest.getTimerCount()).toBe(0);
+        unsubscribe();
+      } finally {
+        queue.clearRetainedFileDeletions();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it('persists attempts before dispatch and does not reset them on reload or duplicate retention', async () => {
+    let queue = await import('../files');
+    queue.retainFileDeletion(record);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      expect(queue.claimFileDeletionRetries([record])).toEqual([record]);
+      queue.settleFileDeletionRetries([record], new Set([record.file_id]));
+      queue.retainFileDeletion(record);
+      jest.resetModules();
+      queue = await import('../files');
+    }
+    expect(JSON.parse(sessionStorage.getItem(RETAINED_KEY) ?? '[]')[0].attempts).toBe(4);
+    expect(queue.claimFileDeletionRetries([record])).toEqual([record]);
+    queue.settleFileDeletionRetries([record], new Set([record.file_id]));
+    expect(queue.takeRetainedFileDeletions()).toEqual([]);
+    expect(sessionStorage.getItem(RETAINED_KEY)).toBeNull();
+  });
+
+  it('drops a final in-flight attempt restored after a reload without dispatching it again', async () => {
+    sessionStorage.setItem(RETAINED_KEY, JSON.stringify([{ ...record, attempts: 5 }]));
+    const queue = await import('../files');
+    expect(queue.claimFileDeletionRetries(queue.takeRetainedFileDeletions())).toEqual([]);
+    expect(sessionStorage.getItem(RETAINED_KEY)).toBeNull();
+  });
+
+  it('counts each file once and removes successful files without exhausting the rest', async () => {
+    const queue = await import('../files');
+    const other = { ...record, file_id: 'other-file' };
+    expect(queue.claimFileDeletionRetries([record, record, other], 2)).toEqual([record, other]);
+    queue.settleFileDeletionRetries([record, other], new Set([other.file_id]), 2);
+    expect(queue.takeRetainedFileDeletions()).toEqual([other]);
+    expect(queue.claimFileDeletionRetries([other], 2)).toEqual([other]);
+    queue.settleFileDeletionRetries([other], new Set([other.file_id]), 2);
+    expect(sessionStorage.getItem(RETAINED_KEY)).toBeNull();
+  });
+
+  it('persists retry accounting once per batch rather than once per file', async () => {
+    const queue = await import('../files');
+    const batch = Array.from({ length: 8 }, (_, index) => ({
+      ...record,
+      file_id: `file-${index}`,
+    }));
+    const write = jest.spyOn(Storage.prototype, 'setItem');
+    const remove = jest.spyOn(Storage.prototype, 'removeItem');
+    queue.claimFileDeletionRetries(batch);
+    expect(write.mock.calls.filter(([key]) => key === RETAINED_KEY)).toHaveLength(1);
+    queue.settleFileDeletionRetries(batch, new Set());
+    expect(remove.mock.calls.filter(([key]) => key === RETAINED_KEY)).toHaveLength(1);
+  });
+
+  it('does not count reconnects or scheduling as attempts', async () => {
+    jest.useFakeTimers();
+    const queue = await import('../files');
+    try {
+      queue.retainFileDeletion(record);
+      queue.scheduleRetainedFileDeletionRetry();
+      queue.scheduleRetainedFileDeletionRetry();
+      window.dispatchEvent(new Event('online'));
+      expect(queue.takeRetainedFileDeletions()).toEqual([record]);
+      expect(JSON.parse(sessionStorage.getItem(RETAINED_KEY) ?? '[]')[0].attempts).toBeUndefined();
+    } finally {
+      queue.clearRetainedFileDeletions();
+      jest.useRealTimers();
+    }
+  });
+
+  it('preserves a deferred discard wakeup when the other pane drains the retained queue', async () => {
+    jest.useFakeTimers();
+    const queue = await import('../files');
+    try {
+      queue.claimFileDeletionRetries([record]);
+      const listener = jest.fn();
+      const unsubscribe = queue.subscribeRetainedFileDeletions(listener);
+      queue.scheduleRetainedFileDeletionRetry(true);
+      queue.settleFileDeletionRetries([record], new Set());
+      expect(queue.takeRetainedFileDeletions()).toEqual([]);
+      jest.advanceTimersByTime(5_000);
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+      unsubscribe();
+    } finally {
+      queue.clearRetainedFileDeletions();
+      jest.useRealTimers();
+    }
+  });
+
+  it('wakes deferred work even when the claimed pass had no resolvable payload', async () => {
+    jest.useFakeTimers();
+    const queue = await import('../files');
+    try {
+      const listener = jest.fn();
+      const unsubscribe = queue.subscribeRetainedFileDeletions(listener);
+      queue.scheduleRetainedFileDeletionRetry(true);
+      jest.advanceTimersByTime(5_000);
+      expect(listener).toHaveBeenCalledTimes(1);
+      unsubscribe();
+    } finally {
+      queue.clearRetainedFileDeletions();
+      jest.useRealTimers();
+    }
+  });
+
+  it('migrates the remount queue only once and preserves an existing retry budget', async () => {
+    const queue = await import('../files');
+    queue.claimFileDeletionRetries([record]);
+    localStorage.setItem(
+      LocalStorageKeys.FILES_TO_DELETE,
+      JSON.stringify({
+        [record.file_id]: { ...record, temp_file_id: 'upload-id' },
+      }),
+    );
+    queue.migrateStoredFileDeletions();
+    expect(localStorage.getItem(LocalStorageKeys.FILES_TO_DELETE)).toBeNull();
+    expect(queue.takeRetainedFileDeletions()).toEqual([record]);
+    expect(JSON.parse(sessionStorage.getItem(RETAINED_KEY) ?? '[]')[0].attempts).toBe(1);
+    queue.migrateStoredFileDeletions();
+    expect(queue.takeRetainedFileDeletions()).toEqual([record]);
+  });
+
+  it('does not re-enqueue or dispatch deletion work after sign-out', async () => {
+    const queue = await import('../files');
+    queue.clearRetainedFileDeletions();
+    expect(queue.claimFileDeletionRetries([record])).toEqual([]);
+    queue.retainFileDeletion(record);
+    expect(sessionStorage.getItem(RETAINED_KEY)).toBeNull();
   });
 });

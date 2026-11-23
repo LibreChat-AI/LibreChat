@@ -6,7 +6,10 @@ const { Tool } = require('@librechat/agents/langchain/tools');
 const {
   applyAxiosProxyConfig,
   createMinimalRetentionRequest,
+  formatToolError,
   getHttpsProxyAgent,
+  resolveFluxResultRequest,
+  createImageToolArtifact,
 } = require('@librechat/api');
 const { FileContext, ContentTypes } = require('librechat-data-provider');
 
@@ -145,7 +148,7 @@ class FluxAPI extends Tool {
     // Use action: 'list_finetunes' to see available custom models. When using finetunes, use endpoint: '/v1/flux-pro-finetuned' (default) or '/v1/flux-pro-1.1-ultra-finetuned' for higher quality and aspect ratio.`;
 
     // Add base URL from environment variable with fallback
-    this.baseUrl = process.env.FLUX_API_BASE_URL || 'https://api.us1.bfl.ai';
+    this.baseUrl = process.env.FLUX_API_BASE_URL || 'https://api.bfl.ai';
 
     this.schema = fluxApiJsonSchema;
   }
@@ -239,7 +242,6 @@ class FluxAPI extends Tool {
     }
 
     const generateUrl = `${this.baseUrl}${imageData.endpoint || '/v1/flux-pro'}`;
-    const resultUrl = `${this.baseUrl}/v1/get_result`;
 
     logger.debug('[FluxAPI] Generating image with payload:', payload);
     logger.debug('[FluxAPI] Using endpoint:', generateUrl);
@@ -255,16 +257,14 @@ class FluxAPI extends Tool {
         ...this.getAxiosConfig(),
       });
     } catch (error) {
-      const details = this.getDetails(error?.response?.data || error.message);
-      logger.error('[FluxAPI] Error while submitting task:', details);
-
-      return this.returnValue(
-        `Something went wrong when trying to generate the image. The Flux API may be unavailable:
-        Error Message: ${details}`,
-      );
+      return this.returnValue(formatToolError(error, 'Flux'));
     }
 
-    const taskId = taskResponse.data.id;
+    const resultRequest = resolveFluxResultRequest(
+      this.baseUrl,
+      taskResponse.data.id,
+      taskResponse.data.polling_url,
+    );
 
     // Polling for the result
     let status = 'Pending';
@@ -273,13 +273,13 @@ class FluxAPI extends Tool {
       try {
         // Wait 2 seconds between polls
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        const resultResponse = await axios.get(resultUrl, {
+        const resultResponse = await axios.get(resultRequest.url, {
           headers: {
             'x-key': requestApiKey,
             Accept: 'application/json',
           },
-          params: { id: taskId },
-          ...this.getAxiosConfig(),
+          params: resultRequest.params,
+          ...applyAxiosProxyConfig({}, resultRequest.url),
         });
         status = resultResponse.data.status;
 
@@ -317,15 +317,7 @@ class FluxAPI extends Tool {
         }
         const imageResponse = await fetch(imageUrl, fetchOptions);
         const arrayBuffer = await imageResponse.arrayBuffer();
-        const base64 = Buffer.from(arrayBuffer).toString('base64');
-        const content = [
-          {
-            type: ContentTypes.IMAGE_URL,
-            image_url: {
-              url: `data:image/png;base64,${base64}`,
-            },
-          },
-        ];
+        const artifact = await createImageToolArtifact(Buffer.from(arrayBuffer));
 
         const response = [
           {
@@ -333,10 +325,9 @@ class FluxAPI extends Tool {
             text: displayMessage,
           },
         ];
-        return [response, { content }];
+        return [response, artifact];
       } catch (error) {
-        logger.error('Error processing image for agent:', error);
-        return this.returnValue(`Failed to process the image. ${error.message}`);
+        return this.returnValue(formatToolError(error, 'Flux'));
       }
     }
 
@@ -367,9 +358,7 @@ class FluxAPI extends Tool {
       this.result = this.returnMetadata ? result : this.wrapInMarkdown(result.filepath);
       return this.returnValue(this.result);
     } catch (error) {
-      const details = this.getDetails(error?.message ?? 'No additional error details.');
-      logger.error('Error while saving the image:', details);
-      return this.returnValue(`Failed to save the image locally. ${details}`);
+      return this.returnValue(formatToolError(error, 'Flux'));
     }
   }
 
@@ -419,9 +408,7 @@ class FluxAPI extends Tool {
       }
       return JSON.stringify(finetuneDetails);
     } catch (error) {
-      const details = this.getDetails(error?.response?.data || error.message);
-      logger.error('[FluxAPI] Error while getting finetunes:', details);
-      const errorMsg = `Failed to get finetunes: ${details}`;
+      const errorMsg = formatToolError(error, 'Flux');
       return this.isAgent ? this.returnValue([errorMsg, {}]) : new Error(errorMsg);
     }
   }
@@ -474,7 +461,6 @@ class FluxAPI extends Tool {
     }
 
     const generateUrl = `${this.baseUrl}${endpoint}`;
-    const resultUrl = `${this.baseUrl}/v1/get_result`;
 
     logger.debug('[FluxAPI] Generating finetuned image with payload:', payload);
     logger.debug('[FluxAPI] Using endpoint:', generateUrl);
@@ -490,15 +476,14 @@ class FluxAPI extends Tool {
         ...this.getAxiosConfig(),
       });
     } catch (error) {
-      const details = this.getDetails(error?.response?.data || error.message);
-      logger.error('[FluxAPI] Error while submitting finetuned task:', details);
-      return this.returnValue(
-        `Something went wrong when trying to generate the finetuned image. The Flux API may be unavailable:
-        Error Message: ${details}`,
-      );
+      return this.returnValue(formatToolError(error, 'Flux'));
     }
 
-    const taskId = taskResponse.data.id;
+    const resultRequest = resolveFluxResultRequest(
+      this.baseUrl,
+      taskResponse.data.id,
+      taskResponse.data.polling_url,
+    );
 
     // Polling for the result
     let status = 'Pending';
@@ -507,13 +492,13 @@ class FluxAPI extends Tool {
       try {
         // Wait 2 seconds between polls
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        const resultResponse = await axios.get(resultUrl, {
+        const resultResponse = await axios.get(resultRequest.url, {
           headers: {
             'x-key': requestApiKey,
             Accept: 'application/json',
           },
-          params: { id: taskId },
-          ...this.getAxiosConfig(),
+          params: resultRequest.params,
+          ...applyAxiosProxyConfig({}, resultRequest.url),
         });
         status = resultResponse.data.status;
 
@@ -549,15 +534,7 @@ class FluxAPI extends Tool {
         }
         const imageResponse = await fetch(imageUrl, fetchOptions);
         const arrayBuffer = await imageResponse.arrayBuffer();
-        const base64 = Buffer.from(arrayBuffer).toString('base64');
-        const content = [
-          {
-            type: ContentTypes.IMAGE_URL,
-            image_url: {
-              url: `data:image/png;base64,${base64}`,
-            },
-          },
-        ];
+        const artifact = await createImageToolArtifact(Buffer.from(arrayBuffer));
 
         const response = [
           {
@@ -565,10 +542,9 @@ class FluxAPI extends Tool {
             text: displayMessage,
           },
         ];
-        return [response, { content }];
+        return [response, artifact];
       } catch (error) {
-        logger.error('[FluxAPI] Error processing finetuned image for agent:', error);
-        return this.returnValue(`Failed to process the finetuned image. ${error.message}`);
+        return this.returnValue(formatToolError(error, 'Flux'));
       }
     }
 
@@ -590,9 +566,7 @@ class FluxAPI extends Tool {
       this.result = this.returnMetadata ? result : this.wrapInMarkdown(result.filepath);
       return this.returnValue(this.result);
     } catch (error) {
-      const details = this.getDetails(error?.message ?? 'No additional error details.');
-      logger.error('Error while saving the finetuned image:', details);
-      return this.returnValue(`Failed to save the finetuned image locally. ${details}`);
+      return this.returnValue(formatToolError(error, 'Flux'));
     }
   }
 }

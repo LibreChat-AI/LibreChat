@@ -59,12 +59,22 @@ function baseConfig(): AppConfig {
   } as unknown as AppConfig;
 }
 
-function merge(layers: ConfigOverrideLayer[], base = baseConfig()) {
+function merge(
+  layers: ConfigOverrideLayer[],
+  base = baseConfig(),
+  derivation: { rederiveEndpoints?: boolean } = {},
+) {
   const rebindings: SecretRebinding[] = [];
   const merged = mergeConfigOverrides(base, layers, {
+    ...derivation,
     afterLayer: createSecretRebindingGuard((rebinding) => rebindings.push(rebinding)),
   });
   return { merged, rebindings, ignored: rebindings.map(toIgnoredSecretOverride) };
+}
+
+/** {@link merge} as `CONFIG_REDERIVE_ENDPOINTS` runs it: a layer's Azure groups resolved. */
+function mergeGroups(layers: ConfigOverrideLayer[], base = baseConfig()) {
+  return merge(layers, base, { rederiveEndpoints: true });
 }
 
 describe('createSecretRebindingGuard', () => {
@@ -1367,7 +1377,36 @@ describe('createSecretRebindingGuard', () => {
       expect(rebindings).toEqual([]);
     });
 
-    it("sets the Vertex AI region back to librechat.yaml's, whatever the override supplies", () => {
+    it("reports nothing for Vertex AI a layer turns on, and serves it on librechat.yaml's region", () => {
+      const rebindings: SecretRebinding[] = [];
+      const yamlVertex = { enabled: false, region: 'europe-west1' };
+      const merged = mergeConfigOverrides(
+        {
+          config: { endpoints: { anthropic: { vertex: yamlVertex } } },
+          endpoints: { anthropic: {} },
+        } as unknown as AppConfig,
+        [
+          layer({
+            endpoints: {
+              anthropic: { vertex: { enabled: true, projectId: 'p-1', region: 'evil' } },
+            },
+          }),
+        ],
+        {
+          rederiveEndpoints: true,
+          afterLayer: createSecretRebindingGuard((rebinding) => rebindings.push(rebinding)),
+        },
+      );
+
+      expect(merged.endpoints?.anthropic?.vertexConfig).toMatchObject({
+        projectId: 'p-1',
+        region: 'europe-west1',
+      });
+      expect(rebindings).toEqual([]);
+    });
+
+    it('never applies Vertex AI settings an override writes to the resolved vertexConfig', () => {
+      const base = withResolvedEndpoints();
       const { merged, rebindings } = merge(
         [
           layer({
@@ -1382,16 +1421,13 @@ describe('createSecretRebindingGuard', () => {
             },
           }),
         ],
-        withResolvedEndpoints(),
+        base,
       );
 
-      expect(merged.endpoints?.anthropic?.vertexConfig).toMatchObject({
-        region: 'us-east5',
-        projectId: 'other-project',
-      });
-      expect(rebindings.map(({ kind, path }) => [kind, path])).toEqual([
-        ['destination', 'endpoints.anthropic.vertexConfig.region'],
-      ]);
+      expect(merged.endpoints?.anthropic?.vertexConfig).toEqual(
+        base.endpoints?.anthropic?.vertexConfig,
+      );
+      expect(rebindings).toEqual([]);
     });
   });
 
@@ -1429,25 +1465,177 @@ describe('createSecretRebindingGuard', () => {
       models: { 'gpt-5': true },
     };
 
-    it("replaces librechat.yaml's groups with the layer's, each with the key it entered", () => {
-      const { merged, rebindings } = merge(
+    it("merges the layer's groups by group over librechat.yaml's, each with the key it entered", () => {
+      const { merged, rebindings } = mergeGroups(
         [layer({ endpoints: { azureOpenAI: { groups: [ownGroup] } } }, '__base__', 0)],
         azureBase(),
       );
 
       const azure = merged.endpoints?.azureOpenAI;
-      expect(Object.keys(azure?.groupMap ?? {})).toEqual(['west']);
+      expect(Object.keys(azure?.groupMap ?? {})).toEqual(['east', 'west']);
+      expect(azure?.groupMap?.east).toMatchObject({ apiKey: 'yaml-literal-east-key' });
       expect(azure?.groupMap?.west).toMatchObject({
         apiKey: 'v3:west-admin-key',
         instanceName: 'west',
       });
-      expect(azure?.modelGroupMap).toEqual({ 'gpt-5': { group: 'west' } });
-      expect(azure?.modelNames).toEqual(['gpt-5']);
+      expect(azure?.modelGroupMap).toEqual({
+        'gpt-4o': { group: 'east' },
+        'gpt-5': { group: 'west' },
+      });
+      expect(azure?.modelNames).toEqual(['gpt-4o', 'gpt-5']);
       expect(rebindings).toEqual([]);
     });
 
+    it("replaces librechat.yaml's groups with a layer's that tombstones them", () => {
+      const replacing = {
+        ...layer({ endpoints: { azureOpenAI: { groups: [ownGroup] } } }, '__base__', 0),
+        tombstones: ['endpoints.azureOpenAI.groups'],
+      };
+      const { merged } = mergeGroups([replacing], azureBase());
+
+      expect(Object.keys(merged.endpoints?.azureOpenAI?.groupMap ?? {})).toEqual(['west']);
+      expect(merged.endpoints?.azureOpenAI?.modelNames).toEqual(['gpt-5']);
+    });
+
+    it('keeps the inherited key of a librechat.yaml group whose item changes only its models', () => {
+      const { merged, rebindings } = mergeGroups(
+        [
+          layer({
+            endpoints: {
+              azureOpenAI: {
+                groups: [{ group: 'east', models: { 'gpt-4o-mini': { deploymentName: 'mini' } } }],
+              },
+            },
+          }),
+        ],
+        azureBase(),
+      );
+
+      const azure = merged.endpoints?.azureOpenAI;
+      expect(azure?.groupMap?.east).toMatchObject({
+        apiKey: 'yaml-literal-east-key',
+        instanceName: 'east',
+        models: { 'gpt-4o': true, 'gpt-4o-mini': { deploymentName: 'mini' } },
+      });
+      expect(azure?.modelNames).toEqual(['gpt-4o', 'gpt-4o-mini']);
+      expect(rebindings).toEqual([]);
+    });
+
+    it("drops librechat.yaml's key when a partial item points its group elsewhere", () => {
+      const { merged, ignored } = mergeGroups(
+        [
+          layer({
+            endpoints: { azureOpenAI: { groups: [{ group: 'east', instanceName: 'evil' }] } },
+          }),
+        ],
+        azureBase(),
+      );
+
+      expect(merged.endpoints?.azureOpenAI?.groupMap?.east).toMatchObject({
+        apiKey: '',
+        instanceName: 'evil',
+      });
+      expect(ignored.map(({ path }) => path)).toEqual([
+        'endpoints.azureOpenAI.groupMap.east.apiKey',
+      ]);
+    });
+
+    it('drops and reports nothing without CONFIG_REDERIVE_ENDPOINTS, where the groups stay inert', () => {
+      const { merged, ignored } = merge(
+        [
+          layer({
+            endpoints: { azureOpenAI: { groups: [{ group: 'east', instanceName: 'evil' }] } },
+          }),
+        ],
+        azureBase(),
+      );
+
+      expect(merged.endpoints?.azureOpenAI?.groupMap).toEqual(
+        azureBase().endpoints?.azureOpenAI?.groupMap,
+      );
+      expect(ignored).toEqual([]);
+    });
+
+    it('keeps a key a lower layer dropped dropped when a later layer writes the same group', () => {
+      const { merged, ignored } = mergeGroups(
+        [
+          layer(
+            { endpoints: { azureOpenAI: { groups: [{ group: 'east', instanceName: 'evil' }] } } },
+            '__base__',
+            0,
+          ),
+          layer({
+            endpoints: {
+              azureOpenAI: {
+                groups: [{ group: 'east', models: { 'gpt-4o-mini': { deploymentName: 'mini' } } }],
+              },
+            },
+          }),
+        ],
+        azureBase(),
+      );
+
+      expect(merged.endpoints?.azureOpenAI?.groupMap?.east).toMatchObject({
+        apiKey: '',
+        instanceName: 'evil',
+      });
+      expect(ignored.map(({ path }) => path)).toEqual([
+        'endpoints.azureOpenAI.groupMap.east.apiKey',
+      ]);
+    });
+
+    it.each([
+      ['hides a field it needs', 'endpoints.azureOpenAI.groups["east"].instanceName'],
+      ['tombstones its groupMap entry', 'endpoints.azureOpenAI.groupMap.east'],
+    ])(
+      "sends no librechat.yaml key to a group a lower layer's tombstone (%s) left unserved",
+      (_case, tombstone) => {
+        const moved = { instanceName: 'evil', baseURL: 'https://evil.example/openai' };
+        const { merged } = mergeGroups(
+          [
+            { ...layer({}, '__base__', 0), tombstones: [tombstone] },
+            layer({ endpoints: { azureOpenAI: { groups: [{ group: 'east', ...moved }] } } }),
+          ],
+          azureBase(),
+        );
+
+        const east = merged.endpoints?.azureOpenAI?.groupMap?.east;
+        expect(east).toMatchObject(moved);
+        expect(east).not.toHaveProperty('apiKey');
+        expect(merged.endpoints?.azureOpenAI?.modelGroupMap).toEqual({
+          'gpt-4o': { group: 'east' },
+        });
+      },
+    );
+
+    it("drops a layer's own key for a group whose destination a lower layer moved", () => {
+      const { merged, rebindings } = mergeGroups(
+        [
+          layer(
+            { endpoints: { azureOpenAI: { groups: [{ group: 'east', instanceName: 'moved' }] } } },
+            '__base__',
+            0,
+          ),
+          layer({
+            endpoints: { azureOpenAI: { groups: [{ group: 'east', apiKey: 'v3:own-key' }] } },
+          }),
+        ],
+        azureBase(),
+      );
+
+      expect(merged.endpoints?.azureOpenAI?.groupMap?.east).toMatchObject({
+        apiKey: '',
+        instanceName: 'moved',
+      });
+      expect(rebindings[rebindings.length - 1]).toMatchObject({
+        kind: 'secret',
+        path: 'endpoints.azureOpenAI.groupMap.east.apiKey',
+        binding: expect.any(String),
+      });
+    });
+
     it('keeps the key a layer enters for a librechat.yaml group it points elsewhere', () => {
-      const { merged, rebindings } = merge(
+      const { merged, rebindings } = mergeGroups(
         [
           layer({
             endpoints: {
@@ -1468,7 +1656,7 @@ describe('createSecretRebindingGuard', () => {
     });
 
     it('drops the key of a group a layer resolved once a later layer points it elsewhere', () => {
-      const { merged, ignored } = merge(
+      const { merged, ignored } = mergeGroups(
         [
           layer({ endpoints: { azureOpenAI: { groups: [ownGroup] } } }, '__base__', 0),
           layer({ endpoints: { azureOpenAI: { groupMap: { west: { instanceName: 'evil' } } } } }),
@@ -1495,7 +1683,7 @@ describe('createSecretRebindingGuard', () => {
         baseURL: 'https://west.openai.azure.com/openai/deployments/${DEPLOYMENT_NAME}',
       };
       const renamed = (group: Record<string, unknown>) =>
-        merge(
+        mergeGroups(
           [
             layer({ endpoints: { azureOpenAI: { groups: [group] } } }, '__base__', 0),
             layer({
@@ -1517,7 +1705,7 @@ describe('createSecretRebindingGuard', () => {
 
     it('binds the destination options its addParams reach the client with', () => {
       const moved = (addParams: Record<string, unknown>) =>
-        merge(
+        mergeGroups(
           [
             layer({ endpoints: { azureOpenAI: { groups: [ownGroup] } } }, '__base__', 0),
             layer({ endpoints: { azureOpenAI: { groupMap: { west: { addParams } } } } }),
@@ -1530,7 +1718,7 @@ describe('createSecretRebindingGuard', () => {
     });
 
     it('leaves groups that do not resolve unread, and what lies below in place', () => {
-      const { merged } = merge(
+      const { merged } = mergeGroups(
         [
           layer({
             endpoints: { azureOpenAI: { groups: [ownGroup, { ...ownGroup, group: 'w2' }] } },

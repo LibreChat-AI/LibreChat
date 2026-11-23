@@ -4,7 +4,7 @@ import { Tools } from 'librechat-data-provider';
 import { logger } from '@librechat/data-schemas';
 import type { MemoryArtifact } from 'librechat-data-provider';
 import { createMemoryTool, processMemory } from '../memory';
-import Tokenizer from '~/utils/tokenizer';
+import { countTokens } from '~/utils/tokenizer';
 
 // Mock the logger
 // `winston.format` must be a callable factory (real winston returns a Format
@@ -39,12 +39,10 @@ jest.mock('winston', () => ({
   },
 }));
 
-// Mock the Tokenizer
+// Mock the token counter
 jest.mock('~/utils/tokenizer', () => ({
   __esModule: true,
-  default: {
-    getTokenCount: jest.fn((text: string) => text.length), // Simple mock: 1 char = 1 token
-  },
+  countTokens: jest.fn(async (text: string) => text.length), // Simple mock: 1 char = 1 token
 }));
 
 // Mock the Run module
@@ -241,7 +239,7 @@ describe('createMemoryTool', () => {
 
     it('should block configured memory content before tokenization or persistence', async () => {
       const onWrite = jest.fn();
-      const tokenCount = jest.mocked(Tokenizer.getTokenCount);
+      const tokenCount = jest.mocked(countTokens);
       const tool = createMemoryTool({
         userId: 'test-user',
         setMemory: mockSetMemory,
@@ -357,7 +355,7 @@ describe('processMemory - GPT-5+ handling', () => {
   });
 
   it('should enforce memory filters in the automatic processor without changing deletes', async () => {
-    const tokenCount = jest.mocked(Tokenizer.getTokenCount);
+    const tokenCount = jest.mocked(countTokens);
     tokenCount.mockClear();
 
     await processMemory({

@@ -465,6 +465,33 @@ describe('createProvisionService', () => {
       expect(alive.has('f5')).toBe(false);
     });
 
+    it.each([null, {}, { files: [] }, 'not an array'])(
+      'keeps a malformed summary %p unverified',
+      async (data) => {
+        mockAxios.mockResolvedValue({ data });
+        const { service } = buildService();
+        expect(await service.checkSessionsAlive({ files: [staleFile('f1')], req })).toEqual(
+          new Set(['f1']),
+        );
+      },
+    );
+
+    it('starts independent session probes in parallel and probes each session once', async () => {
+      const pending: Array<(value: { data: unknown[] }) => void> = [];
+      mockAxios.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+      const files = [staleFile('f1'), staleFile('f2'), staleFile('f3')];
+      files[2].metadata!.codeEnvRef!.storage_session_id = 'sess-2';
+      const { service } = buildService();
+      const checking = service.checkSessionsAlive({ files, req });
+      await new Promise(setImmediate);
+      expect(mockAxios).toHaveBeenCalledTimes(2);
+      for (const resolve of pending)
+        resolve({
+          data: [{ fileId: 'remote-f1' }, { fileId: 'remote-f2' }, { fileId: 'remote-f3' }],
+        });
+      expect(await checking).toEqual(new Set(['f1', 'f2', 'f3']));
+    });
+
     describe('on an attached or stateful route', () => {
       const ROUTE_KEY = 'stateful:env1';
       const BYOM_URL = 'https://code-byom.test/v1';

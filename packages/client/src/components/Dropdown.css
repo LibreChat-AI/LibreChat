@@ -31,6 +31,20 @@
 /* Elevation here is a black shadow, which carries no separation at all against
  * a pure black surface. Lives with the primitive rather than in the app
  * stylesheet, which the published package does not include. */
+/* A form-field list takes the theme's list roles: `listMinWidth` (0 sizes it by its
+ * trigger) and `listMaxHeight`, never past the room the popover leaves below or above it. */
+.popover-ui[data-variant='field'] {
+  min-width: var(--theme-list-min-width, 8rem);
+  max-height: min(var(--theme-list-max-height, 24rem), var(--popover-available-height, 100dvh));
+}
+
+/* ...and is never narrower than its trigger. The floor sits on Ariakit's wrapper, where the
+ * anchor width is set and which the list fills, because a role of `0` (unitless) cannot be
+ * combined with a length in `max()`. */
+.popover-field-wrapper {
+  min-width: var(--popover-anchor-width, 0px);
+}
+
 html.high-contrast .popover-ui {
   border: 1px solid rgb(var(--border-medium));
   box-shadow: none;

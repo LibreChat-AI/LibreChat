@@ -1,10 +1,5 @@
 const { logger } = require('@librechat/data-schemas');
-const {
-  getToolkitKey,
-  checkPluginAuth,
-  filterUniquePlugins,
-  filterGitHubComparePlugins,
-} = require('@librechat/api');
+const { listAvailableTools } = require('@librechat/api');
 const { getCachedTools, setCachedTools } = require('~/server/services/Config');
 const { availableTools, toolkits } = require('~/app/clients/tools');
 const { getAppConfig } = require('~/server/services/Config');
@@ -33,12 +28,6 @@ const getAvailableTools = async (req, res) => {
       toolDefinitions = appConfig.availableTools;
     }
 
-    const uniquePlugins = filterUniquePlugins(
-      filterGitHubComparePlugins(availableTools, appConfig?.githubCompare),
-    );
-    const toolDefKeysList = toolDefinitions ? Object.keys(toolDefinitions) : null;
-    const toolDefKeys = toolDefKeysList ? new Set(toolDefKeysList) : null;
-
     /**
      * `getAvailableTools` serves BOTH tool dialogs — /api/agents/tools and
      * /api/assistants/tools. Tools flagged `agentsOnly` in the manifest (e.g.
@@ -47,27 +36,13 @@ const getAvailableTools = async (req, res) => {
      * run to pause and no resume surface, so attaching one there guarantees a
      * permanent tool error. Scope them out of the assistants listing by route.
      */
-    const isAssistantsRoute = req.baseUrl?.includes('/assistants') === true;
-
-    const toolsOutput = [];
-    for (const plugin of uniquePlugins) {
-      if (plugin.agentsOnly === true && isAssistantsRoute) {
-        continue;
-      }
-      const isToolDefined = toolDefKeys?.has(plugin.pluginKey) === true;
-      const isToolkit =
-        plugin.toolkit === true &&
-        toolDefKeysList != null &&
-        toolDefKeysList.some(
-          (key) => getToolkitKey({ toolkits, toolName: key }) === plugin.pluginKey,
-        );
-
-      if (!isToolDefined && !isToolkit) {
-        continue;
-      }
-
-      toolsOutput.push(checkPluginAuth(plugin) ? { ...plugin, authenticated: true } : plugin);
-    }
+    const toolsOutput = listAvailableTools({
+      manifest: availableTools,
+      toolkits,
+      toolDefinitions,
+      githubCompare: appConfig?.githubCompare,
+      forAssistants: req.baseUrl?.includes('/assistants') === true,
+    });
 
     res.status(200).json(toolsOutput);
   } catch (error) {

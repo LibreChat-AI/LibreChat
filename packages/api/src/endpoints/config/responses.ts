@@ -46,7 +46,7 @@ export function getResponsesApiRouting(
       // noncanonical case: explicit/admin-forced routes still survive, whereas
       // automatic model inference is conservatively withheld.
       if (isUserProvided(baseURL)) baseURL = 'https://user-url.invalid/v1';
-      const route = (value?: boolean, webSearch?: boolean) =>
+      const request = (value?: boolean, webSearch?: boolean) =>
         getOpenAIConfig(
           'route-policy',
           {
@@ -62,9 +62,13 @@ export function getResponsesApiRouting(
             },
           },
           endpoint,
-        ).llmConfig.useResponsesApi === true;
+        ).llmConfig;
+      const defaults = request();
+      const route = (value?: boolean, webSearch?: boolean) =>
+        request(value, webSearch).useResponsesApi === true;
       result[model] = {
-        default: route(),
+        firstPartyEndpoint: defaults.firstPartyEndpoint === true,
+        default: defaults.useResponsesApi === true,
         on: route(true),
         off: route(false),
         withWebSearch: {

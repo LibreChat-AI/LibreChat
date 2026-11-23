@@ -33,7 +33,7 @@ export function ArchivedChatsModal({
         ref={contentRef}
         tabIndex={-1}
         onOpenAutoFocus={handleOpenAutoFocus}
-        className="w-11/12 max-w-3xl shadow-2xl"
+        className="w-11/12 max-w-5xl shadow-2xl"
       >
         <OGDialogHeader>
           <OGDialogTitle>{localize('com_nav_archived_chats')}</OGDialogTitle>

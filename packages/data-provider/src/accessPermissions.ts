@@ -41,6 +41,7 @@ export enum ResourceType {
   SKILL = 'skill',
   SHARED_LINK = 'sharedLink',
   CHAT_PROJECT = 'chatProject',
+  SLACK_BOT = 'slackBot',
 }
 
 /**

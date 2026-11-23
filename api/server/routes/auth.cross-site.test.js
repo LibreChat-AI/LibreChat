@@ -7,6 +7,7 @@ const mockRequireLocalAuth = jest.fn((req, res, next) => next());
 const mockSetTwoFactorTempUser = jest.fn((req, res, next) => next());
 const mockLoginController = jest.fn((req, res) => res.status(204).end());
 const mockVerify2FAWithTempToken = jest.fn((req, res) => res.status(204).end());
+const mockCancel2FASetup = jest.fn((req, res) => res.status(204).end());
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -39,6 +40,7 @@ jest.mock('~/server/controllers/auth/TwoFactorAuthController', () => ({
   confirm2FASetupWithTempToken: jest.fn((req, res) => res.status(204).end()),
   acknowledge2FASetup: jest.fn((req, res) => res.status(204).end()),
   finalize2FASetup: jest.fn((req, res) => res.status(204).end()),
+  cancel2FASetup: (...args) => mockCancel2FASetup(...args),
 }));
 
 jest.mock('~/server/controllers/auth/PasskeyController', () => ({
@@ -173,6 +175,43 @@ describe('local login endpoints reject cross-site submissions', () => {
 
     expect(mockSetTwoFactorTempUser).not.toHaveBeenCalled();
     expect(mockVerify2FAWithTempToken).not.toHaveBeenCalled();
+  });
+
+  /** The setup token rides in the body, but the response clears cookies the browser sends on its own. */
+  it('rejects a cross-site setup cancellation before it can clear the browser session', async () => {
+    const response = await request(app)
+      .post('/api/auth/2fa/setup/cancel')
+      .set('Host', 'chat.example.com')
+      .set('Sec-Fetch-Site', 'cross-site')
+      .set('Origin', OTHER_ORIGIN)
+      .type('form')
+      .send({ tempToken: 'attacker-setup-token' })
+      .expect(403);
+
+    expect(response.headers['set-cookie']).toBeUndefined();
+    expect(mockSetTwoFactorTempUser).not.toHaveBeenCalled();
+    expect(mockCancel2FASetup).not.toHaveBeenCalled();
+  });
+
+  it('accepts a setup cancellation the app submits from its own origin', async () => {
+    const { generateTwoFactorSetupToken } = require('@librechat/api');
+    process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+    process.env.JWT_SECRET = 'cross-site-secret';
+
+    try {
+      await request(app)
+        .post('/api/auth/2fa/setup/cancel')
+        .set('Host', 'chat.example.com')
+        .set('Sec-Fetch-Site', 'same-origin')
+        .set('Origin', APP_ORIGIN)
+        .send({ tempToken: generateTwoFactorSetupToken('user-1', 'cross-site-secret') })
+        .expect(204);
+    } finally {
+      delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+      delete process.env.JWT_SECRET;
+    }
+
+    expect(mockCancel2FASetup).toHaveBeenCalledTimes(1);
   });
 
   it('accepts the login form the app submits from its own origin', async () => {

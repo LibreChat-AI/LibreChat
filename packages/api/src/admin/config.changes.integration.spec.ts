@@ -95,7 +95,7 @@ function createDeps(overrides: Partial<AdminConfigDeps> = {}): AdminConfigDeps {
     listAllConfigs: methods.listAllConfigs,
     findConfigByPrincipal: methods.findConfigByPrincipal,
     writeConfigDocument: jest.fn(methods.writeConfigDocument),
-    unsetConfigField: methods.unsetConfigField,
+    unsetConfigFieldTracked: methods.unsetConfigFieldTracked,
     deleteConfig: methods.deleteConfig,
     toggleConfigActiveTracked: methods.toggleConfigActiveTracked,
     hasConfigCapability: async () => true,
@@ -285,6 +285,7 @@ describe('POST …/changes: one atomic write', () => {
         path: 'mcpServers.new.title',
         segments: ['mcpServers', 'new', 'title'],
         code: 'invalid_type',
+        params: { expected: 'string', received: 'number' },
       },
     ]);
     expect(deps.writeConfigDocument).not.toHaveBeenCalled();
@@ -1279,32 +1280,52 @@ describe('POST …/changes: entries librechat.yaml owns', () => {
         path: 'endpoints.custom.2.baseURL',
         segments: ['endpoints', 'custom', '2', 'baseURL'],
         code: 'invalid_type',
+        params: { expected: 'string', received: 'number' },
       },
     ]);
   });
 
-  it('reports writes to a YAML stdio server as applied but ignored at runtime', async () => {
+  it('refuses a write inside a YAML stdio server, and leaves one out of a whole-section value', async () => {
     const params = nextParams();
-    const { status, body } = await send(
+    const refused = await send(
       {
         ops: [
-          { op: 'set', fieldPath: 'mcpServers.yaml-stdio.title', value: 'Local' },
           { op: 'set', fieldPath: 'mcpServers.yaml-http.title', value: 'Remote' },
+          { op: 'set', fieldPath: 'mcpServers.yaml-stdio.title', value: 'Local' },
         ],
       },
       params,
     );
+    expect(refused.status).toBe(400);
+    expect(refused.body).toMatchObject({ code: 'PROCESS_MCP_SERVER_OVERRIDE', opIndex: 1 });
+    expect(await storedDocument(params.principalId)).toBeNull();
 
+    const { status, body } = await send(
+      {
+        ops: [
+          {
+            op: 'set',
+            fieldPath: 'mcpServers',
+            value: { 'yaml-stdio': { title: 'Local' }, 'yaml-http': { title: 'Remote' } },
+          },
+        ],
+      },
+      params,
+    );
     expect(status).toBe(200);
-    expect(body.applied).toHaveLength(2);
-    expect(body.ignored).toEqual([
+    expect(body.applied).toEqual([{ opIndex: 0, op: 'set', segments: ['mcpServers'] }]);
+    expect(body.skipped).toEqual([
       {
         opIndex: 0,
         op: 'set',
-        segments: ['mcpServers', 'yaml-stdio', 'title'],
+        segments: ['mcpServers', 'yaml-stdio'],
         reason: 'process_mcp_server',
       },
     ]);
+    expect(body.ignored).toEqual([]);
+    expect((await storedDocument(params.principalId))!.overrides).toEqual({
+      mcpServers: { 'yaml-http': { title: 'Remote' } },
+    });
   });
 
   it('reports the YAML stdio servers a whole-section tombstone leaves in place as ignored', async () => {
@@ -1364,7 +1385,83 @@ describe('POST …/changes: entries librechat.yaml owns', () => {
     expect((await storedDocument(params.principalId))!.tombstones).toEqual(['endpoints.agents']);
   });
 
-  it('reports a rename under a YAML stdio server as ignored, but not an unset there', async () => {
+  it('skips a set or tombstone of a derived field and strips one a set above it carries', async () => {
+    const params = nextParams();
+    const stale = { projectId: 'x', serviceKeyFile: 'http://169.254.169.254/latest' };
+    const skippedOnly = [
+      { op: 'set', fieldPath: 'endpoints.anthropic.vertexConfig', value: stale },
+      { op: 'tombstone', fieldPath: 'endpoints.anthropic.vertexConfig' },
+      { op: 'set', fieldPath: 'endpoints.anthropic.vertexConfig.projectId', value: 'y' },
+    ];
+    for (const op of skippedOnly) {
+      const { status, body } = await send({ ops: [op] }, params);
+      expect(status).toBe(200);
+      expect(body.skipped).toEqual([
+        {
+          opIndex: 0,
+          op: op.op,
+          segments: op.fieldPath.split('.'),
+          reason: 'derived_path',
+        },
+      ]);
+      expect(body.applied).toEqual([]);
+    }
+    expect(await storedDocument(params.principalId)).toBeNull();
+
+    const { status, body } = await send(
+      {
+        ops: [
+          {
+            op: 'set',
+            fieldPath: 'endpoints.anthropic',
+            value: { titleModel: 'claude-haiku-4-5', vertexConfig: stale },
+          },
+        ],
+      },
+      params,
+    );
+
+    expect(status).toBe(200);
+    expect(body.skipped).toEqual([
+      {
+        opIndex: 0,
+        op: 'set',
+        segments: ['endpoints', 'anthropic', 'vertexConfig'],
+        reason: 'derived_path',
+      },
+    ]);
+    expect(body.applied.map((ref) => ref.opIndex)).toEqual([0]);
+    const stored = await storedDocument(params.principalId);
+    expect(stored!.overrides).toEqual({
+      endpoints: { anthropic: { titleModel: 'claude-haiku-4-5' } },
+    });
+    expect(stored!.tombstones).toEqual([]);
+  });
+
+  it('lets an unset clear a derived field an older server stored', async () => {
+    const params = nextParams();
+    await seedDocument(
+      params.principalId,
+      {
+        endpoints: { anthropic: { titleModel: 'claude-haiku-4-5', vertexConfig: { region: 'x' } } },
+      },
+      [],
+    );
+
+    const { status, body } = await send(
+      { ops: [{ op: 'unset', fieldPath: 'endpoints.anthropic.vertexConfig' }] },
+      params,
+    );
+
+    expect(status).toBe(200);
+    expect(body.skipped).toEqual([]);
+    expect(body.applied.map(({ opIndex, op }) => [opIndex, op])).toEqual([[0, 'unset']]);
+    expect((await storedDocument(params.principalId))!.overrides).toEqual({
+      endpoints: { anthropic: { titleModel: 'claude-haiku-4-5' } },
+    });
+  });
+
+  it('refuses a rename under a YAML stdio server, but not an unset there', async () => {
     const params = nextParams();
     await seedDocument(
       params.principalId,
@@ -1379,7 +1476,7 @@ describe('POST …/changes: entries librechat.yaml owns', () => {
       [],
     );
 
-    const { status, body } = await send(
+    const rename = await send(
       {
         ops: [
           {
@@ -1388,24 +1485,22 @@ describe('POST …/changes: entries librechat.yaml owns', () => {
             from: 'OLD',
             to: 'NEW',
           },
-          { op: 'unset', fieldPath: 'mcpServers.yaml-stdio.title' },
         ],
       },
       params,
     );
+    expect(rename.status).toBe(400);
+    expect(rename.body).toMatchObject({ code: 'PROCESS_MCP_SERVER_OVERRIDE', opIndex: 0 });
 
+    const { status, body } = await send(
+      { ops: [{ op: 'unset', fieldPath: 'mcpServers.yaml-stdio.title' }] },
+      params,
+    );
     expect(status).toBe(200);
-    expect(body.applied.map((ref) => ref.opIndex)).toEqual([0, 1]);
-    expect(body.ignored).toEqual([
-      {
-        opIndex: 0,
-        op: 'rename',
-        segments: ['mcpServers', 'yaml-stdio', 'customUserVars'],
-        reason: 'process_mcp_server',
-      },
-    ]);
+    expect(body.applied.map((ref) => ref.opIndex)).toEqual([0]);
+    expect(body.ignored).toEqual([]);
     expect((await storedDocument(params.principalId))!.overrides).toEqual({
-      mcpServers: { 'yaml-stdio': { customUserVars: { NEW: { title: 'T', description: 'D' } } } },
+      mcpServers: { 'yaml-stdio': { customUserVars: { OLD: { title: 'T', description: 'D' } } } },
     });
   });
 
@@ -1416,6 +1511,79 @@ describe('POST …/changes: entries librechat.yaml owns', () => {
     );
     expect(status).toBe(400);
     expect(body).toMatchObject({ code: 'PROCESS_MCP_CONFIG', opIndex: 0 });
+  });
+});
+
+describe("POST …/changes: hiding or removing the endpoint a profile's model spec selects", () => {
+  const spec = (name: string, endpointName: string) => ({
+    name,
+    label: name,
+    preset: { endpoint: endpointName, model: 'm' },
+  });
+
+  it.each([
+    ['a keyed tombstone', { op: 'tombstone', fieldPath: 'endpoints.custom["yaml-endpoint"]' }],
+    ['a tombstone of the list', { op: 'tombstone', fieldPath: 'endpoints.custom' }],
+  ])("takes the spec with %s of librechat.yaml's endpoint", async (_case, op) => {
+    const params = nextParams();
+    const specs = [spec('yaml', 'yaml-endpoint'), spec('openai', 'openAI')];
+    expect(
+      (await patchFields([{ fieldPath: 'modelSpecs.list', value: specs }], params)).status,
+    ).toBe(200);
+
+    const { status, body } = await send({ ops: [op] }, params);
+
+    expect(status).toBe(200);
+    expect(body.applied.map(({ opIndex }) => opIndex)).toEqual([0]);
+    expect((await storedDocument(params.principalId))!.tombstones).toEqual([op.fieldPath]);
+  });
+
+  it.each([
+    ['removeEntry', { op: 'removeEntry', fieldPath: 'endpoints.custom', key: 'Router' }],
+    ['a keyed unset', { op: 'unset', fieldPath: 'endpoints.custom["Router"]' }],
+    ['a keyed tombstone', { op: 'tombstone', fieldPath: 'endpoints.custom["Router"]' }],
+    ['an unset of the list', { op: 'unset', fieldPath: 'endpoints.custom' }],
+  ])("takes the spec with %s of the profile's own endpoint", async (_case, op) => {
+    const params = nextParams();
+    const written = await patchFields(
+      [
+        { fieldPath: 'endpoints.custom', value: [endpoint('Router')] },
+        { fieldPath: 'modelSpecs.list', value: [spec('router', 'Router')] },
+      ],
+      params,
+    );
+    expect(written.status).toBe(200);
+
+    const { status, body } = await send({ ops: [op] }, params);
+
+    expect(status).toBe(200);
+    expect(body.applied.map(({ opIndex }) => opIndex)).toEqual([0]);
+    const { overrides } = (await storedDocument(params.principalId))!;
+    expect(valueAt(overrides, ['endpoints', 'custom']) ?? []).toEqual([]);
+    expect(valueAt(overrides, ['modelSpecs', 'list'])).toEqual([spec('router', 'Router')]);
+  });
+
+  it('still refuses a spec the batch writes for the endpoint it hides', async () => {
+    const params = nextParams();
+
+    const { status, body } = await send(
+      {
+        ops: [
+          { op: 'tombstone', fieldPath: 'endpoints.custom["yaml-endpoint"]' },
+          { op: 'set', fieldPath: 'modelSpecs.list', value: [spec('yaml', 'yaml-endpoint')] },
+        ],
+      },
+      params,
+    );
+
+    expect(status).toBe(400);
+    expect(body.issues).toEqual([
+      expect.objectContaining({
+        path: 'modelSpecs.list.0.preset.endpoint',
+        code: 'unknown_spec_endpoint',
+      }),
+    ]);
+    expect(await storedDocument(params.principalId)).toBeNull();
   });
 });
 
@@ -1897,7 +2065,12 @@ describe('POST …/changes: no-ops, dry runs and preconditions', () => {
     );
     expect(rewritten.status).toBe(400);
     expect(rewritten.body.issues).toEqual([
-      { path: 'balance.startBalance', segments: ['balance', 'startBalance'], code: 'invalid_type' },
+      {
+        path: 'balance.startBalance',
+        segments: ['balance', 'startBalance'],
+        code: 'invalid_type',
+        params: { expected: 'number', received: 'string' },
+      },
     ]);
   });
 
@@ -2205,6 +2378,66 @@ describe('POST …/changes: request checks', () => {
     const stored = await storedDocument(params.principalId);
     expect(stored!.overrides).toEqual({ interface: { customWelcome: 'hi' } });
     expect(stored!.tombstones).toEqual([]);
+  });
+
+  it('lets unset remove part of what an older server stored outside configSchema, and still refuses writes there', async () => {
+    const params = nextParams();
+    await seedDocument(
+      params.principalId,
+      {
+        paths: { uploads: '/tmp/x', imageOutput: '/tmp/y' },
+        interfaceConfig: { agents: false, prompts: false },
+        interface: { customWelcome: 'hi' },
+      },
+      ['config.version', 'config.cache', 'interfaceConfig.bookmarks'],
+    );
+
+    const { status, body } = await send(
+      {
+        ops: [
+          { op: 'unset', fieldPath: 'paths.uploads' },
+          { op: 'unset', fieldPath: 'config.version' },
+          { op: 'unset', fieldPath: 'interfaceConfig.agents' },
+          { op: 'set', fieldPath: 'interface.customWelcome', value: 'hello' },
+        ],
+      },
+      params,
+    );
+
+    expect({ status, code: body.code, issues: body.issues }).toEqual({
+      status: 200,
+      code: undefined,
+      issues: undefined,
+    });
+    expect(body.applied.map((ref) => ref.opIndex)).toEqual([0, 1, 2, 3]);
+    const stored = await storedDocument(params.principalId);
+    expect(stored!.overrides).toEqual({
+      paths: { imageOutput: '/tmp/y' },
+      interfaceConfig: { prompts: false },
+      interface: { customWelcome: 'hello' },
+    });
+    expect(stored!.tombstones).toEqual(['config.cache', 'interfaceConfig.bookmarks']);
+
+    for (const op of [
+      { op: 'set', fieldPath: 'paths.imageOutput', value: '/tmp/z' },
+      { op: 'tombstone', fieldPath: 'interfaceConfig.prompts' },
+      { op: 'rename', fieldPath: 'paths', from: 'imageOutput', to: 'uploads' },
+    ]) {
+      const refused = await send(
+        { ops: [{ op: 'unset', fieldPath: 'paths.uploads' }, op] },
+        params,
+      );
+      expect({
+        status: refused.status,
+        code: refused.body.code,
+        opIndex: refused.body.opIndex,
+      }).toEqual({
+        status: 400,
+        code: 'UNKNOWN_SECTION',
+        opIndex: 1,
+      });
+    }
+    expect((await storedDocument(params.principalId))!.overrides).toEqual(stored!.overrides);
   });
 
   it('hides a whole inherited array but refuses a tombstone inside one', async () => {
@@ -2580,5 +2813,211 @@ describe('PATCH /fields and POST …/changes: tombstones a write lifts', () => {
       },
     ]);
     expect(await storedDocument(params.principalId)).toEqual(before);
+  });
+});
+
+describe('PATCH, DELETE and tombstone /fields: retries and paths that change nothing', () => {
+  type FieldRoute = 'patchConfigField' | 'deleteConfigField' | 'tombstoneConfigField';
+
+  async function fieldWrite(
+    route: FieldRoute,
+    request: { body?: Record<string, unknown>; query?: Record<string, unknown> },
+    params: { principalType: string; principalId: string },
+  ) {
+    const deps = createDeps();
+    const res = mockRes();
+    await createAdminConfigHandlers(deps)[route](mockReq({ params, ...request }), res);
+    const audits = (deps.recordAuditEntry as jest.Mock).mock.calls.map(
+      ([entry]) => entry as { action: string; metadata: Record<string, unknown> },
+    );
+    return { status: res.statusCode, body: res.body as unknown as ChangesBody, deps, audits };
+  }
+
+  const version = async (principalId: string) => (await storedDocument(principalId))?.configVersion;
+
+  it('a PATCH retry that finds every value stored writes nothing and records no audit entry', async () => {
+    const params = nextParams();
+    const entries = [
+      { fieldPath: 'interface.customWelcome', value: 'Hello' },
+      { fieldPath: 'balance.startBalance', value: 100 },
+    ];
+    const first = await fieldWrite('patchConfigField', { body: { entries } }, params);
+    expect(first.status).toBe(200);
+    expect(first.audits).toHaveLength(1);
+    const written = await version(params.principalId);
+
+    const retry = await fieldWrite('patchConfigField', { body: { entries } }, params);
+
+    expect(retry.status).toBe(200);
+    expect(retry.body.config).toEqual(first.body.config);
+    expect(retry.deps.writeConfigDocument).not.toHaveBeenCalled();
+    expect(retry.audits).toEqual([]);
+    expect(retry.deps.invalidateConfigCaches).toHaveBeenCalledTimes(1);
+    expect(await version(params.principalId)).toBe(written);
+  });
+
+  it('a mixed PATCH audits only the path whose value changed', async () => {
+    const params = nextParams();
+    await seedDocument(params.principalId, { interface: { customWelcome: 'Hello' } }, []);
+
+    const { status, audits } = await fieldWrite(
+      'patchConfigField',
+      {
+        body: {
+          entries: [
+            { fieldPath: 'interface.customWelcome', value: 'Hello' },
+            { fieldPath: 'balance.startBalance', value: 100 },
+          ],
+        },
+      },
+      params,
+    );
+
+    expect(status).toBe(200);
+    expect(audits).toEqual([
+      expect.objectContaining({
+        action: 'config.updated',
+        metadata: { operation: 'patch', fieldPaths: 'balance.startBalance' },
+      }),
+    ]);
+  });
+
+  it('a PATCH that lifts a tombstone with the value already stored audits that path', async () => {
+    const params = nextParams();
+    await seedDocument(params.principalId, { memory: { agent: { id: 'agent_other' } } }, [
+      'memory.agent.id',
+    ]);
+
+    const { status, audits } = await fieldWrite(
+      'patchConfigField',
+      { body: { entries: [{ fieldPath: 'memory.agent.id', value: 'agent_other' }] } },
+      params,
+    );
+
+    expect(status).toBe(200);
+    expect(audits.map((entry) => entry.metadata.fieldPaths)).toEqual(['memory.agent.id']);
+    expect((await storedDocument(params.principalId))!.tombstones).toEqual([]);
+  });
+
+  it('a PATCH that only moves the priority audits the new priority and no field path', async () => {
+    const params = nextParams();
+    await seedDocument(params.principalId, { interface: { customWelcome: 'Hello' } }, []);
+
+    const { status, audits } = await fieldWrite(
+      'patchConfigField',
+      {
+        body: {
+          entries: [{ fieldPath: 'interface.customWelcome', value: 'Hello' }],
+          priority: 25,
+        },
+      },
+      params,
+    );
+
+    expect(status).toBe(200);
+    expect(audits).toEqual([
+      expect.objectContaining({
+        action: 'config.updated',
+        metadata: { operation: 'patch', fieldPaths: '', priority: 25 },
+      }),
+    ]);
+    expect((await storedDocument(params.principalId))!.priority).toBe(25);
+  });
+
+  it('a DELETE retry, or a DELETE of a path never stored, writes nothing and records no audit entry', async () => {
+    const params = nextParams();
+    await seedDocument(params.principalId, { interface: { customWelcome: 'Hello' } }, []);
+
+    const removed = await fieldWrite(
+      'deleteConfigField',
+      { query: { fieldPath: 'interface.customWelcome' } },
+      params,
+    );
+    expect(removed.status).toBe(200);
+    expect(removed.audits).toEqual([
+      expect.objectContaining({
+        action: 'config.updated',
+        metadata: { operation: 'unset', fieldPath: 'interface.customWelcome' },
+      }),
+    ]);
+    const written = await version(params.principalId);
+
+    for (const fieldPath of ['interface.customWelcome', 'balance.startBalance']) {
+      const retry = await fieldWrite('deleteConfigField', { query: { fieldPath } }, params);
+      expect(retry.status).toBe(200);
+      expect(retry.body.config).toEqual(removed.body.config);
+      expect(retry.audits).toEqual([]);
+      expect(retry.deps.invalidateConfigCaches).toHaveBeenCalledTimes(1);
+    }
+    expect(await version(params.principalId)).toBe(written);
+  });
+
+  it('a DELETE of an entry the document does not hold writes nothing and records no audit entry', async () => {
+    const params = nextParams();
+    await seedDocument(params.principalId, { endpoints: { custom: [endpoint('kept')] } }, []);
+    const seeded = await version(params.principalId);
+
+    const absent = await fieldWrite(
+      'deleteConfigField',
+      { query: { fieldPath: 'endpoints.custom["gone"]' } },
+      params,
+    );
+
+    expect(absent.status).toBe(200);
+    expect(absent.deps.writeConfigDocument).not.toHaveBeenCalled();
+    expect(absent.audits).toEqual([]);
+    expect(await version(params.principalId)).toBe(seeded);
+
+    const removed = await fieldWrite(
+      'deleteConfigField',
+      { query: { fieldPath: 'endpoints.custom["kept"]' } },
+      params,
+    );
+    expect(removed.status).toBe(200);
+    expect(removed.audits).toHaveLength(1);
+    expect((await storedDocument(params.principalId))!.overrides).toEqual({});
+  });
+
+  it('a DELETE on a principal without a document still answers 404', async () => {
+    const params = nextParams();
+
+    for (const fieldPath of ['interface.customWelcome', 'endpoints.custom["gone"]']) {
+      const { status, audits } = await fieldWrite(
+        'deleteConfigField',
+        { query: { fieldPath } },
+        params,
+      );
+      expect(status).toBe(404);
+      expect(audits).toEqual([]);
+    }
+  });
+
+  it('a tombstone retry writes nothing and records no audit entry', async () => {
+    const params = nextParams();
+    const first = await fieldWrite(
+      'tombstoneConfigField',
+      { body: { fieldPath: 'memory.agent' } },
+      params,
+    );
+    expect(first.status).toBe(200);
+    expect(first.audits).toEqual([
+      expect.objectContaining({
+        action: 'config.created',
+        metadata: { operation: 'tombstone', fieldPath: 'memory.agent' },
+      }),
+    ]);
+    const written = await version(params.principalId);
+
+    const retry = await fieldWrite(
+      'tombstoneConfigField',
+      { body: { fieldPath: 'memory.agent' } },
+      params,
+    );
+
+    expect(retry.status).toBe(200);
+    expect(retry.body.config).toEqual(first.body.config);
+    expect(retry.deps.writeConfigDocument).not.toHaveBeenCalled();
+    expect(retry.audits).toEqual([]);
+    expect(await version(params.principalId)).toBe(written);
   });
 });

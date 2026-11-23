@@ -1,0 +1,39 @@
+name: Redis binaries
+description: >-
+  Puts redis-server and redis-cli at the Redis version pinned in pin.json on PATH without a
+  package manager: restores them from the Actions cache and, when the cache has none for this
+  pin and runner OS release, builds them once from the pinned upstream commit. Use after Node.js
+  is set up and before anything starts Redis or calls redis-cli.
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve the pinned Redis build
+      id: pin
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/provision.mjs" key
+
+    # No restore-keys: binaries of another pin or another OS release are never a starting point.
+    - name: Restore Redis binaries
+      id: cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.cache/redis-binaries
+        key: ${{ steps.pin.outputs.key }}
+
+    - name: Provision redis-server and redis-cli
+      shell: bash
+      env:
+        REDIS_BINARIES_CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: node "$GITHUB_ACTION_PATH/provision.mjs"
+
+    # Saved here rather than in a post-job step: only binaries that were just proven to run are
+    # promoted into the cache every later job restores, and a failing test run still leaves
+    # them behind for the next one.
+    - name: Save Redis binaries
+      if: steps.cache.outputs.cache-hit != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@v5
+      with:
+        path: ~/.cache/redis-binaries
+        key: ${{ steps.cache.outputs.cache-primary-key }}

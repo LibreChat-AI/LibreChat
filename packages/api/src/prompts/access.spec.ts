@@ -3,7 +3,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createModels, createMethods } from '@librechat/data-schemas';
 import type { PromptDatabase, PromptRecord } from './types';
 import { createPromptAccessResolvers } from './access';
-import { createNativePromptAdapter } from './native';
+import { createPromptStore } from './store';
 
 let mongo: MongoMemoryServer;
 let db: PromptDatabase;
@@ -17,7 +17,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  const created = await createNativePromptAdapter(db).createPromptGroup({
+  const created = await createPromptStore(db).createPromptGroup({
     prompt: { prompt: 'Prompt', type: 'text' },
     group: { name: 'Access group' },
     author: new Types.ObjectId().toString(),

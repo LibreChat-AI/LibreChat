@@ -24,6 +24,8 @@ const ctx: SettingsContextValue = {
   allowAccountDeletion: true,
   aboutEnabled: false,
   mascotAllowed: true,
+  sessionRailAutoOpenAllowed: true,
+  engineSTT: 'browser',
   engineTTS: 'browser',
   langfuseConnectionAccess: false,
   adminPanelURL: '',
@@ -61,6 +63,11 @@ describe('Sidebar', () => {
 
   it('shows the Langfuse tab when Langfuse is available to the user', () => {
     setup({ langfuseConnectionAccess: true });
+    expect(screen.getByText('Langfuse')).toBeInTheDocument();
+  });
+
+  it('shows the Langfuse tab with prompt access and no connection access', () => {
+    setup({ langfuseConnectionAccess: false, langfusePromptSyncAccess: true });
     expect(screen.getByText('Langfuse')).toBeInTheDocument();
   });
 

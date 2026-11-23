@@ -18,6 +18,7 @@ import {
   getCredentialRuntimeState,
   getLegacyCredentialNames,
 } from '~/credentials';
+import { SERVICE_REQUEST_TIMEOUT_MS } from '~/utils/timeouts';
 import { isEnabled, checkEmailConfig } from '~/utils';
 import { configureHashPool } from '~/auth/hashing';
 import { handleRateLimits } from './limits';
@@ -269,7 +270,9 @@ export async function checkCredentialDatabase(): Promise<void> {
  */
 export async function checkHealth(): Promise<void> {
   try {
-    const response = await fetch(`${process.env.RAG_API_URL}/health`);
+    const response = await fetch(`${process.env.RAG_API_URL}/health`, {
+      signal: AbortSignal.timeout(SERVICE_REQUEST_TIMEOUT_MS),
+    });
     if (response?.ok && response?.status === 200) {
       logger.info(`RAG API is running and reachable at ${process.env.RAG_API_URL}.`);
     }

@@ -24,7 +24,7 @@ export default function WeekStartSelector() {
         options={options}
         onChange={(value) => setWeekStart(value as WeekStartPreference)}
         testId="week-start-selector"
-        sizeClasses="z-50 w-[150px]"
+        sizeClasses="w-[150px]"
         className="z-50"
         aria-labelledby={labelId}
       />

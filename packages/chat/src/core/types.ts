@@ -9,6 +9,7 @@ import type {
   ChatEvent,
   TConversation,
   TPendingSteer,
+  CodeApprovalMode,
   TAgentQueuedTurnReceipt,
   TEnqueueAgentQueuedTurnRequest,
 } from 'librechat-data-provider';
@@ -90,12 +91,24 @@ export type ChatSendResult =
       generationProtocolVersion?: number;
     };
 
+/** A generation as the server names it: what addresses it, known before its stream opens. */
+export type ChatGeneration = Pick<
+  ChatStream,
+  'streamId' | 'generationCreatedAt' | 'generationProtocolVersion'
+>;
+
 export type ChatSendRequest = ChatRequestOptions & {
   trigger: ChatTrigger;
   chatId: string;
   messageId?: string;
   payload: TPayload;
   abortSignal?: AbortSignal;
+  /**
+   * Told the generation the server started for the turn as soon as the server names it. That is
+   * before its stream opens, which can take a while and can fail: the run is there to be
+   * stopped or steered from the moment the server has taken the turn.
+   */
+  onGeneration?: (generation: ChatGeneration) => void;
 };
 
 export type ChatReconnectRequest = ChatRequestOptions & {
@@ -106,6 +119,11 @@ export type ChatReconnectRequest = ChatRequestOptions & {
   /** The {@link ChatStream.generationCreatedAt} to reattach to, so a newer run is not attached instead. */
   generationCreatedAt?: number;
   abortSignal?: AbortSignal;
+  /**
+   * Told the generation found running, before its stream opens: one the server says is running
+   * is there to be stopped, steered and looked for again even when its stream cannot be had.
+   */
+  onGeneration?: (generation: ChatGeneration) => void;
 };
 
 export type ChatAbortRequest = {
@@ -165,6 +183,11 @@ export type ChatSteerRequest = {
   quotes?: string[];
   /** Asks to interrupt the running step instead of waiting for a tool boundary. */
   preempt?: boolean;
+  /** This pane adopts a durable queued turn (`promotedSteers` on FINAL) in place of
+   *  the chip if the run ends without applying the steer. */
+  promoteLeftover?: boolean;
+  /** Sent with `promoteLeftover`: the mode a promoted turn must start under. */
+  codeApprovalMode?: CodeApprovalMode;
 };
 
 /** The server queued the steer; `settled` and `leftover` mark a receipt replayed after the run ended. */
@@ -223,8 +246,8 @@ export type ChatStreamStatus = {
 /** The agent selection a paused generation resumes with, matching its original request. */
 export type ChatResumeSelection = {
   conversationId: string;
-  /** The paused generation being resumed. */
-  generationCreatedAt: number;
+  /** The paused generation being resumed, when its stream named one; the action id fences it either way. */
+  generationCreatedAt?: number;
   endpoint?: string | null;
   endpointType?: string | null;
   agent_id?: string | null;
@@ -268,13 +291,20 @@ export type ChatTransportError = Error & {
 export interface ChatTransport {
   /** Starts a turn, then attaches to its stream. Rejects with a {@link ChatTransportError}. */
   sendMessages(request: ChatSendRequest): Promise<ChatSendResult>;
-  /** Attaches to the running generation, or resolves `null` when nothing is running. */
+  /**
+   * Attaches to the running generation, or resolves `null` when nothing is running. A generation
+   * paused for a tool decision or an answer is still running.
+   */
   reconnectToStream(request: ChatReconnectRequest): Promise<ChatStream | null>;
   /**
    * Stops the running generation; its stream then reports the abort, unless the result says it
    * settled first. A request with `abortKey` resolves to a {@link ChatRunAbortResult}.
    */
   abort(request: ChatAbortRequest): Promise<ChatAbortResult>;
+  /**
+   * Releases what the transport holds. Its creator calls it: one transport can serve several chats,
+   * so disposing a chat closes only that chat's stream.
+   */
   close?(): void;
   /** Reads the conversation's generation state; what a reload checks before reattaching. */
   getStatus?(conversationId: string): Promise<ChatStreamStatus>;

@@ -276,6 +276,24 @@ export default function Stage({
     });
     document.body.appendChild(mirror);
 
+    /* Caret measurement forces layout; coalesce keystrokes and focus changes into one read per frame. */
+    let caretTarget: HTMLTextAreaElement | null = null;
+    let caretFrame = 0;
+    const updateCaret = (target: HTMLTextAreaElement) => {
+      caretTarget = target;
+      if (caretFrame) {
+        return;
+      }
+      caretFrame = requestAnimationFrame(() => {
+        caretFrame = 0;
+        const next = caretTarget;
+        caretTarget = null;
+        if (next) {
+          engine.caret = caretPoint(next, mirror, root.getBoundingClientRect());
+        }
+      });
+    };
+
     let keyTimes: number[] = [];
     let longShown = false;
     const onInput = (e: Event) => {
@@ -285,7 +303,7 @@ export default function Stage({
       }
       const now = performance.now();
       engine.noteTyping();
-      engine.caret = caretPoint(target, mirror, root.getBoundingClientRect());
+      updateCaret(target);
       /* Deleting back under the threshold re-arms the reaction for the next long message. */
       if (target.value.length <= 280) {
         longShown = false;
@@ -328,7 +346,7 @@ export default function Stage({
     };
     const onFocusIn = (e: FocusEvent) => {
       if (e.target instanceof HTMLTextAreaElement) {
-        engine.caret = caretPoint(e.target, mirror, root.getBoundingClientRect());
+        updateCaret(e.target);
         engine.glance('curious', 900, 'caret');
         engine.noteActivity(true);
       }
@@ -543,6 +561,7 @@ export default function Stage({
       band?.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('pointermove', onPointerMove);
       cancelAnimationFrame(pointerFrame);
+      cancelAnimationFrame(caretFrame);
       window.removeEventListener('dragenter', onDragEnter);
       window.removeEventListener('dragleave', onDragLeave);
       window.removeEventListener('drop', onDrop);

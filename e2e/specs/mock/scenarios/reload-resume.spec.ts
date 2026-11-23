@@ -74,4 +74,48 @@ test.describe('reload during a reply', () => {
     expect(events[snapshot]).not.toContain(LONG_REPLY_LAST_CHUNK);
     expect(terminal - snapshot).toBeGreaterThan(1);
   });
+
+  test('returning to a chat mid-reply shows the reply finishing @scenario:returning-to-a-running-chat-finishes-its-reply', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    const label = `return-resume-${Date.now()}`;
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10_000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+
+    const setup = await sendMessage(page, replyPrompt(`${label}-setup`));
+    expect(setup.ok()).toBeTruthy();
+    await expect(messagesView(page).getByText(replyText(`${label}-setup`))).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/, { timeout: 15_000 });
+    const conversationPath = new URL(page.url()).pathname;
+
+    const response = await sendMessage(page, `${LONG_REPLY_MARKER}:${label}`);
+    expect(response.ok()).toBeTruthy();
+    await expect(messagesView(page).getByText('chunk-010')).toBeVisible({ timeout: 15_000 });
+
+    /** In-app navigation keeps the warm message cache, so the return exercises the
+     *  resume gate that waits for the background revalidation, not a cold load. */
+    await page
+      .getByRole('link', { name: 'New chat', exact: true })
+      .or(page.getByRole('button', { name: 'New chat', exact: true }))
+      .filter({ visible: true })
+      .first()
+      .click();
+    await expect(page).toHaveURL(/\/c\/new$/);
+    await page.goBack();
+    await expect(page).toHaveURL((url) => url.pathname === conversationPath);
+
+    const assistantMessage = messagesView(page).locator('.message-render').last();
+    await expect(assistantMessage).toContainText(LONG_REPLY_LAST_CHUNK, { timeout: 90_000 });
+    await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden();
+
+    await page.reload();
+    await expect(messagesView(page).locator('.message-render').last()).toContainText(
+      LONG_REPLY_LAST_CHUNK,
+      { timeout: 30_000 },
+    );
+  });
 });

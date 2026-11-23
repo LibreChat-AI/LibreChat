@@ -8,6 +8,8 @@ import type { ServerRequest } from '~/types/http';
 process.env.CREDS_KEY =
   process.env.CREDS_KEY ?? '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 process.env.CREDS_IV = process.env.CREDS_IV ?? '0123456789abcdef0123456789abcdef';
+/** An Azure group a write stores must resolve, its `${AZURE_API_KEY}` included. */
+process.env.AZURE_API_KEY = process.env.AZURE_API_KEY ?? 'test-azure-key';
 
 type DataSchemas = typeof import('@librechat/data-schemas');
 type ConfigMethods = ReturnType<DataSchemas['createMethods']>;
@@ -259,9 +261,16 @@ function nextPrincipalId(): string {
   return `admin-${principalCounter}`;
 }
 
+const LIFECYCLE_TIMEOUT_MS = 180_000;
+
 beforeAll(async () => {
-  jest.resetModules();
-  const dataSchemas = await import('@librechat/data-schemas');
+  const [dataSchemas, handlersModule, secretsModule, server] = await Promise.all([
+    import('@librechat/data-schemas'),
+    import('./config'),
+    import('./secrets'),
+    MongoMemoryServer.create(),
+  ]);
+  mongoServer = server;
   ({
     decryptV3,
     loadOCRConfig,
@@ -273,19 +282,17 @@ beforeAll(async () => {
   jest.spyOn(dataSchemas.logger, 'info').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'debug').mockReturnValue(dataSchemas.logger);
 
-  ({ createAdminConfigHandlers } = await import('./config'));
-  ({ getSecretPreview, encryptConfigSecretFields, UNPREVIEWED_SECRET_MASK } = await import(
-    './secrets'
-  ));
+  ({ createAdminConfigHandlers } = handlersModule);
+  ({ getSecretPreview, encryptConfigSecretFields, UNPREVIEWED_SECRET_MASK } = secretsModule);
 
-  mongoServer = await MongoMemoryServer.create();
   await mongoose.connect(mongoServer.getUri());
   dataSchemas.createModels(mongoose);
+  await mongoose.models.Config.init();
   configMethods = dataSchemas.createMethods(mongoose);
   ({ patchConfigFields } = configMethods);
 
   handlers = createRealHandlers();
-});
+}, LIFECYCLE_TIMEOUT_MS);
 
 /** Handlers over the real Config collection; `getAppConfig` supplies a librechat.yaml base. */
 function createRealHandlers(
@@ -295,7 +302,7 @@ function createRealHandlers(
     listAllConfigs: configMethods.listAllConfigs,
     findConfigByPrincipal: configMethods.findConfigByPrincipal,
     writeConfigDocument: configMethods.writeConfigDocument,
-    unsetConfigField: configMethods.unsetConfigField,
+    unsetConfigFieldTracked: configMethods.unsetConfigFieldTracked,
     deleteConfig: configMethods.deleteConfig,
     toggleConfigActiveTracked: configMethods.toggleConfigActiveTracked,
     hasConfigCapability: async () => true,
@@ -308,8 +315,8 @@ function createRealHandlers(
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
-});
+  await mongoServer?.stop();
+}, LIFECYCLE_TIMEOUT_MS);
 
 describe('config secret registry — real handlers against a real Config collection', () => {
   describe.each(SECRET_FIELD_CASES)(
@@ -1376,6 +1383,17 @@ describe('config secret registry — real handlers against a real Config collect
         key: VICTIM_KEY,
       };
 
+      /**
+       * Deleting a URL the document did not hold when it was read changes nothing at that
+       * revision, so nothing is written over the other admin's URL and key, pinned or not.
+       */
+      const VICTIM_KEPT_UNCHANGED = {
+        statusCode: 200,
+        body: expect.objectContaining({ config: expect.anything() }),
+        url: VICTIM_URL,
+        key: VICTIM_KEY,
+      };
+
       /** A write pinned to the revision it read answers 409 instead of re-checking. */
       const VICTIM_KEPT_PINNED = {
         statusCode: 409,
@@ -1432,9 +1450,9 @@ describe('config secret registry — real handlers against a real Config collect
       });
 
       it.each([
-        { name: 'deleting', handler: 'deleteConfigField' as const },
-        { name: 'tombstoning', handler: 'tombstoneConfigField' as const },
-      ])('rejects $name the URL', async ({ handler }) => {
+        { name: 'deleting', handler: 'deleteConfigField' as const, kept: VICTIM_KEPT_UNCHANGED },
+        { name: 'tombstoning', handler: 'tombstoneConfigField' as const, kept: VICTIM_KEPT },
+      ])("keeps the other admin's URL and key when $name the URL", async ({ handler, kept }) => {
         const principalId = nextPrincipalId();
         await patch(principalId, [{ fieldPath: 'webSearch.safeSearch', value: 1 }]);
         const res = mockRes();
@@ -1445,7 +1463,7 @@ describe('config secret registry — real handlers against a real Config collect
           res,
         );
 
-        expect(await outcome(principalId, res)).toEqual(VICTIM_KEPT);
+        expect(await outcome(principalId, res)).toEqual(kept);
       });
 
       it.each([
@@ -1477,26 +1495,29 @@ describe('config secret registry — real handlers against a real Config collect
       );
 
       it.each([
-        { name: 'deleting', handler: 'deleteConfigField' as const },
-        { name: 'tombstoning', handler: 'tombstoneConfigField' as const },
-      ])('answers 409 to $name the URL pinned to the revision it read', async ({ handler }) => {
-        const principalId = nextPrincipalId();
-        await patch(principalId, [{ fieldPath: 'webSearch.safeSearch', value: 1 }]);
-        const expectedRevision = await currentRevision(principalId);
-        const res = mockRes();
-        const fieldPath = 'webSearch.searxngInstanceUrl';
+        { name: 'deleting', handler: 'deleteConfigField' as const, kept: VICTIM_KEPT_UNCHANGED },
+        { name: 'tombstoning', handler: 'tombstoneConfigField' as const, kept: VICTIM_KEPT_PINNED },
+      ])(
+        "keeps the other admin's URL and key when $name the URL pinned to the revision it read",
+        async ({ handler, kept }) => {
+          const principalId = nextPrincipalId();
+          await patch(principalId, [{ fieldPath: 'webSearch.safeSearch', value: 1 }]);
+          const expectedRevision = await currentRevision(principalId);
+          const res = mockRes();
+          const fieldPath = 'webSearch.searxngInstanceUrl';
 
-        await racedHandlers(principalId)[handler](
-          mockReq({
-            params: params(principalId),
-            query: { fieldPath, expectedRevision },
-            body: { fieldPath, expectedRevision },
-          }),
-          res,
-        );
+          await racedHandlers(principalId)[handler](
+            mockReq({
+              params: params(principalId),
+              query: { fieldPath, expectedRevision },
+              body: { fieldPath, expectedRevision },
+            }),
+            res,
+          );
 
-        expect(await outcome(principalId, res)).toEqual(VICTIM_KEPT_PINNED);
-      });
+          expect(await outcome(principalId, res)).toEqual(kept);
+        },
+      );
 
       it('lets a write to another section proceed', async () => {
         const principalId = nextPrincipalId();
@@ -1544,7 +1565,7 @@ describe('config secret registry — real handlers against a real Config collect
         writeConfigDocument: async () => {
           throw new Error('not written in this test');
         },
-        unsetConfigField: async () => null,
+        unsetConfigFieldTracked: async () => null,
         deleteConfig: async () => null,
         toggleConfigActiveTracked: async () => null,
         hasConfigCapability: async () => true,
@@ -1621,7 +1642,7 @@ describe('config secret registry — real handlers against a real Config collect
         writeConfigDocument: async () => {
           throw new Error('not written in this test');
         },
-        unsetConfigField: async () => null,
+        unsetConfigFieldTracked: async () => null,
         deleteConfig: async () => null,
         toggleConfigActiveTracked: async () => null,
         hasConfigCapability: async () => true,
@@ -1668,6 +1689,89 @@ describe('config secret registry — real handlers against a real Config collect
         true,
       ]);
       expect(JSON.stringify(appConfig)).toContain(AZURE_KEY);
+    });
+
+    it("never returns the value a Base profile's Vertex AI settings would reference", async () => {
+      const DEPLOYMENT_KEY = 'sk-deployment-openai-key-0123456789';
+      const saved = {
+        OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+        GCP_PROJECT: process.env.GCP_PROJECT,
+      };
+      process.env.OPENAI_API_KEY = DEPLOYMENT_KEY;
+      process.env.GCP_PROJECT = 'yaml-gcp-project';
+      try {
+        const { AppService } = await import('@librechat/data-schemas');
+        const { createAppConfigService } = await import('~/app/service');
+        const { expandCustomEndpoint } = await import('~/app/params');
+        const yaml = {
+          endpoints: {
+            anthropic: { vertex: { projectId: '${GCP_PROJECT}', models: ['claude-sonnet-4-6'] } },
+          },
+        };
+        const vertex = {
+          projectId: '${OPENAI_API_KEY}',
+          deploymentName: '${OPENAI_API_KEY}',
+          models: ['claude-opus-4-6'],
+        };
+        const entries = new Map<string, unknown>();
+        const service = createAppConfigService({
+          loadBaseConfig: () =>
+            AppService({ config: structuredClone(yaml) as never, expandCustomEndpoint }),
+          setCachedTools: async () => undefined,
+          getCache: () => ({
+            get: async (key: string) => entries.get(key),
+            set: async (key: string, value: unknown) => entries.set(key, value),
+            delete: async (key: string) => entries.delete(key),
+          }),
+          cacheKeys: { APP_CONFIG: 'app_config' },
+          getApplicableConfigs: async () => [
+            {
+              principalType: PrincipalType.ROLE,
+              principalId: basePrincipalId,
+              principalModel: PrincipalModel.ROLE,
+              priority: 0,
+              isActive: true,
+              overrides: { endpoints: { anthropic: { vertex } } },
+            } as never,
+          ],
+          getUserPrincipals: async () => [],
+          rederiveEndpoints: true,
+        });
+        const baseHandlers = createAdminConfigHandlers({
+          listAllConfigs: async () => [],
+          findConfigByPrincipal: async () => null,
+          writeConfigDocument: async () => {
+            throw new Error('not written in this test');
+          },
+          unsetConfigFieldTracked: async () => null,
+          deleteConfig: async () => null,
+          toggleConfigActiveTracked: async () => null,
+          hasConfigCapability: async () => true,
+          hasAnyConfigReadAccess: async () => true,
+          hasCapability: async () => true,
+          getAppConfig: (options) => service.getAppConfig(options),
+        });
+
+        const res = mockRes();
+        await baseHandlers.getBaseConfig(mockReq(), res);
+
+        expect(res.statusCode).toBe(200);
+        expect(JSON.stringify(res.body)).not.toContain(DEPLOYMENT_KEY);
+        const vertexConfig = getAtPath(res.body!.config, 'endpoints.anthropic.vertexConfig');
+        expect(vertexConfig).toMatchObject({
+          projectId: 'yaml-gcp-project',
+          modelNames: ['claude-opus-4-6'],
+          modelDeploymentMap: { 'claude-opus-4-6': 'claude-opus-4-6' },
+        });
+      } finally {
+        for (const [name, value] of Object.entries(saved)) {
+          if (value === undefined) {
+            delete process.env[name];
+          } else {
+            process.env[name] = value;
+          }
+        }
+      }
     });
   });
 });
@@ -2098,6 +2202,30 @@ describe('MCP server credentials — real handlers against a real Config collect
       expect(res.body).toMatchObject({ code: 'MCP_API_KEY_REENTRY_REQUIRED', server: 'code' });
     });
 
+    it('duplicates a server to two names from one stored source', async () => {
+      const principalId = await seed();
+      const source = await storedServer(principalId, 'github');
+
+      const res = await patch(
+        principalId,
+        [
+          { fieldPath: 'mcpServers.code', value: renamed() },
+          { fieldPath: 'mcpServers.copy', value: renamed() },
+        ],
+        {
+          renames: [
+            { path: 'mcpServers', previousName: 'github', name: 'code' },
+            { path: 'mcpServers', previousName: 'github', name: 'copy' },
+          ],
+        },
+      );
+
+      expect(res.statusCode).toBe(200);
+      for (const name of ['code', 'copy']) {
+        expect((await storedServer(principalId, name)).apiKey.key).toBe(source.apiKey.key);
+      }
+    });
+
     it('without a hint, a renamed server keeps no credential', async () => {
       const principalId = await seed();
 
@@ -2113,7 +2241,11 @@ describe('MCP server credentials — real handlers against a real Config collect
       const write = [{ fieldPath: 'mcpServers.code', value: renamed() }];
 
       const cases: Array<[unknown, string]> = [
-        [[{ path: 'endpoints.custom', previousName: 'github', name: 'code' }], 'unsupported_path'],
+        [
+          [{ path: 'endpoints.azureOpenAI.groups', previousName: 'github', name: 'code' }],
+          'unsupported_path',
+        ],
+        [[{ path: 'endpoints.custom', previousName: 'github', name: 'code' }], 'source_not_found'],
         [[{ path: 'mcpServers', previousName: 'github', name: 'github' }], 'invalid_name'],
         [[{ path: 'mcpServers', previousName: '__proto__', name: 'code' }], 'invalid_name'],
         [[{ path: 'mcpServers', previousName: 'missing', name: 'code' }], 'source_not_found'],
@@ -2339,6 +2471,7 @@ describe('env reference allowlist on admin writes', () => {
       apiKey: '${AZURE_API_KEY}',
       instanceName: 'east-instance',
       version: '2024-10-21',
+      deploymentName: 'gpt-4o',
       baseURL,
       models: { 'gpt-4o': true },
     };
@@ -2354,7 +2487,15 @@ describe('env reference allowlist on admin writes', () => {
           {
             op: 'set',
             fieldPath: 'endpoints.azureOpenAI.groups',
-            value: [group, { ...group, group: 'west', instanceName: 'west-instance' }],
+            value: [
+              group,
+              {
+                ...group,
+                group: 'west',
+                instanceName: 'west-instance',
+                models: { 'gpt-4o-west': true },
+              },
+            ],
           },
         ],
       },
@@ -2462,6 +2603,7 @@ describe('Azure OpenAI group keys — real handlers against a real Config collec
     group: 'east',
     instanceName: 'east-instance',
     version: '2024-10-21',
+    deploymentName: 'gpt-4o',
     models: { 'gpt-4o': true },
     ...(apiKey !== undefined && { apiKey }),
   });
@@ -2489,6 +2631,64 @@ describe('Azure OpenAI group keys — real handlers against a real Config collec
       | Array<Record<string, string>>
       | undefined;
     expect(after![0].apiKey).toBe(stored![0].apiKey);
+  });
+
+  it('binds a key a profile enters for a group only Base defines, so CONFIG_REDERIVE_ENDPOINTS keeps it', async () => {
+    const { resolveConfigOverrides } = await import('~/app/overrides');
+    const { createEnvReferencePolicy } = await import('~/app/allowlist');
+    const principalId = nextPrincipalId();
+    const west = { ...group('azure-base-west-key-0001'), group: 'west', instanceName: 'west' };
+    try {
+      expect(
+        (
+          await patch(basePrincipalId, [
+            { fieldPath: 'endpoints.azureOpenAI.groups', value: [west] },
+          ])
+        ).statusCode,
+      ).toBe(200);
+      /** Written while the deployment leaves the switch off: the groups do not apply yet. */
+      const entered = await patch(principalId, [
+        {
+          fieldPath: 'endpoints.azureOpenAI.groups',
+          value: [{ group: 'west', apiKey: 'azure-role-west-key-0002' }],
+        },
+      ]);
+      expect(entered.statusCode).toBe(200);
+      expect(entered.body!.ignored).toBeUndefined();
+
+      const serveWest = async () => {
+        const layers = await Promise.all([
+          configMethods.findConfigByPrincipal(PrincipalType.ROLE, basePrincipalId),
+          configMethods.findConfigByPrincipal(PrincipalType.ROLE, principalId),
+        ]);
+        const served = resolveConfigOverrides(
+          { config: {} } as never,
+          layers.filter((layer) => layer != null),
+          { envPolicy: createEnvReferencePolicy({ config: {} }), rederiveEndpoints: true },
+        ) as unknown as {
+          endpoints?: { azureOpenAI?: { groupMap?: Record<string, Record<string, unknown>> } };
+        };
+        return served.endpoints?.azureOpenAI?.groupMap?.west;
+      };
+
+      expect(await serveWest()).toMatchObject({
+        apiKey: 'azure-role-west-key-0002',
+        instanceName: 'west',
+      });
+
+      /** The key stays bound to where it was entered: Base moving the group drops it. */
+      const moved = { ...west, instanceName: 'elsewhere', apiKey: 'azure-base-west-key-0003' };
+      expect(
+        (
+          await patch(basePrincipalId, [
+            { fieldPath: 'endpoints.azureOpenAI.groups', value: [moved] },
+          ])
+        ).statusCode,
+      ).toBe(200);
+      expect(await serveWest()).toMatchObject({ apiKey: '', instanceName: 'elsewhere' });
+    } finally {
+      await mongoose.models.Config.deleteOne({ principalId: basePrincipalId });
+    }
   });
 
   describe('a stored group key kept beside a destination the write changes', () => {
@@ -3842,6 +4042,7 @@ describe('write guards on every handler that changes a document', () => {
     toggleConfig: 'switches the document on or off; the merge judges the layers it brings in',
     updateConfigPriority:
       'sets only the priority, keeping overrides and tombstones; the merge judges the order it brings in',
+    reloadConfig: 'clears the config caches; no document is read or written',
   };
 
   it('lists every handler', () => {
@@ -3979,7 +4180,7 @@ describe('a document an MCP removal creates', () => {
       expect(tombstoned.statusCode).toBe(404);
       expect(tombstoned.body).toMatchObject({ code: 'PRINCIPAL_NOT_FOUND' });
       expect(unset.statusCode).toBe(404);
-      expect(unset.body).toEqual({ error: 'Config not found' });
+      expect(unset.body).toEqual({ error: 'Config not found', code: 'CONFIG_NOT_FOUND' });
       expect(await mongoose.models.Config.findOne({ principalId })).toBeNull();
     },
   );

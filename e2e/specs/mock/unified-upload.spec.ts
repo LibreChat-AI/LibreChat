@@ -69,7 +69,7 @@ test.describe('unified file upload', () => {
     expect(persisted?.llmDeliveryPath).toBe('none');
   });
 
-  test('single attach button still delivers a provider-routed upload and shows it in chat', async ({
+  test('single attach button still delivers a provider-routed upload and shows it in chat @scenario:provider-upload-delivered', async ({
     page,
   }) => {
     test.setTimeout(120000);
@@ -93,7 +93,9 @@ test.describe('unified file upload', () => {
     expect(((await response.json()) as UploadedFile).llmDeliveryPath).toBe('provider');
 
     // (a) shows as an attachment chip in the composer before sending.
-    await expect(page.getByRole('button', { name: fileName })).toBeVisible({ timeout: 15000 });
+    await expect(
+      page.getByTestId('composer-tray').getByRole('button', { name: fileName, exact: true }),
+    ).toBeVisible({ timeout: 15000 });
 
     // (b) reaches the model input: the mock LLM echoes a pass marker only when the
     // provider file is present in the request content (see e2e/setup/fake-model.js).

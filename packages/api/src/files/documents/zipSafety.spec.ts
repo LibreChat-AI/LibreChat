@@ -37,6 +37,23 @@ describe('assertSafeZipSize', () => {
     await expect(assertSafeZipSize(buffer)).resolves.toBeUndefined();
   });
 
+  test('exposes entry names during the validated traversal', async () => {
+    const names: string[] = [];
+    await assertSafeZipSize(await buildBenignArchive(), { onEntry: (name) => names.push(name) });
+    expect(names).toEqual(['hello.txt', 'subdir/', 'subdir/note.txt']);
+  });
+
+  test('rejects and closes the archive when entry inspection fails', async () => {
+    const failure = new Error('entry inspection failed');
+    await expect(
+      assertSafeZipSize(await buildBenignArchive(), {
+        onEntry: () => {
+          throw failure;
+        },
+      }),
+    ).rejects.toBe(failure);
+  });
+
   test('passes an archive whose entries are all under both caps', async () => {
     const buffer = await buildBombArchive([
       { name: 'a.bin', decompressedBytes: 1 * megabyte },

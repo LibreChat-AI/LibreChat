@@ -1,0 +1,653 @@
+import mongoose from 'mongoose';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import {
+  createModels,
+  createMethods,
+  createChannelIdentityStorage,
+  runAsSystem,
+  tenantStorage,
+} from '@librechat/data-schemas';
+import type { ChannelExternalIdentity, ChannelIdentityResult } from 'librechat-data-provider';
+import type { ChannelIdentityDependencies } from './identity';
+import { createChannelIdentityService } from './identity';
+
+let mongo: MongoMemoryReplSet;
+let db: ReturnType<typeof createMethods>;
+let clock: number;
+let allowed: boolean;
+let allowedUsers: Set<string>;
+let currentRevision: string;
+let service: ReturnType<typeof createChannelIdentityService>;
+let dependencies: ChannelIdentityDependencies;
+const identity: ChannelExternalIdentity = {
+  tenantId: 'tenant-a',
+  channelId: 'channel-a',
+  channelRevision: 'channel-rev-1',
+  teamId: 'T1',
+  externalUserId: 'U1',
+  agentId: 'agent-a',
+};
+const principal = { tenantId: 'tenant-a', userId: 'user-a', accountLabel: 'Local account' };
+
+function value<T>(result: ChannelIdentityResult<T>): T {
+  if (!result.ok) throw new Error(result.error.code);
+  return result.value;
+}
+const scoped = (test: () => Promise<void>) => () =>
+  tenantStorage.run({ tenantId: identity.tenantId }, test);
+
+beforeAll(async () => {
+  mongo = await MongoMemoryReplSet.create({
+    replSet: { count: 1 },
+    instanceOpts: [{ args: ['--nounixsocket'] }],
+  });
+  await mongoose.connect(mongo.getUri());
+  createModels(mongoose);
+  db = createMethods(mongoose);
+  await mongoose.models.ChannelIdentity.init();
+}, 60_000);
+afterAll(async () => {
+  await mongoose.disconnect();
+  await mongo?.stop();
+});
+beforeEach(async () => {
+  await runAsSystem(() =>
+    Promise.all(
+      ['ChannelIdentity', 'AgentChannel', 'ChannelScope', 'ResponseScope'].map((name) =>
+        mongoose.models[name].deleteMany({}),
+      ),
+    ),
+  );
+  await tenantStorage.run({ tenantId: identity.tenantId }, () =>
+    db.createAgentChannel({
+      channelId: identity.channelId,
+      agentId: identity.agentId,
+      createdBy: 'creator',
+      type: 'slack',
+      status: 'active',
+      credentialMode: 'per_user',
+      revision: identity.channelRevision,
+      slack: { teamId: identity.teamId, appId: 'A1', botUserId: 'UBOT' },
+    }),
+  );
+  clock = 1_000_000;
+  allowed = true;
+  allowedUsers = new Set([principal.userId]);
+  currentRevision = identity.channelRevision;
+  dependencies = {
+    storage: createChannelIdentityStorage(mongoose),
+    channelIsCurrent: async (actor) => actor.channelRevision === currentRevision,
+    canUse: async (_actor, userId) => allowed && allowedUsers.has(userId),
+    publicBaseUrl: 'http://127.0.0.1:3088',
+    ticketLifetimeMs: 60_000,
+    linkLifetimeMs: 600_000,
+    now: () => clock,
+  };
+  service = createChannelIdentityService(dependencies);
+});
+
+async function accept() {
+  const issued = value(await service.issue(identity));
+  const secret = new URL(issued.url).hash.slice(1);
+  const preview = value(await service.preview(principal, secret));
+  const accepted = value(await service.accept(principal, secret, preview.revision));
+  return { issued, secret, preview, accepted };
+}
+
+it(
+  'resolves current configured ticket/link lifetimes at issue and confirmation',
+  scoped(async () => {
+    const settings = { ticketLifetimeMs: 1000, linkLifetimeMs: 5000 };
+    service = createChannelIdentityService({ ...dependencies, getLifetimes: async () => settings });
+    const { issued, accepted } = await accept();
+    expect(issued.expiresAtMs).toBe(clock + 1000);
+    settings.linkLifetimeMs = 500;
+    const active = value(await service.confirm(identity, accepted.linkId, accepted.revision));
+    expect(active.expiresAtMs).toBe(clock + 500);
+    clock += 501;
+    expect(await service.resolve(identity, active.revision)).toEqual({
+      ok: false,
+      error: { code: 'expired' },
+    });
+  }),
+);
+
+it(
+  'never resolves actor A permissions for actor B joining the same channel and thread',
+  scoped(async () => {
+    const actorB = { ...identity, externalUserId: 'U2' };
+    const principalB = { ...principal, userId: 'user-b', accountLabel: 'Account B' };
+    allowedUsers.add(principalB.userId);
+    const { accepted } = await accept();
+    const linkA = value(await service.confirm(identity, accepted.linkId, accepted.revision));
+    expect(await service.resolve(actorB)).toEqual({ ok: false, error: { code: 'changed' } });
+    expect(await service.confirm(actorB, linkA.linkId, linkA.revision)).toEqual({
+      ok: false,
+      error: { code: 'forbidden' },
+    });
+    const ticketB = value(await service.issue(actorB));
+    const secretB = new URL(ticketB.url).hash.slice(1);
+    const pendingB = value(await service.preview(principalB, secretB));
+    const acceptedB = value(await service.accept(principalB, secretB, pendingB.revision));
+    const linkB = value(await service.confirm(actorB, acceptedB.linkId, acceptedB.revision));
+    expect(value(await service.resolve(actorB))).toMatchObject({ userId: 'user-b' });
+    expect(value(await service.resolve(identity))).toMatchObject({ userId: 'user-a' });
+    expect(linkB.linkId).not.toBe(linkA.linkId);
+    expect(await service.resolve(actorB, linkA.revision)).toEqual({
+      ok: false,
+      error: { code: 'changed' },
+    });
+    expect(await service.revoke(principalB, linkA.linkId, linkA.revision)).toEqual({
+      ok: false,
+      error: { code: 'forbidden' },
+    });
+  }),
+);
+
+it(
+  'a forwarded A ticket accepted by account B cannot be confirmed by Slack actor B',
+  scoped(async () => {
+    const actorB = { ...identity, externalUserId: 'U2' };
+    const principalB = { ...principal, userId: 'user-b', accountLabel: 'Account B' };
+    allowedUsers.add(principalB.userId);
+    const issued = value(await service.issue(identity));
+    const secret = new URL(issued.url).hash.slice(1);
+    const pending = value(await service.preview(principalB, secret));
+    const accepted = value(await service.accept(principalB, secret, pending.revision));
+    expect(await service.confirm(actorB, accepted.linkId, accepted.revision)).toEqual({
+      ok: false,
+      error: { code: 'forbidden' },
+    });
+    expect(await service.resolve(identity)).toEqual({
+      ok: false,
+      error: { code: 'confirmation_required' },
+    });
+    expect(await service.resolve(actorB)).toEqual({ ok: false, error: { code: 'changed' } });
+    expect(await service.preview(principal, secret)).toEqual({
+      ok: false,
+      error: { code: 'forbidden' },
+    });
+    expect(value(await service.inspectActor(identity))).toMatchObject({
+      state: 'accepted',
+      accountLabel: 'Account B',
+    });
+  }),
+);
+
+it(
+  'requires browser acceptance then matching actor confirmation and never returns a credential',
+  scoped(async () => {
+    const { secret, accepted } = await accept();
+    expect(await service.resolve(identity)).toEqual({
+      ok: false,
+      error: { code: 'confirmation_required' },
+    });
+    expect(
+      await service.confirm(
+        { ...identity, externalUserId: 'U2' },
+        accepted.linkId,
+        accepted.revision,
+      ),
+    ).toEqual({ ok: false, error: { code: 'forbidden' } });
+    const link = value(await service.confirm(identity, accepted.linkId, accepted.revision));
+    expect(value(await service.resolve(identity, link.revision))).toEqual(link);
+    expect(JSON.stringify(link)).not.toMatch(/apiKey|accessToken|refreshToken/);
+    const stored = await createChannelIdentityStorage(mongoose).readChannelIdentity(identity);
+    expect(JSON.stringify(stored)).not.toContain(secret);
+    expect(stored?.ticketHash).toHaveLength(64);
+  }),
+);
+
+it(
+  'allows exactly one concurrent browser acceptance and actor confirmation',
+  scoped(async () => {
+    const issued = value(await service.issue(identity));
+    const secret = new URL(issued.url).hash.slice(1);
+    const preview = value(await service.preview(principal, secret));
+    const results = await Promise.all([
+      service.accept(principal, secret, preview.revision),
+      service.accept(principal, secret, preview.revision),
+    ]);
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    const accepted = value(results.find((result) => result.ok)!);
+    const confirmations = await Promise.all([
+      service.confirm(identity, accepted.linkId, accepted.revision),
+      service.confirm(identity, accepted.linkId, accepted.revision),
+    ]);
+    expect(confirmations.filter((result) => result.ok)).toHaveLength(1);
+    expect(await service.accept(principal, secret, preview.revision)).toEqual({
+      ok: false,
+      error: { code: 'changed' },
+    });
+  }),
+);
+
+it(
+  'expires tickets, prevents cross-tenant claiming, and invalidates superseded tickets',
+  scoped(async () => {
+    const first = value(await service.issue(identity));
+    const secret = new URL(first.url).hash.slice(1);
+    const otherTenant = await tenantStorage.run({ tenantId: 'tenant-b' }, () =>
+      service.preview({ ...principal, tenantId: 'tenant-b' }, secret),
+    );
+    expect(otherTenant).toEqual({ ok: false, error: { code: 'invalid_ticket' } });
+    await service.issue(identity);
+    expect(await service.preview(principal, secret)).toEqual({
+      ok: false,
+      error: { code: 'invalid_ticket' },
+    });
+    const latest = value(await service.issue(identity));
+    clock += 60_001;
+    expect(await service.preview(principal, new URL(latest.url).hash.slice(1))).toEqual({
+      ok: false,
+      error: { code: 'expired' },
+    });
+  }),
+);
+
+it(
+  'revocation and current channel/RBAC changes fence subsequent admission and continuation',
+  scoped(async () => {
+    const { accepted } = await accept();
+    const link = value(await service.confirm(identity, accepted.linkId, accepted.revision));
+    allowed = false;
+    expect(await service.resolve(identity, link.revision)).toEqual({
+      ok: false,
+      error: { code: 'forbidden' },
+    });
+    allowed = true;
+    currentRevision = 'mode-change';
+    expect(await service.resolve(identity, link.revision)).toEqual({
+      ok: false,
+      error: { code: 'forbidden' },
+    });
+    currentRevision = identity.channelRevision;
+    expect(
+      await service.revoke({ ...principal, userId: 'other' }, link.linkId, link.revision),
+    ).toEqual({ ok: false, error: { code: 'forbidden' } });
+    value(await service.revoke(principal, link.linkId, link.revision));
+    expect(await service.resolve(identity, link.revision)).toEqual({
+      ok: false,
+      error: { code: 'revoked' },
+    });
+    expect((await service.list(principal))[0].state).toBe('revoked');
+  }),
+);
+
+it(
+  'cannot confirm a pending ticket, a changed mode, or an expired accepted ticket',
+  scoped(async () => {
+    const issued = value(await service.issue(identity));
+    const secret = new URL(issued.url).hash.slice(1);
+    const pending = value(await service.preview(principal, secret));
+    expect(await service.confirm(identity, pending.linkId, pending.revision)).toEqual({
+      ok: false,
+      error: { code: 'changed' },
+    });
+    const accepted = value(await service.accept(principal, secret, pending.revision));
+    currentRevision = 'other';
+    expect(await service.confirm(identity, accepted.linkId, accepted.revision)).toEqual({
+      ok: false,
+      error: { code: 'forbidden' },
+    });
+    currentRevision = identity.channelRevision;
+    clock += 60_001;
+    expect(await service.confirm(identity, accepted.linkId, accepted.revision)).toEqual({
+      ok: false,
+      error: { code: 'expired' },
+    });
+  }),
+);
+
+it(
+  'replaces a link only after its original principal becomes ineligible',
+  scoped(async () => {
+    const { accepted } = await accept();
+    const linked = value(await service.confirm(identity, accepted.linkId, accepted.revision));
+    expect(await service.issue(identity)).toEqual({ ok: false, error: { code: 'already_linked' } });
+    allowedUsers.delete(principal.userId);
+    const actor = value(await service.inspectActor(identity));
+    expect(actor?.state).toBe('unavailable');
+    expect((await service.list(principal))[0].state).toBe('unavailable');
+    const replacement = value(await service.issue(identity));
+    const next = { ...principal, userId: 'replacement-user', accountLabel: 'Replacement account' };
+    allowedUsers.add(next.userId);
+    const ticket = new URL(replacement.url).hash.slice(1);
+    const preview = value(await service.preview(next, ticket));
+    const acceptedNext = value(await service.accept(next, ticket, preview.revision));
+    value(await service.confirm(identity, acceptedNext.linkId, acceptedNext.revision));
+    expect(value(await service.resolve(identity)).userId).toBe(next.userId);
+    expect(await service.resolve(identity, linked.revision)).toEqual({
+      ok: false,
+      error: { code: 'changed' },
+    });
+  }),
+);
+
+it(
+  'does not list a prior channel revision as an active identity',
+  scoped(async () => {
+    const { accepted } = await accept();
+    value(await service.confirm(identity, accepted.linkId, accepted.revision));
+    currentRevision = 'changed-channel-revision';
+    expect((await service.list(principal))[0].state).toBe('unavailable');
+    expect(await service.inspectActor({ ...identity, channelRevision: currentRevision })).toEqual({
+      ok: true,
+      value: null,
+    });
+  }),
+);
+
+it(
+  'propagates eligibility outages without replacing or revoking canonical consent',
+  scoped(async () => {
+    const { accepted } = await accept();
+    const linked = value(await service.confirm(identity, accepted.linkId, accepted.revision));
+    dependencies.canUse = async () => {
+      throw new Error('eligibility unavailable');
+    };
+    await expect(service.issue(identity)).rejects.toThrow('eligibility unavailable');
+    await expect(service.list(principal)).rejects.toThrow('eligibility unavailable');
+    const stored = await dependencies.storage.readChannelIdentity(identity);
+    expect(stored).toMatchObject({ state: 'active', revision: linked.revision });
+  }),
+);
+
+it.each(['http://192.168.1.50:3080', 'https://example.test/?unsafe=1', 'not-a-url'])(
+  'defers unsafe link origin validation until issuance and persists no ticket: %s',
+  (origin) =>
+    scoped(async () => {
+      const disabled = createChannelIdentityService({
+        ...dependencies,
+        publicBaseUrl: origin,
+        channelIsCurrent: async () => false,
+      });
+      expect(await disabled.issue(identity)).toEqual({ ok: false, error: { code: 'changed' } });
+      const enabled = createChannelIdentityService({ ...dependencies, publicBaseUrl: origin });
+      await expect(enabled.issue(identity)).rejects.toThrow();
+      expect(await mongoose.models.ChannelIdentity.countDocuments({})).toBe(0);
+    })(),
+);
+
+function replies() {
+  const update = jest
+    .fn<Promise<void>, Parameters<NonNullable<ChannelIdentityDependencies['reply']>['update']>>()
+    .mockResolvedValue();
+  const onError = jest.fn();
+  service = createChannelIdentityService({
+    ...dependencies,
+    reply: {
+      encrypt: async (text) => `encrypted:${Buffer.from(text).toString('base64')}`,
+      decrypt: async (text) => Buffer.from(text.slice(10), 'base64').toString(),
+      update,
+      onError,
+    },
+  });
+  return { update, onError };
+}
+const replyURL = 'https://hooks.slack.com/actions/T1/B1/secret';
+
+it(
+  'updates the original Slack card after browser acceptance and hides the encrypted callback',
+  scoped(async () => {
+    const { update } = replies();
+    const issued = value(await service.issue(identity));
+    expect(await service.registerReply(identity, issued.linkId, issued.attempt, replyURL)).toEqual({
+      ok: true,
+      value: null,
+    });
+    expect(update).not.toHaveBeenCalled();
+    const secret = new URL(issued.url).hash.slice(1);
+    const preview = value(await service.preview(principal, secret));
+    const accepted = value(await service.accept(principal, secret, preview.revision));
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith(
+      replyURL,
+      expect.objectContaining({ state: 'accepted', revision: accepted.revision }),
+    );
+    await service.preview(principal, secret);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(await service.list(principal))).not.toContain('slackReply');
+    const privateRecord = await dependencies.storage.readChannelLink(
+      identity.tenantId,
+      issued.linkId,
+    );
+    expect(privateRecord?.slackReply?.encryptedUrl).not.toContain(replyURL);
+    await service.confirm(identity, accepted.linkId, accepted.revision);
+    expect(
+      (await dependencies.storage.readChannelLink(identity.tenantId, issued.linkId))?.slackReply,
+    ).toBeUndefined();
+  }),
+);
+
+it(
+  'handles acceptance before the Slack callback and never attaches another actor or old ticket',
+  scoped(async () => {
+    const { update } = replies();
+    const { issued } = await accept();
+    expect(update).not.toHaveBeenCalled();
+    expect(
+      await service.registerReply(
+        { ...identity, externalUserId: 'U2' },
+        issued.linkId,
+        issued.attempt,
+        replyURL,
+      ),
+    ).toMatchObject({ ok: false });
+    expect(
+      await service.registerReply(identity, issued.linkId, 'a'.repeat(64), replyURL),
+    ).toMatchObject({ ok: false });
+    expect(
+      await service.registerReply(identity, issued.linkId, issued.attempt, replyURL),
+    ).toMatchObject({ ok: true });
+    await service.notifyReply(identity, issued.linkId, issued.attempt);
+    expect(update).toHaveBeenCalledTimes(1);
+  }),
+);
+
+it(
+  'retains committed consent without retrying an ambiguously failed Slack write',
+  scoped(async () => {
+    const { update, onError } = replies();
+    const issued = value(await service.issue(identity));
+    await service.registerReply(identity, issued.linkId, issued.attempt, replyURL);
+    update.mockRejectedValueOnce(new Error('remote unavailable'));
+    const secret = new URL(issued.url).hash.slice(1);
+    const preview = value(await service.preview(principal, secret));
+    expect(value(await service.accept(principal, secret, preview.revision)).state).toBe('accepted');
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(value(await service.preview(principal, secret)).state).toBe('accepted');
+    expect(update).toHaveBeenCalledTimes(1);
+  }),
+);
+
+it(
+  'rejects untrusted Slack reply destinations and clears reply capabilities on revocation',
+  scoped(async () => {
+    const { update } = replies();
+    const { issued, accepted } = await accept();
+    expect(
+      await service.registerReply(
+        identity,
+        issued.linkId,
+        issued.attempt,
+        'https://example.com/actions/T1/B1/secret',
+      ),
+    ).toMatchObject({ ok: false });
+    await service.registerReply(identity, issued.linkId, issued.attempt, replyURL);
+    await service.notifyReply(identity, issued.linkId, issued.attempt);
+    expect(update).toHaveBeenCalledTimes(1);
+    await service.revoke(principal, accepted.linkId, accepted.revision);
+    expect(
+      (await dependencies.storage.readChannelLink(identity.tenantId, issued.linkId))?.slackReply,
+    ).toBeUndefined();
+  }),
+);
+
+it(
+  'cannot reattach a callback from a replaced ticket or recreate a deleted identity',
+  scoped(async () => {
+    replies();
+    const first = value(await service.issue(identity));
+    await service.registerReply(identity, first.linkId, first.attempt, replyURL);
+    const next = value(await service.issue(identity));
+    expect(
+      (await dependencies.storage.readChannelLink(identity.tenantId, next.linkId))?.slackReply,
+    ).toBeUndefined();
+    expect(
+      await service.registerReply(identity, first.linkId, first.attempt, replyURL),
+    ).toMatchObject({ ok: false });
+    const pending = (await dependencies.storage.readChannelLink(identity.tenantId, next.linkId))!;
+    await mongoose.models.ChannelIdentity.deleteOne({
+      tenantId: identity.tenantId,
+      linkId: next.linkId,
+    });
+    expect(
+      await dependencies.storage.saveChannelIdentityReply(pending, {
+        attempt: next.attempt,
+        encryptedUrl: 'ciphertext',
+        expiresAtMs: clock + 1000,
+      }),
+    ).toBe(false);
+    expect(await dependencies.storage.readChannelLink(identity.tenantId, next.linkId)).toBeNull();
+  }),
+);
+
+it(
+  'does not notify after the ticket expires or permissions are revoked',
+  scoped(async () => {
+    const { update } = replies();
+    const issued = value(await service.issue(identity));
+    await service.registerReply(identity, issued.linkId, issued.attempt, replyURL);
+    const secret = new URL(issued.url).hash.slice(1);
+    const preview = value(await service.preview(principal, secret));
+    allowed = false;
+    expect(await service.accept(principal, secret, preview.revision)).toMatchObject({ ok: false });
+    expect(update).not.toHaveBeenCalled();
+    clock = issued.expiresAtMs + 1;
+    expect(
+      await service.registerReply(identity, issued.linkId, issued.attempt, replyURL),
+    ).toMatchObject({ ok: false });
+    expect(update).not.toHaveBeenCalled();
+  }),
+);
+
+it(
+  'claims one immutable accepted write and reconciles a delayed writer after confirmation',
+  scoped(async () => {
+    const { update, onError } = replies();
+    let release!: () => void;
+    let started!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let card = 'pending';
+    update.mockImplementation(async (_url, snapshot) => {
+      if (snapshot.state === 'accepted') {
+        started();
+        await pending;
+      }
+      card = snapshot.state;
+    });
+    const issued = value(await service.issue(identity));
+    await service.registerReply(identity, issued.linkId, issued.attempt, replyURL);
+    const secret = new URL(issued.url).hash.slice(1);
+    const preview = value(await service.preview(principal, secret));
+    const accepting = service.accept(principal, secret, preview.revision);
+    await entered;
+    try {
+      await Promise.all([
+        service.preview(principal, secret),
+        service.registerReply(
+          identity,
+          issued.linkId,
+          issued.attempt,
+          'https://hooks.slack.com/actions/T1/B1/other',
+        ),
+      ]);
+      expect(update).toHaveBeenCalledTimes(1);
+      const current = value(await service.inspectActor(identity))!;
+      await service.confirm(identity, current.linkId, current.revision);
+      card = 'active'; // Another private prompt has already displayed terminal success.
+    } finally {
+      release();
+    }
+    expect(value(await accepting).state).toBe('accepted');
+    expect(update.mock.calls.map(([, snapshot]) => snapshot.state)).toEqual(['accepted', 'active']);
+    expect(update.mock.calls.every(([url]) => url === replyURL)).toBe(true);
+    expect(card).toBe('active');
+    expect(onError).not.toHaveBeenCalled();
+  }),
+);
+
+it(
+  'allows one database claim when observers already hold the same accepted snapshot',
+  scoped(async () => {
+    replies();
+    const { issued } = await accept();
+    await service.registerReply(identity, issued.linkId, issued.attempt, replyURL);
+    const record = (await dependencies.storage.readChannelLink(identity.tenantId, issued.linkId))!;
+    const claims = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        dependencies.storage.claimChannelIdentityReply(record, record.slackReply!),
+      ),
+    );
+    expect(claims.filter(Boolean)).toHaveLength(1);
+  }),
+);
+
+it.each(['revoked', 'erased', 'replaced', 'expired', 'permission', 'channel'])(
+  'removes account details when a paused card write resumes after %s invalidation',
+  (invalidation) =>
+    scoped(async () => {
+      dependencies.linkLifetimeMs = 1000;
+      const { update, onError } = replies();
+      let release!: () => void;
+      let started!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const entered = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      update.mockImplementationOnce(async () => {
+        started();
+        await pending;
+      });
+      const issued = value(await service.issue(identity));
+      await service.registerReply(identity, issued.linkId, issued.attempt, replyURL);
+      const secret = new URL(issued.url).hash.slice(1);
+      const preview = value(await service.preview(principal, secret));
+      const accepting = service.accept(principal, secret, preview.revision);
+      await entered;
+      try {
+        const current = value(await service.inspectActor(identity))!;
+        if (invalidation === 'revoked' || invalidation === 'replaced') {
+          value(await service.revoke(principal, current.linkId, current.revision));
+          if (invalidation === 'replaced') value(await service.issue(identity));
+        } else if (invalidation === 'erased') {
+          await mongoose.models.ChannelIdentity.deleteOne({
+            tenantId: identity.tenantId,
+            linkId: issued.linkId,
+          });
+        } else if (invalidation === 'expired') {
+          // An already-confirmed link can expire while the original card is paused.
+          value(await service.confirm(identity, current.linkId, current.revision));
+          clock += dependencies.linkLifetimeMs + 1;
+        } else if (invalidation === 'permission') allowed = false;
+        else currentRevision = 'replaced-channel';
+      } finally {
+        release();
+      }
+      await accepting;
+      expect(update.mock.calls.map(([, snapshot]) => snapshot.state)).toEqual([
+        'accepted',
+        'unavailable',
+      ]);
+      expect(update.mock.calls[1][1].accountLabel).toBeUndefined();
+      expect(onError).not.toHaveBeenCalled();
+    })(),
+);

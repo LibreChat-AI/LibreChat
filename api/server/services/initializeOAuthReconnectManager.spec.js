@@ -8,6 +8,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  createOAuthReconnectionTracker: (config) => ({ type: 'tracker', config }),
   prepareMCPAuthorizationMutation: (...args) => mockPrepareMCPAuthorizationMutation(...args),
 }));
 
@@ -60,7 +61,10 @@ describe('initializeOAuthReconnectManager', () => {
   it('resolves the effective user policy when a reconnect refresh prepares its write', async () => {
     await initializeOAuthReconnectManager();
 
-    expect(mockGetAppConfig).not.toHaveBeenCalled();
+    /* Startup reads only the base config for the tracker; the per-user policy stays lazy. */
+    expect(mockGetAppConfig).toHaveBeenCalledTimes(1);
+    expect(mockGetAppConfig).toHaveBeenCalledWith({ baseOnly: true });
+    expect(mockCreateOAuthReconnectionManager.mock.calls[0][2]).toMatchObject({ type: 'tracker' });
     const prepareRefresh = mockCreateOAuthReconnectionManager.mock.calls[0][4];
     const scope = { userId: 'user-1', serverName: 'github' };
     await prepareRefresh(scope);

@@ -1,5 +1,6 @@
 import axios from 'axios';
-import { decryptV2 } from '@librechat/data-schemas';
+import { inspect } from 'util';
+import { logger, decryptV2 } from '@librechat/data-schemas';
 import { TokenExchangeMethodEnum } from 'librechat-data-provider';
 import type { AxiosRequestConfig } from 'axios';
 import { getAccessToken, refreshAccessToken } from './tokens';
@@ -76,6 +77,76 @@ describe('action OAuth token exchange validation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedAxios.mockResolvedValue({ data: tokenResponse });
+  });
+
+  describe.each(['exchange', 'refresh'] as const)('%s credential-safe diagnostics', (operation) => {
+    const message =
+      operation === 'exchange' ? 'Error exchanging OAuth code' : 'Error refreshing OAuth tokens';
+
+    function requestTokens() {
+      const fields = {
+        ...baseFields,
+        token_exchange_method: TokenExchangeMethodEnum.DefaultPost,
+      };
+      const methods = createTokenMethods();
+      return {
+        methods,
+        request:
+          operation === 'exchange'
+            ? getAccessToken(
+                {
+                  ...fields,
+                  code: 'authorization-code',
+                  redirect_uri: 'https://chat.example.com/api/actions/action-1/oauth/callback',
+                },
+                methods,
+              )
+            : refreshAccessToken({ ...fields, refresh_token: 'refresh-token' }, methods),
+      };
+    }
+
+    it.each([true, false])('omits raw errors with an HTTP response: %s', async (hasResponse) => {
+      const secret = 'sentinel-oauth-credential';
+      const error = Object.assign(new Error(`Provider echoed ${secret}`), {
+        isAxiosError: true,
+        config: {
+          data: `client_secret=${secret}&refresh_token=${secret}`,
+          headers: { Authorization: `Basic ${secret}` },
+          url: `${baseFields.client_url}?secret=${secret}`,
+        },
+        request: { body: secret },
+        ...(hasResponse && {
+          response: {
+            status: 400,
+            data: { error_description: secret, refresh_token: secret },
+            headers: { 'set-cookie': secret },
+          },
+        }),
+      });
+      mockedAxios.mockRejectedValueOnce(error);
+      const { request, methods } = requestTokens();
+
+      await expect(request).rejects.toThrow(message);
+      expect(logger.error).toHaveBeenCalledWith(message, {
+        type: 'Error',
+        ...(hasResponse && { status: 400 }),
+      });
+      expect(inspect(jest.mocked(logger.error).mock.calls, { depth: null })).not.toContain(secret);
+      expect(methods.findToken).not.toHaveBeenCalled();
+      expect(methods.createToken).not.toHaveBeenCalled();
+    });
+
+    it('does not log or store a token response missing its access token', async () => {
+      const secret = 'sentinel-refresh-token';
+      mockedAxios.mockResolvedValueOnce({ data: { refresh_token: secret, extra: secret } });
+      const { request, methods } = requestTokens();
+
+      await expect(request).rejects.toThrow(message);
+      expect(logger.error).toHaveBeenCalledWith('Access token not found');
+      expect(inspect(jest.mocked(logger.error).mock.calls, { depth: null })).not.toContain(secret);
+      expect(methods.findToken).not.toHaveBeenCalled();
+      expect(methods.createToken).not.toHaveBeenCalled();
+    });
   });
 
   it.each([

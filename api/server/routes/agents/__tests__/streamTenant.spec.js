@@ -39,29 +39,41 @@ jest.mock('@librechat/api', () => ({
 
 jest.mock('~/models', () => ({
   initializeMessageBudget: jest.fn(),
+  initializeChannelStorageConfig: jest.fn(),
   saveMessage: (...args) => mockSaveMessage(...args),
 }));
 
 let mockUserId = 'user-123';
 let mockTenantId;
 
-jest.mock('~/server/middleware', () => ({
-  uaParser: (req, res, next) => next(),
-  checkBan: (req, res, next) => next(),
-  requireJwtAuth: (req, res, next) => {
-    req.user = { id: mockUserId, tenantId: mockTenantId };
-    next();
-  },
-  moderateText: (req, res, next) => next(),
-  messageIpLimiter: (req, res, next) => next(),
-  configMiddleware: (req, res, next) => next(),
-  requireTermsAcceptance: (req, res, next) => next(),
-  loadStreamKeepaliveMs: (req) =>
-    jest
-      .requireActual('@librechat/api')
-      .createStreamKeepaliveLoader((...args) => mockLoadPlainAppConfig(...args))(req),
-  messageUserLimiter: (req, res, next) => next(),
-}));
+jest.mock('~/server/middleware', () => {
+  const middleware = {
+    uaParser: (req, res, next) => next(),
+    checkBan: (req, res, next) => next(),
+    requireJwtAuth: (req, res, next) => {
+      req.user = { id: mockUserId, tenantId: mockTenantId };
+      next();
+    },
+    moderateText: (req, res, next) => next(),
+    messageIpLimiter: (req, res, next) => next(),
+    configMiddleware: (req, res, next) => next(),
+    requireTermsAcceptance: (req, res, next) => next(),
+    loadStreamKeepaliveMs: (req) =>
+      jest
+        .requireActual('@librechat/api')
+        .createStreamKeepaliveLoader((...args) => mockLoadPlainAppConfig(...args))(req),
+    messageUserLimiter: (req, res, next) => next(),
+  };
+  const strictRequests = new WeakSet();
+  return {
+    ...middleware,
+    strictConfigMiddleware: (req, res, next) => {
+      if (strictRequests.has(req)) return next();
+      strictRequests.add(req);
+      return middleware.configMiddleware(req, res, next);
+    },
+  };
+});
 
 jest.mock('~/server/routes/agents/chat', () => require('express').Router());
 jest.mock('~/server/routes/agents/v1', () => {
@@ -84,6 +96,28 @@ function mockSubscribeSuccess() {
     process.nextTick(() => onDone({ done: true }));
     return { unsubscribe: jest.fn() };
   });
+}
+
+/** A real HTTP socket must reach subscribe before fake time can exercise its keepalive. */
+function openSilentStream() {
+  let resolveAttached;
+  const subscribed = new Promise((resolve) => {
+    resolveAttached = resolve;
+  });
+  mockGenerationJobManager.subscribe.mockImplementation(async (_streamId, _writeEvent, onDone) => {
+    resolveAttached(onDone);
+    return { unsubscribe: jest.fn() };
+  });
+  const pending = request(app)
+    .get('/agents/chat/stream/stream-123')
+    .then((res) => res);
+  const attached = Promise.race([
+    subscribed,
+    pending.then((res) => {
+      throw new Error(`Stream ended before subscribing: HTTP ${res.status}`);
+    }),
+  ]);
+  return { pending, attached };
 }
 
 describe('SSE stream tenant isolation', () => {
@@ -411,19 +445,8 @@ describe('SSE stream tenant isolation', () => {
           status: 'running',
           createdAt: 1000,
         });
-        let finish;
-        mockGenerationJobManager.subscribe.mockImplementation(
-          async (_streamId, _writeEvent, onDone) => {
-            finish = onDone;
-            return { unsubscribe: jest.fn() };
-          },
-        );
-
-        const pending = request(app)
-          .get('/agents/chat/stream/stream-123')
-          .then((res) => res);
-        await jest.advanceTimersByTimeAsync(0);
-        await new Promise((resolve) => setImmediate(resolve));
+        const { pending, attached } = openSilentStream();
+        const finish = await attached;
         await jest.advanceTimersByTimeAsync(60_000);
         finish({ final: true });
         const res = await pending;
@@ -470,19 +493,8 @@ describe('SSE stream tenant isolation', () => {
           status: 'running',
           createdAt: 1000,
         });
-        let finish;
-        mockGenerationJobManager.subscribe.mockImplementation(
-          async (_streamId, _writeEvent, onDone) => {
-            finish = onDone;
-            return { unsubscribe: jest.fn() };
-          },
-        );
-
-        const pending = request(app)
-          .get('/agents/chat/stream/stream-123')
-          .then((res) => res);
-        await jest.advanceTimersByTimeAsync(0);
-        await new Promise((resolve) => setImmediate(resolve));
+        const { pending, attached } = openSilentStream();
+        const finish = await attached;
         await jest.advanceTimersByTimeAsync(60_000);
         finish({ final: true });
         const res = await pending;
@@ -502,19 +514,8 @@ describe('SSE stream tenant isolation', () => {
           status: 'running',
           createdAt: 1000,
         });
-        let finish;
-        mockGenerationJobManager.subscribe.mockImplementation(
-          async (_streamId, _writeEvent, onDone) => {
-            finish = onDone;
-            return { unsubscribe: jest.fn() };
-          },
-        );
-
-        const pending = request(app)
-          .get('/agents/chat/stream/stream-123')
-          .then((res) => res);
-        await jest.advanceTimersByTimeAsync(0);
-        await new Promise((resolve) => setImmediate(resolve));
+        const { pending, attached } = openSilentStream();
+        const finish = await attached;
         await jest.advanceTimersByTimeAsync(60_000);
 
         expect(mockGenerationJobManager.subscribe).toHaveBeenCalled();
@@ -969,7 +970,13 @@ describe('SSE stream tenant isolation', () => {
     });
 
     it('reports an already-settled generation when natural completion wins the abort CAS', async () => {
+      /** Read by the child-job guard, by the route, and again after the abort lost its CAS. */
       mockGenerationJobManager.getJob
+        .mockResolvedValueOnce({
+          metadata: { userId: 'user-123', generationProtocolVersion: 2 },
+          status: 'running',
+          createdAt: 1000,
+        })
         .mockResolvedValueOnce({
           metadata: { userId: 'user-123', generationProtocolVersion: 2 },
           status: 'running',
@@ -1006,7 +1013,13 @@ describe('SSE stream tenant isolation', () => {
     });
 
     it('keeps the legacy abort ACK shape when natural completion wins for protocol v1', async () => {
+      /** Read by the child-job guard, by the route, and again after the abort lost its CAS. */
       mockGenerationJobManager.getJob
+        .mockResolvedValueOnce({
+          metadata: { userId: 'user-123', generationProtocolVersion: 1 },
+          status: 'running',
+          createdAt: 1000,
+        })
         .mockResolvedValueOnce({
           metadata: { userId: 'user-123', generationProtocolVersion: 1 },
           status: 'running',

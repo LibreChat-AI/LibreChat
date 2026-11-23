@@ -53,6 +53,8 @@ const ALLOWED_EXTENSIONS = new Set(['.md', '.zip', '.skill']);
 const MAX_IMPORT_SIZE = 50 * 1024 * 1024; // 50 MB
 
 const memoryStorage = multer.memoryStorage();
+// Browsers send multipart filenames as raw UTF-8, and multer assumes latin1 unless told otherwise.
+const defParamCharset = 'utf8';
 
 function getSkillImportSizeLimit(req) {
   const fileConfig = mergeFileConfig(req.config?.fileConfig);
@@ -72,6 +74,7 @@ const skillImportFilter = (_req, file, cb) => {
 const skillUpload = (req, res, next) =>
   multer({
     storage: memoryStorage,
+    defParamCharset,
     fileFilter: skillImportFilter,
     limits: { fileSize: getSkillImportSizeLimit(req) },
   }).single('file')(req, res, next);
@@ -80,6 +83,7 @@ const skillUpload = (req, res, next) =>
 const MAX_SINGLE_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const singleFileUpload = multer({
   storage: memoryStorage,
+  defParamCharset,
   limits: { fileSize: MAX_SINGLE_FILE_SIZE },
 });
 

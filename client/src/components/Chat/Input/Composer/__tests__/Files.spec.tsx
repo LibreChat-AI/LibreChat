@@ -1,6 +1,6 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { TFile } from 'librechat-data-provider';
 import FileGrid from '../Files';
 
@@ -37,6 +37,7 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, options?: Record<string, string | number>) =>
     options ? `${key}:${options['0']}` : key,
   useAuthContext: () => ({ user: { id: 'user-1' } }),
+  useOnline: jest.requireActual('~/hooks/useOnline').default,
 }));
 
 const renderGrid = (props: Partial<React.ComponentProps<typeof FileGrid>> = {}) => {
@@ -126,6 +127,21 @@ describe('FileGrid', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('com_ui_error_connection');
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
     expect(mockRefetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('names a lost connection as the cause and follows it coming back', () => {
+    const onLine = jest.spyOn(window.navigator, 'onLine', 'get').mockReturnValue(false);
+    mockFiles = undefined;
+    mockQueryState = { isLoading: false, isError: true };
+    renderGrid();
+    expect(screen.getByRole('alert')).toHaveTextContent('com_ui_error_offline');
+
+    onLine.mockReturnValue(true);
+    act(() => {
+      window.dispatchEvent(new Event('online'));
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('com_ui_error_connection');
+    onLine.mockRestore();
   });
 
   it('stays on the grid when an image has nothing to preview', async () => {

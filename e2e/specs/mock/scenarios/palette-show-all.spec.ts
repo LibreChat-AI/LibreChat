@@ -146,6 +146,29 @@ async function uploadFile(
 }
 
 test.describe('composer palette show all', () => {
+  test('matches the composer bounds beside an expanded sidebar @scenario:palette-matches-composer-bounds', async ({
+    page,
+  }) => {
+    test.skip((page.viewportSize()?.width ?? 0) < 768, 'Desktop sidebar alignment');
+    await gotoMockChat(page);
+    await useMockEndpoint(page);
+    const openSidebar = page.getByTestId('open-sidebar-button');
+    if (await openSidebar.isVisible()) {
+      await openSidebar.click();
+    }
+    await expect(page.getByTestId('close-sidebar-button')).toBeVisible();
+    await openPalette(page);
+
+    await expect(async () => {
+      const composerBox = await page.getByTestId('composer-surface').boundingBox();
+      const paletteBox = await palette(page).boundingBox();
+      expect(composerBox).not.toBeNull();
+      expect(paletteBox).not.toBeNull();
+      expect(Math.abs(paletteBox!.x - composerBox!.x)).toBeLessThanOrEqual(2);
+      expect(Math.abs(paletteBox!.width - composerBox!.width)).toBeLessThanOrEqual(2);
+    }).toPass();
+  });
+
   test('caps long sections with Show all and leaves Tools uncapped @scenario:palette-caps-long-sections-with-show-all', async ({
     page,
   }) => {

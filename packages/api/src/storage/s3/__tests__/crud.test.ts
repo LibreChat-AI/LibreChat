@@ -48,6 +48,7 @@ jest.mock('@librechat/data-schemas', () => ({
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { deleteRagFile } from '~/files';
 import { logger } from '@librechat/data-schemas';
+import { createStoredUploadDelete } from '~/files/orphan';
 
 describe('S3 CRUD', () => {
   let originalEnv: NodeJS.ProcessEnv;
@@ -909,21 +910,22 @@ describe('S3 CRUD', () => {
       const { deleteFileFromS3 } = await import('../crud');
       await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
       expect(onDelete.mock.calls).toEqual([[]]);
-      expect(deleteRagFile).not.toHaveBeenCalled();
+      expect(deleteRagFile).toHaveBeenCalledWith({ userId: 'user123', file: mockFile });
     });
 
-    it('confirms DeleteObject before a later RAG cleanup denial', async () => {
+    it('keeps DeleteObject undispatched when RAG cleanup is denied', async () => {
       const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
       const onDelete = jest.fn();
       s3Mock.on(HeadObjectCommand).resolves({});
       const failure = Object.assign(new Error('RAG denied'), { status: 403 });
       jest.mocked(deleteRagFile).mockImplementationOnce(async () => {
-        expect(onDelete.mock.calls).toEqual([[], ['confirmed']]);
+        expect(onDelete).not.toHaveBeenCalled();
         throw failure;
       });
       const { deleteFileFromS3 } = await import('../crud');
       await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
-      expect(onDelete.mock.calls).toEqual([[], ['confirmed']]);
+      expect(onDelete).not.toHaveBeenCalled();
+      expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
     });
 
     it('reports a definitive DeleteObject denial', async () => {
@@ -937,6 +939,54 @@ describe('S3 CRUD', () => {
       const { deleteFileFromS3 } = await import('../crud');
       await expect(deleteFileFromS3(mockReq, mockFile, undefined, onDelete)).rejects.toBe(failure);
       expect(onDelete.mock.calls).toEqual([[], ['rejected']]);
+    });
+
+    it.each([FileSources.s3, FileSources.cloudfront])(
+      'deletes an unrecorded %s upload independently of vector rollback',
+      async (source) => {
+        const mockFile = {
+          filepath: 'images/user123/file.jpg',
+          user: 'user123',
+          file_id: 'failed-upload',
+          source,
+          embedded: true,
+          metadata: { embeddedEntities: ['agent-a'] },
+        } as TFile;
+        s3Mock.on(HeadObjectCommand).resolves({});
+        jest
+          .mocked(deleteRagFile)
+          .mockImplementationOnce(async ({ file }) => file.embedded !== true);
+        const { deleteFileFromS3 } = await import('../crud');
+        const failure = new Error('Vector deletion was not confirmed');
+        const vectors = jest.fn().mockRejectedValue(failure);
+        const remove = createStoredUploadDelete({
+          source,
+          getDeleteFile: (destination) =>
+            destination === FileSources.vectordb
+              ? vectors
+              : async (_req, file) => deleteFileFromS3(mockReq, { ...mockFile, ...file, source }),
+        });
+        await expect(remove(mockReq as never, { ...mockFile, source })).rejects.toBe(failure);
+        expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(1);
+        expect(deleteRagFile).toHaveBeenCalledWith({
+          userId: 'user123',
+          file: { ...mockFile, embedded: false },
+        });
+        expect(vectors).toHaveBeenCalledWith(mockReq, mockFile);
+        expect(mockFile.embedded).toBe(true);
+        expect(mockFile.metadata?.embeddedEntities).toEqual(['agent-a']);
+      },
+    );
+
+    it('keeps the S3 object when vector cleanup returns false', async () => {
+      const mockFile = { filepath: 'images/user123/file.jpg', user: 'user123' } as TFile;
+      s3Mock.on(HeadObjectCommand).resolves({});
+      jest.mocked(deleteRagFile).mockResolvedValueOnce(false);
+      const { deleteFileFromS3 } = await import('../crud');
+      await expect(deleteFileFromS3(mockReq, mockFile)).rejects.toThrow(
+        'Vector deletion was not confirmed',
+      );
+      expect(s3Mock.commandCalls(DeleteObjectCommand)).toHaveLength(0);
     });
 
     it('uses the file owner for RAG cleanup when a different authorized user deletes', async () => {
@@ -1180,6 +1230,140 @@ describe('S3 CRUD', () => {
         expect.any(Error),
       );
       expect(fs.promises.unlink).toHaveBeenCalledWith('/tmp/upload.jpg');
+    });
+  });
+
+  describe('stored content type', () => {
+    const mockReq = { user: { id: 'user123' } } as ServerRequest;
+
+    const mockFetch = (type: string | null, body?: ReadableStream<Uint8Array>) => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        headers: {
+          get: (name: string) =>
+            ({ 'content-length': '8', 'content-type': type })[name.toLowerCase()] ?? null,
+        },
+        body,
+        arrayBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(8)),
+      }) as unknown as typeof fetch;
+    };
+
+    const uploadFile = async (originalname: string, mimetype: string) => {
+      (fs.promises.stat as jest.Mock).mockResolvedValue({ size: 1024 });
+      (fs.createReadStream as jest.Mock).mockReturnValue(new Readable());
+      const { uploadFileToS3 } = await import('../crud');
+      await uploadFileToS3({
+        req: mockReq,
+        file: { path: '/tmp/upload', originalname, mimetype } as Express.Multer.File,
+        file_id: 'file123',
+        basePath: 'images',
+      });
+      return s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.ContentType;
+    };
+
+    it('stores uploaded raster images with their reported type', async () => {
+      expect(await uploadFile('photo.png', 'image/png')).toBe('image/png');
+    });
+
+    it('falls back to the extension when the reported type is generic', async () => {
+      expect(await uploadFile('photo.JPG', 'application/octet-stream')).toBe('image/jpeg');
+    });
+
+    it.each([
+      ['page.html', 'text/html'],
+      ['icon.svg', 'image/svg+xml'],
+      ['notes.txt', 'text/plain'],
+      ['page.html', 'image/svg+xml'],
+    ])('leaves %s reported as %s without a stored type', async (name, type) => {
+      expect(await uploadFile(name, type)).toBeUndefined();
+    });
+
+    it('stores resized buffers with the type of their target extension', async () => {
+      const { saveBufferToS3 } = await import('../crud');
+      await saveBufferToS3({
+        userId: 'user123',
+        buffer: Buffer.from('test'),
+        fileName: 'file123__photo.webp',
+        basePath: 'images',
+      });
+      expect(s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.ContentType).toBe('image/webp');
+    });
+
+    it('does not store a type for non-image buffers', async () => {
+      const { saveBufferToS3 } = await import('../crud');
+      await saveBufferToS3({
+        userId: 'user123',
+        buffer: Buffer.from('<svg/>'),
+        fileName: 'drawing.svg',
+        basePath: 'images',
+      });
+      expect(s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.ContentType).toBeUndefined();
+    });
+
+    it('stores buffered URL saves with the raster type the remote reported', async () => {
+      mockFetch('image/png; charset=binary');
+      const { saveURLToS3 } = await import('../crud');
+      await saveURLToS3({ userId: 'user123', URL: 'https://example.com/a', fileName: 'a.jpg' });
+      expect(s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.ContentType).toBe('image/png');
+    });
+
+    it('does not store an active remote type for URL saves', async () => {
+      mockFetch('text/html');
+      const { saveURLToS3 } = await import('../crud');
+      await saveURLToS3({ userId: 'user123', URL: 'https://example.com/a', fileName: 'a.html' });
+      expect(s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.ContentType).toBeUndefined();
+    });
+
+    it('stores streamed URL saves with their type', async () => {
+      mockFetch(
+        'image/gif',
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(Buffer.from('streamed'));
+            controller.close();
+          },
+        }),
+      );
+      const { saveURLToS3 } = await import('../crud');
+      await saveURLToS3({ userId: 'user123', URL: 'https://example.com/a', fileName: 'a.gif' });
+      expect(s3Mock.commandCalls(PutObjectCommand)[0].args[0].input.ContentType).toBe('image/gif');
+    });
+
+    it('starts multipart URL saves with their type', async () => {
+      const part = Buffer.alloc(5 * 1024 * 1024 + 1, 'a');
+      mockFetch(
+        null,
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(part);
+            controller.close();
+          },
+        }),
+      );
+      const { saveURLToS3 } = await import('../crud');
+      await saveURLToS3({ userId: 'user123', URL: 'https://example.com/a', fileName: 'a.png' });
+      const calls = s3Mock.commandCalls(CreateMultipartUploadCommand);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].args[0].input.ContentType).toBe('image/png');
+    });
+
+    it('signs image URLs with the type of their extension for objects stored without one', async () => {
+      const { getS3URL } = await import('../crud');
+      await getS3URL({ userId: 'user123', fileName: 'file123__photo.png' });
+      expect(getSignedUrl).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          input: expect.objectContaining({ ResponseContentType: 'image/png' }),
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('does not override the response type of non-image URLs', async () => {
+      const { getS3URL } = await import('../crud');
+      await getS3URL({ userId: 'user123', fileName: 'file123__page.html' });
+      const input = (getSignedUrl as jest.Mock).mock.lastCall[1].input;
+      expect(input.ResponseContentType).toBeUndefined();
     });
   });
 

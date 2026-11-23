@@ -189,6 +189,7 @@ export const ResourceCapabilityMap: Record<ResourceType, SystemCapability> = {
   [ResourceType.SKILL]: SystemCapabilities.MANAGE_SKILLS,
   [ResourceType.SHARED_LINK]: SystemCapabilities.MANAGE_SHARED_LINKS,
   [ResourceType.CHAT_PROJECT]: SystemCapabilities.MANAGE_PROJECTS,
+  [ResourceType.SLACK_BOT]: SystemCapabilities.MANAGE_AGENTS,
 };
 
 /**

@@ -14,6 +14,7 @@ import type {
   UpdateQuery,
 } from 'mongoose';
 import type { SearchParams } from 'meilisearch';
+import type { ClientSession } from 'mongoose';
 import type {
   IAgentEventActorCheckpoint,
   IAgentEventActorReconciliation,
@@ -23,22 +24,32 @@ import type {
   IAgentEventBindingRecord,
   IAgentTriggerDeliveryDocument,
   AppConfig,
+  FileExclusionResult,
   IChatProjectDocument,
   IActiveSubagentThreadLease,
   IConversation,
   IMessage,
   ISharedLink,
   ISubagentThreadReservation,
+  IUser,
 } from '~/types';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { MessageMethods } from './message';
 import {
+  MAX_EXCLUDED_FILES,
   MAX_AGENT_EVENT_ACTOR_DISCOVERED_TOOLS,
   MAX_AGENT_EVENT_ACTOR_ENCODING_LENGTH,
   MAX_AGENT_EVENT_ACTOR_SKILLS,
   MAX_AGENT_EVENT_ACTOR_SUMMARY_LENGTH,
   MAX_AGENT_EVENT_ACTOR_TOOL_NAME_LENGTH,
 } from '~/types/convo';
+import {
+  closeResponseScopes,
+  eraseResponseRecords,
+  createResponseRetention,
+  discoverResponseOwners,
+  createResponseConversationReplacement,
+} from './responseScope';
 import {
   activeExpirationFilter,
   buildRetentionVisibilityFilter,
@@ -49,11 +60,13 @@ import {
   updateChatProjectLastConversationForUser,
 } from './chatProject';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
+import { getTenantId, SYSTEM_TENANT_ID, runAsSystem } from '~/config/tenantContext';
 import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
 import { prepareSubagentContentDeletion } from './subagentContent';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { runAfterTransaction } from '~/utils/postCommit';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { decrementTagCounts } from './conversationTag';
 import logger from '~/config/winston';
@@ -334,6 +347,13 @@ export interface ConversationMethods {
     conversationId: string,
     pinned: boolean,
   ): Promise<IConversation | null>;
+  getConvoExcludedFiles(conversationId: string, user?: string): Promise<string[]>;
+  setConvoFileExclusion(
+    user: string,
+    conversationId: string,
+    fileIds: string[],
+    excluded: boolean,
+  ): Promise<FileExclusionResult>;
   appendConvoMessageReference(
     user: string,
     conversationId: string,
@@ -649,6 +669,8 @@ export interface ConversationMethods {
 
 export interface ConversationMethodDeps
   extends Pick<MessageMethods, 'getMessages' | 'deleteMessages'> {
+  /** Private data-schemas transaction for canonical response turn saves. */
+  saveSession?: ClientSession;
   searchMessages?: MessageMethods['searchMessages'];
   /**
    * Whether the user may use a project for their own chats: they own it or it was shared
@@ -672,12 +694,17 @@ export interface ConversationMethodDeps
     user: string,
     conversationIds: string[],
   ) => Promise<void>;
+  /** Whether the deployment serves shared links; omitted means enabled. */
+  allowSharedLinks?: boolean;
 }
 
 export function createConversationMethods(
   mongoose: typeof import('mongoose'),
   deps?: ConversationMethodDeps,
 ): ConversationMethods {
+  const retainResponses = createResponseRetention(mongoose, deps?.saveSession);
+  const allowSharedLinks = deps?.allowSharedLinks !== false;
+  const prepareResponseReplacement = createResponseConversationReplacement(mongoose);
   let legacyReceiptExpiryCursor: Types.ObjectId | undefined;
 
   async function canUseChatProject(user: string, projectId: string): Promise<boolean> {
@@ -686,7 +713,9 @@ export function createConversationMethods(
     }
     const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
     return (
-      (await ChatProject.exists({ _id: new mongoose.Types.ObjectId(projectId), user })) != null
+      (await ChatProject.exists({ _id: new mongoose.Types.ObjectId(projectId), user }).session(
+        deps?.saveSession ?? null,
+      )) != null
     );
   }
 
@@ -2356,12 +2385,13 @@ export function createConversationMethods(
 
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const stored = await Conversation.findOne({ conversationId, user: userId })
-      .select({ _id: 1, isTemporary: 1, expiredAt: 1, tags: 1 })
+      .select({ _id: 1, isTemporary: 1, expiredAt: 1, tags: 1, tenantId: 1 })
       .lean<{
         _id: Types.ObjectId;
         isTemporary?: boolean;
         expiredAt?: Date | null;
         tags?: string[];
+        tenantId?: string;
       } | null>();
     if (!stored) {
       return;
@@ -2377,6 +2407,7 @@ export function createConversationMethods(
       }
     }
 
+    await retainResponses({ userId, tenantId: stored.tenantId }, conversationId, expiredAt);
     let stampedDeadline = stored.expiredAt != null;
     if (stored.isTemporary !== true) {
       /**
@@ -2485,6 +2516,9 @@ export function createConversationMethods(
       }
       /* Remembered tool approvals are granted only by a validated resume. */
       delete update.toolApprovalAllows;
+      /* The left-out files change one id at a time through `setConvoFileExclusion`; a save that
+       * carries a copy of the list would put back what another tab just changed. */
+      delete update.excludedFiles;
       stripFields(update, LANE_PRIVATE_FIELDS);
       /** Ordinary saves may seed a decision, but only an explicit move may replace it. */
       const decisionOnInsert = {
@@ -2511,6 +2545,7 @@ export function createConversationMethods(
       delete unsetFields.titleSetByUser;
       delete unsetFields.titleRevision;
       delete unsetFields.toolApprovalAllows;
+      delete unsetFields.excludedFiles;
       stripFields(unsetFields, LANE_PRIVATE_FIELDS);
       delete unsetFields.codeEnvironmentRevision;
       delete unsetFields.codeEnvironmentMode;
@@ -2595,6 +2630,38 @@ export function createConversationMethods(
         update.expiredAt = null;
       }
 
+      const responseDeadline =
+        update.expiredAt instanceof Date ? update.expiredAt : retentionOnInsert?.expiredAt;
+      const replacingConversationId = newConversationId && newConversationId !== conversationId;
+      if (responseDeadline || replacingConversationId) {
+        const stored = await Conversation.findOne({ user: userId, conversationId })
+          .session(deps?.saveSession ?? null)
+          .select('tenantId expiredAt')
+          .lean<Pick<IConversation, 'tenantId' | 'expiredAt'>>();
+        const contextTenant = getTenantId();
+        const responseOwner = {
+          userId,
+          tenantId:
+            stored?.tenantId ?? (contextTenant === SYSTEM_TENANT_ID ? undefined : contextTenant),
+        };
+        // Conversation IDs are shared foreign keys for messages, approvals, jobs
+        // and checkpoints. newConversationId assigns an initial ID, never renames
+        // a persisted conversation independently of those resources.
+        if (
+          replacingConversationId &&
+          (stored || !(await prepareResponseReplacement(responseOwner, conversationId)))
+        ) {
+          return { message: 'Conversation ID cannot be replaced after persistence.' };
+        }
+        const deadline = responseDeadline ?? stored?.expiredAt;
+        if (deadline)
+          await retainResponses(
+            responseOwner,
+            newConversationId || conversationId,
+            stored?.expiredAt && stored.expiredAt < deadline ? stored.expiredAt : deadline,
+          );
+      }
+
       const createdAtOnInsert =
         metadata?.createdAtOnInsert instanceof Date &&
         !Number.isNaN(metadata.createdAtOnInsert.getTime())
@@ -2667,6 +2734,9 @@ export function createConversationMethods(
       const baseFilter = {
         conversationId,
         user: userId,
+        // Initial ID assignment must never match a source inserted after the
+        // absence check. Upsert may create the new ID, but cannot rename that row.
+        ...(replacingConversationId ? { _id: { $exists: false } } : {}),
         ...(metadata?.titleSource === 'generated' && {
           titleSetByUser: { $ne: true },
           title: { $in: [null, '', 'New Chat'] },
@@ -2681,6 +2751,7 @@ export function createConversationMethods(
           new: true,
           upsert,
           includeResultMetadata: true,
+          session: deps?.saveSession,
           ...timestampOptions,
         }) as unknown as Promise<ConversationUpdateResult>;
 
@@ -2718,7 +2789,7 @@ export function createConversationMethods(
          * That is a live conversation, so confirm it is really gone before letting the
          * route answer 404, and retry the pair when it is not. */
         for (let attempt = 0; !conversationResult.value && attempt < 2; attempt++) {
-          if (!(await Conversation.exists(baseFilter))) {
+          if (!(await Conversation.exists(baseFilter).session(deps?.saveSession ?? null))) {
             break;
           }
           conversationResult = await runArchiveWrites();
@@ -2730,7 +2801,7 @@ export function createConversationMethods(
           /** Alternating archive and unarchive requests can split every attempt, so
            * exhausting the retries still proves nothing about whether the chat exists.
            * Answer with its actual current state rather than reporting it missing. */
-          const current = await Conversation.findOne(baseFilter);
+          const current = await Conversation.findOne(baseFilter).session(deps?.saveSession ?? null);
           if (current) {
             conversationResult = {
               value: current as unknown as ConversationUpdateResult['value'],
@@ -2770,7 +2841,7 @@ export function createConversationMethods(
             $or: [{ codeWorkspaces: { $in: [null] } }, { codeWorkspaces: { $size: 0 } }],
           },
           { $set: decisionOnInsert },
-          { timestamps: false },
+          { timestamps: false, session: deps?.saveSession },
         );
         if (seeded.modifiedCount > 0) {
           Object.assign(conversation, decisionOnInsert);
@@ -2788,6 +2859,11 @@ export function createConversationMethods(
           interfaceConfig,
           conversation.isTemporary === true,
         );
+        await retainResponses(
+          { userId, tenantId: conversation.tenantId },
+          conversationId,
+          deadline,
+        );
         const result = await Conversation.updateOne(
           {
             _id: conversation._id,
@@ -2795,7 +2871,7 @@ export function createConversationMethods(
             isTemporary: conversation.isTemporary === true ? true : { $ne: true },
           },
           { $set: { expiredAt: deadline } },
-          { timestamps: false },
+          { timestamps: false, session: deps?.saveSession },
         );
         if (result.modifiedCount > 0) {
           conversation.expiredAt = deadline;
@@ -2857,7 +2933,10 @@ export function createConversationMethods(
         await Conversation.updateOne(
           { _id: conversation._id, isTemporary: { $ne: false } },
           { $set: { isTemporary: false } },
-          preserveUpdatedAt || replyStampApplied ? { timestamps: false } : {},
+          {
+            ...(preserveUpdatedAt || replyStampApplied ? { timestamps: false } : {}),
+            session: deps?.saveSession,
+          },
         );
         conversation.isTemporary = false;
       }
@@ -2867,49 +2946,53 @@ export function createConversationMethods(
          on a different collection: letting one of their failures reach the catch below would
          answer a successful save with an error, dropping the stamp from the terminal event and
          presenting a reply the user already watched arrive as unread on the next refresh. */
-      try {
-        if (conversation.chatProjectId) {
-          const isRetentionVisibilityUpdate =
-            typeof update.isTemporary === 'boolean' ||
-            Object.prototype.hasOwnProperty.call(convo, 'expiredAt') ||
-            Object.prototype.hasOwnProperty.call(unsetFields, 'isTemporary') ||
-            Object.prototype.hasOwnProperty.call(unsetFields, 'expiredAt');
-          /**
-           * Saving a conversation that is itself archived or retention-hidden (e.g.
-           * renaming or title generation on an archived project chat) must recompute
-           * stats rather than take the incremental fast path, otherwise the project's
-           * lastConversationAt/Id would point at a chat the project workspace hides.
-           */
-          const isConversationHidden =
-            conversation.isArchived === true ||
-            conversation.isTemporary === true ||
-            (conversation.expiredAt != null &&
-              new Date(conversation.expiredAt).getTime() <= Date.now());
-          const isNewConversation = conversationResult.lastErrorObject?.updatedExisting === false;
-          const shouldRefreshProjectStats =
-            isNewConversation ||
-            typeof update.isArchived === 'boolean' ||
-            Object.prototype.hasOwnProperty.call(unsetFields, 'isArchived') ||
-            isRetentionVisibilityUpdate ||
-            isConversationHidden;
+      const maintainProject = async () => {
+        try {
+          if (conversation.chatProjectId) {
+            const isRetentionVisibilityUpdate =
+              typeof update.isTemporary === 'boolean' ||
+              Object.prototype.hasOwnProperty.call(convo, 'expiredAt') ||
+              Object.prototype.hasOwnProperty.call(unsetFields, 'isTemporary') ||
+              Object.prototype.hasOwnProperty.call(unsetFields, 'expiredAt');
+            /**
+             * Saving a conversation that is itself archived or retention-hidden (e.g.
+             * renaming or title generation on an archived project chat) must recompute
+             * stats rather than take the incremental fast path, otherwise the project's
+             * lastConversationAt/Id would point at a chat the project workspace hides.
+             */
+            const isConversationHidden =
+              conversation.isArchived === true ||
+              conversation.isTemporary === true ||
+              (conversation.expiredAt != null &&
+                new Date(conversation.expiredAt).getTime() <= Date.now());
+            const isNewConversation = conversationResult.lastErrorObject?.updatedExisting === false;
+            const shouldRefreshProjectStats =
+              isNewConversation ||
+              typeof update.isArchived === 'boolean' ||
+              Object.prototype.hasOwnProperty.call(unsetFields, 'isArchived') ||
+              isRetentionVisibilityUpdate ||
+              isConversationHidden;
 
-          if (shouldRefreshProjectStats) {
-            await refreshChatProjectStatsForUser(mongoose, userId, conversation.chatProjectId);
-          } else if (!preserveUpdatedAt) {
-            await updateChatProjectLastConversationForUser(
-              mongoose,
-              userId,
-              conversation.chatProjectId,
-              conversation,
-            );
+            if (shouldRefreshProjectStats) {
+              await refreshChatProjectStatsForUser(mongoose, userId, conversation.chatProjectId);
+            } else if (!preserveUpdatedAt) {
+              await updateChatProjectLastConversationForUser(
+                mongoose,
+                userId,
+                conversation.chatProjectId,
+                conversation,
+              );
+            }
           }
+        } catch (error) {
+          logger.error('[saveConvo] Failed to maintain project statistics', error);
         }
-      } catch (error) {
-        logger.error('[saveConvo] Failed to maintain project statistics', error);
-      }
+      };
+      await runAfterTransaction(deps?.saveSession, maintainProject);
 
       return conversation.toObject();
     } catch (error) {
+      if (deps?.saveSession) throw error;
       logger.error('[saveConvo] Error saving conversation', error);
       if (metadata?.context) {
         logger.info(`[saveConvo] ${metadata.context}`);
@@ -2940,6 +3023,81 @@ export function createConversationMethods(
     } catch (error) {
       logger.error('[setConvoPinned] Error updating pinned state', error);
       throw new Error('Error updating pinned state');
+    }
+  }
+
+  /**
+   * The file ids a conversation leaves out of later turns; none for one that is not stored.
+   * With `user`, none for a conversation that is not theirs either, which is what a request
+   * answering a client must pass.
+   */
+  async function getConvoExcludedFiles(conversationId: string, user?: string): Promise<string[]> {
+    try {
+      const Conversation = mongoose.models.Conversation as Model<IConversation>;
+      const conversation = await Conversation.findOne(
+        user == null ? { conversationId } : { conversationId, user },
+        'excludedFiles',
+      ).lean<IConversation>();
+      return conversation?.excludedFiles ?? [];
+    } catch (error) {
+      logger.error('[getConvoExcludedFiles] Error getting excluded files', error);
+      throw new Error('Error getting excluded files');
+    }
+  }
+
+  /**
+   * Leaves files out of a conversation's later turns, or takes them back in. One direction per
+   * call, so each is a single atomic array update and two tabs changing different files cannot
+   * overwrite each other. `timestamps: false` because choosing files is not activity and must
+   * not reorder the sidebar.
+   *
+   * The list is bounded: an exclusion that would carry it past `MAX_EXCLUDED_FILES` matches no
+   * document. The bound is on the list as it would be afterwards, so ids that are on it already
+   * take no room and repeating a change that landed succeeds again. Only when nothing matched is
+   * the conversation read again, to tell a full list from one that is not this user's or does
+   * not exist.
+   */
+  async function setConvoFileExclusion(
+    user: string,
+    conversationId: string,
+    fileIds: string[],
+    excluded: boolean,
+  ): Promise<FileExclusionResult> {
+    try {
+      const Conversation = mongoose.models.Conversation as Model<IConversation>;
+      const options = { new: true, timestamps: false, projection: 'excludedFiles' };
+      if (!excluded) {
+        const updated = await Conversation.findOneAndUpdate(
+          { conversationId, user },
+          { $pull: { excludedFiles: { $in: fileIds } } },
+          options,
+        ).lean<IConversation>();
+        return updated == null
+          ? { ok: false, error: { code: 'not_found' } }
+          : { ok: true, value: updated.excludedFiles ?? [] };
+      }
+      const updated = await Conversation.findOneAndUpdate(
+        {
+          conversationId,
+          user,
+          $expr: {
+            $lte: [
+              { $size: { $setUnion: [{ $ifNull: ['$excludedFiles', []] }, fileIds] } },
+              MAX_EXCLUDED_FILES,
+            ],
+          },
+        },
+        { $addToSet: { excludedFiles: { $each: fileIds } } },
+        options,
+      ).lean<IConversation>();
+      if (updated != null) {
+        return { ok: true, value: updated.excludedFiles ?? [] };
+      }
+      const exists = await Conversation.exists({ conversationId, user });
+      return { ok: false, error: { code: exists == null ? 'not_found' : 'limit_exceeded' } };
+    } catch (error) {
+      logger.error('[setConvoFileExclusion] Error updating excluded files', error);
+      throw new Error('Error updating excluded files');
     }
   }
 
@@ -3556,8 +3714,7 @@ export function createConversationMethods(
     }
     /* A deployment with shared links off serves no links and renders no badge, so the
        extra round trip on the sidebar's first page would buy nothing. */
-    const allowSharedLinks = process.env.ALLOW_SHARED_LINKS;
-    if (allowSharedLinks !== undefined && allowSharedLinks.toLowerCase().trim() !== 'true') {
+    if (!allowSharedLinks) {
       return;
     }
 
@@ -3619,8 +3776,7 @@ export function createConversationMethods(
     if (!SharedLink) {
       return null;
     }
-    const allowSharedLinks = process.env.ALLOW_SHARED_LINKS;
-    if (allowSharedLinks !== undefined && allowSharedLinks.toLowerCase().trim() !== 'true') {
+    if (!allowSharedLinks) {
       return null;
     }
 
@@ -3992,7 +4148,11 @@ export function createConversationMethods(
           getVisibleConversationRetentionFilter(),
           getHumanConversationFilter(),
         ],
-      } as FilterQuery<IConversation>).lean<IConversation[]>();
+      } as FilterQuery<IConversation>)
+        /* Search only needs conversation metadata; the embedded `messages` id array can hold
+           thousands of entries per conversation and is never read from these rows. */
+        .select('-messages')
+        .lean<IConversation[]>();
 
       results.sort(
         (a, b) => new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime(),
@@ -4081,12 +4241,40 @@ export function createConversationMethods(
         .select('conversationId tenantId chatProjectId tags')
         .lean<DeletionConversation[]>();
       const recoveryConversationIds: string[] = [];
+      const recoveryResponseScopes: DeletionConversation[] = [];
+      const responseGroups = (wave: DeletionConversation[]) => {
+        const groups = new Map<string | undefined, string[]>();
+        for (const conversation of wave) {
+          const tenantId = conversation.tenantId || undefined;
+          const ids = groups.get(tenantId) ?? [];
+          ids.push(conversation.conversationId);
+          groups.set(tenantId, ids);
+        }
+        return groups;
+      };
+      const closeResponses = async (wave: DeletionConversation[]) => {
+        for (const [tenantId, ids] of responseGroups(wave))
+          await closeResponseScopes(mongoose, { userId: user, tenantId }, ids);
+      };
+      const eraseResponses = async (wave: DeletionConversation[]) => {
+        for (const [tenantId, ids] of responseGroups(wave))
+          await eraseResponseRecords(mongoose, { userId: user, tenantId }, ids);
+      };
       if (!conversations.length && typeof filter.conversationId === 'string') {
+        // Authorized delayed reservations retain the globally unique user's actual tenant.
+        // Fence it before probing legacy payloads, including when no response exists yet.
+        const owner = isValidObjectIdString(user)
+          ? await (mongoose.models.User as Model<IUser>).findById(user).select('tenantId').lean()
+          : null;
+        if (owner)
+          await closeResponses([
+            { conversationId: filter.conversationId, tenantId: owner.tenantId },
+          ]);
         /** A prior attempt may have deleted the root before a descendant read failed.
          * Resume from immutable root lineage and retain the root id for message,
          * checkpoint, and tool cleanup. The message probe distinguishes that partial
          * commit from a conversation id that never existed. */
-        const [descendants, rootMessages] = await Promise.all([
+        const [descendants, rootMessages, responseOwners] = await Promise.all([
           retryCascadeOperation(() =>
             Conversation.find({
               user,
@@ -4096,8 +4284,20 @@ export function createConversationMethods(
               .lean<DeletionConversation[]>(),
           ),
           getMessages({ user, conversationId: filter.conversationId }, '_id', { limit: 1 }),
+          discoverResponseOwners(mongoose, user, filter.conversationId),
         ]);
-        if (descendants.length === 0 && rootMessages.length === 0 && options?.allowEmpty !== true) {
+        for (const responseOwner of responseOwners) {
+          recoveryResponseScopes.push({
+            conversationId: filter.conversationId,
+            tenantId: responseOwner.tenantId,
+          });
+        }
+        if (
+          descendants.length === 0 &&
+          rootMessages.length === 0 &&
+          recoveryResponseScopes.length === 0 &&
+          options?.allowEmpty !== true
+        ) {
           throw new Error('Conversation not found or already deleted.');
         }
         conversations = descendants;
@@ -4167,6 +4367,7 @@ export function createConversationMethods(
           break;
         }
         const waveIds = wave.map((conversation) => conversation.conversationId);
+        await closeResponses(wave);
         await deps?.deleteAgentQueuedTurns?.(
           user,
           wave.map((conversation) => ({
@@ -4182,6 +4383,8 @@ export function createConversationMethods(
             conversationId: { $in: waveIds },
           }),
         );
+        // Like subagent content, response erasure is an irreversible part of deletion intent.
+        await eraseResponses(wave);
         const result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
         if (result.deletedCount > 0) {
           /** Result erasure is irreversible. Keep receipts intact when a
@@ -4216,6 +4419,12 @@ export function createConversationMethods(
       ];
 
       if (recoveryConversationIds.length > 0) {
+        // Each command retains an explicit owner/partition predicate. Request tenant
+        // middleware must not replace the partitions discovered by recovery.
+        await runAsSystem(async () => {
+          await closeResponses(recoveryResponseScopes);
+          await eraseResponses(recoveryResponseScopes);
+        });
         await deps?.deleteAgentQueuedTurns?.(
           user,
           recoveryConversationIds.map((conversationId) => ({
@@ -4583,6 +4792,8 @@ export function createConversationMethods(
     stampForcedRetention,
     saveConvo,
     setConvoPinned,
+    getConvoExcludedFiles,
+    setConvoFileExclusion,
     appendConvoMessageReference,
     getConvoCodeEnvironmentDecision,
     addConvoToolApprovalAllows,

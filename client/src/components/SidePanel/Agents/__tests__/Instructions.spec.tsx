@@ -48,6 +48,23 @@ function InstructionsHarness({
 }
 
 describe('Agent Instructions', () => {
+  it.each(['com_ui_variables', 'com_ui_expand_editor'])(
+    'places %s in the heading row before the source toggle',
+    (name) => {
+      render(<InstructionsHarness />);
+
+      const header = screen.getByTestId('instructions-heading').parentElement;
+      const action = screen.getByRole('button', { name });
+      expect(header).toContainElement(action);
+      const toggle = screen.getByRole('radiogroup', {
+        name: 'com_agents_instructions_source_toggle_aria',
+      });
+      expect(
+        action.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    },
+  );
+
   it('offers special-variable insertion by default', async () => {
     const user = userEvent.setup();
     render(<InstructionsHarness />);

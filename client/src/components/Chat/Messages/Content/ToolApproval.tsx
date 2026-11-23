@@ -1,5 +1,7 @@
 import { useId, useContext, useEffect, useMemo } from 'react';
 import { Button, TextareaAutosize } from '@librechat/client';
+import { SCHEDULE_APPROVAL_REASON } from 'librechat-data-provider';
+import { useComposerPresentsApproval, useOptionalChatSurface } from '@librechat/chat/react';
 import {
   X,
   Check,
@@ -9,19 +11,17 @@ import {
   ShieldQuestion,
   TriangleAlert,
 } from 'lucide-react';
-import type { Agents } from 'librechat-data-provider';
-import type { KeyboardEvent } from 'react';
-import type { TranslationKeys } from '~/hooks';
 import {
   isReboundSubmitChord,
   resolveComposerKeyDown,
   bindingFromEvent,
   bindingsMatch,
   bindingHash,
-} from '~/utils/shortcuts';
-import { useComposerPresentsApproval } from '~/components/Chat/approval/state';
-import { useOptionalChatSurface } from '~/components/Chat/Subagents/surface';
-import { boundApprovalLabel } from '~/components/Chat/approval/preview';
+  boundApprovalLabel,
+} from '@librechat/chat';
+import type { Agents } from 'librechat-data-provider';
+import type { KeyboardEvent } from 'react';
+import type { TranslationKeys } from '~/hooks';
 import { useApprovalContext, useResumeSubmit } from './ApprovalContext';
 import { cn, forceResize, insertTextAtCursor, logger } from '~/utils';
 import { NO_HOST_BINDINGS } from '~/hooks/Input/useComposerBindings';
@@ -85,6 +85,11 @@ function seedArgs(args: string | Record<string, unknown> | undefined): string {
   }
 }
 
+/** Explanations the server sends as a code, said here in the reader's language. */
+const descriptionKeys = new Map<string, TranslationKeys>([
+  [SCHEDULE_APPROVAL_REASON, 'com_ui_approval_schedule_owner'],
+]);
+
 /**
  * Renders approve / reject / edit / respond controls for a paused tool call,
  * scoped to the decisions the server allows. Records its decision in the
@@ -109,7 +114,11 @@ export default function ToolApproval({
   const localize = useLocalize();
   const invalidJsonId = useId();
   const allowAlwaysHintId = useId();
-  const { actionId, allowed_decisions: allowedDecisions, description } = approval;
+  const { actionId, description } = approval;
+  /** A stored approval can lack the decision list. The hooks below still run on an empty one, and
+   *  the card renders nothing for it rather than crashing the message. */
+  const hasDecisions = Array.isArray(approval.allowed_decisions);
+  const allowedDecisions = hasDecisions ? approval.allowed_decisions : [];
   const rememberScope = approval.remember_scope;
   const rememberUnavailable = approval.remember_unavailable;
   const unavailableLabels: Record<NonNullable<typeof rememberUnavailable>, TranslationKeys> = {
@@ -171,8 +180,10 @@ export default function ToolApproval({
 
   const status = getStatus(actionId);
   const locked = status === 'submitting' || status === 'submitted' || status === 'expired';
-  const safeDescription =
-    description == null ? undefined : boundApprovalLabel(description, 1024).label;
+  const descriptionKey = description == null ? undefined : descriptionKeys.get(description);
+  let safeDescription: string | undefined;
+  if (descriptionKey != null) safeDescription = localize(descriptionKey);
+  else if (description != null) safeDescription = boundApprovalLabel(description, 1024).label;
 
   /** Recompute and store this card's decision whenever inputs change. A null
    *  resolution (e.g. invalid edit JSON) clears it so submit stays disabled. */
@@ -341,6 +352,10 @@ export default function ToolApproval({
   const descriptionNode = safeDescription != null && safeDescription.length > 0 && (
     <p className="text-text-secondary text-sm">{safeDescription}</p>
   );
+
+  if (!hasDecisions) {
+    return null;
+  }
 
   if (deferToComposer) {
     return (

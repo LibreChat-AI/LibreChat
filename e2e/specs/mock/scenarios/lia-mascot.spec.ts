@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { NEW_CHAT_PATH, sendMessage } from '../helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * Lia, the welcome screen mascot: off until the user opts in from Settings, standing on the

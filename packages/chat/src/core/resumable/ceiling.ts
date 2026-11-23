@@ -4,6 +4,7 @@ import type { TerminalContext } from './terminal';
 import {
   restoreLiveStatus,
   handoffToReplacement,
+  settleOptimisticConversation,
   clearPendingApprovalForTerminal,
   clearAttachedGenerationCreatedAt,
 } from './terminal';
@@ -100,7 +101,8 @@ export async function settleAfterRetryCeiling(ctx: TerminalContext): Promise<voi
     if (!sub.isCurrent()) {
       return;
     }
-    const fetched = await host.cache.fetchMessages(recoveryConvoId);
+    /** A conversation whose `created` frame never arrived has no query of its own to read through. */
+    const fetched = await host.cache.fetchMessages(recoveryConvoId, true);
     if (!sub.isCurrent()) {
       return;
     }
@@ -154,8 +156,11 @@ export async function settleAfterRetryCeiling(ctx: TerminalContext): Promise<voi
   host.cache.removeActiveJob(currentStreamId);
   clearAttachedGenerationCreatedAt(ctx);
   clearPendingApprovalForTerminal(ctx, recoveryConvoId);
-  if (!run.createdStreamIds.has(currentStreamId) && run.optimisticStreamIds.has(currentStreamId)) {
-    host.cache.removeConversation(currentStreamId);
+  if (!(await settleOptimisticConversation(ctx, recoveryConvoId))) {
+    return;
+  }
+  if (persistedMessages) {
+    host.messages.set(persistedMessages);
   }
   sub.retired = true;
   host.pane.setIsSubmitting(false);

@@ -1,3 +1,13 @@
+import { createPermissionPrincipalMethods, type PermissionPrincipalStorage } from './provisioning';
+export type {
+  PermissionPrincipalStorage,
+  PermissionPrincipalChange,
+  PermissionPrincipalRecord,
+  PermissionPrincipalData,
+} from './provisioning';
+import { runAfterTransaction } from '~/utils/postCommit';
+export type { ResponseTurnWrites } from './responseTurn';
+import type { ChannelStorageConfig } from 'librechat-data-provider';
 import { createSubagentContentMethods, type SubagentContentMethods } from './subagentContent';
 export type {
   SubagentContentScope,
@@ -7,13 +17,16 @@ export type {
   SubagentContentAppendResult,
 } from './subagentContent';
 import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
-import type { ScheduleMCPConsentStorage } from './scheduleConsent';
 import type { ClearFileCodeEnvRefsParams } from '~/types/file';
 import type { FileStorageMethods } from './fileStorage';
 import { createToolApprovalGrantMethods } from './toolApprovalGrant';
-import { createScheduleMCPConsentStorage } from './scheduleConsent';
-export { createScheduleMCPConsentStorage } from './scheduleConsent';
-export type { ScheduleMCPConsentStorage, ScheduleConsentSnapshot } from './scheduleConsent';
+export { createScheduleMCPConsentStorage, createAgentKeyMCPConsentStorage } from './runGrant';
+export type {
+  RunGrantStorage,
+  RunGrantSnapshot,
+  ScheduleMCPConsentStorage,
+  ScheduleConsentSnapshot,
+} from './runGrant';
 import type {
   FileMethods,
   FileOwnerScope,
@@ -43,7 +56,7 @@ import { createPasskeyMethods, type PasskeyMethods } from './passkey';
 import { createUserMethods, DEFAULT_SESSION_EXPIRY, type UserMethods } from './user';
 import { createTokenMethods, type TokenMethods } from './token';
 import { createTokenListMethods, type TokenListMethods } from './tokenList';
-import { createRoleMethods, RoleConflictError } from './role';
+import { createRoleMethods, RoleConflictError, RoleDeletionError } from './role';
 import { createKeyMethods, type KeyMethods } from './key';
 import { createFileStorageMethods } from './fileStorage';
 import { createFileMethods } from './file';
@@ -60,6 +73,35 @@ import {
 import { createAgentCategoryMethods, type AgentCategoryMethods } from './agentCategory';
 /* Agent API Keys */
 import { createAgentApiKeyMethods, type AgentApiKeyMethods } from './agentApiKey';
+import { createAgentChannelMethods, type AgentChannelMethods } from './channel';
+export { createChannelIdentityStorage } from './channelIdentity';
+export type { ChannelIdentityStorage } from './channelIdentity';
+export type { AgentChannelDeletionResult } from './channel';
+export type { ChannelIdentityRecord } from '~/models/channelIdentity';
+export {
+  createChannelFeedbackStorage,
+  ChannelFeedbackAuthorityError,
+  CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX,
+  CHANNEL_FEEDBACK_RECEIPT_RETENTION_MS,
+  channelFeedbackReactionIdentity,
+  isLaterChannelFeedbackEvent,
+} from './channelFeedback';
+export type { ChannelFeedbackStorage, ChannelFeedbackReplySource } from './channelFeedback';
+export type { ChannelFeedbackEventRecord, ChannelFeedbackLedger } from '~/models/channelFeedback';
+export { createChannelRunStorage, ChannelRunConflict } from './channelRun';
+export { createChannelSummaryStorage, CHANNEL_SUMMARY_MAX_PRIOR_ROWS } from './channelSummary';
+export type {
+  ChannelSummaryStorage,
+  ChannelSummaryScope,
+  ChannelSummaryRow,
+} from './channelSummary';
+export type {
+  ChannelRunStorage,
+  ChannelRunEnrollment,
+  ChannelLaneScope,
+  ChannelRunRecord,
+  ChannelLaneRecord,
+} from './channelRun';
 /* MCP Servers */
 import { createMCPServerMethods, type MCPServerMethods } from './mcpServer';
 import { createCodeEnvironmentMethods, type CodeEnvironmentMethods } from './codeEnvironment';
@@ -67,12 +109,7 @@ import { createCodeEnvironmentMethods, type CodeEnvironmentMethods } from './cod
 import { createPluginAuthMethods, type PluginAuthMethods } from './pluginAuth';
 /* Permissions */
 import { createAccessRoleMethods, type AccessRoleMethods } from './accessRole';
-import {
-  createUserGroupMethods,
-  runAfterTransaction,
-  type UserGroupMethods,
-  type UserGroupDeps,
-} from './userGroup';
+import { createUserGroupMethods, type UserGroupMethods, type UserGroupDeps } from './userGroup';
 import {
   createAclEntryMethods,
   permissionBitSupersets,
@@ -119,6 +156,8 @@ import {
   type ParentSubagentThreadRecord,
 } from './conversation';
 import { createChatProjectMethods, type ChatProjectMethods } from './chatProject';
+import { createConversationMetadataMethods } from './conversationMetadata';
+import type { ConversationMetadataMethods } from './conversationMetadata';
 export type {
   AssignConversationToProjectResult,
   ChatProjectAccess,
@@ -232,6 +271,7 @@ import { createInsightsMethods, type InsightsMethods } from './insights';
 export {
   runAfterTransaction,
   RoleConflictError,
+  RoleDeletionError,
   MCPAuthorityProofError,
   MAX_MCP_AUTHORITY_TARGETS,
   DEFAULT_REFRESH_TOKEN_EXPIRY,
@@ -262,6 +302,7 @@ export { AUDIT_SCHEMA_VERSION, MAX_AUDIT_EXPORT_ROWS, MAX_AUDIT_LOG_LIMIT, MAX_A
 export { MAX_TOOL_FAVORITES };
 export { AgentTriggerDeliveryConflictError };
 export type { PromptGroupListParams };
+export type { RoleDeletion, RoleDeletionFailure } from './role';
 export { AGENT_OWNER_CONTACT_RESOLVED_FIELD, AgentSortCursorError } from './agent';
 export { createSkillDeletionPersistenceAdapter } from './skillDeletionAdapter';
 export type {
@@ -275,7 +316,8 @@ export {
   AgentQueuedTurnLaneRetiredError,
 };
 
-export type AllMethods = SubagentContentMethods &
+export type AllMethods = PermissionPrincipalStorage &
+  SubagentContentMethods &
   ToolApprovalGrantStorage &
   UserMethods &
   SessionMethods &
@@ -293,6 +335,7 @@ export type AllMethods = SubagentContentMethods &
   ToolFavoriteMethods &
   AgentCategoryMethods &
   AgentApiKeyMethods &
+  AgentChannelMethods &
   MCPServerMethods &
   CodeEnvironmentMethods &
   UserGroupMethods &
@@ -312,6 +355,7 @@ export type AllMethods = SubagentContentMethods &
   ConversationImportMethods &
   MessageMethods &
   ConversationMethods &
+  ConversationMetadataMethods &
   ChatProjectMethods &
   TxMethods &
   TransactionMethods &
@@ -322,7 +366,6 @@ export type AllMethods = SubagentContentMethods &
   SkillLifecycleMethods &
   AgentTriggerDeliveryMethods &
   AgentQueuedTurnMethods &
-  ScheduleMCPConsentStorage &
   ScheduleMethods &
   AgentMethods &
   ConfigMethods &
@@ -332,6 +375,8 @@ export type AllMethods = SubagentContentMethods &
 
 /** Dependencies injected from the api layer into createMethods */
 export interface CreateMethodsDeps {
+  toolFavorites?: ToolFavoriteMethods;
+  getChannelStorageConfig?: () => Promise<Partial<ChannelStorageConfig>>;
   /** Matches a model name to a canonical key. From @librechat/api. */
   matchModelName?: (model: string, endpoint?: string) => string | undefined;
   /** Finds the first key in values whose key is a substring of model. From @librechat/api. */
@@ -347,6 +392,8 @@ export interface CreateMethodsDeps {
   getMCPAppMessageBudget?: () => Promise<number | undefined>;
   /** Recognizes agent skill IDs supplied by an external, non-database registry. */
   isExternalSkillId?: AgentDeps['isExternalSkillId'];
+  /** Whether the deployment serves shared links; omitted means enabled. */
+  allowSharedLinks?: boolean;
 }
 
 /**
@@ -401,6 +448,7 @@ export function createMethods(
       chatProjectAccess.current?.(user, projectId) ?? Promise.resolve(false),
     listAccessibleChatProjectIds: (user) =>
       chatProjectAccess.listIds?.(user) ?? Promise.resolve([]),
+    allowSharedLinks: deps.allowSharedLinks,
     getMessages: messageMethods.getMessages,
     deleteMessages: messageMethods.deleteMessages,
     searchMessages: messageMethods.searchMessages,
@@ -536,10 +584,14 @@ export function createMethods(
     getUserPrincipals: userGroupMethods.getUserPrincipals,
     findAccessibleResources: aclEntryMethods.findAccessibleResources,
     isExternalSkillId: deps.isExternalSkillId,
+    getCache: deps.getCache,
   };
   const agentMethods = createAgentMethods(mongoose, agentDeps);
   return {
-    ...createUserMethods(mongoose, { getCache: deps.getCache }),
+    ...createUserMethods(mongoose, {
+      getCache: deps.getCache,
+      getChannelStorageConfig: deps.getChannelStorageConfig,
+    }),
     ...createToolApprovalGrantMethods(mongoose),
     ...createSessionMethods(mongoose),
     ...createTokenMethods(mongoose),
@@ -554,15 +606,17 @@ export function createMethods(
     ...createFileMethods(mongoose),
     ...createFileStorageMethods(mongoose),
     ...createMemoryMethods(mongoose),
-    ...createToolFavoriteMethods(mongoose),
+    ...(deps.toolFavorites ?? createToolFavoriteMethods(mongoose)),
     ...createAgentCategoryMethods(mongoose),
     ...createAgentApiKeyMethods(mongoose),
+    ...createAgentChannelMethods(mongoose, deps.getChannelStorageConfig),
     ...createMCPServerMethods(mongoose, {
       getSoleOwnedResourceIds: aclEntryMethods.getSoleOwnedResourceIds,
     }),
     ...createCodeEnvironmentMethods(mongoose),
     ...createAccessRoleMethods(mongoose),
     ...userGroupMethods,
+    ...createPermissionPrincipalMethods(mongoose, userGroupMethods.invalidatePrincipalMemberships),
     ...aclEntryMethods,
     ...systemGrantMethods,
     ...createAuditLogMethods(mongoose),
@@ -581,6 +635,7 @@ export function createMethods(
     ...messageMethods,
     ...conversationMethods,
     ...chatProjectMethods,
+    ...createConversationMetadataMethods(mongoose),
     /* Tier 3 */
     ...txMethods,
     ...transactionMethods,
@@ -592,7 +647,6 @@ export function createMethods(
     ...agentTriggerDeliveryMethods,
     ...agentQueuedTurnMethods,
     ...createScheduleMethods(mongoose),
-    ...createScheduleMCPConsentStorage(mongoose),
     /* Tier 5 */
     ...agentMethods,
     /* Config */
@@ -636,6 +690,7 @@ export type {
   ToolFavoriteMethods,
   AgentCategoryMethods,
   AgentApiKeyMethods,
+  AgentChannelMethods,
   MCPServerMethods,
   CodeEnvironmentMethods,
   UserGroupMethods,
@@ -706,3 +761,5 @@ export type {
 };
 
 export { recordAgentEventActorReceiptMetric, setAgentEventActorReceiptMetricObserver };
+
+export { createToolFavoriteMethods } from './favorite';

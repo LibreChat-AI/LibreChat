@@ -2,11 +2,31 @@ import { getRequestId, getTenantId, getUserId } from '@librechat/data-schemas';
 import { Constants, EModelEndpoint, ReasoningEffort } from 'librechat-data-provider';
 import type { AgentTriggerExecutionHostDeps, AgentTriggerFetch } from './host';
 import {
+  AgentTriggerExecutionError,
+  createAgentTriggerExecutionHost,
+  getTrustedNewConversationId,
+} from './host';
+import {
   EVENT_ACTOR_DETACHED_COMPLETION_SOURCE,
   EVENT_ACTOR_DETACHED_COMPLETION_TYPE,
 } from './detachedAction';
 import { createAgentTriggerEnvelope, getAgentTriggerIdempotencyKey } from './envelope';
-import { AgentTriggerExecutionError, createAgentTriggerExecutionHost } from './host';
+
+describe('trusted new conversation reservation', () => {
+  it.each([
+    [false, false, 'reserved-conversation', null],
+    [true, false, 'reserved-conversation', 'reserved-conversation'],
+    [false, true, 'reserved-conversation', 'reserved-conversation'],
+    [false, true, undefined, null],
+  ])(
+    'schedule=%s trigger=%s selects only a trusted reservation',
+    (isScheduledFire, isAgentTrigger, newConversationId, expected) => {
+      expect(
+        getTrustedNewConversationId({ isScheduledFire, isAgentTrigger, newConversationId }),
+      ).toBe(expected);
+    },
+  );
+});
 
 const createFireEnvelope = () =>
   createAgentTriggerEnvelope({
@@ -106,6 +126,35 @@ function expectExecutionError(error: unknown, expected: Partial<AgentTriggerExec
 }
 
 describe('createAgentTriggerExecutionHost fire adapter', () => {
+  it.each(['fire', 'continue'] as const)(
+    'retains exact reply identity without a parallel chat-channel lane: %s',
+    async (mode) => {
+      const original = mode === 'fire' ? createFireEnvelope() : createContinueEnvelope();
+      const envelope = {
+        ...original,
+        event: {
+          ...original.event,
+          id: 'channel-run-1',
+          source: { type: 'channel', id: 'channel-1' },
+        },
+      };
+      const fetcher = fetchMock(async () =>
+        response({
+          streamId: 'conversation-1',
+          conversationId: 'conversation-1',
+          generationCreatedAt: 40,
+          status: 'started',
+          responseMessageId: 'saved-reply-1',
+        }),
+      );
+      const result = await createAgentTriggerExecutionHost(deps(fetcher)).dispatch(envelope);
+      expect(result).toMatchObject({ responseMessageId: 'saved-reply-1' });
+      expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).not.toHaveProperty(
+        'channelExecution',
+      );
+    },
+  );
+
   it('rejects malformed serialized envelopes through its promise contract', async () => {
     const host = createAgentTriggerExecutionHost(deps(fetchMock(async () => response({}))));
     const malformed = { ...createFireEnvelope() };
@@ -577,6 +626,13 @@ describe('createAgentTriggerExecutionHost continue adapter', () => {
     expect(String(input)).toBe('http://127.0.0.1:3080/api/agents/chat/agents');
     expect(JSON.parse(String(init?.body))).toEqual({
       agentCompletion: { version: 1, sourceId: 'subagent-completion' },
+      /** The event's identity, so the route can name the delivery that started the turn. */
+      agentEvent: {
+        id: envelope.event.id,
+        type: envelope.event.type,
+        occurredAt: envelope.event.occurredAt,
+        source: envelope.event.source,
+      },
       text: envelope.input,
       endpoint: EModelEndpoint.agents,
       agent_id: 'agent-1',
@@ -586,6 +642,112 @@ describe('createAgentTriggerExecutionHost continue adapter', () => {
       isRegenerate: false,
       clientRequestId: idempotencyKey,
       generationProtocolVersion: 2,
+    });
+  });
+
+  describe('the trigger the reported work kept of the run that began it', () => {
+    const trigger = {
+      subject: { kind: 'key' as const, id: 'key-1' },
+      origin: {
+        agentId: 'agent-root',
+        delivery: { key: 'trigger_abc', event: { id: 'event-1', type: 'x', occurredAt: 1 } },
+      },
+    };
+    const started = async () =>
+      response({ streamId: 'conversation-1', conversationId: 'conversation-1', status: 'started' });
+    /** Dispatches one continuation and returns the body the chat route would receive. */
+    const body = async (envelope: ReturnType<typeof createContinueEnvelope>) => {
+      const fetcher = fetchMock(started);
+      await createAgentTriggerExecutionHost(deps(fetcher)).dispatch(envelope);
+      return JSON.parse(String(fetcher.mock.calls[0][1]?.body));
+    };
+    const completion = (payload: Record<string, unknown>, id = 'subagent-completion') => {
+      const envelope = createContinueEnvelope();
+      envelope.event.source = { id, type: 'internal' };
+      envelope.event.payload = payload as typeof envelope.event.payload;
+      return envelope;
+    };
+
+    it.each(['subagent-completion', 'background-tool-completion'])(
+      'is handed to the turn that reports a %s, from the wake-up the server wrote',
+      async (id) => {
+        expect((await body(completion({ taskId: 'task-1', trigger }, id))).agentCompletion).toEqual(
+          { version: 1, sourceId: id, trigger },
+        );
+        expect((await body(completion({ taskId: 'task-1' }, id))).agentCompletion).toEqual({
+          version: 1,
+          sourceId: id,
+        });
+        expect(
+          (await body(completion({ taskId: 'task-1', trigger: null }, id))).agentCompletion,
+        ).toEqual({ version: 1, sourceId: id });
+      },
+    );
+
+    it('is handed to the delivery that resumes an actor suspended on a detached action', async () => {
+      const detached = {
+        version: 1 as const,
+        invocationId: 'original-delivery-1',
+        generationCreatedAt: 1_787_000_000_000,
+        wakeGenerationCreatedAt: 1_787_000_000_000,
+        taskId: 'event-actor-task-1',
+        idempotencyKey: 'a'.repeat(64),
+      };
+      const resumed = (payload: Record<string, unknown>) => {
+        const envelope = completion(payload, EVENT_ACTOR_DETACHED_COMPLETION_SOURCE);
+        envelope.event.type = EVENT_ACTOR_DETACHED_COMPLETION_TYPE;
+        envelope.target = {
+          ...envelope.target,
+          bindingId: 'binding-1',
+          sourceKeyId: 'source-key-1',
+        };
+        return envelope;
+      };
+
+      const kept = await body(resumed({ ...detached, trigger }));
+      expect(kept.agentEventDelivery).toMatchObject({ internalCompletion: detached, trigger });
+      expect(kept.agentEventDelivery.internalCompletion).not.toHaveProperty('trigger');
+      expect(kept).not.toHaveProperty('agentCompletion');
+      expect((await body(resumed(detached))).agentEventDelivery).not.toHaveProperty('trigger');
+    });
+
+    it('is never read from an event the server did not make, whatever its payload says', async () => {
+      const posted = completion({ trigger }, 'key-1');
+      posted.event.source = { id: 'key-1', type: 'remote_api_key' };
+      const bound = completion({ trigger }, 'key-1');
+      bound.event.source = { id: 'key-1', type: 'remote_api_key' };
+      bound.target = { ...bound.target, bindingId: 'binding-1', sourceKeyId: 'source-key-1' };
+      const queued = completion({ trigger }, 'agent-queued-turn');
+
+      for (const envelope of [posted, bound, queued]) {
+        const sent = await body(envelope);
+        expect(JSON.stringify(sent)).not.toContain('"origin"');
+        expect(sent).not.toHaveProperty('agentCompletion');
+        expect(sent.agentEventDelivery ?? {}).not.toHaveProperty('trigger');
+      }
+    });
+
+    it.each([
+      ['is not an object', 'key-1'],
+      ['names a subject of no known kind', { subject: { kind: 'user', id: 'user-1' } }],
+      ['names an origin that names nothing', { subject: trigger.subject, origin: {} }],
+    ])('ends the delivery before anything is prepared or sent when it %s', async (_label, kept) => {
+      expect.hasAssertions();
+      const fetcher = fetchMock(started);
+      const prepareContinue = jest.fn(async () => undefined);
+      const host = createAgentTriggerExecutionHost(deps(fetcher, { prepareContinue }));
+
+      await host
+        .dispatch(completion({ taskId: 'task-1', trigger: kept }))
+        .catch((error: unknown) => {
+          expectExecutionError(error, {
+            certainty: 'definite',
+            retryable: false,
+            code: 'RUN_TRIGGER_INVALID',
+          });
+        });
+      expect(prepareContinue).not.toHaveBeenCalled();
+      expect(fetcher).not.toHaveBeenCalled();
     });
   });
 
@@ -764,6 +926,8 @@ describe('createAgentTriggerExecutionHost continue adapter', () => {
     expect(
       JSON.parse(String(fetcher.mock.calls[0][1]?.body)).agentEventDelivery.event,
     ).not.toHaveProperty('payload');
+    /** A bound continuation already names its event in the delivery it carries. */
+    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).not.toHaveProperty('agentEvent');
   });
 
   it('projects only the bounded internal detached-completion authority', async () => {

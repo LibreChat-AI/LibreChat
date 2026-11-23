@@ -5,12 +5,17 @@ import {
   AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
   getTenantId,
   SYSTEM_TENANT_ID,
 } from '@librechat/data-schemas';
 import type { AgentTriggerDeliveryPersistence, AgentTriggerStoredRecord } from './service';
 import type { AgentTriggerDeliveryStore } from './engine';
-import { AgentTriggerServiceUnavailableError, createAgentTriggerService } from './service';
+import {
+  AgentTriggerServiceUnavailableError,
+  createAgentTriggerService,
+  createAgentTriggerProducerBinding,
+} from './service';
 import { __resetShutdownStateForTests } from '../../app/shutdown';
 import { createAgentTriggerEnvelope } from './envelope';
 import * as deliveryEngineModule from './engine';
@@ -190,6 +195,7 @@ describe('durable agent trigger service', () => {
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+          AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
           AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
         ],
       }),
@@ -340,7 +346,7 @@ describe('durable agent trigger service', () => {
       );
     });
 
-    it("expedites a principal's completion deliveries when one of its generations settles", async () => {
+    it("expedites a principal's completion deliveries and queued turns when one of its generations settles", async () => {
       const methods = deliveryMethods({
         expediteAgentTriggerDeliveries: jest.fn(async () => ({ expedited: 2, held: 0 })),
       });
@@ -363,7 +369,7 @@ describe('durable agent trigger service', () => {
       expect(methods.expediteAgentTriggerDeliveries).toHaveBeenCalledWith({
         user: '507f1f77bcf86cd799439011',
         conversationId: 'conversation-1',
-        sourceIds: ['background-tool-completion', 'subagent-completion'],
+        sourceIds: ['background-tool-completion', 'subagent-completion', 'agent-queued-turn'],
         now: expect.any(Date),
       });
       expect(methods.claimNextAgentTriggerDelivery).toHaveBeenCalled();
@@ -426,6 +432,7 @@ describe('durable agent trigger service', () => {
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+          AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
         ],
       }),
     );
@@ -997,4 +1004,71 @@ describe('durable agent trigger service', () => {
     );
     await service.stop();
   });
+});
+
+it('reports the same durable readiness before init, after failure/retry, and after stop', async () => {
+  const methods = deliveryMethods();
+  const service = createAgentTriggerService({ methods, deliveryOptions: { tickMs: 60000 } });
+  expect(service.isReady()).toBe(false);
+  await expect(service.initialize()).rejects.toThrow('valid listener');
+  expect(service.isReady()).toBe(false);
+  await service.initialize({ address: { address: '127.0.0.1', family: 'IPv4', port: 4123 } });
+  expect(service.isReady()).toBe(true);
+  await service.stop();
+  expect(service.isReady()).toBe(false);
+  await expect(service.enqueue(envelope())).rejects.toBeInstanceOf(
+    AgentTriggerServiceUnavailableError,
+  );
+});
+
+it('keeps an unbound producer closed and follows only the canonical readiness lifecycle', async () => {
+  const binding = createAgentTriggerProducerBinding();
+  expect(binding.isReady()).toBe(false);
+  await expect(binding.enqueue(envelope())).rejects.toBeInstanceOf(
+    AgentTriggerServiceUnavailableError,
+  );
+  let ready = false;
+  const enqueue = jest.fn(async () => ({
+    id: 'id',
+    deliveryKey: 'key',
+    status: 'pending' as const,
+    availableAt: START,
+    replayed: false,
+  }));
+  const producer = { enqueue, isReady: () => ready };
+  binding.bind(producer);
+  binding.bind(producer);
+  expect(binding.isReady()).toBe(false);
+  ready = true;
+  expect(binding.isReady()).toBe(true);
+  await binding.enqueue(envelope());
+  expect(enqueue).toHaveBeenCalledTimes(1);
+  ready = false;
+  expect(binding.isReady()).toBe(false);
+  expect(() => binding.bind({ ...producer, enqueue: jest.fn() })).toThrow('already bound');
+});
+
+it('keeps readiness and enqueue closed while delivery indexes are still initializing', async () => {
+  let release!: () => void;
+  const indexes = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const methods = deliveryMethods({ ensureAgentTriggerDeliveryIndexes: () => indexes });
+  const service = createAgentTriggerService({ methods, deliveryOptions: { tickMs: 60000 } });
+  const initializing = service.initialize({
+    address: { address: '127.0.0.1', family: 'IPv4', port: 4123 },
+  });
+  try {
+    expect(service.isReady()).toBe(false);
+    await expect(service.enqueue(envelope())).rejects.toBeInstanceOf(
+      AgentTriggerServiceUnavailableError,
+    );
+    expect(methods.enqueueAgentTriggerDelivery).not.toHaveBeenCalled();
+  } finally {
+    release();
+    await initializing;
+    expect(service.isReady()).toBe(true);
+    await service.stop();
+  }
+  expect(service.isReady()).toBe(false);
 });

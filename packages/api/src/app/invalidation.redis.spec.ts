@@ -25,10 +25,8 @@ describe('createRedisConfigInvalidationPubSub', () => {
   });
 
   afterEach(async () => {
-    for (const { invalidation, pubsub } of opened) {
+    for (const { invalidation } of opened) {
       await invalidation.close().catch(() => undefined);
-      (pubsub.publisher as Redis).disconnect();
-      (pubsub.subscriber as Redis).disconnect();
     }
     for (const client of clients) {
       client.disconnect();
@@ -173,8 +171,30 @@ describe('createRedisConfigInvalidationPubSub', () => {
     server = await startRespServer();
   });
 
-  it('subscribes once Redis comes back when the first SUBSCRIBE failed during an outage', async () => {
-    const error = jest.spyOn(logger, 'error').mockReturnValue(logger);
+  it('reports a reload whose broadcast Redis did not take, and one it did', async () => {
+    jest.spyOn(logger, 'error').mockReturnValue(logger);
+    const instance = await startInstance('deploy-a');
+    await waitFor(() => (instance.pubsub.publisher as Redis).status === 'ready');
+
+    await expect(instance.invalidation.reload('tenant-a')).resolves.toEqual({
+      cleared: true,
+      broadcast: 'sent',
+    });
+
+    await server.close();
+    await waitFor(() => (instance.pubsub.publisher as Redis).status !== 'ready');
+    const started = Date.now();
+    await expect(instance.invalidation.reload('tenant-a')).resolves.toEqual({
+      cleared: true,
+      broadcast: 'failed',
+    });
+
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(instance.clearOverrides).toHaveBeenCalledTimes(2);
+    server = await startRespServer();
+  });
+
+  it('subscribes once Redis comes back when the first SUBSCRIBE is pending during an outage', async () => {
     const channel = 'librechat:config:invalidate:deploy-a';
     const client = await connect();
     const { port } = server;
@@ -182,13 +202,9 @@ describe('createRedisConfigInvalidationPubSub', () => {
     await waitFor(() => client.status !== 'ready');
 
     const late = await startInstanceOn(client, 'deploy-a');
-    await waitFor(
-      () =>
-        error.mock.calls.some(([message]) =>
-          String(message).includes('Subscribing to cross-instance invalidations failed'),
-        ),
-      5000,
-    );
+    const subscribe = jest.spyOn(late.pubsub.subscriber, 'subscribe');
+    await waitFor(() => (late.pubsub.subscriber as Redis).status === 'reconnecting');
+    expect(server.commands.filter((frame) => frame[0]?.toUpperCase() === 'SUBSCRIBE')).toEqual([]);
 
     server = await startRespServer(port);
     await waitFor(subscribed(channel, 1), 5000);
@@ -199,6 +215,48 @@ describe('createRedisConfigInvalidationPubSub', () => {
 
     await waitFor(() => late.clearOverrides.mock.calls.length === 1);
     expect(late.clearOverrides).toHaveBeenCalledWith('tenant-a');
+    expect(subscribe).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    'closes its owned connections during an outage (subscription acknowledged=%s)',
+    async (acknowledged) => {
+      const client = await connect();
+      const early = acknowledged ? await startInstanceOn(client, 'deploy-a') : undefined;
+      if (early) {
+        await waitFor(() => (early.pubsub.subscriber as Redis).mode === 'subscriber');
+      }
+      await server.close();
+      await waitFor(() => client.status !== 'ready');
+      const instance = early ?? (await startInstanceOn(client, 'deploy-a'));
+      const subscriber = instance.pubsub.subscriber as Redis;
+      const publisher = instance.pubsub.publisher as Redis;
+      await waitFor(() => subscriber.status === 'reconnecting');
+      const disconnectSubscriber = jest.spyOn(subscriber, 'disconnect');
+      const disconnectPublisher = jest.spyOn(publisher, 'disconnect');
+      const unsubscribe = jest.spyOn(subscriber, 'unsubscribe');
+
+      const started = Date.now();
+      await instance.invalidation.close();
+      await instance.invalidation.close();
+
+      expect(Date.now() - started).toBeLessThan(1000);
+      expect(disconnectSubscriber).toHaveBeenCalledTimes(1);
+      expect(disconnectPublisher).toHaveBeenCalledTimes(1);
+      expect(unsubscribe).not.toHaveBeenCalled();
+    },
+  );
+
+  it('leaves the shared client usable when the owned pair is closed', async () => {
+    const client = await connect();
+    const instance = await startInstanceOn(client, 'deploy-a');
+    await waitFor(() => (instance.pubsub.subscriber as Redis).mode === 'subscriber');
+
+    await instance.invalidation.close();
+
+    await expect(client.ping()).resolves.toBe('PONG');
+    await waitFor(() => (instance.pubsub.subscriber as Redis).status === 'end');
+    await waitFor(() => (instance.pubsub.publisher as Redis).status === 'end');
   });
 
   it('returns no pub/sub without Redis', async () => {

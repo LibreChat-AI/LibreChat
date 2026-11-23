@@ -1,5 +1,5 @@
 import { chromium } from '@playwright/test';
-import type { FullConfig, Page } from '@playwright/test';
+import type { Browser, FullConfig, Page } from '@playwright/test';
 import type { User } from '../types';
 import cleanupUser from './cleanupUser';
 import dotenv from 'dotenv';
@@ -39,6 +39,15 @@ export async function login(page: Page, user: User) {
   await page.getByTestId('login-button').click();
 }
 
+/**
+ * Opens a setup page in the project's locale, `en-US` unless configured, matching the test
+ * fixtures. A bare `browser.newPage()` follows the host locale, so the app renders translated
+ * labels and the English locators above never match.
+ */
+export function newSetupPage(browser: Browser, config: FullConfig) {
+  return browser.newPage({ locale: config.projects[0].use.locale ?? 'en-US' });
+}
+
 export function appURL(baseURL: string, pathname = '') {
   const normalizedBaseURL = baseURL.endsWith('/') ? baseURL : `${baseURL}/`;
   return new URL(pathname.replace(/^\/+/, ''), normalizedBaseURL).toString();
@@ -58,7 +67,7 @@ async function authenticate(config: FullConfig, user: User) {
     ...(chromiumChannel ? { channel: chromiumChannel } : {}),
   });
   try {
-    const page = await browser.newPage();
+    const page = await newSetupPage(browser, config);
     console.log('🤖: 🗝  authenticating user:', user.email);
 
     if (typeof baseURL !== 'string') {

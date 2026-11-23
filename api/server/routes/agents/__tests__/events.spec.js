@@ -43,11 +43,22 @@ jest.mock('~/server/services/Agents/triggers', () => ({
   getAgentTriggerDeliveryStatus: mockGetAgentTriggerDeliveryStatus,
 }));
 
-jest.mock('~/server/middleware', () => ({
-  agentEventUserLimiter: (_req, _res, next) => next(),
-  configMiddleware: (_req, _res, next) => next(),
-  requireTermsAcceptance: (_req, _res, next) => next(),
-}));
+jest.mock('~/server/middleware', () => {
+  const middleware = {
+    agentEventUserLimiter: (_req, _res, next) => next(),
+    configMiddleware: (_req, _res, next) => next(),
+    requireTermsAcceptance: (_req, _res, next) => next(),
+  };
+  const strictRequests = new WeakSet();
+  return {
+    ...middleware,
+    strictConfigMiddleware: (req, res, next) => {
+      if (strictRequests.has(req)) return next();
+      strictRequests.add(req);
+      return middleware.configMiddleware(req, res, next);
+    },
+  };
+});
 
 jest.mock('../middleware', () => ({
   preAuthTenantMiddleware: (_req, _res, next) => next(),

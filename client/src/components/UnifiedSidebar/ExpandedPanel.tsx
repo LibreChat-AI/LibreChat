@@ -10,6 +10,7 @@ import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
 import useDirection, { inlineSide } from '~/hooks/Nav/useDirection';
 import useNewChat from '~/hooks/Conversations/useNewChat';
 import { lazyWithRecovery } from '~/lib/assets/lazy';
+import Credits from '~/components/Balance/Credits';
 import { useLocalize } from '~/hooks';
 
 const AccountSettings = lazyWithRecovery(() => import('~/components/Nav/AccountSettings'));
@@ -151,7 +152,7 @@ function ExpandedPanel({
   const toggleSidebarAriaKey = useShortcutAriaKey('toggleSidebar');
 
   return (
-    <div className="border-border-inset bg-surface-sidebar flex h-full shrink-0 flex-col gap-2 border-e px-2 py-2">
+    <div className="border-border-light bg-surface-sidebar flex h-full shrink-0 flex-col gap-2 border-e px-2 py-2">
       <TooltipAnchor
         side={tooltipSide}
         description={toggleSidebarHint}
@@ -165,7 +166,7 @@ function ExpandedPanel({
             aria-expanded={expanded}
             aria-keyshortcuts={toggleSidebarAriaKey}
             className="h-9 w-9"
-            onClick={toggleClick}
+            onClick={() => toggleClick?.()}
           >
             <Sidebar aria-hidden="true" className="text-text-primary h-5 w-5 rtl:-scale-x-100" />
           </Button>
@@ -194,7 +195,8 @@ function ExpandedPanel({
         ))}
       </div>
 
-      <div className="mt-auto">
+      <div className="mt-auto flex flex-col gap-2">
+        <Credits />
         <Suspense fallback={<Skeleton className="h-9 w-9 rounded-lg" />}>
           <AccountSettings collapsed />
         </Suspense>

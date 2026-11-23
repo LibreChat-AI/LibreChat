@@ -48,7 +48,7 @@ const Slider: React.ForwardRefExoticComponent<SliderProps & React.RefAttributes<
         <SliderPrimitive.Thumb
           {...{
             className: cn(
-              'block h-5 w-5 rounded-full border-2 border-border-xheavy bg-surface-primary ring-offset-surface-primary transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
+              'relative block h-5 w-5 rounded-full border-2 border-surface-inverted bg-surface-inverted ring-offset-surface-primary after:absolute after:inset-0 after:m-auto after:size-1.5 after:rounded-full after:bg-text-inverted transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
               disabledFillClasses,
             ),
             'aria-labelledby': ariaLabelledBy,

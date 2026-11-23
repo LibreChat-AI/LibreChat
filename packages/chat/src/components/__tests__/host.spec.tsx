@@ -4,7 +4,7 @@
 import { render, screen } from '@testing-library/react';
 import type { Agent } from 'librechat-data-provider';
 import type { MessagePartsHost, MessagePartsMarkdownProps } from '../../react/host';
-import { MessagePartsHostProvider } from '../../react/host';
+import { emptyToolCallChrome, MessagePartsHostProvider } from '../../react/host';
 import AgentUpdate from '../AgentUpdate';
 import Text from '../Text';
 
@@ -26,6 +26,10 @@ function createHost(enableUserMsgMarkdown = false): MessagePartsHost {
     useSmoothStreaming: () => false,
     useAgent: (agentId) => (agentId === agent.id ? agent : undefined),
     renderAgentIcon: (current) => <span data-testid="agent-icon">{current?.id ?? 'unknown'}</span>,
+    renderAgentAvatar: () => null,
+    renderContentParts: () => null,
+    renderImage: () => null,
+    renderFilePreview: () => null,
     useFontSize: () => 'text-base',
     useShowThinking: () => false,
     useAutoExpandTools: () => false,
@@ -40,10 +44,14 @@ function createHost(enableUserMsgMarkdown = false): MessagePartsHost {
     useFileMap: () => undefined,
     useToast: () => jest.fn(),
     useSandboxStarting: () => false,
+    usePtcTrace: () => ({ entries: [], dropped: 0 }),
+    useLoadedSkill: () => undefined,
     useToolArtifactClaim: () => [null, jest.fn()],
     useSteerEscalating: () => false,
     usePaneConversationId: () => null,
     useLiveAppliedSteer: () => [false, jest.fn()],
+    useShare: () => ({}),
+    useToolCallChrome: emptyToolCallChrome,
   };
 }
 

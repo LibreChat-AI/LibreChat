@@ -17,8 +17,8 @@ const repoRoot = join(__dirname, '../../../..');
 const primitives: Record<string, string[]> = {
   Button: ['Button.tsx'],
   Input: ['Input.tsx', 'Field.ts'],
-  Select: ['Select.tsx', 'Dropdown.tsx', 'Dropdown.css'],
-  Dialog: ['OriginalDialog.tsx', 'OGDialogTemplate.tsx', 'Dialog.tsx'],
+  Select: ['Dropdown.tsx', 'Dropdown.css'],
+  Dialog: ['OriginalDialog.tsx', 'OGDialogTemplate.tsx'],
   Menu: ['DropdownPopup.tsx', 'Dropdown.css'],
   Tabs: ['Tabs.tsx'],
   Switch: ['Switch.tsx'],

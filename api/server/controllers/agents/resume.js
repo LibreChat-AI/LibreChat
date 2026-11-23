@@ -10,6 +10,7 @@ const {
 } = require('librechat-data-provider');
 const {
   checkAccess,
+  completedOutcome,
   GenerationJobManager,
   GENERATION_RECOVERY_FAILED_ERROR,
   isPendingActionStale,
@@ -39,7 +40,6 @@ const {
   checkAndIncrementPendingRequest,
   isSteerPreemptSupported,
   isStopConfirmed,
-  toPendingSteer,
   createMCPRuntimeRequestBody,
   getSafeErrorMetadata,
   isAgentEventRetentionActive,
@@ -53,7 +53,9 @@ const {
   rejectChangedResumeProjectContext,
   PROJECT_CONTEXT_CHANGED_REASON,
   PROJECT_CONTEXT_CHANGED_RESPONSE,
-  restoreScheduledTokenContext,
+  restoreExecutionContext,
+  collectApprovedToolCalls,
+  asksEveryUse,
   recoverTurnMessageReference,
   applyForcedRetention,
   applyForcedTemporaryRequest,
@@ -111,6 +113,7 @@ const {
   negotiateNewGenerationProtocol,
   negotiateExistingGenerationProtocol,
 } = require('./protocol');
+const { promoteUnappliedSteers } = require('./promotion');
 
 function sendGenerationJson(res, status, body, generationProtocolVersion) {
   if (typeof res.set === 'function') {
@@ -496,6 +499,7 @@ async function finalizeResumedTurn({
     iconURL: meta.iconURL,
     model: meta.model,
     unfinished: preemptIncomplete || stepLimitReached,
+    ...client?.metadata,
     ...(stepLimitReached && { finish_reason: Constants.TOOL_CALL_LIMIT_FINISH_REASON }),
     error: false,
     isCreatedByUser: false,
@@ -684,19 +688,22 @@ async function finalizeResumedTurn({
         scheduledFor: meta.scheduledFor,
         streamId,
         jobCreatedAt: job.createdAt,
-        status: preemptIncomplete || stepLimitReached ? 'interrupted' : 'success',
         conversationId,
-        ...(preemptIncomplete && {
-          error: 'Scheduled run was interrupted before completion',
+        ...completedOutcome({
+          preempted: preemptIncomplete,
+          stepLimit: stepLimitReached,
+          content,
         }),
-        ...(stepLimitReached &&
-          !preemptIncomplete && {
-            error: 'Scheduled run reached its tool call limit before completion',
-          }),
       });
     }
 
-    const pendingSteers = terminalClaim.drainedSteers.map(toPendingSteer);
+    const { pendingSteers, promotedSteers } = await promoteUnappliedSteers(req, {
+      claim: terminalClaim,
+      conversationId,
+      responseMessageId: savedResponseMessage.messageId,
+      responseContent: responseMessage.content,
+      completed: responseMessage.unfinished !== true,
+    });
     const finalEvent = {
       final: true,
       conversation,
@@ -716,6 +723,7 @@ async function finalizeResumedTurn({
         : null,
       responseMessage: { ...responseMessage },
       ...(pendingSteers.length > 0 && { pendingSteers }),
+      ...(promotedSteers.length > 0 && { promotedSteers }),
     };
 
     terminalPublicationStarted = true;
@@ -1946,8 +1954,9 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           parentMessageId: job.metadata.userMessage?.messageId ?? Constants.NO_PARENT,
         });
       const result = await initializeClient({
-        scheduledTokenContext: restoreScheduledTokenContext(req, job.metadata),
+        executionContext: restoreExecutionContext(req, job.metadata),
         scheduleJobIdentity: job.metadata,
+        approvedToolCalls: collectApprovedToolCalls(mapped.resumeValue),
         req,
         res,
         endpointOption: req.body.endpointOption,
@@ -2003,6 +2012,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           // Replay deferred tools discovered before the pause (captured at pause). The rebuilt
           // graph passes `messages: []`, so without these the model would lose their schemas.
           discoveredToolNames: job.metadata?.discoveredTools,
+          authoredSkills: job.metadata?.authoredSkills,
           activityPhaseSnapshot: job.metadata?.activityPhaseSnapshot,
           compactionSemanticIndex: job.metadata?.compactionSemanticIndex,
         });
@@ -2032,6 +2042,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           appConfig: req.config,
         },
         pluginHookSource: getPluginHookSource(),
+        asksEveryUse: asksEveryUse(req),
         request: req,
         addConvoToolApprovalAllows,
       });

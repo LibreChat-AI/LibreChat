@@ -23,6 +23,7 @@ import {
   observeRedisOperation,
   RedisUseCases,
 } from './redisTelemetry';
+import { ConfigMemoryStore } from './config';
 import { cacheConfig } from './cacheConfig';
 import { violationFile } from './keyvFiles';
 
@@ -141,7 +142,13 @@ export const standardCache = (
    *  a Buffer. Plain JSON keeps today's copy semantics (readers never share references with
    *  the store, dates still come back as ISO strings); a Buffer would now round-trip as its
    *  `{ type: 'Buffer', data }` JSON form instead of reviving. */
-  const cache = new Keyv({ namespace, ttl, serialize: JSON.stringify, deserialize: JSON.parse });
+  const cache = new Keyv({
+    namespace,
+    ttl,
+    store: namespace === CacheKeys.APP_CONFIG ? new ConfigMemoryStore() : new Map(),
+    serialize: JSON.stringify,
+    deserialize: JSON.parse,
+  });
   inMemoryCacheMap.set(namespace, cache);
   return cache;
 };

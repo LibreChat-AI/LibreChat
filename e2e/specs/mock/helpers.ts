@@ -50,16 +50,30 @@ export const modelSelectorTrigger = (page: Page) =>
 
 export const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/**
+ * Whether a computed color paints nothing. Only a four-part `rgba()` whose last part is zero
+ * does: matching a bare trailing `, 0)` also catches opaque black, `rgb(0, 0, 0)`, and every
+ * color with no blue in it.
+ */
+export const isTransparentColor = (color: string) =>
+  color === 'transparent' || /^rgba\(.*,\s*0\)$/.test(color);
+
 /** Open the model selector, choose an endpoint, then its model (committed on the model click). */
 export async function selectMockEndpoint(page: Page, endpoint: MockEndpoint) {
   const trigger = modelSelectorTrigger(page);
   await trigger.click();
-  await page.getByRole('option', { name: endpoint.label }).click();
-  const modelOption = page.getByRole('option', { name: endpoint.model, exact: true });
-  if (await modelOption.isVisible({ timeout: 1000 }).catch(() => false)) {
-    await modelOption.click();
+  const option = page.getByRole('option', { name: endpoint.label });
+  await expect(option).toBeVisible();
+  const expands = (await option.getAttribute('aria-expanded')) != null;
+  await option.click();
+  if (expands) {
+    await page
+      .getByRole('option')
+      .filter({ has: page.getByText(endpoint.model, { exact: true }) })
+      .click();
   }
-  await expect(trigger).not.toHaveText('Select a model');
+  await expect(trigger).toContainText(expands ? endpoint.model : endpoint.label);
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
 }
 
 /** Open the model selector and choose a configured model spec by label. */
@@ -138,6 +152,8 @@ export async function sendMessage(page: Page, text: string): Promise<Response> {
   const input = page.getByRole('textbox', { name: 'Message input' });
   await input.click();
   await input.fill(text);
+  // A restored chat can accept a draft before its workspace and target reads permit sending.
+  await expect(page.getByTestId('send-button')).toBeEnabled({ timeout: 30000 });
   const [response] = await Promise.all([
     page.waitForResponse(isAgentsStream, { timeout: 30000 }),
     input.press('Enter'),
@@ -407,6 +423,16 @@ export type CodeProvisionRecord = {
   storage_session_id: string;
   fileId: string;
 };
+
+export type CodeExecRecord = { lang: string; code: string; fileNames: string[] };
+
+/** Every `/v1/exec` the fake code server received, with the file names mounted on each. */
+export async function getCodeExecs(page: Page): Promise<CodeExecRecord[]> {
+  const response = await page.request.get(`${CODE_API_BASE}/__debug/uploads`);
+  expect(response.ok(), 'fake code server /__debug/uploads should respond').toBeTruthy();
+  const body = (await response.json()) as { execs: CodeExecRecord[] };
+  return body.execs;
+}
 
 export type RagEmbedRecord = { file_id: string; filename: string; entity_id: string };
 export type RagQueryRecord = { file_id: string; query: string };

@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { inspect } = require('util');
 const express = require('express');
 const request = require('supertest');
 const mongoose = require('mongoose');
@@ -9,6 +10,7 @@ const {
   MCPApiKeyReentryRequiredError,
   MCPOAuthSecretReentryRequiredError,
 } = require('@librechat/api');
+const { TERMS_NOT_ACCEPTED_CODE } = require('librechat-data-provider');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 
 function generateTestCsrfToken(flowId) {
@@ -39,6 +41,7 @@ const mockRegistryInstance = {
 };
 let mockMCPUseAllowed = true;
 let mockRequestConfig = {};
+let mockTermsConfig = {};
 const mockLoadMCPServerCatalogs = jest.fn().mockResolvedValue({
   serverTools: new Map(),
   serversWithoutTools: [],
@@ -189,14 +192,20 @@ jest.mock('~/cache', () => ({
   getLogStores: jest.fn(),
 }));
 
-jest.mock('~/server/middleware', () => ({
-  requireJwtAuth: (req, res, next) => next(),
-  configMiddleware: (req, res, next) => {
-    req.config = mockRequestConfig;
-    next();
-  },
-  canAccessMCPServerResource: () => (req, res, next) => next(),
-}));
+jest.mock('~/server/middleware', () => {
+  const { createTermsAcceptanceGate, createTermsRouteGate } = jest.requireActual('@librechat/api');
+  const deps = { getAppConfig: async () => mockTermsConfig };
+  /** The same gates the app mounts, so each route is exercised behind them. */
+  return {
+    requireJwtAuth: createTermsAcceptanceGate(deps),
+    requireTermsAcceptanceOnRead: createTermsRouteGate(deps),
+    configMiddleware: (req, res, next) => {
+      req.config = mockRequestConfig;
+      next();
+    },
+    canAccessMCPServerResource: () => (req, res, next) => next(),
+  };
+});
 
 jest.mock(
   '~/server/middleware/limiters/mcpAppAdmissionLimiter',
@@ -260,7 +269,7 @@ describe('MCP Routes', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   beforeEach(() => {
@@ -270,6 +279,7 @@ describe('MCP Routes', () => {
       serversWithoutTools: [],
     });
     currentUser = undefined;
+    mockTermsConfig = {};
     mockResolveAllMcpConfigs.mockResolvedValue({});
     mockResolveMcpConfigNames.mockResolvedValue([]);
     mockRequestConfig = {};
@@ -356,6 +366,112 @@ describe('MCP Routes', () => {
 
     expect(routeLayer).toBeDefined();
     expect(routeLayer.route.stack[1].handle).toBe(admissionLimiter);
+  });
+
+  describe('OAuth diagnostic confidentiality', () => {
+    const { MCPOAuthHandler } = require('@librechat/api');
+    const { logger } = require('@librechat/data-schemas');
+    const expectPrivate = (...secrets) => {
+      const output = inspect(
+        ['debug', 'info', 'warn', 'error'].flatMap((level) => logger[level].mock.calls),
+        { depth: null },
+      );
+      for (const secret of secrets) expect(output.includes(secret)).toBe(false);
+    };
+
+    it('redirects initiation normally without logging the generated authorization URL or metadata', async () => {
+      const secret = 'fixture-private-authorization';
+      const authorizationUrl = `https://oauth.example.com/auth?state=${secret}`;
+      const flowId = 'test-user-id:test-server';
+      mockResolveAllMcpConfigs.mockResolvedValue({
+        'test-server': { url: 'https://test-server.com' },
+      });
+      require('~/config').getFlowStateManager.mockReturnValue({
+        getFlowState: jest.fn().mockResolvedValue({
+          status: 'PENDING',
+          createdAt: Date.now(),
+          metadata: { serverUrl: 'https://test-server.com', oauth: { client_id: 'client' } },
+        }),
+        initFlow: jest.fn().mockResolvedValue(),
+      });
+      MCPOAuthHandler.initiateOAuthFlow.mockResolvedValueOnce({
+        authorizationUrl,
+        flowId,
+        flowMetadata: {
+          state: secret,
+          codeVerifier: secret,
+          oauthHeaders: { Authorization: secret },
+        },
+      });
+      MCPOAuthHandler.storeStateMapping.mockResolvedValueOnce();
+
+      const response = await request(app)
+        .get('/api/mcp/test-server/oauth/initiate')
+        .query({ userId: 'test-user-id', flowId });
+
+      expect(response.status).toBe(302);
+      expect(response.headers.location).toBe(authorizationUrl);
+      expectPrivate(secret, authorizationUrl);
+      expect(logger.debug).toHaveBeenCalledWith('[MCP OAuth] OAuth flow initiated', {
+        oauthFlowId: flowId,
+      });
+    });
+
+    it('reports callback presence without logging unrecognized state or authorization code', async () => {
+      const state = 'fixture-private-unrecognized-state';
+      const code = 'fixture-private-authorization-code';
+      MCPOAuthHandler.resolveStateToFlowId.mockResolvedValueOnce(null);
+      const response = await request(app)
+        .get('/api/mcp/test-server/oauth/callback')
+        .query({ state, code });
+
+      expect(response.status).toBe(302);
+      expect(response.headers.location).toContain('error=invalid_state');
+      expectPrivate(state, code);
+      expect(logger.debug).toHaveBeenCalledWith('[MCP OAuth] Callback received', {
+        serverName: 'test-server',
+        code: 'present',
+        hasState: true,
+        hasError: false,
+      });
+    });
+
+    it('does not log raw provider error text on an error callback', async () => {
+      const secret = 'fixture-private-provider-error';
+      MCPOAuthHandler.resolveStateToFlowId.mockResolvedValueOnce(null);
+      const response = await request(app)
+        .get('/api/mcp/test-server/oauth/callback')
+        .query({ state: secret, error: secret });
+
+      expect(response.status).toBe(302);
+      expectPrivate(secret);
+      expect(logger.error).toHaveBeenCalledWith('[MCP OAuth] OAuth error received');
+    });
+
+    it('projects callback failures to safe type/status without changing the failure redirect', async () => {
+      const secret = 'fixture-private-callback-failure';
+      const flowId = 'test-user-id:test-server';
+      MCPOAuthHandler.resolveStateToFlowId.mockResolvedValueOnce(flowId);
+      MCPOAuthHandler.getFlowState.mockRejectedValueOnce(
+        Object.assign(new Error(secret), {
+          status: 503,
+          codeVerifier: secret,
+          tokens: { access_token: secret, refresh_token: secret },
+        }),
+      );
+      const response = await request(app)
+        .get('/api/mcp/test-server/oauth/callback')
+        .set('Cookie', [`oauth_csrf=${generateTestCsrfToken(flowId)}`])
+        .query({ state: secret, code: secret });
+
+      expect(response.status).toBe(302);
+      expect(response.headers.location).toContain('error=callback_failed');
+      expectPrivate(secret);
+      expect(logger.error).toHaveBeenCalledWith('[MCP OAuth] OAuth callback error', {
+        type: 'Error',
+        status: 503,
+      });
+    });
   });
 
   describe('GET /:serverName/oauth/initiate', () => {
@@ -470,6 +586,8 @@ describe('MCP Routes', () => {
     });
 
     it('should initiate OAuth flow when stored authorization URL is missing', async () => {
+      const nonce = 'sentinel-authorization-nonce';
+      const authorizationUrl = `https://oauth.example.com/auth?state=${nonce}&code_challenge=sentinel-pkce-challenge`;
       const mockFlowManager = {
         getFlowState: jest.fn().mockResolvedValue({
           status: 'PENDING',
@@ -486,9 +604,9 @@ describe('MCP Routes', () => {
       require('~/config').getFlowStateManager.mockReturnValue(mockFlowManager);
 
       MCPOAuthHandler.initiateOAuthFlow.mockResolvedValue({
-        authorizationUrl: 'https://oauth.example.com/auth',
+        authorizationUrl,
         flowId: 'test-user-id:test-server',
-        flowMetadata: { state: 'random-state-value' },
+        flowMetadata: { state: nonce },
       });
       MCPOAuthHandler.storeStateMapping.mockResolvedValue();
       mockFlowManager.initFlow = jest.fn().mockResolvedValue();
@@ -499,7 +617,7 @@ describe('MCP Routes', () => {
       });
 
       expect(response.status).toBe(302);
-      expect(response.headers.location).toBe('https://oauth.example.com/auth');
+      expect(response.headers.location).toBe(authorizationUrl);
       expect(MCPOAuthHandler.initiateOAuthFlow).toHaveBeenCalledWith(
         'test-server',
         serverUrl,
@@ -519,16 +637,20 @@ describe('MCP Routes', () => {
         'test-user-id:test-server',
         'mcp_oauth',
         expect.objectContaining({
-          state: 'random-state-value',
-          authorizationUrl: 'https://oauth.example.com/auth',
+          state: nonce,
+          authorizationUrl,
           serverGeneration: `config:${JSON.stringify({ url: serverUrl })}`,
         }),
       );
       expect(MCPOAuthHandler.storeStateMapping).toHaveBeenCalledWith(
-        'random-state-value',
+        nonce,
         'test-user-id:test-server',
         mockFlowManager,
       );
+      const { logger } = require('@librechat/data-schemas');
+      const diagnostics = inspect(logger.debug.mock.calls, { depth: null });
+      expect(diagnostics).not.toContain(nonce);
+      expect(diagnostics).not.toContain('sentinel-pkce-challenge');
     });
 
     describe('when the server is no longer one the user can use', () => {
@@ -690,8 +812,13 @@ describe('MCP Routes', () => {
     });
 
     it('should return 500 when OAuth initiation throws unexpected error', async () => {
+      const secret = 'sentinel-initiation-credential';
+      const error = Object.assign(new Error(secret), {
+        config: { headers: { Authorization: secret }, data: secret },
+        response: { status: 401, data: { client_secret: secret } },
+      });
       const mockFlowManager = {
-        getFlowState: jest.fn().mockRejectedValue(new Error('Database error')),
+        getFlowState: jest.fn().mockRejectedValue(error),
       };
 
       getLogStores.mockReturnValue({});
@@ -704,6 +831,12 @@ describe('MCP Routes', () => {
 
       expect(response.status).toBe(500);
       expect(response.body).toEqual({ error: 'Failed to initiate OAuth' });
+      const { logger } = require('@librechat/data-schemas');
+      expect(logger.error).toHaveBeenCalledWith('[MCP OAuth] Failed to initiate OAuth', {
+        type: 'Error',
+        status: 401,
+      });
+      expect(inspect(logger.error.mock.calls, { depth: null })).not.toContain(secret);
     });
 
     it('should return 400 when flow state metadata is null', async () => {
@@ -724,6 +857,84 @@ describe('MCP Routes', () => {
 
       expect(response.status).toBe(400);
       expect(response.body).toEqual({ error: 'Invalid flow state' });
+    });
+
+    describe('when the user must still accept the terms', () => {
+      const termsRequired = { interfaceConfig: { termsOfService: { modalAcceptance: true } } };
+      const query = { userId: 'test-user-id', flowId: 'test-user-id:test-server' };
+      const authorizationUrl = 'https://oauth.example.com/auth?state=fresh-state';
+
+      /** A flow created while the terms were accepted, still pending when acceptance was reset. */
+      const pendingFlow = () => ({
+        getFlowState: jest.fn().mockResolvedValue({
+          status: 'PENDING',
+          createdAt: Date.now(),
+          metadata: {
+            serverUrl,
+            state: 'old-state-value',
+            oauth: { clientId: 'test-client-id' },
+          },
+        }),
+        initFlow: jest.fn().mockResolvedValue(),
+      });
+
+      beforeEach(() => {
+        mockTermsConfig = termsRequired;
+        currentUser = { id: 'test-user-id', termsAccepted: false };
+        mockResolveAllMcpConfigs.mockResolvedValue({ 'test-server': { url: serverUrl } });
+        MCPOAuthHandler.initiateOAuthFlow.mockResolvedValue({
+          authorizationUrl,
+          flowId: 'test-user-id:test-server',
+          flowMetadata: { state: 'fresh-state' },
+        });
+        MCPOAuthHandler.storeStateMapping.mockResolvedValue();
+      });
+
+      it.each(['get', 'head'])(
+        'refuses a %s before it reads or writes any flow state, or sets a cookie',
+        async (method) => {
+          const flowManager = pendingFlow();
+          getLogStores.mockReturnValue({});
+          require('~/config').getFlowStateManager.mockReturnValue(flowManager);
+
+          const response = await request(app)
+            [method]('/api/mcp/test-server/oauth/initiate')
+            .query(query);
+
+          expect(response.status).toBe(403);
+          if (method === 'get') {
+            expect(response.body).toEqual({
+              code: TERMS_NOT_ACCEPTED_CODE,
+              message: expect.any(String),
+            });
+          }
+          expect(response.headers.location).toBeUndefined();
+          expect(response.headers['set-cookie']).toBeUndefined();
+          expect(flowManager.getFlowState).not.toHaveBeenCalled();
+          expect(MCPOAuthHandler.initiateOAuthFlow).not.toHaveBeenCalled();
+          expect(MCPOAuthHandler.deleteStateMapping).not.toHaveBeenCalled();
+          expect(flowManager.initFlow).not.toHaveBeenCalled();
+          expect(MCPOAuthHandler.storeStateMapping).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each([
+        ['has accepted', { id: 'test-user-id', termsAccepted: true }, termsRequired],
+        ['is not asked to by the deployment', { id: 'test-user-id', termsAccepted: false }, {}],
+      ])('starts the flow once the user %s', async (_label, user, config) => {
+        currentUser = user;
+        mockTermsConfig = config;
+        const flowManager = pendingFlow();
+        getLogStores.mockReturnValue({});
+        require('~/config').getFlowStateManager.mockReturnValue(flowManager);
+
+        const response = await request(app).get('/api/mcp/test-server/oauth/initiate').query(query);
+
+        expect(response.status).toBe(302);
+        expect(response.headers.location).toBe(authorizationUrl);
+        expect(flowManager.initFlow).toHaveBeenCalledTimes(1);
+        expect(MCPOAuthHandler.storeStateMapping).toHaveBeenCalledTimes(1);
+      });
     });
   });
 
@@ -801,6 +1012,28 @@ describe('MCP Routes', () => {
       expect(response.status).toBe(302);
       expect(response.headers.location).toBe(`${basePath}/oauth/error?error=access_denied`);
     });
+
+    it.each([undefined, 'sentinel-provider-error'])(
+      'keeps callback query values out of diagnostics, provider error: %s',
+      async (error) => {
+        const nonce = 'sentinel-callback-nonce';
+        MCPOAuthHandler.resolveStateToFlowId.mockResolvedValueOnce(null);
+        const response = await request(app).get('/api/mcp/test-server/oauth/callback').query({
+          code: 'sentinel-authorization-code',
+          state: nonce,
+          error,
+        });
+        const { logger } = require('@librechat/data-schemas');
+        const diagnostics = inspect(
+          [logger.debug, logger.info, logger.warn, logger.error].map((log) => log.mock.calls),
+          { depth: null },
+        );
+        expect(response.status).toBe(302);
+        expect(diagnostics).not.toContain(nonce);
+        expect(diagnostics).not.toContain('sentinel-authorization-code');
+        expect(diagnostics).not.toContain('sentinel-provider-error');
+      },
+    );
 
     describe('OAuth error callback failFlow', () => {
       it('should fail the flow when OAuth error is received with valid CSRF cookie', async () => {
@@ -2064,7 +2297,12 @@ describe('MCP Routes', () => {
     });
 
     it('should redirect to error page when callback processing fails', async () => {
-      MCPOAuthHandler.getFlowState.mockRejectedValue(new Error('Callback error'));
+      const secret = 'sentinel-callback-credential';
+      const error = Object.assign(new Error(secret), {
+        config: { data: secret, headers: { Authorization: secret } },
+        response: { status: 401, data: { refresh_token: secret } },
+      });
+      MCPOAuthHandler.getFlowState.mockRejectedValue(error);
       const flowId = 'test-user-id:test-server';
       const csrfToken = generateTestCsrfToken(flowId);
 
@@ -2079,6 +2317,12 @@ describe('MCP Routes', () => {
 
       expect(response.status).toBe(302);
       expect(response.headers.location).toBe(`${basePath}/oauth/error?error=callback_failed`);
+      const { logger } = require('@librechat/data-schemas');
+      expect(logger.error).toHaveBeenCalledWith('[MCP OAuth] OAuth callback error', {
+        type: 'Error',
+        status: 401,
+      });
+      expect(inspect(logger.error.mock.calls, { depth: null })).not.toContain(secret);
     });
 
     it('should handle system-level OAuth completion', async () => {
@@ -2532,6 +2776,44 @@ describe('MCP Routes', () => {
       expect(MCPOAuthHandler.completeOAuthFlow).not.toHaveBeenCalled();
       expect(MCPTokenStorage.storeTokens).not.toHaveBeenCalled();
     });
+  });
+
+  describe.each(['tokens', 'status'])('GET /oauth/%s/:flowId authorization', (endpoint) => {
+    it.each([
+      ['USER', undefined, 'system:test-server'],
+      ['ADMIN', undefined, 'system:test-server'],
+      ['USER', 'tenant-a', 'tenant:tenant-a:system:test-server'],
+      ['ADMIN', 'tenant-a', 'tenant:tenant-a:system:test-server'],
+    ])(
+      'denies %s access in tenant %s to %s before reading flow state',
+      async (role, tenantId, flowId) => {
+        const { getTenantId } = require('@librechat/data-schemas');
+        const { getFlowStateManager } = require('~/config');
+        const { getLogStores } = require('~/cache');
+        const mockFlowManager = {
+          getFlowState: jest.fn().mockResolvedValue({
+            status: 'COMPLETED',
+            result: {
+              access_token: 'system-access-token',
+              refresh_token: 'system-refresh-token',
+            },
+          }),
+        };
+        currentUser = { id: 'test-user-id', role };
+        getTenantId.mockReturnValue(tenantId);
+        getFlowStateManager.mockReturnValue(mockFlowManager);
+
+        const response = await request(app).get(
+          `/api/mcp/oauth/${endpoint}/${encodeURIComponent(flowId)}`,
+        );
+
+        expect(response.status).toBe(403);
+        expect(response.body).toEqual({ error: 'Access denied' });
+        expect(getLogStores).not.toHaveBeenCalled();
+        expect(getFlowStateManager).not.toHaveBeenCalled();
+        expect(mockFlowManager.getFlowState).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('GET /oauth/tokens/:flowId', () => {
@@ -3189,10 +3471,9 @@ describe('MCP Routes', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
-      expect(require('@librechat/api').getUserMCPAuthMap).toHaveBeenCalledWith({
+      expect(require('~/models').findPluginAuthsByKeys).toHaveBeenCalledWith({
         userId: 'test-user-id',
-        servers: ['test-server'],
-        findPluginAuthsByKeys: require('~/models').findPluginAuthsByKeys,
+        pluginKeys: [`${require('librechat-data-provider').Constants.mcp_prefix}test-server`],
       });
     });
   });
@@ -3296,6 +3577,7 @@ describe('MCP Routes', () => {
         userId: 'test-user-id',
         servers: ['server1'],
         findPluginAuthsByKeys: require('~/models').findPluginAuthsByKeys,
+        throwOnError: true,
       });
       expect(require('@librechat/api').getUserMCPAuthMap).toHaveBeenCalledTimes(1);
       expect(mockRegistryInstance.resolveAllowlists).toHaveBeenCalledTimes(1);
@@ -3317,6 +3599,82 @@ describe('MCP Routes', () => {
         },
       );
     });
+
+    it('shares one variable lookup across ordinary non-OAuth server observations', async () => {
+      const config = {
+        server1: { url: 'https://one.example', customUserVars: { API_KEY: { title: 'Key' } } },
+        server2: { url: 'https://two.example', customUserVars: { API_KEY: { title: 'Key' } } },
+      };
+      getMCPSetupData.mockResolvedValue({
+        mcpConfig: config,
+        appConnections: new Map(),
+        userConnections: new Map(),
+        oauthServers: new Set(),
+      });
+      const load = require('@librechat/api').getUserMCPAuthMap;
+      load.mockResolvedValue({});
+      const observe = async (_user, _name, _config, _app, _connections, _oauth, context) => {
+        await context.loadUserMCPAuthMap();
+        return {
+          connectionState: 'disconnected',
+          connectionStateSource: 'unobserved',
+          requiresOAuth: false,
+        };
+      };
+      getServerConnectionStatus.mockImplementationOnce(observe).mockImplementationOnce(observe);
+
+      const response = await request(app).get('/api/mcp/connection/status').expect(200);
+
+      expect(Object.keys(response.body.connectionStatus)).toEqual(['server1', 'server2']);
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(load).toHaveBeenCalledWith(
+        expect.objectContaining({ servers: ['server1', 'server2'] }),
+      );
+    });
+
+    it.each(['/connection/status', '/connection/status/server1'])(
+      'propagates credential lookup failure in %s and keeps one batched read',
+      async (endpoint) => {
+        getMCPSetupData.mockResolvedValue({
+          mcpConfig: {
+            server1: { customUserVars: { API_KEY: { title: 'Key' } } },
+            server2: { customUserVars: { API_KEY: { title: 'Key' } } },
+          },
+          appConnections: new Map(),
+          userConnections: new Map(),
+          oauthServers: new Set(),
+        });
+        const load = require('@librechat/api').getUserMCPAuthMap;
+        load.mockImplementation(async ({ throwOnError }) => {
+          if (throwOnError) throw new Error('synthetic credential storage failure');
+          return {};
+        });
+        getServerConnectionStatus.mockImplementation(
+          async (_user, _name, _config, _app, _connections, _oauth, context) => {
+            await context.loadUserMCPAuthMap();
+            return { connectionState: 'disconnected', configurationState: 'needs_configuration' };
+          },
+        );
+        const singleServer = endpoint.endsWith('server1');
+        const response = await request(app)
+          .get(`/api/mcp${endpoint}`)
+          .expect(singleServer ? 500 : 200);
+        if (singleServer) {
+          expect(response.body).toEqual({ error: 'Failed to get connection status' });
+        }
+        const statuses = singleServer ? [] : Object.values(response.body.connectionStatus);
+        for (const status of statuses) {
+          expect(status).toEqual({
+            connectionState: 'error',
+            connectionStateSource: 'unavailable',
+            requiresOAuth: false,
+          });
+        }
+        expect(load).toHaveBeenCalledTimes(1);
+        expect(load).toHaveBeenCalledWith(expect.objectContaining({ throwOnError: true }));
+        expect(JSON.stringify(response.body)).not.toContain('synthetic credential storage failure');
+      },
+    );
 
     it('should resolve independent server statuses concurrently', async () => {
       let releaseFirst;
@@ -3361,32 +3719,39 @@ describe('MCP Routes', () => {
       expect(getServerConnectionStatus).toHaveBeenCalledTimes(2);
     });
 
-    it('preserves request-scoped metadata when an individual status check fails', async () => {
-      getMCPSetupData.mockResolvedValue({
-        mcpConfig: {
-          server1: {
-            source: 'config',
-            headers: { 'X-Message': '{{LIBRECHAT_BODY_MESSAGEID}}' },
-            customUserVars: { API_KEY: { title: 'API key' } },
-          },
+    it.each([
+      ['non-OAuth', false, {}],
+      ['OAuth', true, {}],
+      [
+        'request-scoped',
+        false,
+        {
+          source: 'config',
+          headers: { 'X-Message': '{{LIBRECHAT_BODY_MESSAGEID}}' },
+          customUserVars: { API_KEY: { title: 'API key' } },
         },
-        appConnections: new Map(),
-        userConnections: new Map(),
-        oauthServers: new Set(),
-      });
-      getServerConnectionStatus.mockRejectedValueOnce(new Error('status unavailable'));
-
-      const response = await request(app).get('/api/mcp/connection/status');
-
-      expect(response.status).toBe(200);
-      expect(response.body.connectionStatus.server1).toEqual(
-        expect.objectContaining({
+      ],
+    ])(
+      'reports %s lookup failure without inventing authorization or configuration failures',
+      async (_name, requiresOAuth, config) => {
+        getMCPSetupData.mockResolvedValue({
+          mcpConfig: { server1: config },
+          appConnections: new Map(),
+          userConnections: new Map(),
+          oauthServers: new Set(requiresOAuth ? ['server1'] : []),
+        });
+        getServerConnectionStatus.mockRejectedValueOnce(new Error('secret provider diagnostic'));
+        const response = await request(app).get('/api/mcp/connection/status');
+        expect(response.status).toBe(200);
+        expect(response.body.connectionStatus.server1).toEqual({
           connectionState: 'error',
-          requestScoped: true,
-          configurationState: 'needs_configuration',
-        }),
-      );
-    });
+          connectionStateSource: 'unavailable',
+          requiresOAuth,
+          ...(_name === 'request-scoped' && { requestScoped: true }),
+        });
+        expect(JSON.stringify(response.body)).not.toContain('secret provider diagnostic');
+      },
+    );
 
     it('should return 500 when connection status check fails', async () => {
       getMCPSetupData.mockRejectedValue(new Error('Database error'));

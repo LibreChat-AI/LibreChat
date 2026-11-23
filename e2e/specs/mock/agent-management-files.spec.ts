@@ -1,4 +1,6 @@
 import fs from 'fs';
+import jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
 import path from 'path';
 import mongoose from 'mongoose';
 import { expect, test } from '@playwright/test';
@@ -69,6 +71,89 @@ test.describe('agent management file lifecycle', () => {
     } finally {
       await mongoose.disconnect();
       await oidc?.close();
+    }
+  });
+
+  test('registers an SDK agent and executes it through native chat and persistence', async ({
+    request,
+  }) => {
+    const binding = { id: 'e2e-sdk', protocolVersion: 1 };
+    const created = await request.post(agentsPath, {
+      headers,
+      data: {
+        name: 'SDK runtime agent',
+        provider: 'Mock Provider A',
+        model: 'mock-model-a',
+        sdk_runtime: binding,
+      },
+    });
+    expect(created.status(), await created.text()).toBe(201);
+    const agent = await created.json();
+    expect(agent.sdk_runtime).toEqual(binding);
+    const secret = process.env.JWT_SECRET;
+    if (!secret) throw new Error('Test JWT secret is unavailable');
+    const chatHeaders = {
+      Authorization: `Bearer ${jwt.sign({ id: managementUserId }, secret, { expiresIn: '5m' })}`,
+      'X-Tenant-Id': managementTenantId,
+      'User-Agent': 'Mozilla/5.0 Chrome/126.0.0.0 Safari/537.36',
+    };
+    try {
+      const read = await request.get(`${agentsPath}/${agent.id}`, { headers });
+      expect((await read.json()).sdk_runtime).toEqual(binding);
+      const run = async () => {
+        const admitted = await request.post('/api/agents/chat/agents', {
+          headers: chatHeaders,
+          data: {
+            text: 'E2E_REPLY:sdk-runtime',
+            sender: 'User',
+            isCreatedByUser: true,
+            parentMessageId: '00000000-0000-0000-0000-000000000000',
+            messageId: randomUUID(),
+            endpoint: 'agents',
+            agent_id: agent.id,
+            key: 'never',
+            isTemporary: false,
+            isRegenerate: false,
+            isContinued: false,
+          },
+        });
+        expect(admitted.status(), await admitted.text()).toBe(200);
+        const { streamId, conversationId } = await admitted.json();
+        const stream = await request.get(`/api/agents/chat/stream/${streamId}`, {
+          headers: chatHeaders,
+        });
+        expect(stream.status(), await stream.text()).toBe(200);
+        const saved = await request.get(`/api/messages/${conversationId}`, {
+          headers: chatHeaders,
+        });
+        expect(saved.status(), await saved.text()).toBe(200);
+        return JSON.stringify(await saved.json());
+      };
+      expect(await run()).toContain('E2E reply sdk-runtime');
+      const changed = await request.patch(`${agentsPath}/${agent.id}`, {
+        headers,
+        data: { sdk_runtime: { id: 'not-configured', protocolVersion: 1 } },
+      });
+      expect(changed.status(), await changed.text()).toBe(400);
+      // Simulate an existing binding whose operator configuration was removed.
+      await withMongo(async (db) => {
+        await db
+          .collection('agents')
+          .updateOne(
+            { id: agent.id, tenantId: managementTenantId },
+            { $set: { sdk_runtime: { id: 'not-configured', protocolVersion: 1 } } },
+          );
+      });
+      expect(await run()).not.toContain('E2E reply sdk-runtime');
+      const cleared = await request.patch(`${agentsPath}/${agent.id}`, {
+        headers,
+        data: { sdk_runtime: null },
+      });
+      expect(cleared.status(), await cleared.text()).toBe(200);
+      expect((await cleared.json()).sdk_runtime).toBeNull();
+      expect(await run()).toContain('E2E reply sdk-runtime');
+    } finally {
+      await request.delete(`${agentsPath}/${agent.id}`, { headers });
     }
   });
 

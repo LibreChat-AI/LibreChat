@@ -66,19 +66,52 @@ withheld instead of falling back to `librechat.yaml`.
 
 ### When a change takes effect
 
-Each process keeps a principal's decision for `MCP_REGISTRY_CACHE_TTL` (5 seconds by default),
-including a decision made while the configuration could not be read. The decision is derived from
-the merged configuration, which each process also caches, per user and role, for 60 seconds.
-Hiding or unhiding a server therefore takes effect:
+The decision is derived from the principal's merged configuration. Each process caches the merged
+configuration per user and role for 60 seconds, and the decision for `MCP_REGISTRY_CACHE_TTL`
+(5 seconds by default), including a decision made while the configuration could not be read.
 
-- immediately in the process that handled the admin config write, which clears both caches;
-- within 60 seconds plus `MCP_REGISTRY_CACHE_TTL` (65 seconds by default) in every other process,
-  which learns of the write only when its caches expire. The same bound applies to the writing
-  process when the `APP_CONFIG` cache is Redis-backed, because merged configurations are then left
-  to expire rather than cleared.
+Every admin config write that changes a profile clears these caches before it answers: the merged
+configurations (of the admin's tenant, or of every tenant for an admin without one), the hiding
+decisions and the cached `librechat.yaml`. Deleting a group or role through the admin API clears
+them the same way when it removes (or, if the deletion cannot finish, restores) that principal's
+profile, and so does `POST /api/admin/config/reload`, which changes no profile. A merge that
+read the configuration before the clear is never cached after it, so a request racing the write
+cannot put the old decision back. Hiding or unhiding a server therefore takes effect:
 
-Group membership is not part of either cache key, so adding a user to a group or removing one from
-it also takes up to that long to change what the user can see.
+- in the process that handled the write, for every request after the response, the admin's next
+  read included;
+- with Redis (`USE_REDIS`), in every other process as soon as it receives the clear the write
+  publishes before it answers. A process whose subscription is down, for example while Redis is
+  unreachable, catches up when its caches expire, within 60 seconds plus `MCP_REGISTRY_CACHE_TTL`
+  (65 seconds by default);
+- without Redis, in every other process only when its caches expire, within the same 65 seconds.
+
+The cached `librechat.yaml` does not expire. A process the clear does not reach (every other process
+without Redis; with Redis, one whose subscription is down, or all of them when the publish fails)
+keeps its old `librechat.yaml` until a later clear reaches it or it restarts, so a server added to
+or removed from the file does not change there in the meantime.
+
+`POST /api/admin/config/reload` is for an admin without a tenant, since it reaches every tenant.
+The answering process loads `librechat.yaml` again before it answers, and publishes the clear only
+once the file loaded. It answers 422 `CONFIG_RELOAD_INVALID`, with the location of each schema
+issue, when the file fails to load: that process keeps its last good configuration and the others
+are not told, so nothing changes until the file is fixed and reloaded. It answers 503
+`CONFIG_RELOAD_BROADCAST_FAILED` when the answering process reloaded but the clear could not be
+published (for example while Redis is unreachable), so the reload can be retried, and
+`{ "success": true, "broadcast": false }` without Redis, when only the answering process reloaded.
+It cannot tell whether a subscribed process missed a clear that was published, or whether another
+process, which loads the file on its next read, failed to load it.
+
+When `APP_CONFIG` is removed from `FORCED_IN_MEMORY_CACHE_NAMESPACES`, merged configurations live in
+Redis, where they are not listed and cleared. They then expire after 60 seconds in every process,
+the writing one included; the hiding decisions are still cleared.
+
+Hiding is enforced on every use, not only in what the catalog lists, so a server stays unusable
+once the principal's decision hides it: a stale catalog entry or a persisted agent that still names
+it fails at checkout, as described above.
+
+Group membership is not part of either cache key, and adding a user to a group or removing one from
+it clears nothing, so a membership change takes up to 65 seconds to change what the user can see.
 
 Hiding does not stop the shared connections started at boot for other principals, and it keeps the
 principal's stored OAuth tokens. Revoking those tokens (uninstalling the server or deleting the

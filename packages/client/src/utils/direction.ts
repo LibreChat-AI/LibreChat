@@ -19,12 +19,12 @@ export function isRtl(element?: Element | null): boolean {
  *  is visually equivalent under RTL; `top`/`bottom` and LTR anchors pass through unchanged.
  *  The `-start`/`-end` suffix is left alone: floating positioning already resolves it per direction. */
 export function resolveSide<T extends string>(side: T, element?: Element | null): T {
-  if (!isRtl(element)) {
-    return side;
-  }
   const [base, ...rest] = side.split('-');
   const opposite = OPPOSITE[base];
-  return (opposite ? [opposite, ...rest].join('-') : side) as T;
+  if (!opposite || !isRtl(element)) {
+    return side;
+  }
+  return [opposite, ...rest].join('-') as T;
 }
 
 /** Swaps ArrowLeft and ArrowRight for horizontal navigation when the element is RTL. */

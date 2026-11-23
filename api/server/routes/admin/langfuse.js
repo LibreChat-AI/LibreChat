@@ -5,6 +5,7 @@ const {
   hasConfigCapability,
   requireCapability,
 } = require('~/server/middleware/roles/capabilities');
+const { syncLangfusePromptCatalog } = require('~/server/services/LangfusePromptSync');
 const { invalidateConfigCaches } = require('~/server/services/Config');
 const configMiddleware = require('~/server/middleware/config/app');
 const { requireJwtAuth } = require('~/server/middleware');
@@ -13,6 +14,7 @@ const db = require('~/models');
 const router = express.Router();
 
 const requireAdminAccess = requireCapability(SystemCapabilities.ACCESS_ADMIN);
+const requireManagePrompts = requireCapability(SystemCapabilities.MANAGE_PROMPTS);
 
 async function requireLangfuseManage(req, res, next) {
   try {
@@ -40,6 +42,7 @@ const handlers = createAdminLangfuseHandlers({
   patchConfigFields: db.patchConfigFields,
   toggleConfigActive: db.toggleConfigActive,
   getMessages: db.getMessages,
+  syncPromptCatalog: syncLangfusePromptCatalog,
   invalidateConfigCaches,
   recordAuditEntry: db.recordAuditEntry,
 });
@@ -53,5 +56,9 @@ router.get('/connection', handlers.getConnection);
 router.get('/connection/session/:conversationId', handlers.getSessionLink);
 router.put('/connection', handlers.updateConnection);
 router.post('/connection/test', handlers.testConnection);
+router.put('/prompt-sync', handlers.updatePromptSync);
+router.get('/prompts', handlers.listPrompts);
+router.post('/prompts/sync', requireManagePrompts, handlers.syncPrompts);
+router.get('/prompts/:name', handlers.getPrompt);
 
 module.exports = router;

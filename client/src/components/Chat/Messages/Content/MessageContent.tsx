@@ -1,19 +1,22 @@
 import { memo, Suspense, useMemo } from 'react';
+import { Thinking } from '@librechat/chat/components';
 import { Alert, DelayedRender } from '@librechat/client';
-import { EmptyText, CollapsibleText } from '@librechat/chat/components';
 import { Constants, parseThinkingContent } from 'librechat-data-provider';
+import {
+  EmptyText,
+  CollapsibleText,
+  ToolCallLimitNotice,
+  Container,
+} from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageContentProps, TDisplayProps } from '~/common';
 import AttachmentRecoveryActions from '~/components/Messages/Content/Error/recovery';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import Error from '~/components/Messages/Content/Error';
-import ToolCallLimitNotice from './ToolCallLimitNotice';
+import { useLocalize, useOnline } from '~/hooks';
 import MarkdownLite from './MarkdownLite';
 import EditMessage from './EditMessage';
-import Thinking from './Parts/Thinking';
-import { useLocalize } from '~/hooks';
-import Container from './Container';
 import Markdown from './Markdown';
 import { cn } from '~/utils';
 
@@ -48,6 +51,7 @@ const ErrorBox = ({
 
 const ConnectionError = ({ message }: { message?: TMessage }) => {
   const localize = useLocalize();
+  const online = useOnline();
 
   return (
     <Suspense fallback={<LoadingFallback />}>
@@ -62,7 +66,7 @@ const ConnectionError = ({ message }: { message?: TMessage }) => {
             elevation="raised"
             className="text-text-secondary mt-2 transition-all"
           >
-            {localize('com_ui_error_connection')}
+            {localize(online ? 'com_ui_error_connection' : 'com_ui_error_offline')}
           </Alert>
         </Container>
       </DelayedRender>

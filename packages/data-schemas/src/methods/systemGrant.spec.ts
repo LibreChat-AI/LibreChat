@@ -32,7 +32,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(async () => {
@@ -342,6 +342,53 @@ describe('systemGrant methods', () => {
         principalId: userId,
       }).lean();
       expect(grant).toBeNull();
+    });
+
+    it('revokes every legacy duplicate without touching another tenant or capability', async () => {
+      const keys = { principalType: 1, principalId: 1, capability: 1, tenantId: 1 } as const;
+      await SystemGrant.collection.dropIndex(
+        'principalType_1_principalId_1_capability_1_tenantId_1',
+      );
+      try {
+        const principalId = new Types.ObjectId();
+        const base = {
+          principalType: PrincipalType.USER,
+          principalId,
+          capability: SystemCapabilities.READ_USERS,
+        };
+        await SystemGrant.collection.insertMany([
+          { ...base },
+          { ...base },
+          { ...base, tenantId: 'a' },
+          { ...base, tenantId: 'a' },
+          { ...base, tenantId: 'b' },
+          { ...base, capability: SystemCapabilities.READ_USAGE },
+        ]);
+        expect(
+          await methods.revokeCapability({
+            ...base,
+            principalId: principalId.toString(),
+            tenantId: 'a',
+          }),
+        ).toEqual({ deletedCount: 2 });
+        expect(await methods.revokeCapability(base)).toEqual({ deletedCount: 2 });
+        expect(
+          await methods.hasCapabilityForPrincipals({
+            principals: [{ principalType: PrincipalType.USER, principalId }],
+            capability: base.capability,
+            tenantId: 'a',
+          }),
+        ).toBe(false);
+        const remaining = await SystemGrant.find({ principalId }).lean();
+        expect(remaining).toHaveLength(2);
+        expect(remaining.some((grant) => grant.tenantId === 'b')).toBe(true);
+        expect(remaining.some((grant) => grant.capability === SystemCapabilities.READ_USAGE)).toBe(
+          true,
+        );
+      } finally {
+        await SystemGrant.deleteMany({});
+        await SystemGrant.collection.createIndex(keys, { unique: true });
+      }
     });
 
     it('is a no-op when the grant does not exist', async () => {
@@ -843,7 +890,7 @@ describe('systemGrant methods', () => {
       );
     });
 
-    it('moves only platform-level grants when no tenant is given, unlike the delete cascade', async () => {
+    it('moves only platform-level grants when no tenant is given, as the delete cascade removes them', async () => {
       await grant('editor', SystemCapabilities.READ_USERS, 'tenant-a');
       await grant('editor', SystemCapabilities.READ_CONFIGS);
       await grant('writer', SystemCapabilities.READ_USERS, 'tenant-a');
@@ -1113,7 +1160,7 @@ describe('systemGrant methods', () => {
       expect(caps).toEqual([SystemCapabilities.READ_GROUPS, SystemCapabilities.READ_USERS]);
     });
 
-    it('without tenantId deletes all grants across all tenants', async () => {
+    it("without tenantId deletes only platform-level grants, never a tenant's own role's", async () => {
       await methods.grantCapability({
         principalType: PrincipalType.ROLE,
         principalId: 'temp-role',
@@ -1126,13 +1173,18 @@ describe('systemGrant methods', () => {
         tenantId: 'tenant-a',
       });
 
-      await methods.deleteGrantsForPrincipal(PrincipalType.ROLE, 'temp-role');
+      const found = await methods.findGrantsForPrincipal(PrincipalType.ROLE, 'temp-role');
+      const removed = await methods.deleteGrantsForPrincipal(PrincipalType.ROLE, 'temp-role');
 
-      const remaining = await SystemGrant.countDocuments({
+      expect(found.map((g) => g.capability)).toEqual([SystemCapabilities.READ_USERS]);
+      expect(removed.map((g) => g.capability)).toEqual([SystemCapabilities.READ_USERS]);
+      const remaining = await SystemGrant.find({
         principalType: PrincipalType.ROLE,
         principalId: 'temp-role',
-      });
-      expect(remaining).toBe(0);
+      }).lean();
+      expect(remaining.map((g) => [g.capability, g.tenantId])).toEqual([
+        [SystemCapabilities.READ_CONFIGS, 'tenant-a'],
+      ]);
     });
   });
 
