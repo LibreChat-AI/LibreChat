@@ -277,6 +277,7 @@ jest.mock('../conversation', () => ({
     parentAuthor: { name: string };
     turns: Array<{
       taskId: string;
+      briefing?: boolean;
       outcome?: { text: string };
       trigger: { summary: string };
       activity: { items: Array<{ text?: string }>; activityTruncated?: boolean };
@@ -300,7 +301,12 @@ jest.mock('../conversation', () => ({
       >
         {author.icon}
         {turns.map((turn) => (
-          <div key={turn.taskId} data-testid="conversation-turn" data-outcome={turn.outcome?.text}>
+          <div
+            key={turn.taskId}
+            data-testid="conversation-turn"
+            data-outcome={turn.outcome?.text}
+            data-briefing={turn.briefing === true ? 'true' : undefined}
+          >
             {turn.trigger.summary}
             {turn.activity.items.map((item, index) => (
               <span key={index}>{item.text}</span>
@@ -826,6 +832,64 @@ describe('SubagentThreadPanel', () => {
       }
     },
   );
+
+  it('opens on a call still being written as an unnamed subagent with a pending face', () => {
+    mockUseSubagentThreadQuery.mockReturnValue({ isLoading: false, isError: false });
+    const { container } = render(
+      <Root>
+        <SubagentThreadPanel
+          selection={{
+            ...selection,
+            durable: undefined,
+            subagentType: '',
+            initialProgress: 0,
+            isSubmitting: true,
+            briefing: true,
+            prompt: 'Ask the reviewer to',
+          }}
+        />
+      </Root>,
+    );
+    expect(screen.getByRole('heading', { name: 'com_ui_subagent_unnamed' })).toBeInTheDocument();
+    expect(screen.queryByText(/^agent$/)).not.toBeInTheDocument();
+    expect(container.querySelector('header [data-subagent-pending-face]')).toBeInTheDocument();
+    const turn = screen.getByTestId('conversation-turn');
+    expect(turn).toHaveAttribute('data-briefing', 'true');
+    expect(turn).toHaveTextContent('Ask the reviewer to');
+  });
+
+  it('names a call still being written by the saved agent its requested type is', () => {
+    mockUseSubagentThreadQuery.mockReturnValue({ isLoading: false, isError: false });
+    const { container } = render(
+      <Root>
+        <SubagentThreadPanel
+          selection={{
+            ...selection,
+            durable: undefined,
+            subagentType: 'agent-1',
+            initialProgress: 0,
+            isSubmitting: true,
+          }}
+        />
+      </Root>,
+    );
+    expect(screen.getByRole('heading', { name: 'Analyst One' })).toBeInTheDocument();
+    expect(container.querySelector('header img[src="/analyst.png"]')).toBeInTheDocument();
+    expect(container.querySelector('header [data-subagent-pending-face]')).toBeNull();
+    expect(screen.getByTestId('conversation-turn')).not.toHaveAttribute('data-briefing');
+  });
+
+  it('does not name a stored call without an identity by its requested type', () => {
+    mockUseSubagentThreadQuery.mockReturnValue({ isLoading: false, isError: false });
+    render(
+      <Root>
+        <SubagentThreadPanel
+          selection={{ ...selection, durable: undefined, subagentType: 'agent-1' }}
+        />
+      </Root>,
+    );
+    expect(screen.queryByRole('heading', { name: 'Analyst One' })).not.toBeInTheDocument();
+  });
 
   it('uses the durable title when the child agent is unavailable', () => {
     mockUseSubagentThreadQuery.mockReturnValue({

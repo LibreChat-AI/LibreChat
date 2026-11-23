@@ -45,6 +45,7 @@ import { SubagentCallerContext } from '../../../react/subagents/author';
 import { SubagentsHostProvider } from '../../../react/subagents/host';
 import { useIsPartsPreview } from '../../../react/parts/preview';
 import { StreamHostProvider } from '../../../react/stream/host';
+import { ToolPreparation } from '../preparation';
 import { FailedRevealContext } from '../reveal';
 import { FOLD_GLYPH_SELECTOR } from '../rows';
 import { litFoldPath } from '../rail';
@@ -73,6 +74,9 @@ const localize = (key: string): string => {
     com_ui_subagent_cancelled: 'Cancelled agent',
     com_ui_subagent_errored: 'Agent errored',
     com_ui_subagent_waiting: 'Waiting for first update…',
+    com_ui_subagent_briefing: 'Writing the brief…',
+    com_ui_subagent_starting: 'Starting…',
+    com_ui_starting_one_subagent: 'Starting a subagent',
     com_ui_subagent_ticker_writing: 'Writing',
     com_ui_subagent_ticker_reasoning: 'Reasoning',
     com_ui_subagent_ticker_error: 'Error',
@@ -412,8 +416,22 @@ describe('SubagentCall', () => {
   it.each([
     {
       child: 'streams with no saved agent',
-      state: { initialProgress: 0.1, toolArgs: { subagent_type: 'self' } },
+      state: {
+        initialProgress: 0.1,
+        toolArgs: { subagent_type: 'self' },
+        progress: progressFromEvents({
+          subagentRunId: 'child-run',
+          subagentType: 'self',
+          status: 'start',
+          events: [],
+        }),
+      },
       pulses: true,
+    },
+    {
+      child: 'has not reported yet, so it wears the pending face instead',
+      state: { initialProgress: 0.1, toolArgs: { subagent_type: 'self' } },
+      pulses: false,
     },
     {
       child: 'streams as a saved agent',
@@ -600,13 +618,25 @@ describe('SubagentCall', () => {
     expect(rendered.getSelection()?.durable).toBeUndefined();
   });
 
-  it('says it is waiting until the child has a row, and shows none once it is done', () => {
+  it('says it is starting until the child reports, waiting until it has a row, and shows none once it is done', () => {
     const rendered = renderWithState({
       toolCallId: 'call-waiting',
       initialProgress: 0.3,
       isSubmitting: true,
     });
+    expect(screen.getByText('Starting…')).toBeInTheDocument();
+    expect(screen.queryByText('Waiting for first update…')).toBeNull();
+
+    rendered.setProgress(
+      progressFromEvents({
+        subagentRunId: 'child-run',
+        subagentType: 'self',
+        status: 'start',
+        events: [],
+      }),
+    );
     expect(screen.getByText('Waiting for first update…')).toBeInTheDocument();
+    expect(screen.queryByText('Starting…')).toBeNull();
     expect(screen.queryByTestId('thread-row')).toBeNull();
 
     rendered.setProgress(
@@ -1139,5 +1169,143 @@ describe('SubagentCall', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Ran agent' }));
     expect(rendered.getSelection()?.durable).toBeUndefined();
     expect(rendered.getSelection()?.legacyOutput).toBe(output);
+  });
+});
+
+describe('a subagent call the parent is still writing', () => {
+  const openSelection: ActiveSubagentPanel = {
+    host: 'conversation',
+    parentConversationId: 'parent-conversation',
+    parentMessageId: 'parent-message',
+    toolCallId: 'writing',
+    partIndex: 0,
+    subagentType: '',
+    initialProgress: 0,
+    isSubmitting: true,
+  };
+
+  function renderWriting(
+    toolArgs: string | Record<string, unknown>,
+    options: { preparationStartedAt?: number; progress?: SubagentProgress } = {},
+  ) {
+    let selection: ActiveSubagentPanel | null = null;
+    const SelectionObserver = () => {
+      selection = useAtomValue(activeSubagentPanel);
+      return null;
+    };
+    const tree = (args: string | Record<string, unknown>) => (
+      <Providers
+        seed={(store) => {
+          store.set(activeSubagentPanel, openSelection);
+          if (options.progress != null) {
+            store.set(
+              subagentProgressByToolCallId(subagentProgressKey('parent-message', 'writing', 0)),
+              options.progress,
+            );
+          }
+        }}
+      >
+        <SelectionObserver />
+        <ToolPreparation
+          call={{
+            name: 'subagent',
+            args,
+            ...(options.preparationStartedAt == null
+              ? {}
+              : { toolPreparationStartedAt: options.preparationStartedAt }),
+          }}
+          isSubmitting
+        >
+          <SubagentCall toolCallId="writing" initialProgress={0.1} isSubmitting args={args} />
+        </ToolPreparation>
+      </Providers>
+    );
+    const rendered = render(tree(toolArgs));
+    return {
+      ...rendered,
+      getSelection: () => selection,
+      write: (next: string | Record<string, unknown>) => rendered.rerender(tree(next)),
+    };
+  }
+
+  const card = () => screen.getByRole('button');
+  const pendingFace = () => card().querySelector('[data-subagent-pending-face]');
+
+  it('starts as a generic placeholder while nothing of the call is known', () => {
+    renderWriting('{"inte');
+    expect(card()).toHaveAccessibleName('Starting a subagent, Writing the brief…');
+    expect(screen.getByText('Starting a subagent')).toHaveClass('shimmer');
+    expect(screen.getByText('Writing the brief…')).not.toHaveClass('shimmer');
+    expect(pendingFace()).not.toBeNull();
+    expect(card().querySelector(FOLD_GLYPH_SELECTOR)).not.toHaveClass('animate-pulse');
+    expect(screen.queryByText('Waiting for first update…')).toBeNull();
+    expect(screen.queryByText(/Preparing/)).toBeNull();
+  });
+
+  it('takes the intent as its title as soon as it streams, and sweeps the waiting line instead', () => {
+    renderWriting('{"intent":"Asking the reviewer to restate its findings","description":"Ask');
+    expect(card()).toHaveAccessibleName(
+      'Asking the reviewer to restate its findings, Writing the brief…',
+    );
+    expect(screen.getByText('Writing the brief…')).toHaveClass('shimmer');
+    expect(pendingFace()).not.toBeNull();
+  });
+
+  it('names the agent once the requested type has closed, and not from a half-written one', () => {
+    const head = '{"intent":"Reviewing","description":"Look at the change","subagent_type":"agent-';
+    const { write } = renderWriting(head);
+    expect(screen.queryByText('Analyst One')).toBeNull();
+    expect(pendingFace()).not.toBeNull();
+
+    write(`${head}1"`);
+    expect(screen.getByText('Analyst One')).toBeInTheDocument();
+    expect(screen.getByRole('img', { hidden: true })).toHaveAttribute('src', '/analyst.png');
+    expect(pendingFace()).toBeNull();
+    expect(card()).toHaveAccessibleName('Analyst One: Reviewing, Writing the brief…');
+  });
+
+  it('shows no name for a self-spawn, which keeps the pending face until it starts', () => {
+    renderWriting('{"intent":"Reviewing","description":"Look","subagent_type":"self"');
+    expect(screen.getByText('Reviewing')).toBeInTheDocument();
+    expect(pendingFace()).not.toBeNull();
+  });
+
+  it('says it is starting once the call is written but the child has not reported', () => {
+    renderWriting('{"intent":"Reviewing","description":"Look","subagent_type":"agent-1"}', {
+      preparationStartedAt: 100,
+    });
+    expect(card()).toHaveAccessibleName('Analyst One: Reviewing, Starting…');
+    expect(screen.getByText('Starting…')).toHaveClass('shimmer');
+    expect(screen.queryByText('Writing the brief…')).toBeNull();
+  });
+
+  it('goes back to the child’s own progress once it reports', () => {
+    renderWriting('{"intent":"Reviewing","description":"Look","subagent_type":"agent-1"}', {
+      progress: progressFromEvents({
+        subagentRunId: 'child-run',
+        subagentType: 'agent-1',
+        subagentAgentId: 'agent-1',
+        status: 'start',
+        events: [],
+      }),
+    });
+    expect(screen.getByText('Waiting for first update…')).toBeInTheDocument();
+    expect(screen.queryByText('Starting…')).toBeNull();
+    expect(screen.getByText('Analyst One')).toBeInTheDocument();
+    expect(pendingFace()).toBeNull();
+  });
+
+  it('streams the brief into the open panel and says when it is no longer being written', () => {
+    const { write, getSelection } = renderWriting(
+      '{"intent":"Reviewing","description":"Look at the \\"change\\" and',
+    );
+    expect(getSelection()?.briefing).toBe(true);
+    expect(getSelection()?.prompt).toBe('Look at the "change" and');
+    expect(getSelection()?.subagentType).toBe('');
+
+    write('{"intent":"Reviewing","description":"Look at the change","subagent_type":"agent-1"}');
+    expect(getSelection()?.briefing).toBeUndefined();
+    expect(getSelection()?.prompt).toBe('Look at the change');
+    expect(getSelection()?.subagentType).toBe('agent-1');
   });
 });

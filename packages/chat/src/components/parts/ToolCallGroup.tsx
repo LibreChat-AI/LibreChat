@@ -474,6 +474,12 @@ export default function ToolCallGroup({
    *  tool calls fall back to the user-facing concept of "actions". */
   const resolveGroupLabel = (): string => {
     if (isGroupLive && activitySummary.preparingCount > 0 && activitySummary.executingCount === 0) {
+      /** A batch of subagents being written reads as the agents it is about to start. */
+      if (allSubagents) {
+        return count === 1
+          ? localize('com_ui_starting_one_subagent')
+          : localize('com_ui_starting_n_subagents', { 0: String(count) });
+      }
       if (count === 1) {
         return singleToolLabel
           ? localize('com_ui_tool_preparing', { 0: singleToolLabel })
