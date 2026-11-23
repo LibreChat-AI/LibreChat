@@ -199,6 +199,7 @@ export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnl
   'registration.oauthStateTtlMs': 'startup',
   'endpoints.agents.subagentActivity': 'startup',
   'endpoints.agents.eventDriven': 'startup',
+  'endpoints.agents.events': 'operator',
   'endpoints.agents.channels.slackApp': 'operator',
   'endpoints.agents.backgroundTasks.shutdownInterruptGraceMs': 'startup',
   'endpoints.agents.backgroundTasks.completionResultBatchSize': 'startup',
@@ -671,6 +672,14 @@ const pullRequestTokenReferenceSchema = z
   .trim()
   .regex(/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/, {
     message: 'must be an environment variable reference like ${GITHUB_PULL_REQUEST_TOKEN}',
+  });
+
+/** `${NAME}`: the environment variable holding a GitHub App credential, never the value itself. */
+const agentEventReferenceSchema = z
+  .string()
+  .trim()
+  .regex(/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/, {
+    message: 'must be an environment variable reference like ${GITHUB_APP_WEBHOOK_SECRET}',
   });
 
 export const skillSyncGitHubSourceSchema = z
@@ -2404,6 +2413,45 @@ export const agentsEndpointSchema = baseEndpointSchema
                 .max(300_000)
                 .optional()
                 .default(60_000),
+            })
+            .optional(),
+        })
+        .optional(),
+      /** Agent events: deliveries an outside service signs and posts, such as a review on a pull
+       *  request, read into the events an agent can be subscribed to. Off unless `enabled` is
+       *  true. Read from librechat.yaml only: the credentials named here belong to the whole
+       *  deployment, so no config document can change where they are sent. */
+      events: z
+        .object({
+          /** Turn on only once every replica runs a version that knows event subscriptions: an
+           *  older replica would run a subscription's delivery without its grant. */
+          enabled: z.boolean().optional().default(false),
+          /** Bounds on what one delivery becomes; each default is used when the field is unset. */
+          limits: z
+            .object({
+              /** Longest copy of a review's or a comment's text kept from a delivery, in
+               *  characters. The turn links to the full text. Default 2000. */
+              excerpt: z.number().int().min(16).max(65_536).optional(),
+              /** Most pull requests one finished check suite becomes events for. Default 10. */
+              fanout: z.number().int().min(1).max(100).optional(),
+            })
+            .optional(),
+          /** The GitHub App the operator registered for events: one app, one webhook secret and
+           *  one webhook URL for the deployment. The same app may also be the OAuth client of
+           *  `pullRequests`. */
+          github: z
+            .object({
+              /** Environment variable references, never the values. `appId` is the app's ID or
+               *  its client ID; `privateKey` is the PEM the app's settings page generated, with
+               *  its line breaks kept or written as `\n`. */
+              appId: agentEventReferenceSchema,
+              privateKey: agentEventReferenceSchema,
+              webhookSecret: agentEventReferenceSchema,
+              /** The host the app is registered on: `github.com` by default, a GitHub Enterprise
+               *  Server host or a `*.ghe.com` tenant otherwise. */
+              host: pullRequestHostSchema.optional(),
+              /** Longest one request to GitHub may take, in seconds. Default 10. */
+              requestTimeoutSeconds: z.number().int().min(1).max(60).optional(),
             })
             .optional(),
         })
