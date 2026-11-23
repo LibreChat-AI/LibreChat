@@ -114,7 +114,20 @@ test('keeps the selected agent catalog skill scope when its chat summary arrives
     skills: ['skill-1'],
   };
   const map = {
-    'agent-1': { ...basic, ...skills, name: 'Cached name' },
+    'agent-1': {
+      ...basic,
+      ...skills,
+      name: 'Cached name',
+      model_parameters: {
+        temperature: 1,
+        maxContextTokens: 4096,
+        max_context_tokens: 4096,
+        max_output_tokens: 1024,
+        top_p: 1,
+        frequency_penalty: 0,
+        presence_penalty: 0,
+      },
+    },
   };
 
   mockTargetAgent.mockReturnValue(basic);
