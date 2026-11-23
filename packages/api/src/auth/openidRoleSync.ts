@@ -1,5 +1,6 @@
 import get from 'lodash/get';
 import { SystemRoles } from 'librechat-data-provider';
+import type { IUser } from '@librechat/data-schemas';
 import type { RecordAuditEntry } from '~/admin/audit';
 import { recordSystemAuditEntry } from '~/admin/audit';
 import { isEnabled } from '~/utils';
@@ -350,5 +351,67 @@ export async function recordIdpRoleChange({
       tenantId,
     },
     '[openidRoleSync]',
+  );
+}
+
+/** How often a role write is retried after a concurrent write moved the stored role first. */
+const ROLE_WRITE_ATTEMPTS = 3;
+
+type IdpRoleWriteInput = {
+  userId: string;
+  /** The fields to persist, `role` included. */
+  update: Partial<IUser>;
+  /** The stored role the caller read before deciding `update.role`. */
+  observedRole?: string | null;
+  updateUser: (
+    userId: string,
+    update: Partial<IUser>,
+    expectedState: { role: string | null },
+  ) => Promise<IUser | null>;
+  findUser: (filter: { _id: string }, fields: string) => Promise<Pick<IUser, 'role'> | null>;
+  recordAuditEntry?: RecordAuditEntry;
+  source: 'openid_login' | 'remote_agent_oidc';
+  tenantId?: string;
+};
+
+/**
+ * Persists an IdP-decided role and audits the transition that write performed. The write is
+ * conditional on the stored role the caller read; when a concurrent write moved it first, the
+ * stored role is read again and the write retried from it. Each audit entry therefore names the
+ * role the write replaced, and overlapping logins that make the same change audit it once.
+ * Resolves `null` when the user no longer exists.
+ */
+export async function writeIdpRoleChange({
+  userId,
+  update,
+  observedRole,
+  updateUser,
+  findUser,
+  recordAuditEntry,
+  source,
+  tenantId,
+}: IdpRoleWriteInput): Promise<IUser | null> {
+  let previousRole = observedRole ?? null;
+  for (let attempt = 0; attempt < ROLE_WRITE_ATTEMPTS; attempt++) {
+    const user = await updateUser(userId, update, { role: previousRole });
+    if (user) {
+      await recordIdpRoleChange({
+        recordAuditEntry,
+        userId,
+        previousRole,
+        role: update.role,
+        source,
+        tenantId,
+      });
+      return user;
+    }
+    const current = await findUser({ _id: userId }, 'role');
+    if (!current) {
+      return null;
+    }
+    previousRole = current.role ?? null;
+  }
+  throw new Error(
+    `[openidRoleSync] The stored role of user ${userId} kept changing during the role write`,
   );
 }
