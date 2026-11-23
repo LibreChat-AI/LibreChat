@@ -1281,9 +1281,41 @@ describe('MCPOAuthHandler - Configurable OAuth Metadata', () => {
       ).rejects.toThrow(
         'Token refresh failed: 400 Bad Request - {"error":"invalid_request","error_description":"refresh_token.client_id: Field required"}',
       );
+      expect(logger.warn).toHaveBeenCalledWith(
+        '[MCPOAuth] Failed to refresh tokens for test-server',
+        { type: 'Error' },
+      );
+      expect(logger.error).not.toHaveBeenCalledWith(
+        '[MCPOAuth] Failed to refresh tokens for test-server',
+        expect.anything(),
+      );
+    });
+
+    it('logs an unreachable token endpoint as an error', async () => {
+      const metadata = {
+        serverName: 'test-server',
+        serverUrl: 'https://auth.example.com',
+        clientInfo: {
+          client_id: 'test-client-id',
+          client_secret: 'test-client-secret',
+          grant_types: ['authorization_code', 'refresh_token'],
+        },
+        storedTokenEndpoint: 'https://auth.example.com/oauth/token',
+        storedAuthMethods: ['client_secret_post'],
+      };
+
+      mockFetch.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+
+      await expect(
+        MCPOAuthHandler.refreshOAuthTokens(mockRefreshToken, metadata, {}, {}),
+      ).rejects.toThrow('connect ECONNREFUSED');
       expect(logger.error).toHaveBeenCalledWith(
         '[MCPOAuth] Failed to refresh tokens for test-server',
         { type: 'Error' },
+      );
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        '[MCPOAuth] Failed to refresh tokens for test-server',
+        expect.anything(),
       );
     });
 
