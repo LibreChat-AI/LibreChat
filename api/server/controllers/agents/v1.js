@@ -18,6 +18,7 @@ const {
   replaceEdgeSourceId,
   mergeDeploymentSkillIds,
   getAgentListAccess,
+  getAgentUploadTools,
   getAgentListAvatarRefreshKey,
   mergeAgentOcrConversion,
   applyAgentInferenceInput,
@@ -1020,6 +1021,7 @@ const getAgentHandler = async (req, res, expandProperties) => {
         provider: agent.provider,
         model: agent.model,
         model_parameters: getSafeModelParameters(agent.model_parameters),
+        tools: getAgentUploadTools(agent.tools),
         isPublic: agent.isPublic,
         version: agent.version,
         // Safe metadata

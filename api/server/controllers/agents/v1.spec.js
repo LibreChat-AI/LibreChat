@@ -1479,6 +1479,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         name: 'Azure Agent',
         description: 'Uses Responses API',
         instructions: 'Editor-only instructions',
+        tools: ['file_search', 'execute_code', 'custom_tool'],
         tool_resources: { file_search: { file_ids: ['editor-only-file'] } },
         provider: 'azureOpenAI',
         model: 'gpt-5.5',
@@ -1499,6 +1500,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(response.name).toBe('Azure Agent');
       expect(response).not.toHaveProperty('instructions');
       expect(response).not.toHaveProperty('tool_resources');
+      expect(response.tools).toEqual(['file_search', 'execute_code']);
       expect(response.model_parameters).toEqual({ useResponsesApi: true });
       expect(response.model_parameters.temperature).toBeUndefined();
       expect(response.model_parameters.apiKey).toBeUndefined();
