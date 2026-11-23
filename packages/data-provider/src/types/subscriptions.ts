@@ -99,8 +99,10 @@ export const subscriptionUpdateSchema = partialWithoutDefaults(
     /** The revision the edit was made from. A newer one on the server refuses the edit. */
     expectedRevision: z.number().int().min(0).optional(),
   })
-  /** The fence alone changes nothing, so it is not an edit. */
-  .refine((input) => Object.keys(input).some((key) => key !== 'expectedRevision'));
+  /** The fence alone changes nothing, so it is not an edit. Nor is a field sent as undefined. */
+  .refine((input) =>
+    Object.entries(input).some(([key, value]) => key !== 'expectedRevision' && value !== undefined),
+  );
 export type SubscriptionUpdate = z.infer<typeof subscriptionUpdateSchema>;
 
 /** A standing instruction: when these events arrive on a connection, run this agent. */

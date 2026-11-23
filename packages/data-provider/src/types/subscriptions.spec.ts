@@ -172,6 +172,8 @@ describe('subscriptionUpdateSchema', () => {
   it('refuses an edit that changes nothing', () => {
     expect(edits({})).toBe(false);
     expect(edits({ expectedRevision: 1 })).toBe(false);
+    expect(edits({ prompt: undefined, expectedRevision: 1 })).toBe(false);
+    expect(edits({ prompt: undefined, cap: null })).toBe(true);
   });
 
   it('takes the revision an edit was made from as a whole number from zero', () => {
