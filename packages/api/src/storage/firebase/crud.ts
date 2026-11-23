@@ -1,0 +1,99 @@
+import fs from 'fs';
+import path from 'path';
+import { logger } from '@librechat/data-schemas';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import type { SaveBufferParams, UploadFileParams, UploadResult } from '~/storage/types';
+import { getFirebaseStorage } from '~/cdn/firebase';
+
+const defaultBasePath = 'images';
+
+/**
+ * Resolves the download URL of `${basePath}/${fileName}` in Firebase Storage.
+ * Returns null when Firebase is not initialized or the lookup fails.
+ */
+export async function getFirebaseURL({
+  fileName,
+  basePath = defaultBasePath,
+}: {
+  fileName: string;
+  basePath?: string;
+}): Promise<string | null> {
+  const storage = getFirebaseStorage();
+  if (!storage) {
+    logger.error('Firebase is not initialized. Cannot get image URL from Firebase Storage.');
+    return null;
+  }
+
+  const storageRef = ref(storage, `${basePath}/${fileName}`);
+
+  try {
+    return await getDownloadURL(storageRef);
+  } catch (error) {
+    logger.error('Error fetching file URL from Firebase Storage:', (error as Error).message);
+    return null;
+  }
+}
+
+/** Uploads a buffer to `${basePath}/${userId}/${fileName}` and returns its download URL. */
+export async function saveBufferToFirebase({
+  userId,
+  buffer,
+  fileName,
+  basePath = defaultBasePath,
+}: SaveBufferParams): Promise<string | null> {
+  const storage = getFirebaseStorage();
+  if (!storage) {
+    throw new Error('Firebase is not initialized');
+  }
+
+  const storageRef = ref(storage, `${basePath}/${userId}/${fileName}`);
+  await uploadBytes(storageRef, buffer);
+
+  return await getFirebaseURL({ fileName, basePath: `${basePath}/${userId}` });
+}
+
+/**
+ * Uploads a multer temp file under the caller's `basePath` (`images` when omitted).
+ * On failure the temp file is removed and the error is rethrown.
+ */
+export async function uploadFileToFirebase({
+  req,
+  file,
+  file_id,
+  basePath = defaultBasePath,
+}: UploadFileParams): Promise<UploadResult> {
+  if (!req.user) {
+    throw new Error('[uploadFileToFirebase] User not authenticated');
+  }
+
+  const inputFilePath = file.path;
+  const inputBuffer = await fs.promises.readFile(inputFilePath);
+  const bytes = Buffer.byteLength(inputBuffer);
+  const userId = req.user.id;
+  const fileName = `${file_id}__${path.basename(inputFilePath)}`;
+  try {
+    const downloadURL = await saveBufferToFirebase({
+      userId,
+      buffer: inputBuffer,
+      fileName,
+      basePath,
+    });
+    if (!downloadURL) {
+      throw new Error('[uploadFileToFirebase] Firebase returned no download URL');
+    }
+    return { filepath: downloadURL, bytes };
+  } catch (err) {
+    logger.error('[uploadFileToFirebase] Error saving file buffer to Firebase:', err);
+    try {
+      if (file && file.path) {
+        await fs.promises.unlink(file.path);
+      }
+    } catch (unlinkError) {
+      logger.error(
+        '[uploadFileToFirebase] Error deleting temporary file, likely already deleted:',
+        (unlinkError as Error).message,
+      );
+    }
+    throw err;
+  }
+}
