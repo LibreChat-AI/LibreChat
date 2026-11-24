@@ -179,7 +179,8 @@ const {
   hasYouTubeVideoParts,
   appendYouTubeVideoParts,
   resolveGoogleVideoError,
-  resolveClassifiedProviderError,
+  getUserFacingRequestError,
+  hasGenerationContentProtection,
   resolveYouTubeInjectionConfig,
   decrementPendingRequest,
   maybePrewarmCodeSandbox,
@@ -195,6 +196,9 @@ const {
   rejectPrivateTextAdmission,
   createInitialModelBoundAdmissionCallback,
   hasModelBoundContentProtection,
+  allowsAssistantSideEffects,
+  runAssistantSideEffect,
+  isInteractiveAssistantRequest,
   assertResumeRuntimeContentAllowed,
   collectReachableAgents,
   isStatefulCodeEnvironmentToolName,
@@ -242,7 +246,6 @@ const {
   UsageEvents,
   Permissions,
   VisionModes,
-  ErrorTypes,
   ContentTypes,
   FileSources,
   ApprovalEvents,
@@ -253,7 +256,6 @@ const {
   isAgentsEndpoint,
   isEphemeralAgentId,
   removeNullishValues,
-  stripLangChainTroubleshootingUrl,
   DEFAULT_MEMORY_MAX_INPUT_TOKENS,
 } = require('librechat-data-provider');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
@@ -370,35 +372,6 @@ function captureRunContextMeta(client) {
     fadingTiers: source?.getFadingTiers?.(),
     getEncoding: () => client.getEncoding(),
   });
-}
-
-/**
- * User-visible text for a failed run. LangChain classifies provider errors by mutating
- * `error.message` with a docs URL, so a classified failure becomes typed copy the client localizes
- * and everything else keeps the provider's own wording with that URL removed. The untouched error
- * still reaches the logs through `getSafeErrorMetadata`.
- */
-function getUserFacingRequestError(baseMessage, error, appConfig) {
-  /** Carries no model or user content, so it is safe under every filter. */
-  if (error?.name === 'ManualSummarizationSkippedError') {
-    return JSON.stringify({ type: ErrorTypes.COMPACTION_SKIPPED, reason: error.reason });
-  }
-  const protectionEnabled = hasModelBoundContentProtection(
-    appConfig?.filters,
-    appConfig?.messageFilter?.pii,
-  );
-  if (protectionEnabled || !error?.message) {
-    return baseMessage;
-  }
-  const typedError = resolveClassifiedProviderError(error, appConfig);
-  if (typedError != null) {
-    return typedError;
-  }
-  const message = stripLangChainTroubleshootingUrl(error.message);
-  if (!message) {
-    return baseMessage;
-  }
-  return `${baseMessage}: ${message}`;
 }
 
 class AgentClient extends BaseClient {
@@ -3302,7 +3275,7 @@ class AgentClient extends BaseClient {
    */
   async useMemory() {
     const user = this.options.req.user;
-    if (user.personalization?.memories === false) {
+    if (!allowsAssistantSideEffects(this.options.req.config, user.personalization?.memories)) {
       return;
     }
     const hasAccess = await checkAccess({
@@ -4566,10 +4539,7 @@ class AgentClient extends BaseClient {
       responseMessageId: this.responseMessageId,
       source: '[api/server/controllers/agents/client.js #sendCompletion]',
       genericMessage: '[api/server/controllers/agents/client.js #sendCompletion] Unhandled error',
-      protectionEnabled: hasModelBoundContentProtection(
-        appConfig?.filters,
-        appConfig?.messageFilter?.pii,
-      ),
+      protectionEnabled: hasGenerationContentProtection(appConfig),
     });
     const balanceConfig = getBalanceConfig(appConfig);
     const transactionsConfig = getTransactionsConfig(appConfig);
@@ -4962,7 +4932,7 @@ class AgentClient extends BaseClient {
         config = withPrivateTextAdmissionConfig(config, initialModelBoundAdmission);
 
         if (this.processMemory && !isCompactionTurn) {
-          memoryPromise = this.runMemory(memoryMessages);
+          memoryPromise = runAssistantSideEffect(appConfig, () => this.runMemory(memoryMessages));
         }
 
         const { calibrationRatio, fadingTier, fadingTiers } = resolveRunSeeds(this);
@@ -5023,9 +4993,12 @@ class AgentClient extends BaseClient {
           });
         }
 
-        const activityLabel = this.buildActivityLabelWiring(streamId, abortController.signal);
-        const activityPhase = this.buildActivityPhaseWiring(streamId, abortController.signal);
-        const reasoningLabel = this.buildReasoningLabelWiring(streamId, abortController.signal);
+        const { activityLabel, activityPhase, reasoningLabel } =
+          runAssistantSideEffect(appConfig, () => ({
+            activityLabel: this.buildActivityLabelWiring(streamId, abortController.signal),
+            activityPhase: this.buildActivityPhaseWiring(streamId, abortController.signal),
+            reasoningLabel: this.buildReasoningLabelWiring(streamId, abortController.signal),
+          })) ?? {};
         const offsetHandlers = createSteerIndexOffsetHandlers(
           this.options.eventHandlers,
           this.steerOffsetState,
@@ -5111,6 +5084,7 @@ class AgentClient extends BaseClient {
           tenantId: resolveRequestTenantId(this.options.req ?? {}),
           summarizationConfig: appConfig?.summarization,
           summarizeOnly: this.isCompactionTurn(),
+          interactiveAssistant: isInteractiveAssistantRequest(this.options.req),
           appConfig,
           tokenCounter,
           /** Bills subagent child-run model calls — foreground usage joins
@@ -5465,10 +5439,7 @@ class AgentClient extends BaseClient {
       responseMessageId: this.responseMessageId,
       source: '[api/server/controllers/agents/client.js #resumeCompletion]',
       genericMessage: '[api/server/controllers/agents/client.js #resumeCompletion] Unhandled error',
-      protectionEnabled: hasModelBoundContentProtection(
-        appConfig?.filters,
-        appConfig?.messageFilter?.pii,
-      ),
+      protectionEnabled: hasGenerationContentProtection(appConfig),
     });
     const balanceConfig = getBalanceConfig(appConfig);
     const transactionsConfig = getTransactionsConfig(appConfig);

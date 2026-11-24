@@ -14,6 +14,7 @@ import {
 } from './limits';
 import {
   filtersConfigSchema,
+  outputProtectionSchema,
   MAX_PII_CUSTOM_REGEX_CHARACTERS,
   MAX_PII_CUSTOM_REGEX_INSTRUCTIONS,
   MAX_PII_PATTERN_ID_LENGTH,
@@ -127,7 +128,12 @@ export const DEFAULT_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 /** Sections only librechat.yaml sets: no config document, Base included, can change or remove
  * them. `turnstile` stays here until the server verifies Turnstile tokens: until then a stored
  * site key adds no protection, and a wrong one locks users out of sign-in and registration. */
-export const BASE_ONLY_CONFIG_SECTIONS = ['filters', 'mcpAppSandbox', 'turnstile'] as const;
+export const BASE_ONLY_CONFIG_SECTIONS = [
+  'filters',
+  'mcpAppSandbox',
+  'outputProtection',
+  'turnstile',
+] as const;
 /** Sections that may be stored in the tenant's base config document but must
  * not be overridden or tombstoned by role, group, or user config documents. */
 export const BASE_PRINCIPAL_CONFIG_SECTIONS = ['langfuse'] as const;
@@ -5267,6 +5273,7 @@ export const configSchema = z.object({
   fileConfig: fileConfigSchema.optional(),
   modelSpecs: specsConfigSchema.optional(),
   filters: filtersConfigSchema.optional(),
+  outputProtection: outputProtectionSchema.optional(),
   messageFilter: messageFilterSchema.optional(),
   endpoints: z
     .object({
@@ -5915,6 +5922,8 @@ export enum ViolationTypes {
  * Enum for error message types that are not "violations" as above, used to identify client-facing errors.
  */
 export enum ErrorTypes {
+  ASSISTANT_OUTPUT_UNSUPPORTED = 'assistant_output_unsupported',
+  ASSISTANT_OUTPUT_WITHHELD = 'assistant_output_withheld',
   /**
    * No User-provided Key.
    */

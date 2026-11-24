@@ -318,6 +318,16 @@ function withSpecInterface(
   return interfaceConfig === config.interfaceConfig ? config : { ...config, interfaceConfig };
 }
 
+/** Base-only policy must share the same SDK buffer across cached principal configs. */
+function withBaseOutputProtection(config: AppConfig, base: AppConfig): AppConfig {
+  const policy = base.config?.outputProtection;
+  if (config.config?.outputProtection === policy) return config;
+  const yaml = { ...config.config };
+  if (policy == null) delete yaml.outputProtection;
+  else yaml.outputProtection = policy;
+  return { ...config, config: yaml };
+}
+
 /** Re-derive only spec-dependent controls before principal overrides are applied. */
 function scopeBaseConfig(config: AppConfig, tenantId?: string): AppConfig {
   const scoped = scopeCustomEndpoints(config, tenantId);
@@ -1052,10 +1062,13 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     }
 
     const augment = async (appConfig: AppConfig): Promise<AppConfig> => {
-      const scopedConfig = scopeCustomEndpoints(appConfig, effectiveTenantId, hiddenEndpoints);
+      const scopedConfig = withBaseOutputProtection(
+        scopeCustomEndpoints(appConfig, effectiveTenantId, hiddenEndpoints),
+        scopedBaseConfig,
+      );
       if (augmentConfig == null || skipRuntimeAugmentation === true) return scopedConfig;
       try {
-        return scopeCustomEndpoints(
+        const augmented = scopeCustomEndpoints(
           await augmentConfig({
             appConfig: scopedConfig,
             baseConfig: scopedBaseConfig,
@@ -1065,6 +1078,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
           effectiveTenantId,
           hiddenEndpoints,
         );
+        return withBaseOutputProtection(augmented, scopedBaseConfig);
       } catch (error) {
         if (failClosed) throw error;
         logger.error('[getAppConfig] Error augmenting principal config:', error);

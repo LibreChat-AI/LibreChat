@@ -4287,6 +4287,8 @@ module.exports = function fakeModelHook(run, context) {
   }
 
   const text = getLatestUserText(context?.messages);
+  // This scenario exercises the native provider boundary; its endpoint runs locally.
+  if (graph.providerTextProtection && text?.startsWith('E2E_ASSISTANT_OUTPUT:')) return;
   /** Recorded-session replay outranks marker routing: a conversation whose
    * prompt matches a fixture's next recorded invocation streams that recording
    * through the real pipeline instead of a scripted mock response. */

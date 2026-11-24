@@ -571,3 +571,21 @@ describe('createCustomConfigLoader filters', () => {
     expect(error).not.toHaveBeenCalled();
   });
 });
+
+it('rejects an unsupported output policy even when startup validation is bypassed', async () => {
+  const env = process.env.CONFIG_BYPASS_VALIDATION;
+  const configPath = process.env.CONFIG_PATH;
+  process.env.CONFIG_BYPASS_VALIDATION = 'true';
+  delete process.env.CONFIG_PATH;
+  try {
+    const load = createCustomConfigLoader({
+      defaultConfigPath: fixture('valid'),
+      loadLocal: () => ({ version: '1.3.5', outputProtection: { version: 2 } }),
+    });
+    await expect(load(false)).rejects.toThrow('Invalid configuration containing output protection');
+  } finally {
+    if (env === undefined) delete process.env.CONFIG_BYPASS_VALIDATION;
+    else process.env.CONFIG_BYPASS_VALIDATION = env;
+    if (configPath !== undefined) process.env.CONFIG_PATH = configPath;
+  }
+});
