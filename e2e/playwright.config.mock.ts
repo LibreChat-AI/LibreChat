@@ -4,6 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { getLocalE2EEnv, getE2EBaseURL } from './setup/env';
 import { managementAuth } from './setup/agent-management';
+import { storageStatePath } from './setup/user';
+import { serialProjects } from './setup/serial';
 
 const rootPath = path.resolve(__dirname, '..');
 const replicaCount = Number(process.env.E2E_REPLICAS || '1');
@@ -544,7 +546,7 @@ Object.assign(process.env, baseEnv);
 neutralizeDotenvSecrets(path.resolve(rootPath, '.env'), preservedCredentialEnvKeys);
 
 export default defineConfig({
-  globalSetup: require.resolve('./setup/global-setup'),
+  globalSetup: require.resolve('./setup/global-setup.mock'),
   globalTeardown: require.resolve('./setup/global-teardown.mock'),
   testDir: 'specs/mock/',
   /** Record mode swaps the fake model for a real provider, so it must never
@@ -554,13 +556,18 @@ export default defineConfig({
    * unfiltered entry point (`npm run e2e:mock`) does exactly that. */
   ...(modelFixtureRecording ? { testMatch: /model-replay[a-z-]*\.spec\.ts$/ } : {}),
   outputDir: 'specs/.test-results',
-  fullyParallel: true,
+  /** A spec file is the unit of parallelism: its tests run in order on one worker, sharing what
+   *  its hooks and module scope set up. With one worker this runs exactly as `true` would. */
+  fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   /** In CI a test that fails and then passes on a retry fails the run. The retries stay for
    *  what they show: a trace of each failed attempt, video of the first retry, and whether the
    *  failure is deterministic. Derived profiles inherit this with the rest of the config. */
   failOnFlakyTests: !!process.env.CI,
+  /** Raise with `--workers`: global setup signs in one user per worker. Specs that change state
+   *  every worker sees belong to the `-serial` project; see `e2e/setup/serial.ts` for how a
+   *  run with more workers takes it. */
   workers: 1,
   /** In CI the JSON results land beside the HTML report (reporters end in order, after the HTML
    *  reporter has replaced its folder), so the report artifact also carries the per-file
@@ -580,7 +587,9 @@ export default defineConfig({
     trace: 'retain-on-failure',
     ignoreHTTPSErrors: true,
     headless: true,
-    storageState: path.resolve(process.cwd(), 'e2e/storageState.json'),
+    /** Playwright evaluates this config again in each worker, with `TEST_PARALLEL_INDEX` set,
+     *  so every worker loads the signed-in state of its own user. */
+    storageState: storageStatePath(),
     screenshot: 'only-on-failure',
     /** Each test opens a fresh context, so the PWA service worker installs and claims the page
      *  during that test's first load. A `page.route` installed within a few milliseconds of the
@@ -593,7 +602,7 @@ export default defineConfig({
   expect: {
     timeout: 10000,
   },
-  projects: [
+  projects: serialProjects(
     {
       name: chromiumChannel ?? 'chromium',
       use: {
@@ -601,7 +610,8 @@ export default defineConfig({
         ...(chromiumChannel ? { channel: chromiumChannel } : {}),
       },
     },
-  ],
+    path.resolve(__dirname, 'specs/mock'),
+  ),
   webServer: [
     {
       // URL-based MCP fixture for the allowlist-override spec (its health route is GET /).

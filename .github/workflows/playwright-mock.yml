@@ -264,8 +264,8 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository)))
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Separate runners isolate each shard's user, MongoDB, Redis and fixture state.
-    # Keep workers: 1 in Playwright; shared-user cleanup is not worker-safe.
+    # Separate runners isolate each shard's MongoDB, Redis and fixture state. Within a shard,
+    # every Playwright worker signs in as its own user (e2e/README.md, "--workers").
     strategy:
       fail-fast: false
       matrix: >-
