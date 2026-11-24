@@ -37,20 +37,18 @@ const BUDGETS = {
   read: 30_050,
   /** Rows the thread adds in one frame as it mounts. */
   step: 32,
-  /** Listeners on `document` and `window` once every row has been read: 263. */
-  listeners: 276,
-  /**
-   * Component renders in one streamed frame of a reply: 59, or 74 once the reply's usage
-   * control has mounted, which then renders again on every frame.
-   */
-  frame: 80,
+  /** Listeners on `document` and `window` once every row has been read: 131. */
+  listeners: 138,
+  /** Component renders in one streamed frame of a reply: 59. */
+  frame: 62,
   /** Of those, the renders outside every row: 31. */
-  around: 34,
+  around: 33,
   /**
-   * Renders inside the rows that were already there, over the whole reply: 1,931. All of them
-   * are the toolbars of the rows near the reader, five or six times each.
+   * Renders inside the rows that were already there, over the whole reply: 575 to 591. They are
+   * the toolbars of the rows near the reader, rendered when the run starts and when it ends,
+   * and the one component in each that reads the chat for them, at each step of the send.
    */
-  earlier: 2_600,
+  earlier: 700,
 };
 
 type Budget = keyof typeof BUDGETS;

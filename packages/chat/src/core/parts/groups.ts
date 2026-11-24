@@ -1,7 +1,9 @@
 import { Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
-import { getActivityLabelText, getBatchActivityLabelPart } from '@librechat/chat';
 import type { TMessageContentParts, Agents } from 'librechat-data-provider';
-import type { PartWithIndex } from '~/components/Chat/Messages/Content/ParallelContent';
+import type { PartWithIndex } from '../content';
+import { getActivityLabelText, getBatchActivityLabelPart } from './activityLabels';
+import { partAgentId, partToolCallId } from './owners';
+import { getPartKeyIndex } from '../content';
 
 export type GroupedPart =
   | { type: 'single'; part: PartWithIndex }
@@ -189,4 +191,70 @@ export function groupSequentialToolCalls(parts: PartWithIndex[]): GroupedPart[] 
   flushWithoutLabel();
 
   return result;
+}
+
+/**
+ * Render identity of a tool group, from the calls it holds. `fallbackScope` separates groups with
+ * no provider id across the messages one renderer instance shows in turn.
+ */
+export function toolGroupId(parts: PartWithIndex[], fallbackScope: number): string {
+  const firstPart = parts[0];
+  if (!firstPart) {
+    return 'empty';
+  }
+  /** Keyed on the first TOOL CALL, not the first part. An activity label
+   *  absorbs the block's leading THINK part when its text lands, so keying on
+   *  `parts[0]` would flip the key mid-run — remounting the group and losing
+   *  whatever the user had expanded. The tool calls themselves do not move. */
+  let firstToolKeyIdx: number | undefined;
+  for (const { part, idx } of parts) {
+    const toolCallId = partToolCallId(part);
+    if (toolCallId) {
+      const agentId = partAgentId(part);
+      /** `stepId` is stamped only when a tool finishes, so it cannot be part
+       * of the render identity without remounting a live group at completion.
+       * Agent + provider id are available from the first render; message-wide
+       * occurrence numbering distinguishes later reuse in the same row. */
+      return agentId == null ? `tool:${toolCallId}` : `tool:${toolCallId}:${agentId}`;
+    }
+    if (firstToolKeyIdx === undefined && part?.type === ContentTypes.TOOL_CALL) {
+      firstToolKeyIdx = getPartKeyIndex(part, idx);
+    }
+  }
+  /** Same reasoning for id-less tool calls: anchor to the first TOOL entry's
+   *  index rather than the block's first part, which shifts when reasoning is
+   *  absorbed. Only a block with no tool call at all falls back to `parts[0]`. */
+  return `fallback:${fallbackScope}:${firstToolKeyIdx ?? getPartKeyIndex(firstPart.part, firstPart.idx)}`;
+}
+
+/** Transcript index of a group's first tool call, or of its first part when it holds none. */
+export function toolGroupAnchor(parts: PartWithIndex[]): number {
+  for (const { part, idx } of parts) {
+    if (partToolCallId(part) || part?.type === ContentTypes.TOOL_CALL) {
+      return idx;
+    }
+  }
+  return parts[0]?.idx ?? -1;
+}
+
+/**
+ * Which occurrence of its id each tool group is within a message, by the group's anchor index.
+ * A provider can reuse a tool call id later in one response; the count keeps those groups apart.
+ */
+export function toolGroupOccurrences(
+  groups: GroupedPart[],
+  fallbackScope: number,
+): Map<number, number> {
+  const occurrences = new Map<number, number>();
+  const counts = new Map<string, number>();
+  for (const group of groups) {
+    if (group.type === 'single') {
+      continue;
+    }
+    const id = toolGroupId(group.parts, fallbackScope);
+    const occurrence = (counts.get(id) ?? 0) + 1;
+    counts.set(id, occurrence);
+    occurrences.set(toolGroupAnchor(group.parts), occurrence);
+  }
+  return occurrences;
 }

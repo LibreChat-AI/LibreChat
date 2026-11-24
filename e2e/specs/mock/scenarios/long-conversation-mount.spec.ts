@@ -350,6 +350,94 @@ test.describe('a reader scrolling up while a long conversation mounts', () => {
 });
 
 /**
+ * Beside a reply in flight the thread mounts a few rows on every frame and holds the reader
+ * itself, by writing the scroll position. Chromium keeps that position in whole pixels, and
+ * four one-line turns are not a whole number of them tall, so every step left part of a pixel
+ * out and nothing made it up: the row a reader had scrolled up to sank by 60px while the rest
+ * of an 800-turn thread mounted above it.
+ */
+test.describe('a reader scrolling up while a long conversation mounts beside a reply in flight', () => {
+  test.use({ viewport: { width: 1280, height: 800 }, isMobile: false, hasTouch: false });
+
+  /** Two hundred steps of four rows: enough of them for a part of a pixel each to show. */
+  const MANY = 800;
+  let conversationId: string;
+
+  test.beforeEach(async () => {
+    conversationId = await seedLongChat(MANY);
+  });
+
+  test.afterEach(async () => {
+    await deleteMessagesByConversation([conversationId]);
+    await deleteConversations([conversationId]);
+  });
+
+  test('keeps their place through every step @scenario:reader-keeps-place-while-long-conversation-mounts-beside-a-reply', async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await page.goto(`/c/${conversationId}`);
+    const thread = page.locator(`[data-conversation-id="${conversationId}"]`);
+    await expect(thread.locator('.message-render')).toHaveCount(MANY, { timeout: 60_000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+
+    /** Ten seconds pass before each of this reply's tokens: the run is in flight for the
+     *  whole of the load below. */
+    const label = randomUUID().slice(0, 8);
+    await sendMessage(page, `E2E_PRE_TOKEN_REPLY:${label}`);
+    const stop = page.getByTestId('stop-generation-button');
+    await expect(stop).toBeVisible({ timeout: 30_000 });
+    await page.reload();
+
+    /** Mounting, and landed on its end: the open's own scroll there is not the reader's. */
+    await page.waitForFunction(() => {
+      const scroller = document.getElementById('messages-end')?.parentElement?.parentElement;
+      return (
+        scroller != null &&
+        document.getElementsByClassName('message-render').length >= 40 &&
+        scroller.scrollTop > 0 &&
+        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 1
+      );
+    });
+    const view = await page.getByTestId('messages-view').boundingBox();
+    await page.mouse.move((view?.x ?? 0) + (view?.width ?? 800) / 2, (view?.y ?? 0) + 300);
+    await page.mouse.wheel(0, -1500);
+    /** A wheel scroll is animated: let it land before reading where it left the reader. */
+    await page.waitForTimeout(400);
+
+    const marked = await page.evaluate(() => {
+      const rows = Array.from(document.getElementsByClassName('message-render'));
+      const row = rows.find((candidate) => candidate.getBoundingClientRect().top > 80);
+      row?.setAttribute('data-reading', '');
+      const scroller = document.getElementById('messages-end')?.parentElement?.parentElement;
+      return {
+        top: row?.getBoundingClientRect().top ?? Number.NaN,
+        mounted: rows.length,
+        fromEnd: scroller
+          ? scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+          : Number.NaN,
+      };
+    });
+    /** Read with enough of the thread still to come, at least 25 steps of it, that what each
+     *  one left out would add up to several times the 2px allowed below. */
+    expect(marked.mounted).toBeLessThan(MANY - 100);
+    /** The scroll was obeyed: the reader is a good way above the end. */
+    expect(marked.fromEnd).toBeGreaterThan(1000);
+
+    await expect(thread.locator('.message-render')).toHaveCount(MANY + 2, { timeout: 60_000 });
+    const top = await page
+      .locator('[data-reading]')
+      .evaluate((row) => row.getBoundingClientRect().top);
+    expect(Math.abs(top - marked.top)).toBeLessThanOrEqual(2);
+
+    /** Every row is in and the run is still under way: it was beside the reply throughout. */
+    await expect(stop).toBeVisible();
+    await stop.click();
+    await expect(stop).toBeHidden({ timeout: 30_000 });
+  });
+});
+
+/**
  * In a window tall enough that the rows a long thread opens on do not fill it, there is nothing
  * to scroll yet and the scroller sits at its origin, where a browser's scroll anchoring holds
  * nothing. The rows that mount above must still leave the thread on its latest turn.

@@ -1,158 +1,185 @@
+/** @jest-environment jsdom */
 import React from 'react';
 import { getDefaultStore } from 'jotai';
 import { ContentTypes, Tools } from 'librechat-data-provider';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import {
-  subagentProgressKey,
-  reduceSubagentProgress,
-  subagentProgressByToolCallId,
-} from '@librechat/chat/react';
 import type {
   TMessageContentParts,
   SubagentUpdateEvent,
   TAttachment,
 } from 'librechat-data-provider';
-import type { SubagentProgress } from '@librechat/chat/react';
-import { preserveStreamedContentIdentity } from '~/utils/messages';
-import { mapAttachments, groupSequentialToolCalls } from '~/utils';
+import type { ContentPartsProps, ContentPartsSlots } from '../contentTypes';
+import type { SubagentProgress } from '../../react/subagents/state';
+import {
+  subagentProgressKey,
+  reduceSubagentProgress,
+  subagentProgressByToolCallId,
+} from '../../react/subagents/state';
+import { preserveStreamedContentIdentity } from '../../core/content';
+import { groupSequentialToolCalls } from '../../core/parts/groups';
+import { AppSuppressionContext } from '../../react/parts/apps';
+import { mapAttachments } from '../../core/attachments';
 
-jest.mock('~/utils', () => ({
-  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
+/** The message's attachment index is empty unless a case installs one, and workspace files are
+ * told apart by the marker alone, so each case states the ownership it is about. */
+jest.mock('../../core/attachments', () => ({
+  ...jest.requireActual<typeof import('../../core/attachments')>('../../core/attachments'),
   mapAttachments: jest.fn(() => ({})),
-  filterAttachmentsForPart: (attachments: unknown) => attachments,
-  groupSequentialToolCalls: jest.fn(),
-  hasPendingApprovalInPart: jest.requireActual('~/utils/groupToolCalls').hasPendingApprovalInPart,
-  getPartKeyIndex: jest.requireActual('~/utils/messages').getPartKeyIndex,
-  /** Real implementations: the media helpers are pure and drive the phase
-   * card's attachment row, so stubbing them would make that path inert here. */
-  ...jest.requireActual<typeof import('~/utils/media')>('~/utils/media'),
-}));
-
-jest.mock('~/Providers', () => {
-  return {
-    /** Use the real context: cloning the immediate child assumes Part has no
-     * intervening providers and does not exercise context propagation. */
-    MessageContext: jest.requireActual<typeof import('~/Providers/MessageContext')>(
-      '~/Providers/MessageContext',
-    ).MessageContext,
-    SearchContext: {
-      Provider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-    },
-    /** `WebSearch` reads this; leaving it off the mock threw inside the render and
-     * the component's own catch swallowed it, so the sources path was dead here
-     * while the suite still passed. */
-    useSearchContext: () => ({ searchResults: undefined }),
-    MediaContext: {
-      Provider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-    },
-    useMediaContext: () => ({ attachmentsByName: undefined }),
-  };
-});
-
-jest.mock('../Parts', () => ({
-  EmptyText: ({ underHeaderIcon }: { underHeaderIcon?: boolean }) => (
-    <div data-testid="empty-text" data-under-header-icon={String(underHeaderIcon === true)} />
-  ),
-  AttachmentGroup: ({ attachments }: { attachments?: unknown[] }) => (
-    <div data-testid="attachment-group" data-count={String(attachments?.length ?? 0)} />
-  ),
-  AgentUpdate: ({ currentAgentId }: { currentAgentId: string }) => (
-    <div data-testid="post-steer-agent-update" data-agent-id={currentAgentId} />
-  ),
-}));
-
-jest.mock('../MemoryArtifacts', () => ({
-  __esModule: true,
-  default: () => <div data-testid="memory-artifacts" />,
-  hasMemoryArtifacts:
-    jest.requireActual<typeof import('../MemoryArtifacts')>('../MemoryArtifacts')
-      .hasMemoryArtifacts,
-}));
-
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  PendingSkillCall: ({ skillName, loaded }: { skillName: string; loaded: boolean }) => (
-    <div data-testid="pending-skill-call" data-skill={skillName} data-loaded={String(loaded)} />
-  ),
-  Container: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="container">{children}</div>
-  ),
-}));
-jest.mock('../Parts/WorkspaceChanges', () => ({
-  __esModule: true,
-  default: ({ attachments }: { attachments: TAttachment[] }) =>
-    attachments.length > 0 ? (
-      <div data-testid="workspace-changes" data-count={attachments.length} />
-    ) : null,
   partitionWorkspaceChanges: (attachments?: TAttachment[]) => ({
     inlineAttachments: (attachments ?? []).filter((attachment) => !attachment.workspaceChange),
     workspaceChanges: (attachments ?? []).filter((attachment) => attachment.workspaceChange),
   }),
 }));
 
-jest.mock('../ToolCallGroup', () => ({
+jest.mock('../../core/parts/groups', () => ({
+  ...jest.requireActual<typeof import('../../core/parts/groups')>('../../core/parts/groups'),
+  groupSequentialToolCalls: jest.fn(),
+}));
+
+jest.mock('../EmptyText', () => ({
+  __esModule: true,
+  default: ({ underHeaderIcon }: { underHeaderIcon?: boolean }) => (
+    <div data-testid="empty-text" data-under-header-icon={String(underHeaderIcon === true)} />
+  ),
+}));
+
+jest.mock('../AgentUpdate', () => ({
+  __esModule: true,
+  default: ({ currentAgentId }: { currentAgentId: string }) => (
+    <div data-testid="post-steer-agent-update" data-agent-id={currentAgentId} />
+  ),
+}));
+
+/** Every list of files a file row was handed, in render order. */
+const mockFileLists: unknown[] = [];
+
+jest.mock('../parts/Attachment', () => ({
+  __esModule: true,
+  AttachmentGroup: ({ attachments }: { attachments?: unknown[] }) => {
+    mockFileLists.push(attachments);
+    return <div data-testid="attachment-group" data-count={String(attachments?.length ?? 0)} />;
+  },
+}));
+
+jest.mock('../parts/MemoryArtifacts', () => ({
+  __esModule: true,
+  default: () => <div data-testid="memory-artifacts" />,
+  hasMemoryArtifacts: jest.requireActual<typeof import('../parts/MemoryArtifacts')>(
+    '../parts/MemoryArtifacts',
+  ).hasMemoryArtifacts,
+}));
+
+jest.mock('../parts/PendingSkillCall', () => ({
+  __esModule: true,
+  default: ({ skillName, loaded }: { skillName: string; loaded: boolean }) => (
+    <div data-testid="pending-skill-call" data-skill={skillName} data-loaded={String(loaded)} />
+  ),
+}));
+
+jest.mock('../parts/Container', () => ({
+  __esModule: true,
+  default: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="container">{children}</div>
+  ),
+}));
+
+jest.mock('../parts/ToolCallGroup', () => ({
   __esModule: true,
   default: ({
     initialExpansionState,
     onExpansionChange,
     groupAttachments,
+    renderAppViews,
   }: {
     initialExpansionState?: { isExpanded: boolean; userOverride: boolean };
     onExpansionChange?: (state: { isExpanded: boolean; userOverride: boolean }) => void;
     groupAttachments?: TAttachment[];
+    renderAppViews?: (attachments: TAttachment[]) => React.ReactNode;
   }) => (
-    <button
-      data-testid="tool-call-group"
-      data-attachments={(groupAttachments ?? []).map((file) => file.filename).join(',')}
-      data-initial-expanded={
-        initialExpansionState == null ? 'unset' : String(initialExpansionState.isExpanded)
-      }
-      onClick={() => onExpansionChange?.({ isExpanded: false, userOverride: true })}
-    />
+    <>
+      <button
+        data-testid="tool-call-group"
+        data-attachments={(groupAttachments ?? []).map((file) => file.filename).join(',')}
+        data-initial-expanded={
+          initialExpansionState == null ? 'unset' : String(initialExpansionState.isExpanded)
+        }
+        onClick={() => onExpansionChange?.({ isExpanded: false, userOverride: true })}
+      />
+      {renderAppViews?.(groupAttachments ?? [])}
+    </>
   ),
 }));
 
-jest.mock('../ActivityPhaseGroup', () => ({
+/** Every set of message-level MCP App attachments a part read from its context, in render order. */
+const mockSuppressedSets: unknown[] = [];
+
+/** Every map of subagent-owned files a part read from its context, in render order. */
+const mockNestedMaps: unknown[] = [];
+
+/** How many times each phase card rendered, by its label. */
+const mockPhaseRenders = new Map<string, number>();
+
+jest.mock('../parts/ActivityPhaseGroup', () => ({
   __esModule: true,
   default: ({
     children,
     showCursor,
     animateEntrance,
+    attachments,
+    renderAppViews,
+    labelPart,
   }: {
     children: React.ReactNode;
     showCursor?: boolean;
     animateEntrance?: boolean;
-  }) => (
-    <div
-      data-testid="activity-phase-group"
-      data-show-cursor={String(showCursor === true)}
-      data-animate-entrance={String(animateEntrance === true)}
-    >
-      {children}
-    </div>
-  ),
+    attachments?: TAttachment[];
+    renderAppViews?: (attachments: TAttachment[]) => React.ReactNode;
+    labelPart: { activity_label?: string };
+  }) => {
+    const label = labelPart.activity_label ?? '';
+    mockPhaseRenders.set(label, (mockPhaseRenders.get(label) ?? 0) + 1);
+    return (
+      <div
+        data-testid="activity-phase-group"
+        data-show-cursor={String(showCursor === true)}
+        data-animate-entrance={String(animateEntrance === true)}
+      >
+        {renderAppViews?.(attachments ?? [])}
+        {children}
+      </div>
+    );
+  },
 }));
 
 jest.mock('../Part', () => {
-  const { useMessageContext } = jest.requireActual<typeof import('~/Providers/MessageContext')>(
-    '~/Providers/MessageContext',
+  const { useMessageContext } =
+    jest.requireActual<typeof import('../../react/message')>('../../react/message');
+  const { SoleToolContext } = jest.requireActual<typeof import('../../react/parts/disclosure')>(
+    '../../react/parts/disclosure',
   );
-  const { SoleToolContext } =
-    jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
+  const { AppSuppressionContext } =
+    jest.requireActual<typeof import('../../react/parts/apps')>('../../react/parts/apps');
+  const { SubagentAttachmentsContext } = jest.requireActual<
+    typeof import('../../react/subagents/attachments')
+  >('../../react/subagents/attachments');
   const { useContext } = jest.requireActual<typeof import('react')>('react');
   return {
     __esModule: true,
-    default: function MockPart({
+    Part: function MockPart({
       part,
       showCursor,
       isLast,
+      renderers,
     }: {
       part: TMessageContentParts;
       showCursor?: boolean;
       isLast?: boolean;
+      renderers?: unknown;
     }) {
       const { partIndex } = useMessageContext();
       const soleTool = useContext(SoleToolContext);
+      mockNestedMaps.push(useContext(SubagentAttachmentsContext));
+      mockSuppressedSets.push(useContext(AppSuppressionContext));
       return (
         <div
           data-testid={`real-part-${part.type}`}
@@ -160,25 +187,14 @@ jest.mock('../Part', () => {
           data-sole-tool={String(soleTool)}
           data-show-cursor={String(showCursor === true)}
           data-is-last={String(isLast === true)}
+          data-host-renderers={String(renderers != null)}
         />
       );
     },
   };
 });
 
-/** What the server answers when asked which subagent transcripts hold the files in doubt. */
-let mockOwners: unknown;
-const mockUseSubagentAttachmentCallsQueries = jest.fn(
-  (params: { files: unknown[] }, enabled: boolean) =>
-    params.files.length === 0 ? [] : [{ data: enabled ? mockOwners : undefined }],
-);
-jest.mock('~/data-provider', () => ({
-  useSubagentAttachmentCallsQueries: (
-    ...args: Parameters<typeof mockUseSubagentAttachmentCallsQueries>
-  ) => mockUseSubagentAttachmentCallsQueries(...args),
-}));
-
-jest.mock('../ParallelContent', () => ({
+jest.mock('../Parallel', () => ({
   /** Invokes `renderResumeAttribution` per content index like the real
    *  renderer does for its sequential stretches, so the wiring is testable. */
   ParallelContentRenderer: ({
@@ -196,7 +212,30 @@ jest.mock('../ParallelContent', () => ({
   ),
 }));
 
-import ContentParts from '../ContentParts';
+import { ContentParts as ChatContentParts } from '../ContentParts';
+
+/** What the server answers when asked which subagent transcripts hold the files in doubt. */
+let mockOwners: unknown;
+const mockUseSubagentAttachmentCallsQueries = jest.fn(
+  (params: { files: unknown[] }, enabled: boolean) =>
+    params.files.length === 0 ? [] : [{ data: enabled ? mockOwners : undefined }],
+);
+
+/** The host's side of the renderer: a workspace changes row and the query for stored hints. */
+const slots: ContentPartsSlots = {
+  renderWorkspaceChanges: (attachments) =>
+    attachments.length > 0 ? (
+      <div data-testid="workspace-changes" data-count={attachments.length} />
+    ) : null,
+  useSubagentAttachmentCalls: (params, enabled) =>
+    mockUseSubagentAttachmentCallsQueries(params, enabled) as ReturnType<
+      NonNullable<ContentPartsSlots['useSubagentAttachmentCalls']>
+    >,
+};
+
+const ContentParts = (props: Omit<ContentPartsProps, 'slots'>) => (
+  <ChatContentParts {...props} slots={slots} />
+);
 
 const baseProps = {
   messageId: 'msg-1',
@@ -846,7 +885,8 @@ describe('ContentParts — activity phase state', () => {
     jest
       .mocked(mapAttachments)
       .mockImplementation(
-        jest.requireActual<typeof import('~/utils/map')>('~/utils/map').mapAttachments,
+        jest.requireActual<typeof import('../../core/attachments')>('../../core/attachments')
+          .mapAttachments,
       );
     jest
       .mocked(groupSequentialToolCalls)
@@ -1798,5 +1838,507 @@ describe('ContentParts: settled content identity across compaction', () => {
       'data-animate-entrance',
       'true',
     );
+  });
+});
+
+describe('ContentParts: host slots', () => {
+  const realIndex = () =>
+    jest
+      .mocked(mapAttachments)
+      .mockImplementation(
+        jest.requireActual<typeof import('../../core/attachments')>('../../core/attachments')
+          .mapAttachments,
+      );
+  afterEach(() => {
+    jest.mocked(mapAttachments).mockImplementation(() => ({}));
+  });
+
+  const tool = (id: string): TMessageContentParts =>
+    ({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: { id, name: 'search', args: {}, output: 'done' },
+    }) as unknown as TMessageContentParts;
+  const text = (value: string) =>
+    ({ type: ContentTypes.TEXT, text: value }) as TMessageContentParts;
+  const image = (toolCallId: string, filename: string) =>
+    ({ toolCallId, filename, file_id: filename, filepath: `/files/${filename}` }) as TAttachment;
+  const app = (toolCallId: string, uri: string) =>
+    ({
+      toolCallId,
+      type: Tools.ui_resources,
+      [Tools.ui_resources]: [
+        { uri, mimeType: 'text/html;profile=mcp-app', toolName: 'show', serverName: 'server' },
+      ],
+    }) as unknown as TAttachment;
+  const appViews: ContentPartsSlots['renderAppViews'] = (attachments) => (
+    <div data-testid="app-views" data-files={attachments.map((file) => file.filename).join(',')} />
+  );
+
+  it('draws a message with no slots at all, and leaves a workspace file beside its call', () => {
+    realIndex();
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    const change = {
+      ...image('tool-1', 'report.csv'),
+      workspaceChange: { profile: 'stateful', operation: 'created', path: 'report.csv' },
+    } as TAttachment;
+
+    render(
+      <ChatContentParts
+        {...baseProps}
+        content={[tool('tool-1'), tool('tool-2')]}
+        attachments={[change]}
+      />,
+    );
+
+    expect(screen.queryByTestId('workspace-changes')).not.toBeInTheDocument();
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute('data-attachments', 'report.csv');
+    expect(screen.queryByTestId('app-views')).not.toBeInTheDocument();
+  });
+
+  it('hands the host renderer table to every part, and none when the host has none', () => {
+    const renderers = { parts: {}, tools: {} } as NonNullable<ContentPartsSlots['renderers']>;
+    const { rerender } = render(
+      <ChatContentParts {...baseProps} content={[text('hello')]} slots={{ renderers }} />,
+    );
+    expect(screen.getByTestId(`real-part-${ContentTypes.TEXT}`)).toHaveAttribute(
+      'data-host-renderers',
+      'true',
+    );
+
+    rerender(<ChatContentParts {...baseProps} content={[text('hello')]} />);
+    expect(screen.getByTestId(`real-part-${ContentTypes.TEXT}`)).toHaveAttribute(
+      'data-host-renderers',
+      'false',
+    );
+  });
+
+  it('offers the App views slot the files of a tool group', () => {
+    realIndex();
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+
+    render(
+      <ChatContentParts
+        {...baseProps}
+        content={[tool('tool-1'), tool('tool-2')]}
+        attachments={[image('tool-2', 'chart.png')]}
+        slots={{ renderAppViews: appViews }}
+      />,
+    );
+
+    expect(screen.getByTestId('app-views')).toHaveAttribute('data-files', 'chart.png');
+  });
+
+  it('offers the App views slot the files of an activity phase', () => {
+    realIndex();
+    const phase = {
+      type: ContentTypes.ACTIVITY_LABEL,
+      [ContentTypes.ACTIVITY_LABEL]: 'Charted the results',
+      activity_label_type: 'phase',
+      activity_start_index: 0,
+      activity_end_index: 1,
+      activity_count: 1,
+      pending: false,
+    } as unknown as TMessageContentParts;
+
+    render(
+      <ChatContentParts
+        {...baseProps}
+        content={[tool('tool-1'), phase, text('Done.')]}
+        attachments={[image('tool-1', 'chart.png')]}
+        slots={{ renderAppViews: appViews }}
+      />,
+    );
+
+    const phaseCard = screen.getByTestId('activity-phase-group');
+    expect(phaseCard.querySelector('[data-testid="app-views"]')).toHaveAttribute(
+      'data-files',
+      'chart.png',
+    );
+  });
+
+  it('holds an App back from the views under a group only for a host that draws App rows', () => {
+    realIndex();
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    /** A view that leaves out what the message says it draws itself, as LibreChat's does. */
+    function Views({ attachments }: { attachments: TAttachment[] }) {
+      const suppressed = React.useContext(AppSuppressionContext);
+      const shown = attachments.filter((attachment) => suppressed?.has(attachment) !== true);
+      return <div data-testid="app-views" data-shown={shown.length} />;
+    }
+    const renderAppViews: ContentPartsSlots['renderAppViews'] = (attachments) => (
+      <Views attachments={attachments} />
+    );
+    const content = [tool('tool-1'), tool('tool-2')];
+    const attachments = [app('tool-1', 'ui://first')];
+
+    const { unmount } = render(
+      <ChatContentParts
+        {...baseProps}
+        content={content}
+        attachments={attachments}
+        slots={{ renderAppViews }}
+      />,
+    );
+    expect(screen.getByTestId('app-views')).toHaveAttribute('data-shown', '1');
+    unmount();
+
+    render(
+      <ChatContentParts
+        {...baseProps}
+        content={content}
+        attachments={attachments}
+        slots={{ renderAppViews, renderApp: () => <div data-testid="app-row" /> }}
+      />,
+    );
+    expect(screen.getByTestId('app-row')).toBeInTheDocument();
+    for (const views of screen.getAllByTestId('app-views')) {
+      expect(views).toHaveAttribute('data-shown', '0');
+    }
+  });
+
+  it('draws an MCP App as a row after its part only when the host draws Apps and allows them', () => {
+    realIndex();
+    const renderApp: ContentPartsSlots['renderApp'] = (resource, ordinal) => (
+      <div data-testid="app-row" data-uri={resource.resource.uri} data-ordinal={ordinal} />
+    );
+    const content = [tool('tool-1'), text('after'), tool('tool-2')];
+    const attachments = [app('tool-1', 'ui://first'), app('tool-2', 'ui://second')];
+    const allowed = { renderApp };
+    const denied = { renderApp, useAppsEnabled: () => false };
+
+    const { unmount } = render(
+      <ChatContentParts
+        {...baseProps}
+        content={content}
+        attachments={attachments}
+        slots={allowed}
+      />,
+    );
+    const rows = screen.getAllByTestId('app-row');
+    expect(rows.map((row) => row.getAttribute('data-uri'))).toEqual(['ui://first', 'ui://second']);
+    expect(rows.map((row) => row.getAttribute('data-ordinal'))).toEqual(['1', '2']);
+    const order = screen
+      .getAllByTestId(/^(app-row|real-part-.*)$/)
+      .map((node) => node.getAttribute('data-testid'));
+    expect(order).toEqual([
+      `real-part-${ContentTypes.TOOL_CALL}`,
+      'app-row',
+      `real-part-${ContentTypes.TEXT}`,
+      `real-part-${ContentTypes.TOOL_CALL}`,
+      'app-row',
+    ]);
+    unmount();
+
+    render(
+      <ChatContentParts
+        {...baseProps}
+        content={content}
+        attachments={attachments}
+        slots={denied}
+      />,
+    );
+    expect(screen.queryByTestId('app-row')).not.toBeInTheDocument();
+    unmount();
+
+    render(<ChatContentParts {...baseProps} content={content} attachments={attachments} />);
+    expect(screen.queryByTestId('app-row')).not.toBeInTheDocument();
+  });
+
+  it('hands a message in edit mode to the host editor, and draws it read-only without one', () => {
+    const enterEdit = jest.fn();
+    const setSiblingIdx = jest.fn();
+    const renderEdit = jest.fn<
+      React.ReactNode,
+      Parameters<NonNullable<ContentPartsSlots['renderEdit']>>
+    >(({ content, renderReadOnlyPart }) => (
+      <div data-testid="editor" data-parts={content.length}>
+        {renderReadOnlyPart(content[0] as TMessageContentParts, 0, true)}
+      </div>
+    ));
+    const edit = { edit: true, enterEdit, setSiblingIdx, siblingIdx: 2 };
+
+    const { unmount } = render(
+      <ChatContentParts
+        {...baseProps}
+        {...edit}
+        content={[text('hello')]}
+        contentIndexOffset={4}
+        slots={{ renderEdit }}
+      />,
+    );
+    expect(screen.getByTestId('editor')).toHaveAttribute('data-parts', '1');
+    expect(renderEdit.mock.calls[0][0]).toMatchObject({
+      messageId: 'msg-1',
+      contentIndexOffset: 4,
+      isSubmitting: false,
+      siblingIdx: 2,
+      enterEdit,
+      setSiblingIdx,
+    });
+    expect(
+      screen.getByTestId('editor').querySelector(`[data-testid="real-part-${ContentTypes.TEXT}"]`),
+    ).not.toBeNull();
+    unmount();
+
+    render(<ChatContentParts {...baseProps} {...edit} content={[text('hello')]} />);
+    expect(screen.queryByTestId('editor')).not.toBeInTheDocument();
+    expect(screen.getByTestId(`real-part-${ContentTypes.TEXT}`)).toBeInTheDocument();
+  });
+
+  it('never asks about subagent files when the host has no query for them', () => {
+    mockUseSubagentAttachmentCallsQueries.mockClear();
+    render(<ChatContentParts {...baseProps} content={[tool('tool-1')]} />);
+    expect(mockUseSubagentAttachmentCallsQueries).not.toHaveBeenCalled();
+
+    render(<ContentParts {...baseProps} content={[tool('tool-1')]} />);
+    expect(mockUseSubagentAttachmentCallsQueries).toHaveBeenCalled();
+  });
+});
+
+describe('ContentParts: settled phases while the tail streams', () => {
+  const tool = (id: string, output = 'done'): TMessageContentParts =>
+    ({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: { id, name: 'search', args: {}, output },
+    }) as unknown as TMessageContentParts;
+  const summary = (label: string, start: number, end: number): TMessageContentParts =>
+    ({
+      type: ContentTypes.ACTIVITY_LABEL,
+      [ContentTypes.ACTIVITY_LABEL]: label,
+      activity_label_type: 'phase',
+      activity_start_index: start,
+      activity_end_index: end,
+      activity_count: 1,
+      pending: false,
+    }) as unknown as TMessageContentParts;
+  const text = (value: string) =>
+    ({ type: ContentTypes.TEXT, text: value }) as TMessageContentParts;
+  const live = { isLast: true, isSubmitting: true, isLatestMessage: true };
+  const renders = (label: string) => mockPhaseRenders.get(label) ?? 0;
+
+  beforeEach(() => {
+    mockPhaseRenders.clear();
+  });
+
+  it('does not render a settled phase again when a later part streams', () => {
+    const first = [tool('tool-1'), summary('Searched the docs', 0, 1)];
+    const second = [tool('tool-2'), summary('Checked the source', 2, 3)];
+    const { rerender } = render(
+      <ContentParts {...baseProps} {...live} content={[...first, ...second, text('The')]} />,
+    );
+    expect(renders('Searched the docs')).toBe(1);
+    expect(renders('Checked the source')).toBe(1);
+
+    for (const delta of ['The answer', 'The answer is', 'The answer is here.']) {
+      rerender(
+        <ContentParts {...baseProps} {...live} content={[...first, ...second, text(delta)]} />,
+      );
+    }
+
+    expect(renders('Searched the docs')).toBe(1);
+    expect(renders('Checked the source')).toBe(1);
+    expect(screen.getByTestId(`real-part-${ContentTypes.TEXT}`)).toHaveAttribute(
+      'data-is-last',
+      'true',
+    );
+  });
+
+  it('does not render a settled phase again while the next phase grows', () => {
+    const first = [tool('tool-1'), summary('Searched the docs', 0, 1)];
+    const { rerender } = render(<ContentParts {...baseProps} {...live} content={first} />);
+
+    /** The cursor leaves the first card for the call that starts next: one render, and its last. */
+    rerender(<ContentParts {...baseProps} {...live} content={[...first, tool('tool-2', '')]} />);
+    const before = renders('Searched the docs');
+
+    rerender(<ContentParts {...baseProps} {...live} content={[...first, tool('tool-2')]} />);
+    rerender(
+      <ContentParts
+        {...baseProps}
+        {...live}
+        content={[...first, tool('tool-2'), tool('tool-3', '')]}
+      />,
+    );
+    rerender(
+      <ContentParts
+        {...baseProps}
+        {...live}
+        content={[...first, tool('tool-2'), tool('tool-3')]}
+      />,
+    );
+
+    expect(renders('Searched the docs')).toBe(before);
+  });
+
+  it('renders a settled phase again when one of its own parts changes', () => {
+    const second = [tool('tool-2'), summary('Checked the source', 2, 3)];
+    const label = summary('Searched the docs', 0, 1);
+    const { rerender } = render(
+      <ContentParts {...baseProps} {...live} content={[tool('tool-1', ''), label, ...second]} />,
+    );
+    const before = renders('Searched the docs');
+    const untouched = renders('Checked the source');
+
+    rerender(
+      <ContentParts
+        {...baseProps}
+        {...live}
+        content={[tool('tool-1', 'late'), label, ...second]}
+      />,
+    );
+
+    expect(renders('Searched the docs')).toBe(before + 1);
+    expect(renders('Checked the source')).toBe(untouched);
+  });
+
+  it('hands a file row the same list of files while a later part streams', () => {
+    jest
+      .mocked(mapAttachments)
+      .mockImplementation(
+        jest.requireActual<typeof import('../../core/attachments')>('../../core/attachments')
+          .mapAttachments,
+      );
+    const chart = {
+      toolCallId: 'tool-1',
+      filename: 'chart.png',
+      file_id: 'chart',
+      filepath: '/files/chart.png',
+    } as TAttachment;
+    const first = [tool('tool-1'), summary('Charted the results', 0, 1)];
+    const { rerender } = render(
+      <ContentParts
+        {...baseProps}
+        {...live}
+        content={[...first, text('The')]}
+        attachments={[chart]}
+      />,
+    );
+    mockFileLists.length = 0;
+
+    for (const delta of ['The chart', 'The chart shows']) {
+      rerender(
+        <ContentParts
+          {...baseProps}
+          {...live}
+          content={[...first, text(delta)]}
+          attachments={[chart]}
+        />,
+      );
+    }
+    jest.mocked(mapAttachments).mockImplementation(() => ({}));
+
+    expect(screen.getByTestId('attachment-group')).toHaveAttribute('data-count', '1');
+    expect(mockFileLists.length).toBeGreaterThan(0);
+    expect(new Set(mockFileLists).size).toBe(1);
+  });
+
+  it('keeps one map of subagent-owned files while a later part streams', () => {
+    jest
+      .mocked(mapAttachments)
+      .mockImplementation(
+        jest.requireActual<typeof import('../../core/attachments')>('../../core/attachments')
+          .mapAttachments,
+      );
+    const subagent = {
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'subagent-1',
+        name: 'subagent',
+        args: {},
+        output: 'done',
+        subagent_content: [tool('child-1')],
+      },
+    } as unknown as TMessageContentParts;
+    const image = {
+      toolCallId: 'child-1',
+      filename: 'cat.png',
+      filepath: '/cat.png',
+    } as TAttachment;
+    const { rerender } = render(
+      <ContentParts
+        {...baseProps}
+        {...live}
+        content={[subagent, text('The')]}
+        attachments={[image]}
+      />,
+    );
+    mockNestedMaps.length = 0;
+
+    for (const delta of ['The cat', 'The cat is']) {
+      rerender(
+        <ContentParts
+          {...baseProps}
+          {...live}
+          content={[subagent, text(delta)]}
+          attachments={[image]}
+        />,
+      );
+    }
+    jest.mocked(mapAttachments).mockImplementation(() => ({}));
+
+    const maps = new Set(mockNestedMaps);
+    expect(maps.size).toBe(1);
+    expect((mockNestedMaps[0] as Map<unknown, unknown>).get(subagent)).toEqual([image]);
+  });
+
+  it('keeps one set of message-level MCP Apps while a later part streams', () => {
+    jest
+      .mocked(mapAttachments)
+      .mockImplementation(
+        jest.requireActual<typeof import('../../core/attachments')>('../../core/attachments')
+          .mapAttachments,
+      );
+    const app = {
+      toolCallId: 'tool-1',
+      type: Tools.ui_resources,
+      [Tools.ui_resources]: [
+        { uri: 'ui://a', mimeType: 'text/html;profile=mcp-app', toolName: 'show', serverName: 's' },
+      ],
+    } as unknown as TAttachment;
+    const call = tool('tool-1');
+    const appSlots: ContentPartsSlots = { renderApp: () => <div data-testid="app-row" /> };
+    const draw = (value: string) => (
+      <ChatContentParts
+        {...baseProps}
+        {...live}
+        content={[call, text(value)]}
+        attachments={[app]}
+        slots={appSlots}
+      />
+    );
+    const { rerender } = render(draw('The'));
+    mockSuppressedSets.length = 0;
+
+    rerender(draw('The app'));
+    rerender(draw('The app is'));
+    jest.mocked(mapAttachments).mockImplementation(() => ({}));
+
+    expect(screen.getByTestId('app-row')).toBeInTheDocument();
+    expect(mockSuppressedSets.length).toBeGreaterThan(0);
+    expect(new Set(mockSuppressedSets).size).toBe(1);
+    expect([...(mockSuppressedSets[0] as Set<unknown>)]).toEqual([app]);
+  });
+
+  it('renders every phase again when the run ends', () => {
+    const content = [
+      tool('tool-1'),
+      summary('Searched the docs', 0, 1),
+      tool('tool-2'),
+      summary('Checked the source', 2, 3),
+      text('Done.'),
+    ];
+    const { rerender } = render(<ContentParts {...baseProps} {...live} content={content} />);
+    const before = renders('Searched the docs');
+
+    rerender(<ContentParts {...baseProps} {...live} isSubmitting={false} content={content} />);
+
+    expect(renders('Searched the docs')).toBe(before + 1);
+    expect(renders('Checked the source')).toBeGreaterThan(1);
   });
 });

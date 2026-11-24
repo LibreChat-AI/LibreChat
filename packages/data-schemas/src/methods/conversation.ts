@@ -684,6 +684,8 @@ export interface ConversationMethodDeps
     user: string,
     conversationIds: string[],
   ) => Promise<void>;
+  /** Whether the deployment serves shared links; omitted means enabled. */
+  allowSharedLinks?: boolean;
 }
 
 export function createConversationMethods(
@@ -691,6 +693,7 @@ export function createConversationMethods(
   deps?: ConversationMethodDeps,
 ): ConversationMethods {
   const retainResponses = createResponseRetention(mongoose, deps?.saveSession);
+  const allowSharedLinks = deps?.allowSharedLinks !== false;
   const prepareResponseReplacement = createResponseConversationReplacement(mongoose);
   let legacyReceiptExpiryCursor: Types.ObjectId | undefined;
 
@@ -3682,8 +3685,7 @@ export function createConversationMethods(
     }
     /* A deployment with shared links off serves no links and renders no badge, so the
        extra round trip on the sidebar's first page would buy nothing. */
-    const allowSharedLinks = process.env.ALLOW_SHARED_LINKS;
-    if (allowSharedLinks !== undefined && allowSharedLinks.toLowerCase().trim() !== 'true') {
+    if (!allowSharedLinks) {
       return;
     }
 
@@ -3745,8 +3747,7 @@ export function createConversationMethods(
     if (!SharedLink) {
       return null;
     }
-    const allowSharedLinks = process.env.ALLOW_SHARED_LINKS;
-    if (allowSharedLinks !== undefined && allowSharedLinks.toLowerCase().trim() !== 'true') {
+    if (!allowSharedLinks) {
       return null;
     }
 

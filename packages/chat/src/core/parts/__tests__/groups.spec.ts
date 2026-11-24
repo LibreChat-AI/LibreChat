@@ -1,7 +1,12 @@
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
-import type { PartWithIndex } from '~/components/Chat/Messages/Content/ParallelContent';
-import { groupSequentialToolCalls } from '../groupToolCalls';
+import type { PartWithIndex } from '../../content';
+import {
+  toolGroupId,
+  toolGroupAnchor,
+  toolGroupOccurrences,
+  groupSequentialToolCalls,
+} from '../groups';
 
 const toolCall = (id: string): TMessageContentParts =>
   ({
@@ -325,4 +330,59 @@ it('does not move a post-label thought into the next tool batch as streaming con
     ]),
   );
   expect(grouped[0]).toMatchObject({ type: 'tool-group', parts: [{ idx: 0 }, { idx: 2 }] });
+});
+
+describe('tool group identity', () => {
+  const agentCall = (id: string, agentId: string): TMessageContentParts =>
+    ({ ...toolCall(id), agentId }) as TMessageContentParts;
+  const anonymous = (): TMessageContentParts =>
+    ({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: { name: 'web_search', args: '{}' },
+    }) as unknown as TMessageContentParts;
+
+  it('keys a group on its first tool call, so absorbing leading reasoning does not move it', () => {
+    const before = withIndex([toolCall('a'), toolCall('b')]);
+    const after = withIndex([think('planning'), toolCall('a'), toolCall('b')]);
+    expect(toolGroupId(before, 0)).toBe('tool:a');
+    expect(toolGroupId(after, 0)).toBe('tool:a');
+    expect(toolGroupId(withIndex([agentCall('a', 'agent_x')]), 0)).toBe('tool:a:agent_x');
+  });
+
+  it('falls back to position and scope when no call carries a provider id', () => {
+    expect(toolGroupId(withIndex([think('planning'), anonymous()]), 3)).toBe('fallback:3:1');
+    expect(toolGroupId(withIndex([think('planning')]), 3)).toBe('fallback:3:0');
+    expect(toolGroupId([], 3)).toBe('empty');
+  });
+
+  it('prefers the streamed index of the anchoring part over its live position', () => {
+    const stamped = { ...anonymous(), streamedIndex: 7 } as TMessageContentParts;
+    expect(toolGroupId([{ part: stamped, idx: 2 }], 0)).toBe('fallback:0:7');
+  });
+
+  it('anchors a group at its first tool call, or its first part when it has none', () => {
+    expect(toolGroupAnchor(withIndex([think('planning'), toolCall('a')]))).toBe(1);
+    expect(toolGroupAnchor(withIndex([think('planning'), anonymous()]))).toBe(1);
+    expect(toolGroupAnchor(withIndex([think('planning')]))).toBe(0);
+    expect(toolGroupAnchor([])).toBe(-1);
+  });
+
+  it('numbers groups that reuse a provider id within one message', () => {
+    const parts = withIndex([
+      toolCall('a'),
+      toolCall('b'),
+      textPart(),
+      toolCall('a'),
+      toolCall('c'),
+      textPart(),
+      toolCall('d'),
+      toolCall('e'),
+    ]);
+    const occurrences = toolGroupOccurrences(groupSequentialToolCalls(parts), 0);
+    expect([...occurrences]).toEqual([
+      [0, 1],
+      [3, 2],
+      [6, 1],
+    ]);
+  });
 });

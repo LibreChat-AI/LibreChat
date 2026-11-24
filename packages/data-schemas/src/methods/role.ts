@@ -302,12 +302,14 @@ export function createRoleMethods(
    * The role named exactly `roleName` in the caller's tenant partition (`tenantPartitionFilter`),
    * as the admin roles API addresses it: never a tenant's role of the same name outside that
    * tenant. A system role with no document there is created there, as {@link getRoleByName}
-   * creates it. Reads no cache, so an admin read never returns another partition's cached role.
+   * creates it. Reads no cache, so an admin read never returns another partition's cached role,
+   * and reads the primary, so a read after a write returns what the write committed.
    */
   async function getPartitionRole(roleName: string): Promise<IRole | null> {
     const Role = mongoose.models.Role as Model<IRole>;
     const read = () =>
       Role.findOne(roleDocumentFilter(roleName, 'getPartitionRole'))
+        .read('primary')
         .select('-__v')
         .lean<IRole>()
         .exec();

@@ -5,6 +5,7 @@ export * from './react/subagents';
 export * from './react/usage';
 export * from './react/thread';
 export * from './react/latest';
+export { useShared } from './react/shared';
 export * from './react/approval';
 export { MessageContext, MessagePartIndex, useMessageContext } from './react/message';
 export {
@@ -290,6 +291,7 @@ export { ArtifactContext, ArtifactProvider, useArtifactContext } from './react/p
 export type { ArtifactIndex } from './react/parts/artifactIndex';
 export { MediaContext, useMediaContext } from './react/parts/media';
 export { SearchContext, useSearchContext } from './react/parts/search';
+export { AppSuppressionContext } from './react/parts/apps';
 export type { SearchResults } from './react/parts/search';
 export type { MediaSources } from './react/parts/media';
 export type { LazyImport } from './react/lazy';

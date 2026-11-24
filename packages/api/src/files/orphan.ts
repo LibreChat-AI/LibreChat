@@ -1,6 +1,6 @@
 import { FileSources } from 'librechat-data-provider';
 
-import { getSafeErrorMetadata } from '~/utils/errors';
+import { getSafeErrorMetadata } from '../utils/errors';
 
 export type StoredUploadRef = {
   file_id: string;
@@ -31,6 +31,9 @@ export type StoredUploadCleanup = {
   /** Set when `next` calls its `beginWrite` argument just before the record write; a failure
    * earlier than that cannot have committed a record, so the lookup is skipped. */
   trackWrite?: boolean;
+  /** Reverts writes `next` made ahead of the record, such as the agent's link to the file.
+   * Runs only when no record exists, before the object is deleted. */
+  revert?: () => Promise<unknown>;
   logger: { error: (message: string, meta?: unknown) => void };
 };
 
@@ -46,7 +49,7 @@ export const createRecordExists =
  * The original failure is rethrown; a failed cleanup is logged and never replaces it.
  */
 export async function withStoredUploadCleanup<T>(
-  { stored, resolveDeleteFile, recordExists, req, logger, trackWrite }: StoredUploadCleanup,
+  { stored, resolveDeleteFile, recordExists, req, logger, trackWrite, revert }: StoredUploadCleanup,
   next: (beginWrite: () => void) => Promise<T>,
 ): Promise<T> {
   let writeBegun = trackWrite !== true;
@@ -58,6 +61,14 @@ export async function withStoredUploadCleanup<T>(
     try {
       /* A rejected write can still have committed; deleting then would strand the record. */
       if (!writeBegun || !(await recordExists(stored))) {
+        try {
+          await revert?.();
+        } catch (revertError) {
+          logger.error(
+            '[withStoredUploadCleanup] Failed to revert upload writes',
+            getSafeErrorMetadata(revertError),
+          );
+        }
         /* Storage strategies validate ownership and tenant against the object key. */
         const ref: StoredUploadRef = {
           user: req.user?.id,
@@ -77,6 +88,54 @@ export async function withStoredUploadCleanup<T>(
     }
     throw error;
   }
+}
+
+export type AgentFileLink = {
+  agent_id: string;
+  tool_resource: string;
+  file_id: string;
+  updatingUserId?: string;
+};
+
+/**
+ * Writes an agent upload's file record, first linking the file to the agent's tool resource
+ * when `link` is set. The link goes first so a rejected link (a missing agent, say) leaves no
+ * record behind; when the record then fails and does not exist, the link is removed with the
+ * stored object, so the agent never lists a file id that no record backs.
+ */
+export function recordAgentUpload<T>({
+  cleanup,
+  link,
+  addLink,
+  removeLinks,
+  createRecord,
+}: {
+  cleanup: StoredUploadCleanup;
+  link?: AgentFileLink;
+  addLink: (link: AgentFileLink) => Promise<unknown>;
+  removeLinks: (params: {
+    agent_id: string;
+    files: Array<{ tool_resource: string; file_id: string }>;
+  }) => Promise<unknown>;
+  createRecord: () => Promise<T>;
+}): Promise<T> {
+  let attempted = false;
+  const revert = async () => {
+    if (!attempted || link == null) {
+      return;
+    }
+    const { agent_id, tool_resource, file_id } = link;
+    await removeLinks({ agent_id, files: [{ tool_resource, file_id }] });
+  };
+  return withStoredUploadCleanup({ ...cleanup, trackWrite: true, revert }, async (beginWrite) => {
+    if (link != null) {
+      /* A rejected link write may still have committed, so it is reverted too. */
+      attempted = true;
+      await addLink(link);
+    }
+    beginWrite();
+    return createRecord();
+  });
 }
 
 export type StoredUploadTarget = { source: string; stored: StoredUploadRef };

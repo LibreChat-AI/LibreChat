@@ -242,6 +242,19 @@ export function useProgressiveRowMount({
      *  the same task (`finish`): the reader cannot have scrolled between the two. */
     restingTop: number | null;
   } | null>(null);
+  /**
+   * What the scroll position still owes the reader after a step, and the position that step
+   * left it at.
+   *
+   * Chromium keeps a scroll position in whole pixels, and rows are not whole pixels tall:
+   * asked to move by the 458.375px that four one-line turns come to, it moves by 458.
+   * Each step measures its own rows and nothing else, so what a step lost stayed lost, and a
+   * reader beside a reply in flight, where a step lands on every frame, watched the row they
+   * were reading sink 60px while 800 rows mounted above it. What a step could not apply goes
+   * into the next one instead, for as long as the position is still where the mount left it:
+   * any other move is the reader's, or the stream's, and is a place of its own.
+   */
+  const owedRef = useRef<{ top: number; height: number } | null>(null);
   /** The thread's height before the step in flight, while one is. */
   const heightRef = useRef<number | null>(null);
   const onInsertAboveRef = useRef(onInsertAbove);
@@ -361,6 +374,9 @@ export function useProgressiveRowMount({
   useLayoutEffect(() => {
     const captured = anchorRef.current;
     anchorRef.current = null;
+    /** Owed to the step that follows the one it came from, and to no other. */
+    const owed = owedRef.current;
+    owedRef.current = null;
     const container = scrollableRef.current;
     const height = heightRef.current;
     heightRef.current = null;
@@ -410,12 +426,14 @@ export function useProgressiveRowMount({
     if (!captured.byHand && before > 0) {
       return;
     }
+    const carried = owed != null && owed.top === before ? owed.height : 0;
     /** Rows added above have not moved the scroll position, so what it reads is where the
-     *  reader was before the step, and this is where the anchor sat on their screen. */
-    const restingTop = captured.documentOffset - before;
+     *  reader was before the step. This is where the anchor belongs on their screen: where it
+     *  sat, less what the position was already short of. */
+    const restingTop = captured.documentOffset - before - carried;
     const shift = captured.element.getBoundingClientRect().top + before - captured.documentOffset;
     if (shift !== 0) {
-      container.scrollTop = before + shift;
+      container.scrollTop = before + shift + carried;
     }
     /**
      * Once more when the commit has finished. A row that mounts can change its height before
@@ -432,10 +450,19 @@ export function useProgressiveRowMount({
       if (!captured.element.isConnected) {
         return;
       }
-      const drift = captured.element.getBoundingClientRect().top - restingTop;
-      if (Math.abs(drift) >= 1) {
-        container.scrollTop += drift;
+      /** How far below where it belongs the anchor sits: under a pixel when nothing changed
+       *  height, which is the part of the step the scroll position could not take. */
+      let short = captured.element.getBoundingClientRect().top - restingTop;
+      let top = container.scrollTop;
+      if (Math.abs(short) >= 1) {
+        container.scrollTop = top + short;
+        const moved = container.scrollTop - top;
+        short -= moved;
+        top += moved;
       }
+      /** A pixel or more left over is the end of the scroll range, where there is no further
+       *  to go, and not something a later step should make up. */
+      owedRef.current = Math.abs(short) < 1 ? { top, height: short } : null;
     });
   }, [mountWindow, scrollableRef]);
 

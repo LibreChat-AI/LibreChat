@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useLocalize } from '@librechat/client';
+import { isEphemeralAgentId } from 'librechat-data-provider';
 import type {
   AgentDisplay,
   TMessage,
@@ -14,6 +15,7 @@ import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from './labels';
 import { ErrorSourceProvider } from '../../react/messages/error';
 import { MessageIconSlot } from '../../react/messages/host';
 import { AuthorContext } from '../../react/messages/author';
+import { renderContentParts } from '../contentRenderer';
 import { useMessagePartsHost } from '../../react/host';
 import { getHeaderHoverLabel } from './HeaderLabel';
 import MessageFooter from './MessageFooter';
@@ -34,6 +36,9 @@ export type ContentRowProps = {
   hasConfiguredSender: boolean;
   /** Drops the avatar and name from a turn by the agent the header's model selector shows. */
   hideSelectedAuthor?: boolean;
+  /** The sender a response sent under the conversation's current selection carries; one written
+   *  under another spec on the same model carries another. */
+  selectedSender?: string;
   isLast: boolean;
   isLatestMessage: boolean;
   isSubmitting: boolean;
@@ -62,6 +67,56 @@ export type ContentRowProps = {
   notice?: ReactNode;
 };
 
+/** Whether a response came from the conversation's own selection: the saved agent the selector
+ *  shows, or, with no saved agent, the spec or endpoint and model it runs, under the sender that
+ *  selection writes. A turn by another agent, from another spec on the same model, a subagent's
+ *  read-only thread (whose header has no selector), side-by-side agent columns and an added
+ *  conversation (index > 0) all keep their author. A sender missing on either side, as on a
+ *  response still streaming, does not tell the authors apart. */
+function isSelectedAuthor({
+  agent,
+  index,
+  message,
+  assistant,
+  conversation,
+  selectedSender,
+  hasParallelContent,
+}: Pick<
+  ContentRowProps,
+  | 'agent'
+  | 'index'
+  | 'message'
+  | 'assistant'
+  | 'conversation'
+  | 'selectedSender'
+  | 'hasParallelContent'
+>): boolean {
+  if (message.isCreatedByUser === true || conversation == null) {
+    return false;
+  }
+  if (conversation.subagentThread != null) {
+    return false;
+  }
+  if (agent != null) {
+    return agent.id === conversation.agent_id;
+  }
+  /** A spec or endpoint turn runs as an ephemeral agent, whose id the server saves on the
+   *  conversation; only a saved agent is another author. */
+  if (
+    assistant != null ||
+    (conversation.agent_id != null && !isEphemeralAgentId(conversation.agent_id))
+  ) {
+    return false;
+  }
+  return (
+    index === 0 &&
+    !hasParallelContent &&
+    (message.endpoint ?? conversation.endpoint) === conversation.endpoint &&
+    (message.model ?? conversation.model) === conversation.model &&
+    (!message.sender || !selectedSender || message.sender === selectedSender)
+  );
+}
+
 /**
  * The row of a message rendered from content parts: header, parts and footer (elapsed time,
  * sibling navigation and the caller's toolbar, through `MessageFooter`). The parts render through the host's content-parts
@@ -77,6 +132,7 @@ export default function ContentRow({
   assistant,
   hasConfiguredSender,
   hideSelectedAuthor = false,
+  selectedSender,
   isLast,
   isLatestMessage,
   isSubmitting,
@@ -101,14 +157,17 @@ export default function ContentRow({
   const showThinking = host.useShowThinking();
   const autoExpandTools = host.useAutoExpandTools();
   const isCreatedByUser = message.isCreatedByUser === true;
-  /** A turn by another agent keeps its author, and so does a subagent's read-only thread, whose
-   *  header has no selector. */
   const authorHidden =
     hideSelectedAuthor &&
-    !isCreatedByUser &&
-    agent != null &&
-    agent.id === conversation?.agent_id &&
-    conversation.subagentThread == null;
+    isSelectedAuthor({
+      agent,
+      index,
+      message,
+      assistant,
+      conversation,
+      selectedSender,
+      hasParallelContent,
+    });
 
   const author = useMemo(
     () => ({
@@ -156,7 +215,7 @@ export default function ContentRow({
       <AuthorContext.Provider value={author}>
         <ErrorSourceProvider message={message}>
           {body ??
-            host.renderContentParts({
+            (host.renderContentParts ?? renderContentParts)({
               edit,
               isLast,
               enterEdit,

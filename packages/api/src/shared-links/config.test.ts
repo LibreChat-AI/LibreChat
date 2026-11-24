@@ -3,6 +3,7 @@ import { getTenantId, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
 import type { TThemeDefinitionConfig } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import {
+  isSharedLinksEnabled,
   resolveSharedLinkConfig,
   isFileSnapshotEnabled,
   buildSharedLinkStartupPayload,
@@ -130,6 +131,19 @@ describe('isFileSnapshotEnabled', () => {
   it('env override wins over yaml (env true beats yaml false)', () => {
     process.env.SHARED_LINKS_SNAPSHOT_FILES = 'true';
     expect(isFileSnapshotEnabled(withSharedLinks({ snapshotFiles: false }))).toBe(true);
+  });
+});
+
+describe('isSharedLinksEnabled', () => {
+  it('enables shared links when ALLOW_SHARED_LINKS is unset', () => {
+    expect(isSharedLinksEnabled({})).toBe(true);
+  });
+
+  it('follows an explicit ALLOW_SHARED_LINKS value', () => {
+    expect(isSharedLinksEnabled({ ALLOW_SHARED_LINKS: 'true' })).toBe(true);
+    expect(isSharedLinksEnabled({ ALLOW_SHARED_LINKS: ' TRUE ' })).toBe(true);
+    expect(isSharedLinksEnabled({ ALLOW_SHARED_LINKS: 'false' })).toBe(false);
+    expect(isSharedLinksEnabled({ ALLOW_SHARED_LINKS: '' })).toBe(false);
   });
 });
 
