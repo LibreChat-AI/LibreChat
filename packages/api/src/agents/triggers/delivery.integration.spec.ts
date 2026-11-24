@@ -163,6 +163,50 @@ describe('durable trigger delivery integration', () => {
     }
   });
 
+  it('backs off idle maintenance while the conversation sweep spans many full pages', async () => {
+    /** The legacy-receipt sweep pages the whole conversations collection, and every full page
+     * used to count as activity. With more conversations than one page holds the loop never went
+     * idle: it polled at its base interval whatever `maintenanceMaxIntervalMs` said. */
+    const Conversation = mongoose.models.Conversation;
+    await Conversation.insertMany(
+      Array.from({ length: 20 }, () => ({
+        conversationId: new mongoose.Types.ObjectId().toString(),
+        user: 'sweep-user',
+        endpoint: 'agents',
+      })),
+    );
+    const methods = createMethods(mongoose);
+    const sweep = methods.expireLegacyAgentEventActorReceipts.bind(methods);
+    const passes: number[] = [];
+    jest.spyOn(methods, 'expireLegacyAgentEventActorReceipts').mockImplementation((...args) => {
+      passes.push(Date.now());
+      return sweep(...args);
+    });
+    service = createAgentTriggerService({
+      methods: methods as typeof methods & AgentTriggerDeliveryPersistence,
+      purgeRecoveryIntervalMs: 40,
+      purgeRecoveryLimit: 2,
+      deliveryOptions: { concurrency: 1, tickMs: 60_000 },
+    });
+    try {
+      await service.initialize({
+        address: { address: '127.0.0.1', family: 'IPv4', port: 3080 },
+        idlePolling: { maintenanceMaxIntervalMs: 640 },
+      });
+      const deadline = Date.now() + 8_000;
+      while (passes.length < 5) {
+        if (Date.now() >= deadline)
+          throw new Error('Timed out waiting for five maintenance passes');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const gaps = passes.slice(1, 5).map((at, index) => at - passes[index]);
+      /** Idle passes double the wait (80, 160, 320, 640 ms); a loop held at its base interval stays near 40 ms. */
+      expect(gaps[3]).toBeGreaterThan(gaps[0] * 3);
+    } finally {
+      await Conversation.deleteMany({});
+    }
+  });
+
   it('moves a trusted envelope through Mongo, the lease worker, and host admission', async () => {
     const fetcher = jest.fn<ReturnType<AgentTriggerFetch>, Parameters<AgentTriggerFetch>>(
       async () =>
