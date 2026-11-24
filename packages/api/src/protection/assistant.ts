@@ -11,7 +11,12 @@ import {
   ProviderTextProtectionError,
   PROVIDER_TEXT_PROTECTION_VERSION,
 } from '@librechat/agents';
-import type { OpenAIClientOptions, AgentInputs, ProviderTextProtection } from '@librechat/agents';
+import type {
+  OpenAIClientOptions,
+  AgentInputs,
+  ProviderTextProtection,
+  ProviderTextProtectionResult,
+} from '@librechat/agents';
 import type { AIMessage, BaseMessage } from '@librechat/agents/langchain/messages';
 import type { TCustomConfig } from 'librechat-data-provider';
 import type { RequestHandler } from 'express';
@@ -22,7 +27,13 @@ export type AssistantConfig = {
 };
 
 type Policy = NonNullable<NonNullable<TCustomConfig['outputProtection']>['assistantText']>;
-const compiled = new WeakMap<object, ProviderTextProtection>();
+interface AssistantProtection extends ProviderTextProtection {
+  readonly inspect: (
+    input: Parameters<ProviderTextProtection['inspect']>[0],
+  ) => ProviderTextProtectionResult;
+}
+
+const compiled = new WeakMap<Policy, AssistantProtection>();
 const admitted = new WeakSet<object>();
 const historyKeys = new Set(['provenance', 'sourceMessageId', 'sourceMessageIds']);
 const supportedModel = /^gpt-4(?:o(?:-mini)?|\.1(?:-mini|-nano)?)(?:-\d{4}-\d{2}-\d{2})?$/;
@@ -113,7 +124,7 @@ function classify(content: string): 'prose' | 'unsupported' {
     : 'prose';
 }
 
-export function createAssistantProtection(config: Policy): ProviderTextProtection {
+export function createAssistantProtection(config: Policy): AssistantProtection {
   if (PROVIDER_TEXT_PROTECTION_VERSION !== 1) {
     throw new ProviderTextProtectionError('incompatible');
   }
@@ -133,7 +144,7 @@ export function createAssistantProtection(config: Policy): ProviderTextProtectio
     throw new ProviderTextProtectionError('unavailable');
   }
   const maxAttemptBytes = maxCharacters * 16 + 65_536;
-  const protection: ProviderTextProtection = {
+  const protection: AssistantProtection = {
     version: 1,
     timeoutMs,
     maxAttemptBytes,
@@ -223,51 +234,58 @@ export function createAssistantModel(
   return model;
 }
 
-function readText(message: BaseMessage): readonly string[] {
-  if (typeof message.content === 'string') return [message.content];
-  return message.content.map((part) => {
-    if (
-      typeof part === 'string' ||
-      part.type !== 'text' ||
-      typeof part.text !== 'string' ||
-      Object.keys(part).some((key) => key !== 'type' && key !== 'text')
-    ) {
-      throw new ProviderTextProtectionError('unsupported');
-    }
-    return part.text;
-  });
-}
-
 /** Old assistant text is not trusted merely because the host loaded it. */
-export async function inspectAssistantHistory(
-  protection: ProviderTextProtection,
+export function inspectAssistantHistory(
+  protection: AssistantProtection,
   messages: readonly BaseMessage[],
   signal: AbortSignal,
-): Promise<void> {
+): void {
   let remaining = protection.maxAttemptBytes;
   const deadline = performance.now() + protection.timeoutMs;
   for (const message of messages) {
     const type = message._getType();
     if (type !== 'ai' && type !== 'human') throw new ProviderTextProtectionError('unsupported');
-    const parts = readText(message);
-    if (type !== 'ai') continue;
-    const assistant = message as AIMessage;
+    const assistant = type === 'ai' ? (message as AIMessage) : undefined;
     if (
-      assistant.tool_calls?.length ||
-      assistant.invalid_tool_calls?.length ||
-      Object.keys(assistant.additional_kwargs).some((key) => !historyKeys.has(key))
+      assistant != null &&
+      (assistant.tool_calls?.length ||
+        assistant.invalid_tool_calls?.length ||
+        Object.keys(assistant.additional_kwargs).some((key) => !historyKeys.has(key)))
     ) {
       throw new ProviderTextProtectionError('unsupported');
     }
-    for (const part of parts) remaining -= part.length * 4;
-    if (remaining < 0) throw new ProviderTextProtectionError('overflow');
-    const content = parts.length === 1 ? parts[0] : parts.join('');
+
+    let content = '';
+    if (typeof message.content === 'string') {
+      if (assistant == null) continue;
+      content = message.content;
+      remaining -= content.length * 4;
+      if (remaining < 0) throw new ProviderTextProtectionError('overflow');
+    } else {
+      let parts: string[] | undefined;
+      for (const part of message.content) {
+        if (
+          typeof part === 'string' ||
+          part.type !== 'text' ||
+          typeof part.text !== 'string' ||
+          Object.keys(part).some((key) => key !== 'type' && key !== 'text')
+        ) {
+          throw new ProviderTextProtectionError('unsupported');
+        }
+        if (assistant == null || part.text === '') continue;
+        remaining -= part.text.length * 4;
+        if (remaining < 0) throw new ProviderTextProtectionError('overflow');
+        if (content === '') content = part.text;
+        else (parts ??= [content]).push(part.text);
+      }
+      if (parts != null) content = parts.join('');
+    }
     if (content === '') continue;
     if (signal.aborted) throw new ProviderTextProtectionError('cancelled');
     if (performance.now() >= deadline) throw new ProviderTextProtectionError('timeout');
     if (protection.classify(content) !== 'prose')
       throw new ProviderTextProtectionError('unsupported');
-    const result = await protection.inspect({
+    const result = protection.inspect({
       version: 1,
       content,
       target: { source: 'message', field: 'text', provenance: 'model' },

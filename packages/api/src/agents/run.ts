@@ -2583,7 +2583,7 @@ export async function createRun({
   const protection = output == null ? undefined : createAssistantProtection(output.assistantText!);
   if (protection != null) {
     hitlCapable = false;
-    if (messages != null) await inspectAssistantHistory(protection, messages, signal);
+    if (messages != null) inspectAssistantHistory(protection, messages, signal);
   }
   const runFilesActive =
     runFiles?.activate(

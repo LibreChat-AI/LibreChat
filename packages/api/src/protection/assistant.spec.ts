@@ -20,6 +20,8 @@ import {
   isInteractiveAssistantRequest,
   allowsAssistantSideEffects,
   runAssistantSideEffect,
+  createAssistantProtection,
+  inspectAssistantHistory,
 } from './assistant';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { createModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
@@ -234,6 +236,68 @@ it('suppresses auxiliary producers only when protection is required', () => {
   expect(start).toHaveBeenCalledTimes(1);
 });
 
+describe('assistant history inspection', () => {
+  const text = (value: string) => ({ type: 'text' as const, text: value });
+
+  it('inspects each nonempty assistant message once and leaves user text to the input policy', () => {
+    const policy = createAssistantProtection(config.outputProtection.assistantText);
+    const inspect = jest.fn(policy.inspect);
+    const messages = [
+      new HumanMessage(marker),
+      new HumanMessage({ content: [text(marker), text('more user text')] }),
+      new AIMessage(''),
+      new AIMessage({ content: [text(''), text('')] }),
+      new AIMessage('plain text'),
+      new AIMessage({ content: [text('single block')] }),
+      new AIMessage({ content: [text(''), text('two '), text(''), text('blocks')] }),
+    ];
+
+    inspectAssistantHistory({ ...policy, inspect }, messages, new AbortController().signal);
+
+    expect(inspect.mock.calls.map(([input]) => input.content)).toEqual([
+      'plain text',
+      'single block',
+      'two blocks',
+    ]);
+  });
+
+  it('charges multipart and plain assistant text to the same history budget', () => {
+    const policy = createAssistantProtection(config.outputProtection.assistantText);
+    const inspect = jest.fn(policy.inspect);
+    const messages = [
+      new AIMessage('abc'),
+      new HumanMessage({ content: [text('not charged to the assistant budget')] }),
+      new AIMessage({ content: [text('de'), text('f')] }),
+    ];
+    const signal = new AbortController().signal;
+
+    inspectAssistantHistory({ ...policy, inspect, maxAttemptBytes: 24 }, messages, signal);
+    expect(inspect.mock.calls.map(([input]) => input.content)).toEqual(['abc', 'def']);
+
+    inspect.mockClear();
+    expect(() =>
+      inspectAssistantHistory({ ...policy, inspect, maxAttemptBytes: 23 }, messages, signal),
+    ).toThrow(expect.objectContaining({ code: 'overflow' }));
+    expect(inspect.mock.calls.map(([input]) => input.content)).toEqual(['abc']);
+  });
+
+  it('rejects non-text user history without running the assistant detector', () => {
+    const policy = createAssistantProtection(config.outputProtection.assistantText);
+    const inspect = jest.fn(policy.inspect);
+    const history = new HumanMessage({
+      content: [
+        text('user text'),
+        { type: 'image_url', image_url: 'https://example.invalid/image' },
+      ],
+    });
+
+    expect(() =>
+      inspectAssistantHistory({ ...policy, inspect }, [history], new AbortController().signal),
+    ).toThrow(expect.objectContaining({ code: 'unsupported' }));
+    expect(inspect).not.toHaveBeenCalled();
+  });
+});
+
 it('withholds a match spanning provider chunks from deltas and run content', async () => {
   const provider = await fixture(['Here is the private ', 'phrase example.']);
   const manager = jobManager();
@@ -306,6 +370,15 @@ it('admits no provider call from an unsupported caller or unchecked history', as
     await expect(
       setup(provider.agent, { messages: [new AIMessage(marker)] }),
     ).rejects.toMatchObject({ code: 'blocked' });
+    const multipart = new AIMessage({
+      content: [
+        { type: 'text', text: 'private ' },
+        { type: 'text', text: 'phrase example' },
+      ],
+    });
+    await expect(setup(provider.agent, { messages: [multipart] })).rejects.toMatchObject({
+      code: 'blocked',
+    });
     expect(provider.outbound).toHaveLength(0);
   } finally {
     await provider.close();
