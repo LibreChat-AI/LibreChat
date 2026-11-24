@@ -188,7 +188,8 @@ describe('registerDeploymentPluginHooks', () => {
     await initialize();
     const registry = new HookRegistry();
     registerDeploymentPluginHooks({ registry, context: { sessionId: 'missing-shell' } });
-    jest.replaceProperty(process.env, 'PATH', dataDir);
+    const pathKey = (Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH') as 'PATH';
+    jest.replaceProperty(process.env, pathKey, dataDir);
 
     const result = await executeHooks({
       registry,

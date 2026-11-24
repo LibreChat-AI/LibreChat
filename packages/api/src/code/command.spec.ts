@@ -1079,7 +1079,7 @@ describe('createAttachedWorkspaceBashTool', () => {
     });
     try {
       const content = await bashTool.invoke({
-        command: 'cd child && printf "%s/%s" "${OLDPWD##*/}" "${PWD##*/}"',
+        command: 'prev=$(pwd -P) && cd child && printf "%s/%s" "${prev##*/}" "${PWD##*/}"',
       });
       expect(content).toContain('[starting directory: "workspace/"]');
       expect(content).toContain('stdout:\nproject/child');
