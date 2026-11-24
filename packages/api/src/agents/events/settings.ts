@@ -42,7 +42,12 @@ function resolveGitHub(config: EventConfig['github'], env: Env): GitHubSettings 
     config.requestTimeoutSeconds == null
       ? DEFAULT_REQUEST_TIMEOUT_MS
       : config.requestTimeoutSeconds * 1000;
-  return { app: { id, key: pem(key), host, timeoutMs }, secret };
+  // Only binding needs the OAuth client, so deliveries are verified without it.
+  const clientId = config.clientId == null ? null : resolveTokenReference(config.clientId, env);
+  const clientSecret =
+    config.clientSecret == null ? null : resolveTokenReference(config.clientSecret, env);
+  const client = clientId && clientSecret ? { id: clientId, secret: clientSecret } : undefined;
+  return { app: { id, key: pem(key), host, timeoutMs, ...(client && { client }) }, secret };
 }
 
 /**

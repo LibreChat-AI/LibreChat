@@ -22,6 +22,11 @@ export interface AppConfig {
    * that installation is asked about again.
    */
   capacity?: number;
+  /**
+   * The app's OAuth client, with which a user's authorization code is exchanged to check what
+   * that user can access. Holds a credential. Without it `owns` answers `credential`.
+   */
+  client?: { id: string; secret: string };
 }
 
 export interface AppDeps {
@@ -41,10 +46,11 @@ export interface AppDeps {
  *   without the repository permission the question needs.
  * - `limited`: GitHub is rate limiting the installation; `retryAfterMs` is how long it asked
  *   callers to wait.
+ * - `code`: GitHub does not accept a user's authorization code: it is wrong, used or expired.
  *
  * Everything else is an outage and is thrown as a `GitHubError`.
  */
-export type AppFailure = 'credential' | 'missing' | 'forbidden' | 'limited';
+export type AppFailure = 'credential' | 'missing' | 'forbidden' | 'limited' | 'code';
 
 /**
  * Why GitHub could not be asked at all:
@@ -110,6 +116,14 @@ export interface App {
    * cannot be asked.
    */
   installation(id: number): Promise<Reply<Installation>>;
+  /**
+   * Whether the user who authorized the app with `code` can access installation `id`, which is
+   * GitHub's proof that the user installed it or administers the account it is on. The code is
+   * exchanged for that user's token, the token is used for this one question, and it is then
+   * dropped: it is never held, returned or logged. `credential` when no client is configured
+   * or GitHub rejects it. Rejects with a `GitHubError` when GitHub cannot be asked.
+   */
+  owns(code: string, id: number): Promise<Reply<boolean>>;
 }
 
 const REPO = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
@@ -136,6 +150,17 @@ const LIMIT_WAIT_MS = 60_000;
 /** GitHub's limits reset within the hour, so a longer wait is a header that did not read. */
 const MAX_WAIT_MS = 3_600_000;
 const CAPACITY = 10_000;
+/** A user's installations are listed this many to a page, for at most this many pages. */
+const PAGE = 100;
+const PAGES = 10;
+/** An authorization code as GitHub issues it. */
+const CODE = /^[A-Za-z0-9_-]{1,512}$/;
+/** The token endpoint's refusals of the code itself, which it answers with HTTP 200. */
+const CODE_REFUSALS: ReadonlySet<string> = new Set([
+  'bad_verification_code',
+  'redirect_uri_mismatch',
+  'invalid_grant',
+]);
 
 type Failure = Extract<Reply<never>, { ok: false }>;
 
@@ -418,5 +443,100 @@ export function createApp(config: AppConfig, deps: AppDeps): App {
     return asApp(`/app/installations/${id}`, installed);
   }
 
-  return { access, about, installation };
+  /** The user's token for `code`, from the app's own token endpoint on its host. */
+  async function redeem(
+    code: string,
+    client: { id: string; secret: string },
+  ): Promise<Reply<string>> {
+    const signal = AbortSignal.timeout(config.timeoutMs);
+    const body = new URLSearchParams({ client_id: client.id, client_secret: client.secret, code });
+    let response: Response;
+    try {
+      response = await deps.fetch(`https://${config.host}/login/oauth/access_token`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'LibreChat-Agent-Events',
+        },
+        body: body.toString(),
+        signal,
+      });
+    } catch {
+      throw new GitHubError(signal.aborted ? 'timeout' : 'network');
+    }
+    if (response.status >= 500) {
+      throw new GitHubError('upstream', response.status);
+    }
+    const limit = await gitHubRateLimit(response);
+    if (limit != null) {
+      return fail('limited', Math.min(limit.waitMs ?? LIMIT_WAIT_MS, MAX_WAIT_MS));
+    }
+    const parsed = await read(response);
+    const error = isRecord(parsed) && typeof parsed.error === 'string' ? parsed.error : undefined;
+    // GitHub answers a refused code with 200 and an `error` field.
+    if (error != null && CODE_REFUSALS.has(error)) {
+      return fail('code');
+    }
+    if (error === 'incorrect_client_credentials' || response.status === 401) {
+      return fail('credential');
+    }
+    const token = isRecord(parsed) ? parsed.access_token : undefined;
+    if (!response.ok || error != null || typeof token !== 'string' || !TOKEN.test(token)) {
+      throw new GitHubError('upstream', response.status);
+    }
+    return { ok: true, value: token };
+  }
+
+  async function owns(code: string, id: number): Promise<Reply<boolean>> {
+    if (!isId(id)) {
+      return fail('missing');
+    }
+    if (!CODE.test(code)) {
+      return fail('code');
+    }
+    if (config.client == null) {
+      return fail('credential');
+    }
+    const redeemed = await redeem(code, config.client);
+    if (!redeemed.ok) {
+      return redeemed;
+    }
+    const bearer = redeemed.value;
+    for (let page = 1; page <= PAGES; page++) {
+      const response = await request(
+        `/user/installations?per_page=${PAGE}&page=${page}`,
+        bearer,
+        'GET',
+      );
+      if (!response.ok) {
+        const limit = await gitHubRateLimit(response);
+        if (limit != null) {
+          return fail('limited', Math.min(limit.waitMs ?? LIMIT_WAIT_MS, MAX_WAIT_MS));
+        }
+        if (response.status === 401) {
+          return fail('credential');
+        }
+        if (response.status === 403) {
+          return fail('forbidden');
+        }
+        throw new GitHubError('upstream', response.status);
+      }
+      const body = await read(response);
+      const listed = isRecord(body) ? body.installations : undefined;
+      if (!Array.isArray(listed)) {
+        throw new GitHubError('upstream', response.status);
+      }
+      if (listed.some((entry) => isRecord(entry) && entry.id === id)) {
+        return { ok: true, value: true };
+      }
+      const total = isRecord(body) && isId(body.total_count) ? body.total_count : 0;
+      if (listed.length < PAGE || page * PAGE >= total) {
+        break;
+      }
+    }
+    return { ok: true, value: false };
+  }
+
+  return { access, about, installation, owns };
 }

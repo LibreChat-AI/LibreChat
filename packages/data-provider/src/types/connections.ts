@@ -40,6 +40,8 @@ export interface ConnectionChoicesResponse {
 export const ConnectionError = {
   invalid: 'CONNECTION_INVALID',
   state: 'CONNECTION_STATE_INVALID',
+  code: 'CONNECTION_CODE_INVALID',
+  inaccessible: 'CONNECTION_NOT_ACCESSIBLE',
   missing: 'CONNECTION_NOT_FOUND',
   installation: 'CONNECTION_INSTALLATION_NOT_FOUND',
   taken: 'CONNECTION_TAKEN',
@@ -61,18 +63,27 @@ export interface AdminConnections {
   configured: boolean;
 }
 
-/** Where to send the admin to install the app; the link carries a state the bind checks. */
+/**
+ * Where to send the admin. `url` installs the app; with "Request user authorization (OAuth)
+ * during installation" on, GitHub then returns to the app's Callback URL with a `code` and the
+ * installation's id. `authorize` asks the admin to authorize the app alone, for an install made
+ * another way; GitHub returns to the Callback URL with a `code`. Both links carry the `state`
+ * the bind checks.
+ */
 export interface ConnectionInstall {
   url: string;
+  authorize: string;
 }
 
 /**
- * What GitHub hands the app's Setup URL after an install: the installation's id and the
- * `state` the install link carried.
+ * What the app's Callback URL received: the installation's id, the authorization `code` GitHub
+ * issued for the admin, and the `state` the link carried. The code proves which installations
+ * the admin can access.
  */
 export interface ConnectionBindRequest {
   installation: string;
   state: string;
+  code: string;
 }
 
 export interface ConnectionMarkRequest {

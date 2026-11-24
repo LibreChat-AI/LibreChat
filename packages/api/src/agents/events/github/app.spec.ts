@@ -793,3 +793,222 @@ describe('createApp as the app itself', () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe('createApp owns', () => {
+  const CLIENT = { id: 'Iv23.client', secret: 'client-secret-6b0e' };
+  const USER_TOKEN = 'ghu_usertoken77c4';
+  type Sent = { url: string; method: string; body: string; headers: Record<string, string> };
+
+  /** GitHub's token endpoint and the user's installations, as `answer` decides. */
+  function owner(
+    answer: (sent: Sent) => Response | Promise<Response>,
+    config: Partial<AppConfig> = {},
+  ) {
+    const sent: Sent[] = [];
+    const fetch: PullRequestFetch = async (input, init) => {
+      const entry: Sent = {
+        url: input,
+        method: init?.method ?? 'GET',
+        body: typeof init?.body === 'string' ? init.body : '',
+        headers: Object.fromEntries(new Headers(init?.headers).entries()),
+      };
+      sent.push(entry);
+      return answer(entry);
+    };
+    const app = createApp(
+      {
+        id: 'Iv1.example',
+        key: KEY,
+        host: 'github.com',
+        timeoutMs: 10_000,
+        client: CLIENT,
+        ...config,
+      },
+      { fetch, now: () => START },
+    );
+    return { app, sent };
+  }
+
+  const isToken = (sent: Sent) => sent.url.endsWith('/login/oauth/access_token');
+  const page = (url: string) => Number(new URL(url).searchParams.get('page'));
+
+  /** An account that can access `ids`, a hundred to a page. */
+  const account = (ids: number[]) => (sent: Sent) =>
+    isToken(sent)
+      ? json({ access_token: USER_TOKEN, token_type: 'bearer' })
+      : json({
+          total_count: ids.length,
+          installations: ids
+            .slice((page(sent.url) - 1) * 100, page(sent.url) * 100)
+            .map((id) => ({ id })),
+        });
+
+  it('redeems the code with the client on the app host and asks as that account', async () => {
+    const { app, sent } = owner(account([12, INSTALLATION]));
+    await expect(app.owns('code1f2e', INSTALLATION)).resolves.toEqual({ ok: true, value: true });
+    expect(sent.map((entry) => `${entry.method} ${entry.url}`)).toEqual([
+      'POST https://github.com/login/oauth/access_token',
+      'GET https://api.github.com/user/installations?per_page=100&page=1',
+    ]);
+    expect(Object.fromEntries(new URLSearchParams(sent[0].body))).toEqual({
+      client_id: CLIENT.id,
+      client_secret: CLIENT.secret,
+      code: 'code1f2e',
+    });
+    expect(sent[0].headers.accept).toBe('application/json');
+    expect(sent[1].headers.authorization).toBe(`Bearer ${USER_TOKEN}`);
+  });
+
+  it('answers no for an installation the account cannot access', async () => {
+    const { app } = owner(account([12, 13]));
+    await expect(app.owns('code1f2e', INSTALLATION)).resolves.toEqual({ ok: true, value: false });
+  });
+
+  it('reads further pages, and stops at the last one', async () => {
+    const ids = Array.from({ length: 250 }, (_, index) => 10_000 + index);
+    ids[180] = INSTALLATION;
+    let found = owner(account(ids));
+    await expect(found.app.owns('code1f2e', INSTALLATION)).resolves.toEqual({
+      ok: true,
+      value: true,
+    });
+    expect(found.sent.filter((entry) => !isToken(entry)).map((entry) => page(entry.url))).toEqual([
+      1, 2,
+    ]);
+    found = owner(account(ids.filter((id) => id !== INSTALLATION)));
+    await expect(found.app.owns('code1f2e', INSTALLATION)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+    expect(found.sent.filter((entry) => !isToken(entry))).toHaveLength(3);
+  });
+
+  it('reads at most ten pages', async () => {
+    const ids = Array.from({ length: 5_000 }, (_, index) => 10_000 + index);
+    const { app, sent } = owner(account(ids));
+    await expect(app.owns('code1f2e', INSTALLATION)).resolves.toEqual({ ok: true, value: false });
+    expect(sent.filter((entry) => !isToken(entry))).toHaveLength(10);
+  });
+
+  it('uses the Enterprise host for the token and its API for the account', async () => {
+    const { app, sent } = owner(account([INSTALLATION]), { host: 'git.example.com:8443' });
+    await app.owns('code1f2e', INSTALLATION);
+    expect(sent.map((entry) => entry.url)).toEqual([
+      'https://git.example.com:8443/login/oauth/access_token',
+      'https://git.example.com:8443/api/v3/user/installations?per_page=100&page=1',
+    ]);
+  });
+
+  it.each([
+    ['bad_verification_code', 'code'],
+    ['redirect_uri_mismatch', 'code'],
+    ['incorrect_client_credentials', 'credential'],
+  ] as const)('answers the token endpoint refusing with %s as %s', async (error, code) => {
+    const { app, sent } = owner(() => json({ error, error_description: MARKER }));
+    await expect(app.owns('code1f2e', INSTALLATION)).resolves.toEqual({
+      ok: false,
+      error: { code },
+    });
+    expect(sent).toHaveLength(1);
+  });
+
+  it('answers a rejected account token as credential and a rate limit as limited', async () => {
+    let { app } = owner((sent) =>
+      isToken(sent) ? json({ access_token: USER_TOKEN }) : json({ message: MARKER }, 401),
+    );
+    await expect(app.owns('code1f2e', INSTALLATION)).resolves.toEqual({
+      ok: false,
+      error: { code: 'credential' },
+    });
+    ({ app } = owner(() => json({ message: MARKER }, 429, { 'retry-after': '20' })));
+    await expect(app.owns('code1f2e', INSTALLATION)).resolves.toEqual({
+      ok: false,
+      error: { code: 'limited', retryAfterMs: 20_000 },
+    });
+  });
+
+  it("answers the account's installation list being limited or forbidden as GitHub said", async () => {
+    const list =
+      (status: number, headers: Record<string, string> = {}) =>
+      (sent: Sent) =>
+        isToken(sent)
+          ? json({ access_token: USER_TOKEN })
+          : json({ message: MARKER }, status, headers);
+    await expect(
+      owner(list(429, { 'retry-after': '5' })).app.owns('code1f2e', INSTALLATION),
+    ).resolves.toEqual({ ok: false, error: { code: 'limited', retryAfterMs: 5_000 } });
+    await expect(owner(list(403)).app.owns('code1f2e', INSTALLATION)).resolves.toEqual({
+      ok: false,
+      error: { code: 'forbidden' },
+    });
+  });
+
+  it('throws an outage for a server error, an unreadable token, an unreadable list or a failed request', async () => {
+    expect.hasAssertions();
+    await outage(
+      owner(() => json({ message: MARKER }, 502)).app.owns('c', INSTALLATION),
+      'upstream',
+      502,
+    );
+    await outage(
+      owner(() => json({ token_type: 'bearer' })).app.owns('c', INSTALLATION),
+      'upstream',
+      200,
+    );
+    await outage(
+      owner((sent) =>
+        isToken(sent) ? json({ access_token: USER_TOKEN }) : json({ total_count: 1 }),
+      ).app.owns('c', INSTALLATION),
+      'upstream',
+      200,
+    );
+    await outage(
+      owner(() => {
+        throw new Error(MARKER);
+      }).app.owns('c', INSTALLATION),
+      'network',
+    );
+  });
+
+  it('asks nothing without a client, for a code that does not read, or for an id that is not one', async () => {
+    const bare = owner(account([INSTALLATION]), { client: undefined });
+    await expect(bare.app.owns('code1f2e', INSTALLATION)).resolves.toEqual({
+      ok: false,
+      error: { code: 'credential' },
+    });
+    const { app, sent } = owner(account([INSTALLATION]));
+    await expect(app.owns('a code', INSTALLATION)).resolves.toEqual({
+      ok: false,
+      error: { code: 'code' },
+    });
+    await expect(app.owns('code1f2e', 0)).resolves.toEqual({
+      ok: false,
+      error: { code: 'missing' },
+    });
+    expect([...bare.sent, ...sent]).toHaveLength(0);
+  });
+
+  it("never returns or throws the account's token or the client secret", async () => {
+    const seen: unknown[] = [];
+    const answers: Array<(sent: Sent) => Response> = [
+      account([INSTALLATION]),
+      account([1]),
+      () => json({ error: 'bad_verification_code', error_description: USER_TOKEN }),
+      (sent) =>
+        isToken(sent) ? json({ access_token: USER_TOKEN }) : json({ message: USER_TOKEN }, 500),
+      () => {
+        throw new Error(`${USER_TOKEN} ${CLIENT.secret}`);
+      },
+    ];
+    for (const answer of answers) {
+      seen.push(
+        await owner(answer)
+          .app.owns('code1f2e', INSTALLATION)
+          .catch((error: unknown) => ({ ...(error as object), message: (error as Error).message })),
+      );
+    }
+    const text = JSON.stringify(seen);
+    expect(text).not.toContain(USER_TOKEN);
+    expect(text).not.toContain(CLIENT.secret);
+  });
+});

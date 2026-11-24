@@ -4,7 +4,7 @@ import mongoose from 'mongoose';
 import request from 'supertest';
 import { generateKeyPairSync } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { tenantStorage, createConnections } from '@librechat/data-schemas';
+import { logger, tenantStorage, createConnections } from '@librechat/data-schemas';
 import type { RecordAuditEntryInput, Connections, IUser } from '@librechat/data-schemas';
 import type { NextFunction, Request, Response } from 'express';
 import type { AdminConnectionDeps, EventsConfigSource } from './connections';
@@ -20,6 +20,9 @@ const INSTALLATION = 4400;
 const START = Date.UTC(2026, 10, 24, 12, 0, 0);
 const SECRET = 'state-secret-91d2';
 const WEBHOOK = 'webhook-secret-3a7f';
+const CLIENT_SECRET = 'client-secret-6b0e';
+const USER_TOKEN = 'ghu_usertoken77c4';
+const CODE = 'code1f2e3d';
 
 const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const KEY = rsa.privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
@@ -31,6 +34,8 @@ const ENV = {
   EVENTS_APP_ID: 'Iv1.example',
   EVENTS_APP_KEY: KEY,
   EVENTS_WEBHOOK_SECRET: WEBHOOK,
+  EVENTS_CLIENT_ID: 'Iv23.client',
+  EVENTS_CLIENT_SECRET: CLIENT_SECRET,
 };
 const CONFIG: EventsConfigSource = {
   endpoints: {
@@ -41,6 +46,8 @@ const CONFIG: EventsConfigSource = {
           appId: '${EVENTS_APP_ID}',
           privateKey: '${EVENTS_APP_KEY}',
           webhookSecret: '${EVENTS_WEBHOOK_SECRET}',
+          clientId: '${EVENTS_CLIENT_ID}',
+          clientSecret: '${EVENTS_CLIENT_SECRET}',
         },
       },
     },
@@ -61,11 +68,24 @@ function json(body: unknown, status = 200): globalThis.Response {
   });
 }
 
-/** GitHub as the app sees it: its page, and the installations it holds. */
-function gitHub(installations: Record<number, unknown> = {}) {
+/**
+ * GitHub as the app sees it: its page, the installations it holds, the token endpoint that
+ * redeems the admin's code, and the installations that admin can access (`mine`), a hundred to
+ * a page.
+ */
+function gitHub(installations: Record<number, unknown> = {}, mine: number[] = [INSTALLATION]) {
   return (url: string): globalThis.Response => {
-    const path = new URL(url).pathname;
+    const parsed = new URL(url);
+    const path = parsed.pathname;
     if (path === '/app') return json({ html_url: 'https://github.com/apps/example-events' });
+    if (path === '/login/oauth/access_token') {
+      return json({ access_token: USER_TOKEN, token_type: 'bearer' });
+    }
+    if (path === '/user/installations') {
+      const page = Number(parsed.searchParams.get('page'));
+      const ids = mine.slice((page - 1) * 100, page * 100);
+      return json({ total_count: mine.length, installations: ids.map((id) => ({ id })) });
+    }
     const found = /^\/app\/installations\/(\d+)$/.exec(path);
     const installation = found ? installations[Number(found[1])] : undefined;
     return installation ? json(installation) : json({ message: 'Not Found' }, 404);
@@ -201,7 +221,7 @@ describe('binding an installation', () => {
     const state = await start(app);
     const res = await request(app)
       .post('/connections')
-      .send({ installation: String(INSTALLATION), state });
+      .send({ installation: String(INSTALLATION), state, code: CODE });
     expect(res.status).toBe(201);
     expect(res.body).toEqual({
       id: expect.stringMatching(/^conn_/),
@@ -230,7 +250,9 @@ describe('binding an installation', () => {
   it('accepts the id as a number, as a Setup URL query read by a client may give it', async () => {
     const app = build();
     const state = await start(app);
-    const res = await request(app).post('/connections').send({ installation: INSTALLATION, state });
+    const res = await request(app)
+      .post('/connections')
+      .send({ installation: INSTALLATION, state, code: CODE });
     expect(res.status).toBe(201);
   });
 
@@ -238,7 +260,9 @@ describe('binding an installation', () => {
     github.mockImplementation(gitHub({ [INSTALLATION]: installed('example-org', true) }));
     const app = build();
     const state = await start(app);
-    const res = await request(app).post('/connections').send({ installation: INSTALLATION, state });
+    const res = await request(app)
+      .post('/connections')
+      .send({ installation: INSTALLATION, state, code: CODE });
     expect(res.status).toBe(201);
     expect(res.body.status).toBe('suspended');
     expect((await stored())[0].status).toBe('suspended');
@@ -248,11 +272,11 @@ describe('binding an installation', () => {
     const app = build();
     const first = await request(app)
       .post('/connections')
-      .send({ installation: INSTALLATION, state: await start(app) });
+      .send({ installation: INSTALLATION, state: await start(app), code: CODE });
     github.mockImplementation(gitHub({ [INSTALLATION]: installed('renamed-org') }));
     const again = await request(app)
       .post('/connections')
-      .send({ installation: INSTALLATION, state: await start(app) });
+      .send({ installation: INSTALLATION, state: await start(app), code: CODE });
     expect(again.status).toBe(201);
     expect(again.body.id).toBe(first.body.id);
     expect(again.body.account.name).toBe('renamed-org');
@@ -264,11 +288,11 @@ describe('binding an installation', () => {
     await request(app)
       .post('/connections')
       .set('x-tenant', STRANGER)
-      .send({ installation: INSTALLATION, state: await start(app, ADMIN, STRANGER) })
+      .send({ installation: INSTALLATION, state: await start(app, ADMIN, STRANGER), code: CODE })
       .expect(201);
     const res = await request(app)
       .post('/connections')
-      .send({ installation: INSTALLATION, state: await start(app) });
+      .send({ installation: INSTALLATION, state: await start(app), code: CODE });
     expect(res.status).toBe(409);
     expect(res.body).toEqual({
       error: 'Installation is bound elsewhere',
@@ -284,9 +308,13 @@ describe('binding an installation', () => {
   });
 
   it("refuses an installation GitHub does not report as this app's", async () => {
+    // The account can reach installation 77, but it is not one of this app's.
+    github.mockImplementation(gitHub({ [INSTALLATION]: installed() }, [77]));
     const app = build();
     const state = await start(app);
-    const res = await request(app).post('/connections').send({ installation: 77, state });
+    const res = await request(app)
+      .post('/connections')
+      .send({ installation: 77, state, code: CODE });
     expect(res.status).toBe(404);
     expect(res.body.code).toBe('CONNECTION_INSTALLATION_NOT_FOUND');
     expect(await stored()).toHaveLength(0);
@@ -302,7 +330,7 @@ describe('binding an installation', () => {
       const res = await request(app)
         .post('/connections')
         .set(headers)
-        .send({ installation: INSTALLATION, state });
+        .send({ installation: INSTALLATION, state, code: CODE });
       expect(res.status).toBe(403);
       expect(res.body).toEqual({
         error: 'Install state is not valid for this admin',
@@ -361,6 +389,7 @@ describe('binding an installation', () => {
     [{ installation: '0', state: 'x.y.z' }],
     [{ installation: '1e3', state: 'x.y.z' }],
     [{ installation: String(INSTALLATION) }],
+    [{ installation: String(INSTALLATION), state: 'x.y.z' }],
     [{}],
   ])('refuses a request that does not read: %j', async (body) => {
     const res = await request(build()).post('/connections').send(body);
@@ -372,7 +401,9 @@ describe('binding an installation', () => {
     const app = build();
     const state = await start(app);
     audit.mockRejectedValueOnce(new Error('audit store down'));
-    const res = await request(app).post('/connections').send({ installation: INSTALLATION, state });
+    const res = await request(app)
+      .post('/connections')
+      .send({ installation: INSTALLATION, state, code: CODE });
     expect(res.status).toBe(500);
     expect(res.body.code).toBe('CONNECTION_AUDIT_UNAVAILABLE');
     expect(await stored()).toHaveLength(0);
@@ -385,7 +416,7 @@ describe('listing, suspending and removing', () => {
     const res = await request(app)
       .post('/connections')
       .set('x-tenant', tenant)
-      .send({ installation: INSTALLATION, state: await start(app, ADMIN, tenant) });
+      .send({ installation: INSTALLATION, state: await start(app, ADMIN, tenant), code: CODE });
     expect(res.status).toBe(201);
     audit.mockClear();
     return res.body.id as string;
@@ -472,12 +503,106 @@ describe('listing, suspending and removing', () => {
   });
 });
 
+describe("GitHub's proof that the admin can access the installation", () => {
+  const bindWith = async (app: express.Express) =>
+    request(app)
+      .post('/connections')
+      .send({ installation: INSTALLATION, state: await start(app), code: CODE });
+
+  it('refuses an installation of the app the authorizing account cannot access, binding nothing', async () => {
+    github.mockImplementation(gitHub({ [INSTALLATION]: installed() }, [77, 78]));
+    const res = await bindWith(build());
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({
+      error: 'Installation is not accessible to this GitHub account',
+      code: 'CONNECTION_NOT_ACCESSIBLE',
+    });
+    expect(await stored()).toHaveLength(0);
+    expect(audit).not.toHaveBeenCalled();
+    expect(calls).not.toContain(`https://api.github.com/app/installations/${INSTALLATION}`);
+  });
+
+  it('redeems the code on the app host and asks as that account, page by page', async () => {
+    const mine = Array.from({ length: 150 }, (_, index) => 10_000 + index);
+    mine[120] = INSTALLATION;
+    github.mockImplementation(gitHub({ [INSTALLATION]: installed() }, mine));
+    const res = await bindWith(build());
+    expect(res.status).toBe(201);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        'https://github.com/login/oauth/access_token',
+        'https://api.github.com/user/installations?per_page=100&page=1',
+        'https://api.github.com/user/installations?per_page=100&page=2',
+      ]),
+    );
+  });
+
+  it('stops after the last page without finding it', async () => {
+    const mine = Array.from({ length: 230 }, (_, index) => 10_000 + index);
+    github.mockImplementation(gitHub({ [INSTALLATION]: installed() }, mine));
+    const res = await bindWith(build());
+    expect(res.status).toBe(403);
+    expect(calls.filter((url) => url.includes('/user/installations'))).toHaveLength(3);
+  });
+
+  it('answers a code GitHub will not redeem as invalid', async () => {
+    github.mockImplementation((url: string) =>
+      url.endsWith('/login/oauth/access_token')
+        ? json({ error: 'bad_verification_code', error_description: USER_TOKEN })
+        : gitHub({ [INSTALLATION]: installed() })(url),
+    );
+    const res = await bindWith(build());
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: 'Authorization code is not valid',
+      code: 'CONNECTION_CODE_INVALID',
+    });
+    expect(await stored()).toHaveLength(0);
+  });
+
+  it('answers an outage of the code exchange as unavailable', async () => {
+    github.mockImplementation((url: string) => {
+      if (url.endsWith('/login/oauth/access_token')) throw new Error(`reset ${CLIENT_SECRET}`);
+      return gitHub({ [INSTALLATION]: installed() })(url);
+    });
+    const res = await bindWith(build());
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe('CONNECTION_GITHUB_UNAVAILABLE');
+    expect(await stored()).toHaveLength(0);
+  });
+
+  it('is not configured without the OAuth client, so no install starts and nothing binds', async () => {
+    const env = { ...ENV, EVENTS_CLIENT_SECRET: undefined };
+    let res = await request(build({ env })).post('/connections/install');
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('CONNECTION_NOT_CONFIGURED');
+    res = await request(build({ env }))
+      .post('/connections')
+      .send({ installation: INSTALLATION, state: 'x.y.z', code: CODE });
+    expect(res.status).toBe(409);
+    res = await request(build({ env })).get('/connections');
+    expect(res.body.configured).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('offers a link that authorizes the app alone, with the same state', async () => {
+    const res = await request(build()).post('/connections/install');
+    const install = new URL(res.body.url);
+    const authorize = new URL(res.body.authorize);
+    expect(`${authorize.origin}${authorize.pathname}`).toBe(
+      'https://github.com/login/oauth/authorize',
+    );
+    expect(authorize.searchParams.get('client_id')).toBe('Iv23.client');
+    expect(authorize.searchParams.get('state')).toBe(install.searchParams.get('state'));
+  });
+});
+
 describe('failures', () => {
   async function bound(): Promise<string> {
     const app = build();
     const res = await request(app)
       .post('/connections')
-      .send({ installation: INSTALLATION, state: await start(app) });
+      .send({ installation: INSTALLATION, state: await start(app), code: CODE });
     expect(res.status).toBe(201);
     audit.mockClear();
     return res.body.id as string;
@@ -496,12 +621,12 @@ describe('failures', () => {
   it('refuses a state that is not a token, and binds while unconfigured never', async () => {
     let res = await request(build())
       .post('/connections')
-      .send({ installation: INSTALLATION, state: 'not-a-token' });
+      .send({ installation: INSTALLATION, state: 'not-a-token', code: CODE });
     expect(res.status).toBe(403);
     expect(res.body.code).toBe('CONNECTION_STATE_INVALID');
     res = await request(build({ getAppConfig: async () => ({}) }))
       .post('/connections')
-      .send({ installation: INSTALLATION, state: 'x.y.z' });
+      .send({ installation: INSTALLATION, state: 'x.y.z', code: CODE });
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('CONNECTION_NOT_CONFIGURED');
     expect(calls).toHaveLength(0);
@@ -533,7 +658,7 @@ describe('failures', () => {
     });
     const res = await request(app)
       .post('/connections')
-      .send({ installation: INSTALLATION, state: await start(app) });
+      .send({ installation: INSTALLATION, state: await start(app), code: CODE });
     expect(res.status).toBe(500);
     expect(res.body).toEqual({ error: 'Failed to bind the installation' });
     expect(actions()).toEqual([
@@ -586,15 +711,69 @@ describe('disclosure', () => {
     const install = await request(app).post('/connections/install');
     record(install);
     const state = new URL(install.body.url).searchParams.get('state') ?? '';
-    record(await request(app).post('/connections').send({ installation: INSTALLATION, state }));
+    record(
+      await request(app)
+        .post('/connections')
+        .send({ installation: INSTALLATION, state, code: CODE }),
+    );
     github.mockImplementation(() => json({ message: `Bad credentials ${KEY_BODY}` }, 401));
     record(await request(app).post('/connections/install'));
     github.mockImplementation(() => json({ message: KEY_BODY }, 500));
     record(await request(app).post('/connections/install'));
     const text = bodies.join('\n');
-    for (const secret of [KEY_BODY, WEBHOOK, SECRET, 'Bad credentials']) {
+    for (const secret of [
+      KEY_BODY,
+      WEBHOOK,
+      SECRET,
+      CLIENT_SECRET,
+      USER_TOKEN,
+      'Bad credentials',
+    ]) {
       expect(text).not.toContain(secret);
     }
     expect(text).not.toMatch(/eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{100,}/);
+  });
+
+  it("never logs the user's token, the client secret or the app's key", async () => {
+    const spies = (['error', 'warn', 'info', 'debug'] as const).map((level) =>
+      jest.spyOn(logger, level).mockImplementation(() => logger),
+    );
+    try {
+      const app = build();
+      await request(app)
+        .post('/connections')
+        .send({ installation: INSTALLATION, state: await start(app), code: CODE })
+        .expect(201);
+      github.mockImplementation((url: string) => {
+        if (url.endsWith('/login/oauth/access_token')) {
+          throw new Error(`reset ${CLIENT_SECRET} ${USER_TOKEN} ${KEY_BODY}`);
+        }
+        return gitHub({ [INSTALLATION]: installed() })(url);
+      });
+      await request(app)
+        .post('/connections')
+        .send({ installation: INSTALLATION, state: await start(app), code: CODE })
+        .expect(503);
+      const store = build({
+        connections: {
+          ...connections,
+          bind: async () => {
+            throw new Error(`write failed ${USER_TOKEN} ${CLIENT_SECRET}`);
+          },
+        },
+      });
+      github.mockImplementation(gitHub({ [INSTALLATION]: installed() }));
+      await request(store)
+        .post('/connections')
+        .send({ installation: INSTALLATION, state: await start(store), code: CODE })
+        .expect(500);
+      const logged = JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
+      expect(logged).not.toBe('[]');
+      for (const secret of [USER_TOKEN, CLIENT_SECRET, KEY_BODY, SECRET, CODE]) {
+        expect(logged).not.toContain(secret);
+      }
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+    }
   });
 });

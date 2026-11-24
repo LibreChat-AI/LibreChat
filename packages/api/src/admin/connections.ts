@@ -127,6 +127,9 @@ function refused(res: Response, reply: Extract<Reply<never>, { ok: false }>): Re
       retryAfterMs,
     );
   }
+  if (code === 'code') {
+    return refuse(res, 400, ConnectionError.code, 'Authorization code is not valid');
+  }
   return refuse(res, 502, ConnectionError.refused, 'GitHub refused the app');
 }
 
@@ -135,11 +138,13 @@ function refused(res: Response, reply: Extract<Reply<never>, { ok: false }>): Re
  * install GitHub reports back to the caller's tenant, list, suspend or resume, and remove.
  *
  * Binding is a two-step flow. Starting an install signs a short-lived state for the calling
- * admin and tenant into the app's install link; GitHub hands that state back to the app's
- * Setup URL with the installation's id, and the Admin Panel posts both here with the admin's
- * own bearer token. A request that carries no state the caller started, as from a link
- * someone else crafted, binds nothing. GitHub is then asked, as the app, whether the
- * installation is one of this app's.
+ * admin and tenant into the app's install and authorize links. GitHub returns the admin to the
+ * app's Callback URL with an authorization `code`, and the Admin Panel posts the installation's
+ * id, the code and the state here with the admin's own bearer token. Three proofs must hold:
+ * the state names this admin and tenant, so a link someone else crafted binds nothing; the
+ * code, redeemed for the admin's GitHub token, shows the admin can access the installation,
+ * since the id alone could be anyone's installation of the app; and the app's own token shows
+ * the installation is this app's.
  */
 export function createAdminConnectionHandlers(deps: AdminConnectionDeps): {
   list: (req: ServerRequest, res: Response) => Promise<Response>;
@@ -167,7 +172,16 @@ export function createAdminConnectionHandlers(deps: AdminConnectionDeps): {
   let held: { key: string; app: App } | null = null;
   function appFor(config: AppConfig): App {
     const key = createHash('sha256')
-      .update(JSON.stringify([config.id, config.host, config.timeoutMs, config.key]))
+      .update(
+        JSON.stringify([
+          config.id,
+          config.host,
+          config.timeoutMs,
+          config.key,
+          config.client?.id ?? null,
+          config.client?.secret ?? null,
+        ]),
+      )
       .digest('hex');
     if (held?.key !== key) {
       held = { key, app: createApp(config, { fetch: deps.fetch, now }) };
@@ -175,9 +189,15 @@ export function createAdminConnectionHandlers(deps: AdminConnectionDeps): {
     return held.app;
   }
 
-  async function settings(): Promise<AppConfig | null> {
+  /**
+   * The app, when an install can be bound: events on, the app's settings resolving, its OAuth
+   * client configured, and a secret to sign states with. `null` otherwise.
+   */
+  async function settings(): Promise<{ app: AppConfig; key: string } | null> {
     const config = await deps.getAppConfig();
-    return eventSettings(config?.endpoints?.agents?.events, env)?.github?.app ?? null;
+    const app = eventSettings(config?.endpoints?.agents?.events, env)?.github?.app;
+    const key = secret();
+    return app?.client != null && key != null ? { app, key } : null;
   }
 
   function verify(state: string, key: string, req: ServerRequest): boolean {
@@ -263,20 +283,21 @@ export function createAdminConnectionHandlers(deps: AdminConnectionDeps): {
   }
 
   const list = guard('list', 'Failed to list connections', async (_req, res) => {
-    const [found, app] = await Promise.all([connections.list(), settings()]);
+    const [found, ready] = await Promise.all([connections.list(), settings()]);
     const body: AdminConnections = {
       connections: found.map(view),
       ingress,
-      configured: app != null && secret() != null,
+      configured: ready != null,
     };
     return res.status(200).json(body);
   });
 
   const install = guard('install', 'Failed to start an install', async (req, res) => {
-    const [config, key] = [await settings(), secret()];
-    if (config == null || key == null) {
+    const ready = await settings();
+    if (ready == null) {
       return refuse(res, 409, ConnectionError.unconfigured, 'Agent events are not configured');
     }
+    const { app: config, key } = ready;
     const about = await appFor(config).about();
     if (!about.ok) {
       return refused(res, about);
@@ -292,29 +313,54 @@ export function createAdminConnectionHandlers(deps: AdminConnectionDeps): {
       algorithm: 'HS256',
       expiresIn: STATE_LIFETIME_S,
     });
+    const query = encodeURIComponent(state);
     const body: ConnectionInstall = {
-      url: `${about.value.url}/installations/new?state=${encodeURIComponent(state)}`,
+      url: `${about.value.url}/installations/new?state=${query}`,
+      authorize: `https://${config.host}/login/oauth/authorize?client_id=${encodeURIComponent(
+        config.client!.id,
+      )}&state=${query}`,
     };
     return res.status(200).json(body);
   });
 
   const bind = guard('bind', 'Failed to bind the installation', async (req, res) => {
-    const { installation: raw, state } = (req.body ?? {}) as {
+    const {
+      installation: raw,
+      state,
+      code,
+    } = (req.body ?? {}) as {
       installation?: unknown;
       state?: unknown;
+      code?: unknown;
     };
     const id = installationOf(raw);
-    if (id == null || typeof state !== 'string') {
-      return refuse(res, 400, ConnectionError.invalid, 'Invalid installation or state');
+    if (id == null || typeof state !== 'string' || typeof code !== 'string') {
+      return refuse(res, 400, ConnectionError.invalid, 'Invalid installation, state or code');
     }
-    const [config, key] = [await settings(), secret()];
-    if (config == null || key == null) {
+    const ready = await settings();
+    if (ready == null) {
       return refuse(res, 409, ConnectionError.unconfigured, 'Agent events are not configured');
     }
+    const { app: config, key } = ready;
     if (!verify(state, key, req)) {
       return refuse(res, 403, ConnectionError.state, 'Install state is not valid for this admin');
     }
-    const reported = await appFor(config).installation(id);
+    const app = appFor(config);
+    // GitHub's proof that this admin can access the installation: the id alone could be
+    // anyone's installation of the app.
+    const owned = await app.owns(code, id);
+    if (!owned.ok) {
+      return refused(res, owned);
+    }
+    if (!owned.value) {
+      return refuse(
+        res,
+        403,
+        ConnectionError.inaccessible,
+        'Installation is not accessible to this GitHub account',
+      );
+    }
+    const reported = await app.installation(id);
     if (!reported.ok) {
       return refused(res, reported);
     }

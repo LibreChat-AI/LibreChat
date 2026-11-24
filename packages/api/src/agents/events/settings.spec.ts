@@ -30,6 +30,32 @@ describe('eventSettings', () => {
     expect(eventSettings(config, env)).toBeNull();
   });
 
+  it('resolves the OAuth client only when both of its references resolve', () => {
+    const client = {
+      clientId: '${GITHUB_APP_CLIENT_ID}',
+      clientSecret: '${GITHUB_APP_CLIENT_SECRET}',
+    };
+    const withClient = {
+      ...env,
+      GITHUB_APP_CLIENT_ID: 'Iv23.client',
+      GITHUB_APP_CLIENT_SECRET: 'cs',
+    };
+    expect(
+      eventSettings({ enabled: true, github: { ...github, ...client } }, withClient)?.github?.app
+        .client,
+    ).toEqual({ id: 'Iv23.client', secret: 'cs' });
+    // Deliveries are verified without the client; only binding needs it.
+    const partial = eventSettings(
+      { enabled: true, github: { ...github, ...client } },
+      { ...env, GITHUB_APP_CLIENT_ID: 'Iv23.client' },
+    );
+    expect(partial?.github?.secret).toBe(env.GITHUB_APP_WEBHOOK_SECRET);
+    expect(partial?.github?.app).not.toHaveProperty('client');
+    expect(eventSettings({ enabled: true, github }, withClient)?.github?.app).not.toHaveProperty(
+      'client',
+    );
+  });
+
   it('uses the catalog bounds when none are set', () => {
     expect(eventSettings({ enabled: true }, env)).toEqual({ limits: LIMITS, github: null });
   });

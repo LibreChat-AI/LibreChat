@@ -2464,6 +2464,12 @@ export const agentsEndpointSchema = baseEndpointSchema
               appId: agentEventReferenceSchema,
               privateKey: agentEventReferenceSchema,
               webhookSecret: agentEventReferenceSchema,
+              /** The app's OAuth client ID and client secret, as environment variable references.
+               *  Binding an installation to a tenant asks GitHub, with the installing admin's
+               *  authorization, whether that admin can access the installation; without both,
+               *  installations cannot be bound. Deliveries do not need them. */
+              clientId: agentEventReferenceSchema.optional(),
+              clientSecret: agentEventReferenceSchema.optional(),
               /** The host the app is registered on: `github.com` by default, a GitHub Enterprise
                *  Server host or a `*.ghe.com` tenant otherwise. */
               host: pullRequestHostSchema.optional(),
