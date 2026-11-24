@@ -87,7 +87,8 @@ export interface IScheduleDocument extends Omit<ISchedule, 'id' | '_id'>, Docume
 export interface IScheduleRun {
   mcp?: ScheduleMCPOutcome[];
   _id?: Types.ObjectId;
-  /** A schedule's id on its own row. On a row of another kind, the delivery's key. */
+  /** The schedule's id. Every schedule row holds it; a row of another kind holds none, and
+   *  the schedule methods never read one (their queries name `kind: null`). */
   scheduleId: string;
   /** Whose run the row records, where that is not a schedule. */
   kind?: 'subscription';
