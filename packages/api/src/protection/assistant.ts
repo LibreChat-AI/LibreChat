@@ -10,8 +10,8 @@ import {
   ProviderTextProtectionError,
   PROVIDER_TEXT_PROTECTION_VERSION,
 } from '@librechat/agents';
+import type { OpenAIClientOptions, AgentInputs, ProviderTextProtection } from '@librechat/agents';
 import type { AIMessage, BaseMessage } from '@librechat/agents/langchain/messages';
-import type { AgentInputs, ProviderTextProtection } from '@librechat/agents';
 import type { TCustomConfig } from 'librechat-data-provider';
 import type { RequestHandler } from 'express';
 import { createPatternContentInspector } from './detectors/pattern';
