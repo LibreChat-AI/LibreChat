@@ -341,6 +341,70 @@ describe('createProviderSessionAuthorizer: authorize', () => {
     await expect(rejection).rejects.toMatchObject({ cause: dbError });
   });
 
+  it.each([
+    ['enforce', null, undefined, 'no_ref', true],
+    ['enforce', ref, 'MISSING', 'missing', true],
+    ['enforce', ref, 'ENDED', 'ended', false],
+    ['enforce', ref, 'CONFLICT', 'conflict', false],
+    ['record', ref, 'ENDED', 'ended', false],
+    ['record', ref, 'CONFLICT', 'conflict', false],
+  ] as const)(
+    '%s mode: logs the denial reason for ref=%p, result %s',
+    async (mode, inputRef, dbCode, reason, legacy) => {
+      const methods = makeMethods();
+      if (dbCode) methods.authorize.mockResolvedValue({ ok: false, code: dbCode });
+      const logger = makeLogger();
+      const authorizer = createProviderSessionAuthorizer({
+        methods,
+        getConfig: async () => makeConfig({ mode }),
+        logger,
+        now: () => now,
+      });
+      await expect(authorizer.authorize({ ref: inputRef, expiresAt, legacy })).resolves.toEqual({
+        ok: false,
+        code: OPENID_SESSION_ENDED,
+      });
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      const [message, meta] = logger.warn.mock.calls[0];
+      expect(message).toBe('[providerSession] renewal denied');
+      expect(meta).toMatchObject({ mode, reason, legacy });
+      if (inputRef) {
+        expect(meta).toMatchObject({ issuer: ref.issuer, clientId: ref.clientId });
+        expect(meta.sidHash).toEqual(expect.any(String));
+      }
+      expect(JSON.stringify(meta)).not.toContain(ref.sid);
+    },
+  );
+
+  it.each(['authorize', 'establish'] as const)(
+    'enforce mode: the %s unavailable log names the database failure without its message',
+    async (operation) => {
+      const methods = makeMethods();
+      const dbError = Object.assign(new Error(`E11000 duplicate key { sid: "${ref.sid}" }`), {
+        name: 'MongoServerError',
+        code: 11000,
+      });
+      methods[operation].mockRejectedValue(dbError);
+      const logger = makeLogger();
+      const authorizer = createProviderSessionAuthorizer({
+        methods,
+        getConfig: async () => makeConfig({ mode: 'enforce' }),
+        logger,
+        now: () => now,
+      });
+      const call =
+        operation === 'authorize'
+          ? authorizer.authorize({ ref, expiresAt, legacy: false })
+          : authorizer.establish({ ref, expiresAt, callbackIssuedAt: now });
+      await expect(call).rejects.toBeInstanceOf(ProviderSessionUnavailableError);
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      const [, meta] = logger.error.mock.calls[0];
+      expect(meta).toMatchObject({ errorName: 'MongoServerError', errorCode: 11000 });
+      expect(JSON.stringify(meta)).not.toContain(ref.sid);
+      expect(JSON.stringify(meta)).not.toContain('E11000');
+    },
+  );
+
   it('record mode: a database failure fails open and logs without the raw sid', async () => {
     const methods = makeMethods();
     methods.authorize.mockRejectedValue(new Error('connection lost'));
