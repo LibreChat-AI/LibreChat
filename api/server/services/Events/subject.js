@@ -49,6 +49,4 @@ module.exports = createSubscriptionHost({
       getMCPServersRegistry().getAllServerConfigs(user.id, config, user.role),
   },
   readiness: readinessDeps,
-  readyTtlSeconds: async () =>
-    (await getAppConfig({ baseOnly: true }))?.endpoints?.agents?.events?.readyTtlSeconds,
 });

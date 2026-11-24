@@ -598,14 +598,12 @@ export function createPreflight<Identity extends RunGrantIdentity = ScheduledMCP
             const reused = listing && (await reuse(listing));
             if (reused) return reused;
           }
-          const finish = key && cache?.begin(key);
+          const finish = key && cache?.begin(key, ttlMs);
           try {
             // Only a listing that found the server ready is kept or handed to those waiting.
-            return await probe(server, required, serverConfig, customUserVars, (listing) => {
-              if (!key) return;
-              cache?.set(key, listing, ttlMs);
-              finish?.(listing);
-            });
+            return await probe(server, required, serverConfig, customUserVars, (listing) =>
+              finish?.(listing),
+            );
           } finally {
             finish?.();
           }

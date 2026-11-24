@@ -119,15 +119,16 @@ export function createSubscriptionHost(deps: {
   enrollment: Omit<RunGrantOfferDeps, 'findUser' | 'canUseRoot' | 'canUseMCP'>;
   /** What checking that the servers a run needs are ready reads and connects with. */
   readiness?: Omit<PreflightDeps<SubscriptionIdentity>, 'execution'>;
-  /**
-   * How long a server found ready is not checked again for the same owner, in seconds; 0
-   * checks on every delivery. Absent or unset, `DEFAULT_READY_TTL_SECONDS`.
-   */
-  readyTtlSeconds?: () => Promise<number | undefined>;
 }): SubscriptionHost {
   // Ready listings this process reuses for subscriptions alone: schedules and keys keep none.
+  // How long one is reused is the deployment's `endpoints.agents.events.readyTtlSeconds`, which
+  // only librechat.yaml sets, read from the base configuration for every check.
   const ready = createReadyCache({
-    ttlMs: async () => ((await deps.readyTtlSeconds?.()) ?? DEFAULT_READY_TTL_SECONDS) * 1000,
+    ttlMs: async () => {
+      const config = await deps.enrollment.getAppConfig({ baseOnly: true });
+      const seconds = config?.endpoints?.agents?.events?.readyTtlSeconds;
+      return (seconds ?? DEFAULT_READY_TTL_SECONDS) * 1000;
+    },
   });
   const loadOwner = async (
     identity: Pick<SubscriptionIdentity, 'ownerId' | 'tenantId'>,

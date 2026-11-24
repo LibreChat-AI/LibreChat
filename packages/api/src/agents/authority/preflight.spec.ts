@@ -156,6 +156,8 @@ async function setup(credentials?: PreflightCredentials<AgentKeyMCPIdentity>, ca
   };
   /** The tools each server lists. */
   const listed: Record<string, string[]> = { warehouse: ['query'], docs: ['search'] };
+  /** While set, every connection waits for it: a probe held under way. */
+  const gate: { wait?: Promise<void> } = {};
   const deps: PreflightDeps<AgentKeyMCPIdentity> = {
     resolveAgentGraphAccess: async () => ({}) as AgentGraphAccessContext,
     getAgentGraphNodes: nodes,
@@ -168,6 +170,7 @@ async function setup(credentials?: PreflightCredentials<AgentKeyMCPIdentity>, ca
     findPluginAuthsByKeys: async () => [],
     execution: host.execution,
     connect: jest.fn(async ({ serverName, oauthStart }) => {
+      await gate.wait;
       if (!ready.has(serverName)) throw new Error('connection refused');
       if (expired.has(serverName)) await oauthStart?.('https://resource.example/authorize');
       return {
@@ -185,7 +188,7 @@ async function setup(credentials?: PreflightCredentials<AgentKeyMCPIdentity>, ca
   const preflight = createPreflight<AgentKeyMCPIdentity>(deps, credentials, cache);
   const probed = () =>
     (deps.connect as jest.Mock).mock.calls.map(([options]) => options.serverName).sort();
-  return { preflight, probed, ready, expired, state, servers, listed, host };
+  return { preflight, probed, ready, expired, state, servers, listed, host, gate };
 }
 
 it("checks the servers an API key's grant allows, with no schedule to name", async () => {
@@ -410,6 +413,85 @@ describe('reusing a server found ready', () => {
     expect(probed()).toEqual(['warehouse', 'warehouse', 'warehouse']);
   });
 
+  it('has a delivery waiting on a probe ask the server itself once the owner was refused', async () => {
+    const pending = jest.fn((key: Parameters<ReadyCache['pending']>[0]) => cache.pending(key));
+    const { preflight, probed, gate } = await setup(undefined, { ...cache, pending });
+    const turns = () => new Promise((resolve) => setImmediate(resolve));
+    let release!: () => void;
+    gate.wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = check(preflight);
+    while (probed().length === 0) await turns();
+    const second = check(preflight);
+    // The second delivery is waiting on the first one's probe.
+    while (!pending.mock.results.some(({ value }) => value != null)) await turns();
+    // A call of a run finds the owner's sign-in refused while that probe is under way.
+    cache.forget('owner', 'warehouse');
+    gate.wait = undefined;
+    release();
+    await expect(first).resolves.toEqual(ok);
+    await expect(second).resolves.toEqual(ok);
+    // The second asked the server itself; what it found, after the refusal, is what is kept.
+    expect(probed()).toEqual(['warehouse', 'warehouse']);
+    await expect(check(preflight)).resolves.toEqual(ok);
+    expect(probed()).toEqual(['warehouse', 'warehouse']);
+  });
+
+  it('does not keep what a probe found before the owner was refused', async () => {
+    const { preflight, probed, gate } = await setup(undefined, cache);
+    const turns = () => new Promise((resolve) => setImmediate(resolve));
+    let release!: () => void;
+    gate.wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = check(preflight);
+    while (probed().length === 0) await turns();
+    cache.forget('owner', 'warehouse');
+    gate.wait = undefined;
+    release();
+    await expect(first).resolves.toEqual(ok);
+    // The next delivery asks the server: nothing found before the refusal was kept.
+    await expect(check(preflight)).resolves.toEqual(ok);
+    expect(probed()).toEqual(['warehouse', 'warehouse']);
+  });
+
+  it('does not make a delivery after a refusal wait on a probe begun before it', async () => {
+    const { preflight, probed, gate } = await setup(undefined, cache);
+    const turns = () => new Promise((resolve) => setImmediate(resolve));
+    let release!: () => void;
+    gate.wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = check(preflight);
+    while (probed().length === 0) await turns();
+    cache.forget('owner', 'warehouse');
+    const second = check(preflight);
+    // It connects for itself while the earlier probe is still held.
+    while (probed().length < 2) await turns();
+    gate.wait = undefined;
+    release();
+    await expect(Promise.all([first, second])).resolves.toEqual([ok, ok]);
+  });
+
+  it('hands a probe under way to a delivery that arrives before any refusal', async () => {
+    const { preflight, probed, gate } = await setup(undefined, cache);
+    const turns = () => new Promise((resolve) => setImmediate(resolve));
+    let release!: () => void;
+    gate.wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = check(preflight);
+    while (probed().length === 0) await turns();
+    const second = check(preflight);
+    for (let turn = 0; turn < 20; turn += 1) await turns();
+    gate.wait = undefined;
+    release();
+    await expect(Promise.all([first, second])).resolves.toEqual([ok, ok]);
+    await expect(check(preflight)).resolves.toEqual(ok);
+    expect(probed()).toEqual(['warehouse']);
+  });
+
   it('connects every time when given no cache, as schedules and keys are', async () => {
     const { preflight, probed } = await setup();
     await check(preflight);
@@ -479,9 +561,14 @@ describe('the ready cache', () => {
     cache.set(key('a', 1), listing, 1000);
     cache.set(key('a', 2), listing, 1000);
     cache.set(key('b', 1), listing, 1000);
+    cache.begin(key('a', 3), 1000);
+    cache.begin(key('b', 3), 1000);
     cache.forget('owner', 'a');
     expect(cache.get(key('a', 1))).toBeUndefined();
     expect(cache.get(key('a', 2))).toBeUndefined();
     expect(cache.get(key('b', 1))).toBe(listing);
+    // A check of that server under way is no longer waited on; another server's still is.
+    expect(cache.pending(key('a', 3))).toBeUndefined();
+    expect(cache.pending(key('b', 3))).toBeInstanceOf(Promise);
   });
 });

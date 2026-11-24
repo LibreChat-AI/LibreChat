@@ -24,15 +24,23 @@ export interface ReadyCache {
   get: (key: ReadyKey) => MCPToolsSnapshot | undefined;
   set: (key: ReadyKey, snapshot: MCPToolsSnapshot, ttlMs: number) => void;
   delete: (key: ReadyKey) => void;
-  /** Stops reusing every listing kept for this owner and server, whatever their settings. */
+  /**
+   * Stops reusing every listing kept for this owner and server, whatever their settings. A check
+   * of that server already under way keeps nothing and hands nothing on: those waiting on it,
+   * and every check after this, ask the server themselves.
+   */
   forget: (ownerId: string, server: string) => void;
   /**
    * A check of this server under way for the same owner, which settles with its listing if it
    * found the server ready and with nothing otherwise. Absent when none is under way.
    */
   pending: (key: ReadyKey) => Promise<MCPToolsSnapshot | undefined> | undefined;
-  /** Marks a check under way. Call what it returns once, with the listing if it was ready. */
-  begin: (key: ReadyKey) => (snapshot?: MCPToolsSnapshot) => void;
+  /**
+   * Marks a check under way. Call what it returns once, with the listing if the server was
+   * ready: the listing is then kept for `ttlMs` and handed to those waiting, unless the owner's
+   * server was forgotten since the check began.
+   */
+  begin: (key: ReadyKey, ttlMs: number) => (snapshot?: MCPToolsSnapshot) => void;
 }
 
 /** Same value, same text: object keys in order, so equal settings hash alike. */
@@ -64,7 +72,28 @@ export function createReadyCache(options: {
     { ownerId: string; server: string; snapshot: MCPToolsSnapshot; expiresAt: number }
   >();
   /** Checks under way, one per owner and server, so a burst of deliveries connects once. */
-  const flights = new Map<string, Promise<MCPToolsSnapshot | undefined>>();
+  const flights = new Map<
+    string,
+    {
+      ownerId: string;
+      server: string;
+      listing: Promise<MCPToolsSnapshot | undefined>;
+      /** Forgotten while under way: what it finds was found before the owner was refused. */
+      stale: boolean;
+    }
+  >();
+  const keep = (key: ReadyKey, snapshot: MCPToolsSnapshot, ttlMs: number): void => {
+    if (ttlMs <= 0) return;
+    const name = id(key);
+    entries.delete(name);
+    entries.set(name, {
+      ownerId: key.ownerId,
+      server: key.server,
+      snapshot,
+      expiresAt: now() + ttlMs,
+    });
+    while (entries.size > max) entries.delete(entries.keys().next().value as string);
+  };
   return {
     ttlMs: options.ttlMs,
     get(key) {
@@ -77,40 +106,41 @@ export function createReadyCache(options: {
       }
       return entry.snapshot;
     },
-    set(key, snapshot, ttlMs) {
-      if (ttlMs <= 0) return;
-      const name = id(key);
-      entries.delete(name);
-      entries.set(name, {
-        ownerId: key.ownerId,
-        server: key.server,
-        snapshot,
-        expiresAt: now() + ttlMs,
-      });
-      while (entries.size > max) entries.delete(entries.keys().next().value as string);
-    },
+    set: keep,
     delete(key) {
       entries.delete(id(key));
     },
     forget(ownerId, server) {
       for (const [name, entry] of entries)
         if (entry.ownerId === ownerId && entry.server === server) entries.delete(name);
+      for (const [name, flight] of flights) {
+        if (flight.ownerId !== ownerId || flight.server !== server) continue;
+        flight.stale = true;
+        flights.delete(name);
+      }
     },
     pending(key) {
-      return flights.get(id(key));
+      return flights.get(id(key))?.listing;
     },
-    begin(key) {
+    begin(key, ttlMs) {
       const name = id(key);
       let settle!: (snapshot?: MCPToolsSnapshot) => void;
-      const flight = new Promise<MCPToolsSnapshot | undefined>((resolve) => {
-        settle = resolve;
-      });
+      const flight = {
+        ownerId: key.ownerId,
+        server: key.server,
+        listing: new Promise<MCPToolsSnapshot | undefined>((resolve) => {
+          settle = resolve;
+        }),
+        stale: false,
+      };
       flights.set(name, flight);
       let done = false;
       return (snapshot) => {
         if (done) return;
         done = true;
         if (flights.get(name) === flight) flights.delete(name);
+        if (!snapshot || flight.stale) return settle(undefined);
+        keep(key, snapshot, ttlMs);
         settle(snapshot);
       };
     },

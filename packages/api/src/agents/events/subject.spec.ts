@@ -999,13 +999,24 @@ describe("the subscription's readiness check", () => {
 
   it('reuses for as long as the deployment sets, and checks every delivery at 0', async () => {
     const clock = jest.spyOn(Date, 'now').mockReturnValue(NOW);
-    const longer = await subscribed({ readyTtlSeconds: async () => 600 });
+    const lasting = (readyTtlSeconds: number) =>
+      getAppConfig.mockResolvedValue({
+        ...config,
+        endpoints: {
+          agents: { capabilities: [AgentCapabilities.tools], events: { readyTtlSeconds } },
+        },
+      } as never);
+    lasting(600);
+    const longer = await subscribed();
     await longer.check();
     clock.mockReturnValue(NOW + 599_000);
     await longer.check();
     expect(connect).toHaveBeenCalledTimes(1);
+    // Read from librechat.yaml alone: the base configuration, never one resolved for a user.
+    expect(getAppConfig).toHaveBeenCalledWith({ baseOnly: true });
     connect.mockClear();
-    const never = await subscribed({ readyTtlSeconds: async () => 0 });
+    lasting(0);
+    const never = await subscribed();
     await never.check();
     await never.check();
     expect(connect).toHaveBeenCalledTimes(2);
