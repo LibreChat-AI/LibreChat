@@ -472,6 +472,110 @@ describe('listing, suspending and removing', () => {
   });
 });
 
+describe('failures', () => {
+  async function bound(): Promise<string> {
+    const app = build();
+    const res = await request(app)
+      .post('/connections')
+      .send({ installation: INSTALLATION, state: await start(app) });
+    expect(res.status).toBe(201);
+    audit.mockClear();
+    return res.body.id as string;
+  }
+
+  it('answers GitHub rate limiting as unavailable, with the wait it asked for', async () => {
+    github.mockImplementation(
+      () => new globalThis.Response('{}', { status: 429, headers: { 'retry-after': '42' } }),
+    );
+    const res = await request(build()).post('/connections/install');
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe('CONNECTION_GITHUB_UNAVAILABLE');
+    expect(res.headers['retry-after']).toBe('42');
+  });
+
+  it('refuses a state that is not a token, and binds while unconfigured never', async () => {
+    let res = await request(build())
+      .post('/connections')
+      .send({ installation: INSTALLATION, state: 'not-a-token' });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe('CONNECTION_STATE_INVALID');
+    res = await request(build({ getAppConfig: async () => ({}) }))
+      .post('/connections')
+      .send({ installation: INSTALLATION, state: 'x.y.z' });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('CONNECTION_NOT_CONFIGURED');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('answers a request with no user as unauthenticated', async () => {
+    const handlers = createAdminConnectionHandlers({
+      connections,
+      getAppConfig: async () => CONFIG,
+      env: ENV,
+      fetch: async () => {
+        throw new Error('not asked');
+      },
+    });
+    const app = express();
+    app.get('/connections', handlers.list as unknown as express.RequestHandler);
+    const res = await request(app).get('/connections');
+    expect(res.status).toBe(401);
+  });
+
+  it("records a failed write's outcome and answers without the store's words", async () => {
+    const app = build({
+      connections: {
+        ...connections,
+        bind: async () => {
+          throw new Error(`write failed ${KEY_BODY}`);
+        },
+      },
+    });
+    const res = await request(app)
+      .post('/connections')
+      .send({ installation: INSTALLATION, state: await start(app) });
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Failed to bind the installation' });
+    expect(actions()).toEqual([
+      ['event_connection.bound', 'pending'],
+      ['event_connection.bound', 'failure'],
+    ]);
+  });
+
+  it('suspends and removes nothing when the audit entry cannot be written', async () => {
+    const id = await bound();
+    const app = build();
+    audit.mockRejectedValueOnce(new Error('audit store down'));
+    let res = await request(app).patch(`/connections/${id}`).send({ status: 'suspended' });
+    expect(res.status).toBe(500);
+    expect(res.body.code).toBe('CONNECTION_AUDIT_UNAVAILABLE');
+    audit.mockRejectedValueOnce(new Error('audit store down'));
+    res = await request(app).delete(`/connections/${id}`);
+    expect(res.status).toBe(500);
+    const rows = await stored();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe('active');
+  });
+
+  it('answers a connection removed between the read and the write as missing', async () => {
+    const id = await bound();
+    const app = build({
+      connections: { ...connections, remove: async () => false, mark: async () => null },
+    });
+    let res = await request(app).delete(`/connections/${id}`);
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('CONNECTION_NOT_FOUND');
+    res = await request(app).patch(`/connections/${id}`).send({ status: 'suspended' });
+    expect(res.status).toBe(404);
+    expect(actions()).toEqual([
+      ['event_connection.removed', 'pending'],
+      ['event_connection.removed', 'failure'],
+      ['event_connection.suspended', 'pending'],
+      ['event_connection.suspended', 'failure'],
+    ]);
+  });
+});
+
 describe('disclosure', () => {
   it("never answers with the app's key, its token, the webhook secret or GitHub's words", async () => {
     const app = build();
