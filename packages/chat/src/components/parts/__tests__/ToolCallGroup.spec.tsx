@@ -31,6 +31,12 @@ function mockLocalize(key: string, values?: Record<string | number, string>): st
   if (key === 'com_ui_preparing_n_actions') {
     return `Preparing ${values?.[0]} actions`;
   }
+  if (key === 'com_ui_starting_n_subagents') {
+    return `Starting ${values?.[0]} subagents`;
+  }
+  if (key === 'com_ui_running_n_agents') {
+    return `Running ${values?.[0]} agents`;
+  }
   if (key === 'com_ui_running_n_actions') {
     return `Running ${values?.[0]} actions`;
   }
@@ -2114,6 +2120,45 @@ describe('grouped tool preparation', () => {
     );
     expect(screen.getByRole('button', { name: /^Ran 2 actions/ })).toBeInTheDocument();
     expect(screen.queryByText(/^Preparing /)).not.toBeInTheDocument();
+  });
+});
+
+describe('grouped subagent preparation', () => {
+  const groupProps = (parts: TMessageContentParts[]) => ({
+    parts: parts.map((part, idx) => ({ part, idx })),
+    isSubmitting: true,
+    isLast: true,
+    showThinking: false,
+    lastContentIdx: parts.length - 1,
+    renderPart: (_part: TMessageContentParts, idx: number) => <div key={idx} />,
+  });
+
+  it('names a batch of subagents being written by the agents it starts, then by the running agents', () => {
+    const first = makePart('first', '', 'subagent', '{"intent":"Reviewing the change');
+    const second = makePart('second', '', 'subagent', '{"intent":"Checking the tests');
+    const { rerender } = renderGroup(groupProps([first, second]));
+    expect(screen.getByRole('button', { name: /^Starting 2 subagents/ })).toBeInTheDocument();
+    expect(screen.queryByText(/^Preparing /)).not.toBeInTheDocument();
+    const dispatched =
+      first.type === ContentTypes.TOOL_CALL
+        ? { ...first, tool_call: { ...first.tool_call, toolDispatchedAt: 100 } }
+        : first;
+    rerender(
+      <Host>
+        <ToolCallGroup {...groupProps([dispatched, second])} />
+      </Host>,
+    );
+    expect(screen.getByRole('button', { name: /^Running 2 agents/ })).toBeInTheDocument();
+  });
+
+  it('keeps the generic label for a batch that mixes subagents with other tools', () => {
+    renderGroup(
+      groupProps([
+        makePart('first', '', 'subagent', '{"intent":"Reviewing'),
+        makePart('second', '', 'lookup', '{"query":"second'),
+      ]),
+    );
+    expect(screen.getByRole('button', { name: /^Preparing 2 actions/ })).toBeInTheDocument();
   });
 });
 

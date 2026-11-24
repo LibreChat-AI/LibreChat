@@ -317,7 +317,10 @@ export type ActiveSubagentPanel = {
   toolCallId: string;
   partIndex: number;
   subagentType: string;
+  /** The brief as far as it has been written: while `briefing`, it is still streaming. */
   prompt?: string;
+  /** The parent is still writing the call, so the child has not been started. */
+  briefing?: boolean;
   legacyOutput?: string | null;
   persistedContent?: TMessageContentParts[];
   attachments?: TAttachment[];

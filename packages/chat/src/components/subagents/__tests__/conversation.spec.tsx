@@ -284,6 +284,52 @@ describe('SubagentConversation', () => {
     expect(screen.getByText('submit_move')).toBeInTheDocument();
   });
 
+  it('streams a brief still being written, and says the child starts when it is finished', () => {
+    const writing: ChildConversationTurn = {
+      ...turns[0],
+      taskId: 'task-writing',
+      briefing: true,
+      outcome: undefined,
+      trigger: { kind: 'parent_dispatch', summary: 'Ask the reviewer to restate' },
+      activity: { ...turns[0].activity, status: 'running', items: [], content: [] },
+    };
+    render(
+      <ChatSurfaceHarness>
+        <SubagentConversation turns={[writing]} author={author} parentAuthor={parentAuthor} />
+      </ChatSurfaceHarness>,
+    );
+
+    const brief = screen.getByRole('group', { name: 'com_ui_subagent_trigger_parent_dispatch' });
+    expect(within(brief).getByText('Ask the reviewer to restate')).toBeInTheDocument();
+    expect(within(brief).getByText('com_ui_subagent_briefing')).toHaveClass('shimmer');
+    /** Nothing to copy until the brief is whole. */
+    expect(within(brief).queryByRole('button', { name: 'copy' })).toBeNull();
+
+    expect(screen.getByRole('heading', { name: 'Research child' })).toBeInTheDocument();
+    expect(screen.getByText('com_ui_subagent_starts_after_brief')).toBeInTheDocument();
+    expect(screen.queryByTestId('stream-elapsed')).toBeNull();
+    expect(document.querySelector('.result-thinking')).toBeNull();
+  });
+
+  it('sweeps the empty bubble instead of naming the dispatch while the brief has not begun', () => {
+    const writing: ChildConversationTurn = {
+      ...turns[0],
+      taskId: 'task-empty-brief',
+      briefing: true,
+      outcome: undefined,
+      trigger: { kind: 'parent_dispatch', summary: '' },
+      activity: { ...turns[0].activity, status: 'running', items: [], content: [] },
+    };
+    render(
+      <ChatSurfaceHarness>
+        <SubagentConversation turns={[writing]} author={author} parentAuthor={parentAuthor} />
+      </ChatSurfaceHarness>,
+    );
+    const brief = screen.getByRole('group', { name: 'com_ui_subagent_trigger_parent_dispatch' });
+    expect(within(brief).getByText('com_ui_subagent_briefing')).toHaveClass('shimmer');
+    expect(within(brief).queryByText('com_ui_subagent_trigger_parent_dispatch')).toBeNull();
+  });
+
   it('names an empty parent follow-up instead of rendering a blank bubble', () => {
     const followUp: ChildConversationTurn = {
       ...turns[0],
