@@ -40,10 +40,21 @@ const list = (text: string): string[] =>
     .map((part) => part.trim())
     .filter(Boolean);
 
-function filtersFrom(text: Record<FilterKey, string>): SubscriptionFilters | null {
+/** A stored list as its field shows it. */
+const shown = (values?: string[]) => values?.join(', ') ?? '';
+
+/**
+ * The filters the fields stand for. A field the owner left as it was keeps the stored list
+ * unchanged, so a value that holds a comma is not split by a save that never touched it.
+ */
+export function filtersFrom(
+  text: Record<FilterKey, string>,
+  stored?: SubscriptionFilters,
+): SubscriptionFilters | null {
   const filters: SubscriptionFilters = {};
   for (const key of filterKeys) {
-    const values = list(text[key]);
+    const kept = stored?.[key];
+    const values = kept && text[key] === shown(kept) ? kept : list(text[key]);
     if (values.length) filters[key] = values;
   }
   return Object.keys(filters).length ? filters : null;
@@ -93,9 +104,9 @@ export default function EventDialog({
   const [actors, setActors] = useState<SubscriptionActors>(subscription?.actors ?? 'write');
   const [bots, setBots] = useState(subscription?.bots ?? false);
   const [filters, setFilters] = useState<Record<FilterKey, string>>(() => ({
-    repositories: subscription?.filters?.repositories?.join(', ') ?? '',
-    branches: subscription?.filters?.branches?.join(', ') ?? '',
-    labels: subscription?.filters?.labels?.join(', ') ?? '',
+    repositories: shown(subscription?.filters?.repositories),
+    branches: shown(subscription?.filters?.branches),
+    labels: shown(subscription?.filters?.labels),
   }));
 
   const provider = connections.find((choice) => choice.id === connection)?.provider ?? 'github';
@@ -120,7 +131,10 @@ export default function EventDialog({
     const onSuccess = () => onOpenChange(false);
     if (subscription) {
       // Only what changed is sent: any edit but turning it off or on leaves the grant behind.
-      const patch = changes(subscription, { ...fields, filters: filtersFrom(filters) });
+      const patch = changes(subscription, {
+        ...fields,
+        filters: filtersFrom(filters, subscription.filters),
+      });
       if (!patch) {
         onSuccess();
         return;
@@ -154,6 +168,8 @@ export default function EventDialog({
             className="space-y-4"
             onSubmit={(event) => {
               event.preventDefault();
+              // React carries a submit through the portal to the agent form around the panel.
+              event.stopPropagation();
               save();
             }}
           >

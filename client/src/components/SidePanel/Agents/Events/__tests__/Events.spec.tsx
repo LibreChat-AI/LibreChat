@@ -4,7 +4,7 @@ import { dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import type { ConnectionChoice, Subscription, RunGrantView } from 'librechat-data-provider';
-import { changes } from '../EventDialog';
+import { changes, filtersFrom } from '../EventDialog';
 import Events from '../Events';
 
 jest.mock('~/hooks', () => ({
@@ -49,14 +49,22 @@ const subscription: Subscription = {
 
 const grant = (state: RunGrantView['state']) => ({ state }) as RunGrantView;
 
-function renderEvents(agentId = 'agent-1') {
+function renderEvents(agentId = 'agent-1', canCreate = true, onAgentSave = jest.fn()) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     logger: { log: () => {}, warn: () => {}, error: () => {} },
   });
   return render(
     <QueryClientProvider client={client}>
-      <Events agentId={agentId || undefined} />
+      {/* The builder's own form is around the section, as in the agent panel. */}
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          onAgentSave();
+        }}
+      >
+        <Events agentId={agentId || undefined} canCreate={canCreate} />
+      </form>
     </QueryClientProvider>,
   );
 }
@@ -153,10 +161,21 @@ describe('Events', () => {
     expect(screen.queryByText('raw server text')).not.toBeInTheDocument();
   });
 
+  it('offers no write to a role that may only use subscriptions', async () => {
+    renderEvents('agent-1', false);
+    const card = await screen.findByTestId('event-card');
+    expect(screen.queryByRole('button', { name: 'com_ui_events_add' })).not.toBeInTheDocument();
+    expect(within(card).getByRole('switch')).toBeDisabled();
+    await userEvent.click(within(card).getByRole('button', { name: /com_ui_events_options/ }));
+    expect(await screen.findByRole('menuitem', { name: 'com_ui_delete' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'com_ui_edit' })).not.toBeInTheDocument();
+  });
+
   it('creates a subscription from the dialog with what the owner chose', async () => {
     service.getAgentEventSubscriptions.mockResolvedValue({ subscriptions: [] });
     service.createAgentEventSubscription.mockResolvedValue(subscription);
-    renderEvents();
+    const onAgentSave = jest.fn();
+    renderEvents('agent-1', true, onAgentSave);
     await userEvent.click(await screen.findByRole('button', { name: 'com_ui_events_add' }));
     const dialog = await screen.findByRole('dialog');
     const save = within(dialog).getByRole('button', { name: 'com_ui_save' });
@@ -181,6 +200,8 @@ describe('Events', () => {
         filters: { branches: ['main', 'release'] },
       }),
     );
+    // Saving the subscription is not saving the agent around it.
+    expect(onAgentSave).not.toHaveBeenCalled();
   });
 });
 
@@ -205,5 +226,21 @@ describe('changes', () => {
     expect(
       changes({ ...subscription, filters: { labels: ['bug'] } }, { ...fields, filters: null }),
     ).toEqual({ filters: null });
+  });
+});
+
+describe('filtersFrom', () => {
+  const stored = { labels: ['team,backend'], branches: ['main'] };
+  const text = { repositories: '', branches: 'main', labels: 'team,backend' };
+
+  it('keeps a stored list whose field was left as it was, commas and all', () => {
+    expect(filtersFrom(text, stored)).toEqual(stored);
+  });
+
+  it('splits a field the owner edited', () => {
+    expect(filtersFrom({ ...text, labels: 'team, ops' }, stored)).toEqual({
+      branches: ['main'],
+      labels: ['team', 'ops'],
+    });
   });
 });

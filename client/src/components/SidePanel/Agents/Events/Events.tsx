@@ -10,7 +10,14 @@ import EventCard from './EventCard';
  * The agent's event subscriptions owned by the person viewing it: when these events arrive,
  * run this agent. Each person who can use the agent has their own.
  */
-export default function Events({ agentId }: { agentId?: string }) {
+export default function Events({
+  agentId,
+  canCreate = false,
+}: {
+  agentId?: string;
+  /** `AGENT_EVENTS:CREATE`: adding, editing, turning on or off, and allowing tools. */
+  canCreate?: boolean;
+}) {
   const localize = useLocalize();
   const id = useId();
   const addRef = useRef<HTMLButtonElement | null>(null);
@@ -36,7 +43,7 @@ export default function Events({ agentId }: { agentId?: string }) {
             <Info className="text-text-tertiary size-3.5" aria-hidden="true" />
           </InfoHoverCard>
         </div>
-        {!none && (
+        {!none && canCreate && (
           <Button
             ref={addRef}
             type="button"
@@ -84,6 +91,7 @@ export default function Events({ agentId }: { agentId?: string }) {
               agentId={agentId}
               subscription={subscription}
               connections={choices}
+              canWrite={canCreate}
             />
           ))}
         </ul>
@@ -93,7 +101,9 @@ export default function Events({ agentId }: { agentId?: string }) {
         subscriptions.data != null &&
         subscriptions.data.length === 0 &&
         connections.isSuccess && (
-          <p className="text-text-secondary text-xs">{localize('com_ui_events_empty')}</p>
+          <p className="text-text-secondary text-xs">
+            {localize(canCreate ? 'com_ui_events_empty' : 'com_ui_events_empty_read_only')}
+          </p>
         )}
       {adding && agentId && (
         <EventDialog

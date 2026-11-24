@@ -16,10 +16,13 @@ export default function EventCard({
   agentId,
   subscription,
   connections,
+  canWrite,
 }: {
   agentId: string;
   subscription: Subscription;
   connections: ConnectionChoice[];
+  /** Whether the viewer may edit it, turn it on or off, and allow tools; deleting needs none. */
+  canWrite: boolean;
 }) {
   const localize = useLocalize();
   const { update, remove } = useEventSubscriptionMutations(agentId);
@@ -48,15 +51,21 @@ export default function EventCard({
         ref: grantRef,
         render: (props: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props} />,
       },
-      {
-        label: localize('com_ui_edit'),
-        onClick: () => setDialog('edit'),
-        icon: <Pencil className="icon-sm text-text-primary me-2" aria-hidden="true" />,
-        ariaHasPopup: 'dialog' as const,
-        hideOnClick: false,
-        ref: editRef,
-        render: (props: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props} />,
-      },
+      ...(canWrite
+        ? [
+            {
+              label: localize('com_ui_edit'),
+              onClick: () => setDialog('edit'),
+              icon: <Pencil className="icon-sm text-text-primary me-2" aria-hidden="true" />,
+              ariaHasPopup: 'dialog' as const,
+              hideOnClick: false,
+              ref: editRef,
+              render: (props: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+                <button {...props} />
+              ),
+            },
+          ]
+        : []),
       {
         label: localize('com_ui_delete'),
         onClick: () => setDialog('delete'),
@@ -67,7 +76,7 @@ export default function EventCard({
         render: (props: React.ButtonHTMLAttributes<HTMLButtonElement>) => <button {...props} />,
       },
     ],
-    [localize],
+    [localize, canWrite],
   );
 
   return (
@@ -86,7 +95,7 @@ export default function EventCard({
         </div>
         <Switch
           checked={subscription.enabled}
-          disabled={update.isLoading}
+          disabled={!canWrite || update.isLoading}
           aria-label={`${localize('com_ui_events_enabled')}: ${name}`}
           onCheckedChange={(enabled) =>
             update.mutate({
@@ -135,6 +144,7 @@ export default function EventCard({
       )}
       {dialog === 'grant' && (
         <EventGrant
+          canConfirm={canWrite}
           id={subscription.id}
           name={name}
           onOpenChange={(open) => !open && setDialog(null)}

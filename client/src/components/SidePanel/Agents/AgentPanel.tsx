@@ -482,6 +482,10 @@ export default function AgentPanel() {
     permissionType: PermissionTypes.AGENT_EVENTS,
     permission: Permissions.USE,
   });
+  const canCreateEvents = useHasAccess({
+    permissionType: PermissionTypes.AGENT_EVENTS,
+    permission: Permissions.CREATE,
+  });
   const { showToast } = useToastContext();
   const {
     activePanel,
@@ -1068,7 +1072,10 @@ export default function AgentPanel() {
     Boolean(user?.id) &&
     canUseAgents &&
     canUseEvents ? (
-      <Events agentId={isPersistedAgent ? current_agent_id! : undefined} />
+      <Events
+        agentId={isPersistedAgent ? current_agent_id! : undefined}
+        canCreate={canCreateEvents}
+      />
     ) : null;
 
   return (

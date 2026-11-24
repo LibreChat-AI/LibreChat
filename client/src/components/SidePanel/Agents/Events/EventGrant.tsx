@@ -17,11 +17,14 @@ const copy: GrantCopy = {
 
 /** What runs an event subscription starts may use, as its owner allows them. */
 export default function EventGrant({
+  canConfirm,
   id,
   name,
   onOpenChange,
   triggerRef,
 }: {
+  /** Without it the grant is shown and can be revoked, but not made or renewed. */
+  canConfirm: boolean;
   id: string;
   name: string;
   onOpenChange: (open: boolean) => void;
@@ -31,6 +34,7 @@ export default function EventGrant({
   const { confirm, revoke } = useEventGrantMutations(id);
   return (
     <GrantDialog
+      canConfirm={canConfirm}
       longest
       source={{ query, confirm, revoke }}
       copy={copy}

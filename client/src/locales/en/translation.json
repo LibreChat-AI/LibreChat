@@ -4156,6 +4156,7 @@
   "com_ui_events_edit": "Edit event subscription",
   "com_ui_events_edit_note": "Saving a change ends the tool access you allowed; allow it again afterwards. Turning the subscription off or on keeps it.",
   "com_ui_events_empty": "This agent is not subscribed to any events.",
+  "com_ui_events_empty_read_only": "This agent is not subscribed to any events. Your role cannot add subscriptions.",
   "com_ui_events_enabled": "Subscription on",
   "com_ui_events_error": "Something went wrong. Try again.",
   "com_ui_events_error_agent": "You can no longer run this agent.",
