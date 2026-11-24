@@ -1,5 +1,7 @@
+import { AUTH_SESSION_CHECK_UNAVAILABLE } from 'librechat-data-provider';
 import type { OpenIDRefreshRecoveryDeps } from './recovery';
 import { createOpenIDRefreshOwnershipError, isOpenIDSessionEndedError } from './errors';
+import { isProviderSessionUnavailableError } from './providerSession/errors';
 import { createOpenIDRefreshRecoveryService } from './recovery';
 
 describe('OpenID authentication publication settlement', () => {
@@ -732,5 +734,49 @@ describe('OpenID refresh bridge recovery: lease callback execution', () => {
 
     expect(leaseContext.markLeaseSettled).not.toHaveBeenCalled();
     expect(deps.failOpenIDRefreshFlight).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * With `OPENID_REUSE_TOKENS` on, the login publication completes the bridge flight of the token it
+ * publishes. A bridge recovery for that same token, within the flight TTL, must not publish the
+ * spent token again; it answers a retryable `503` until the flight expires.
+ */
+describe('OpenID refresh bridge recovery: completed login publication of the presented token', () => {
+  const loginPublication = {
+    tokenset: { access_token: 'login-access', refresh_token: 'cookie-refresh' },
+    claims: { sub: 'sub-1' },
+    appAuthToken: 'login-app-token',
+    __flightOwnerId: 'login-owner',
+    __flightCreatedAt: Date.now(),
+  };
+
+  it('answers a retryable 503 and does not publish the presented token again', async () => {
+    const deps = createBridgeRecoveryDeps({
+      acquireOpenIDRefreshFlight: jest.fn().mockResolvedValue({ acquired: false }),
+      waitForOpenIDRefreshFlight: jest.fn().mockResolvedValue(loginPublication),
+    });
+    const service = createOpenIDRefreshRecoveryService(deps);
+
+    const outcome = await service
+      .recoverOpenIDRefreshBridge({
+        req: buildBridgeRecoveryReq() as never,
+        res: {} as never,
+        refreshToken: 'cookie-refresh',
+        bridgedRefreshToken: 'bridged-refresh',
+        bridgeUser,
+        bridgeProviderSession: null,
+        markerProviderSession: null,
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+    expect(isProviderSessionUnavailableError(outcome)).toBe(true);
+    expect(outcome).toMatchObject({ status: 503, code: AUTH_SESSION_CHECK_UNAVAILABLE });
+    expect(deps.waitForOpenIDRefreshFlight).toHaveBeenCalledWith({ key: 'bridge-flight-key' });
+    expect(deps.setOpenIDAuthTokens).not.toHaveBeenCalled();
+    expect(deps.refreshOpenIDSession).not.toHaveBeenCalled();
   });
 });

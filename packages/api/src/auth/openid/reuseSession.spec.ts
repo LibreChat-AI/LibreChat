@@ -9,6 +9,7 @@ import {
   authorizeCachedReuseSession,
   resolveOpenIDRefreshProviderSession,
   respondToProviderSessionError,
+  getBridgeRecoveryMarker,
   type AuthorizeCachedReuseSessionDeps,
   type AuthorizeCachedReuseSessionInput,
   type OpenIDRefreshProviderSessionDeps,
@@ -397,6 +398,7 @@ describe('resolveOpenIDRefreshProviderSession', () => {
       findProviderSessionBinding: jest.fn().mockResolvedValue(null),
       logger: { warn: jest.fn() },
       providerSessionExpiryMs: 60_000,
+      sessionProviderSession: null,
       ...overrides,
     };
   }
@@ -452,6 +454,20 @@ describe('resolveOpenIDRefreshProviderSession', () => {
     expect(deps.deleteOpenIDSession).not.toHaveBeenCalled();
   });
 
+  it('record mode: sends the cached user subject and denies a provider session of another subject', async () => {
+    const dbAuthorize = jest.fn().mockResolvedValue({ ok: false, code: 'CONFLICT' });
+    const deps = makeDeps('record', dbAuthorize);
+    const { authorizeReuse } = await resolveOpenIDRefreshProviderSession(deps, refreshToken, true);
+
+    const error: unknown = await authorizeReuse(refA, null, 'sub-1').catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(dbAuthorize).toHaveBeenCalledWith(expect.objectContaining({ subject: 'sub-1' }));
+    expect(isOpenIDSessionEndedError(error)).toBe(true);
+    expect(deps.deleteOpenIDSession).toHaveBeenCalledWith(refreshToken);
+  });
+
   /** A marker signed for another refresh token (for example an older marker for the same user)
    *  does not bind; with no Express session, the Session row is the only source of the ref. */
   describe('unbound marker with no Express session', () => {
@@ -476,8 +492,8 @@ describe('resolveOpenIDRefreshProviderSession', () => {
         false,
       );
 
-      await expect(resolveBoundProviderSession(refreshToken, null)).resolves.toEqual(refB);
-      await expect(resolveBoundProviderSession(refreshToken, null)).resolves.toEqual(refB);
+      await expect(resolveBoundProviderSession(refreshToken)).resolves.toEqual(refB);
+      await expect(resolveBoundProviderSession(refreshToken)).resolves.toEqual(refB);
       expect(deps.findProviderSessionBinding).toHaveBeenCalledTimes(1);
       expect(deps.findProviderSessionBinding).toHaveBeenCalledWith(refreshToken);
     });
@@ -493,7 +509,7 @@ describe('resolveOpenIDRefreshProviderSession', () => {
         false,
       );
 
-      await expect(resolveBoundProviderSession(refreshToken, null)).resolves.toBeNull();
+      await expect(resolveBoundProviderSession(refreshToken)).resolves.toBeNull();
     });
 
     it('mode off: reads no Session row', async () => {
@@ -504,9 +520,46 @@ describe('resolveOpenIDRefreshProviderSession', () => {
       const { resolveBoundProviderSession, authorizeReuse } =
         await resolveOpenIDRefreshProviderSession(deps, refreshToken, true);
 
-      await expect(resolveBoundProviderSession(refreshToken, null)).resolves.toBeNull();
+      await expect(resolveBoundProviderSession(refreshToken)).resolves.toBeNull();
       await expect(authorizeReuse(null)).resolves.toBeUndefined();
       expect(deps.findProviderSessionBinding).not.toHaveBeenCalled();
+    });
+
+    it('record mode: resolves the Express session ref and reads no Session row', async () => {
+      const dbAuthorize = jest.fn().mockResolvedValue({ ok: true });
+      const deps = makeDeps('record', dbAuthorize, {
+        parsedCookies: unboundMarker,
+        sessionProviderSession: refB,
+      });
+      const { resolveBoundProviderSession } = await resolveOpenIDRefreshProviderSession(
+        deps,
+        refreshToken,
+        false,
+      );
+
+      await expect(resolveBoundProviderSession(refreshToken)).resolves.toEqual(refB);
+      expect(deps.findProviderSessionBinding).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getBridgeRecoveryMarker', () => {
+    it('returns the user and the ref of a marker bound to the token', () => {
+      expect(getBridgeRecoveryMarker(markerCookie(refA), SECRET, refreshToken)).toEqual({
+        userId: 'user-1',
+        markerProviderSession: refA,
+      });
+    });
+
+    it('returns a null ref for a bound marker signed without one', () => {
+      expect(getBridgeRecoveryMarker(markerCookie(null), SECRET, refreshToken)).toEqual({
+        userId: 'user-1',
+        markerProviderSession: null,
+      });
+    });
+
+    it('returns null for a marker bound to another token, or no marker', () => {
+      expect(getBridgeRecoveryMarker(markerCookie(refA), SECRET, 'other-token')).toBeNull();
+      expect(getBridgeRecoveryMarker({}, SECRET, refreshToken)).toBeNull();
     });
   });
 

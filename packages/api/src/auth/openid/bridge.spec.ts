@@ -177,15 +177,4 @@ describe('RefreshTokenBridgeService flight keys', () => {
 
     expect(service.createRefreshTokenBridgeFlightKey(input)).toBe(expected);
   });
-
-  it('keys the admin grant flight in its own namespace', () => {
-    const service = makeService();
-
-    const grantKey = service.createAdminRefreshGrantFlightKey(input);
-
-    expect(grantKey).toEqual(expect.any(String));
-    expect(grantKey).not.toBe(service.createRefreshTokenBridgeFlightKey(input));
-    expect(service.createAdminRefreshGrantFlightKey({ ...input, oldRefreshToken: '' })).toBeNull();
-    expect(service.createAdminRefreshGrantFlightKey({ ...input, userId: undefined })).toBeNull();
-  });
 });

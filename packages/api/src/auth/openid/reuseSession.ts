@@ -187,6 +187,8 @@ export interface OpenIDRefreshProviderSessionDeps {
   findProviderSessionBinding: FindProviderSessionBinding;
   logger: Pick<OpenIDLogger, 'warn'>;
   providerSessionExpiryMs: number;
+  /** The Express session's provider-session ref when the request starts, or `null`. */
+  sessionProviderSession: ProviderSessionRef | null;
 }
 
 export interface OpenIDRefreshProviderSessionContext {
@@ -195,17 +197,44 @@ export interface OpenIDRefreshProviderSessionContext {
   reuseCredential: OpenIDReuseCredential | null;
   /** Final authorization for a cached (session-token-reuse) response, pre-bound to
    *  `reuseCredential`'s provider session; run once the cached user and identity checks pass,
-   *  right before the response is sent. Throws `OPENID_SESSION_ENDED` on denial. */
+   *  right before the response is sent. `openidSubject` is the cached user's OpenID `sub`, so a
+   *  provider session recorded for another subject is denied. Throws `OPENID_SESSION_ENDED` on
+   *  denial. */
   authorizeReuse: (
     sessionProviderSession: ProviderSessionRef | null,
     session?: AuthorizeCachedReuseSessionInput['session'],
+    openidSubject?: string,
   ) => Promise<void>;
-  /** `resolveBoundProviderSessionForToken` for this request's mode and cookies. Reads the
-   *  Session row at most once for each token. */
+  /** `resolveBoundProviderSessionForToken` for this request's mode, cookies and Express session
+   *  ref. Reads the Session row at most once for each token. */
   resolveBoundProviderSession: (
     refreshToken: string | undefined,
-    sessionProviderSession: ProviderSessionRef | null,
   ) => Promise<ProviderSessionRef | null>;
+}
+
+export interface BridgeRecoveryMarker {
+  userId: string;
+  /** The provider session the marker was signed with, or `null`. Bridge recovery checks it
+   *  against the bridge's own record, so recovery cannot cross provider sessions. */
+  markerProviderSession: ProviderSessionRef | null;
+}
+
+/** Reads the verified `openid_user_id` marker bound to `refreshToken` for bridge recovery.
+ *  `/refresh` is unauthenticated, so the marker is the only source of the user to recover.
+ *  Returns `null` when the marker is absent, does not verify, or is bound to another token. */
+export function getBridgeRecoveryMarker(
+  parsedCookies: { openid_user_id?: string },
+  jwtRefreshSecret: string | undefined,
+  refreshToken: string,
+): BridgeRecoveryMarker | null {
+  const credential = getValidOpenIDReuseCredential(parsedCookies, jwtRefreshSecret, refreshToken);
+  if (!credential?.userId) {
+    return null;
+  }
+  return {
+    userId: credential.userId,
+    markerProviderSession: credential.providerSession ?? null,
+  };
 }
 
 /** Resolves the OpenID refresh path's provider-session mode and reuse-credential binding for a
@@ -235,6 +264,7 @@ export async function resolveOpenIDRefreshProviderSession(
   const authorizeReuse = async (
     sessionProviderSession: ProviderSessionRef | null,
     session?: AuthorizeCachedReuseSessionInput['session'],
+    openidSubject?: string,
   ) => {
     const markerProviderSession = reuseCredential?.providerSession ?? null;
     await authorizeCachedReuseSession(
@@ -254,22 +284,20 @@ export async function resolveOpenIDRefreshProviderSession(
           refreshToken,
           findProviderSessionBinding,
         ),
+        openidSubject,
         refreshToken,
         session,
       },
     );
   };
 
-  const resolveBoundProviderSessionFor = (
-    token: string | undefined,
-    sessionProviderSession: ProviderSessionRef | null,
-  ) =>
+  const resolveBoundProviderSessionFor = (token: string | undefined) =>
     resolveBoundProviderSessionForToken(
       mode,
       deps.parsedCookies,
       deps.jwtRefreshSecret,
       token,
-      sessionProviderSession,
+      deps.sessionProviderSession,
       findProviderSessionBinding,
     );
 

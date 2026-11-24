@@ -1163,6 +1163,7 @@ describe('refreshController – OpenID path', () => {
 
       expect(mockAuthorizeProviderSession).toHaveBeenCalledWith({
         ref: providerSession,
+        subject: baseClaims.sub,
         expiresAt: expect.any(Date),
         legacy: false,
       });
@@ -1207,6 +1208,7 @@ describe('refreshController – OpenID path', () => {
       expect(findSession).toHaveBeenCalledWith({ refreshToken: 'stored-refresh' }, { lean: true });
       expect(mockAuthorizeProviderSession).toHaveBeenCalledWith({
         ref: providerSession,
+        subject: baseClaims.sub,
         expiresAt: expect.any(Date),
         legacy: false,
       });
@@ -1220,6 +1222,7 @@ describe('refreshController – OpenID path', () => {
 
       expect(mockAuthorizeProviderSession).toHaveBeenCalledWith({
         ref: null,
+        subject: baseClaims.sub,
         expiresAt: expect.any(Date),
         legacy: true,
       });
