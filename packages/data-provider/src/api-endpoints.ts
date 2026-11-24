@@ -581,6 +581,15 @@ export const scheduleMCPConsent = (id: string) => `${schedule(id)}/mcp-consent`;
 export const scheduleMCPOffer = () => `${schedules()}/mcp-consent/offer`;
 export const runSchedule = (id: string) => `${schedule(id)}/run`;
 
+/* Agent event subscriptions */
+export const agentEvents = () => `${BASE_URL}/api/agents/events`;
+export const agentEventConnections = () => `${agentEvents()}/connections`;
+export const agentEventSubscriptions = (agentId?: string) =>
+  `${agentEvents()}/subscriptions${buildQuery({ agentId })}`;
+export const agentEventSubscription = (id: string) =>
+  `${agentEvents()}/subscriptions/${encodeURIComponent(id)}`;
+export const agentEventSubscriptionGrant = (id: string) => `${agentEventSubscription(id)}/grant`;
+
 /* Skills */
 export const skills = () => `${BASE_URL}/api/skills`;
 export const importSkill = () => `${skills()}/import`;

@@ -104,8 +104,19 @@ export function createSubscriptionHost(deps: {
     user.id = identity.ownerId;
     return user;
   };
-  const canUseAgent = async (agentId: string, user: IUser): Promise<boolean> =>
-    (await deps.access(agentId, user)) === 'ok';
+  /** Whether the owner's role still allows event subscriptions, and they may run the agent. */
+  const canUseAgent = async (agentId: string, user: IUser): Promise<boolean> => {
+    const [permitted, access] = await Promise.all([
+      checkAccess({
+        user,
+        getRoleByName: deps.getRoleByName,
+        permissionType: PermissionTypes.AGENT_EVENTS,
+        permissions: [Permissions.USE],
+      }),
+      deps.access(agentId, user),
+    ]);
+    return permitted && access === 'ok';
+  };
   const canUseMCP = (user: IUser): Promise<boolean> =>
     checkAccess({
       user,

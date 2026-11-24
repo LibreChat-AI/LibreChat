@@ -67,6 +67,9 @@ const unused = async (): Promise<never> => {
 
 type HostDeps = Parameters<typeof createSubscriptionHost>[0];
 
+/** A role that may subscribe agents to events, and nothing more. */
+const subscriber = { [PermissionTypes.AGENT_EVENTS]: { [Permissions.USE]: true } };
+
 /** The host over the real stores, with nothing of the owner's configuration readable. */
 const build = (overrides: Partial<HostDeps> = {}): SubscriptionHost =>
   createSubscriptionHost({
@@ -74,7 +77,7 @@ const build = (overrides: Partial<HostDeps> = {}): SubscriptionHost =>
     getSubscription: subscriptions.get,
     getConnection: connections.get,
     findUser,
-    getRoleByName: unused,
+    getRoleByName: async () => ({ permissions: subscriber }) as IRole,
     access,
     enrollment: {
       getAppConfig,
@@ -455,6 +458,59 @@ describe('a subscription with no grant', () => {
     ).rejects.toMatchObject({ failure: { reason: 'consent_missing' } });
   });
 
+  describe('an MCP call under a grant of the whole agent', () => {
+    const mcp = { [PermissionTypes.MCP_SERVERS]: { [Permissions.USE]: true } };
+    /** A run put under a grant of everything, ready to make one call on an undeclared server. */
+    async function call(permissions: object = { ...subscriber, ...mcp }) {
+      host = build({ getRoleByName: async () => ({ permissions }) as IRole });
+      const subscription = await made();
+      await grant(subscription, { everything: true });
+      const input = inputFor(delivery(subscription.id));
+      await place(input);
+      return () =>
+        grantExecution(input.context)!
+          .bind(AGENT, 'query')
+          .authorize({
+            user: { id: OWNER },
+            serverName: 'warehouse',
+            serverConfig: { type: 'streamable-http', url: 'https://warehouse.example/mcp' },
+            toolName: 'query',
+            loadTools: unused,
+          });
+    }
+
+    it('goes ahead, reading the owner and their configuration fail-closed', async () => {
+      getAppConfig.mockResolvedValue({} as never);
+      const authorize = await call();
+      findUser.mockClear();
+      await expect(authorize()).resolves.toBeUndefined();
+      expect(findUser).toHaveBeenCalledWith(OWNER);
+      expect(getAppConfig).toHaveBeenCalledWith(expect.objectContaining({ failClosed: true }));
+    });
+
+    it("is refused when the owner's role no longer allows MCP servers", async () => {
+      getAppConfig.mockResolvedValue({} as never);
+      const authorize = await call(subscriber);
+      await expect(authorize()).rejects.toMatchObject({ failure: { reason: 'rbac_denied' } });
+    });
+
+    it('is refused when the owner is gone by the time of the call', async () => {
+      getAppConfig.mockResolvedValue({} as never);
+      const authorize = await call();
+      findUser.mockResolvedValue(null);
+      await expect(authorize()).rejects.toMatchObject({ failure: { reason: 'rbac_denied' } });
+      expect(getAppConfig).not.toHaveBeenCalled();
+    });
+
+    it("is refused when the owner's configuration cannot be read", async () => {
+      getAppConfig.mockRejectedValue(new Error('config store down'));
+      const authorize = await call();
+      await expect(authorize()).rejects.toMatchObject({
+        failure: { reason: 'dependency_unavailable' },
+      });
+    });
+  });
+
   it('is not lifted by anything the deployment sets for schedules', async () => {
     const subscription = await made();
     const input = inputFor(delivery(subscription.id));
@@ -587,6 +643,15 @@ describe('a subscription that is not live', () => {
     },
   );
 
+  it("refuses when the owner's role no longer allows event subscriptions", async () => {
+    const subscription = await made();
+    await grant(subscription, { everything: true });
+    host = build({ getRoleByName: async () => ({ permissions: {} }) as IRole });
+    const input = inputFor(delivery(subscription.id));
+    expect(await outcome(input)).toBe('rbac_denied');
+    expect(grantExecution(input.context)).toBeUndefined();
+  });
+
   it('refuses a request that has nowhere to hold the check, or no owner', async () => {
     const subscription = await made();
     const req = delivery(subscription.id);
@@ -601,7 +666,7 @@ describe('a subscription that is not live', () => {
   it('never reads a subscription of another tenant', async () => {
     const subscription = await tenantStorage.run({ tenantId: 'tenant-a' }, async () => made());
     const stranger = { id: OWNER, tenantId: 'tenant-b' };
-    findUser.mockResolvedValue({ id: OWNER, tenantId: 'tenant-b' } as IUser);
+    findUser.mockResolvedValue({ id: OWNER, role: 'USER', tenantId: 'tenant-b' } as IUser);
     const req = delivery(subscription.id, { user: stranger });
     expect(
       await tenantStorage.run({ tenantId: 'tenant-b' }, async () => outcome(inputFor(req))),
@@ -610,7 +675,7 @@ describe('a subscription that is not live', () => {
 
   it('refuses a subscription of another tenant even where the store hands it over', async () => {
     const subscription = await tenantStorage.run({ tenantId: 'tenant-a' }, async () => made());
-    findUser.mockResolvedValue({ id: OWNER, tenantId: 'tenant-b' } as IUser);
+    findUser.mockResolvedValue({ id: OWNER, role: 'USER', tenantId: 'tenant-b' } as IUser);
     // No tenant is in scope here, so the read is not narrowed for the caller.
     const req = delivery(subscription.id, { user: { id: OWNER, tenantId: 'tenant-b' } });
     expect(await subscriptions.get(subscription.id, OWNER)).not.toBeNull();
@@ -643,7 +708,12 @@ describe("the owner's grant, made through the consent service", () => {
   const served = (overrides: Partial<HostDeps> = {}): SubscriptionHost =>
     build({
       getRoleByName: async () =>
-        ({ permissions: { [PermissionTypes.MCP_SERVERS]: { [Permissions.USE]: true } } }) as IRole,
+        ({
+          permissions: {
+            ...subscriber,
+            [PermissionTypes.MCP_SERVERS]: { [Permissions.USE]: true },
+          },
+        }) as IRole,
       enrollment: {
         getAppConfig: async () =>
           ({
