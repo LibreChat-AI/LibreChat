@@ -43,6 +43,8 @@ const MAX_DEAD_LETTER_LIMIT = 200;
 const DEFAULT_PURGE_RECOVERY_LIMIT = 25;
 const MAX_PURGE_RECOVERY_LIMIT = 200;
 const HISTORY_LIMIT = 64;
+/** A requeued batch found one of its receipts already removed by the dead-letter deadline. */
+const BATCH_RECEIPTS_EXPIRED = 'BATCH_RECEIPTS_EXPIRED';
 const MAX_BATCH_SIZE = 8;
 const BACKGROUND_RECEIPT_CAPABILITIES = [
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
@@ -980,12 +982,13 @@ export function createAgentTriggerDeliveryMethods(
 
   /** A dead batch root owns requeue before any constituent is reset. Staging
    * recovery replays this preparation, so a crash cannot leave a dead root
-   * beside members that were silently advanced to a new generation. */
-  async function prepareBatchMembersForRequeue(root: IAgentTriggerDelivery): Promise<void> {
+   * beside members that were silently advanced to a new generation. False
+   * when the batch can no longer be requeued: the root is dead again. */
+  async function prepareBatchMembersForRequeue(root: IAgentTriggerDelivery): Promise<boolean> {
     const memberIds = root.batchMemberIds ?? [];
     const requeueCount = root.requeueCount ?? 0;
     if (memberIds.length === 0 || requeueCount <= 0 || root._id == null) {
-      return;
+      return true;
     }
     const previousRequeueCount = requeueCount - 1;
     await Delivery().updateMany(
@@ -1024,9 +1027,60 @@ export function createAgentTriggerDeliveryMethods(
       batchRootId: root._id,
       batchRootRequeueCount: requeueCount,
     });
-    if (preparedCount !== memberIds.length) {
+    if (preparedCount === memberIds.length) {
+      return true;
+    }
+    const remaining = await Delivery().countDocuments({ _id: { $in: memberIds } });
+    if (remaining === memberIds.length) {
       throw new Error('Not every agent trigger batch receipt could be prepared for requeue');
     }
+    /** Receipts carry their root's deadline, so one that no longer exists means the batch
+     * expired while this requeue was claiming it, and the events it held are gone. The root
+     * goes back to a dead letter whose deadline is due, and settlement expires the rest. */
+    const settledAt = new Date();
+    const attempt = Math.max(root.attempts, 1);
+    const error: AgentTriggerDeliveryFailure = {
+      code: BATCH_RECEIPTS_EXPIRED,
+      message: 'Batch receipts expired before the delivery was requeued',
+      certainty: 'definite',
+      retryable: false,
+      attemptedAt: settledAt,
+    };
+    const retired = await Delivery()
+      .findOneAndUpdate(
+        { _id: root._id, status: 'staging', requeueCount },
+        {
+          $set: { status: 'dead', settledAt, lastError: error, deadLetterExpiresAt: settledAt },
+          $unset: { stagingRecoveryAt: 1 },
+          $push: {
+            history: {
+              $each: [
+                { attempt, outcome: 'dead', at: settledAt, workerId: 'batch-requeue', error },
+              ],
+              $slice: -HISTORY_LIMIT,
+            },
+          },
+        },
+        { new: true },
+      )
+      .select('_id orderingKey batchMemberIds batchMembersSettledAt requeueCount')
+      .lean<
+        Pick<
+          IAgentTriggerDelivery,
+          '_id' | 'orderingKey' | 'batchMemberIds' | 'batchMembersSettledAt' | 'requeueCount'
+        >
+      >();
+    if (retired != null) {
+      await settleBatchMembers(retired, {
+        attempt,
+        workerId: 'batch-requeue',
+        status: 'dead',
+        settledAt,
+        expiresAt: settledAt,
+        error,
+      });
+    }
+    return false;
   }
 
   async function publishStagedDelivery(
@@ -1100,7 +1154,9 @@ export function createAgentTriggerDeliveryMethods(
       if ((await UserPurge().exists({ _id: current.user })) != null) {
         return current;
       }
-      await prepareBatchMembersForRequeue(current);
+      if (!(await prepareBatchMembersForRequeue(current))) {
+        continue;
+      }
 
       const lane = await LaneSequence().findById(orderingKey).lean<IAgentTriggerLaneSequence>();
       if (lane?.publisherDeliveryId != null) {
@@ -4777,7 +4833,12 @@ export function createAgentTriggerDeliveryMethods(
 
     // Requeue is a new lane admission. Publication first idempotently prepares
     // its members, then allocates a new sequence on the original lane.
-    return toRecord(await publishStagedDelivery(staged));
+    const published = await publishStagedDelivery(staged);
+    /** Nothing was revived: the dead-letter deadline had already removed a batch receipt. */
+    if (published.status === 'dead' && published.lastError?.code === BATCH_RECEIPTS_EXPIRED) {
+      return null;
+    }
+    return toRecord(published);
   }
 
   async function countActiveAgentTriggerDeliveriesByUser(
