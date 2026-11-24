@@ -117,6 +117,57 @@ describe('BackgroundTaskCard subagent header', () => {
     expect(card).not.toHaveTextContent('com_ui_background_tasks_result_claimed');
   });
 
+  it('shows the intent of the call that started the polled task on a continued thread', () => {
+    const continuation: TMessage = {
+      ...dispatch,
+      messageId: 'parent-turn-2',
+      content: [
+        {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: {
+            id: 'call-2',
+            name: 'subagent',
+            args: JSON.stringify({
+              intent: 'Asking the reviewer to check the follow-up fix',
+              description: 'Continue.',
+              subagent_type: 'agent_reviewer',
+              run_in_background: true,
+            }),
+            output: output.replace(/task-1/g, 'task-2'),
+            subagentIdentity: { subagentKind: 'agent', subagentAgentId: 'agent_reviewer' },
+          },
+        },
+      ],
+    };
+    const task: BackgroundTaskView = {
+      taskId: 'task-2',
+      toolName: 'subagent',
+      status: 'claimed',
+      subagentType: 'agent_reviewer',
+      threadId: 'thread-1',
+    };
+    renderCard(task, [dispatch, continuation]);
+    const card = screen.getByTestId('background-task-card');
+    expect(
+      within(card).getByText('Asking the reviewer to check the follow-up fix'),
+    ).toBeInTheDocument();
+    expect(card).not.toHaveTextContent('restate its findings');
+    expect(within(card).getByTitle('PR Reviewer')).toBeInTheDocument();
+  });
+
+  it('shows no task line when the polled task has no loaded dispatch, even if its thread does', () => {
+    renderCard({
+      taskId: 'task-9',
+      toolName: 'subagent',
+      status: 'claimed',
+      subagentType: 'agent_reviewer',
+      threadId: 'thread-1',
+    });
+    const card = screen.getByTestId('background-task-card');
+    expect(within(card).getByTitle('PR Reviewer')).toBeInTheDocument();
+    expect(card).not.toHaveTextContent('restate its findings');
+  });
+
   it('falls back to the generic subagent name and no task line when the dispatch is not loaded', () => {
     renderCard(
       {

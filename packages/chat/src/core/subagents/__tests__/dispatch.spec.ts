@@ -1,6 +1,6 @@
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
-import { findSubagentDispatch } from '../dispatch';
+import { findSubagentDispatch, findSubagentTaskDispatch } from '../dispatch';
 
 const output = JSON.stringify({
   background_task_id: 'task',
@@ -50,6 +50,8 @@ it.each([false, true])(
     });
     expect(findSubagentDispatch(messages, 'thread')?.message).toBe(message);
     expect(findSubagentDispatch(messages, 'absent')).toBeUndefined();
+    expect(findSubagentTaskDispatch(messages, 'task')?.message).toBe(message);
+    expect(findSubagentTaskDispatch(messages, 'thread')).toBeUndefined();
     expect(scan).toHaveBeenCalledTimes(1);
     expect(findSubagentDispatch([{ ...message, isCreatedByUser: true }], 'thread')).toBeUndefined();
     expect(

@@ -10,10 +10,10 @@ import {
   resolveSubagentAuthor,
   findAgentAuthorMessage,
 } from '../../react/subagents/author';
+import { findSubagentDispatch, findSubagentTaskDispatch } from '../../core/subagents/dispatch';
 import { parseToolName, getToolDisplayLabel } from '../../core/parts/toolLabels';
 import { backgroundTaskMessageKey, backgroundTaskNoteKey } from './guidance';
 import { formatBackgroundCodeOutput } from '../../core/parts/background';
-import { findSubagentDispatch } from '../../core/subagents/dispatch';
 import { useSubagentTaskPanel } from '../../react/subagents/task';
 import { getRunStepDurationLabels } from '../messages/duration';
 import { getToolCallIntent } from '../../react/parts/intent';
@@ -137,7 +137,10 @@ function SubagentHeader({
     task.subagentType != null && isDocumentId(task.subagentType) ? undefined : task.subagentType;
   const { author, intent } = useMemo(() => {
     const messages = getMessages();
-    const dispatch = findSubagentDispatch(messages, task.threadId);
+    /** A continued thread reuses its id, so only the call that started this task says what
+     *  it was asked to do; the thread's first call still says who runs it. */
+    const call = findSubagentTaskDispatch(messages, task.taskId);
+    const dispatch = call ?? findSubagentDispatch(messages, task.threadId);
     const parent = messageAuthor(
       dispatch?.message ?? findAgentAuthorMessage(messages, messageId),
       agentsMap,
@@ -156,9 +159,18 @@ function SubagentHeader({
         agentsMap,
         fallbackName,
       ),
-      intent: getToolCallIntent(dispatch?.args),
+      intent: getToolCallIntent(call?.args),
     };
-  }, [agentsMap, child, fallbackName, getMessages, messageId, readableType, task.threadId]);
+  }, [
+    agentsMap,
+    child,
+    fallbackName,
+    getMessages,
+    messageId,
+    readableType,
+    task.taskId,
+    task.threadId,
+  ]);
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
       <span
