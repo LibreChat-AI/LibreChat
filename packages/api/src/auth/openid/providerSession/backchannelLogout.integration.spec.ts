@@ -10,9 +10,12 @@ import type { Response } from 'express';
 import type { ResolvedBackchannelLogoutConfig } from './config';
 import type { OpenIDSessionRefreshDeps } from '../session';
 import { receiveBackchannelLogout, isBackchannelLogoutEnabled } from '../logout';
+import { respondToProviderSessionError } from '../reuseSession';
 import { createLocalRefreshHandler } from '../../localRefresh';
 import { createOpenIDSessionRefreshService } from '../session';
 import { createProviderSessionAuthorizer } from './authorize';
+import { createOpenIDRefreshFlightService } from '../flight';
+import { createOpenIDSessionEndedError } from '../errors';
 
 /** Cross-path coverage: a real signed logout token runs the real receiver into a real database,
  * then the real authorizer is checked at each renewal/restoration call site. */
@@ -842,5 +845,183 @@ describe('back-channel logout: rollback to off keeps an existing association', (
     expect(result?.access_token).toBe('new-access');
     expect(result?.providerSession).toBeUndefined();
     expect(req.session.openidTokens?.providerSession).toBeUndefined();
+  });
+});
+
+describe('enforce rollout: a session with no recorded provider session', () => {
+  const legacyCases: Array<[string, ProviderSessionRef | undefined]> = [
+    ['no provider-session ref on the Session row', undefined],
+    [
+      'a ref that no login ever recorded',
+      { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-never-recorded' },
+    ],
+  ];
+
+  async function storeOpenIDSession(userId: string, refreshJwt: string, ref?: ProviderSessionRef) {
+    await methods.upsertSession(userId, refreshJwt, {
+      expiration: future(),
+      authMethod: 'openid',
+      ...(ref ? { providerSession: ref } : {}),
+    });
+  }
+
+  it.each(legacyCases)(
+    'enforce: /refresh denies %s with 401 and deletes the Session row, then a new sign-in renews',
+    async (_, ref) => {
+      const config = makeConfig();
+      const authorizer = makeAuthorizer(config);
+      const userId = new mongoose.Types.ObjectId().toString();
+      const refreshJwt = signRefreshJwt(userId);
+      await storeOpenIDSession(userId, refreshJwt, ref);
+
+      const res = buildRes();
+      await buildLocalHandler(authorizer.authorize)({ query: {} } as never, res, refreshJwt);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.send).toHaveBeenCalledWith({ code: OPENID_SESSION_ENDED });
+      await expect(
+        methods.findSession({ userId, refreshToken: refreshJwt }, { lean: false }),
+      ).resolves.toBeNull();
+
+      /** The next sign-in records its provider session, so the new credential renews. */
+      const nextRef = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-after-sign-in' };
+      await expect(
+        authorizer.establish({
+          ref: nextRef,
+          subject: 'sub-1',
+          expiresAt: future(),
+          callbackIssuedAt: new Date(),
+        }),
+      ).resolves.toEqual({ ok: true });
+      const nextUserId = new mongoose.Types.ObjectId().toString();
+      const nextJwt = signRefreshJwt(nextUserId);
+      await storeOpenIDSession(nextUserId, nextJwt, nextRef);
+      const nextRes = buildRes();
+      await buildLocalHandler(authorizer.authorize)({ query: {} } as never, nextRes, nextJwt);
+      expect(nextRes.status).toHaveBeenCalledWith(200);
+    },
+  );
+
+  it.each(legacyCases)('record: /refresh still renews %s (fail open)', async (_, ref) => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const refreshJwt = signRefreshJwt(userId);
+    await storeOpenIDSession(userId, refreshJwt, ref);
+
+    const res = buildRes();
+    await buildLocalHandler(makeAuthorizer(makeConfig({ mode: 'record' })).authorize)(
+      { query: {} } as never,
+      res,
+      refreshJwt,
+    );
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    await expect(
+      methods.findSession({ userId, refreshToken: refreshJwt }, { lean: false }),
+    ).resolves.not.toBeNull();
+  });
+});
+
+describe("refresh flight: a waiter answers the owner's stored provider-session failure", () => {
+  function makeFlightService() {
+    return createOpenIDRefreshFlightService({
+      db: methods,
+      logger: makeLogger(),
+      encrypt: async (value: string) => value,
+      decrypt: async (value: string) => value,
+    });
+  }
+
+  function respond(error: unknown): { status?: number; body?: unknown } {
+    const response: { status?: number; body?: unknown } = {};
+    const res = {
+      status: (code: number) => {
+        response.status = code;
+        return {
+          send: (body: unknown) => {
+            response.body = body;
+            return response;
+          },
+        };
+      },
+    };
+    respondToProviderSessionError(res, error, makeLogger(), 'test');
+    return response;
+  }
+
+  /** The owner's publication step: a denial becomes the ended error, as in `session.ts`. */
+  async function ownerFailure(authorize: () => Promise<{ ok: boolean }>): Promise<Error> {
+    try {
+      const outcome = await authorize();
+      if (!outcome.ok) {
+        throw createOpenIDSessionEndedError();
+      }
+    } catch (error) {
+      return error as Error;
+    }
+    throw new Error('owner authorize unexpectedly succeeded');
+  }
+
+  function waiterFailure(
+    flights: ReturnType<typeof makeFlightService>,
+    key: string,
+  ): Promise<unknown> {
+    return flights
+      .waitForOpenIDRefreshFlight({ key, timeoutMs: 50, intervalMs: 5 })
+      .then(() => new Error('waiter resolved'))
+      .catch((caught: unknown) => caught);
+  }
+
+  it('enforce: a database outage gives owner and waiter the same retryable 503, and a retry takes the flight over', async () => {
+    const flights = makeFlightService();
+    const key = 'flight-db-outage';
+    const owner = await flights.acquireOpenIDRefreshFlight({ key });
+    expect(owner.acquired).toBe(true);
+
+    const failingAuthorizer = createProviderSessionAuthorizer({
+      methods: {
+        establish: methods.establishProviderSession,
+        authorize: jest.fn().mockRejectedValue(new Error('mongo down')),
+      },
+      getConfig: () => Promise.resolve(makeConfig()),
+      logger: makeLogger(),
+    });
+    const ref = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-flight' };
+    const error = await ownerFailure(() =>
+      failingAuthorizer.authorize({ ref, expiresAt: future(), legacy: false }),
+    );
+    await flights.failOpenIDRefreshFlight({ key, ownerId: owner.ownerId, error });
+
+    const ownerResponse = respond(error);
+    expect(ownerResponse).toEqual({ status: 503, body: { code: AUTH_SESSION_CHECK_UNAVAILABLE } });
+    expect(respond(await waiterFailure(flights, key))).toEqual(ownerResponse);
+
+    const retry = await flights.acquireOpenIDRefreshFlight({ key });
+    expect(retry.acquired).toBe(true);
+    expect(retry.ownerId).not.toBe(owner.ownerId);
+  });
+
+  it('enforce: a logged-out session gives owner and waiter the same 401', async () => {
+    const config = makeConfig();
+    const authorizer = makeAuthorizer(config);
+    const ref = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-1' };
+    await authorizer.establish({
+      ref,
+      subject: 'sub-1',
+      expiresAt: future(),
+      callbackIssuedAt: new Date(),
+    });
+    expect((await revokeViaReceiver(config, { sid: 'sid-1', sub: 'sub-1' })).status).toBe(200);
+
+    const flights = makeFlightService();
+    const key = 'flight-logged-out';
+    const owner = await flights.acquireOpenIDRefreshFlight({ key });
+    const error = await ownerFailure(() =>
+      authorizer.authorize({ ref, subject: 'sub-1', expiresAt: future(), legacy: false }),
+    );
+    await flights.failOpenIDRefreshFlight({ key, ownerId: owner.ownerId, error });
+
+    const ownerResponse = respond(error);
+    expect(ownerResponse).toEqual({ status: 401, body: { code: OPENID_SESSION_ENDED } });
+    expect(respond(await waiterFailure(flights, key))).toEqual(ownerResponse);
   });
 });
