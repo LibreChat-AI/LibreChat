@@ -148,6 +148,11 @@ export type TriggerRunSkip = TriggerRunRow & {
   status: Extract<ScheduleRunStatus, 'skipped_overlap' | 'skipped_balance'>;
 };
 
+/** The row of a subscription's run that never starts, which its hourly cap may also leave out. */
+export type EventRunSkip = TriggerRunRow & {
+  status: TriggerRunSkip['status'] | 'skipped_cap';
+};
+
 /**
  * What a row write hands the run's subject for the subject's own step: when the run fired,
  * or the time of the write for a row that holds none, and the revision it started under.

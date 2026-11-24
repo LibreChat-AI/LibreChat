@@ -81,3 +81,34 @@ export function eventSettings(
     github: resolveGitHub(config.github, env),
   };
 }
+
+/** How a subscription's runs are bounded and kept. */
+export interface RunSettings {
+  /** Runs per clock hour for a subscription whose owner set no cap. */
+  perHour: number;
+  /** The most runs per hour any subscription may start. */
+  maxPerHour: number;
+  /** Runs in a row that may fail before the subscription is turned off; 0 never. */
+  failures: number;
+  /** How long a run may stay active with no live generation before it is ended. */
+  staleMs: number;
+}
+
+export const RUN_DEFAULTS: RunSettings = {
+  perHour: 20,
+  maxPerHour: 100,
+  failures: 5,
+  staleMs: 30 * 60_000,
+};
+
+/** The run bounds `endpoints.agents.events.runs` sets, each default where it sets none. */
+export function runSettings(config: Partial<EventConfig> | null | undefined): RunSettings {
+  const runs = config?.runs;
+  const maxPerHour = runs?.maxPerHour ?? RUN_DEFAULTS.maxPerHour;
+  return {
+    perHour: Math.min(runs?.perHour ?? RUN_DEFAULTS.perHour, maxPerHour),
+    maxPerHour,
+    failures: runs?.failures ?? RUN_DEFAULTS.failures,
+    staleMs: runs?.staleMinutes != null ? runs.staleMinutes * 60_000 : RUN_DEFAULTS.staleMs,
+  };
+}

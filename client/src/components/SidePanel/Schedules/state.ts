@@ -27,6 +27,8 @@ const RUN_TONE: Record<ScheduleRunStatus, { tone: ScheduleRowTone; label: Transl
   started: { tone: 'running', label: 'com_ui_schedule_run_started' },
   skipped_overlap: { tone: 'running', label: 'com_ui_schedule_run_skipped' },
   skipped_balance: { tone: 'warning', label: 'com_ui_schedule_run_skipped' },
+  // A subscription's status; a schedule's run never ends in it.
+  skipped_cap: { tone: 'running', label: 'com_ui_schedule_run_skipped' },
 };
 
 /**

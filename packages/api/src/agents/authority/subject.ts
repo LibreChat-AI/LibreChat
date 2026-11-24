@@ -37,6 +37,27 @@ export interface Resolved<Identity extends RunGrantIdentity = RunGrantIdentity> 
   options?: Omit<RunGrantExecutionOptions, 'without'>;
 }
 
+/** A status a run's turn ends in, as the chat route reports it to the run's subject. */
+export type SettleStatus =
+  | 'success'
+  | 'error'
+  | 'interrupted'
+  | 'requires_action'
+  | 'skipped_balance';
+
+/** How one turn of a run ended, for its subject to record. */
+export interface Settle {
+  executionContext?: ExecutionContext;
+  status: SettleStatus;
+  /** A code or short reason safe to store where the owner reads it. */
+  error?: string;
+  conversationId?: string;
+  /** For a run that paused, where its checkpoint is kept. */
+  checkpointNamespace?: string;
+  /** The run's conversation was never created; its row should not keep the id it reserved. */
+  clearConversationId?: boolean;
+}
+
 /**
  * One kind of subject a run can act for: a schedule, an API key. The run host asks each the
  * same questions and reads nothing of the subject itself, so another kind is another adapter.
@@ -67,4 +88,10 @@ export interface SubjectAdapter<
    * where its owner reads them. Absent, the failure reaches the caller as it is.
    */
   readonly opaque?: boolean;
+  /**
+   * Records how a turn of the run ended, on the run's record and in the subject's own state.
+   * `false` when nothing could be recorded, so a caller that must not go on without it can
+   * stop. Absent for a subject whose runs are recorded elsewhere.
+   */
+  settle?(run: Settle): Promise<boolean>;
 }

@@ -10,7 +10,9 @@ import {
   DEFAULT_RUN_GRANT_LIFETIME_HOURS,
 } from 'librechat-data-provider';
 import {
+  createModels,
   tenantStorage,
+  createTriggerRuns,
   createConnections,
   createSubscriptions,
   createSubscriptionGrantStorage,
@@ -35,9 +37,9 @@ import {
   SUBSCRIPTION_SOURCE,
   getSourceKey,
 } from '~/agents/authority/context';
+import { createSubscriptionHost, subscriptionSubject, RunRefusal } from './subject';
 import { grantExecution, narrowGrantedTools } from '~/agents/authority/execution';
 import { createAgentTriggerIngressHandlers } from '~/agents/triggers/ingress';
-import { createSubscriptionHost, subscriptionSubject } from './subject';
 import { scheduleSubject } from '~/schedules/authorization/subject';
 import { RunGrantPolicyError } from '~/agents/authority/policy';
 import { createRunPolicy } from '~/agents/authority/run';
@@ -59,7 +61,7 @@ let storage: RunGrantStorage<SubscriptionIdentity>;
 let host: SubscriptionHost;
 let access: jest.Mock<Promise<AgentAccess>, [string, IUser]>;
 let findUser: jest.Mock<Promise<IUser | null>, [string]>;
-let getAppConfig: jest.Mock<Promise<never>, []>;
+let getAppConfig: jest.Mock<Promise<AppConfig | undefined>, [{ baseOnly?: boolean }?]>;
 let connectionId: string;
 
 const unused = async (): Promise<never> => {
@@ -80,6 +82,8 @@ const build = (overrides: Partial<HostDeps> = {}): SubscriptionHost =>
     findUser,
     getRoleByName: async () => ({ permissions: subscriber }) as IRole,
     access,
+    runs: createTriggerRuns(mongoose),
+    usage: subscriptions,
     enrollment: {
       getAppConfig,
       resolveGraphAccess: unused,
@@ -96,16 +100,22 @@ type TriggerRequest = NonNullable<Parameters<typeof createTriggerExecutionContex
 };
 
 /** The request the trigger host makes for a delivery a subscription matched. */
+let deliveries = 0;
+
 function delivery(
   subscriptionId: string | undefined,
-  { user = { id: OWNER } as TriggerRequest['user'], agentId = AGENT as unknown } = {},
+  {
+    user = { id: OWNER } as TriggerRequest['user'],
+    agentId = AGENT as unknown,
+    key = `trigger_delivery_${++deliveries}`,
+  } = {},
 ): TriggerRequest {
   return {
     user,
     _isAgentTrigger: true,
     body: {
       agent_id: agentId,
-      clientRequestId: 'trigger_delivery',
+      clientRequestId: key,
       agentTrigger: {
         version: 1,
         event: {
@@ -186,7 +196,31 @@ async function grant(
 beforeAll(async () => {
   server = await MongoMemoryServer.create();
   await mongoose.connect(server.getUri());
+  createModels(mongoose);
+  await mongoose.models.ScheduleRun.init();
+  // As the release that drops the two indexes covering every row leaves the collection, so a
+  // subscription's runs can be put on record. The tests of the time before put them back.
+  await legacy(false);
 }, DB_SETUP_TIMEOUT_MS);
+
+const LEGACY = [
+  { key: { scheduleId: 1, scheduledFor: 1 }, name: 'scheduleId_1_scheduledFor_1', unique: true },
+  {
+    key: { scheduleId: 1 },
+    name: 'scheduleId_1',
+    unique: true,
+    partialFilterExpression: { status: 'started' },
+  },
+] as const;
+
+async function legacy(present: boolean): Promise<void> {
+  const collection = mongoose.models.ScheduleRun.collection;
+  const names = new Set((await collection.indexes()).map((index) => index.name));
+  for (const { key, ...options } of LEGACY) {
+    if (present && !names.has(options.name)) await collection.createIndex(key, options);
+    if (!present && names.has(options.name)) await collection.dropIndex(options.name);
+  }
+}
 
 afterAll(async () => {
   await mongoose.disconnect();
@@ -199,6 +233,7 @@ beforeEach(async () => {
   storage = createSubscriptionGrantStorage(mongoose);
   await mongoose.models.AgentEventSubscription.deleteMany({});
   await mongoose.models.AgentEventConnection.deleteMany({});
+  await mongoose.models.ScheduleRun.deleteMany({});
   const bound = await connections.bind({
     provider: 'github',
     installation: '4242',
@@ -209,7 +244,10 @@ beforeEach(async () => {
   connectionId = bound.value.id;
   access = jest.fn<Promise<AgentAccess>, [string, IUser]>(async () => 'ok');
   findUser = jest.fn(async (id: string) => ({ id, role: 'USER' }) as IUser);
-  getAppConfig = jest.fn(unused);
+  // The deployment's own settings are read for a run's bounds; nothing of the owner's is.
+  getAppConfig = jest.fn(async (options?: { baseOnly?: boolean }) =>
+    options?.baseOnly ? ({} as AppConfig) : unused(),
+  );
   host = build();
 });
 
@@ -223,7 +261,7 @@ describe('the context of a delivery a subscription matched', () => {
         type: 'trigger',
         subject: { kind: 'subscription', id: 'sub_1' },
         delivery: {
-          key: 'trigger_delivery',
+          key: expect.stringMatching(/^trigger_delivery_/),
           event: { id: 'gh-delivery-1', type: 'github.check_suite.completed', occurredAt: NOW },
         },
         manual: false,
@@ -500,11 +538,14 @@ describe('a subscription with no grant', () => {
       const authorize = await call();
       findUser.mockResolvedValue(null);
       await expect(authorize()).rejects.toMatchObject({ failure: { reason: 'rbac_denied' } });
-      expect(getAppConfig).not.toHaveBeenCalled();
+      expect(getAppConfig).not.toHaveBeenCalledWith(expect.objectContaining({ failClosed: true }));
     });
 
     it("is refused when the owner's configuration cannot be read", async () => {
-      getAppConfig.mockRejectedValue(new Error('config store down'));
+      getAppConfig.mockImplementation(async (options) => {
+        if (options?.baseOnly) return {} as AppConfig;
+        throw new Error('config store down');
+      });
       const authorize = await call();
       await expect(authorize()).rejects.toMatchObject({
         failure: { reason: 'dependency_unavailable' },
@@ -517,8 +558,9 @@ describe('a subscription with no grant', () => {
     const input = inputFor(delivery(subscription.id));
     await place(input);
     expect(await grantExecution(input.context)!.needsGrant()).toBe(true);
-    // No setting was read to decide it: there is none that could say otherwise.
-    expect(getAppConfig).not.toHaveBeenCalled();
+    // No setting of the owner's was read to decide it: there is none that could say otherwise.
+    // Only the deployment's own bounds on the run were read.
+    expect(getAppConfig.mock.calls.every(([options]) => options?.baseOnly === true)).toBe(true);
   });
 });
 
@@ -1054,5 +1096,214 @@ describe("the subscription's readiness check", () => {
     await check();
     await check();
     expect(connect).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("a subscription's runs on record", () => {
+  const runs = () => createTriggerRuns(mongoose);
+  const refOf = (subscription: Subscription, req: TriggerRequest) => ({
+    subject: { kind: 'subscription', id: subscription.id },
+    delivery: { key: String(req.body?.clientRequestId), event: { occurredAt: NOW } },
+  });
+  const fields = ['status', 'revision', 'owner', 'error', 'conversationId'] as const;
+  const row = (subscription: Subscription, req: TriggerRequest) =>
+    runs().get(refOf(subscription, req), [...fields]);
+  const stored = (id: string) =>
+    mongoose.models.AgentEventSubscription.findOne({ id }).lean<Record<string, unknown>>();
+  const bounds = (settings: Record<string, number>) =>
+    getAppConfig.mockImplementation(async (options) =>
+      options?.baseOnly
+        ? ({ endpoints: { agents: { events: { runs: settings } } } } as unknown as AppConfig)
+        : unused(),
+    );
+
+  /** Why a run was not started: the record's own reason, or the grant check's. */
+  async function refusal(input: SubscriptionInput): Promise<string> {
+    try {
+      await place(input);
+      return 'placed';
+    } catch (error) {
+      if (error instanceof RunRefusal) return error.refusal;
+      if (error instanceof RunGrantPolicyError) return error.failure.reason;
+      throw error;
+    }
+  }
+
+  async function started(subscription: Subscription) {
+    const req = delivery(subscription.id);
+    const input = inputFor(req);
+    await place(input);
+    return { req, input };
+  }
+
+  it('puts the first turn of a delivery on record, under the revision it starts with', async () => {
+    const subscription = await made();
+    const { req } = await started(subscription);
+    expect(await row(subscription, req)).toEqual({
+      status: 'started',
+      revision: 0,
+      owner: OWNER,
+    });
+  });
+
+  it('refuses a delivery that already has a run', async () => {
+    const subscription = await made();
+    const { req } = await started(subscription);
+    expect(await refusal(inputFor(req))).toBe('duplicate');
+  });
+
+  it('refuses every run while the record cannot hold its row, and writes nothing', async () => {
+    await legacy(true);
+    try {
+      const subscription = await made();
+      const req = delivery(subscription.id);
+      expect(await refusal(inputFor(req))).toBe('blocked');
+      expect(await row(subscription, req)).toBeNull();
+    } finally {
+      await legacy(false);
+    }
+  });
+
+  it('records a delivery over the hourly cap as skipped, and does not run it', async () => {
+    const subscription = await subscriptions.create(OWNER, {
+      ...draft,
+      connection: connectionId,
+      cap: { perHour: 1 },
+    });
+    await started(subscription);
+    const req = delivery(subscription.id);
+    expect(await refusal(inputFor(req))).toBe('capped');
+    expect(await row(subscription, req)).toMatchObject({ status: 'skipped_cap' });
+  });
+
+  it("holds an owner's cap to the deployment's ceiling", async () => {
+    bounds({ maxPerHour: 1 });
+    const subscription = await subscriptions.create(OWNER, {
+      ...draft,
+      connection: connectionId,
+      cap: { perHour: 50 },
+    });
+    await started(subscription);
+    expect(await refusal(inputFor(delivery(subscription.id)))).toBe('capped');
+  });
+
+  it('lets no more than the cap through a burst of concurrent deliveries', async () => {
+    bounds({ perHour: 3 });
+    const subscription = await made();
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => refusal(inputFor(delivery(subscription.id)))),
+    );
+    expect(results.filter((result) => result === 'placed')).toHaveLength(3);
+    expect(results.filter((result) => result === 'capped')).toHaveLength(5);
+  });
+
+  it('records how a run ended and starts its failure streak over on a success', async () => {
+    const subscription = await made();
+    const { req, input } = await started(subscription);
+    await expect(
+      host.settle({
+        executionContext: input.executionContext,
+        status: 'success',
+        conversationId: 'conversation-1',
+      }),
+    ).resolves.toBe(true);
+    expect(await row(subscription, req)).toMatchObject({
+      status: 'success',
+      conversationId: 'conversation-1',
+    });
+    expect(await stored(subscription.id)).toMatchObject({ counted: req.body?.clientRequestId });
+  });
+
+  it('turns the subscription off after enough runs in a row fail', async () => {
+    bounds({ failures: 2 });
+    const subscription = await made();
+    for (let i = 0; i < 2; i++) {
+      const { input } = await started(subscription);
+      await host.settle({ executionContext: input.executionContext, status: 'error', error: 'x' });
+    }
+    const after = await subscriptions.get(subscription.id, OWNER);
+    expect(after).toMatchObject({ enabled: false, suspended: { reason: 'failures', failures: 2 } });
+    // Turned off, its next delivery is refused before anything is recorded.
+    expect(await refusal(inputFor(delivery(subscription.id)))).toBe('binding_mismatch');
+  });
+
+  it('counts neither a balance skip nor a pause into the streak', async () => {
+    bounds({ failures: 1 });
+    const subscription = await made();
+    const first = await started(subscription);
+    await host.settle({
+      executionContext: first.input.executionContext,
+      status: 'skipped_balance',
+    });
+    const second = await started(subscription);
+    await expect(
+      host.settle({ executionContext: second.input.executionContext, status: 'requires_action' }),
+    ).resolves.toBe(true);
+    expect(await row(subscription, second.req)).toMatchObject({ status: 'requires_action' });
+    expect(await stored(subscription.id)).toMatchObject({ enabled: true });
+  });
+
+  it('settles nothing for a turn that reports earlier work', async () => {
+    const subscription = await made();
+    const { req, input } = await started(subscription);
+    const source = input.executionContext!.source as Record<string, unknown>;
+    const reporting = {
+      ...input.executionContext!,
+      source: { ...source, origin: { agentId: AGENT } },
+    } as ExecutionContext;
+    await expect(host.settle({ executionContext: reporting, status: 'error' })).resolves.toBe(true);
+    expect(await row(subscription, req)).toMatchObject({ status: 'started' });
+  });
+
+  it('answers false when the run is not active on record', async () => {
+    const subscription = await made();
+    const context = createTriggerExecutionContext(delivery(subscription.id));
+    await expect(host.settle({ executionContext: context, status: 'success' })).resolves.toBe(
+      false,
+    );
+  });
+
+  describe('reconcile', () => {
+    const aged = (subscription: Subscription, req: TriggerRequest, field: string) =>
+      mongoose.models.ScheduleRun.updateOne(
+        { kind: 'subscription', subject: subscription.id, deliveryKey: req.body?.clientRequestId },
+        { $set: { [field]: new Date(Date.now() - 3 * 3_600_000) } },
+      );
+
+    it('ends a stale run whose generation is gone as interrupted, and counts it', async () => {
+      bounds({ failures: 1 });
+      const subscription = await made();
+      const { req } = await started(subscription);
+      await aged(subscription, req, 'firedAt');
+      await expect(host.reconcile(async () => false)).resolves.toBe(1);
+      expect(await row(subscription, req)).toMatchObject({ status: 'interrupted' });
+      expect(await stored(subscription.id)).toMatchObject({ enabled: false });
+    });
+
+    it('leaves a stale run whose generation is still live', async () => {
+      const subscription = await made();
+      const { req } = await started(subscription);
+      await aged(subscription, req, 'firedAt');
+      await expect(host.reconcile(async () => true)).resolves.toBe(0);
+      expect(await row(subscription, req)).toMatchObject({ status: 'started' });
+    });
+
+    it("finishes the subscription's step a crash left undone after the row was written", async () => {
+      bounds({ failures: 1 });
+      const subscription = await made();
+      const { req } = await started(subscription);
+      // The row was written, then the process stopped before the subscription's own step.
+      await runs().finish(refOf(subscription, req), { status: 'error' });
+      await aged(subscription, req, 'settledAt');
+      await expect(host.reconcile(async () => false)).resolves.toBe(1);
+      expect(await stored(subscription.id)).toMatchObject({ enabled: false });
+      await expect(host.reconcile(async () => false)).resolves.toBe(0);
+    });
+
+    it('leaves a recent run alone', async () => {
+      const subscription = await made();
+      await started(subscription);
+      await expect(host.reconcile(async () => false)).resolves.toBe(0);
+    });
   });
 });

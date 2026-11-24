@@ -1,15 +1,11 @@
 const mongoose = require('mongoose');
 const {
+  createTriggerRuns,
   createConnections,
   createSubscriptions,
   createSubscriptionGrantStorage,
 } = require('@librechat/data-schemas');
-const {
-  getAgentCheckpointer,
-  GenerationJobManager,
-  createSubscriptionHost,
-  createScheduledPauseCheck,
-} = require('@librechat/api');
+const { createSubscriptionHost } = require('@librechat/api');
 const { resolveAgentFireAccess } = require('~/server/services/Schedules/access');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { getAppConfig } = require('~/server/services/Config/app');
@@ -29,11 +25,8 @@ module.exports = createSubscriptionHost({
   findUser: (id) => methods.findUser({ _id: id }),
   getRoleByName: methods.getRoleByName,
   access: resolveAgentFireAccess,
-  canPauseRuns: createScheduledPauseCheck({
-    isSharedStore: () => GenerationJobManager.isRedis,
-    getCheckpointer: getAgentCheckpointer,
-    getAppConfig,
-  }),
+  runs: createTriggerRuns(mongoose),
+  usage: subscriptions,
   enrollment: {
     getAppConfig,
     resolveGraphAccess: (user) =>

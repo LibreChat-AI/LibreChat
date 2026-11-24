@@ -10,6 +10,7 @@ import type {
   TriggerRunRef,
   TriggerRunRow,
   TriggerRunSkip,
+  EventRunSkip,
   TriggerRunScope,
   TriggerRunClaim,
   TriggerRunPause,
@@ -340,7 +341,7 @@ export type TriggerRuns = {
    */
   skip: {
     (ref: ScheduleRunRef, row: TriggerRunSkip): Promise<TriggerRunOrigin | null>;
-    (ref: TriggerRunRef, row: TriggerRunSkip): Promise<TriggerRunOrigin | null | TriggerRunBlocked>;
+    (ref: TriggerRunRef, row: EventRunSkip): Promise<TriggerRunOrigin | null | TriggerRunBlocked>;
   };
   /** Marks a run as settled with its subject, once the subject's own step has landed. */
   settled: (ref: TriggerRunRef) => Promise<void>;
@@ -776,11 +777,11 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
   function skip(ref: ScheduleRunRef, row: TriggerRunSkip): Promise<TriggerRunOrigin | null>;
   function skip(
     ref: TriggerRunRef,
-    row: TriggerRunSkip,
+    row: EventRunSkip,
   ): Promise<TriggerRunOrigin | null | TriggerRunBlocked>;
   async function skip(
     ref: TriggerRunRef,
-    row: TriggerRunSkip,
+    row: EventRunSkip,
   ): Promise<TriggerRunOrigin | null | TriggerRunBlocked> {
     const at = where(ref);
     if (at == null) return null;
