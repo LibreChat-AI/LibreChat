@@ -9,7 +9,14 @@ const emptyInputs: BuildCatalogInputs = {
   mcpServersMap: new Map(),
   skills: [],
   actions: [],
-  permissions: { mcp: true, skills: true, webSearch: true, runCode: true, fileSearch: true },
+  permissions: {
+    mcp: true,
+    skills: true,
+    webSearch: true,
+    runCode: true,
+    fileSearch: true,
+    agentBuilder: true,
+  },
 };
 
 const toolInputs: BuildCatalogInputs = {
@@ -94,6 +101,23 @@ describe('buildCatalog', () => {
         (i) => i.kind === 'builtin' && i.id === 'ask_user_question',
       ),
     ).toBeUndefined();
+  });
+
+  test('offers agent_builder only with its capability and the agent CREATE grant', () => {
+    const find = (inputs: BuildCatalogInputs) =>
+      buildCatalog(inputs).find((i) => i.kind === 'builtin' && i.id === 'agent_builder');
+    const builderInputs: BuildCatalogInputs = {
+      ...emptyInputs,
+      agentsConfig: { capabilities: [AgentCapabilities.agent_builder] },
+    };
+    expect(find(emptyInputs)).toBeUndefined();
+    expect(
+      find({ ...builderInputs, permissions: { ...emptyInputs.permissions, agentBuilder: false } }),
+    ).toBeUndefined();
+    expect(find(builderInputs)?.description).toBe('com_agents_agent_builder_read_info');
+    expect(find({ ...builderInputs, approvalEnabled: true })?.description).toBe(
+      'com_agents_agent_builder_info',
+    );
   });
 
   test('hides MCP items when the user lacks MCP permission', () => {

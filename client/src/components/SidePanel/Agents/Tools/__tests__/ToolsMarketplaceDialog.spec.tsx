@@ -107,7 +107,14 @@ jest.mock('../hooks', () => {
         mcpServersMap: mcpServersMap ?? new Map(),
         skills: [],
         actions: agentActions,
-        permissions: { mcp: true, skills: false, webSearch: true, runCode: true, fileSearch: true },
+        permissions: {
+          mcp: true,
+          skills: false,
+          webSearch: true,
+          runCode: true,
+          fileSearch: true,
+          agentBuilder: true,
+        },
       });
       const selected = deriveSelectedItems(
         {
