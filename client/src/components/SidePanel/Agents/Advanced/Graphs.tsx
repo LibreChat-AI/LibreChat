@@ -9,6 +9,7 @@ import {
   Checkbox,
   Switch,
   FlowGraph,
+  describeFlow,
   ControlCombobox,
 } from '@librechat/client';
 import {
@@ -257,6 +258,11 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
                       entry={team.entry_agent_id}
                       result={team.result_agent_id}
                       label={localize('com_ui_agent_graphs_drawing', { 0: team.name })}
+                      description={describeFlow(
+                        team.agent_ids.map((id) => ({ id, label: nameOf(id) })),
+                        team.edges,
+                        localize('com_ui_agent_graphs_then'),
+                      )}
                     />
                   </div>
                 </div>
@@ -390,6 +396,11 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
                 label={localize('com_ui_agent_graphs_drawing', {
                   0: graph.name || localize('com_ui_agent_graphs_name'),
                 })}
+                description={describeFlow(
+                  graph.agent_ids.map((id) => ({ id, label: nameOf(id) })),
+                  graph.edges,
+                  localize('com_ui_agent_graphs_then'),
+                )}
               />
             </div>
           )}

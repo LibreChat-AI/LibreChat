@@ -89,6 +89,26 @@ export interface FlowGraphProps extends Omit<React.HTMLAttributes<HTMLDivElement
   size?: keyof typeof SIZES;
   /** What the drawing is of, for a reader who cannot see it. */
   label: string;
+  /** The order the drawing shows, in words, read after `label`. Build it with `describeFlow`. */
+  description?: string;
+}
+
+/**
+ * The drawing in words: each column's names, one column after another, as `layoutFlow` places
+ * them. `then` is the localized word between columns.
+ */
+export function describeFlow(
+  nodes: readonly Pick<FlowNode, 'id' | 'label'>[],
+  edges: readonly FlowEdge[],
+  then: string,
+): string {
+  const names = new Map(nodes.map((node) => [node.id, node.label]));
+  return layoutFlow(
+    nodes.map((node) => node.id),
+    edges,
+  )
+    .columns.map((ids) => ids.map((id) => names.get(id) ?? id).join(', '))
+    .join(`; ${then} `);
 }
 
 const STATE_CLASS: Record<FlowState, string> = {
@@ -100,7 +120,11 @@ const STATE_CLASS: Record<FlowState, string> = {
 
 /**
  * A directed graph drawn left to right: who starts, who runs beside whom, who answers. Read-only;
- * the drawing is one image to assistive technology, described by `label`.
+ * the drawing is one image to assistive technology, named by `label` and described by
+ * `description`.
+ *
+ * A connection between neighbouring columns is a curve. One that skips a column would run under
+ * the nodes between, so it bows over the top of the drawing instead, each in its own lane.
  */
 export function FlowGraph({
   nodes,
@@ -109,9 +133,11 @@ export function FlowGraph({
   result,
   size = 'md',
   label,
+  description,
   className,
   ...props
 }: FlowGraphProps): React.ReactElement | null {
+  const descriptionId = React.useId();
   const { width, height, gapX, gapY } = SIZES[size];
   const layout = React.useMemo(
     () =>
@@ -122,25 +148,56 @@ export function FlowGraph({
     [nodes, edges],
   );
   if (nodes.length === 0) return null;
+  const columnOf = new Map<string, number>();
+  layout.columns.forEach((entries, col) => entries.forEach((id) => columnOf.set(id, col)));
+  const skips = layout.links.filter(
+    ({ from, to }) => (columnOf.get(to) ?? 0) - (columnOf.get(from) ?? 0) > 1,
+  );
+  const lane = Math.max(4, gapY);
+  const top = skips.length * lane;
   const rows = Math.max(...layout.columns.map((entries) => entries.length));
   const totalWidth = layout.columns.length * width + (layout.columns.length - 1) * gapX;
-  const totalHeight = rows * height + (rows - 1) * gapY;
+  const totalHeight = top + rows * height + (rows - 1) * gapY;
   const position = new Map<string, { x: number; y: number }>();
   layout.columns.forEach((entries, col) => {
-    const top = ((rows - entries.length) * (height + gapY)) / 2;
+    const offset = top + ((rows - entries.length) * (height + gapY)) / 2;
     entries.forEach((id, row) => {
-      position.set(id, { x: col * (width + gapX), y: top + row * (height + gapY) });
+      position.set(id, { x: col * (width + gapX), y: offset + row * (height + gapY) });
     });
   });
   const running = nodes.some((node) => node.state != null);
+  const path = (from: string, to: string): string | null => {
+    const a = position.get(from);
+    const b = position.get(to);
+    if (a == null || b == null) return null;
+    const x1 = a.x + width;
+    const y1 = a.y + height / 2;
+    const x2 = b.x;
+    const y2 = b.y + height / 2;
+    const skip = skips.findIndex((link) => link.from === from && link.to === to);
+    if (skip === -1) {
+      const bend = (x2 - x1) / 2;
+      return `M${x1} ${y1}C${x1 + bend} ${y1} ${x2 - bend} ${y2} ${x2} ${y2}`;
+    }
+    /** Up out of the source, along its lane above every node, and down into the target. */
+    const y = (skip + 0.5) * lane;
+    const turn = gapX / 2;
+    return `M${x1} ${y1}C${x1 + turn} ${y1} ${x1 + turn} ${y} ${x1 + turn * 2} ${y}L${x2 - turn * 2} ${y}C${x2 - turn} ${y} ${x2 - turn} ${y2} ${x2} ${y2}`;
+  };
   return (
     <div
       role="img"
       aria-label={label}
+      aria-describedby={description ? descriptionId : undefined}
       className={cn('relative shrink-0', className)}
       style={{ width: totalWidth, height: totalHeight }}
       {...props}
     >
+      {description && (
+        <span id={descriptionId} className="sr-only">
+          {description}
+        </span>
+      )}
       <svg
         aria-hidden="true"
         className="text-border-heavy absolute inset-0"
@@ -149,18 +206,12 @@ export function FlowGraph({
         fill="none"
       >
         {layout.links.map(({ from, to }) => {
-          const a = position.get(from);
-          const b = position.get(to);
-          if (a == null || b == null) return null;
-          const x1 = a.x + width;
-          const y1 = a.y + height / 2;
-          const x2 = b.x;
-          const y2 = b.y + height / 2;
-          const bend = (x2 - x1) / 2;
+          const d = path(from, to);
+          if (d == null) return null;
           return (
             <path
               key={`${from}\u0000${to}`}
-              d={`M${x1} ${y1}C${x1 + bend} ${y1} ${x2 - bend} ${y2} ${x2} ${y2}`}
+              d={d}
               stroke="currentColor"
               strokeWidth={size === 'md' ? 1.5 : 1}
             />

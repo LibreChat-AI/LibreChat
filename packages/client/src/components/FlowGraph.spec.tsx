@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react';
-import { FlowGraph, layoutFlow } from './FlowGraph';
+import { FlowGraph, describeFlow, layoutFlow } from './FlowGraph';
 
 describe('layoutFlow', () => {
   it('puts each node one column past its furthest source', () => {
@@ -76,6 +76,55 @@ describe('FlowGraph', () => {
     render(<FlowGraph nodes={nodes} edges={edges} size="sm" label="Review team" />);
 
     expect(screen.getByRole('img', { name: 'Review team' })).toHaveTextContent('');
+  });
+
+  it('bows a connection that skips a column over the nodes it passes', () => {
+    const { container } = render(
+      <FlowGraph
+        nodes={[
+          { id: 'a', label: 'A' },
+          { id: 'b', label: 'B' },
+          { id: 'c', label: 'C' },
+        ]}
+        edges={[
+          { from: 'a', to: 'b' },
+          { from: ['a', 'b'], to: 'c' },
+        ]}
+        label="Team"
+      />,
+    );
+    const nodeTops = [...container.querySelectorAll<HTMLElement>('[title]')].map((node) =>
+      parseFloat(node.style.top),
+    );
+    const lowestLine = (d: string) =>
+      Math.min(
+        ...[...d.matchAll(/[ ,ML]?(-?[\d.]+) (-?[\d.]+)/g)].map((match) => Number(match[2])),
+      );
+    const paths = [...container.querySelectorAll('path')].map(
+      (path) => path.getAttribute('d') ?? '',
+    );
+
+    expect(paths).toHaveLength(3);
+    /** Exactly one line, A to C, rises above the row of nodes. */
+    expect(paths.filter((d) => lowestLine(d) < Math.min(...nodeTops))).toHaveLength(1);
+  });
+
+  it('reads its order aloud through the description', () => {
+    const team = [
+      { id: 'plan', label: 'Planner' },
+      { id: 'research', label: 'Researcher' },
+      { id: 'critique', label: 'Critic' },
+      { id: 'write', label: 'Writer' },
+    ];
+    const connections = [
+      { from: 'plan', to: ['research', 'critique'] },
+      { from: ['research', 'critique'], to: 'write' },
+    ];
+    const description = describeFlow(team, connections, 'then');
+
+    expect(description).toBe('Planner; then Researcher, Critic; then Writer');
+    render(<FlowGraph nodes={team} edges={connections} label="Review" description={description} />);
+    expect(screen.getByRole('img', { name: 'Review' })).toHaveAccessibleDescription(description);
   });
 
   it('renders nothing for a team with no members', () => {

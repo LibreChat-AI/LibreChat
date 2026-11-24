@@ -99,6 +99,9 @@ test('a saved team is drawn by its connections, and the draft is redrawn as it i
   }
   /** Two branches out of the planner and two into the writer: four lines, not a chain of three. */
   expect(lines()).toHaveLength(4);
+  expect(drawing).toHaveAccessibleDescription(
+    'Planner; com_ui_agent_graphs_then Researcher, com_ui_agent_graphs_self; com_ui_agent_graphs_then Writer',
+  );
 
   fireEvent.click(screen.getByRole('button', { name: 'com_ui_agent_graphs_edit' }));
   expect(lines()).toHaveLength(4);
