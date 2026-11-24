@@ -1651,6 +1651,25 @@ export function createAgentTriggerDeliveryMethods(
     }
   }
 
+  /** Releases a lane whose dead letter was just removed by hand, ahead of any request its
+   * deadline left: a later one would keep the lane row until that deadline. Reclaiming
+   * re-reads the lane, so a dead letter still on it moves the request to its own deadline. */
+  async function reclaimDismissedLane(orderingKey: string): Promise<void> {
+    try {
+      await LaneSequence().updateOne(
+        { _id: orderingKey },
+        { $min: { cleanupRequestedAt: new Date() } },
+      );
+      await reclaimLaneIfInactive(orderingKey);
+    } catch (error) {
+      // The dismissal stands. A lost request only leaves the lane row behind.
+      logger.warn('[agent-triggers] failed to reclaim the lane of a dismissed dead letter', {
+        orderingKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   async function reclaimLaneIfInactive(orderingKey: string): Promise<boolean> {
     const lane = await LaneSequence().findById(orderingKey).lean<IAgentTriggerLaneSequence>();
     if (lane?.cleanupRequestedAt == null) {
@@ -5049,8 +5068,8 @@ export function createAgentTriggerDeliveryMethods(
         batchRootId: { $exists: false },
         'actorDetachedAction.status': { $nin: OPEN_DETACHED_ACTIONS },
       })
-      .select('_id batchMemberIds')
-      .lean<Pick<IAgentTriggerDelivery, '_id' | 'batchMemberIds'>>();
+      .select('_id orderingKey batchMemberIds')
+      .lean<Pick<IAgentTriggerDelivery, '_id' | 'orderingKey' | 'batchMemberIds'>>();
     if (root?._id == null) {
       return false;
     }
@@ -5062,6 +5081,7 @@ export function createAgentTriggerDeliveryMethods(
         status: 'dead',
       });
     }
+    await reclaimDismissedLane(root.orderingKey);
     return true;
   }
 

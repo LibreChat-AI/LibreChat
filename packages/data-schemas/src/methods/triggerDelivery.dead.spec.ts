@@ -125,12 +125,18 @@ async function killBatch(): Promise<string> {
   return kill(shared);
 }
 
-/** The commands one call sends to the database, and the projection its first one asked for. */
+/**
+ * The commands one call sends to the delivery collection, and the projection its first one
+ * asked for. Lane commands are left out; the lane tests below read the lane row itself.
+ */
 async function commands(
   run: () => Promise<unknown>,
 ): Promise<{ methods: string[]; projection: unknown }> {
   const sent: Array<[string, unknown]> = [];
-  mongoose.set('debug', (_collection: string, method: string, ...args: unknown[]) => {
+  mongoose.set('debug', (collection: string, method: string, ...args: unknown[]) => {
+    if (collection !== Delivery.collection.name) {
+      return;
+    }
     const options = args[args.length - 1] as { projection?: unknown } | undefined;
     sent.push([method, options?.projection]);
   });
@@ -570,8 +576,8 @@ describe('dismiss within a tenant partition', () => {
     await expect(
       commands(() => methods.dismissAgentTriggerDeadLetter('tenant-1', id)),
     ).resolves.toEqual({
-      methods: ['findOneAndDelete'],
-      projection: { _id: 1, batchMemberIds: 1 },
+      methods: ['findOneAndDelete', 'findOne'],
+      projection: { _id: 1, orderingKey: 1, batchMemberIds: 1 },
     });
     await expect(Delivery.countDocuments({ _id: id })).resolves.toBe(0);
     await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', id)).resolves.toBe(false);
@@ -603,8 +609,8 @@ describe('dismiss within a tenant partition', () => {
     await expect(
       commands(() => methods.dismissAgentTriggerDeadLetter('tenant-1', root)),
     ).resolves.toEqual({
-      methods: ['findOneAndDelete', 'deleteMany'],
-      projection: { _id: 1, batchMemberIds: 1 },
+      methods: ['findOneAndDelete', 'deleteMany', 'findOne'],
+      projection: { _id: 1, orderingKey: 1, batchMemberIds: 1 },
     });
 
     await expect(Delivery.find({}).distinct('_id')).resolves.toEqual([
@@ -742,5 +748,90 @@ describe('dismiss within a tenant partition', () => {
       { $set: { 'actorDetachedAction.status': 'failed' } },
     );
     await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', id)).resolves.toBe(true);
+  });
+});
+
+describe('lane of a dismissed dead letter', () => {
+  const lane = (orderingKey: string) => LaneSequence.findById(orderingKey).lean();
+  const laneOf = async (id: string) =>
+    (await Delivery.findById(id).select('orderingKey').lean())!.orderingKey;
+
+  it('reclaims the lane at once instead of at the deadline it was given', async () => {
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60_000);
+    const id = await kill({}, expiresAt);
+    const orderingKey = await laneOf(id);
+    await expect(lane(orderingKey)).resolves.toMatchObject({
+      cleanupRequestedAt: new Date(expiresAt.getTime() + 60_000),
+    });
+
+    await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', id)).resolves.toBe(true);
+
+    await expect(lane(orderingKey)).resolves.toBeNull();
+  });
+
+  it('reclaims a lane that no deadline would ever have released', async () => {
+    const id = await kill();
+    const orderingKey = await laneOf(id);
+    await expect(lane(orderingKey)).resolves.not.toHaveProperty('cleanupRequestedAt');
+
+    await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', id)).resolves.toBe(true);
+
+    await expect(lane(orderingKey)).resolves.toBeNull();
+  });
+
+  it('reclaims the lane of a dismissed batch once its receipts are gone too', async () => {
+    const root = await killBatch();
+    const orderingKey = await laneOf(root);
+
+    await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', root)).resolves.toBe(true);
+
+    await expect(Delivery.countDocuments({ orderingKey })).resolves.toBe(0);
+    await expect(lane(orderingKey)).resolves.toBeNull();
+  });
+
+  it('keeps a lane another dead letter still holds, until that one is removed', async () => {
+    const orderingKey = `shared-lane-${counter}`;
+    const later = new Date(Date.now() + 60 * 60_000);
+    const first = await kill({ orderingKey }, new Date(Date.now() + 30 * 24 * 60 * 60_000));
+    const second = await kill({ orderingKey }, later);
+
+    await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', first)).resolves.toBe(true);
+
+    await expect(lane(orderingKey)).resolves.toMatchObject({
+      cleanupRequestedAt: new Date(later.getTime() + 60_000),
+    });
+    await expect(methods.reclaimInactiveAgentTriggerLanes()).resolves.toBe(0);
+
+    await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', second)).resolves.toBe(true);
+    await expect(lane(orderingKey)).resolves.toBeNull();
+  });
+
+  it('keeps the lane while a delivery is still waiting on it', async () => {
+    const orderingKey = `busy-lane-${counter}`;
+    const id = await kill({ orderingKey });
+    const waiting = await methods.enqueueAgentTriggerDelivery(input({ orderingKey }));
+
+    await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', id)).resolves.toBe(true);
+
+    await expect(lane(orderingKey)).resolves.toMatchObject({ _id: orderingKey });
+    await expect(lane(orderingKey)).resolves.not.toHaveProperty('cleanupRequestedAt');
+    await expect(Delivery.findById(waiting.delivery.id).lean()).resolves.toMatchObject({
+      status: 'pending',
+    });
+  });
+
+  it('keeps a dismissal that succeeded when the lane cannot be reached', async () => {
+    const id = await kill();
+    const orderingKey = await laneOf(id);
+    const failure = jest.spyOn(LaneSequence, 'updateOne').mockImplementationOnce(() => {
+      throw new Error('lane write failed');
+    });
+    try {
+      await expect(methods.dismissAgentTriggerDeadLetter('tenant-1', id)).resolves.toBe(true);
+    } finally {
+      failure.mockRestore();
+    }
+    await expect(Delivery.countDocuments({ _id: id })).resolves.toBe(0);
+    await expect(lane(orderingKey)).resolves.toMatchObject({ _id: orderingKey });
   });
 });
