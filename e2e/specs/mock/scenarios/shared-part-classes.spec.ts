@@ -122,10 +122,14 @@ test.describe('shared part classes', () => {
     await expect.poll(() => readSweep(page, moving, property)).not.toBe(first);
     await expect.poll(async () => Number(await readDipAlpha(page))).toBeLessThan(1);
 
-    await page.emulateMedia({ contrast: 'more' });
-    await expect(page.locator('html.high-contrast')).toHaveCount(1, { timeout: 5_000 });
-    await expect.poll(() => readDipAlpha(page)).toBe('1');
-    await page.emulateMedia({ contrast: null });
+    /** Playwright's Firefox changes what `prefers-contrast` matches without firing the `change`
+     *  event the theme provider listens for, so the app cannot switch to high contrast there. */
+    if (!firefox) {
+      await page.emulateMedia({ contrast: 'more' });
+      await expect(page.locator('html.high-contrast')).toHaveCount(1, { timeout: 5_000 });
+      await expect.poll(() => readDipAlpha(page)).toBe('1');
+      await page.emulateMedia({ contrast: null });
+    }
 
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await expect(elapsedReading(page).locator('.shimmer-clip')).toHaveCSS('display', 'none');
