@@ -1,6 +1,8 @@
+import { performance } from 'node:perf_hooks';
 import { createChatExpirationDate, createFallbackRetentionDate } from '@librechat/data-schemas';
 import type {
   IUser,
+  AppConfig,
   ResponseOwner,
   ResponseStorage,
   StoredResponseRecord,
@@ -15,6 +17,7 @@ import type { BackgroundResponseTransportDependencies } from './transport';
 import type { BackgroundResponseWorkerDependencies } from './worker';
 import type { AgentTriggerService } from '../triggers/service';
 import type { BackgroundResponseResult } from './background';
+import type { GetAppConfigOptions } from '~/app/service';
 import type { BackgroundResponseQueue } from './queue';
 import type { ServerRequest } from '~/types/http';
 import type { BoundAddress } from '~/app/origin';
@@ -46,8 +49,17 @@ export interface BackgroundResponsesHostDependencies
   isQueueReady: AgentTriggerService['isReady'];
   jobs: Pick<
     GenerationJobManagerClass,
-    'getJob' | 'abortJob' | 'getResumeState' | 'finishProviderTerminalPersistence'
+    | 'getJob'
+    | 'getCleanupJob'
+    | 'isRedis'
+    | 'abortJob'
+    | 'getResumeState'
+    | 'finishProviderTerminalPersistence'
   >;
+  /** Read base operator policy, not a tenant or principal override. */
+  getDeploymentConfig?: (
+    options: Pick<GetAppConfigOptions, 'baseOnly' | 'failClosed'>,
+  ) => Promise<AppConfig>;
   publicBaseURL?: string;
   getMessage: Parameters<typeof resolveResponseContinuation>[2]['getMessage'];
   getConvoRetention: ConversationMethods['getConvoRetention'];
@@ -74,6 +86,7 @@ export interface BackgroundResponsesHost {
   cancelReview: RequestHandler;
   retireResponse: (owner: ResponseOwner, responseId: string) => Promise<'stopped' | 'pending'>;
   readResponse: (owner: ResponseOwner, responseId: string) => Promise<BackgroundResponseResult>;
+  /** Only the trusted channel projection may call this for a bound run with a member Stop. */
   cancelResponse: (owner: ResponseOwner, responseId: string) => Promise<BackgroundResponseResult>;
   sourceDispatchers: BackgroundResponseQueue['sourceDispatchers'];
   initialize: (address: BoundAddress | string | null) => void;
@@ -181,7 +194,20 @@ export function createBackgroundResponsesHost(
     })(owner, responseId, input);
   };
 
-  function service(req?: Request) {
+  async function isRestartOrphan(record: StoredResponseRecord): Promise<boolean> {
+    // A live generation may lose its local store entry to eviction. Only a generation
+    // predating this process can have died in the asserted non-overlapping restart.
+    return (
+      record.generationCreatedAt != null &&
+      record.generationCreatedAt < performance.timeOrigin &&
+      !deps.jobs.isRedis &&
+      (await deps.getDeploymentConfig?.({ baseOnly: true, failClosed: true }))?.endpoints?.agents
+        ?.channels?.singleProcess === true &&
+      !(await deps.jobs.getCleanupJob(record.responseId))
+    );
+  }
+
+  function service(req?: Request, channelStop = false) {
     const user = (req as ServerRequest | undefined)?.user;
     return createBackgroundResponseService({
       storage: deps.storage,
@@ -223,7 +249,7 @@ export function createBackgroundResponsesHost(
       observe: review.observe,
       recoverTerminal: completion.finish,
       cancel: async (record) => {
-        await retire(record, record.responseId);
+        await retire(record, record.responseId, channelStop ? isRestartOrphan : undefined);
       },
     });
   }
@@ -312,7 +338,7 @@ export function createBackgroundResponsesHost(
     },
     retireResponse: retire,
     readResponse: (owner, responseId) => service().retrieve(owner, responseId),
-    cancelResponse: (owner, responseId) => service().cancel(owner, responseId),
+    cancelResponse: (owner, responseId) => service(undefined, true).cancel(owner, responseId),
     sourceDispatchers: new Map([
       ...[...queue.sourceDispatchers].map(
         ([name, source]) => [name, { ...source, recoverPending: outbox.recoverPending }] as const,

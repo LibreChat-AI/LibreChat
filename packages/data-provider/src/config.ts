@@ -1333,6 +1333,8 @@ export const sharedSlackGatewayWirePolicySchema = sharedSlackGatewayPolicySchema
 /** Channel runtime and operator policy; execution remains disabled by default. */
 export const channelConfigSchema = channelStorageConfigSchema.extend({
   enabled: z.boolean().default(false),
+  /** Assert one non-overlapping API process, including during restarts. Ignored with Redis streams. */
+  singleProcess: z.boolean().default(false),
   transport: channelGatewayPolicySchema.shape.transport.default(
     DEFAULT_CHANNEL_GATEWAY_POLICY.transport,
   ),
