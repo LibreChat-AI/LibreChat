@@ -50,6 +50,21 @@ export async function establishOpenIDCallbackProviderSession(
 
     const claims = input.getClaims();
     const client = deps.getProviderSessionClient();
+    if (!client) {
+      /** A LibreChat configuration fault, not a missing `sid`: the client ID or issuer that
+       *  scopes the provider session could not be resolved. */
+      deps.logger.error(
+        '[OAuth] OpenID provider-session client unresolved (client ID or issuer); check the OpenID configuration',
+        { mode },
+      );
+      if (mode === 'enforce') {
+        redirectToAuthFailure(input.res, {
+          clientDomain: input.clientDomain,
+          authFailedError: AUTH_SESSION_CHECK_UNAVAILABLE,
+        });
+        return { ok: false };
+      }
+    }
     const ref = client
       ? extractProviderSessionRef(claims, { issuer: client.issuer, clientId: client.clientId })
       : null;
