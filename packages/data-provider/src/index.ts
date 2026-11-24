@@ -119,6 +119,8 @@ export * from './types/channelIdentity';
 export * from './channelLink';
 export * from './types/channelFeedback';
 export * from './types/channelRuns';
+export * from './types/connections';
+export * from './types/subscriptions';
 
 export * from './codeSetup';
 
