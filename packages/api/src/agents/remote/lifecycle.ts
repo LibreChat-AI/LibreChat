@@ -62,6 +62,7 @@ export class AgentExecutionEnrollment {
   private readonly retainTerminalPersistence?: true;
   private readonly captureTerminalOutcome?: true;
   private readonly trailingWrites: Promise<unknown>[] = [];
+  private completionWrite?: () => Promise<void>;
   private providerStarted = false;
   private providerStartRejected = false;
   private settlement?: Promise<AgentExecutionSettlement>;
@@ -264,6 +265,10 @@ export class AgentExecutionEnrollment {
     return this.settlement;
   }
 
+  trackCompletionWrite(write: () => Promise<void>): void {
+    this.completionWrite = write;
+  }
+
   /** Bind tracked persistence to this attempt; this witness is not terminal or drain authority. */
   getPersistenceIdentity(): {
     generationCreatedAt: number;
@@ -316,11 +321,15 @@ export class AgentExecutionEnrollment {
       error == null ? undefined : this.failureMessage,
       this.createdAt,
     ] as const;
+    const beforeTerminalCleanup = error == null ? this.completionWrite : undefined;
     if (this.manager.getJobStore().providerGuardedStatusTransitions !== true)
-      return this.manager.completeJob(...args);
+      return beforeTerminalCleanup
+        ? this.manager.completeJob(...args, { beforeTerminalCleanup })
+        : this.manager.completeJob(...args);
     return this.manager.completeJob(...args, {
       expectedProviderExecutionId: this.providerExecutionId,
       persistencePending: this.retainTerminalPersistence,
+      ...(beforeTerminalCleanup && { beforeTerminalCleanup }),
     });
   }
 

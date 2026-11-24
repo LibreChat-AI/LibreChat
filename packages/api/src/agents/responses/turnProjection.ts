@@ -44,18 +44,29 @@ export function projectCanonicalResponseTurn(
     )
       throw new Error('Response input ancestry changed');
     const message: InternalMessage = inputs[index];
+    const origin = layout.clientToolOrigin;
+    if (
+      origin &&
+      (origin.responseId !== record.parentMessageId ||
+        origin.responseId !== layout.parentMessageId ||
+        !Array.isArray(origin.callIds))
+    )
+      throw new Error('Response tool ancestry changed');
     return {
       messageId: layout.messageId,
       parentMessageId: layout.parentMessageId,
       conversationId: record.conversationId,
       isCreatedByUser: message.role === 'user',
       isUserSubmitted: true,
-      metadata: { responseInputRole: message.role },
+      metadata: {
+        responseInputRole: message.role,
+        ...(origin && { responseClientToolOrigin: origin }),
+      },
       text: typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
       content:
         typeof message.content === 'string'
           ? [{ type: ContentTypes.TEXT, text: message.content }]
-          : projectResponseInputContent(message.content),
+          : projectResponseInputContent(message.content, origin),
       sender: { user: 'User', system: 'System', assistant: 'Agent' }[message.role],
       endpoint: EModelEndpoint.agents,
       model: record.agentId,

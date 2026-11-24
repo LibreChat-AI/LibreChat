@@ -382,11 +382,12 @@ export interface InternalToolCallPart {
  * SystemMessage and breaks the conversation for providers that accept a system
  * message only in first position.
  */
-export interface InternalMessage {
+export type InternalMessage = {
   role: 'system' | 'user' | 'assistant';
   content: string | Array<InternalContentPart | InternalToolCallPart>;
   name?: string;
-}
+  clientToolOrigin?: { responseId: string; callIds: string[] };
+};
 
 /**
  * Convert Open Responses input to internal message format.

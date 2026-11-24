@@ -108,6 +108,9 @@ export default function ToolCall({
     if (typeof name !== 'string') {
       return { function_name: '', domain: null, isMCPToolCall: false, mcpServerName: '' };
     }
+    if (clientToolCall) {
+      return { function_name: name, domain: null, isMCPToolCall: false, mcpServerName: '' };
+    }
     if (name.includes(Constants.mcp_delimiter)) {
       const [func, server = ''] = splitToolCallName(name, mcpServerNames);
       const displayName = func === 'oauth' ? server : func;
@@ -141,7 +144,7 @@ export default function ToolCall({
       isMCPToolCall: false,
       mcpServerName: '',
     };
-  }, [name, parsedAuthUrl, mcpServerNames]);
+  }, [name, clientToolCall, parsedAuthUrl, mcpServerNames]);
 
   const displayFunctionName = useMemo(
     () =>
@@ -149,8 +152,10 @@ export default function ToolCall({
        *  above, so re-parsing it would classify an MCP function that happens to
        *  share a built-in's name (`read_file`, `set_memory`) as that native
        *  tool and show, and announce, an unrelated label. */
-      isMCPToolCall ? function_name : getToolDisplayLabel(function_name, localize, mcpServerNames),
-    [function_name, isMCPToolCall, localize, mcpServerNames],
+      isMCPToolCall || clientToolCall
+        ? function_name
+        : getToolDisplayLabel(function_name, localize, mcpServerNames),
+    [function_name, isMCPToolCall, clientToolCall, localize, mcpServerNames],
   );
   const mcpIconUrl = isMCPToolCall ? iconUrlForServer(mcpServerName) : undefined;
 
@@ -488,7 +493,7 @@ export default function ToolCall({
             phaseStepId={stepId}
             icon={
               <ToolIcon
-                type={getToolIconType(name)}
+                type={getToolIconType(clientToolCall ? '' : name)}
                 iconUrl={mcpIconUrl}
                 isAnimating={phase === 'running'}
               />

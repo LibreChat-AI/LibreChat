@@ -120,23 +120,27 @@ describe('ToolCall', () => {
   });
 
   describe('client tool handoff', () => {
-    it('announces the handoff without claiming cancellation or execution', async () => {
-      await act(async () => {
-        renderWithRecoil(
-          <ToolCall
-            {...mockProps}
-            clientToolCall
-            initialProgress={0.1}
-            isSubmitting={false}
-            output={undefined}
-          />,
+    it.each(['testFunction', `lookup${Constants.mcp_delimiter}server`, 'read_file'])(
+      'announces the caller handoff %s with its original name',
+      async (name) => {
+        await act(async () => {
+          renderWithRecoil(
+            <ToolCall
+              {...mockProps}
+              name={name}
+              clientToolCall
+              initialProgress={0.1}
+              isSubmitting={false}
+              output={undefined}
+            />,
+          );
+        });
+        expect(screen.getByTestId('progress-text')).toHaveTextContent(
+          `Requested ${name} from client`,
         );
-      });
-      expect(screen.getByTestId('progress-text')).toHaveTextContent(
-        'Requested testFunction from client',
-      );
-      expect(screen.queryByText('Cancelled')).not.toBeInTheDocument();
-    });
+        expect(screen.queryByText('Cancelled')).not.toBeInTheDocument();
+      },
+    );
     it.each(['', 'client result'])(
       'treats a received result %j as completed rather than a handoff',
       async (output) => {

@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { createChatExpirationDate, createFallbackRetentionDate } from '@librechat/data-schemas';
 import {
   ContentTypes,
@@ -8,26 +9,33 @@ import {
 import type { AppConfig, ResponseTurnWrites } from '@librechat/data-schemas';
 import type { Response as HttpResponse } from 'express';
 import type { RequestHandler } from 'express';
+import type {
+  Response,
+  ResponseContext,
+  Usage,
+  ResponseAccounting,
+  FunctionCallItem,
+} from './types';
 import type { TurnConversationRequest, ConversationWriteContext } from '~/conversations/save';
-import type { Response, ResponseContext, Usage, ResponseAccounting } from './types';
+import type { StoredResponseMessage, StoredResponseOutputLayout } from './persistence';
 import type { PersistedReply, ReplyAnnouncement } from '~/conversations/announce';
 import type { getLangfuseTraceMessageFields } from '~/langfuse/destinations';
 import type { ConversationCodeEnvironmentDecision } from '~/code/decision';
 import type { AgentExecutionEnrollment } from '../remote/lifecycle';
-import type { StoredResponseMessage } from './persistence';
 import type { InternalMessage } from './service';
 import {
   ResponsePersistenceError,
   selectResponseHistory,
   projectResponseMessage,
   projectResponseInputContent,
-  pendingClientToolIds,
+  pendingResponseCalls,
 } from './persistence';
 import { resolvePersistableCodeEnvironmentDecision } from '~/code/decision';
 import { getConversationWriteContext } from '~/conversations/save';
 import { isTemporaryTurn } from '~/conversations/retention';
 import { sendResponsesErrorResponse } from './service';
 import { getSafeErrorMetadata } from '~/utils/errors';
+import { storedClientToolCalls } from './stored';
 
 const inputSenders: Record<InternalMessage['role'], string> = {
   user: 'User',
@@ -68,15 +76,13 @@ export type ForegroundHistoryMessage = InternalMessage &
     | 'isUserSubmitted'
     | 'userSubmittedPaths'
     | 'userSubmittedMessageFieldPaths'
-  > & { responseClientToolNames?: string[] };
+  > & { pendingClientCalls?: FunctionCallItem[] };
 
-function internalHistoryContent(
-  message: ResponseHistoryMessage,
-): Pick<ForegroundHistoryMessage, 'content' | 'responseClientToolNames'> {
-  if (!Array.isArray(message.content)) return { content: message.text ?? '' };
+const responseOrigin = z.object({ responseId: z.string(), callIds: z.array(z.string()).min(1) });
+
+function internalHistoryContent(message: ResponseHistoryMessage): InternalMessage['content'] {
+  if (!Array.isArray(message.content)) return message.text ?? '';
   const content: Exclude<InternalMessage['content'], string> = [];
-  const pending = pendingClientToolIds(message);
-  const clientTools = new Set<string>();
   for (const part of message.content) {
     if (
       part == null ||
@@ -94,25 +100,62 @@ function internalHistoryContent(
     ) {
       const call = part.tool_call;
       if (
-        'id' in call &&
-        typeof call.id === 'string' &&
-        pending.has(call.id) &&
-        'name' in call &&
-        typeof call.name === 'string'
+        !message.isUserSubmitted &&
+        !message.isCreatedByUser &&
+        'clientToolCall' in call &&
+        call.clientToolCall === true &&
+        (!('output' in call) || call.output == null)
       )
-        clientTools.add(call.name);
-      // The next request replays the completed pair. Do not also send its
-      // unanswered historical call to the model.
-      if (!('output' in call) || call.output == null) continue;
+        continue;
     }
     content.push(part);
   }
-  return { content, ...(clientTools.size ? { responseClientToolNames: [...clientTools] } : {}) };
+  return content;
 }
 
-/** Historical availability permits replay only; it does not install executable tools. */
-export function responseClientToolNames(messages: ForegroundHistoryMessage[]): Set<string> {
-  return new Set(messages.flatMap((message) => message.responseClientToolNames ?? []));
+function matchesClientCalls(
+  content: InternalMessage['content'],
+  calls: FunctionCallItem[],
+): boolean {
+  if (!Array.isArray(content) || content.length < calls.length) return false;
+  return calls.every((call, index) => {
+    const part = content[index];
+    if (part.type !== ContentTypes.TOOL_CALL || !('tool_call' in part)) return false;
+    const tool = part.tool_call;
+    return (
+      tool != null &&
+      tool.id === call.call_id &&
+      tool.name === call.name &&
+      tool.args === call.arguments &&
+      tool.output != null
+    );
+  });
+}
+
+export function bindStoredClientResults(
+  inputs: InternalMessage[],
+  history: ForegroundHistoryMessage[],
+  parent: string,
+): InternalMessage[] {
+  const source = history[history.length - 1];
+  const first = inputs[0];
+  if (
+    source?.messageId !== parent ||
+    !source.pendingClientCalls?.length ||
+    first?.role !== 'assistant' ||
+    !matchesClientCalls(first.content, source.pendingClientCalls)
+  )
+    return inputs;
+  return [
+    {
+      ...first,
+      clientToolOrigin: {
+        responseId: parent,
+        callIds: source.pendingClientCalls.map((call) => call.call_id),
+      },
+    },
+    ...inputs.slice(1),
+  ];
 }
 
 function historyRole(message: ResponseHistoryMessage): InternalMessage['role'] {
@@ -138,31 +181,50 @@ export async function loadForegroundResponseHistory(
     );
     if (input.previousResponseId?.startsWith('resp_') && messages.length === 0)
       throw new ResponsePersistenceError();
-    return messages.map((message) => ({
-      role: historyRole(message),
-      ...internalHistoryContent(message),
-      messageId: message.messageId,
-      isCreatedByUser: message.isCreatedByUser === true,
-      ...(message.text !== undefined && { text: message.text }),
-      ...(typeof message.isUserSubmitted === 'boolean' && {
-        isUserSubmitted: message.isUserSubmitted,
-      }),
-      ...(message.userSubmittedPaths && { userSubmittedPaths: message.userSubmittedPaths }),
-      ...(message.userSubmittedMessageFieldPaths && {
-        userSubmittedMessageFieldPaths: message.userSubmittedMessageFieldPaths,
-      }),
-    }));
+    const sources = new Map<string, FunctionCallItem[]>();
+    return messages.map((message) => {
+      const content = internalHistoryContent(message);
+      const calls =
+        Array.isArray(message.content) && message.metadata?.responseReceipt
+          ? storedClientToolCalls({ ...message, content: message.content })
+          : undefined;
+      if (calls?.length) sources.set(message.messageId, calls);
+      const origin =
+        message.isUserSubmitted === true
+          ? responseOrigin.safeParse(message.metadata?.responseClientToolOrigin)
+          : undefined;
+      const source =
+        origin?.success && origin.data.responseId === message.parentMessageId
+          ? sources.get(origin.data.responseId)
+          : undefined;
+      const verified =
+        origin?.success &&
+        source &&
+        source.length === origin.data.callIds.length &&
+        source.every((call, index) => call.call_id === origin.data.callIds[index]) &&
+        matchesClientCalls(content, source)
+          ? origin.data
+          : undefined;
+      return {
+        role: historyRole(message),
+        content,
+        ...(calls?.length && { pendingClientCalls: calls }),
+        ...(verified && { clientToolOrigin: verified }),
+        messageId: message.messageId,
+        isCreatedByUser: message.isCreatedByUser === true,
+        ...(message.text !== undefined && { text: message.text }),
+        ...(typeof message.isUserSubmitted === 'boolean' && {
+          isUserSubmitted: message.isUserSubmitted,
+        }),
+        ...(message.userSubmittedPaths && { userSubmittedPaths: message.userSubmittedPaths }),
+        ...(message.userSubmittedMessageFieldPaths && {
+          userSubmittedMessageFieldPaths: message.userSubmittedMessageFieldPaths,
+        }),
+      };
+    });
   } catch {
     throw new ResponsePersistenceError();
   }
-}
-
-export interface StoredResponseOutputLayout {
-  id: string;
-  type: 'message' | 'function_call' | 'function_call_output';
-  callId?: string;
-  textParts?: number;
-  pendingClientTool?: boolean;
 }
 
 /** Keep accounting beside canonical message content, without a second copy of private output. */
@@ -180,12 +242,7 @@ export function projectStoredResponseMessage(
     };
   };
 } {
-  const clientTools = new Set(
-    (response.tools ?? []).flatMap((tool) => (tool.type === 'function' ? [tool.name] : [])),
-  );
-  const completedCalls = new Set(
-    response.output.flatMap((item) => (item.type === 'function_call_output' ? [item.call_id] : [])),
-  );
+  const pending = pendingResponseCalls(response);
   return {
     ...projectResponseMessage(response),
     parentMessageId,
@@ -201,9 +258,7 @@ export function projectStoredResponseMessage(
                 ? { textParts: item.content.filter((part) => part.type === 'output_text').length }
                 : {
                     callId: item.call_id,
-                    ...(item.type === 'function_call' &&
-                    clientTools.has(item.name) &&
-                    !completedCalls.has(item.call_id)
+                    ...(item.type === 'function_call' && pending.has(item.call_id)
                       ? { pendingClientTool: true }
                       : {}),
                   }),
@@ -239,7 +294,10 @@ export async function saveForegroundResponseInputs<WriteContext>(
         parentMessageId: string;
         isCreatedByUser: boolean;
         isUserSubmitted: true;
-        metadata: { responseInputRole: InternalMessage['role'] };
+        metadata: {
+          responseInputRole: InternalMessage['role'];
+          responseClientToolOrigin?: InternalMessage['clientToolOrigin'];
+        };
         text: string;
         content: Exclude<InternalMessage['content'], string>;
         sender: string;
@@ -260,13 +318,16 @@ export async function saveForegroundResponseInputs<WriteContext>(
           parentMessageId: message.parentMessageId,
           isCreatedByUser: message.role === 'user',
           isUserSubmitted: true,
-          metadata: { responseInputRole: message.role },
+          metadata: {
+            responseInputRole: message.role,
+            ...(message.clientToolOrigin && { responseClientToolOrigin: message.clientToolOrigin }),
+          },
           text:
             typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
           content:
             typeof message.content === 'string'
               ? [{ type: ContentTypes.TEXT, text: message.content }]
-              : projectResponseInputContent(message.content),
+              : projectResponseInputContent(message.content, message.clientToolOrigin),
           sender: inputSenders[message.role],
           endpoint: EModelEndpoint.agents,
           model: input.agentId,
@@ -297,7 +358,7 @@ interface ForegroundTerminalFrame<Saved> {
 export interface ForegroundResponseTerminal<Saved> {
   onSettlementError: (error: unknown) => void;
   beforeSettle: (
-    execution: Pick<AgentExecutionEnrollment, 'signal' | 'track'>,
+    execution: Pick<AgentExecutionEnrollment, 'signal' | 'track' | 'trackCompletionWrite'>,
     error: unknown,
   ) => void;
   stage: (frame: ForegroundTerminalFrame<Saved>) => void;
@@ -415,7 +476,7 @@ export function createResponseTerminal<
       phase = 'staged';
     },
     beforeSettle(
-      execution: Pick<AgentExecutionEnrollment, 'signal' | 'track'>,
+      execution: Pick<AgentExecutionEnrollment, 'signal' | 'track' | 'trackCompletionWrite'>,
       error: unknown,
     ): void {
       if (!staged) return;
@@ -424,6 +485,11 @@ export function createResponseTerminal<
       context.stored = false;
       if ((!completion && requestedStore !== true) || error != null || execution.signal.aborted)
         return;
+      const frame = staged;
+      if (!completion && pendingResponseCalls(frame.response).size > 0) {
+        execution.trackCompletionWrite(() => persist(frame));
+        return;
+      }
       // Account/conversation cleanup must still see this generation until all data writes finish.
       execution.track(persist(staged));
     },
@@ -532,7 +598,12 @@ export interface ResponseStageInput {
 /** Only missing, immutable projection facts; private output stays in the terminal receipt. */
 export interface ResponseTurnIntent {
   version: 1;
-  inputs: { index: number; messageId: string; parentMessageId: string }[];
+  inputs: {
+    index: number;
+    messageId: string;
+    parentMessageId: string;
+    clientToolOrigin?: InternalMessage['clientToolOrigin'];
+  }[];
   parentMessageId: string;
   context: Omit<ResponseTurnWrites['context'], 'expiredAt'> & { expiredAt?: string };
   conversation: ResponseTurnWrites['conversation'];
@@ -604,6 +675,7 @@ export function createResponsePersistence(
           index,
           messageId: message.messageId,
           parentMessageId: message.parentMessageId,
+          ...(message.clientToolOrigin && { clientToolOrigin: message.clientToolOrigin }),
         })),
         parentMessageId,
         context: {

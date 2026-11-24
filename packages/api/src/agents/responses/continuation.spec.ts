@@ -7,19 +7,25 @@ import { ToolMessage } from '@librechat/agents/langchain/messages';
 import { createModels, createMethods, tenantStorage, runAsSystem } from '@librechat/data-schemas';
 import type { Response, FunctionCallItemParam } from './types';
 import {
+  projectStoredResponseMessage,
+  loadForegroundResponseHistory,
+  bindStoredClientResults,
+  saveForegroundResponseInputs,
+} from './foreground';
+import {
   createResponseContext,
   createResponseAggregator,
   buildAggregatedResponse,
   convertInputToMessages,
 } from './service';
 import {
-  projectStoredResponseMessage,
-  loadForegroundResponseHistory,
-  responseClientToolNames,
-} from './foreground';
-import { createStoredToolContinuation, storedToolContinuationReference } from './continuation';
+  createStoredToolContinuation,
+  storedToolContinuationReference,
+  formatResponseMessages,
+} from './continuation';
 import { resolveApiConversationProject } from '~/projects/turn';
 import { createStoredForegroundResponseReader } from './stored';
+import { buildResponseInputChain } from './persistence';
 import { declaredClientToolNames } from './clientTools';
 
 const owner = { userId: '507f1f77bcf86cd799439011', tenantId: 'client-tools' };
@@ -94,7 +100,7 @@ async function save(response = pending(), extra = {}) {
 }
 const outputs = () =>
   ['call_b', 'call_a'].map((call_id) => ({
-    type: 'function_call_output',
+    type: 'function_call_output' as const,
     call_id,
     output: `result:${call_id}`,
   }));
@@ -136,10 +142,16 @@ function appFor(
           db,
         )
       : [];
-    const sdk = formatAgentMessages(
-      [...history, ...convertInputToMessages(req.body.input)].map((message) => ({ ...message })),
-      undefined,
-      new Set([...declaredClientToolNames(req.body.tools), ...responseClientToolNames(history)]),
+    const sdk = formatResponseMessages(
+      [
+        ...history,
+        ...bindStoredClientResults(
+          convertInputToMessages(req.body.input),
+          history,
+          reference?.parentMessageId ?? '',
+        ),
+      ],
+      declaredClientToolNames(req.body.tools),
     );
     res.json({
       reference: storedToolContinuationReference(req, scope, req.body.previous_response_id),
@@ -211,6 +223,97 @@ it('does not duplicate explicitly replayed calls and preserves the original batc
         .filter((item: FunctionCallItemParam) => item.type === 'function_call')
         .map((item: FunctionCallItemParam) => item.call_id),
     ).toEqual(['call_a', 'call_b']);
+  }));
+
+it.each(['missing', 'duplicate', 'malformed duplicate'] as const)(
+  'declines a %s canonical pending row without returning a partial batch',
+  (kind) =>
+    scoped(async () => {
+      const response = pending();
+      const projected = projectStoredResponseMessage(response, 'root');
+      const [first] = projected.content;
+      if (first.type !== 'tool_call' || !('tool_call' in first))
+        throw new Error('Fixture has no pending call');
+      const duplicate =
+        kind === 'malformed duplicate'
+          ? { ...first, tool_call: { ...first.tool_call, name: null } }
+          : first;
+      await save(response, {
+        content: kind === 'missing' ? [first] : [...projected.content, duplicate],
+      });
+      await request(appFor())
+        .post('/')
+        .send({ ...payload(), input: outputs().slice(1) })
+        .expect(400);
+      const retrieved = await request(appFor())
+        .get('/' + responseId)
+        .expect(200);
+      expect(retrieved.body.output).toEqual([]);
+    }),
+);
+
+it('replays only verified caller pairs on their own stored turn when names are reused', () =>
+  scoped(async () => {
+    const context = { userId: owner.userId };
+    const ordinary = await db.saveMessage(context, {
+      messageId: 'legacy',
+      conversationId,
+      parentMessageId: '00000000-0000-0000-0000-000000000000',
+      isCreatedByUser: false,
+      sender: 'Agent',
+      endpoint: 'agents',
+      model: 'agent',
+      content: [
+        {
+          type: 'tool_call',
+          tool_call: { id: 'legacy', name: 'lookup', args: '{}', output: 'the old result' },
+        },
+      ],
+    });
+    expect(ordinary?.messageId).toBe('legacy');
+    const response = pending();
+    await save(response, { parentMessageId: 'legacy' });
+    const history = await loadForegroundResponseHistory(
+      { conversationId, userId: owner.userId, previousResponseId: responseId },
+      db,
+    );
+    const inputs = bindStoredClientResults(
+      convertInputToMessages([...response.output, ...outputs()]),
+      history,
+      responseId,
+    );
+    const chain = buildResponseInputChain(inputs, responseId, history);
+    await saveForegroundResponseInputs(
+      { context, conversationId, agentId: 'agent', messages: chain.messages },
+      db,
+    );
+    await db.saveMessage(context, {
+      messageId: 'resp_followup',
+      conversationId,
+      parentMessageId: chain.parentMessageId,
+      isCreatedByUser: false,
+      sender: 'Agent',
+      endpoint: 'agents',
+      model: 'agent',
+      text: 'Done',
+    });
+    const replay = await loadForegroundResponseHistory(
+      { conversationId, userId: owner.userId, previousResponseId: 'resp_followup' },
+      db,
+    );
+    const formatted = formatResponseMessages(replay, new Set());
+    const calls = formatted.messages.filter((message) => message instanceof ToolMessage);
+    expect(calls.map((call) => [call.name, call.tool_call_id, call.content])).toEqual([
+      ['lookup', 'call_a', 'result:call_a'],
+      ['lookup', 'call_b', 'result:call_b'],
+    ]);
+    expect(JSON.stringify(formatted)).not.toContain('the old result');
+    expect(JSON.stringify(formatted)).not.toMatch(/client_[0-9a-f]{32}_/);
+    expect(
+      formatResponseMessages(replay, new Set(['lookup'])).messages.some(
+        (message) => message instanceof ToolMessage && message.tool_call_id === 'legacy',
+      ),
+    ).toBe(true);
   }));
 
 it.each(['none', 'partial', 'duplicate', 'unknown', 'changed', 'malformed', 'null'])(

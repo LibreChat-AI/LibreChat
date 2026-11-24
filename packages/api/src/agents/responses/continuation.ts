@@ -1,8 +1,13 @@
+import { randomUUID } from 'node:crypto';
+import { ContentTypes } from 'librechat-data-provider';
+import { formatAgentMessages } from '@librechat/agents';
 import type { ResponseOwner } from '@librechat/data-schemas';
 import type { Request, RequestHandler } from 'express';
 import type { StoredForegroundResponseDependencies } from './stored';
 import type { ServerRequest } from '~/types/http';
+import type { InternalMessage } from './service';
 import { validateResponseRequest, sendResponsesErrorResponse } from './service';
+import { getBackgroundResponseWorkerAdmission } from './worker';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { storedClientToolCalls } from './stored';
 import { responseTenantId } from './scope';
@@ -12,6 +17,45 @@ const references = new WeakMap<
   Request,
   ResponseOwner & ContinuationReference & { responseId: string }
 >();
+
+export function formatResponseMessages(
+  payload: InternalMessage[],
+  tools: Set<string>,
+): ReturnType<typeof formatAgentMessages> {
+  if (!payload.some((message) => message.clientToolOrigin))
+    return formatAgentMessages(payload, {}, tools);
+  const names = new Map<string, string>();
+  const prefix = `client_${randomUUID().replaceAll('-', '')}_`;
+  const history = payload.map((message) => {
+    if (!message.clientToolOrigin || !Array.isArray(message.content)) return message;
+    const ids = new Set(message.clientToolOrigin.callIds);
+    const content = message.content.map((part) => {
+      if (
+        part.type !== ContentTypes.TOOL_CALL ||
+        !('tool_call' in part) ||
+        !ids.has(part.tool_call.id)
+      )
+        return part;
+      const alias = `${prefix}${names.size}`;
+      names.set(alias, part.tool_call.name);
+      return { ...part, tool_call: { ...part.tool_call, name: alias } };
+    });
+    return { ...message, content };
+  });
+  if (names.size === 0) return formatAgentMessages(payload, {}, tools);
+  const formatted = formatAgentMessages(history, {}, new Set([...tools, ...names.keys()]));
+  for (const message of formatted.messages) {
+    if ('tool_calls' in message) {
+      for (const call of message.tool_calls ?? []) call.name = names.get(call.name) ?? call.name;
+    }
+    if (message.role === 'tool' && message.name && names.has(message.name)) {
+      const name = names.get(message.name)!;
+      message.name = name;
+      message.lc_kwargs.name = name;
+    }
+  }
+  return formatted;
+}
 
 /** Reuse the request's admitted reference without sharing content or state across callers. */
 export function storedToolContinuationReference(
@@ -35,6 +79,7 @@ export function createStoredToolContinuation(
   deps: Pick<StoredForegroundResponseDependencies, 'getMessage' | 'logger'>,
 ): RequestHandler {
   return async (req, res, next) => {
+    if (getBackgroundResponseWorkerAdmission(req)) return next();
     const body: unknown = req.body;
     if (
       !body ||
@@ -77,6 +122,14 @@ export function createStoredToolContinuation(
       if (!message?.conversationId || message.isCreatedByUser || message.isUserSubmitted)
         return void missing();
       const calls = storedClientToolCalls(message);
+      if (calls == null)
+        return void sendResponsesErrorResponse(
+          res,
+          400,
+          'The stored client tool batch is incomplete.',
+          'invalid_request',
+          'invalid_tool_continuation',
+        );
       const items = typeof input === 'string' ? [] : input;
       const storedCallIds = new Set(calls.map((call) => call.call_id));
       const outputs = new Set(

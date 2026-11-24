@@ -60,8 +60,14 @@ describe('Responses assistant history projection', () => {
       tool_call: { id: 'call', name: 'lookup', args: '{}', output: '' },
     } as const;
     const content = [pair];
-    expect(projectResponseInputContent(content)).toEqual([
-      { ...pair, tool_call: { ...pair.tool_call, runStepStatus: 'completed' } },
+    expect(projectResponseInputContent(content)).toBe(content);
+    expect(
+      projectResponseInputContent(content, { responseId: 'resp_parent', callIds: ['call'] }),
+    ).toEqual([
+      {
+        ...pair,
+        tool_call: { ...pair.tool_call, clientToolCall: true, runStepStatus: 'completed' },
+      },
     ]);
     expect(pair.tool_call).not.toHaveProperty('runStepStatus');
     expect(projectResponseInputContent([{ type: 'text', text: 'hello' }])).toEqual([
