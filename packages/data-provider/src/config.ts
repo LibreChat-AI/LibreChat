@@ -404,17 +404,45 @@ function parseAllowedAddressEntry(entry: string): { address: string; port: strin
   return { address, port };
 }
 
+export interface AllowedAddressEnvReference {
+  varName: string;
+  /** Present for `${VAR}:port`, where the variable holds only the host. */
+  port?: string;
+}
+
+/**
+ * Parses an `allowedAddresses` entry that names a server environment variable: `${VAR}`, where
+ * the variable holds a whole `host:port` entry, or `${VAR}:port`, where it holds only the host.
+ * Returns null for every other shape. The config loader resolves these from the server
+ * environment; nothing else does, so the runtime parser drops any entry still carrying one.
+ */
+export function parseAllowedAddressEnvReference(entry: string): AllowedAddressEnvReference | null {
+  const match = entry.trim().match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}(?::(\d+))?$/);
+  if (!match) return null;
+  if (match[2] == null) return { varName: match[1] };
+  const port = normalizePort(match[2]);
+  return port ? { varName: match[1], port } : null;
+}
+
 /**
  * Why an `allowedAddresses` entry is refused, as the `reason` param of its validation issue:
  * - `empty`: the entry is empty or only whitespace.
+ * - `env_reference`: uses `$`, `{` or `}` without being `${VAR}` or `${VAR}:port`.
  * - `format`: a URL, path, CIDR range or whitespace instead of a `host:port` pair.
  * - `missing_port`: no valid port (`localhost`, `10.0.0.5`).
  * - `public_ip`: an IP literal outside private, loopback and link-local space.
  */
-export type AllowedAddressIssue = 'empty' | 'format' | 'missing_port' | 'public_ip';
+export type AllowedAddressIssue =
+  | 'empty'
+  | 'env_reference'
+  | 'format'
+  | 'missing_port'
+  | 'public_ip';
 
 const ALLOWED_ADDRESS_ISSUE_MESSAGES: Readonly<Record<AllowedAddressIssue, string>> = {
   empty: 'allowedAddresses entries must be non-empty',
+  env_reference:
+    'allowedAddresses environment references must be the whole entry, either ${VAR} holding host:port or ${VAR}:port holding the host',
   format:
     'allowedAddresses entries must be host:port pairs — no URLs, paths, CIDR ranges, or whitespace',
   missing_port:
@@ -431,8 +459,15 @@ export function getAllowedAddressEntryIssue(entry: string): AllowedAddressIssue 
   if (entry.trim().length === 0) {
     return 'empty';
   }
+  const envReference = parseAllowedAddressEnvReference(entry);
+  if (envReference == null && /[${}]/.test(entry)) {
+    return 'env_reference';
+  }
   if (entry.includes('://') || entry.includes('/') || /\s/.test(entry)) {
     return 'format';
+  }
+  if (envReference != null) {
+    return null; // resolved and re-checked by the config loader
   }
   const parsed = parseAllowedAddressEntry(entry);
   if (!parsed) {

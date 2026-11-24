@@ -14,11 +14,21 @@ import {
 import type { TCustomConfig, TEndpoint } from 'librechat-data-provider';
 import type { ConfigOverrideIssue } from '@librechat/data-schemas';
 import type { ZodIssue } from 'zod';
+import type { AllowedAddressEnvDropReason } from '../auth/allowedAddresses';
 import { getPiiRegexProgramSize } from '~/protection/programSize';
+import { resolveConfigAllowedAddresses } from './addresses';
 import { serviceRequestBudget } from '~/utils/timeouts';
 import { checkConfigPolicyLinks } from './interface';
 import { expandCustomEndpoint } from './params';
 import { checkConfigTheme } from './theme';
+
+/** The resolved value is never logged: a misconfigured variable may hold a URL with credentials. */
+const ALLOWED_ADDRESS_DROP_MESSAGES: Record<AllowedAddressEnvDropReason, string> = {
+  unset: 'the environment variable is unset or empty',
+  invalid:
+    'the environment variable does not resolve to a host:port entry in private address space',
+  sensitive: 'the environment variable is an infrastructure secret and is never resolved',
+};
 
 export type CustomConfigLoadMode = 'startup' | 'reload';
 
@@ -415,6 +425,11 @@ export function createCustomConfigLoader({
       }
       if (result.data.modelSpecs) {
         customConfig.modelSpecs = result.data.modelSpecs;
+      }
+      for (const drop of resolveConfigAllowedAddresses(customConfig, process.env)) {
+        logger.warn(
+          `[allowedAddresses] Dropped ${drop.path} entry ${drop.entry}: ${ALLOWED_ADDRESS_DROP_MESSAGES[drop.reason]}`,
+        );
       }
 
       if (printConfig) {
