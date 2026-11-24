@@ -14,6 +14,8 @@ import {
 let pluginRoot: string;
 let pluginData: string;
 
+const describePosix = process.platform === 'win32' ? describe.skip : describe;
+
 const PRE_TOOL_INPUT: HookInput = {
   hook_event_name: 'PreToolUse',
   runId: 'run-1',
@@ -464,13 +466,15 @@ describe('createCommandExecutor', () => {
     expect(output).toEqual({});
   });
 
-  test('fails closed when the shell is not executable', async () => {
-    await fs.promises.writeFile(path.join(pluginData, 'bash'), '#!/bin/sh\nexit 0\n', {
-      mode: 0o600,
+  describePosix('POSIX executable semantics', () => {
+    test('fails closed when the shell is not executable', async () => {
+      await fs.promises.writeFile(path.join(pluginData, 'bash'), '#!/bin/sh\nexit 0\n', {
+        mode: 0o600,
+      });
+      await expect(
+        execute({ type: 'command', command: 'exit 2' }, {}, { PATH: pluginData }),
+      ).resolves.toEqual({ decision: 'deny', reason: 'Plugin hook command could not start' });
     });
-    await expect(
-      execute({ type: 'command', command: 'exit 2' }, {}, { PATH: pluginData }),
-    ).resolves.toEqual({ decision: 'deny', reason: 'Plugin hook command could not start' });
   });
 
   test('fails closed when the command working directory is missing', async () => {

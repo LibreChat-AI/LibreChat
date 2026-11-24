@@ -66,7 +66,9 @@ describeCompatibility(
       if (fixtureCommit !== upstreamCommit)
         throw new Error('The upstream fixture must match the merged protocol commit');
       directory = fs.mkdtempSync(path.join(os.tmpdir(), 'librechat-enrollment-'));
-      fs.chmodSync(directory, 0o700);
+      if (process.platform !== 'win32') {
+        fs.chmodSync(directory, 0o700);
+      }
       execFileSync(
         'openssl',
         [
@@ -90,7 +92,9 @@ describeCompatibility(
       );
       certificate = fs.readFileSync(path.join(directory, 'tls.crt'));
       privateKey = fs.readFileSync(path.join(directory, 'tls.key'));
-      fs.chmodSync(path.join(directory, 'tls.key'), 0o600);
+      if (process.platform !== 'win32') {
+        fs.chmodSync(path.join(directory, 'tls.key'), 0o600);
+      }
       const signing = generateKeyPairSync('ed25519');
       process.env.CODEAPI_JWT_ENABLED = 'true';
       process.env.CODEAPI_JWT_PRIVATE_KEY = signing.privateKey
@@ -392,7 +396,9 @@ describeCompatibility(
           expect(identity.workerId).toBe(pending.workerId);
           expect(identity.publicKey).toBe(planned.publicKey);
           expect(identity.credential.length).toBeGreaterThanOrEqual(32);
-          expect(fs.statSync(saved.identityPath).mode & 0o777).toBe(0o600);
+          if (process.platform !== 'win32') {
+            expect(fs.statSync(saved.identityPath).mode & 0o777).toBe(0o600);
+          }
           const receipt = JSON.parse(
             fs.readFileSync(`${profile}.setup/attempt.json`, 'utf8'),
           ) as Record<string, unknown>;

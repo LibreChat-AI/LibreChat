@@ -6,6 +6,8 @@ import fs from 'node:fs/promises';
 import childProcess from 'node:child_process';
 import { startRedis } from './outage.helper';
 
+const describePosix = process.platform === 'win32' ? describe.skip : describe;
+
 describe.each([false, true])('Redis outage fixture startup (cluster=%s)', (cluster) => {
   let env: NodeJS.ProcessEnv;
   let dir: string;
@@ -71,20 +73,22 @@ describe.each([false, true])('Redis outage fixture startup (cluster=%s)', (clust
     await expectCleanup();
   }, 3000);
 
-  it('reports an early exit with its code and stderr, then cleans up', async () => {
-    process.env.REDIS_SERVER_BIN = join(dir, 'exits');
-    await expect(startRedis(cluster)).rejects.toThrow(
-      'Redis exited before becoming ready (code=23, signal=null): fixture startup refused',
-    );
-    await expectCleanup();
-  }, 3000);
+  describePosix('POSIX executable fixtures', () => {
+    it('reports an early exit with its code and stderr, then cleans up', async () => {
+      process.env.REDIS_SERVER_BIN = join(dir, 'exits');
+      await expect(startRedis(cluster)).rejects.toThrow(
+        'Redis exited before becoming ready (code=23, signal=null): fixture startup refused',
+      );
+      await expectCleanup();
+    }, 3000);
 
-  it('terminates a live child and removes its resources when readiness times out', async () => {
-    process.env.REDIS_SERVER_BIN = join(dir, 'idle');
-    await expect(startRedis(cluster)).rejects.toThrow('Timed out waiting for Redis state');
-    expect(spawned).toHaveBeenCalledTimes(1);
-    expect(spawned.mock.results[0].value.signalCode).toBe('SIGTERM');
-    await expectCleanup();
+    it('terminates a live child and removes its resources when readiness times out', async () => {
+      process.env.REDIS_SERVER_BIN = join(dir, 'idle');
+      await expect(startRedis(cluster)).rejects.toThrow('Timed out waiting for Redis state');
+      expect(spawned).toHaveBeenCalledTimes(1);
+      expect(spawned.mock.results[0].value.signalCode).toBe('SIGTERM');
+      await expectCleanup();
+    });
   });
 
   it('closes the proxy and reused port reservations if allocating the Redis directory fails', async () => {

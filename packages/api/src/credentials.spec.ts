@@ -51,7 +51,9 @@ describe('credentials', () => {
     expect(state.loadedFromFile).toEqual([]);
     expect(state.persistenceFailed).toBe(false);
     expect(getCredentialRuntimeState()).toEqual(state);
-    expect(fs.statSync(tempFile).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(tempFile).mode & 0o777).toBe(0o600);
+    }
     expect(getCredentialFingerprints()).toEqual(
       expect.objectContaining({
         CREDS_KEY: expect.any(String),
