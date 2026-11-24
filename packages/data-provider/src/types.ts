@@ -1362,7 +1362,7 @@ export type TAcceptTermsResponse = {
   termsAcceptedAt: Date | string;
 };
 
-export type TBannerResponse = TBanner | null;
+export type TBannerResponse = Pick<TBanner, 'bannerId' | 'message' | 'persistable'> | null;
 
 export type TUpdateFeedbackRequest = {
   feedback?: TMinimalFeedback;
