@@ -186,10 +186,14 @@ jobs:
   # spec runs twice or not at all. The newest recorded copy is therefore resolved once, here,
   # and handed to the shards as a job output: a shard that restored the cache itself could see
   # a newer entry than its siblings, and a re-run shard a newer one than the attempt it joins.
-  # playwright-timings.yml writes the cache from green runs on dev, and a pull request reads
-  # dev's entries as its base branch. With no entry or a malformed one the output is empty and
-  # every shard plans from the committed e2e/timings.mock.json, so nothing in this job fails on
-  # the data; like every job here it still answers to the gate.
+  # playwright-timings.yml publishes them from green runs on dev as an `e2e-shard-timings`
+  # artifact. An artifact, unlike a cache entry, is readable from every ref: a cache entry saved
+  # on dev reaches only pull requests based on dev, so a stacked pull request and the nightly on
+  # the default branch planned from the committed file, and a busy repository cache evicted the
+  # entry within hours. Only an artifact built on dev in this repository is read, so a fork or
+  # a branch cannot hand the shards its own plan. With no artifact or a malformed one the output
+  # is empty and every shard plans from the committed e2e/timings.mock.json, so nothing in this
+  # job fails on the data; like every job here it still answers to the gate.
   shard_timings:
     name: Shard timings
     if: >-
@@ -203,17 +207,32 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: ubuntu-latest
     timeout-minutes: 3
+    permissions:
+      actions: read
     outputs:
       timings: ${{ steps.read.outputs.timings }}
     steps:
-      - name: Restore the newest recorded timings
+      - name: Download the newest recorded timings
         id: restore
         continue-on-error: true
-        uses: actions/cache/restore@v5
-        with:
-          path: e2e/.generated/shard-timings.json
-          key: e2e-shard-timings-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: e2e-shard-timings-
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          ID=$(gh api "repos/$REPO/actions/artifacts?name=e2e-shard-timings&per_page=100" --jq '
+            [.artifacts[]
+              | select(.expired | not)
+              | select(.workflow_run.head_branch == "dev")
+              | select(.workflow_run.head_repository_id == .workflow_run.repository_id)]
+            | sort_by(.created_at) | last | .id // empty')
+          if [ -z "$ID" ]; then
+            echo "no recorded timings artifact"
+            exit 0
+          fi
+          gh api "repos/$REPO/actions/artifacts/$ID/zip" > "$RUNNER_TEMP/shard-timings.zip"
+          mkdir -p e2e/.generated
+          unzip -o -q "$RUNNER_TEMP/shard-timings.zip" shard-timings.json -d e2e/.generated
+          echo "timings from artifact $ID"
 
       - name: Hand one copy to every shard
         id: read
