@@ -1,7 +1,14 @@
 import axios from 'axios';
 import Anthropic from '@anthropic-ai/sdk';
 import { logger } from '@librechat/data-schemas';
-import { Time, EModelEndpoint, defaultModels, AuthType } from 'librechat-data-provider';
+import {
+  Time,
+  EModelEndpoint,
+  defaultModels,
+  AuthType,
+  FileSources,
+} from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
 import type { FetchModelsParams } from './models';
 import type { ServerRequest } from '~/types';
 import {
@@ -12,8 +19,10 @@ import {
   getBedrockModels,
   getAnthropicModels,
 } from './models';
+import { createSavedSpecTargetResolver } from '~/conversations/target';
 import { createLoadConfigModels } from './config/models';
 import { SCOPED_TOKEN_CONFIG_KEY_PREFIX } from './keys';
+import { createModelsService } from './config/service';
 
 jest.mock('axios');
 
@@ -82,6 +91,75 @@ beforeEach(() => {
   mockTokenConfigSet.mockReset().mockResolvedValue(true);
   mockValidateEndpointURL.mockReset().mockResolvedValue(undefined);
   mockCreateSSRFSafeAgents.mockClear();
+});
+
+describe('catalog discovery for saved target recovery', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it.each(['recovery-proxy', 'openAI', 'anthropic'])(
+    'keeps discovery failure distinct from confirmed absence for %s',
+    async (endpoint) => {
+      jest.replaceProperty(process, 'env', {
+        ...process.env,
+        OPENAI_API_KEY: 'test-key',
+        OPENAI_MODELS: undefined,
+        OPENAI_REVERSE_PROXY: undefined,
+        ANTHROPIC_API_KEY: 'test-key',
+        ANTHROPIC_MODELS: undefined,
+        ANTHROPIC_REVERSE_PROXY: undefined,
+      });
+      const config: AppConfig = {
+        config: {},
+        fileStrategy: FileSources.local,
+        imageOutputType: 'png',
+        endpoints: {
+          custom: [
+            {
+              name: 'recovery-proxy',
+              apiKey: 'test-key',
+              baseURL: 'https://proxy.example.test/v1',
+              models: { fetch: true, default: ['gpt-fallback'] },
+            },
+          ],
+        },
+        modelSpecs: {
+          list: [{ name: 'saved-spec', preset: { endpoint, model: 'gpt-fallback' } }],
+        },
+      };
+      const getAppConfig = async () => config;
+      const modelService = createModelsService({
+        getAppConfig,
+        loadDefaultModels: async () => ({}),
+        loadConfigModels: createLoadConfigModels({ getAppConfig, getUserKeyValues: jest.fn() }),
+        defaultEndpointsConfig: {},
+        loadAsyncEndpoints: async () => ({}),
+      });
+      const resolve = createSavedSpecTargetResolver({
+        getAppConfig,
+        getEndpointsConfig: async () => ({ [endpoint]: { order: 0 } }),
+        getEndpointModelsConfig: modelService.getEndpointModelsConfig,
+      });
+      const stored = { endpoint: 'retired-endpoint', spec: 'saved-spec', model: 'gpt-saved' };
+      const req = { config, user: { id: 'owner' } } as ServerRequest;
+      const outage = new Error('Provider timed out');
+
+      mockedAxios.get.mockRejectedValueOnce(outage);
+      const picker = await modelService.getEndpointModelsConfig(req, endpoint);
+      expect(picker[endpoint]?.length).toBeGreaterThan(0);
+
+      mockedAxios.get.mockRejectedValueOnce(outage);
+      await expect(resolve(req, stored)).rejects.toBe(outage);
+
+      mockedAxios.get.mockResolvedValueOnce({ data: { data: [] } });
+      await expect(resolve(req, stored)).resolves.toMatchObject({
+        endpoint,
+        model: 'gpt-fallback',
+      });
+      await expect(
+        modelService.getEndpointModelsConfig(req, endpoint, { strictDiscovery: true }),
+      ).resolves.toEqual({ [endpoint]: [] });
+    },
+  );
 });
 
 describe('custom Anthropic discovery', () => {

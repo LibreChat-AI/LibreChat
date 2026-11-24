@@ -58,7 +58,12 @@ function shareInFlight<T>(
   return request;
 }
 
-export interface FetchModelsParams {
+export interface CatalogDiscoveryOptions {
+  /** Fail when provider discovery cannot establish the model list. */
+  strictDiscovery?: boolean;
+}
+
+export interface FetchModelsParams extends CatalogDiscoveryOptions {
   /** User ID for API requests */
   user?: string;
   /** API key for authentication */
@@ -194,6 +199,12 @@ export function splitAndTrim(input: string | null | undefined): string[] {
     .filter(Boolean);
 }
 
+function isModelList(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) && value.every((model) => typeof model === 'string' && model.length > 0)
+  );
+}
+
 /**
  * Fetches models from the specified base API path or Azure, based on the provided configuration.
  *
@@ -216,6 +227,7 @@ export async function fetchModels({
   headers,
   userObject,
   skipCache = false,
+  strictDiscovery = false,
 }: FetchModelsParams): Promise<string[]> {
   let models: string[] = [];
   const isCustomAnthropic = provider === EModelEndpoint.anthropic;
@@ -228,11 +240,10 @@ export async function fetchModels({
     baseURL = extractBaseURL(baseURL ?? '') ?? undefined;
   }
 
-  if (!baseURL && !azure) {
-    return models;
-  }
-
-  if (!apiKey) {
+  if ((!baseURL && !azure) || !apiKey) {
+    if (strictDiscovery) {
+      throw new Error('Model discovery credentials or base URL unavailable');
+    }
     return models;
   }
 
@@ -256,7 +267,10 @@ export async function fetchModels({
   if (modelsCache && cacheKey) {
     try {
       const cachedModels = await modelsCache.get(cacheKey);
-      if (cachedModels) {
+      if (
+        cachedModels &&
+        (!strictDiscovery || (isModelList(cachedModels) && cachedModels.length > 0))
+      ) {
         if (createTokenConfig && tokenKey) {
           const tokenConfigBackfilled = await backfillTokenConfigFromModelCache(cacheKey, tokenKey);
           if (!tokenConfigBackfilled && isScopedTokenConfigKey(tokenKey)) {
@@ -290,7 +304,7 @@ export async function fetchModels({
         error: ollamaError as Error,
       });
     }
-    if (ollamaModels !== null) {
+    if (ollamaModels !== null && (!strictDiscovery || isModelList(ollamaModels))) {
       await cacheModelList(modelsCache, cacheKey, ollamaModels);
       return ollamaModels;
     }
@@ -368,7 +382,13 @@ export async function fetchModels({
       }
     }
     models = input.data.map((item: { id: string }) => item.id);
+    if (strictDiscovery && !isModelList(models)) {
+      throw new Error('Invalid model discovery response');
+    }
   } catch (error) {
+    if (strictDiscovery) {
+      throw error;
+    }
     const logMessage = `Failed to fetch models from ${azure ? 'Azure ' : ''}${name} API`;
     logAxiosError({ message: logMessage, error: error as Error });
   }
@@ -384,7 +404,7 @@ function modelsCacheKey(baseURL: string, apiKey: string, provider?: TEndpoint['p
 }
 
 /** Options for fetching OpenAI models */
-export interface GetOpenAIModelsOptions {
+export interface GetOpenAIModelsOptions extends CatalogDiscoveryOptions {
   /** User ID for API requests */
   user?: string;
   /** Whether to fetch from Azure */
@@ -426,6 +446,9 @@ export async function fetchOpenAIModels(
   if (opts.assistants && process.env.ASSISTANTS_BASE_URL) {
     reverseProxyUrl = process.env.ASSISTANTS_BASE_URL;
   } else if (opts.azure) {
+    if (opts.strictDiscovery) {
+      throw new Error('Azure model catalog unavailable');
+    }
     return models;
   }
 
@@ -443,10 +466,11 @@ export async function fetchOpenAIModels(
       skipCache: opts.skipCache,
       headers: opts.headers,
       userObject: opts.userObject,
+      ...(opts.strictDiscovery ? { strictDiscovery: true } : {}),
     });
   }
 
-  if (models.length === 0) {
+  if (models.length === 0 && !opts.strictDiscovery) {
     return _models;
   }
 
@@ -493,6 +517,9 @@ export async function getOpenAIModels(opts: GetOpenAIModelsOptions = {}): Promis
   }
 
   if (isUserProvided(resolveOpenAIApiKey(opts))) {
+    if (opts.strictDiscovery) {
+      throw new Error('OpenAI model catalog unavailable');
+    }
     return models;
   }
 
@@ -511,7 +538,7 @@ export async function fetchAnthropicModels(
     skipCache?: boolean;
     headers?: Record<string, string> | null;
     userObject?: Partial<IUser>;
-  } = {},
+  } & CatalogDiscoveryOptions = {},
   _models: string[] = [],
 ): Promise<string[]> {
   let models = _models.slice() ?? [];
@@ -525,6 +552,9 @@ export async function fetchAnthropicModels(
   }
 
   if (!apiKey) {
+    if (opts.strictDiscovery) {
+      throw new Error('Anthropic model catalog unavailable');
+    }
     return models;
   }
 
@@ -538,10 +568,11 @@ export async function fetchAnthropicModels(
       skipCache: opts.skipCache,
       headers: opts.headers,
       userObject: opts.userObject,
+      ...(opts.strictDiscovery ? { strictDiscovery: true } : {}),
     });
   }
 
-  if (models.length === 0) {
+  if (models.length === 0 && !opts.strictDiscovery) {
     return _models;
   }
 
@@ -561,7 +592,7 @@ export async function getAnthropicModels(
     userObject?: Partial<IUser>;
     /** A model list configured for the endpoint; when set, it is returned without discovery. */
     configuredModels?: string[];
-  } = {},
+  } & CatalogDiscoveryOptions = {},
 ): Promise<string[]> {
   if (opts.configuredModels) {
     return opts.configuredModels;
@@ -578,12 +609,18 @@ export async function getAnthropicModels(
   }
 
   if (isUserProvided(process.env.ANTHROPIC_API_KEY)) {
+    if (opts.strictDiscovery) {
+      throw new Error('Anthropic model catalog unavailable');
+    }
     return models;
   }
 
   try {
     return await fetchAnthropicModels(opts, models);
   } catch (error) {
+    if (opts.strictDiscovery) {
+      throw error;
+    }
     logger.error('Error fetching Anthropic models:', error);
     return models;
   }

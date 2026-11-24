@@ -8,6 +8,7 @@ import {
 } from 'librechat-data-provider';
 import type { TEndpointsConfig, TModelsConfig } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
+import type { CatalogDiscoveryOptions } from '~/endpoints/models';
 import { findModelSpecByName } from '../modelSpecs';
 import { loadStrictAppConfig } from '../app/strict';
 
@@ -37,7 +38,11 @@ type ConfigRequest = Pick<Parameters<typeof loadStrictAppConfig>[0], 'user' | 'c
 type TargetReaders<Request extends ConfigRequest> = {
   getAppConfig: Parameters<typeof loadStrictAppConfig>[1];
   getEndpointsConfig: (req: Request) => Promise<TEndpointsConfig>;
-  getEndpointModelsConfig: (req: Request, endpoint: string) => Promise<TModelsConfig>;
+  getEndpointModelsConfig: (
+    req: Request,
+    endpoint: string,
+    options: CatalogDiscoveryOptions,
+  ) => Promise<TModelsConfig>;
 };
 
 /** Reads the effective configuration only when the saved target can be recovered. */
@@ -53,7 +58,8 @@ export function createSavedSpecTargetResolver<Request extends ConfigRequest>(
         return req.config.modelSpecs;
       },
       getEndpoints: () => readers.getEndpointsConfig(req),
-      getModels: (endpoint) => readers.getEndpointModelsConfig(req, endpoint),
+      getModels: (endpoint) =>
+        readers.getEndpointModelsConfig(req, endpoint, { strictDiscovery: true }),
     });
 }
 
@@ -102,7 +108,11 @@ export async function resolveSavedSpecTarget(
   let model = preset.model;
   if (!specs?.enforce && stored.model && stored.model !== model) {
     const models = await deps.getModels(endpoint);
-    if (models[resolveModelCatalogKey(endpoint, models)]?.includes(stored.model)) {
+    const catalog = models[resolveModelCatalogKey(endpoint, models)];
+    if (!Array.isArray(catalog)) {
+      throw new Error('Replacement model catalog unavailable');
+    }
+    if (catalog.includes(stored.model)) {
       model = stored.model;
     }
   }

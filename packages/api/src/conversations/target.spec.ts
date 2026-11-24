@@ -59,7 +59,7 @@ test('loads strict effective config for the requesting user before reading endpo
       skipRuntimeAugmentation: true,
     }),
   );
-  expect(getEndpointModelsConfig).toHaveBeenCalledWith(req, endpoint);
+  expect(getEndpointModelsConfig).toHaveBeenCalledWith(req, endpoint, { strictDiscovery: true });
 });
 
 test('recovers a hidden spec and keeps the original model when the new endpoint serves it', async () => {
@@ -82,6 +82,14 @@ test('uses the spec model when the original model is absent from the replacement
     endpoint,
     model: 'default-model',
   });
+});
+
+test('does not infer model absence without a replacement catalog entry', async () => {
+  const deps = dependencies();
+  deps.getModels.mockResolvedValueOnce({});
+  await expect(resolveSavedSpecTarget(stored, deps)).rejects.toThrow(
+    'Replacement model catalog unavailable',
+  );
 });
 
 test('uses an enforced spec model without loading the catalog', async () => {

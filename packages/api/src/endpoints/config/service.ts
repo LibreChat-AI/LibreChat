@@ -7,6 +7,7 @@ import {
 import type { TModelsConfig } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { Response } from 'express';
+import type { CatalogDiscoveryOptions } from '~/endpoints/models';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { EndpointsConfigDeps } from './endpoints';
 import type { ServerRequest } from '~/types';
@@ -16,7 +17,11 @@ import { loadDefaultEndpointModels } from './defaults';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
 type EndpointConfig = Awaited<ReturnType<EndpointsConfigDeps['loadDefaultEndpointsConfig']>>;
-type ModelLoader = (req: ServerRequest, endpoint?: string) => Promise<TModelsConfig>;
+type ModelLoader = (
+  req: ServerRequest,
+  endpoint?: string,
+  options?: CatalogDiscoveryOptions,
+) => Promise<TModelsConfig>;
 
 export type RequestModelsConfigResult =
   | { ok: true; modelsConfig: TModelsConfig }
@@ -46,10 +51,12 @@ export function createModelsService(deps: ModelsServiceDeps): {
   getEndpointModelsConfig: (
     req: ServerRequest,
     endpoint: string | null | undefined,
+    options?: CatalogDiscoveryOptions,
   ) => Promise<TModelsConfig>;
 } {
   /** Catalog entries loaded for a request, by the endpoint name they were requested under. */
   const requestEntries = new WeakMap<ServerRequest, Map<string, Promise<TModelsConfig>>>();
+  const strictRequestEntries = new WeakMap<ServerRequest, Map<string, Promise<TModelsConfig>>>();
 
   /** Internal callers keep the full catalog, regardless of HTTP query parameters. */
   async function loadModels(req: ServerRequest): Promise<TModelsConfig> {
@@ -74,20 +81,31 @@ export function createModelsService(deps: ModelsServiceDeps): {
     req: ServerRequest,
     config: AppConfig,
     endpoint: string,
+    options?: CatalogDiscoveryOptions,
   ): Promise<TModelsConfig> {
-    const configured = await deps.loadConfigModels(req, endpoint);
+    const configured = await deps.loadConfigModels(req, endpoint, options);
     if (Object.prototype.hasOwnProperty.call(configured, endpoint)) {
       return { [endpoint]: configured[endpoint] };
     }
-    return (deps.loadDefaultEndpointModels ?? loadDefaultEndpointModels)(req, config, endpoint);
+    return (deps.loadDefaultEndpointModels ?? loadDefaultEndpointModels)(
+      req,
+      config,
+      endpoint,
+      options,
+    );
   }
 
   /** One load per request and endpoint name, shared while in flight and kept once settled. */
-  function loadRequestEntry(req: ServerRequest, endpoint: string): Promise<TModelsConfig> {
-    let entries = requestEntries.get(req);
+  function loadRequestEntry(
+    req: ServerRequest,
+    endpoint: string,
+    options?: CatalogDiscoveryOptions,
+  ): Promise<TModelsConfig> {
+    const cache = options?.strictDiscovery ? strictRequestEntries : requestEntries;
+    let entries = cache.get(req);
     if (entries == null) {
       entries = new Map();
-      requestEntries.set(req, entries);
+      cache.set(req, entries);
     }
     const loaded = entries.get(endpoint);
     if (loaded != null) {
@@ -95,7 +113,7 @@ export function createModelsService(deps: ModelsServiceDeps): {
     }
     const known = entries;
     const pending: Promise<TModelsConfig> = resolveConfig(req)
-      .then((config) => loadEndpointModels(req, config, endpoint))
+      .then((config) => loadEndpointModels(req, config, endpoint, options))
       .catch((error: unknown) => {
         /** A failed load is not remembered, so a later validation in the request may retry. */
         if (known.get(endpoint) === pending) {
@@ -158,16 +176,17 @@ export function createModelsService(deps: ModelsServiceDeps): {
   async function getEndpointModelsConfig(
     req: ServerRequest,
     endpoint: string | null | undefined,
+    options?: CatalogDiscoveryOptions,
   ): Promise<TModelsConfig> {
     if (typeof endpoint !== 'string' || endpoint.length === 0) {
       return {};
     }
-    const exact = await loadRequestEntry(req, endpoint);
+    const exact = await loadRequestEntry(req, endpoint, options);
     if (hasEntry(exact, endpoint)) {
       return exact;
     }
     const key = resolveModelCatalogKey(endpoint, {});
-    return key === endpoint ? exact : loadRequestEntry(req, key);
+    return key === endpoint ? exact : loadRequestEntry(req, key, options);
   }
 
   async function modelController(req: ServerRequest, res: Response): Promise<Response> {

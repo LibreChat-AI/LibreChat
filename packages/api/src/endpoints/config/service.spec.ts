@@ -95,11 +95,13 @@ describe('model discovery service', () => {
     expect(deps.loadConfigModels).toHaveBeenCalledWith(
       expect.objectContaining({ config: req.config }),
       'openAI',
+      undefined,
     );
     expect(deps.loadDefaultEndpointModels).toHaveBeenCalledWith(
       expect.objectContaining({ user: req.user }),
       req.config,
       'openAI',
+      undefined,
     );
     expect(deps.getAppConfig).not.toHaveBeenCalled();
     expect(deps.loadDefaultModels).not.toHaveBeenCalled();
@@ -124,6 +126,7 @@ describe('model discovery service', () => {
     expect(deps.loadConfigModels).toHaveBeenCalledWith(
       expect.objectContaining({ config, user: req.user }),
       'openAI',
+      undefined,
     );
     expect(deps.loadDefaultEndpointModels).not.toHaveBeenCalled();
     expect(res.send).toHaveBeenCalledWith({ openAI: ['narrowed'] });
@@ -415,6 +418,7 @@ describe('per-endpoint model loading', () => {
     expect(deps.loadConfigModels).toHaveBeenCalledWith(
       expect.objectContaining({ config: { endpoints: {} } }),
       'openAI',
+      undefined,
     );
   });
 

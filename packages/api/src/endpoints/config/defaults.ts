@@ -2,6 +2,7 @@ import { logger } from '@librechat/data-schemas';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { TModelsConfig } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
+import type { CatalogDiscoveryOptions } from '~/endpoints/models';
 import type { ServerRequest } from '~/types';
 import {
   getOpenAIModels,
@@ -25,6 +26,7 @@ export async function loadDefaultEndpointModels(
   req: ServerRequest,
   appConfig: AppConfig,
   endpoint: string,
+  options?: CatalogDiscoveryOptions,
   loaders: DefaultModelLoaders = {
     getOpenAIModels,
     getAnthropicModels,
@@ -40,6 +42,7 @@ export async function loadDefaultEndpointModels(
         userObject: req.user,
         headers: mergeHeaders(allHeaders, appConfig.endpoints?.openAI?.headers),
         configuredModels: configuredModelList(appConfig, EModelEndpoint.openAI),
+        ...options,
       }),
     [EModelEndpoint.anthropic]: () =>
       loaders.getAnthropicModels({
@@ -48,11 +51,12 @@ export async function loadDefaultEndpointModels(
         headers: mergeHeaders(allHeaders, appConfig.endpoints?.anthropic?.headers),
         vertexModels: appConfig.endpoints?.anthropic?.vertexConfig?.modelNames,
         configuredModels: configuredModelList(appConfig, EModelEndpoint.anthropic),
+        ...options,
       }),
     [EModelEndpoint.azureOpenAI]: () =>
-      loaders.getOpenAIModels({ user: req.user?.id, azure: true }),
-    [EModelEndpoint.assistants]: () => loaders.getOpenAIModels({ assistants: true }),
-    [EModelEndpoint.azureAssistants]: () => loaders.getOpenAIModels({ azure: true }),
+      loaders.getOpenAIModels({ user: req.user?.id, azure: true, ...options }),
+    [EModelEndpoint.assistants]: () => loaders.getOpenAIModels({ assistants: true, ...options }),
+    [EModelEndpoint.azureAssistants]: () => loaders.getOpenAIModels({ azure: true, ...options }),
     [EModelEndpoint.google]: () => loaders.getGoogleModels(),
     [EModelEndpoint.bedrock]: () => loaders.getBedrockModels(),
   };
@@ -62,6 +66,9 @@ export async function loadDefaultEndpointModels(
   try {
     return { [endpoint]: await sources[endpoint]() };
   } catch (error) {
+    if (options?.strictDiscovery) {
+      throw error;
+    }
     logger.error('Error fetching endpoint models:', getSafeErrorMetadata(error));
     return { [endpoint]: [] };
   }
