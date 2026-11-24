@@ -47,6 +47,8 @@ const MAX_PURGE_RECOVERY_LIMIT = 200;
 const HISTORY_LIMIT = 64;
 /** A requeued batch found one of its receipts already removed by the dead-letter deadline. */
 const BATCH_RECEIPTS_EXPIRED = 'BATCH_RECEIPTS_EXPIRED';
+/** How long past its deadline the TTL monitor can leave a row: its sweep runs once a minute. */
+const TTL_SWEEP_MS = 60_000;
 const MAX_BATCH_SIZE = 8;
 const BACKGROUND_RECEIPT_CAPABILITIES = [
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
@@ -1254,6 +1256,7 @@ export function createAgentTriggerDeliveryMethods(
         expiresAt: settledAt,
         error,
       });
+      await requestLaneCleanupAfter(retired.orderingKey, settledAt);
     }
     return false;
   }
@@ -1622,41 +1625,77 @@ export function createAgentTriggerDeliveryMethods(
     return recovered;
   }
 
+  /** When a row with this deadline is gone for certain, however late the monitor runs. */
+  function afterDeadline(deadline: Date): Date {
+    return new Date(Math.max(deadline.getTime(), Date.now()) + TTL_SWEEP_MS);
+  }
+
+  /** Leaves the reclaimer a request that falls due once a dead letter's deadline has removed
+   * it. An earlier request stays: reclaiming re-reads the lane and defers again if needed. */
+  async function requestLaneCleanupAfter(orderingKey: string, deadline?: Date): Promise<void> {
+    if (deadline == null) {
+      return;
+    }
+    const cleanupRequestedAt = afterDeadline(deadline);
+    try {
+      await LaneSequence().updateOne(
+        { _id: orderingKey, cleanupRequestedAt: { $exists: false } },
+        { $set: { cleanupRequestedAt } },
+      );
+    } catch (error) {
+      // The dead letter is authoritative. A lost request only leaves the lane row behind.
+      logger.warn('[agent-triggers] failed to request lane cleanup for a dead letter', {
+        orderingKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   async function reclaimLaneIfInactive(orderingKey: string): Promise<boolean> {
     const lane = await LaneSequence().findById(orderingKey).lean<IAgentTriggerLaneSequence>();
     if (lane?.cleanupRequestedAt == null) {
       return false;
     }
-    const stillRetained = await Delivery().exists({
-      orderingKey,
-      $or: [
-        {
-          status: {
-            $in: [
-              'staging',
-              'capability_staging',
-              'batched',
-              'pending',
-              'capability_pending',
-              'leased',
-              'capability_leased',
-              'capability_dead',
-              'dead',
-            ],
+    const retained = await Delivery()
+      .findOne({
+        orderingKey,
+        $or: [
+          {
+            status: {
+              $in: [
+                'staging',
+                'capability_staging',
+                'batched',
+                'pending',
+                'capability_pending',
+                'leased',
+                'capability_leased',
+                'capability_dead',
+                'dead',
+              ],
+            },
           },
-        },
-        {
-          status: 'succeeded',
-          batchRootId: { $exists: false },
-          awaitTerminalHandling: true,
-          'handling.status': 'started',
-        },
-      ],
-    });
-    if (stillRetained != null) {
+          {
+            status: 'succeeded',
+            batchRootId: { $exists: false },
+            awaitTerminalHandling: true,
+            'handling.status': 'started',
+          },
+        ],
+      })
+      .select('status expiresAt deadLetterExpiresAt')
+      .lean<Pick<IAgentTriggerDelivery, 'status' | 'expiresAt' | 'deadLetterExpiresAt'>>();
+    if (retained != null) {
+      /** Any other retained row asks again when it settles. A dead letter is removed by its
+       * deadline, which nothing observes, so the request waits for that deadline instead. */
+      const deadline = DEAD_STATUSES.includes(retained.status)
+        ? (retained.expiresAt ?? retained.deadLetterExpiresAt)
+        : undefined;
       await LaneSequence().updateOne(
         { _id: orderingKey, cleanupRequestedAt: lane.cleanupRequestedAt },
-        { $unset: { cleanupRequestedAt: 1 } },
+        deadline == null
+          ? { $unset: { cleanupRequestedAt: 1 } }
+          : { $set: { cleanupRequestedAt: afterDeadline(deadline) } },
       );
       return false;
     }
@@ -1721,7 +1760,7 @@ export function createAgentTriggerDeliveryMethods(
       return reclaimed;
     }
     const lanes = await LaneSequence()
-      .find({ cleanupRequestedAt: { $exists: true } })
+      .find({ cleanupRequestedAt: { $lte: new Date() } })
       .sort({ cleanupRequestedAt: 1, _id: 1 })
       .limit(remaining)
       .select('_id')
@@ -4761,39 +4800,47 @@ export function createAgentTriggerDeliveryMethods(
         },
       },
     });
-    const shieldDead = await Delivery().updateOne(
-      { _id: input.id, ...shieldCapabilityFence(input), ...receiptFence },
-      {
-        $set: {
-          // The pre-capability runtime already treats `capability_dead` as a
-          // terminal, requeueable state, so it cannot block a lane successor.
-          status: 'capability_dead',
-          availableAt: LEGACY_CAPABILITY_SHIELD_AT,
-          capabilityStatus: 'dead',
-          settledAt: input.settledAt,
-          lastError: error,
-          ...(input.expiresAt != null && { expiresAt: input.expiresAt }),
+    const shieldDead = await Delivery()
+      .findOneAndUpdate(
+        { _id: input.id, ...shieldCapabilityFence(input), ...receiptFence },
+        {
+          $set: {
+            // The pre-capability runtime already treats `capability_dead` as a
+            // terminal, requeueable state, so it cannot block a lane successor.
+            status: 'capability_dead',
+            availableAt: LEGACY_CAPABILITY_SHIELD_AT,
+            capabilityStatus: 'dead',
+            settledAt: input.settledAt,
+            lastError: error,
+            ...(input.expiresAt != null && { expiresAt: input.expiresAt }),
+          },
+          $unset: {
+            leaseBy: 1,
+            leaseUntil: 1,
+            claimToken: 1,
+            capabilityLeaseBy: 1,
+            capabilityLeaseUntil: 1,
+            capabilityClaimToken: 1,
+            ...(input.expiresAt == null && { expiresAt: 1 }),
+          },
+          $push: deadUpdate('dead').$push,
         },
-        $unset: {
-          leaseBy: 1,
-          leaseUntil: 1,
-          claimToken: 1,
-          capabilityLeaseBy: 1,
-          capabilityLeaseUntil: 1,
-          capabilityClaimToken: 1,
-          ...(input.expiresAt == null && { expiresAt: 1 }),
-        },
-        $push: deadUpdate('dead').$push,
-      },
-    );
-    if (shieldDead.modifiedCount === 1) {
+      )
+      .select('orderingKey')
+      .lean<Pick<IAgentTriggerDelivery, 'orderingKey'>>();
+    if (shieldDead != null) {
+      await requestLaneCleanupAfter(shieldDead.orderingKey, input.expiresAt);
       return true;
     }
-    const capabilityDead = await Delivery().updateOne(
-      { _id: input.id, ...legacyCapabilityFence(input), ...receiptFence },
-      deadUpdate('capability_dead'),
-    );
-    if (capabilityDead.modifiedCount === 1) {
+    const capabilityDead = await Delivery()
+      .findOneAndUpdate(
+        { _id: input.id, ...legacyCapabilityFence(input), ...receiptFence },
+        deadUpdate('capability_dead'),
+      )
+      .select('orderingKey')
+      .lean<Pick<IAgentTriggerDelivery, 'orderingKey'>>();
+    if (capabilityDead != null) {
+      await requestLaneCleanupAfter(capabilityDead.orderingKey, input.expiresAt);
       return true;
     }
     const settleDead = (filter: Record<string, unknown>, deferExpiry: boolean) =>
@@ -4818,6 +4865,7 @@ export function createAgentTriggerDeliveryMethods(
     if (dead?._id == null) {
       return false;
     }
+    await requestLaneCleanupAfter(dead.orderingKey, input.expiresAt);
     try {
       await settleBatchMembers(dead, {
         attempt: input.attempt,
