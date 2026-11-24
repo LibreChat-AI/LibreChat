@@ -2118,6 +2118,7 @@ function buildSubagentConfigs(
 
   const configs: SubagentConfigEntry[] = [];
   const allowSelf = agent.subagents.allowSelf !== false;
+  let selfConfig: SubagentConfig | undefined;
 
   if (allowSelf) {
     const selfName = agentInput.name ?? agent.name ?? 'self';
@@ -2137,7 +2138,7 @@ function buildSubagentConfigs(
       stripBackgroundFromToolRegistry(agentInput.toolRegistry, agent.backgroundToolNames),
       agent.intentToolNames,
     );
-    configs.push({
+    selfConfig = {
       self: true,
       type: SELF_SUBAGENT_TYPE,
       name: selfName,
@@ -2168,7 +2169,8 @@ function buildSubagentConfigs(
             },
           }
         : {}),
-    });
+    };
+    configs.push(selfConfig);
   }
 
   /** Cycle-safety: include the current agent in `ancestors` before
@@ -2283,6 +2285,32 @@ function buildSubagentConfigs(
       resultAgentId: definition.result_agent_id,
       maxTurns,
     });
+  }
+
+  const delegates = configs.filter((config) => config !== selfConfig);
+  if (selfConfig != null && delegates.length > 0) {
+    /**
+     * A copy keeps the agent's explicit subagents, never the self entry, so a copy cannot spawn
+     * a copy. The description tells the model which it got: nothing else says a copy cannot
+     * reach data only a subagent holds.
+     *
+     * `depth` counts saved hops only. Each agent above may itself have been reached through its
+     * own copy, a hop the run counts and this builder cannot see, so an agent `depth` hops down
+     * can sit up to `2 * depth` hops down when it runs. A copy is given subagents only where it
+     * would still have a hop to spend on the longest such path, so the promise holds on all.
+     */
+    const nests =
+      agentsEConfig?.subagentSelfNesting !== false && 2 * depth + 1 < MAX_SUBAGENT_DEPTH;
+    if (nests) {
+      selfConfig.allowNested = true;
+      selfConfig.agentInputs = {
+        ...(selfConfig.agentInputs ?? agentInput),
+        subagentConfigs: delegates,
+      };
+    }
+    selfConfig.description += nests
+      ? ' The copy can delegate to the same subagents.'
+      : ' The copy cannot delegate to subagents; give a subtask that needs one to that subagent directly.';
   }
 
   return configs;
