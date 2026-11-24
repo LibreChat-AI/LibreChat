@@ -43,7 +43,7 @@ function resolveField(
   return fallback;
 }
 
-/** Resolves discovery retry settings: YAML first, then environment, then schema defaults. */
+/** Resolves discovery retry settings: YAML first, then environment, then the schema defaults. */
 export function resolveOpenIdDiscovery(
   discovery?: Partial<TOpenIdDiscoveryConfig>,
   env: OpenIdDiscoveryEnv = {},
@@ -70,7 +70,7 @@ function shouldFailOnStartupError(raw: string | undefined): boolean {
     return false;
   }
   logger.warn(
-    `[OpenID] Ignoring invalid OPENID_DISCOVERY_FAIL_ON_STARTUP_ERROR "${raw}"; using false.`,
+    `[OpenID] Ignoring invalid OPENID_FAIL_ON_STARTUP_ERROR "${raw}"; using false.`,
   );
   return false;
 }
@@ -89,6 +89,7 @@ export async function registerOpenIdWithRetry<TConfig>({
   env,
 }: OpenIdRegistrationOptions<TConfig>): Promise<void> {
   const { startupAttempts, retryDelayMs } = resolveOpenIdDiscovery(discovery, env);
+  const failOnStartupError = shouldFailOnStartupError(env?.failOnStartupError);
 
   const tryRegistration = async (): Promise<boolean> => {
     try {
@@ -108,13 +109,14 @@ export async function registerOpenIdWithRetry<TConfig>({
     }
   };
 
-  for (let attempt = 1; attempt <= startupAttempts; attempt++) {
+  const attempts = failOnStartupError ? Math.max(startupAttempts, 1) : startupAttempts;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     if (await tryRegistration()) {
       return;
     }
-    if (attempt < startupAttempts) {
+    if (attempt < attempts) {
       logger.warn(
-        `OpenID Connect setup attempt ${attempt}/${startupAttempts} failed. Retrying in ${retryDelayMs}ms.`,
+        `OpenID Connect setup attempt ${attempt}/${attempts} failed. Retrying in ${retryDelayMs}ms.`,
       );
       await wait(retryDelayMs);
     }
@@ -122,7 +124,7 @@ export async function registerOpenIdWithRetry<TConfig>({
 
   logger.error('OpenID Connect configuration failed - strategy not registered.');
 
-  if (shouldFailOnStartupError(env?.failOnStartupError)) {
+  if (failOnStartupError) {
     throw new Error('OpenID Connect initialization failed - strategy not registered.');
   }
 
