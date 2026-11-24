@@ -84,7 +84,22 @@ jobs:
             assert.equal(publishWindowsPrivateFile(join(directory, 'stage'), target, contents), 'written');
             assert.equal(publishWindowsPrivateFile(join(directory, 'stage'), `${target}.lock`, contents), 'written');
             console.log('Private files published.');
-            const bytes = readWindowsPrivateFile(target);
+            let bytes;
+            try {
+              bytes = readWindowsPrivateFile(target);
+            } catch (error) {
+              const traced = program.replace(/(\$script:failureStage = ([0-9]+))/g,
+                '$1; [Console]::Error.WriteLine(\"ACL stage $2\")');
+              const read = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-InputFormat', 'Text',
+                '-EncodedCommand', Buffer.from(traced, 'utf16le').toString('base64')], {
+                cwd, env: { ...env, TMP: root, TEMP: root, LIBRECHAT_PRIVATE_OPERATION: 'read',
+                  LIBRECHAT_PRIVATE_TARGET: target },
+                timeout: 10000, windowsHide: true, encoding: 'utf8', input: '\n',
+              });
+              console.log(`Read probe: ${read.error?.code ?? read.status}`,
+                [...(read.stderr?.matchAll(/ACL stage [0-9]+|ACL probe: [a-zA-Z]+ line \d+ [\w.,]+/g) ?? [])].map(([m]) => m).join(', '));
+              throw error;
+            }
             assert.equal(bytes?.toString(), contents);
             const digest = createHash('sha256').update(bytes).digest('hex');
             assert.equal(finishWindowsPrivateRepair(`${target}.lock`, digest, target), true);

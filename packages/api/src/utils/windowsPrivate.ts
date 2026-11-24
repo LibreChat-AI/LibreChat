@@ -355,7 +355,7 @@ function command(
 export function readWindowsPrivateFile(file: string): Buffer | undefined {
   checkCanonical(file, realpathSync.native(file));
   const { executable, args, options } = command('read', file);
-  const result = spawnSync(executable, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] });
+  const result = spawnSync(executable, args, { ...options, input: '\n' });
   if (result.error) throw failure(null, true);
   if (result.status === 2) return undefined;
   if (result.status !== 0) throw failure(result.status);
