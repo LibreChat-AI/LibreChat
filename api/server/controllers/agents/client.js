@@ -197,7 +197,7 @@ const {
   hasModelBoundContentProtection,
   requiresAssistantProtection,
   isInteractiveAssistantRequest,
-  isAssistantProtectionError,
+  getAssistantProtectionFailure,
   assertResumeRuntimeContentAllowed,
   collectReachableAgents,
   isStatefulCodeEnvironmentToolName,
@@ -386,8 +386,9 @@ function getUserFacingRequestError(baseMessage, error, appConfig) {
   if (error?.name === 'ManualSummarizationSkippedError') {
     return JSON.stringify({ type: ErrorTypes.COMPACTION_SKIPPED, reason: error.reason });
   }
-  if (isAssistantProtectionError(error)) {
-    return JSON.stringify({ type: ErrorTypes.ASSISTANT_OUTPUT_WITHHELD });
+  const withheld = getAssistantProtectionFailure(error);
+  if (withheld != null) {
+    return withheld;
   }
   const protectionEnabled =
     requiresAssistantProtection(appConfig) ||

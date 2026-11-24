@@ -16,7 +16,6 @@ export * from './private/copy';
 export * from './private/admission';
 export {
   requiresAssistantProtection,
-  isAssistantProtectionError,
   admitAssistantRequest,
   isInteractiveAssistantRequest,
 } from './assistant';

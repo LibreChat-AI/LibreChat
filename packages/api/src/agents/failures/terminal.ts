@@ -26,6 +26,12 @@ const UPSTREAM_MODEL_ERROR_ORIGIN = 'model_provider';
 const UNKNOWN_UPSTREAM_MODEL_ERROR_TYPE = '_OTHER';
 const UPSTREAM_MODEL_ERROR_FALLBACK = 'The model provider could not complete this request.';
 
+export function getAssistantProtectionFailure(error: unknown): string | undefined {
+  if (isAssistantProtectionError(error)) {
+    return JSON.stringify({ type: ErrorTypes.ASSISTANT_OUTPUT_WITHHELD });
+  }
+}
+
 function safelyResolveLangChainError(
   error: unknown,
   options: LangChainErrorOptions,
@@ -114,6 +120,9 @@ export function createTerminalRunErrorObserver({
     modelCallback: modelErrorTracker.callback,
     getUserFacingError(error: unknown, fallback: () => string) {
       const upstreamModelError = modelErrorTracker.getUpstreamModelError(error);
+      const withheld =
+        getAssistantProtectionFailure(error) ?? getAssistantProtectionFailure(upstreamModelError);
+      if (withheld != null) return withheld;
       if (upstreamModelError == null) {
         return fallback();
       }
@@ -153,7 +162,11 @@ export function createTerminalRunErrorObserver({
       }
 
       const upstreamModelError = modelErrorTracker.getUpstreamModelError(error);
-      if (upstreamModelError == null) {
+      if (
+        upstreamModelError == null ||
+        isAssistantProtectionError(error) ||
+        isAssistantProtectionError(upstreamModelError)
+      ) {
         logger.error(genericMessage, getSafeErrorMetadata(error));
         return;
       }
@@ -257,9 +270,8 @@ export function getUserFacingGenerationError(
   appConfig: GenerationErrorConfig | null | undefined,
   fallback: string,
 ): string {
-  if (isAssistantProtectionError(error)) {
-    return JSON.stringify({ type: ErrorTypes.ASSISTANT_OUTPUT_WITHHELD });
-  }
+  const withheld = getAssistantProtectionFailure(error);
+  if (withheld != null) return withheld;
   const policyError = getContentFilterError(error);
   if (policyError != null) {
     return policyError.message;
