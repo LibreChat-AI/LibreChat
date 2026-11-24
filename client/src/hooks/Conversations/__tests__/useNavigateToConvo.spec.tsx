@@ -44,6 +44,14 @@ const rowB = {
   model: 'gpt-4o-mini',
 } as TConversation;
 
+const retiredRow = {
+  ...rowB,
+  endpoint: EModelEndpoint.bedrock,
+  spec: 'hidden-research',
+  model: 'retired-model',
+  agent_id: 'bedrock__retired-model',
+};
+
 const rowC = {
   conversationId: C,
   title: 'Charlie',
@@ -136,6 +144,7 @@ function Harness({ runningIds = [] }: { runningIds?: string[] }) {
           })
         }
       />
+      <button data-testid="go-retired-spec" onClick={() => navigateToConvo(retiredRow)} />
       <div data-testid="path">{location.pathname}</div>
       <div data-testid="convo">{JSON.stringify(conversation ?? null)}</div>
     </div>
@@ -202,6 +211,72 @@ const settle = async (id: string, outcome: TConversation | { status: number }) =
 };
 
 describe('useNavigateToConvo', () => {
+  it('waits for the detail when the cached record has no recovered target', async () => {
+    const recovered = { ...recordB, spec: retiredRow.spec };
+    renderHarness([retiredRow]);
+
+    click('go-retired-spec');
+    expect(currentPath()).toBe('/c/convo-a');
+    await settle(B, recovered);
+
+    expect(currentPath()).toBe(`/c/${B}`);
+    expect(currentConvo()).toMatchObject(recovered);
+  });
+
+  it('keeps saved settings and messages when a retired target refresh fails before recovery', async () => {
+    const cached = { ...recordB, ...retiredRow };
+    const queryClient = renderHarness([cached]);
+    const messages = [{ messageId: 'existing-message' }];
+    queryClient.setQueryData([QueryKeys.messages, B], messages);
+
+    click('go-retired-spec');
+    await settle(B, { status: 500 });
+
+    expect(currentPath()).toBe(`/c/${B}`);
+    expect(currentConvo()).toMatchObject(cached);
+    expect(queryClient.getQueryData([QueryKeys.messages, B])).toEqual(messages);
+  });
+
+  it('opens a recovered chat immediately and keeps its transcript after a transient failure', async () => {
+    const recovered = { ...recordB, spec: retiredRow.spec };
+    const queryClient = renderHarness([recovered]);
+    const messages = [{ messageId: 'existing-message' }];
+    queryClient.setQueryData([QueryKeys.messages, B], messages);
+
+    click('go-retired-spec');
+    expect(currentPath()).toBe(`/c/${B}`);
+    expect(currentConvo()).toMatchObject({
+      ...recovered,
+      title: retiredRow.title,
+    });
+    expect(currentConvo()?.agent_id).toBeUndefined();
+
+    await settle(B, { status: 500 });
+
+    expect(currentConvo()?.endpoint).toBe(recovered.endpoint);
+    expect(queryClient.getQueryData([QueryKeys.messages, B])).toEqual(messages);
+  });
+
+  it('refreshes the retired row and its provider-specific agent ID together', async () => {
+    const recovered = { ...recordB, spec: retiredRow.spec };
+    const queryClient = renderHarness([recovered]);
+    queryClient.setQueryData([QueryKeys.allConversations], {
+      pages: [{ conversations: [retiredRow], nextCursor: null }],
+      pageParams: [undefined],
+    });
+
+    click('go-retired-spec');
+    await settle(B, recovered);
+
+    expect(sidebarRow(queryClient, B)).toMatchObject({
+      endpoint: recovered.endpoint,
+      model: recovered.model,
+      spec: recovered.spec,
+      title: retiredRow.title,
+    });
+    expect(sidebarRow(queryClient, B)?.agent_id).toBeUndefined();
+  });
+
   it('uses the destination-scoped cache when an endpoint was removed', () => {
     localStorage.clear();
     const client = renderHarness();
