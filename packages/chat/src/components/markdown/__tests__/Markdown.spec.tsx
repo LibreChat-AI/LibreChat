@@ -2,10 +2,12 @@
  * @jest-environment jsdom
  */
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import type { MarkdownExtensions, MessagePartsHost } from '../../../react/host';
+import type { LazyImport } from '../../../react/lazy';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { LazyImportProvider } from '../../../react/lazy';
 import Markdown from '../Markdown';
 
 jest.mock('@librechat/client', () => ({
@@ -62,12 +64,41 @@ const extensions: MarkdownExtensions = {
 
 describe('Markdown', () => {
   it('draws a reply with the package’s elements, and highlights its code once the plugin loads', async () => {
-    const { container } = draw('# Title\n\nSome **bold** text.\n\n```python\nprint(1)\n```\n');
-    expect(screen.getByRole('heading', { name: 'Title' })).toHaveAttribute('dir', 'auto');
-    expect(screen.getByText('bold').tagName).toBe('STRONG');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let pluginImport: Promise<unknown> | undefined;
+    const lazy: LazyImport = (load) => {
+      const pending = gate.then(load);
+      pluginImport = pending;
+      return pending;
+    };
+
+    const { container } = render(
+      <LazyImportProvider value={lazy}>
+        <MessagePartsHostProvider host={createMessagePartsHost()}>
+          <Markdown
+            content={'# Title\n\nSome **bold** text.\n\n```python\nprint(1)\n```\n'}
+            isLatestMessage={false}
+          />
+        </MessagePartsHostProvider>
+      </LazyImportProvider>,
+    );
     const code = container.querySelector('code.hljs.language-python');
-    expect(code).toHaveTextContent('print(1)');
-    await waitFor(() => expect(code?.querySelector('[class^="hljs-"]')).not.toBeNull());
+    try {
+      expect(screen.getByRole('heading', { name: 'Title' })).toHaveAttribute('dir', 'auto');
+      expect(screen.getByText('bold').tagName).toBe('STRONG');
+      expect(code).toHaveTextContent('print(1)');
+      expect(code?.querySelector('[class^="hljs-"]')).toBeNull();
+      expect(pluginImport).toBeDefined();
+    } finally {
+      await act(async () => {
+        release();
+        await pluginImport;
+      });
+    }
+    expect(code?.querySelector('[class^="hljs-"]')).toBeInTheDocument();
   });
 
   it('holds the thinking cursor for the latest message until it has text', () => {
