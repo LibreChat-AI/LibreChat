@@ -2010,7 +2010,12 @@ export function createConversationMethods(
 
   /** Bounded mixed-version cleanup for terminal receipts embedded by older
    * builds. New receipts expire through the delivery collection TTL index,
-   * but dormant legacy conversations need an independent retirement path. */
+   * but dormant legacy conversations need an independent retirement path.
+   * Each call reads one page and the next resumes after it, restarting at the
+   * end. Only a page holding an expired receipt reports `activity`: a page of
+   * live conversations is not work, and counting it would hold the caller's
+   * idle back-off at its base interval for as long as the collection spans
+   * more than one page, which is the whole walk. */
   async function expireLegacyAgentEventActorReceipts(
     now: Date,
     limit = 100,
@@ -2054,9 +2059,6 @@ export function createConversationMethods(
       return 0;
     }
     legacyReceiptExpiryCursor = candidates[candidates.length - 1]._id;
-    // A full page is not an empty sweep: later conversations may contain
-    // expired receipts. Keep scanning at base cadence until the page walk ends.
-    if (activity != null && candidates.length === boundedLimit) activity.found = true;
     const expiredInvocationIds = [
       ...new Set(
         candidates.flatMap((candidate) =>
