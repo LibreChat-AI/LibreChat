@@ -6,7 +6,7 @@ import { ContentTypes } from 'librechat-data-provider';
 import { render, screen, within } from '@testing-library/react';
 import type { ParentSubagentSummary, SubagentDigest, TMessage } from 'librechat-data-provider';
 import type { BackgroundTaskView } from '../../../core/parts/background';
-import BackgroundTaskCard, { endedTaskDurationMs } from '../BackgroundTaskCard';
+import BackgroundTaskCard, { taskOutcome, endedTaskDurationMs } from '../BackgroundTaskCard';
 import { MessageContext, useMessageContext } from '../../../react/message';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
@@ -110,11 +110,11 @@ describe('BackgroundTaskCard subagent header', () => {
     expect(
       within(card).getByText('Asking the reviewer to restate its findings'),
     ).toBeInTheDocument();
-    expect(within(card).getByText('com_ui_subagent_status_finished')).toBeInTheDocument();
+    expect(within(card).getByText('com_ui_background_tasks_result_claimed')).toBeInTheDocument();
+    expect(card).not.toHaveTextContent('com_ui_subagent_status_finished');
     expect(card).not.toHaveTextContent('agent_reviewer');
     expect(card).not.toHaveTextContent('task-1');
     expect(card).not.toHaveTextContent('A long brief');
-    expect(card).not.toHaveTextContent('com_ui_background_tasks_result_claimed');
   });
 
   it('shows the intent of the call that started the polled task on a continued thread', () => {
@@ -186,7 +186,7 @@ describe('BackgroundTaskCard subagent header', () => {
   });
 });
 
-describe('endedTaskDurationMs', () => {
+describe('parent index task records', () => {
   const child = (status: ParentSubagentSummary['status']): ParentSubagentSummary => ({
     threadId: 'thread-1',
     parentMessageId: 'parent-turn',
@@ -204,6 +204,16 @@ describe('endedTaskDurationMs', () => {
       },
     ],
     tasksTruncated: false,
+  });
+
+  it('reads a claimed task as the outcome its index record carries, and claimed without one', () => {
+    expect(taskOutcome('claimed', child('failed'), 'task-1')).toBe('failed');
+    expect(taskOutcome('claimed', child('cancelled'), 'task-1')).toBe('cancelled');
+    expect(taskOutcome('claimed', child('completed'), 'task-1')).toBe('completed');
+    expect(taskOutcome('claimed', child('running'), 'task-1')).toBe('claimed');
+    expect(taskOutcome('claimed', child('completed'), 'task-2')).toBe('claimed');
+    expect(taskOutcome('claimed', undefined, 'task-1')).toBe('claimed');
+    expect(taskOutcome('failed', child('completed'), 'task-1')).toBe('failed');
   });
 
   it('measures an ended task from its dispatch to its end record', () => {

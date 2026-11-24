@@ -43,7 +43,6 @@ const STATUS: Record<BackgroundTaskStatus, { label: TranslationKeys; dot: string
   cancelled: { label: 'com_ui_cancelled', dot: 'bg-status-warning' },
 };
 
-const FINISHED = new Set<BackgroundTaskStatus>(['completed', 'claimed']);
 const FAILED = new Set<BackgroundTaskStatus>(['error', 'failed']);
 const ENDED = new Set<SubagentThreadStatus>(['completed', 'failed', 'interrupted', 'cancelled']);
 
@@ -60,6 +59,18 @@ export function endedTaskDurationMs(
   return Number.isFinite(ms) && ms > 0 ? ms : undefined;
 }
 
+/** `claimed` says only that a poll collected the result, not how the task ended; the parent
+ *  index's record of the same task does. Without it, the neutral claimed label stays. */
+export function taskOutcome(
+  status: BackgroundTaskStatus,
+  child: ParentSubagentSummary | undefined,
+  taskId: string,
+): BackgroundTaskStatus {
+  if (status !== 'claimed') return status;
+  const entry = child?.tasks.find((candidate) => candidate.taskId === taskId);
+  return entry != null && ENDED.has(entry.status) ? entry.status : status;
+}
+
 function SubagentStatus({
   status,
   durationMs,
@@ -72,7 +83,7 @@ function SubagentStatus({
   const duration =
     durationMs == null ? undefined : getRunStepDurationLabels(durationMs, i18n.language);
   const elapsed = duration == null ? undefined : localize(duration.key, duration.values);
-  if (FINISHED.has(status)) {
+  if (status === 'completed') {
     return (
       <span className="text-text-secondary inline-flex shrink-0 items-center gap-1.5 text-xs">
         <Check className="text-status-success size-3.5" aria-hidden="true" />
@@ -191,7 +202,10 @@ function SubagentHeader({
         {delivery}
       </div>
       <div className="ms-auto flex shrink-0 items-center gap-2">
-        <SubagentStatus status={task.status} durationMs={endedTaskDurationMs(child, task.taskId)} />
+        <SubagentStatus
+          status={taskOutcome(task.status, child, task.taskId)}
+          durationMs={endedTaskDurationMs(child, task.taskId)}
+        />
         {action}
       </div>
     </div>

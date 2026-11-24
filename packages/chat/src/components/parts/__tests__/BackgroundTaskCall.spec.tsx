@@ -250,8 +250,8 @@ describe('BackgroundTaskCall', () => {
     );
     fireEvent.click(screen.getByTestId('task-header'));
     const card = screen.getByTestId('background-task-card');
-    expect(within(card).getByText('com_ui_subagent_status_finished')).toBeInTheDocument();
-    expect(within(card).queryByText('com_ui_background_tasks_result_claimed')).toBeNull();
+    expect(within(card).getByText('com_ui_background_tasks_result_claimed')).toBeInTheDocument();
+    expect(within(card).queryByText('com_ui_subagent_status_finished')).toBeNull();
     expect(within(card).queryByText('com_ui_background_tasks_result_available')).toBeNull();
   });
 
