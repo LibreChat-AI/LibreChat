@@ -2,7 +2,14 @@ import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
 import { resolveSubagents } from 'librechat-data-provider';
 import { ensureHandler } from '@langchain/core/callbacks/manager';
-import { Run, Providers, Constants, GraphEvents, HookRegistry } from '@librechat/agents';
+import {
+  Run,
+  Providers,
+  Constants,
+  GraphEvents,
+  HookRegistry,
+  ProviderTextProtectionError,
+} from '@librechat/agents';
 import {
   hasActivePiiPatterns,
   KnownEndpoints,
@@ -116,6 +123,11 @@ import {
   isSteerPreemptSupported,
   isSteerTerminalContinuationSupported,
 } from '~/agents/steering/runtime';
+import {
+  assertAssistantGraph,
+  createAssistantProtection,
+  inspectAssistantHistory,
+} from '~/protection/assistant';
 import {
   ASK_USER_QUESTION_TOOL_NAME,
   createAskUserQuestionTool,
@@ -2363,6 +2375,7 @@ export async function createRun({
   sdkResumeState,
   streaming = true,
   streamUsage = true,
+  interactiveAssistant = false,
   eagerToolExecution = true,
 }: {
   agents: RunAgent[];
@@ -2373,6 +2386,7 @@ export async function createRun({
   conversationId?: string;
   streaming?: boolean;
   streamUsage?: boolean;
+  interactiveAssistant?: boolean;
   /** Host-owned execution policy; observed Chat results require post-acceptance execution. */
   eagerToolExecution?: boolean;
   requestBody?: t.RequestBody;
@@ -2550,6 +2564,27 @@ export async function createRun({
         (callback) => callback.name === 'librechat-model-bound-content-filter',
       ) === true,
   );
+  const output = appConfig?.config?.outputProtection;
+  if (
+    output !== undefined &&
+    (!interactiveAssistant ||
+      output?.version !== 1 ||
+      output.assistantText == null ||
+      registration != null ||
+      summarizeOnly ||
+      initialSummary != null ||
+      eventActorCheckpointing ||
+      !streaming ||
+      grantExecution != null ||
+      agents.some((agent) => agent.reasoningKey != null || agentRequestsAskUserQuestion(agent)))
+  ) {
+    throw new ProviderTextProtectionError('unsupported');
+  }
+  const protection = output == null ? undefined : createAssistantProtection(output.assistantText!);
+  if (protection != null) {
+    hitlCapable = false;
+    if (messages != null) await inspectAssistantHistory(protection, messages, signal);
+  }
   const runFilesActive =
     runFiles?.activate(
       resolvedRunId,
@@ -2876,7 +2911,7 @@ export async function createRun({
       useLegacyContent: agent.useLegacyContent ?? false,
       discoveredTools:
         !isSubagent && discoveredTools.size > 0 ? Array.from(discoveredTools) : undefined,
-      summarizationEnabled: summarization.enabled && summarizationViable,
+      summarizationEnabled: protection == null && summarization.enabled && summarizationViable,
       summarizationConfig: summarization.config,
       ...(!isSubagent && compactionSemanticIndex != null ? { compactionSemanticIndex } : {}),
       initialSummary: isSubagent ? undefined : initialSummary,
@@ -3295,11 +3330,15 @@ export async function createRun({
         }
       : customHandlers;
 
+  if (protection != null) {
+    assertAssistantGraph(agentInputs, graphConfig.type !== 'standard');
+  }
   const runConfig = {
     runId: resolvedRunId,
     graphConfig,
     tokenCounter,
     customHandlers: runHandlers,
+    ...(protection != null && { providerTextProtection: protection }),
     initialSessions,
     calibrationRatio,
     fadingTier,
@@ -3370,15 +3409,23 @@ export async function createRun({
     // feedback can be scored against the trace without a lookup (see the
     // feedback route in api/server/routes/messages.js). No-op unless Langfuse
     // tracing is enabled. Requires @librechat/agents >= 3.2.21.
-    langfuse: buildLangfuseConfig({
-      appConfig,
-      runId: resolvedRunId,
-      tenantId: tenantId ?? user?.tenantId,
-      centralTraceExportEnabled,
-      isTemporary,
-      user,
-      traceContext: resolveRunTraceContext({ agents, conversationId, requestBody, traceContext }),
-    }),
+    langfuse:
+      protection != null
+        ? { enabled: false }
+        : buildLangfuseConfig({
+            appConfig,
+            runId: resolvedRunId,
+            tenantId: tenantId ?? user?.tenantId,
+            centralTraceExportEnabled,
+            isTemporary,
+            user,
+            traceContext: resolveRunTraceContext({
+              agents,
+              conversationId,
+              requestBody,
+              traceContext,
+            }),
+          }),
     ...(enableToolOutputReferences && {
       toolOutputReferences: { enabled: true },
     }),
@@ -3417,6 +3464,9 @@ export async function createRun({
         },
       })
     : await Run.create(runConfig);
+  if (protection != null && run.Graph?.providerTextProtection !== protection) {
+    throw new ProviderTextProtectionError('incompatible');
+  }
   if (approvalWiring != null) bindRunToolApprovalSession(run, agentApprovalSession);
   runMCPToolAliases.set(run, mcpToolAliases);
 

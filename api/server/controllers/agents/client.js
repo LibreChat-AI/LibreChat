@@ -195,6 +195,9 @@ const {
   rejectPrivateTextAdmission,
   createInitialModelBoundAdmissionCallback,
   hasModelBoundContentProtection,
+  requiresAssistantProtection,
+  isInteractiveAssistantRequest,
+  isAssistantProtectionError,
   assertResumeRuntimeContentAllowed,
   collectReachableAgents,
   isStatefulCodeEnvironmentToolName,
@@ -383,10 +386,12 @@ function getUserFacingRequestError(baseMessage, error, appConfig) {
   if (error?.name === 'ManualSummarizationSkippedError') {
     return JSON.stringify({ type: ErrorTypes.COMPACTION_SKIPPED, reason: error.reason });
   }
-  const protectionEnabled = hasModelBoundContentProtection(
-    appConfig?.filters,
-    appConfig?.messageFilter?.pii,
-  );
+  if (isAssistantProtectionError(error)) {
+    return JSON.stringify({ type: ErrorTypes.ASSISTANT_OUTPUT_WITHHELD });
+  }
+  const protectionEnabled =
+    requiresAssistantProtection(appConfig) ||
+    hasModelBoundContentProtection(appConfig?.filters, appConfig?.messageFilter?.pii);
   if (protectionEnabled || !error?.message) {
     return baseMessage;
   }
@@ -3301,6 +3306,9 @@ class AgentClient extends BaseClient {
    * @returns {Promise<{ withKeys?: string; withoutKeys?: string } | undefined>}
    */
   async useMemory() {
+    if (requiresAssistantProtection(this.options.req?.config)) {
+      return;
+    }
     const user = this.options.req.user;
     if (user.personalization?.memories === false) {
       return;
@@ -4560,16 +4568,16 @@ class AgentClient extends BaseClient {
     /** @type {Promise<(TAttachment | null)[] | undefined>} */
     let memoryPromise;
     const appConfig = this.options.req.config;
+    const protectedOutput = requiresAssistantProtection(appConfig);
     const terminalRunError = createTerminalRunErrorObserver({
       maxProviderErrorChars: appConfig?.endpoints?.agents?.maxProviderErrorChars,
       logger,
       responseMessageId: this.responseMessageId,
       source: '[api/server/controllers/agents/client.js #sendCompletion]',
       genericMessage: '[api/server/controllers/agents/client.js #sendCompletion] Unhandled error',
-      protectionEnabled: hasModelBoundContentProtection(
-        appConfig?.filters,
-        appConfig?.messageFilter?.pii,
-      ),
+      protectionEnabled:
+        protectedOutput ||
+        hasModelBoundContentProtection(appConfig?.filters, appConfig?.messageFilter?.pii),
     });
     const balanceConfig = getBalanceConfig(appConfig);
     const transactionsConfig = getTransactionsConfig(appConfig);
@@ -4961,7 +4969,7 @@ class AgentClient extends BaseClient {
         );
         config = withPrivateTextAdmissionConfig(config, initialModelBoundAdmission);
 
-        if (this.processMemory && !isCompactionTurn) {
+        if (!protectedOutput && this.processMemory && !isCompactionTurn) {
           memoryPromise = this.runMemory(memoryMessages);
         }
 
@@ -5023,9 +5031,15 @@ class AgentClient extends BaseClient {
           });
         }
 
-        const activityLabel = this.buildActivityLabelWiring(streamId, abortController.signal);
-        const activityPhase = this.buildActivityPhaseWiring(streamId, abortController.signal);
-        const reasoningLabel = this.buildReasoningLabelWiring(streamId, abortController.signal);
+        const activityLabel = protectedOutput
+          ? undefined
+          : this.buildActivityLabelWiring(streamId, abortController.signal);
+        const activityPhase = protectedOutput
+          ? undefined
+          : this.buildActivityPhaseWiring(streamId, abortController.signal);
+        const reasoningLabel = protectedOutput
+          ? undefined
+          : this.buildReasoningLabelWiring(streamId, abortController.signal);
         const offsetHandlers = createSteerIndexOffsetHandlers(
           this.options.eventHandlers,
           this.steerOffsetState,
@@ -5111,6 +5125,7 @@ class AgentClient extends BaseClient {
           tenantId: resolveRequestTenantId(this.options.req ?? {}),
           summarizationConfig: appConfig?.summarization,
           summarizeOnly: this.isCompactionTurn(),
+          interactiveAssistant: isInteractiveAssistantRequest(this.options.req),
           appConfig,
           tokenCounter,
           /** Bills subagent child-run model calls — foreground usage joins

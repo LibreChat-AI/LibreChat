@@ -1,6 +1,7 @@
 import { redactMessage } from '@librechat/data-schemas';
 import { ErrorTypes, ViolationTypes } from 'librechat-data-provider';
 import type { FiltersConfig, MessageFilterPiiConfig } from 'librechat-data-provider';
+import type { AssistantConfig } from '../../protection/assistant';
 import type { SafeErrorMetadata } from '../../utils/errors';
 import type { ModelErrorTrackerCallback } from './tracker';
 import type { LangChainErrorOptions } from '../errors';
@@ -10,6 +11,10 @@ import {
   resolveModelStreamError,
   getProviderErrorMessage,
 } from '../errors';
+import {
+  requiresAssistantProtection,
+  isAssistantProtectionError,
+} from '../../protection/assistant';
 import { getSafeErrorText, getSafeErrorMetadata, isOwnedAbortError } from '../../utils/errors';
 import { hasModelBoundContentProtection } from '../../middleware/modelBoundContent';
 import { getContentFilterError } from '../../middleware/contentFilter';
@@ -210,7 +215,7 @@ function getSafeTypedErrorText(
 }
 
 /** The deployment config that decides whether a failure may show its own text. */
-export interface GenerationErrorConfig {
+export interface GenerationErrorConfig extends AssistantConfig {
   readonly filters?: FiltersConfig | null;
   readonly messageFilter?: { readonly pii?: MessageFilterPiiConfig | null } | null;
   readonly endpoints?: {
@@ -229,10 +234,9 @@ export function resolveClassifiedProviderError(
   formatProviderMessage?: (message: string) => string,
 ): string | undefined {
   return safelyResolveLangChainError(error, {
-    includeProviderMessage: !hasModelBoundContentProtection(
-      appConfig?.filters,
-      appConfig?.messageFilter?.pii,
-    ),
+    includeProviderMessage:
+      !requiresAssistantProtection(appConfig) &&
+      !hasModelBoundContentProtection(appConfig?.filters, appConfig?.messageFilter?.pii),
     maxProviderErrorChars: appConfig?.endpoints?.agents?.maxProviderErrorChars,
     formatProviderMessage,
   });
@@ -253,15 +257,17 @@ export function getUserFacingGenerationError(
   appConfig: GenerationErrorConfig | null | undefined,
   fallback: string,
 ): string {
+  if (isAssistantProtectionError(error)) {
+    return JSON.stringify({ type: ErrorTypes.ASSISTANT_OUTPUT_WITHHELD });
+  }
   const policyError = getContentFilterError(error);
   if (policyError != null) {
     return policyError.message;
   }
   const message = error instanceof Error ? error.message : undefined;
-  const protectionEnabled = hasModelBoundContentProtection(
-    appConfig?.filters,
-    appConfig?.messageFilter?.pii,
-  );
+  const protectionEnabled =
+    requiresAssistantProtection(appConfig) ||
+    hasModelBoundContentProtection(appConfig?.filters, appConfig?.messageFilter?.pii);
   const typed = message != null ? parseTypedErrorMessage(message) : undefined;
   if (message != null && typed != null) {
     return getSafeTypedErrorText(message, typed, protectionEnabled);

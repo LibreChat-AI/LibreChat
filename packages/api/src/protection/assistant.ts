@@ -1,0 +1,214 @@
+import {
+  Providers,
+  ProviderTextProtectionError,
+  PROVIDER_TEXT_PROTECTION_VERSION,
+} from '@librechat/agents';
+import {
+  DEFAULT_PII_REDACTION_MAX_CHARACTERS,
+  assistantTextProtectionSchema,
+} from 'librechat-data-provider';
+import type {
+  AgentInputs,
+  FallbackConfig,
+  OpenAIClientOptions,
+  ProviderTextProtection,
+} from '@librechat/agents';
+import type { AIMessage, BaseMessage } from '@librechat/agents/langchain/messages';
+import type { TCustomConfig } from 'librechat-data-provider';
+import type { RequestHandler } from 'express';
+import { createPatternContentInspector } from './detectors/pattern';
+
+export type AssistantConfig = {
+  readonly config?: Pick<TCustomConfig, 'outputProtection'>;
+};
+
+type Policy = NonNullable<NonNullable<TCustomConfig['outputProtection']>['assistantText']>;
+const compiled = new WeakMap<object, ProviderTextProtection>();
+const admitted = new WeakSet<object>();
+const historyKeys = new Set(['provenance', 'sourceMessageId', 'sourceMessageIds']);
+const supportedModel = /^gpt-4(?:o(?:-mini)?|\.1(?:-mini|-nano)?)(?:-\d{4}-\d{2}-\d{2})?$/;
+const sqlVerb = /^(?:SELECT|WITH|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP)\b/i;
+const sqlClause = /\b(?:FROM|AS|INTO|SET|TABLE)\b/i;
+
+export function requiresAssistantProtection(appConfig?: AssistantConfig | null): boolean {
+  return appConfig?.config?.outputProtection !== undefined;
+}
+
+export function isInteractiveAssistantRequest(req: object): boolean {
+  return admitted.has(req);
+}
+
+export const admitAssistantRequest: RequestHandler = (req, res, next) => {
+  const request = req as typeof req & {
+    config?: AssistantConfig;
+    _isAgentTrigger?: boolean;
+    _isScheduledFire?: boolean;
+  };
+  if (!requiresAssistantProtection(request.config)) {
+    return next();
+  }
+  const body = req.body;
+  if (
+    req.method !== 'POST' ||
+    /^\/resume\/?$/i.test(req.path) ||
+    request._isAgentTrigger ||
+    request._isScheduledFire ||
+    typeof body?.text !== 'string' ||
+    body.compact ||
+    body.isRegenerate ||
+    body.isContinued ||
+    body.editedContent != null ||
+    body.files?.length ||
+    body.quotes?.length ||
+    body.responseMessageId != null
+  ) {
+    res.status(400).json({
+      error: 'content_filter_block',
+      message: 'Start a regular text-only Agent turn to use assistant reply protection.',
+    });
+    return;
+  }
+  admitted.add(req);
+  next();
+};
+
+export function isAssistantProtectionError(error: unknown): boolean {
+  return error instanceof ProviderTextProtectionError;
+}
+
+function classify(content: string): 'prose' | 'unsupported' {
+  const text = content.trimStart();
+  return text.startsWith('{') ||
+    text.startsWith('[') ||
+    text.includes('`') ||
+    (sqlVerb.test(text) && sqlClause.test(text))
+    ? 'unsupported'
+    : 'prose';
+}
+
+export function createAssistantProtection(config: Policy): ProviderTextProtection {
+  if (PROVIDER_TEXT_PROTECTION_VERSION !== 1) {
+    throw new ProviderTextProtectionError('incompatible');
+  }
+  const previous = compiled.get(config);
+  if (previous != null) {
+    return previous;
+  }
+  const parsed = assistantTextProtectionSchema.safeParse(config);
+  if (!parsed.success) {
+    throw new ProviderTextProtectionError('incompatible');
+  }
+  const { timeoutMs, maxCharacters = DEFAULT_PII_REDACTION_MAX_CHARACTERS } = parsed.data;
+  let detector: ReturnType<typeof createPatternContentInspector>;
+  try {
+    detector = createPatternContentInspector(parsed.data, { linearTime: true });
+  } catch {
+    throw new ProviderTextProtectionError('unavailable');
+  }
+  const maxAttemptBytes = maxCharacters * 16 + 65_536;
+  const protection: ProviderTextProtection = {
+    version: 1,
+    timeoutMs,
+    maxAttemptBytes,
+    // A shared allowance for concurrent attempts using this deployment policy snapshot.
+    maxBufferedBytes: Math.max(8_388_608, maxAttemptBytes),
+    classify,
+    inspect({ content, target, signal }) {
+      if (signal.aborted) return { version: 1, ok: false, error: { code: 'cancelled' } };
+      if (content.length > maxCharacters) {
+        return { version: 1, ok: false, error: { code: 'overflow' } };
+      }
+      const finding = detector.inspectFragment({
+        ...target,
+        id: 'assistant.text',
+        path: '/text',
+        format: 'plain',
+        treatment: 'inspect_only',
+        text: content,
+      });
+      if (finding != null) return { version: 1, ok: false, error: { code: 'blocked' } };
+      return { version: 1, ok: true, value: { content, replacements: 0, categories: [] } };
+    },
+  };
+  compiled.set(config, protection);
+  return protection;
+}
+
+/** The pilot never opens another output producer alongside the protected model. */
+export function assertAssistantGraph(agents: readonly AgentInputs[], multiAgent: boolean): void {
+  const agent = agents[0];
+  const options = agent?.clientOptions as
+    | (OpenAIClientOptions & { fallbacks?: FallbackConfig[] })
+    | undefined;
+  if (
+    agents.length !== 1 ||
+    multiAgent ||
+    agent.provider !== Providers.OPENAI ||
+    !supportedModel.test(options?.model ?? '') ||
+    options?.useResponsesApi ||
+    options?.fallbacks?.length ||
+    agent.tools?.length ||
+    agent.graphTools?.length ||
+    agent.toolDefinitions?.length ||
+    agent.toolRegistry?.size ||
+    agent.subagentConfigs?.length
+  ) {
+    throw new ProviderTextProtectionError('unsupported');
+  }
+}
+
+function readText(message: BaseMessage): readonly string[] {
+  if (typeof message.content === 'string') return [message.content];
+  return message.content.map((part) => {
+    if (
+      typeof part === 'string' ||
+      part.type !== 'text' ||
+      typeof part.text !== 'string' ||
+      Object.keys(part).some((key) => key !== 'type' && key !== 'text')
+    ) {
+      throw new ProviderTextProtectionError('unsupported');
+    }
+    return part.text;
+  });
+}
+
+/** Old assistant text is not trusted merely because the host loaded it. */
+export async function inspectAssistantHistory(
+  protection: ProviderTextProtection,
+  messages: readonly BaseMessage[],
+  signal: AbortSignal,
+): Promise<void> {
+  let remaining = protection.maxAttemptBytes;
+  const deadline = performance.now() + protection.timeoutMs;
+  for (const message of messages) {
+    const type = message._getType();
+    if (type !== 'ai' && type !== 'human') throw new ProviderTextProtectionError('unsupported');
+    const parts = readText(message);
+    if (type !== 'ai') continue;
+    const assistant = message as AIMessage;
+    if (
+      assistant.tool_calls?.length ||
+      assistant.invalid_tool_calls?.length ||
+      Object.keys(assistant.additional_kwargs).some((key) => !historyKeys.has(key))
+    ) {
+      throw new ProviderTextProtectionError('unsupported');
+    }
+    for (const part of parts) remaining -= part.length * 4;
+    if (remaining < 0) throw new ProviderTextProtectionError('overflow');
+    const content = parts.length === 1 ? parts[0] : parts.join('');
+    if (content === '') continue;
+    if (signal.aborted) throw new ProviderTextProtectionError('cancelled');
+    if (performance.now() >= deadline) throw new ProviderTextProtectionError('timeout');
+    if (protection.classify(content) !== 'prose')
+      throw new ProviderTextProtectionError('unsupported');
+    const result = await protection.inspect({
+      version: 1,
+      content,
+      target: { source: 'message', field: 'text', provenance: 'model' },
+      signal,
+    });
+    if (!result.ok) throw new ProviderTextProtectionError(result.error.code);
+    if (result.value.content !== content) throw new ProviderTextProtectionError('blocked');
+    if (performance.now() >= deadline) throw new ProviderTextProtectionError('timeout');
+  }
+}
