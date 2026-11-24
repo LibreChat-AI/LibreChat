@@ -25,6 +25,7 @@ const {
   buildAgentContextAttachmentsByAgentId,
   createSafeUser,
   initializeAgent,
+  validateAgentModel,
   loadSkillStates,
   loadSkillAccess,
   getBalanceConfig,
@@ -574,6 +575,24 @@ const executeResponse = async (envelope, { req, res }) => {
         );
       }
 
+      const getEndpointModels = (endpoint) => getEndpointModelsConfig(req, endpoint);
+      const modelPolicy = await validateAgentModel({
+        req,
+        res,
+        agent,
+        getEndpointModels,
+        logViolation,
+      });
+      if (!modelPolicy.isValid) {
+        return sendResponsesErrorResponse(
+          res,
+          403,
+          'The configured agent model is unavailable for this request.',
+          'forbidden',
+          'model_not_allowed',
+        );
+      }
+
       req.turnStartedAt = envelope.receivedAt;
       const { decision: codeEnvironmentDecision, conversation: admittedConversation } =
         await resolveAdmittedCodeEnvironmentDecision({
@@ -818,7 +837,7 @@ const executeResponse = async (envelope, { req, res }) => {
           primaryConfig,
           endpointOption,
           allowedProviders,
-          getEndpointModels: (endpoint) => getEndpointModelsConfig(req, endpoint),
+          getEndpointModels,
           loadTools,
           requestFiles: [],
           conversationId,

@@ -274,6 +274,7 @@ jest.mock('@librechat/api', () => ({
   validateRequest: jest
     .fn()
     .mockReturnValue({ request: { model: 'agent-123', messages: [], stream: false } }),
+  validateAgentModel: jest.fn().mockResolvedValue({ isValid: true }),
   initializeAgent: jest.fn().mockResolvedValue({
     id: 'agent-123',
     model: 'gpt-4',
@@ -537,6 +538,37 @@ describe('OpenAIChatCompletionController', () => {
       off: jest.fn(),
     };
   });
+
+  it.each([true, false])(
+    'enforces the primary agent model policy before execution (stream=%s)',
+    async (stream) => {
+      const api = require('@librechat/api');
+      const db = require('~/models');
+      const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
+      api.validateAgentModel.mockImplementationOnce(
+        jest.requireActual('@librechat/api').validateAgentModel,
+      );
+      db.getAgent.mockResolvedValueOnce({
+        id: 'agent-123',
+        provider: 'openAI',
+        model: 'unavailable-model',
+      });
+      getEndpointModelsConfig.mockResolvedValueOnce({ openAI: ['available-model'] });
+      req.body.stream = stream;
+
+      await OpenAIChatCompletionController(req, res);
+
+      expect(getEndpointModelsConfig).toHaveBeenCalledWith(req, 'openAI');
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(api.createErrorResponse).toHaveBeenCalledWith(
+        'The configured agent model is unavailable for this request.',
+        'permission_error',
+        'model_not_allowed',
+      );
+      expect(api.initializeAgent).not.toHaveBeenCalled();
+      expect(res.flushHeaders).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     [false, false],

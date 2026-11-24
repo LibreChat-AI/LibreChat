@@ -339,6 +339,7 @@ jest.mock('@librechat/api', () => ({
     .mockImplementation(({ accessibleSkillIds }) => accessibleSkillIds),
   loadSkillStates: jest.fn().mockResolvedValue({ skillStates: {}, defaultActiveOnShare: false }),
   createSafeUser: jest.fn().mockReturnValue({ id: 'user-123' }),
+  validateAgentModel: jest.fn().mockResolvedValue({ isValid: true }),
   initializeAgent: jest.fn().mockResolvedValue({
     id: 'agent-123',
     model: 'claude-3',
@@ -700,6 +701,38 @@ describe('createResponse controller', () => {
       off: jest.fn(),
     };
   });
+
+  it.each([true, false])(
+    'enforces the primary agent model policy before execution (stream=%s)',
+    async (stream) => {
+      const api = require('@librechat/api');
+      const db = require('~/models');
+      const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
+      api.validateAgentModel.mockImplementationOnce(
+        jest.requireActual('@librechat/api').validateAgentModel,
+      );
+      db.getAgent.mockResolvedValueOnce({
+        id: 'agent-123',
+        provider: 'openAI',
+        model: 'unavailable-model',
+      });
+      getEndpointModelsConfig.mockResolvedValueOnce({ openAI: ['available-model'] });
+      req.body.stream = stream;
+
+      await createResponse(req, res);
+
+      expect(getEndpointModelsConfig).toHaveBeenCalledWith(req, 'openAI');
+      expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
+        res,
+        403,
+        'The configured agent model is unavailable for this request.',
+        'forbidden',
+        'model_not_allowed',
+      );
+      expect(api.initializeAgent).not.toHaveBeenCalled();
+      expect(res.flushHeaders).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(['false', 'true', null, 0, 1, {}, []].map((store) => [store]))(
     'rejects malformed storage intent before creating an execution envelope: %p',
