@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import type { TMessage, TStartupConfig } from 'librechat-data-provider';
 import { deleteConversations, withMongo } from './db';
 import {
@@ -11,6 +12,16 @@ import {
 } from './helpers';
 
 test('continues a saved chat whose hidden spec moved off a retired endpoint', async ({ page }) => {
+  await continueSavedSpec(page, false);
+});
+
+test('retries a failed saved target and continues the same chat from the sidebar', async ({
+  page,
+}) => {
+  await continueSavedSpec(page, true);
+});
+
+async function continueSavedSpec(page: Page, retry: boolean) {
   const provider = MOCK_ENDPOINTS[0];
   const spec = 'e2e-handoff-specialist';
   await page.goto(NEW_CHAT_PATH);
@@ -33,10 +44,40 @@ test('continues a saved chat whose hidden spec moved off a retired endpoint', as
       expect(result.matchedCount).toBe(1);
     });
 
-    await page.goto(`/c/${conversationId}`);
+    if (retry) {
+      await page.route(`**/api/convos/${conversationId}`, async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        await route.fulfill({
+          response,
+          json: {
+            ...body,
+            endpoint: 'Retired Provider',
+            model: 'retired-model',
+            targetResolutionFailed: true,
+          },
+        });
+      });
+    }
+    if (retry) {
+      await page.goto(NEW_CHAT_PATH);
+      await page
+        .locator(`[data-conversation-id="${conversationId}"] [data-conversation-link]`)
+        .click();
+    } else {
+      await page.goto(`/c/${conversationId}`);
+    }
     await expect(page.getByText('Original turn before retirement')).toBeVisible();
     const config = await fetchJson<TStartupConfig>(page, '/api/config', token);
     expect(config.modelSpecs?.list?.some((entry) => entry.name === spec)).toBe(false);
+    if (retry) {
+      const action = page.getByRole('button', { name: 'Retry', exact: true });
+      await expect(action).toBeVisible();
+      await page.unroute(`**/api/convos/${conversationId}`);
+      await action.click();
+      await expect(action).toBeHidden();
+      await expect(page.getByText('Original turn before retirement')).toBeVisible();
+    }
 
     const followUp = await sendMessageAndWaitForCompletion(page, 'Continue the original chat');
     expect(followUp.request().postDataJSON()).toMatchObject({
@@ -55,4 +96,4 @@ test('continues a saved chat whose hidden spec moved off a retired endpoint', as
   } finally {
     await deleteConversations([conversationId]);
   }
-});
+}

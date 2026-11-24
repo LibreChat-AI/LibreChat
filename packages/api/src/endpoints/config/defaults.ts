@@ -13,6 +13,22 @@ import {
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { mergeHeaders } from '~/utils/headers';
 import { configuredModelList } from './models';
+import { extractBaseURL } from '~/utils/url';
+
+type ActiveKey = { userId: string; name: string; activeOnly: true };
+
+export interface CatalogCredentials {
+  getUserKey?: (input: ActiveKey) => Promise<string>;
+  getUserKeyValues?: (input: ActiveKey) => Promise<Record<string, string>>;
+}
+
+type DefaultCatalogOptions = CatalogDiscoveryOptions & { credentials?: CatalogCredentials };
+
+function canUseStoredKey(proxy?: string): boolean {
+  if (!proxy) return true;
+  const base = extractBaseURL(proxy);
+  return !!base && URL.canParse(base) && ['http:', 'https:'].includes(new URL(base).protocol);
+}
 
 export interface DefaultModelLoaders {
   getOpenAIModels: typeof getOpenAIModels;
@@ -26,7 +42,7 @@ export async function loadDefaultEndpointModels(
   req: ServerRequest,
   appConfig: AppConfig,
   endpoint: string,
-  options?: CatalogDiscoveryOptions,
+  options?: DefaultCatalogOptions,
   loaders: DefaultModelLoaders = {
     getOpenAIModels,
     getAnthropicModels,
@@ -34,6 +50,13 @@ export async function loadDefaultEndpointModels(
     getBedrockModels,
   },
 ): Promise<TModelsConfig> {
+  const strict = options?.strictDiscovery ? { strictDiscovery: true } : {};
+  const userId = req.user?.id;
+  const { getUserKey, getUserKeyValues } = options?.credentials ?? {};
+  const userKey =
+    options?.strictDiscovery && userId
+      ? { userId, name: endpoint, activeOnly: true as const }
+      : undefined;
   const allHeaders = appConfig.endpoints?.all?.headers;
   const sources: Record<string, () => string[] | Promise<string[]>> = {
     [EModelEndpoint.openAI]: () =>
@@ -42,7 +65,10 @@ export async function loadDefaultEndpointModels(
         userObject: req.user,
         headers: mergeHeaders(allHeaders, appConfig.endpoints?.openAI?.headers),
         configuredModels: configuredModelList(appConfig, EModelEndpoint.openAI),
-        ...options,
+        ...strict,
+        ...(userKey && getUserKeyValues && canUseStoredKey(process.env.OPENAI_REVERSE_PROXY)
+          ? { getUserApiKey: async () => (await getUserKeyValues(userKey)).apiKey }
+          : {}),
       }),
     [EModelEndpoint.anthropic]: () =>
       loaders.getAnthropicModels({
@@ -51,12 +77,15 @@ export async function loadDefaultEndpointModels(
         headers: mergeHeaders(allHeaders, appConfig.endpoints?.anthropic?.headers),
         vertexModels: appConfig.endpoints?.anthropic?.vertexConfig?.modelNames,
         configuredModels: configuredModelList(appConfig, EModelEndpoint.anthropic),
-        ...options,
+        ...strict,
+        ...(userKey && getUserKey && canUseStoredKey(process.env.ANTHROPIC_REVERSE_PROXY)
+          ? { getUserApiKey: () => getUserKey(userKey) }
+          : {}),
       }),
     [EModelEndpoint.azureOpenAI]: () =>
-      loaders.getOpenAIModels({ user: req.user?.id, azure: true, ...options }),
-    [EModelEndpoint.assistants]: () => loaders.getOpenAIModels({ assistants: true, ...options }),
-    [EModelEndpoint.azureAssistants]: () => loaders.getOpenAIModels({ azure: true, ...options }),
+      loaders.getOpenAIModels({ user: req.user?.id, azure: true, ...strict }),
+    [EModelEndpoint.assistants]: () => loaders.getOpenAIModels({ assistants: true, ...strict }),
+    [EModelEndpoint.azureAssistants]: () => loaders.getOpenAIModels({ azure: true, ...strict }),
     [EModelEndpoint.google]: () => loaders.getGoogleModels(),
     [EModelEndpoint.bedrock]: () => loaders.getBedrockModels(),
   };

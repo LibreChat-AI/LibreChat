@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useCallback, useRef } from 'react';
+import { getDefaultStore } from 'jotai';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useGetEndpointModelsQuery, useUserKeyQuery } from 'librechat-data-provider/react-query';
 import {
@@ -7,11 +8,12 @@ import {
   defaultOrderQuery,
   PermissionBits,
   isAgentsEndpoint,
+  Constants,
   isEphemeralAgentId,
   isAssistantsEndpoint,
   defaultAssistantsVersion,
 } from 'librechat-data-provider';
-import type { TConversation, AssistantsEndpoint } from 'librechat-data-provider';
+import type { TConversation, TEndpointsConfig, AssistantsEndpoint } from 'librechat-data-provider';
 import type { Dispatch, SetStateAction } from 'react';
 import {
   useGetStartupConfig,
@@ -20,6 +22,8 @@ import {
   useListAgentsQuery,
   useListAssistantsQuery,
 } from '~/data-provider';
+import { updateConvoInAllQueries, conversationTarget } from '~/utils/convos';
+import { navigationGenerationAtom } from '~/store/navigation';
 import { assistantKey } from './ask/guards';
 
 const viewAgents = { requiredPermission: PermissionBits.VIEW };
@@ -103,6 +107,10 @@ export default function useTarget(
     enabled: needsModel && !needsAgent && !!endpoints.data?.[endpoint],
   });
   const identity = targetIdentity(conversation);
+  const currentIdentity = useRef(identity);
+  currentIdentity.current = identity;
+  const recovery = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => recovery.current?.abort(), [identity]);
   const defaultAgent = needsAgent ? agents.data?.data[0]?.id : undefined;
   const assistantDetailsReady =
     assistantEnabled &&
@@ -160,6 +168,45 @@ export default function useTarget(
   const ready = !!config && !!endpoints.data?.[endpoint] && targetReady;
   const retryRef = useRef(() => {});
   retryRef.current = () => {
+    const id = conversation?.conversationId;
+    if (missingEndpoint && id && id !== Constants.NEW_CONVO && conversation.spec) {
+      recovery.current?.abort();
+      const attempt = new AbortController();
+      recovery.current = attempt;
+      const route = window.location.pathname + window.location.search;
+      const store = getDefaultStore();
+      const navigation = store.get(navigationGenerationAtom);
+      const key = [QueryKeys.conversation, id];
+      const cached = queryClient.getQueryData<TConversation>(key);
+      void dataService
+        .getConversationById(id, attempt.signal)
+        .then((record) => {
+          const served = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
+          if (
+            attempt.signal.aborted ||
+            currentIdentity.current !== identity ||
+            store.get(navigationGenerationAtom) !== navigation ||
+            window.location.pathname + window.location.search !== route ||
+            queryClient.getQueryData<TConversation>(key) !== cached ||
+            record.targetResolutionFailed ||
+            record.conversationId !== id ||
+            record.spec !== conversation.spec ||
+            !record.endpoint ||
+            !served?.[record.endpoint] ||
+            !record.model
+          )
+            return;
+          const target = conversationTarget(record);
+          setConversation((current) =>
+            current && targetIdentity(current) === identity ? { ...current, ...target } : current,
+          );
+          if (cached) queryClient.setQueryData(key, { ...cached, ...target });
+          updateConvoInAllQueries(queryClient, id, (row) =>
+            targetIdentity(row) === identity ? { ...row, ...target } : row,
+          );
+        })
+        .catch(() => {});
+    }
     if (startup.isError) void startup.refetch();
     if (endpoints.isError || missingEndpoint) void endpoints.refetch();
     if (isSavedAgent) void agent.refetch();

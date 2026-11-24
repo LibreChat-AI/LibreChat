@@ -22,6 +22,7 @@ import {
   getDefaultEndpoint,
   buildDefaultConvo,
   requestChatFocus,
+  conversationTarget,
   isNotFoundError,
   updateConvoInAllQueries,
   logger,
@@ -101,17 +102,6 @@ const bumpNavigationGeneration = () => {
 export const supersedeNavigation = () => {
   bumpNavigationGeneration();
 };
-
-function conversationTarget({
-  endpoint,
-  endpointType,
-  model,
-  spec,
-  agent_id,
-  assistant_id,
-}: TConversation) {
-  return { endpoint, endpointType, model, spec, agent_id, assistant_id };
-}
 
 const useNavigateToConvo = (index = 0) => {
   const navigate = useNavigate();

@@ -413,6 +413,8 @@ export interface GetOpenAIModelsOptions extends CatalogDiscoveryOptions {
   assistants?: boolean;
   /** OpenAI API key (if not using environment variable) */
   openAIApiKey?: string;
+  getUserApiKey?: () => Promise<string | undefined>;
+  createTokenConfig?: boolean;
   /** Skip MODEL_QUERIES cache (e.g., for user-provided keys) */
   skipCache?: boolean;
   /** Configured custom headers forwarded to the (gateway-fronted) provider */
@@ -464,6 +466,7 @@ export async function fetchOpenAIModels(
       user: opts.user,
       name: EModelEndpoint.openAI,
       skipCache: opts.skipCache,
+      ...(opts.createTokenConfig === false ? { createTokenConfig: false } : {}),
       headers: opts.headers,
       userObject: opts.userObject,
       ...(opts.strictDiscovery ? { strictDiscovery: true } : {}),
@@ -517,10 +520,12 @@ export async function getOpenAIModels(opts: GetOpenAIModelsOptions = {}): Promis
   }
 
   if (isUserProvided(resolveOpenAIApiKey(opts))) {
-    if (opts.strictDiscovery) {
+    if (!opts.strictDiscovery) return models;
+    const openAIApiKey = await opts.getUserApiKey?.();
+    if (!openAIApiKey || isUserProvided(openAIApiKey)) {
       throw new Error('OpenAI model catalog unavailable');
     }
-    return models;
+    opts = { ...opts, openAIApiKey, skipCache: true, createTokenConfig: false };
   }
 
   return await fetchOpenAIModels(opts, models);
@@ -536,13 +541,14 @@ export async function fetchAnthropicModels(
   opts: {
     user?: string;
     skipCache?: boolean;
+    apiKey?: string;
     headers?: Record<string, string> | null;
     userObject?: Partial<IUser>;
   } & CatalogDiscoveryOptions = {},
   _models: string[] = [],
 ): Promise<string[]> {
   let models = _models.slice() ?? [];
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
   const anthropicBaseURL = 'https://api.anthropic.com/v1';
   let baseURL = anthropicBaseURL;
   const reverseProxyUrl = process.env.ANTHROPIC_REVERSE_PROXY;
@@ -566,6 +572,7 @@ export async function fetchAnthropicModels(
       name: EModelEndpoint.anthropic,
       tokenKey: EModelEndpoint.anthropic,
       skipCache: opts.skipCache,
+      ...(opts.apiKey ? { createTokenConfig: false } : {}),
       headers: opts.headers,
       userObject: opts.userObject,
       ...(opts.strictDiscovery ? { strictDiscovery: true } : {}),
@@ -588,6 +595,7 @@ export async function getAnthropicModels(
   opts: {
     user?: string;
     vertexModels?: string[];
+    getUserApiKey?: () => Promise<string | undefined>;
     headers?: Record<string, string> | null;
     userObject?: Partial<IUser>;
     /** A model list configured for the endpoint; when set, it is returned without discovery. */
@@ -608,15 +616,17 @@ export async function getAnthropicModels(
     return splitAndTrim(process.env.ANTHROPIC_MODELS);
   }
 
+  let apiKey: string | undefined;
   if (isUserProvided(process.env.ANTHROPIC_API_KEY)) {
-    if (opts.strictDiscovery) {
+    if (!opts.strictDiscovery) return models;
+    apiKey = await opts.getUserApiKey?.();
+    if (!apiKey || isUserProvided(apiKey)) {
       throw new Error('Anthropic model catalog unavailable');
     }
-    return models;
   }
 
   try {
-    return await fetchAnthropicModels(opts, models);
+    return await fetchAnthropicModels(apiKey ? { ...opts, apiKey, skipCache: true } : opts, models);
   } catch (error) {
     if (opts.strictDiscovery) {
       throw error;

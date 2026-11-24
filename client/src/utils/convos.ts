@@ -17,6 +17,17 @@ import type { ConvoTitleState } from '@librechat/chat';
 import { isTemporaryConversation } from './conversation';
 import { getSessionPrincipal } from './session';
 
+export function conversationTarget({
+  endpoint,
+  endpointType,
+  model,
+  spec,
+  agent_id,
+  assistant_id,
+}: TConversation) {
+  return { endpoint, endpointType, model, spec, agent_id, assistant_id };
+}
+
 /**
  * A conversation is unseen when a reply landed after the user last caught up with it.
  *

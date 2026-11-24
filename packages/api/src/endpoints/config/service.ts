@@ -10,6 +10,7 @@ import type { Response } from 'express';
 import type { CatalogDiscoveryOptions } from '~/endpoints/models';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { EndpointsConfigDeps } from './endpoints';
+import type { CatalogCredentials } from './defaults';
 import type { ServerRequest } from '~/types';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { createEndpointsConfigService } from './endpoints';
@@ -34,6 +35,7 @@ export interface ModelsServiceDeps {
   defaultEndpointsConfig: EndpointConfig;
   loadAsyncEndpoints: (config: AppConfig) => Promise<EndpointConfig>;
   loadDefaultEndpointModels?: typeof loadDefaultEndpointModels;
+  credentials?: CatalogCredentials;
 }
 
 function hasEntry(catalog: TModelsConfig, key: string): boolean {
@@ -83,16 +85,21 @@ export function createModelsService(deps: ModelsServiceDeps): {
     endpoint: string,
     options?: CatalogDiscoveryOptions,
   ): Promise<TModelsConfig> {
-    const configured = await deps.loadConfigModels(req, endpoint, options);
+    const configured = options?.strictDiscovery
+      ? await deps.loadConfigModels(req, endpoint, options)
+      : await deps.loadConfigModels(req, endpoint);
     if (Object.prototype.hasOwnProperty.call(configured, endpoint)) {
       return { [endpoint]: configured[endpoint] };
     }
-    return (deps.loadDefaultEndpointModels ?? loadDefaultEndpointModels)(
-      req,
-      config,
-      endpoint,
-      options,
-    );
+    const loadDefault = deps.loadDefaultEndpointModels ?? loadDefaultEndpointModels;
+    return options?.strictDiscovery
+      ? loadDefault(
+          req,
+          config,
+          endpoint,
+          deps.credentials ? { ...options, credentials: deps.credentials } : options,
+        )
+      : loadDefault(req, config, endpoint);
   }
 
   /** One load per request and endpoint name, shared while in flight and kept once settled. */
