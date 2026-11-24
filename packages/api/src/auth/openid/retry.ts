@@ -69,9 +69,7 @@ function shouldFailOnStartupError(raw: string | undefined): boolean {
   if (['false', '0', 'no', 'off'].includes(normalized)) {
     return false;
   }
-  logger.warn(
-    `[OpenID] Ignoring invalid OPENID_FAIL_ON_STARTUP_ERROR "${raw}"; using false.`,
-  );
+  logger.warn(`[OpenID] Ignoring invalid OPENID_FAIL_ON_STARTUP_ERROR "${raw}"; using false.`);
   return false;
 }
 
