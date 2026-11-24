@@ -390,7 +390,7 @@ export interface ValidateAgentModelParams {
    * so a request never loads the model lists of endpoints none of its agents use.
    */
   getEndpointModels: (endpoint: string) => Promise<TModelsConfig>;
-  logViolation: (
+  logViolation?: (
     req: LooseRequest,
     res: Response,
     type: string,
@@ -418,6 +418,24 @@ export async function validateAgentModel(
   params: ValidateAgentModelParams,
 ): Promise<ValidateAgentModelResult> {
   const { req, res, agent, getEndpointModels, logViolation } = params;
+  return checkAgentModel(agent, getEndpointModels, async () => {
+    const { ILLEGAL_MODEL_REQ_SCORE: score = 1 } = process.env ?? {};
+    const type = ViolationTypes.ILLEGAL_MODEL_REQUEST;
+    await logViolation?.(
+      req,
+      res,
+      type,
+      { type, model: agent.model, endpoint: agent.provider },
+      score,
+    );
+  });
+}
+
+async function checkAgentModel(
+  agent: Agent,
+  getEndpointModels: ValidateAgentModelParams['getEndpointModels'],
+  onMismatch?: () => Promise<void>,
+): Promise<ValidateAgentModelResult> {
   const { model, provider: endpoint } = agent;
 
   if (!model) {
@@ -455,15 +473,7 @@ export async function validateAgentModel(
     return { isValid: true };
   }
 
-  const { ILLEGAL_MODEL_REQ_SCORE: score = 1 } = process.env ?? {};
-  const type = ViolationTypes.ILLEGAL_MODEL_REQUEST;
-  const errorMessage = {
-    type,
-    model,
-    endpoint,
-  };
-
-  await logViolation(req, res, type, errorMessage, score);
+  await onMismatch?.();
 
   return {
     isValid: false,
@@ -474,8 +484,11 @@ export async function validateAgentModel(
 }
 
 /** Enforces the primary remote agent's model policy before provider initialization. */
-export async function assertAgentModelAllowed(params: ValidateAgentModelParams): Promise<void> {
-  const result = await validateAgentModel(params);
+export async function assertAgentModelAllowed({
+  agent,
+  getEndpointModels,
+}: Pick<ValidateAgentModelParams, 'agent' | 'getEndpointModels'>): Promise<void> {
+  const result = await checkAgentModel(agent, getEndpointModels);
   if (!result.isValid) {
     throw new AgentModelPolicyError();
   }

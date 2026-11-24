@@ -141,7 +141,6 @@ const { filterFilesByAgentAccess } = require('~/server/services/Files/permission
 const { resolveConfigServers, getAccessibleMcpServerNames } = require('~/server/services/MCP');
 const { resolveConversationTitle } = require('~/server/services/Endpoints/titlePolicy');
 const { getMCPManager } = require('~/config');
-const { logViolation } = require('~/cache');
 const db = require('~/models');
 
 const filterFilesByRemoteAgentAccess = (params) =>
@@ -576,13 +575,7 @@ const executeResponse = async (envelope, { req, res }) => {
       }
 
       const getEndpointModels = (endpoint) => getEndpointModelsConfig(req, endpoint);
-      await assertAgentModelAllowed({
-        req,
-        res,
-        agent,
-        getEndpointModels,
-        logViolation,
-      });
+      await assertAgentModelAllowed({ agent, getEndpointModels });
       req.turnStartedAt = envelope.receivedAt;
       const { decision: codeEnvironmentDecision, conversation: admittedConversation } =
         await resolveAdmittedCodeEnvironmentDecision({
@@ -880,7 +873,6 @@ const executeResponse = async (envelope, { req, res }) => {
             );
             return hasPermissions(permissions, requiredPermission);
           },
-          logViolation,
           db: dbMethods,
           onAgentInitialized: (loadedAgentId, loadedAgent, config) => {
             agentToolContexts.set(

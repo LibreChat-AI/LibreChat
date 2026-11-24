@@ -117,7 +117,6 @@ const { getEndpointModelsConfig } = require('~/server/controllers/ModelControlle
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { resolveConfigServers } = require('~/server/services/MCP');
 const { getMCPManager } = require('~/config');
-const { logViolation } = require('~/cache');
 const db = require('~/models');
 
 const filterFilesByRemoteAgentAccess = (params) =>
@@ -494,13 +493,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       }
 
       const getEndpointModels = (endpoint) => getEndpointModelsConfig(req, endpoint);
-      await assertAgentModelAllowed({
-        req,
-        res,
-        agent,
-        getEndpointModels,
-        logViolation,
-      });
+      await assertAgentModelAllowed({ agent, getEndpointModels });
       req.turnStartedAt = envelope.receivedAt;
       const { decision: codeEnvironmentDecision, conversation: admittedConversation } =
         await resolveAdmittedCodeEnvironmentDecision({
@@ -792,7 +785,6 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
             );
             return hasPermissions(permissions, requiredPermission);
           },
-          logViolation,
           db: dbMethods,
           onAgentInitialized: (loadedAgentId, loadedAgent, config) => {
             agentToolContexts.set(

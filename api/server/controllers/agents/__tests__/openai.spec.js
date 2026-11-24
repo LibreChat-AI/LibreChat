@@ -568,6 +568,7 @@ describe('OpenAIChatCompletionController', () => {
         'invalid_request_error',
         'model_not_allowed',
       );
+      expect(require('~/cache').logViolation).not.toHaveBeenCalled();
       expect(api.initializeAgent).not.toHaveBeenCalled();
       expect(res.flushHeaders).not.toHaveBeenCalled();
     },
