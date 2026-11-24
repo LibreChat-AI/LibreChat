@@ -1065,7 +1065,10 @@ describe('createAttachedWorkspaceBashTool', () => {
       const root = join(directory, 'project');
       await mkdir(join(root, 'child'), { recursive: true });
       const run = (command: string, cwd: string) =>
-        execFileSync('bash', ['-c', command], { cwd, encoding: 'utf8' });
+        execFileSync(process.env.LIBRECHAT_TEST_BASH ?? 'bash', ['-c', command], {
+          cwd,
+          encoding: 'utf8',
+        });
       const physicalRoot = `${run('pwd -P', directory).trimEnd()}/project`;
       const physicalChild = `${physicalRoot}/child`;
       const fetchImpl: CodeBridgeFetch = async (_url, init) => {
@@ -1092,7 +1095,7 @@ describe('createAttachedWorkspaceBashTool', () => {
       expect(scoped.split('\n', 1)[0]).toBe('[starting directory: "workspace/child"]');
       expect(scoped).toContain(`stdout:\n${physicalChild}\n`);
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await rm(directory, { recursive: true, force: true, maxRetries: 3 });
     }
   });
 

@@ -12,6 +12,15 @@ globalThis[key] = started;
 
 jest.doMock('mongodb-memory-server-core', () => {
   const actual = jest.requireActual('mongodb-memory-server-core');
+  if (process.platform === 'win32') {
+    const { MongoInstance } = jest.requireActual(
+      'mongodb-memory-server-core/lib/util/MongoInstance',
+    );
+    const { prepareCommandArgs } = MongoInstance.prototype;
+    MongoInstance.prototype.prepareCommandArgs = function () {
+      return prepareCommandArgs.call(this).filter((arg) => arg !== '--nounixsocket');
+    };
+  }
   for (const Server of [actual.MongoMemoryServer, actual.MongoMemoryReplSet]) {
     const { start } = Server.prototype;
     if (start[key]) {
