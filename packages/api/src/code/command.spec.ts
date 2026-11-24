@@ -978,11 +978,11 @@ describe('createAttachedWorkspaceBashTool', () => {
 
   test.each([
     'cd packages/api && npm test',
-    '\n\tcd "packages/api" && printf "%s" "$OLDPWD"',
+    '\n\tcd "packages/api" && pwd -P',
     'cd missing && npm test || printf fallback',
     'cd "$DIRECTORY" && npm test',
-    'cd .. && pwd',
-    'cd - && pwd',
+    'cd .. && pwd -P',
+    'cd ./packages && pwd -P',
     'cd',
   ])('preserves the script and root lane while suggesting cwd: %s', async (command) => {
     const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
@@ -1079,19 +1079,28 @@ describe('createAttachedWorkspaceBashTool', () => {
     });
     try {
       const content = await bashTool.invoke({
-        command: 'prev=$(pwd -P) && cd child && printf "%s/%s" "${prev##*/}" "${PWD##*/}"',
+        command:
+          'prev=$(pwd -P) && cd child && curr=$(pwd -P) && printf "%s/%s" "${prev##*/}" "${curr##*/}"',
       });
-      expect(content).toContain('[starting directory: "workspace/"]');
+      const labelLine = content.split('\n').find((line) => line.startsWith('[starting directory:'));
+      expect(labelLine).toBe('[starting directory: "workspace/"]');
+      expect(labelLine).not.toContain(directory);
       expect(content).toContain('stdout:\nproject/child');
-      expect(content).not.toContain(directory);
       const fallback = await bashTool.invoke({
         command: 'cd missing 2>/dev/null && printf unexpected || printf fallback',
       });
       expect(fallback).toContain('stdout:\nfallback');
-      const next = await bashTool.invoke({ command: 'printf "%s" "${PWD##*/}"' });
+      const next = await bashTool.invoke({
+        command: 'curr=$(pwd -P) && printf "%s" "${curr##*/}"',
+      });
       expect(next).toContain('stdout:\nproject');
-      const scoped = await bashTool.invoke({ command: 'printf "%s" "${PWD##*/}"', cwd: 'child' });
-      expect(scoped).toContain('[starting directory: "workspace/child"]');
+      const scoped = await bashTool.invoke({
+        command: 'curr=$(pwd -P) && printf "%s" "${curr##*/}"',
+        cwd: 'child',
+      });
+      const scopedLabelLine = scoped.split('\n').find((line) => line.startsWith('[starting directory:'));
+      expect(scopedLabelLine).toBe('[starting directory: "workspace/child"]');
+      expect(scopedLabelLine).not.toContain(directory);
       expect(scoped).toContain('stdout:\nchild');
     } finally {
       await rm(directory, { recursive: true, force: true });
