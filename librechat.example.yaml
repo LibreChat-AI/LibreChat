@@ -31,8 +31,9 @@ cache: true
 # telemetry:
 #   stackTraceLimit: 50
 #   productTracking:
-#     enabled: false # Requires a host-provided event callback. Off when omitted.
+#     enabled: false # Requires a host-provided sink; without one, startup logs a warning. Off when omitted.
 #                    # Apply with a server restart and browser refresh.
+#     maxPendingDeliveries: 1000 # Unsettled server deliveries before new facts are dropped.
 #     session:
 #       shareAcrossTabs: true # Same browser profile, signed-in user, and tenant.
 #       idleTimeoutMs: 1800000 # 30 minutes without user activity.

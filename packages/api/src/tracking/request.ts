@@ -8,6 +8,7 @@ import {
   PRODUCT_SUBMISSION_HEADER,
   getProductTrackingConfig,
   productTrackingContextSchema,
+  PRODUCT_TRACKING_MAX_PENDING_DELIVERIES_DEFAULT,
 } from 'librechat-data-provider';
 import type {
   ServerProductFact,
@@ -22,6 +23,10 @@ import type { ServerRequest } from '~/types';
 /**
  * The host's server delivery. LibreChat builds each event, including its identity; the host
  * adds only what delivery needs, such as its own credentials, through `resolveScope`.
+ *
+ * Both methods run inline on product paths, such as chat callbacks, so they must return at
+ * once. LibreChat does not wait for a returned promise; while
+ * `telemetry.productTracking.maxPendingDeliveries` promises are unsettled, it drops new facts.
  */
 export interface ServerProductSink<Scope> {
   /**
@@ -29,6 +34,7 @@ export interface ServerProductSink<Scope> {
    * after `requireJwtAuth`. Return `undefined` to skip delivery of that fact.
    */
   resolveScope(req: ServerRequest): Scope | undefined;
+  /** Enqueue the event, or start its send; a returned promise counts as pending until it settles. */
   deliver(event: ServerProductEvent, scope: Scope): void | Promise<void>;
 }
 
@@ -38,28 +44,58 @@ export interface ProductTrackingMiddlewareOptions<Scope> {
   browserSink?: ProductSinkDescriptor;
 }
 
-function deliverServerFact<Scope>(
-  sink: ServerProductSink<Scope>,
+type ServerDelivery = (
   req: ServerRequest,
   fact: ServerProductFact,
   context?: ProductTrackingContext,
-) {
-  const scope = sink.resolveScope(req);
-  if (scope === undefined) {
-    return;
-  }
-  return sink.deliver(
-    {
-      version: 1,
-      eventId: randomUUID(),
-      occurredAt: new Date().toISOString(),
-      producer: 'server',
-      identity: toProductIdentity(req.user?.id, getTenantId() ?? req.user?.tenantId),
-      ...(context ? { context } : {}),
-      fact,
-    },
-    scope,
-  );
+) => void | Promise<void>;
+
+/** Delivers through the sink, and drops new facts while too many deliveries are unsettled. */
+function createServerDelivery<Scope>(
+  sink: ServerProductSink<Scope>,
+  maxPending: number,
+): ServerDelivery {
+  let pending = 0;
+  let dropped = 0;
+  const settle = () => {
+    pending -= 1;
+    if (dropped > 0 && pending < maxPending) {
+      logger.warn('[productTracking] The sink recovered after dropped server facts', { dropped });
+      dropped = 0;
+    }
+  };
+  return (req, fact, context) => {
+    if (pending >= maxPending) {
+      dropped += 1;
+      if (dropped === 1) {
+        logger.warn('[productTracking] The sink is saturated; dropping server facts', {
+          maxPending,
+        });
+      }
+      return;
+    }
+    const scope = sink.resolveScope(req);
+    if (scope === undefined) {
+      return;
+    }
+    const result = sink.deliver(
+      {
+        version: 1,
+        eventId: randomUUID(),
+        occurredAt: new Date().toISOString(),
+        producer: 'server',
+        identity: toProductIdentity(req.user?.id, getTenantId() ?? req.user?.tenantId),
+        ...(context ? { context } : {}),
+        fact,
+      },
+      scope,
+    );
+    if (!result) {
+      return;
+    }
+    pending += 1;
+    return result.finally(settle);
+  };
 }
 
 function readContextHeader(
@@ -89,6 +125,18 @@ export function createProductTrackingMiddleware<Scope>(
 ) {
   const resolved = getProductTrackingConfig(telemetry);
   const enabled = resolved.enabled && !!sink;
+  if (resolved.enabled && !sink) {
+    logger.warn(
+      '[productTracking] `telemetry.productTracking.enabled` is true, but no host sink is installed; tracking stays off',
+    );
+  }
+  const deliver = sink
+    ? createServerDelivery(
+        sink,
+        telemetry?.productTracking?.maxPendingDeliveries ??
+          PRODUCT_TRACKING_MAX_PENDING_DELIVERIES_DEFAULT,
+      )
+    : undefined;
   const policy = Object.freeze({
     ...resolved,
     enabled,
@@ -96,8 +144,8 @@ export function createProductTrackingMiddleware<Scope>(
   });
   return (req: ServerRequest, _res: Response, next: NextFunction): void => {
     req.productTracking = policy;
-    if (policy.enabled && sink) {
-      req.productTracker = (fact, context) => deliverServerFact(sink, req, fact, context);
+    if (policy.enabled && deliver) {
+      req.productTracker = (fact, context) => deliver(req, fact, context);
       const context = {
         ...readContextHeader(req, PRODUCT_SESSION_HEADER, 'sessionId'),
         ...readContextHeader(req, PRODUCT_SUBMISSION_HEADER, 'submissionId'),

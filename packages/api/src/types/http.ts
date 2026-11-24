@@ -1,8 +1,7 @@
 import type {
   ProductTrackingContext,
   ProductTracker,
-  ProductSinkDescriptor,
-  TProductTrackingConfig,
+  TProductTrackingPolicy,
   ServerProductFact,
   CodeApprovalMode,
   CodeEnvironmentMode,
@@ -50,7 +49,7 @@ export type ServerRequest = Request<unknown, unknown, RequestBody> & {
   productTracker?: ProductTracker<ServerProductFact>;
   /** Deployment policy captured at server startup, independent of user config. Enabled only
    * when the deployment enables tracking and the host supplies a sink. */
-  productTracking?: Readonly<TProductTrackingConfig & { browserSink?: ProductSinkDescriptor }>;
+  productTracking?: Readonly<TProductTrackingPolicy>;
   user?: IUser;
   config?: AppConfig;
   /** Server-captured generation start time used to anchor dynamic prompt variables. */

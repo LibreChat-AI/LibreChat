@@ -241,6 +241,18 @@ it.each(['request', 'response'])(
   },
 );
 
+it('removes product correlation headers before export', () => {
+  const id = 'd79706cc-4ddf-4cf7-b99a-333755af9be8';
+  expect(
+    sanitizeSpanAttributes({
+      'http.request.header.x_librechat_product_session_id': id,
+      'http.request.header.x-librechat-product-submission-id': [id],
+      'HTTP.RESPONSE.HEADER.X_LIBRECHAT_PRODUCT_SESSION_ID': id,
+      'http.request.header.x_request_id': ['request-123'],
+    }),
+  ).toEqual({ 'http.request.header.x_request_id': ['request-123'] });
+});
+
 it('checks header names before URL redaction and preserves ordinary attributes', () => {
   expect(
     sanitizeSpanAttributes({

@@ -35,6 +35,8 @@ let methods: ConfigMethods;
 let createAdminConfigHandlers: typeof import('./config').createAdminConfigHandlers;
 let generateCapabilityCheck: typeof import('~/middleware/capabilities').generateCapabilityCheck;
 let mergeConfigOverrides: DataSchemas['mergeConfigOverrides'];
+let tenantStorage: DataSchemas['tenantStorage'];
+let createProductTrackingMiddleware: typeof import('~/tracking/request').createProductTrackingMiddleware;
 
 function mockReq(overrides: Record<string, unknown> = {}): ServerRequest {
   return {
@@ -96,17 +98,20 @@ async function readStored(principalId: string): Promise<StoredConfig | null> {
 const LIFECYCLE_TIMEOUT_MS = 180_000;
 
 beforeAll(async () => {
-  const [dataSchemas, handlersModule, capabilitiesModule, server] = await Promise.all([
-    import('@librechat/data-schemas'),
-    import('./config'),
-    import('~/middleware/capabilities'),
-    MongoMemoryServer.create(),
-  ]);
+  const [dataSchemas, handlersModule, capabilitiesModule, trackingModule, server] =
+    await Promise.all([
+      import('@librechat/data-schemas'),
+      import('./config'),
+      import('~/middleware/capabilities'),
+      import('~/tracking/request'),
+      MongoMemoryServer.create(),
+    ]);
   mongoServer = server;
   jest.spyOn(dataSchemas.logger, 'error').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'warn').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'info').mockReturnValue(dataSchemas.logger);
-  ({ mergeConfigOverrides } = dataSchemas);
+  ({ mergeConfigOverrides, tenantStorage } = dataSchemas);
+  ({ createProductTrackingMiddleware } = trackingModule);
   ({ createAdminConfigHandlers } = handlersModule);
   ({ generateCapabilityCheck } = capabilitiesModule);
 
@@ -182,6 +187,39 @@ describe('admin config writes against a real Config collection', () => {
         [{ name: 'librechat.langfuse.promptSync.updated', enabled: true }],
       ]);
       expect(JSON.stringify(productTracker.mock.calls)).not.toContain('private-');
+    });
+
+    it('delivers a Base toggle through the real middleware with the tenant identity', async () => {
+      const delivered: unknown[] = [];
+      const resolveScope = jest.fn((req: ServerRequest) => ({ actor: req.user?.id }));
+      const middleware = createProductTrackingMiddleware(
+        { productTracking: { enabled: true } },
+        { sink: { resolveScope, deliver: (event, scope) => void delivered.push([event, scope]) } },
+      );
+      const req = mockReq({ params, body: { isActive: false } });
+      delete req.productTracking;
+      middleware(req, mockRes(), jest.fn());
+      const res = mockRes();
+      await tenantStorage.run({ tenantId: 'tenant-a' }, async () => {
+        await storeConnection();
+        await handlersFor(async () => true, {
+          isLangfusePromptSyncAvailable: () => true,
+        }).toggleConfig(req, res);
+      });
+      expect(res.statusCode).toBe(200);
+      expect(resolveScope).toHaveBeenCalledWith(req);
+      expect(delivered).toEqual(
+        disabledFacts.map(([fact]) => [
+          expect.objectContaining({
+            version: 1,
+            producer: 'server',
+            identity: { userId: 'u1', tenantId: 'tenant-a' },
+            fact,
+          }),
+          { actor: 'u1' },
+        ]),
+      );
+      expect(JSON.stringify(delivered)).not.toContain('private-');
     });
 
     it.each([true, false])('records only active Base deletion (active: %s)', async (isActive) => {

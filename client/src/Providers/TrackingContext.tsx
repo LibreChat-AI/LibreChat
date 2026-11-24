@@ -69,7 +69,8 @@ function createDelivery(
  * The host mounts this provider and supplies delivery. LibreChat builds each event, with the
  * identity of the signed-in user and tenant and the device, and scopes the session to that
  * identity. Tracking starts only when `GET /api/config` reports it enabled, which requires a
- * server sink. Without this provider, requests carry no correlation headers.
+ * server sink, and after auth is ready. Without this provider, requests carry no correlation
+ * headers.
  *
  * Lifecycle calls to the sink come after the final activity checkpoint for that moment:
  * `flush('hidden' | 'pagehide')` when the page is hidden or unloads, `resume()` when it is
@@ -92,11 +93,16 @@ export function TrackingProvider({
   useLayoutEffect(() => {
     sinkRef.current = sink;
   }, [sink]);
-  const user = useContext(AuthContext)?.user;
-  const userId = user?.id;
-  const tenantId = user?.tenantId;
+  const auth = useContext(AuthContext);
+  const userId = auth?.user?.id;
+  const tenantId = auth?.user?.tenantId;
+  /**
+   * A reload loads the signed-out config before the silent refresh sets the user. Waiting for
+   * auth keeps that moment from starting, then discarding, a session with an empty identity.
+   */
+  const authReady = auth == null || auth.isAuthReady;
   const { data: startup } = useGetStartupConfig();
-  const enabled = available && startup?.productTracking?.enabled === true;
+  const enabled = available && authReady && startup?.productTracking?.enabled === true;
   /** Read at teardown: a session that tracking turned off is discarded; any other end flushes. */
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;

@@ -32,8 +32,20 @@ function sinkFor(track: jest.Mock | ((...args: unknown[]) => void), log: string[
 
 type AuthValue = NonNullable<React.ContextType<typeof AuthContext>>;
 
-function SignedIn({ user, children }: { user?: AuthValue['user']; children: ReactNode }) {
-  return <AuthContext.Provider value={{ user } as AuthValue}>{children}</AuthContext.Provider>;
+function SignedIn({
+  user,
+  ready = true,
+  children,
+}: {
+  user?: AuthValue['user'];
+  ready?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <AuthContext.Provider value={{ user, isAuthReady: ready } as AuthValue}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 function Observer({ fact }: { fact: BrowserProductFact }) {
@@ -271,6 +283,71 @@ it('discards without a final checkpoint when tracking is turned off', async () =
   } finally {
     mockEnabled = true;
   }
+});
+
+it('drops a checkpoint that waits for the lock when tracking is turned off', async () => {
+  const grants: Array<() => void> = [];
+  const request = jest.fn(
+    (_name: string, work: () => unknown) =>
+      new Promise((resolve) => void grants.push(() => resolve(work()))),
+  );
+  Object.defineProperty(navigator, 'locks', { value: { request }, configurable: true });
+  const intervals = jest.spyOn(window, 'setInterval');
+  try {
+    const track = jest.fn();
+    const log: string[] = [];
+    const view = render(
+      <TrackingProvider sink={sinkFor(track, log)}>
+        <span />
+      </TrackingProvider>,
+    );
+    await act(async () => {});
+    await act(async () => grants.shift()?.());
+    const checkpoint = intervals.mock.calls.at(-1)?.[0] as () => void;
+    await act(async () => checkpoint());
+    expect(grants).toHaveLength(1);
+    mockEnabled = false;
+    view.rerender(
+      <TrackingProvider sink={sinkFor(track, log)}>
+        <span />
+      </TrackingProvider>,
+    );
+    await act(async () => {});
+    await act(async () => grants.shift()?.());
+    expect(log).toEqual(['discard']);
+    expect(track).not.toHaveBeenCalled();
+  } finally {
+    mockEnabled = true;
+    intervals.mockRestore();
+    delete (navigator as { locks?: unknown }).locks;
+  }
+});
+
+it('starts no session until auth is ready, so a signed-in reload begins as the user', async () => {
+  const track = jest.fn();
+  const log: string[] = [];
+  const view = render(
+    <SignedIn ready={false}>
+      <TrackingProvider sink={sinkFor(track, log)}>
+        <span />
+      </TrackingProvider>
+    </SignedIn>,
+  );
+  await act(async () => {});
+  expect((await sentHeaders('/api/convos'))?.has(SESSION_HEADER)).toBe(false);
+  expect(window.localStorage.length).toBe(0);
+  view.rerender(
+    <SignedIn user={userOne}>
+      <TrackingProvider sink={sinkFor(track, log)}>
+        <span />
+      </TrackingProvider>
+    </SignedIn>,
+  );
+  await act(async () => {});
+  expect((await sentHeaders('/api/convos'))?.get(SESSION_HEADER)).toMatch(/^[0-9a-f-]{36}$/);
+  await pagehide();
+  expect(log).toEqual(['deliver:librechat.session.activity', 'flush:pagehide']);
+  expect(track.mock.calls[0][2]).toMatchObject({ identity: { userId: 'user-1' } });
 });
 
 it('contains a sink that throws', async () => {
