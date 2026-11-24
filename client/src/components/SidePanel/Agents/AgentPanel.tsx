@@ -55,6 +55,7 @@ import AgentConfig from './AgentConfig';
 import AgentSelect from './AgentSelect';
 import AgentFooter from './AgentFooter';
 import ModelPanel from './ModelPanel';
+import Events from './Events/Events';
 import Channels from './Channels';
 
 /* Helpers */
@@ -475,6 +476,10 @@ export default function AgentPanel() {
   });
   const canUseRemoteAgents = useHasAccess({
     permissionType: PermissionTypes.REMOTE_AGENTS,
+    permission: Permissions.USE,
+  });
+  const canUseEvents = useHasAccess({
+    permissionType: PermissionTypes.AGENT_EVENTS,
     permission: Permissions.USE,
   });
   const { showToast } = useToastContext();
@@ -1056,6 +1061,16 @@ export default function AgentPanel() {
       />
     ) : null;
 
+  /** Each user of the agent subscribes it for themselves, so editing it is not required. */
+  const eventsSection =
+    activePanel === Panel.builder &&
+    !agentQuery.isInitialLoading &&
+    Boolean(user?.id) &&
+    canUseAgents &&
+    canUseEvents ? (
+      <Events agentId={isPersistedAgent ? current_agent_id! : undefined} />
+    ) : null;
+
   return (
     <FormProvider {...methods}>
       <form
@@ -1177,10 +1192,12 @@ export default function AgentPanel() {
                 instructionsPromptStatus={instructionsPromptStatus}
                 onRetryInstructionsPrompt={retryInstructionsPrompt}
                 channels={channelsSection}
+                events={eventsSection}
               />
             )}
           {/* Without the editor the builder is not drawn, so a sharer still gets the section here. */}
           {!canEditAgent && channelsSection}
+          {!canEditAgent && eventsSection}
           {canEditAgent &&
             selectionReady &&
             !agentQuery.isInitialLoading &&
