@@ -77,6 +77,14 @@ function isPrivateTransition(ipv6: string): boolean {
     Number.parseInt(word, 16),
   );
 
+  // RFC 5214 allows both settings of the interface identifier's universal/local bit.
+  if (
+    (fifth === 0 || fifth === 0x0200) &&
+    sixth === 0x5efe &&
+    isPrivateIPv4(high >> 8, high & 0xff, low >> 8)
+  ) {
+    return true;
+  }
   if (first === 0x2002) {
     return isPrivateIPv4(second >> 8, second & 0xff, third >> 8);
   }
@@ -93,12 +101,7 @@ function isPrivateTransition(ipv6: string): boolean {
     // RFC 4380 complements the client's embedded IPv4 address.
     return isPrivateIPv4((~high >> 8) & 0xff, ~high & 0xff, (~low >> 8) & 0xff);
   }
-  // RFC 5214 allows both settings of the interface identifier's universal/local bit.
-  return (
-    (fifth === 0 || fifth === 0x0200) &&
-    sixth === 0x5efe &&
-    isPrivateIPv4(high >> 8, high & 0xff, low >> 8)
-  );
+  return false;
 }
 
 /**
