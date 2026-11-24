@@ -70,6 +70,7 @@ export type {
 export * from './types/subagents';
 export * from './types/background';
 export * from './types/pullRequest';
+export * from './types/eventTypes';
 export * from './types/queuedTurns';
 /* access permissions */
 export * from './accessPermissions';
