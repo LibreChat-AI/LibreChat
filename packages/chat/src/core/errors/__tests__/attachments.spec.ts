@@ -6,7 +6,7 @@ import {
   collectOlderFileIds,
   mayBeAttachmentError,
   findAttachmentRecovery,
-} from '../Error/attachments';
+} from '../attachments';
 
 describe('isAttachmentError', () => {
   it.each([

@@ -54,5 +54,7 @@ export { groupParallelContent, lastParallelColumnCursorIdx } from './parallel';
 export type { ParallelColumn, ParallelSection } from './parallel';
 export { cachePreview, deletePreview, getCachedPreview, removePreviewEntry } from './previewCache';
 export * from './url';
+export * from './errors';
+export { isJson, extractJson } from './json';
 export * from './apps';
 export * from './same';
