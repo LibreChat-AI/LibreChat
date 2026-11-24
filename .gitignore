@@ -76,7 +76,7 @@ api/tsconfig.json
 .flooignore
 
 #config file
-librechat.yaml
+# librechat.yaml is tracked for this fork's Render deployment. Keep secrets in env vars.
 librechat.yml
 
 # Environment
