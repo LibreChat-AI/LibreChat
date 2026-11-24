@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $script:failureStage = 6
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$trustedOwners = @($identity.Value, 'S-1-5-18', 'S-1-5-32-544',
+$trusted = @($identity.Value, 'S-1-5-18', 'S-1-5-32-544',
   'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464') # SYSTEM, Administrators, TrustedInstaller
 
 function Descriptor($security) {
@@ -66,16 +66,19 @@ function CheckParent([string] $path) {
       throw 'Invalid parent directory'
     }
     $sd = Descriptor ($dir.GetAccessControl('Access, Owner'))
-    if ($sd.Owner.Value -notin $trustedOwners -or $null -eq $sd.DiscretionaryAcl) {
-      throw 'Untrusted parent directory'
-    }
-    foreach ($ace in $sd.DiscretionaryAcl) {
-      if ([int]$ace.AceFlags -band 8) { continue } # InheritOnly
-      if ($ace -isnot [Security.AccessControl.QualifiedAce]) { throw 'Unknown ACE' }
-      # Granting creation alone is safe. Reject grants that can remove, replace or retarget entries.
-      if ($ace.AceQualifier -eq 'AccessAllowed' -and ($ace.AccessMask -band 0x500d0140) -and
-          $ace.SecurityIdentifier.Value -notin $trustedOwners) { throw 'Writable parent directory' }
-    }
+    if ($sd.Owner.Value -notin $trusted) { throw 'Untrusted parent directory' }
+    # Creation alone cannot retarget an existing entry.
+    CheckWriteAuthority $sd 0x500d0140
+  }
+}
+
+function CheckWriteAuthority($sd, [int] $mask) {
+  if ($null -eq $sd.DiscretionaryAcl) { throw 'Missing discretionary ACL' }
+  foreach ($ace in $sd.DiscretionaryAcl) {
+    if ([int]$ace.AceFlags -band 8) { continue } # InheritOnly
+    if ($ace -isnot [Security.AccessControl.QualifiedAce]) { throw 'Unknown ACE' }
+    if ($ace.AceQualifier -eq 'AccessAllowed' -and ($ace.AccessMask -band $mask) -and
+        $ace.SecurityIdentifier.Value -notin $trusted) { throw 'Unrelated write authority' }
   }
 }
 
@@ -183,6 +186,8 @@ function ExistingFile([string] $path, [string] $operation, [string] $payload) {
     $acl = $stream.GetAccessControl()
     if (!($acl.GetOwner([Security.Principal.SecurityIdentifier]).Equals($identity))) { exit 9 }
     if (!(IsPrivate $acl $false)) {
+      # Do not adopt bytes that an unrelated account could have changed, or trust a DACL it could reset.
+      CheckWriteAuthority (Descriptor $acl) 0x500d0116
       $acl = PrivateAcl $false
       $dacl = [Security.AccessControl.FileSecurity]::new()
       $dacl.SetSecurityDescriptorBinaryForm($acl.GetSecurityDescriptorBinaryForm(), 'Access')
@@ -247,7 +252,7 @@ try {
   # Only return fixed diagnostics, never exception messages or input data.
   if ($_.Exception.Message -in @('Not a local filesystem path', 'Unsupported filesystem',
       'Invalid parent directory', 'Untrusted parent directory', 'Unknown ACE',
-      'Writable parent directory', 'Directory is not private')) { exit 5 }
+      'Missing discretionary ACL', 'Unrelated write authority', 'Directory is not private')) { exit 5 }
   exit $script:failureStage
 }
 exit 0

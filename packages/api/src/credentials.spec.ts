@@ -247,6 +247,23 @@ describe('credentials', () => {
       expectPrivateWindowsAcl(tempFile, 'file');
     });
 
+    it.each(['WriteData', 'ChangePermissions'])(
+      'rejects a credential file with unrelated %s authority',
+      (right) => {
+        const contents = `CREDS_KEY=${'a'.repeat(64)}\n`;
+        writeLegacyFile(tempFile, contents);
+        grantWindowsEveryone(tempFile, right);
+        const acl = inspectWindowsAcl(tempFile);
+
+        const state = bootstrapCredentials();
+
+        expect(state.loadedFromFile).toEqual([]);
+        expect(state.persistenceFailed).toBe(true);
+        expect(fs.readFileSync(tempFile, 'utf8')).toBe(contents);
+        expect(inspectWindowsAcl(tempFile)).toEqual(acl);
+      },
+    );
+
     it('replaces an incomplete file with a private file and removes the repair name', () => {
       tempFile = path.join(tempDirectory, "settings [test] & 'private'");
       process.env.LIBRECHAT_TEMP_CREDENTIALS_PATH = tempFile;
