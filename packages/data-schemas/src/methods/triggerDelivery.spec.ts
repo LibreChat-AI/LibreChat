@@ -2120,6 +2120,62 @@ describe('agent trigger delivery methods', () => {
     });
   });
 
+  it('lists a private dead delivery until a pre-shield replica requeues it', async () => {
+    await methods.enqueueAgentTriggerDelivery(
+      enqueueInput({
+        orderingKey: 'legacy-requeued-dead-letter-read',
+        requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
+      }),
+    );
+    const claim = await methods.claimNextAgentTriggerDelivery({
+      workerId: 'capable-worker',
+      claimToken: 'claim-before-legacy-requeue',
+      now: START,
+      leaseUntil: new Date(START.getTime() + 60_000),
+      workerCapabilities: [AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1],
+    });
+    await methods.beginAgentTriggerDeliveryAttempt({
+      id: claim!.id,
+      workerId: 'capable-worker',
+      claimToken: 'claim-before-legacy-requeue',
+      now: START,
+    });
+    await methods.deadLetterAgentTriggerDelivery({
+      id: claim!.id,
+      workerId: 'capable-worker',
+      claimToken: 'claim-before-legacy-requeue',
+      attempt: 1,
+      error: transientFailure(),
+      settledAt: START,
+    });
+    await expect(methods.getAgentTriggerDeadLetters()).resolves.toMatchObject([
+      { id: claim!.id, status: 'capability_dead' },
+    ]);
+
+    /** Final state produced by the pre-shield requeue implementation, as in the
+     * adoption test above: republished, with the private lifecycle left at `dead`. */
+    const requeueAt = new Date(START.getTime() + 1_000);
+    await Delivery.updateOne(
+      { _id: claim!.id, status: 'capability_dead', capabilityStatus: 'dead' },
+      {
+        $set: { status: 'capability_pending', availableAt: requeueAt },
+        $unset: { settledAt: 1, lastError: 1 },
+        $inc: { requeueCount: 1 },
+      },
+    );
+
+    await expect(methods.getAgentTriggerDeadLetters()).resolves.toEqual([]);
+    await expect(
+      methods.claimNextAgentTriggerDelivery({
+        workerId: 'new-worker',
+        claimToken: 'claim-after-legacy-requeue',
+        now: requeueAt,
+        leaseUntil: new Date(requeueAt.getTime() + 60_000),
+        workerCapabilities: [AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1],
+      }),
+    ).resolves.toMatchObject({ id: claim!.id });
+  });
+
   it('accepts legacy success as terminal over stale private dead state', async () => {
     const queued = await methods.enqueueAgentTriggerDelivery(
       enqueueInput({

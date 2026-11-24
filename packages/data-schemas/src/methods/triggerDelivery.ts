@@ -4680,9 +4680,15 @@ export function createAgentTriggerDeliveryMethods(
     const boundedLimit = Math.min(limit, MAX_DEAD_LETTER_LIMIT);
     const deliveries = await Delivery()
       .find({
+        /** The states a requeue accepts. A row a pre-shield replica requeued keeps its private
+         * lifecycle at `dead` while it waits to run as `capability_pending`. */
         $or: [
           { status: { $in: ['dead', 'capability_dead'] } },
-          { status: { $ne: 'succeeded' }, capabilityStatus: 'dead' },
+          {
+            status: { $in: ['pending', 'leased'] },
+            requiredWorkerCapability: { $exists: true },
+            capabilityStatus: 'dead',
+          },
         ],
         batchRootId: { $exists: false },
       })
