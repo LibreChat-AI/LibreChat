@@ -3530,6 +3530,21 @@ describe('agent trigger delivery methods', () => {
     );
   });
 
+  it('abandons a lane reservation whose delivery no longer exists', async () => {
+    const orderingKey = 'missing-publisher-lane';
+    await LaneSequence.create({
+      _id: orderingKey,
+      value: 1,
+      user: new mongoose.Types.ObjectId(),
+      publisherDeliveryId: new mongoose.Types.ObjectId(),
+      publisherRequeueCount: 0,
+      publisherStartedAt: new Date(START.getTime() - 60_000),
+    });
+
+    await expect(methods.recoverAgentTriggerLanePublications()).resolves.toBe(1);
+    await expect(LaneSequence.findById(orderingKey)).resolves.toBeNull();
+  });
+
   it('refuses an expired requeued batch when a later admission on its lane reaches it', async () => {
     const user = new mongoose.Types.ObjectId();
     const orderingKey = 'batch-requeue-helper-expired-lane';
