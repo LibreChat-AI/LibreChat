@@ -17,6 +17,7 @@ jest.mock('@librechat/api', () => ({
   },
 }));
 
+const { IncomingMessage, ServerResponse } = require('http');
 const { createOnSearchResults } = require('./search');
 
 describe('createOnSearchResults', () => {
@@ -99,5 +100,27 @@ describe('createOnSearchResults', () => {
     ]);
     expect(snapshots[1].web_search.organic[0].processed).toBe(true);
     expect(snapshots[3].web_search.organic[0].processed).toBe(true);
+  });
+
+  it('leaves a non-streaming response unwritten so it can still be sent as JSON', () => {
+    const res = new ServerResponse(new IncomingMessage());
+    const write = jest.spyOn(res, 'write');
+    const callbacks = createOnSearchResults(res);
+
+    callbacks.onSearchResults(
+      {
+        success: true,
+        data: { organic: [{ link: 'https://example.com' }], topStories: [] },
+      },
+      {
+        metadata: { user_id: 'user-1', run_id: 'response-1', thread_id: 'conversation-1' },
+        toolCall: { id: 'tool-call-1', name: 'web_search', turn: 0 },
+      },
+    );
+    callbacks.onGetHighlights('https://example.com');
+
+    expect(write).not.toHaveBeenCalled();
+    expect(res.headersSent).toBe(false);
+    expect(() => res.setHeader('Content-Type', 'application/json')).not.toThrow();
   });
 });

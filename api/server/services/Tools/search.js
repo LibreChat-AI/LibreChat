@@ -117,6 +117,9 @@ function createOnSearchResults(res, streamId = null, jobCreatedAt) {
       data[type][index].processed = true;
     }
 
+    if (!streamId && !res.headersSent) {
+      return;
+    }
     const attachment = buildAttachment(context);
     writeAttachment(res, streamId, attachment, jobCreatedAt);
   }
