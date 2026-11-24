@@ -3436,6 +3436,100 @@ describe('agent trigger delivery methods', () => {
     await expect(methods.recoverAgentTriggerBatchReceipts()).resolves.toBe(0);
   });
 
+  it('lets a lane helper that lost the publication race of a requeued batch proceed', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const orderingKey = 'batch-requeue-helper-race-lane';
+    const coalesceUntil = new Date(Date.now() + 60_000);
+    const shared = {
+      user,
+      orderingKey,
+      coalesceKey: 'trigger_batch_requeue_helper_race',
+      coalesceFrom: new Date(coalesceUntil.getTime() - 750),
+      coalesceUntil,
+      availableAt: coalesceUntil,
+      envelopeBytes: 128,
+    };
+    await Promise.all(
+      Array.from({ length: 2 }, () => methods.enqueueAgentTriggerDelivery(enqueueInput(shared))),
+    );
+    const claim = await methods.claimNextAgentTriggerDelivery({
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+      leaseUntil: new Date(coalesceUntil.getTime() + 60_000),
+    });
+    const attempt = await methods.beginAgentTriggerDeliveryAttempt({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+    });
+    await methods.deadLetterAgentTriggerDelivery({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      attempt: attempt!,
+      error: transientFailure({ retryable: false }),
+      settledAt: coalesceUntil,
+    });
+    const interrupted = jest.spyOn(Delivery, 'updateMany').mockImplementationOnce(() => {
+      throw new Error('process interrupted before member preparation');
+    });
+    await expect(methods.requeueAgentTriggerDelivery(claim!.id, coalesceUntil)).rejects.toThrow(
+      'process interrupted before member preparation',
+    );
+    interrupted.mockRestore();
+
+    /** This replica reserves the lane for the root and reads it as staged. Before its own
+     * preparation runs, another replica recovers the same reservation, publishes the root,
+     * and a worker runs it to success. */
+    const updateMany = Delivery.collection.updateMany.bind(Delivery.collection);
+    const raced = jest
+      .spyOn(Delivery.collection, 'updateMany')
+      .mockImplementationOnce(async (filter, update, options) => {
+        raced.mockRestore();
+        await expect(methods.recoverAgentTriggerLanePublications()).resolves.toBeGreaterThan(0);
+        const winner = await methods.claimNextAgentTriggerDelivery({
+          workerId: 'worker-2',
+          claimToken: 'claim-2',
+          now: coalesceUntil,
+          leaseUntil: new Date(coalesceUntil.getTime() + 60_000),
+        });
+        expect(winner?.id).toBe(claim!.id);
+        const retried = await methods.beginAgentTriggerDeliveryAttempt({
+          id: claim!.id,
+          workerId: 'worker-2',
+          claimToken: 'claim-2',
+          now: coalesceUntil,
+        });
+        await methods.completeAgentTriggerDelivery({
+          id: claim!.id,
+          workerId: 'worker-2',
+          claimToken: 'claim-2',
+          attempt: retried!,
+          result: { ok: true },
+          settledAt: coalesceUntil,
+        });
+        return updateMany(filter, update, options);
+      });
+
+    const later = await methods.enqueueAgentTriggerDelivery(
+      enqueueInput({ user, orderingKey, availableAt: coalesceUntil }),
+    );
+
+    expect(later.delivery.status).toBe('pending');
+    await expect(Delivery.findById(claim!.id).lean()).resolves.toMatchObject({
+      status: 'succeeded',
+    });
+    await expect(Delivery.findOne({ batchRootId: claim!.id }).lean()).resolves.toMatchObject({
+      status: 'succeeded',
+      batchRootRequeueCount: 1,
+    });
+    await expect(LaneSequence.findById(orderingKey).lean()).resolves.not.toHaveProperty(
+      'publisherDeliveryId',
+    );
+  });
+
   it('refuses an expired requeued batch when a later admission on its lane reaches it', async () => {
     const user = new mongoose.Types.ObjectId();
     const orderingKey = 'batch-requeue-helper-expired-lane';

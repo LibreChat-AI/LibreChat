@@ -1040,6 +1040,16 @@ export function createAgentTriggerDeliveryMethods(
     if (preparedCount === memberIds.length) {
       return true;
     }
+    /** Every replica that holds or recovers the lane can prepare the same root. One that read
+     * it as staged may find its receipts already run and settled by the publisher that won. */
+    const staged = await Delivery().exists({
+      _id: root._id,
+      requeueCount,
+      ...stagingDeliveryScope,
+    });
+    if (staged == null) {
+      return true;
+    }
     const remaining = await Delivery().countDocuments({ _id: { $in: memberIds } });
     if (remaining === memberIds.length) {
       throw new Error('Not every agent trigger batch receipt could be prepared for requeue');
