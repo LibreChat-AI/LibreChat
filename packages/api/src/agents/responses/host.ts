@@ -1,6 +1,7 @@
 import { createChatExpirationDate, createFallbackRetentionDate } from '@librechat/data-schemas';
 import type {
   IUser,
+  AppConfig,
   ResponseOwner,
   ResponseStorage,
   StoredResponseRecord,
@@ -15,6 +16,7 @@ import type { BackgroundResponseTransportDependencies } from './transport';
 import type { BackgroundResponseWorkerDependencies } from './worker';
 import type { AgentTriggerService } from '../triggers/service';
 import type { BackgroundResponseResult } from './background';
+import type { GetAppConfigOptions } from '~/app/service';
 import type { BackgroundResponseQueue } from './queue';
 import type { ServerRequest } from '~/types/http';
 import type { BoundAddress } from '~/app/origin';
@@ -53,8 +55,10 @@ export interface BackgroundResponsesHostDependencies
     | 'getResumeState'
     | 'finishProviderTerminalPersistence'
   >;
-  /** Deployment assertion, never inferred from a process-local miss. */
-  isChannelSingleProcess?: () => Promise<boolean>;
+  /** Read base operator policy, not a tenant or principal override. */
+  getDeploymentConfig?: (
+    options: Pick<GetAppConfigOptions, 'baseOnly' | 'failClosed'>,
+  ) => Promise<AppConfig>;
   publicBaseURL?: string;
   getMessage: Parameters<typeof resolveResponseContinuation>[2]['getMessage'];
   getConvoRetention: ConversationMethods['getConvoRetention'];
@@ -196,7 +200,8 @@ export function createBackgroundResponsesHost(
       record.generationCreatedAt != null &&
       record.generationCreatedAt < performance.timeOrigin &&
       !deps.jobs.isRedis &&
-      (await deps.isChannelSingleProcess?.()) === true &&
+      (await deps.getDeploymentConfig?.({ baseOnly: true, failClosed: true }))?.endpoints?.agents
+        ?.channels?.singleProcess === true &&
       !(await deps.jobs.getCleanupJob(record.responseId))
     );
   }

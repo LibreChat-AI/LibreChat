@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { FileSources, PermissionBits } from 'librechat-data-provider';
+import { FileSources, PermissionBits, channelConfigSchema } from 'librechat-data-provider';
 import {
   createModels,
   createMethods,
@@ -592,7 +592,15 @@ describe('Slack Stop after API restart', () => {
       storage: responses,
       jobs,
       publicBaseURL: 'https://librechat.example',
-      isChannelSingleProcess: async () => singleProcess,
+      getDeploymentConfig: async (options) => {
+        expect(options).toEqual({ baseOnly: true, failClosed: true });
+        return {
+          config: {},
+          fileStrategy: FileSources.local,
+          imageOutputType: 'png',
+          endpoints: { agents: { channels: channelConfigSchema.parse({ singleProcess }) } },
+        };
+      },
       findUser: async () => new mongoose.models.User({ _id: userId, tenantId, role: 'USER' }),
       getKey: async () => (authorized ? {} : null),
       getRole: async () =>
