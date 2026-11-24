@@ -5,6 +5,7 @@ import type { Payload } from './fixtures.helper';
 import {
   set,
   user,
+  LABELS,
   HEAD_SHA,
   repository,
   REPOSITORY_ID,
@@ -108,6 +109,8 @@ describe('normalize', () => {
             url: `${PAGE}#pullrequestreview-3100`,
             text: 'The retry count should come from config.',
             sha: HEAD_SHA,
+            branch: 'main',
+            labels: LABELS,
           },
         ],
       });
@@ -126,6 +129,8 @@ describe('normalize', () => {
             url: `${PAGE}#discussion_r3200`,
             text: 'Three is a magic number here.',
             sha: HEAD_SHA,
+            branch: 'main',
+            labels: LABELS,
           },
         ],
       });
@@ -143,6 +148,7 @@ describe('normalize', () => {
             title: 'Add a retry to the widget loader',
             url: `${PAGE}#issuecomment-3300`,
             text: 'Does this also cover the offline case?',
+            labels: LABELS,
           },
         ],
       });
@@ -160,6 +166,7 @@ describe('normalize', () => {
             state: 'failure',
             url: PAGE,
             sha: HEAD_SHA,
+            branch: 'main',
           },
         ],
       });
@@ -177,6 +184,8 @@ describe('normalize', () => {
             title: 'Add a retry to the widget loader',
             state: 'merged',
             url: PAGE,
+            branch: 'main',
+            labels: LABELS,
           },
         ],
       });
@@ -489,10 +498,50 @@ describe('normalize', () => {
       set(body, 'review.html_url', undefined);
       set(body, 'review.commit_id', undefined);
       set(body, 'pull_request.title', undefined);
+      set(body, 'pull_request.base.ref', 7);
+      set(body, 'pull_request.labels', undefined);
       const event = only('github.pull_request_review.submitted', body);
       expect(Object.keys(event).sort()).toEqual(
         ['actor', 'installation', 'item', 'occurredAt', 'repo', 'state', 'type'].sort(),
       );
+    });
+
+    it('reads the branch and labels a subscription can filter on', () => {
+      const tags = (names: Array<string | number>) =>
+        names.map((name, index) => ({ id: index + 1, name }));
+      const body = set(reviewSubmitted(), 'pull_request.labels', [
+        ...tags(['ready', 'ready', 'x'.repeat(101), 7, '', ' padded ', 'line\nbreak']),
+        null,
+        { id: 9 },
+      ]);
+      expect(only('github.pull_request_review.submitted', body).labels).toEqual(['ready']);
+      const none = set(reviewSubmitted(), 'pull_request.labels', []);
+      expect(only('github.pull_request_review.submitted', none).labels).toEqual([]);
+      const many = set(
+        reviewSubmitted(),
+        'pull_request.labels',
+        tags(Array.from({ length: 120 }, (_, index) => `label-${index}`)),
+      );
+      expect(only('github.pull_request_review.submitted', many).labels).toHaveLength(100);
+      const long = set(reviewSubmitted(), 'pull_request.base.ref', 'b'.repeat(256));
+      expect(only('github.pull_request_review.submitted', long)).not.toHaveProperty('branch');
+      const edge = set(reviewSubmitted(), 'pull_request.base.ref', 'b'.repeat(255));
+      expect(only('github.pull_request_review.submitted', edge).branch).toBe('b'.repeat(255));
+      const label = set(reviewSubmitted(), 'pull_request.labels', tags(['x'.repeat(100)]));
+      expect(only('github.pull_request_review.submitted', label).labels).toEqual(['x'.repeat(100)]);
+    });
+
+    it("keeps each check suite pull request's own branch", () => {
+      const second = set(suitePullRequest(43), 'base.ref', 'release/1.2');
+      const body = set(checkSuiteCompleted(), 'check_suite.pull_requests', [
+        suitePullRequest(42),
+        second,
+        suitePullRequest(42),
+      ]);
+      expect(events('github.check_suite.completed', body).map((event) => event.branch)).toEqual([
+        'main',
+        'release/1.2',
+      ]);
     });
 
     it('lower-cases a verdict', () => {

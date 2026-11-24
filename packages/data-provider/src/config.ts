@@ -2478,6 +2478,11 @@ export const agentsEndpointSchema = baseEndpointSchema
               host: pullRequestHostSchema.optional(),
               /** Longest one request to GitHub may take, in seconds. Default 10. */
               requestTimeoutSeconds: z.number().int().min(1).max(60).optional(),
+              /** How long GitHub's answer that an account may or may not write to a repository
+               *  is reused before it is asked again, in seconds; 0 asks for every event. A
+               *  collaborator removed meanwhile can still start runs until it lapses. A failed
+               *  question is never reused. Default 300. */
+              accessTtlSeconds: z.number().int().min(0).max(3600).optional(),
             })
             .optional(),
           /** How long a subscription's check that an MCP server is ready is reused for the same
