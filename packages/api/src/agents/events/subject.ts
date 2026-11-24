@@ -11,6 +11,7 @@ import type { SubjectAdapter, SubjectInput } from '~/agents/authority/subject';
 import type { RunGrantService } from '~/agents/authority/service';
 import type { RunGrantOfferDeps } from '~/agents/authority/offer';
 import type { CheckAccessParams } from '~/middleware/access';
+import type { AgentAccess } from '~/schedules/access';
 import { createRunGrantExecution } from '~/agents/authority/execution';
 import { createRunGrantService } from '~/agents/authority/service';
 import { RunGrantPolicyError } from '~/agents/authority/policy';
@@ -81,8 +82,8 @@ export function createSubscriptionHost(deps: {
   getConnection: (id: string) => Promise<Connection | null>;
   findUser: (id: string) => Promise<IUser | null>;
   getRoleByName: CheckAccessParams['getRoleByName'];
-  /** Whether the owner may run the agent now. */
-  canUseAgent: (agentId: string, user: IUser) => Promise<boolean>;
+  /** The owner's access to the agent now. Only `ok` lets a run start or a grant be made. */
+  access: (agentId: string, user: IUser) => Promise<AgentAccess>;
   /** Whether a run of this owner can pause for approval. Absent, it cannot. */
   canPauseRuns?: (user: IUser) => Promise<boolean>;
   /**
@@ -103,6 +104,8 @@ export function createSubscriptionHost(deps: {
     user.id = identity.ownerId;
     return user;
   };
+  const canUseAgent = async (agentId: string, user: IUser): Promise<boolean> =>
+    (await deps.access(agentId, user)) === 'ok';
   const canUseMCP = (user: IUser): Promise<boolean> =>
     checkAccess({
       user,
@@ -117,7 +120,7 @@ export function createSubscriptionHost(deps: {
     // the agents' MCP tools are offered among their other tools, by the key the agent has
     // each by, and one that is allowed is called as the owner's own use would call it.
     const offer = createRunGrantOffer<SubscriptionIdentity>(
-      { ...deps.enrollment, ...source, canUseRoot: deps.canUseAgent, canUseMCP },
+      { ...deps.enrollment, ...source, canUseRoot: canUseAgent, canUseMCP },
       { resources: () => undefined, otherTools: 'offer' },
     );
     return createRunGrantService<SubscriptionIdentity>({
@@ -135,7 +138,7 @@ export function createSubscriptionHost(deps: {
       },
       canUse: async (identity) => {
         const user = await loadOwner(identity, source.findUser);
-        return user != null && (await deps.canUseAgent(identity.agentId, user));
+        return user != null && (await canUseAgent(identity.agentId, user));
       },
       canUseMCP: async (identity) => {
         const user = await loadOwner(identity, source.findUser);
@@ -226,7 +229,7 @@ export function createSubscriptionHost(deps: {
         throw new RunGrantPolicyError('binding_mismatch', '', agentId);
       const [connection, allowed] = await Promise.all([
         deps.getConnection(subscription.connection),
-        deps.canUseAgent(agentId, owner),
+        canUseAgent(agentId, owner),
       ]);
       if (connection?.status !== 'active')
         throw new RunGrantPolicyError('provider_missing', '', agentId);

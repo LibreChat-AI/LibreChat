@@ -27,6 +27,7 @@ import type {
 import type { RunGrant, Subscription, SubscriptionIdentity } from 'librechat-data-provider';
 import type { ExecutionContext, SavedRun } from '~/agents/authority/context';
 import type { SubscriptionHost, SubscriptionInput } from './subject';
+import type { AgentAccess } from '~/schedules/access';
 import {
   restoreExecutionContext,
   createTriggerExecutionContext,
@@ -55,7 +56,7 @@ let subscriptions: Subscriptions;
 let connections: Connections;
 let storage: RunGrantStorage<SubscriptionIdentity>;
 let host: SubscriptionHost;
-let canUseAgent: jest.Mock<Promise<boolean>, [string, IUser]>;
+let access: jest.Mock<Promise<AgentAccess>, [string, IUser]>;
 let findUser: jest.Mock<Promise<IUser | null>, [string]>;
 let getAppConfig: jest.Mock<Promise<never>, []>;
 let connectionId: string;
@@ -74,7 +75,7 @@ const build = (overrides: Partial<HostDeps> = {}): SubscriptionHost =>
     getConnection: connections.get,
     findUser,
     getRoleByName: unused,
-    canUseAgent,
+    access,
     enrollment: {
       getAppConfig,
       resolveGraphAccess: unused,
@@ -202,7 +203,7 @@ beforeEach(async () => {
   });
   if (!bound.ok) throw new Error('connection was not bound');
   connectionId = bound.value.id;
-  canUseAgent = jest.fn<Promise<boolean>, [string, IUser]>(async () => true);
+  access = jest.fn<Promise<AgentAccess>, [string, IUser]>(async () => 'ok');
   findUser = jest.fn(async (id: string) => ({ id, role: 'USER' }) as IUser);
   getAppConfig = jest.fn(unused);
   host = build();
@@ -573,15 +574,18 @@ describe('a subscription that is not live', () => {
     expect(await outcome(inputFor(delivery(subscription.id)))).toBe('provider_missing');
   });
 
-  it('refuses when its owner may no longer run the agent', async () => {
-    const subscription = await made();
-    await grant(subscription, { everything: true });
-    canUseAgent.mockResolvedValue(false);
-    const input = inputFor(delivery(subscription.id));
-    expect(await outcome(input)).toBe('rbac_denied');
-    expect(canUseAgent).toHaveBeenCalledWith(AGENT, expect.objectContaining({ id: OWNER }));
-    expect(grantExecution(input.context)).toBeUndefined();
-  });
+  it.each<AgentAccess>(['forbidden', 'missing'])(
+    'refuses when the owner may no longer run the agent (%s)',
+    async (answer) => {
+      const subscription = await made();
+      await grant(subscription, { everything: true });
+      access.mockResolvedValue(answer);
+      const input = inputFor(delivery(subscription.id));
+      expect(await outcome(input)).toBe('rbac_denied');
+      expect(access).toHaveBeenCalledWith(AGENT, expect.objectContaining({ id: OWNER }));
+      expect(grantExecution(input.context)).toBeUndefined();
+    },
+  );
 
   it('refuses a request that has nowhere to hold the check, or no owner', async () => {
     const subscription = await made();
@@ -629,7 +633,7 @@ describe('a subscription that is not live', () => {
 
   it('lets an unexpected failure reach the caller as it is', async () => {
     const subscription = await made();
-    canUseAgent.mockRejectedValueOnce(new Error('acl store down'));
+    access.mockRejectedValueOnce(new Error('acl store down'));
     await expect(place(inputFor(delivery(subscription.id)))).rejects.toThrow('acl store down');
   });
 });

@@ -27,7 +27,7 @@ module.exports = createSubscriptionHost({
   getConnection: connections.get,
   findUser: (id) => methods.findUser({ _id: id }),
   getRoleByName: methods.getRoleByName,
-  canUseAgent: async (agentId, user) => (await resolveAgentFireAccess(agentId, user)) === 'ok',
+  access: resolveAgentFireAccess,
   canPauseRuns: createScheduledPauseCheck({
     isSharedStore: () => GenerationJobManager.isRedis,
     getCheckpointer: getAgentCheckpointer,
