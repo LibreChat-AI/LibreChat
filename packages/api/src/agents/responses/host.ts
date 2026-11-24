@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { createChatExpirationDate, createFallbackRetentionDate } from '@librechat/data-schemas';
 import type {
   IUser,

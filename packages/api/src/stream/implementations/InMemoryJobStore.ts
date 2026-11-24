@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { logger } from '@librechat/data-schemas';
 import type { StandardGraph } from '@librechat/agents';
 import type { Agents } from 'librechat-data-provider';

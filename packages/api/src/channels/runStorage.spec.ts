@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { performance } from 'node:perf_hooks';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { FileSources, PermissionBits, channelConfigSchema } from 'librechat-data-provider';
 import {
