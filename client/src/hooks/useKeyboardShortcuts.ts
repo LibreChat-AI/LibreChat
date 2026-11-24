@@ -3,8 +3,8 @@ import { useSetAtom } from 'jotai';
 import copy from 'copy-to-clipboard';
 import { useToastContext } from '@librechat/client';
 import { useMatch, useNavigate } from 'react-router-dom';
-import { reachRow, useIsSubmitting } from '@librechat/chat/react';
 import { useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
+import { reachRow, useIsSubmitting, finishProgressiveRowMounts } from '@librechat/chat/react';
 import { PermissionTypes, Permissions, isForcedTemporaryRetention } from 'librechat-data-provider';
 import {
   bindingDisplayString,
@@ -609,16 +609,21 @@ export function useShortcutActions(): ShortcutAction[] {
   }, []);
 
   const handleCopyLastCode = useCallback(() => {
-    const blocks = document.querySelectorAll('.agent-turn pre code');
-    if (blocks.length === 0) {
-      return false;
-    }
-    const last = blocks[blocks.length - 1];
-    const text = last.textContent ?? '';
-    if (!text.trim()) {
-      return false;
-    }
-    return copy(text.trim(), { format: 'text/plain' });
+    const copyLast = () => {
+      const blocks = document.querySelectorAll('.agent-turn pre code');
+      const text = blocks[blocks.length - 1]?.textContent?.trim() ?? '';
+      return text !== '' && copy(text, { format: 'text/plain' });
+    };
+    /**
+     * A long thread mounts in steps, and the last block has to be looked for among all of its
+     * rows. One that opened at its start (auto-scroll off) still has its latest rows to come,
+     * so they come in first. One that opened at its end has them already: a block among the
+     * rows in is the last one, and only with none there is the rest of the thread brought in.
+     * Either way it happens within this key press, so the shortcut claims the press only for a
+     * real copy and makes it while the browser still allows one.
+     */
+    finishProgressiveRowMounts('later');
+    return copyLast() || (finishProgressiveRowMounts() && copyLast());
   }, []);
 
   const handleStopGenerating = useCallback(() => {

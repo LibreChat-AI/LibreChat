@@ -25,6 +25,7 @@ import store from '~/store';
 /** `copy-to-clipboard` exports a single callable: `copy(text, options?)`. */
 const mockCopy = jest.fn((_text: string, _options?: { format?: string }) => true);
 const mockReachRow = jest.fn((_row?: Element | null) => undefined);
+const mockFinishRowMounts = jest.fn((_which: 'all' | 'later') => false);
 
 jest.mock('~/components/Chat/Input/Reasoning', () => ({
   __esModule: true,
@@ -59,6 +60,7 @@ jest.mock('@librechat/chat/react', () => ({
   ...jest.requireActual('@librechat/chat/react'),
   useReducedMotion: () => true,
   reachRow: (row?: Element | null) => mockReachRow(row),
+  finishProgressiveRowMounts: (which?: 'all' | 'later') => mockFinishRowMounts(which ?? 'all'),
 }));
 
 jest.mock('copy-to-clipboard', () => ({
@@ -131,6 +133,8 @@ beforeEach(() => {
   window.localStorage.clear();
   mockCopy.mockClear();
   mockReachRow.mockReset();
+  mockFinishRowMounts.mockReset();
+  mockFinishRowMounts.mockReturnValue(false);
 });
 
 afterEach(() => {
@@ -627,6 +631,65 @@ describe('clipboard shortcuts', () => {
 
     const event = dispatchKey({ key: 'k', ctrlKey: true, shiftKey: true });
 
+    expect(mockCopy).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('copies a code block from a row a long thread had not mounted yet', () => {
+    renderHarness();
+    /** A thread opened at its end and still mounting: the older rows arrive when asked for. */
+    mockFinishRowMounts.mockImplementation((which) => {
+      if (which === 'later') {
+        return false;
+      }
+      appendCodeBlock('const earlier = true;');
+      return true;
+    });
+
+    const event = dispatchKey({ key: 'k', ctrlKey: true, shiftKey: true });
+
+    expect(mockFinishRowMounts.mock.calls).toEqual([['later'], ['all']]);
+    expect(mockCopy).toHaveBeenCalledWith('const earlier = true;', { format: 'text/plain' });
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('leaves a mounting thread to its steps when the rows already in hold the last code block', () => {
+    renderHarness();
+    appendCodeBlock('const latest = 1;');
+    /** Opened at its end: only older rows are waiting. */
+    mockFinishRowMounts.mockImplementation((which) => which === 'all');
+
+    dispatchKey({ key: 'k', ctrlKey: true, shiftKey: true });
+
+    expect(mockFinishRowMounts.mock.calls).toEqual([['later']]);
+    expect(mockCopy).toHaveBeenCalledWith('const latest = 1;', { format: 'text/plain' });
+  });
+
+  it('waits for the latest rows of a thread that opened at its start before copying', () => {
+    renderHarness();
+    appendCodeBlock('const older = 1;');
+    /** Auto-scroll off: the rows already in are the oldest, and the latest arrive when asked. */
+    mockFinishRowMounts.mockImplementation((which) => {
+      if (which === 'later') {
+        appendCodeBlock('const latest = 2;');
+      }
+      return which === 'later';
+    });
+
+    const event = dispatchKey({ key: 'k', ctrlKey: true, shiftKey: true });
+
+    expect(mockCopy).toHaveBeenCalledTimes(1);
+    expect(mockCopy).toHaveBeenCalledWith('const latest = 2;', { format: 'text/plain' });
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('does not claim the key press when the whole thread holds no code', () => {
+    renderHarness();
+    mockFinishRowMounts.mockImplementation((which) => which === 'all');
+
+    const event = dispatchKey({ key: 'k', ctrlKey: true, shiftKey: true });
+
+    expect(mockFinishRowMounts.mock.calls).toEqual([['later'], ['all']]);
     expect(mockCopy).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
   });

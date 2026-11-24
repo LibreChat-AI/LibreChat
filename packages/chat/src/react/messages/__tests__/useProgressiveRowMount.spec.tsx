@@ -11,6 +11,7 @@ import {
   createRowGates,
   RowMountProvider,
   useProgressiveRowMount,
+  finishProgressiveRowMounts,
   completeProgressiveRowMounts,
 } from '../useProgressiveRowMount';
 
@@ -173,6 +174,43 @@ describe('useProgressiveRowMount', () => {
 
     /** With nothing in flight it resolves immediately, no frames needed. */
     await expect(completeProgressiveRowMounts()).resolves.toBeUndefined();
+  });
+
+  it('finishes in-flight mounts within the call, for an action that answers in its own event', () => {
+    const { result } = setup();
+    expect(result.current).not.toBeNull();
+
+    let finished = false;
+    act(() => {
+      finished = finishProgressiveRowMounts();
+      /** No frame has passed and no promise has settled: the rows are in already. */
+      expect(result.current).toBeNull();
+    });
+    expect(finished).toBe(true);
+
+    /** With nothing in flight there is nothing to finish, and it says so. */
+    expect(finishProgressiveRowMounts()).toBe(false);
+  });
+
+  it('tells a thread whose latest rows are still to come from one that has them', () => {
+    /** Opened at its end: what is waiting is older than the rows already in. */
+    const fromEnd = setup({ anchorBottom: true });
+    let finished = true;
+    act(() => {
+      finished = finishProgressiveRowMounts('later');
+    });
+    expect(finished).toBe(false);
+    expect(fromEnd.result.current).not.toBeNull();
+    fromEnd.unmount();
+
+    /** Opened at its start: the latest rows are the ones waiting. */
+    const fromStart = setup({ anchorBottom: false });
+    expect(fromStart.result.current).toEqual({ start: 0, end: 15 });
+    act(() => {
+      finished = finishProgressiveRowMounts('later');
+      expect(fromStart.result.current).toBeNull();
+    });
+    expect(finished).toBe(true);
   });
 
   it('re-arms a fresh window when the conversation changes', () => {

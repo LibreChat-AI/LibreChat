@@ -8,6 +8,7 @@ import {
   useLayoutEffect,
   startTransition,
 } from 'react';
+import { flushSync } from 'react-dom';
 import type { ReactNode, RefObject } from 'react';
 
 /**
@@ -305,29 +306,32 @@ export function useProgressiveRowMount({
     }
   }, [isSubmitting, mountWindow, moveTo]);
 
-  const captureAnchor = useCallback(() => {
-    const container = scrollableRef.current;
-    heightRef.current = container && anchorBottom ? container.scrollHeight : null;
-    if (!container || !anchorBottom) {
-      anchorRef.current = null;
-      return;
-    }
-    /** Taken even where the browser anchors: whether it will for this step is only known once
-     *  the rows are in, by where the reader is then. */
-    const element = container.querySelector('.message-render');
-    /** Document-space offset (viewport top + scrollTop): the widening commit
-     *  is transition-deferred, so the user may scroll between capture and
-     *  commit. User scrolling moves viewport coordinates but not document
-     *  ones, so measuring here isolates the inserted-row shift and never
-     *  folds the user's own movement into the correction. */
-    anchorRef.current = element
-      ? {
-          element,
-          documentOffset: element.getBoundingClientRect().top + container.scrollTop,
-          byHand: pinsByHand(isSubmitting),
-        }
-      : null;
-  }, [anchorBottom, isSubmitting, scrollableRef]);
+  const captureAnchor = useCallback(
+    (byHand = pinsByHand(isSubmitting)) => {
+      const container = scrollableRef.current;
+      heightRef.current = container && anchorBottom ? container.scrollHeight : null;
+      if (!container || !anchorBottom) {
+        anchorRef.current = null;
+        return;
+      }
+      /** Taken even where the browser anchors: whether it will for this step is only known once
+       *  the rows are in, by where the reader is then. */
+      const element = container.querySelector('.message-render');
+      /** Document-space offset (viewport top + scrollTop): the widening commit
+       *  is transition-deferred, so the user may scroll between capture and
+       *  commit. User scrolling moves viewport coordinates but not document
+       *  ones, so measuring here isolates the inserted-row shift and never
+       *  folds the user's own movement into the correction. */
+      anchorRef.current = element
+        ? {
+            element,
+            documentOffset: element.getBoundingClientRect().top + container.scrollTop,
+            byHand,
+          }
+        : null;
+    },
+    [anchorBottom, isSubmitting, scrollableRef],
+  );
 
   useEffect(() => {
     if (mountWindow == null || tailDepth == null) {
@@ -429,29 +433,40 @@ export function useProgressiveRowMount({
     });
   }, [mountWindow, scrollableRef]);
 
-  /** Registered while a window is active so `completeProgressiveRowMounts`
-   *  (screenshot capture) can force the remaining rows in and wait for the
-   *  commit to paint before cloning the DOM. */
+  /** Registered while a window is active, so a consumer of the whole thread can bring the
+   *  remaining rows in (`completeProgressiveRowMounts`, `finishProgressiveRowMounts`). */
   const isWindowActive = mountWindow != null;
+  /** Whether rows after the mounted ones are still to come: a thread that opened at its start
+   *  mounts towards its end, where one that opened at its end has had its latest rows all along. */
+  const laterRef = useRef(false);
+  laterRef.current = mountWindow != null && tailDepth != null && mountWindow.end < tailDepth;
   useEffect(() => {
     if (!isWindowActive) {
       return;
     }
-    const complete = () =>
-      new Promise<void>((resolve) => {
-        moveTo(null);
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-      });
-    activeCompleters.add(complete);
-    return () => {
-      activeCompleters.delete(complete);
+    /**
+     * The rest of the thread lands above the reader like any step, in the commit that ends the
+     * window. The thread's scroller anchors again from that commit on, so where the browser
+     * anchors it is the one holding the reader for these rows, beside a reply included: pinning
+     * them by hand as well corrected twice and left the reader at the end of the thread.
+     */
+    const finish = () => {
+      captureAnchor(!anchorsNatively());
+      moveTo(null);
     };
-  }, [isWindowActive, moveTo]);
+    const thread = { finish, later: () => laterRef.current };
+    mounting.add(thread);
+    return () => {
+      mounting.delete(thread);
+    };
+  }, [isWindowActive, captureAnchor, moveTo]);
 
   return mountWindow;
 }
 
-const activeCompleters = new Set<() => Promise<void>>();
+/** Each thread that is still mounting: what mounts the rest of its rows, and whether any of
+ *  those come after the rows already in. */
+const mounting = new Set<{ finish: () => void; later: () => boolean }>();
 
 /**
  * Forces every in-flight progressive mount to completion and resolves after
@@ -460,8 +475,37 @@ const activeCompleters = new Set<() => Promise<void>>();
  * silently truncate the rows still outside the window.
  */
 export async function completeProgressiveRowMounts(): Promise<void> {
-  if (activeCompleters.size === 0) {
+  if (mounting.size === 0) {
     return;
   }
-  await Promise.all([...activeCompleters].map((complete) => complete()));
+  for (const thread of [...mounting]) {
+    thread.finish();
+  }
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
+
+/**
+ * Mounts the remaining rows of every thread still mounting before it returns, and says whether
+ * there were any. For an action that reads the thread from the document and has to answer
+ * inside the event that asked: a keyboard shortcut reports whether it did anything, and a copy
+ * made after the key press is one the browser may refuse.
+ *
+ * The rest of the thread lands in one commit, which is what mounting in steps exists to avoid,
+ * so call it once the rows already in have been found not to hold the answer. `'later'` keeps
+ * to the threads with rows still to come after the ones already in, for an action that wants
+ * the latest of something: there the rows already in cannot be trusted to hold it.
+ */
+export function finishProgressiveRowMounts(which: 'all' | 'later' = 'all'): boolean {
+  const threads = [...mounting].filter((thread) => which === 'all' || thread.later());
+  if (threads.length === 0) {
+    return false;
+  }
+  flushSync(() => {
+    for (const thread of threads) {
+      thread.finish();
+    }
+  });
+  return true;
 }
