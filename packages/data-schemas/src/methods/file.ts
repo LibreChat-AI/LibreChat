@@ -76,6 +76,8 @@ export type AvailableProjectFileRecord = {
   context?: string;
   user: string;
   tenantId?: string;
+  createdAt?: Date;
+  updatedAt?: Date;
 };
 
 type AvailableProjectFileRecordSource = Pick<
@@ -93,6 +95,8 @@ type AvailableProjectFileRecordSource = Pick<
   | 'context'
   | 'user'
   | 'tenantId'
+  | 'createdAt'
+  | 'updatedAt'
 >;
 
 function normalizeAvailableProjectFileRecord(
@@ -124,6 +128,8 @@ function normalizeAvailableProjectFileRecord(
     ...(file.context !== undefined ? { context: file.context } : {}),
     user: file.user.toString(),
     ...(file.tenantId !== undefined ? { tenantId: file.tenantId } : {}),
+    ...(file.createdAt !== undefined ? { createdAt: file.createdAt } : {}),
+    ...(file.updatedAt !== undefined ? { updatedAt: file.updatedAt } : {}),
   };
 }
 
@@ -804,6 +810,8 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
         context: 1,
         user: 1,
         tenantId: 1,
+        createdAt: 1,
+        updatedAt: 1,
       })
       .sort({ _id: -1 })
       .limit(limit + 1)

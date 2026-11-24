@@ -228,6 +228,49 @@ describe('ChatProject handlers', () => {
     expect(result.body).not.toHaveProperty('files.0.text');
   });
 
+  it('returns available-file timestamps the picker card dates itself by', async () => {
+    const createdAt = new Date('2026-03-01T12:00:00.000Z');
+    const updatedAt = new Date('2026-03-14T12:00:00.000Z');
+    const base = {
+      filepath: '/uploads/candidate.txt',
+      object: 'file' as const,
+      type: 'text/plain',
+      bytes: 10,
+      usage: 0,
+      embedded: true,
+      context: 'message_attachment',
+      user: 'owner',
+      tenantId: 'tenant-a',
+    };
+    const { handlers } = setup({
+      getChatProject: jest.fn().mockResolvedValue({
+        _id: projectId,
+        tenantId: 'tenant-a',
+        file_ids: [],
+      }),
+      getAvailableProjectFiles: jest.fn().mockResolvedValue({
+        files: [
+          { ...base, _id: 'a', file_id: 'dated', filename: 'dated.txt', createdAt, updatedAt },
+          { ...base, _id: 'b', file_id: 'legacy', filename: 'legacy.txt' },
+        ],
+        nextCursor: null,
+      }),
+    });
+    const { res, result } = response();
+
+    await handlers.listAvailableProjectFiles(request({ params: { projectId } }), res);
+
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(JSON.stringify(result.body));
+    expect(body.files[0]).toMatchObject({
+      file_id: 'dated',
+      createdAt: createdAt.toISOString(),
+      updatedAt: updatedAt.toISOString(),
+    });
+    expect(body.files[1]).not.toHaveProperty('createdAt');
+    expect(body.files[1]).not.toHaveProperty('updatedAt');
+  });
+
   it.each([{ limit: '0' }, { limit: '51' }, { limit: '1.5' }, { limit: 'nope' }])(
     'rejects invalid available-file limit %# before project access',
     async (query) => {
