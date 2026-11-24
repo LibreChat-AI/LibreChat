@@ -1,5 +1,18 @@
 /** Themed message and part components. Populated as the components move in. */
 export { Part } from './components/Part';
+export {
+  default as ErrorMessage,
+  ErrorBox,
+  ERROR_CONNECTION_TEXT,
+} from './components/errors/ErrorMessage';
+export { default as ErrorText } from './components/errors/ErrorText';
+export {
+  ErrorBody,
+  ErrorAction,
+  ErrorActions,
+  ErrorDetails,
+  ErrorWithDetail,
+} from './components/errors/parts';
 export { ContentParts } from './components/ContentParts';
 export { contentPartsRenderer } from './components/contentRenderer';
 export type {

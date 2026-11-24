@@ -137,7 +137,7 @@ message?: string } }`. Keep an existing domain-specific result shape when changi
   `packages/api/src/utils/errors.ts` documents when redacted error text is appropriate.
 - Localization is a UI responsibility, not a database-method return shape. When a failure reaches
   a user-facing surface, expose a safe, stable code the UI can map to localized, actionable copy
-  and a fallback. See `client/src/components/Messages/Content/Error/registry.ts` and
+  and a fallback. See `packages/chat/src/components/errors/registry.ts` and
   `client/src/components/Chat/Trace/Viewer.tsx`. Keep any intentionally disclosed provider detail
   behind its existing protection policy rather than treating arbitrary upstream text as safe.
 

@@ -145,11 +145,6 @@
       "count": 9
     }
   },
-  "client/src/components/Chat/Messages/Content/MessageContent.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
   "client/src/components/Chat/Messages/Content/Parts/ArtifactRow.tsx": {
     "shadcn/no-restyle": {
       "count": 7
@@ -351,17 +346,6 @@
     },
     "shadcn/require-static-classes": {
       "count": 3
-    }
-  },
-  "client/src/components/Messages/Content/Error/parts.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-inline-styles": {
-      "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 1
     }
   },
   "client/src/components/Messages/Content/Mermaid/Export.tsx": {

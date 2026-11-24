@@ -1,23 +1,16 @@
-import { useContext } from 'react';
-import { Permissions, SystemRoles, EModelEndpoint, PermissionTypes } from 'librechat-data-provider';
+import { useLocalize } from '@librechat/client';
+import { EModelEndpoint } from 'librechat-data-provider';
+import type { TranslationKeys } from '@librechat/client';
+import type { ReactNode } from 'react';
 import type { ErrorRendererProps } from './parts';
-import type { TranslationKeys } from '~/hooks';
-import { ErrorActions, ErrorBody, getProviderName, readString, useErrorEndpoint } from './parts';
-import { useHasAccess, useLocalize } from '~/hooks';
-import { AuthContext } from '~/hooks/AuthContext';
+import { useAgentBuilderAccess, useErrorEndpoint } from '../../react/errors';
+import { getProviderName, readString } from '../../core/errors';
+import { ErrorActions, ErrorBody } from './parts';
 
-export default function AgentError({ json, message }: ErrorRendererProps) {
+export default function AgentError({ json, message }: ErrorRendererProps): ReactNode {
   const localize = useLocalize();
   const { agent, provider: endpointProvider, endpointsConfig } = useErrorEndpoint(message);
-  const user = useContext(AuthContext)?.user;
-  const canUseAgents = useHasAccess({
-    permissionType: PermissionTypes.AGENTS,
-    permission: Permissions.USE,
-  });
-  const canCreateAgents = useHasAccess({
-    permissionType: PermissionTypes.AGENTS,
-    permission: Permissions.CREATE,
-  });
+  const { canUseBuilder, isAdmin } = useAgentBuilderAccess();
 
   const info = readString(json, 'info');
   const providerName = info != null ? getProviderName(info) : endpointProvider;
@@ -31,11 +24,8 @@ export default function AgentError({ json, message }: ErrorRendererProps) {
    */
   const agentsConfig = endpointsConfig?.[EModelEndpoint.agents];
   const builderAvailable =
-    agentsConfig != null && agentsConfig.disableBuilder !== true && canUseAgents && canCreateAgents;
-  const canEdit =
-    agent != null &&
-    builderAvailable &&
-    (agent.isEditable !== false || user?.role === SystemRoles.ADMIN);
+    agentsConfig != null && agentsConfig.disableBuilder !== true && canUseBuilder;
+  const canEdit = agent != null && builderAvailable && (agent.isEditable !== false || isAdmin);
 
   const supportName = agent?.support_contact?.name?.trim() ?? '';
   const supportEmail = agent?.support_contact?.email?.trim() ?? '';

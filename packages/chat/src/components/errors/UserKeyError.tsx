@@ -1,18 +1,13 @@
 import { useState } from 'react';
+import { useLocalize } from '@librechat/client';
 import { ErrorTypes, getEndpointField } from 'librechat-data-provider';
+import type { TranslationKeys } from '@librechat/client';
+import type { ReactNode } from 'react';
 import type { ErrorRendererProps } from './parts';
-import type { TranslationKeys } from '~/hooks';
-import {
-  ErrorBody,
-  readString,
-  ErrorAction,
-  ErrorActions,
-  formatTimestamp,
-  useErrorEndpoint,
-  ProviderErrorCodes,
-} from './parts';
-import { SetKeyDialog } from '~/components/Input/SetKeyDialog';
-import { useLocalize } from '~/hooks';
+import { readString, formatTimestamp, ProviderErrorCodes } from '../../core/errors';
+import { ErrorBody, ErrorAction, ErrorActions } from './parts';
+import { useMessagePartsHost } from '../../react/host';
+import { useErrorEndpoint } from '../../react/errors';
 
 type UserKeyErrorCode =
   | ErrorTypes.NO_USER_KEY
@@ -23,14 +18,22 @@ type UserKeyErrorCode =
   | (typeof ProviderErrorCodes)[keyof typeof ProviderErrorCodes];
 
 /** What the dialog is opened to do; every other code updates a key that is already saved. */
-const actionLabels: Partial<Record<UserKeyErrorCode, TranslationKeys>> = {
-  [ErrorTypes.NO_USER_KEY]: 'com_error_user_key_add',
-  [ErrorTypes.NO_BASE_URL]: 'com_error_user_url_add',
-  [ErrorTypes.INVALID_BASE_URL]: 'com_error_user_url_update',
-};
+function actionLabel(code: UserKeyErrorCode | undefined): TranslationKeys {
+  switch (code) {
+    case ErrorTypes.NO_USER_KEY:
+      return 'com_error_user_key_add';
+    case ErrorTypes.NO_BASE_URL:
+      return 'com_error_user_url_add';
+    case ErrorTypes.INVALID_BASE_URL:
+      return 'com_error_user_url_update';
+    default:
+      return 'com_error_user_key_update';
+  }
+}
 
-export default function UserKeyError({ json, message }: ErrorRendererProps) {
+export default function UserKeyError({ json, message }: ErrorRendererProps): ReactNode {
   const localize = useLocalize();
+  const { renderSetKeyDialog } = useMessagePartsHost();
   const [dialogOpen, setDialogOpen] = useState(false);
   const code = (readString(json, 'code') ?? readString(json, 'type')) as
     | UserKeyErrorCode
@@ -118,47 +121,51 @@ export default function UserKeyError({ json, message }: ErrorRendererProps) {
       errorMessage = localize('com_error_invalid_user_key');
   }
 
-  const canEditKey = userProvidesCredentials === true && endpoint != null;
-  const updateLabel =
-    (code != null ? actionLabels[code] : undefined) ?? 'com_error_user_key_update';
+  /** The reader can fix their own key here only where the host draws the dialog that edits it. */
+  const canEditKey =
+    userProvidesCredentials === true && endpoint != null && renderSetKeyDialog != null;
 
   return (
     <ErrorBody>
       {errorMessage}
       {canEditKey && (
         <ErrorActions>
-          <ErrorAction onClick={() => setDialogOpen(true)}>{localize(updateLabel)}</ErrorAction>
+          <ErrorAction onClick={() => setDialogOpen(true)}>
+            {localize(actionLabel(code))}
+          </ErrorAction>
         </ErrorActions>
       )}
-      {canEditKey && dialogOpen && endpoint != null && (
-        <SetKeyDialog
-          open={dialogOpen}
-          onOpenChange={setDialogOpen}
-          endpoint={endpoint}
-          endpointType={endpointType}
-          userProvideURL={getEndpointField(endpointsConfig, endpoint, 'userProvideURL')}
-          userProvideAccessKeyId={getEndpointField(
+      {canEditKey &&
+        dialogOpen &&
+        endpoint != null &&
+        renderSetKeyDialog != null &&
+        renderSetKeyDialog({
+          open: dialogOpen,
+          onOpenChange: setDialogOpen,
+          endpoint,
+          endpointType,
+          userProvideURL: getEndpointField(endpointsConfig, endpoint, 'userProvideURL'),
+          userProvideAccessKeyId: getEndpointField(
             endpointsConfig,
             endpoint,
             'userProvideAccessKeyId',
-          )}
-          userProvideSecretAccessKey={getEndpointField(
+          ),
+          userProvideSecretAccessKey: getEndpointField(
             endpointsConfig,
             endpoint,
             'userProvideSecretAccessKey',
-          )}
-          userProvideSessionToken={getEndpointField(
+          ),
+          userProvideSessionToken: getEndpointField(
             endpointsConfig,
             endpoint,
             'userProvideSessionToken',
-          )}
-          userProvideBearerToken={getEndpointField(
+          ),
+          userProvideBearerToken: getEndpointField(
             endpointsConfig,
             endpoint,
             'userProvideBearerToken',
-          )}
-        />
-      )}
+          ),
+        })}
     </ErrorBody>
   );
 }

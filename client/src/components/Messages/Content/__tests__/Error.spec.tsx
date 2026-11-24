@@ -51,20 +51,6 @@ jest.mock('~/hooks', () => ({
   useHasAccess: ({ permission }: { permission: string }) => mockAccess[permission] === true,
 }));
 
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  /** Mirrors the real hook's contract — a grid style plus a ref — without pulling `useMediaQuery`
-   *  and its `matchMedia` dependency into a spec that asserts copy, not motion. */
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: {
-      display: 'grid',
-      gridTemplateRows: isExpanded ? '1fr' : '0fr',
-      opacity: isExpanded ? 1 : 0,
-    },
-    ref: { current: null },
-  }),
-}));
-
 let mockPresetTargets: AgentDisplay[] = [];
 jest.mock('~/data-provider/Agents/queries', () => ({
   useModelSpecHandoffsQuery: () => ({ data: mockPresetTargets }),
