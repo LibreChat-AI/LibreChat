@@ -28,6 +28,7 @@ import {
   useProjectQuery,
 } from '~/data-provider';
 import { useIdChangeEffect, useAppStartup, useNewConvo, useLocalize } from '~/hooks';
+import { hasRetiredSavedSpec } from '~/utils/convos';
 import { ToolCallsMapProvider } from '~/Providers';
 import ChatView from '~/components/Chat/ChatView';
 import { NotificationSeverity } from '~/common';
@@ -268,7 +269,7 @@ export default function ChatRoute() {
         template: record,
         /* this is necessary to load all existing settings */
         preset: record as TPreset,
-        buildDefault: !unresolvedTarget,
+        buildDefault: !unresolvedTarget && !hasRetiredSavedSpec(record, endpointsQuery.data),
         keepComposerState: true,
       });
       hasSetConversation.current = true;

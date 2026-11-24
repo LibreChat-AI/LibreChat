@@ -23,6 +23,7 @@ import {
   buildDefaultConvo,
   requestChatFocus,
   conversationTarget,
+  hasRetiredSavedSpec,
   isNotFoundError,
   updateConvoInAllQueries,
   logger,
@@ -280,12 +281,7 @@ const useNavigateToConvo = (index = 0) => {
 
     let convo = { ...conversation };
     const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
-    const retiredSpec =
-      convo.conversationId !== Constants.NEW_CONVO &&
-      !!convo.spec &&
-      !!convo.endpoint &&
-      endpointsConfig != null &&
-      !endpointsConfig[convo.endpoint];
+    const retiredSpec = hasRetiredSavedSpec(convo, endpointsConfig);
     if (!retiredSpec && (!convo.endpoint || !endpointsConfig?.[convo.endpoint])) {
       /* undefined/removed endpoint edge case */
       const defaultEndpoint = getDefaultEndpoint({

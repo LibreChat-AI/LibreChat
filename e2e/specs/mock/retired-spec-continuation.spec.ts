@@ -25,7 +25,13 @@ test('retries a failed saved target loaded directly by URL', async ({ page }) =>
   await continueSavedSpec(page, 'url');
 });
 
-async function continueSavedSpec(page: Page, retry?: 'sidebar' | 'url') {
+test('keeps the saved target after another tab selects a model and the route is restored', async ({
+  page,
+}) => {
+  await continueSavedSpec(page, 'restored');
+});
+
+async function continueSavedSpec(page: Page, retry?: 'sidebar' | 'url' | 'restored') {
   const provider = MOCK_ENDPOINTS[0];
   const spec = 'e2e-handoff-specialist';
   await page.goto(NEW_CHAT_PATH);
@@ -48,6 +54,12 @@ async function continueSavedSpec(page: Page, retry?: 'sidebar' | 'url') {
       expect(result.matchedCount).toBe(1);
     });
 
+    if (retry === 'restored') {
+      const other = await page.context().newPage();
+      await other.goto(NEW_CHAT_PATH);
+      await selectMockEndpoint(other, MOCK_ENDPOINTS[1]);
+      await other.close();
+    }
     if (retry) {
       await page.route(`**/api/convos/${conversationId}`, async (route) => {
         const response = await route.fetch();
@@ -58,7 +70,7 @@ async function continueSavedSpec(page: Page, retry?: 'sidebar' | 'url') {
             ...body,
             endpoint: 'Retired Provider',
             model: 'retired-model',
-            targetResolutionFailed: true,
+            targetResolutionFailed: retry === 'restored' ? undefined : true,
           },
         });
       });

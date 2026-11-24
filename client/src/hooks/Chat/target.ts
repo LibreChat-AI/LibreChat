@@ -8,12 +8,11 @@ import {
   defaultOrderQuery,
   PermissionBits,
   isAgentsEndpoint,
-  Constants,
   isEphemeralAgentId,
   isAssistantsEndpoint,
   defaultAssistantsVersion,
 } from 'librechat-data-provider';
-import type { TConversation, TEndpointsConfig, AssistantsEndpoint } from 'librechat-data-provider';
+import type { TConversation, AssistantsEndpoint } from 'librechat-data-provider';
 import type { Dispatch, SetStateAction } from 'react';
 import {
   useGetStartupConfig,
@@ -22,7 +21,7 @@ import {
   useListAgentsQuery,
   useListAssistantsQuery,
 } from '~/data-provider';
-import { updateConvoInAllQueries, conversationTarget } from '~/utils/convos';
+import { updateConvoInAllQueries, conversationTarget, hasRetiredSavedSpec } from '~/utils/convos';
 import { navigationGenerationAtom } from '~/store/navigation';
 import { assistantKey } from './ask/guards';
 
@@ -169,7 +168,8 @@ export default function useTarget(
   const retryRef = useRef(() => {});
   retryRef.current = () => {
     const id = conversation?.conversationId;
-    if (missingEndpoint && id && id !== Constants.NEW_CONVO && conversation.spec) {
+    const recover = !!conversation && hasRetiredSavedSpec(conversation, endpoints.data);
+    if (recover && id) {
       recovery.current?.abort();
       const attempt = new AbortController();
       recovery.current = attempt;
@@ -178,10 +178,11 @@ export default function useTarget(
       const navigation = store.get(navigationGenerationAtom);
       const key = [QueryKeys.conversation, id];
       const cached = queryClient.getQueryData<TConversation>(key);
-      void dataService
-        .getConversationById(id, attempt.signal)
-        .then((record) => {
-          const served = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
+      void Promise.all([
+        dataService.getConversationById(id, attempt.signal),
+        endpoints.refetch({ cancelRefetch: false }),
+      ])
+        .then(([record, refreshed]) => {
           if (
             attempt.signal.aborted ||
             currentIdentity.current !== identity ||
@@ -192,7 +193,8 @@ export default function useTarget(
             record.conversationId !== id ||
             record.spec !== conversation.spec ||
             !record.endpoint ||
-            !served?.[record.endpoint] ||
+            !refreshed.data?.[record.endpoint] ||
+            !!refreshed.data[endpoint] ||
             !record.model
           )
             return;
@@ -208,7 +210,7 @@ export default function useTarget(
         .catch(() => {});
     }
     if (startup.isError) void startup.refetch();
-    if (endpoints.isError || missingEndpoint) void endpoints.refetch();
+    if (!recover && (endpoints.isError || missingEndpoint)) void endpoints.refetch();
     if (isSavedAgent) void agent.refetch();
     if (userProvidesCredentials && !credentialsReady) void checkUserKey.refetch();
     if (assistantId && assistantEnabled) void assistant.refetch();

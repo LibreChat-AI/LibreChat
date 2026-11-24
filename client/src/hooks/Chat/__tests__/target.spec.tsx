@@ -113,6 +113,37 @@ beforeEach(() => {
   jest.spyOn(dataService, 'listAssistants').mockImplementation(() => new Promise(() => {}));
 });
 
+it.each([false, true])(
+  'waits for refreshed endpoints after recovered detail (old endpoint returns=%s)',
+  async (restored) => {
+    const retired = conversation({
+      conversationId: 'saved',
+      endpoint: EModelEndpoint.google,
+      model: 'saved-model',
+      spec: 'saved-spec',
+    });
+    const recovered = { ...retired, endpoint: EModelEndpoint.anthropic, model: 'recovered' };
+    const endpoints = deferred<TEndpointsConfig>();
+    jest.spyOn(dataService, 'getAIEndpoints').mockReturnValueOnce(endpoints.promise);
+    jest.spyOn(dataService, 'getConversationById').mockResolvedValueOnce(recovered);
+    const { result, client } = setup(retired, undefined, Infinity);
+    client.setQueryData([QueryKeys.conversation, 'saved'], retired);
+    await waitFor(() => expect(result.current.target.failed).toBe(true));
+    await act(async () => result.current.target.retry());
+    expect(result.current.value?.endpoint).toBe(EModelEndpoint.google);
+    await act(async () =>
+      endpoints.resolve({
+        [EModelEndpoint.anthropic]: { order: 0 },
+        ...(restored ? { [EModelEndpoint.google]: { order: 1 } } : {}),
+      }),
+    );
+    await waitFor(() => expect(result.current.target.ready).toBe(true));
+    expect(result.current.value?.endpoint).toBe(
+      restored ? EModelEndpoint.google : EModelEndpoint.anthropic,
+    );
+  },
+);
+
 it('retries a retired saved spec and preserves active conversation settings', async () => {
   const retired = conversation({
     conversationId: 'saved',
