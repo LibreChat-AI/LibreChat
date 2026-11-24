@@ -58,6 +58,8 @@ function hasExplicitConfig(
       return interfaceConfig?.mcpServers !== undefined;
     case PermissionTypes.REMOTE_AGENTS:
       return interfaceConfig?.remoteAgents !== undefined;
+    case PermissionTypes.AGENT_EVENTS:
+      return interfaceConfig?.agentEvents !== undefined;
     case PermissionTypes.SKILLS:
       return interfaceConfig?.skills !== undefined;
     case PermissionTypes.SHARED_LINKS:
@@ -715,6 +717,24 @@ export async function updateInterfacePermissions(
                 getConfigCreate(loadedInterface.schedules),
                 defaultPerms[PermissionTypes.SCHEDULES]?.[Permissions.CREATE],
                 schedulesDefaultCreate ?? true,
+              ),
+            }
+          : {}),
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: getPermissionValue(
+          loadedInterface.agentEvents?.use,
+          defaultPerms[PermissionTypes.AGENT_EVENTS]?.[Permissions.USE],
+          defaults.agentEvents?.use,
+        ),
+        ...((typeof interfaceConfig?.agentEvents === 'object' &&
+          'create' in interfaceConfig.agentEvents) ||
+        !existingPermissions?.[PermissionTypes.AGENT_EVENTS]
+          ? {
+              [Permissions.CREATE]: getPermissionValue(
+                loadedInterface.agentEvents?.create,
+                defaultPerms[PermissionTypes.AGENT_EVENTS]?.[Permissions.CREATE],
+                defaults.agentEvents?.create,
               ),
             }
           : {}),

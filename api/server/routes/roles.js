@@ -11,6 +11,7 @@ const {
   marketplacePermissionsSchema,
   peoplePickerPermissionsSchema,
   remoteAgentsPermissionsSchema,
+  agentEventsPermissionsSchema,
   skillPermissionsSchema,
 } = require('librechat-data-provider');
 const { createRolePermissionsUpdateHandler } = require('@librechat/api');
@@ -66,6 +67,11 @@ const permissionConfigs = {
     schema: skillPermissionsSchema,
     permissionType: PermissionTypes.SKILLS,
     errorMessage: 'Invalid skill permissions.',
+  },
+  'agent-events': {
+    schema: agentEventsPermissionsSchema,
+    permissionType: PermissionTypes.AGENT_EVENTS,
+    errorMessage: 'Invalid agent event permissions.',
   },
 };
 
@@ -176,5 +182,11 @@ router.put('/:roleName/remote-agents', manageRoles, createPermissionUpdateHandle
  * Update skill permissions for a specific role
  */
 router.put('/:roleName/skills', manageRoles, createPermissionUpdateHandler('skills'));
+
+/**
+ * PUT /api/roles/:roleName/agent-events
+ * Update agent event subscription permissions for a specific role
+ */
+router.put('/:roleName/agent-events', manageRoles, createPermissionUpdateHandler('agent-events'));
 
 module.exports = router;

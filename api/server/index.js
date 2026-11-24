@@ -516,6 +516,8 @@ const startServer = async () => {
   app.use('/api/share', preAuthTenantMiddleware, routes.share);
   app.use('/api/roles', routes.roles);
   app.use('/api/agents/chat', rejectChatStartsUntilReady);
+  /** Before `/api/agents`, whose `/:id` routes would otherwise read `events` as an agent id. */
+  app.use('/api/agents/events', routes.events);
   app.use('/api/agents', routes.agents);
   app.use('/api/channels', routes.channels);
   app.use('/api/banner', routes.banner);

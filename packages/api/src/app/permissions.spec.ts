@@ -128,6 +128,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
     };
 
     const expectedPermissionsForAdmin = {
@@ -190,6 +194,10 @@ describe('updateInterfacePermissions - permissions', () => {
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
       },
     };
 
@@ -348,6 +356,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
     };
 
     const expectedPermissionsForAdmin = {
@@ -410,6 +422,10 @@ describe('updateInterfacePermissions - permissions', () => {
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
       },
     };
 
@@ -524,6 +540,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
     };
 
     const expectedPermissionsForAdmin = {
@@ -586,6 +606,10 @@ describe('updateInterfacePermissions - permissions', () => {
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
       },
     };
 
@@ -713,6 +737,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
     };
 
     const expectedPermissionsForAdmin = {
@@ -775,6 +803,10 @@ describe('updateInterfacePermissions - permissions', () => {
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
       },
     };
 
@@ -889,6 +921,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
     };
 
     const expectedPermissionsForAdmin = {
@@ -951,6 +987,10 @@ describe('updateInterfacePermissions - permissions', () => {
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
       },
     };
 
@@ -1070,6 +1110,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
     };
 
     const expectedPermissionsForAdmin = {
@@ -1120,6 +1164,10 @@ describe('updateInterfacePermissions - permissions', () => {
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
       },
     };
 
@@ -1256,6 +1304,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
     };
 
     const expectedPermissionsForAdmin = {
@@ -1310,6 +1362,10 @@ describe('updateInterfacePermissions - permissions', () => {
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
       },
     };
 
@@ -2940,6 +2996,36 @@ describe('updateInterfacePermissions - permissions', () => {
       [Permissions.CREATE]: true,
       [Permissions.SHARE]: true,
       [Permissions.SHARE_PUBLIC]: true,
+    });
+  });
+
+  it('turns agent event subscriptions on only where the operator does', async () => {
+    mockGetRoleByName.mockResolvedValue(null);
+    const seed = async (config: object) => {
+      mockUpdateAccessPermissions.mockClear();
+      const configDefaults = { interface: {} } as TConfigDefaults;
+      const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
+      await updateInterfacePermissions({
+        appConfig: { config, interfaceConfig } as unknown as AppConfig,
+        getRoleByName: mockGetRoleByName,
+        updateAccessPermissions: mockUpdateAccessPermissions,
+      });
+      return Object.fromEntries(
+        mockUpdateAccessPermissions.mock.calls.map((call) => [
+          call[0],
+          call[1][PermissionTypes.AGENT_EVENTS],
+        ]),
+      );
+    };
+    const off = { [Permissions.USE]: false, [Permissions.CREATE]: false };
+    expect(await seed({ interface: {} })).toEqual({
+      [SystemRoles.ADMIN]: off,
+      [SystemRoles.USER]: off,
+    });
+    const on = { [Permissions.USE]: true, [Permissions.CREATE]: true };
+    expect(await seed({ interface: { agentEvents: { use: true, create: true } } })).toEqual({
+      [SystemRoles.ADMIN]: on,
+      [SystemRoles.USER]: on,
     });
   });
 

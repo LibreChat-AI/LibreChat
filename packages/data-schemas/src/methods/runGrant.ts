@@ -4,6 +4,7 @@ import {
   agentKeyMCPIdentitySchema,
   agentKeyMCPEnrollmentSchema,
   scheduledMCPEnrollmentSchema,
+  subscriptionEnrollmentSchema,
   MAX_RUN_GRANT_SERVER_TOOLS,
   grantLifetime,
 } from 'librechat-data-provider';
@@ -12,6 +13,7 @@ import type {
   RunGrant,
   AgentKeyMCPIdentity,
   ScheduledMCPIdentity,
+  SubscriptionIdentity,
 } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 
@@ -424,6 +426,50 @@ export function createAgentKeyMCPConsentStorage(
       runValidators: false,
     },
     now,
+  );
+}
+
+/**
+ * The grant of an event subscription, on the subscription's own document: one subscription is
+ * for one agent, so it holds one. A grant dies with its subscription, and is made for one
+ * revision of it: an edit moves the revision, and the grant made before it allows nothing.
+ */
+export function createSubscriptionGrantStorage(
+  mongoose: typeof import('mongoose'),
+  options: { now?: () => number } = {},
+): RunGrantStorage<SubscriptionIdentity> {
+  return createEmbeddedGrantStorage<SubscriptionIdentity>(
+    {
+      model: () => mongoose.models.AgentEventSubscription as unknown as Model<Row>,
+      path: () => 'grant',
+      scope: (identity) => ({
+        id: identity.subscriptionId,
+        user: identity.ownerId,
+        tenantId: identity.tenantId,
+      }),
+      fence: (identity, { expectedConfigRevision, requireEnabled }) => ({
+        ...(expectedConfigRevision != null && { revision: expectedConfigRevision }),
+        agentId: identity.agentId,
+        ...(requireEnabled === true && { enabled: true }),
+      }),
+      select: 'agentId enabled revision grant',
+      parse: (value) => {
+        const parsed = subscriptionEnrollmentSchema.safeParse(value);
+        return parsed.success ? parsed.data : undefined;
+      },
+      sameIdentity: (stored, expected) =>
+        stored.subscriptionId === expected.subscriptionId &&
+        stored.ownerId === expected.ownerId &&
+        stored.tenantId === expected.tenantId &&
+        stored.agentId === expected.agentId,
+      describe: (row) => ({
+        agentId: row.agentId as string,
+        enabled: row.enabled as boolean,
+        configRevision: row.revision as number,
+      }),
+      runValidators: true,
+    },
+    options.now ?? Date.now,
   );
 }
 

@@ -223,6 +223,12 @@ export interface RunGrantExecutionDeps<Identity extends RunGrantIdentity = Sched
    */
   coversTools?: boolean;
   /**
+   * Whether a subject with no grant loads only what a grant that lists nothing would: none of
+   * its agents' MCP tools and, where the grant covers the other tools, none of those. Absent,
+   * such a run loads every tool and is refused at the call once a grant is required.
+   */
+  scoped?: boolean;
+  /**
    * Whether a completion turn for work a run sent to the background resolves this subject's
    * grant again. Absent, it does not, and a run under a grant starts nothing there.
    */
@@ -438,7 +444,9 @@ export function createRunGrantExecution<Identity extends RunGrantIdentity = Sche
         );
       },
       narrow: (agentId: string, toolKeys: readonly string[]) =>
-        enrolled ? toolKeys.filter((key) => loads(agentId, key)) : [...toolKeys],
+        enrolled || deps.scoped === true
+          ? toolKeys.filter((key) => loads(agentId, key))
+          : [...toolKeys],
       grantsTool: allows,
       coversTools: deps.coversTools === true,
       ...(deps.wording && { wording: deps.wording }),

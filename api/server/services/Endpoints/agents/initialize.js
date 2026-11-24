@@ -57,6 +57,7 @@ const {
   retainScheduleMCPCompletion,
   scheduleExecution,
   scheduleSubject,
+  subscriptionSubject,
   keySubject,
   getMCPRequestContext,
   createSubagentCodeRouting,
@@ -143,6 +144,7 @@ const SUBAGENT_GRAPH_LOAD_CONCURRENCY = 4;
  * @param {boolean} [definitionsOnly=false] - When true, returns only serializable
  *   tool definitions without creating full tool instances (for event-driven mode)
  * @param {number} [jobCreatedAt] - The generation epoch that owns emitted tool events
+ * @param {boolean} [unattended] - Nobody can follow a sign-in prompt for this run
  */
 function createToolLoader(
   req,
@@ -153,6 +155,7 @@ function createToolLoader(
   jobCreatedAt,
   upstreamTokenProvider,
   upstreamTokenProviderResolver,
+  unattended,
 ) {
   /**
    * @param {object} params
@@ -198,6 +201,7 @@ function createToolLoader(
         accessibleMcpServerNames,
         upstreamTokenProvider,
         upstreamTokenProviderResolver,
+        ...(unattended === true && { unattended }),
       });
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal }) || isContentFilterError(error)) {
@@ -525,6 +529,7 @@ const initializeClientWithProvider = async ({
         actionsEnabled: ctx.actionsEnabled,
         accessibleMcpServerNames: ctx.accessibleMcpServerNames,
         jobCreatedAt,
+        ...(runContext?.unattended === true && { unattended: true }),
       });
 
       logger.debug(`[ON_TOOL_EXECUTE] loaded ${result.loadedTools?.length ?? 0} tools`);
@@ -730,6 +735,7 @@ const initializeClientWithProvider = async ({
     jobCreatedAt,
     upstreamTokenProvider,
     upstreamTokenProviderResolver,
+    runContext?.unattended,
   );
   /** @type {Array<MongoFile>} */
   const requestFiles = req.body.files ?? [];
@@ -1439,6 +1445,7 @@ const initializeClientWithProvider = async ({
               jobCreatedAt,
               upstreamTokenProvider,
               upstreamTokenProviderResolver,
+              runContext?.unattended,
             ),
             requestFiles,
             authorizedRunFiles: getAuthorizedRunFileSnapshot({
@@ -2199,6 +2206,7 @@ function createInitializeClient(dependencies = {}) {
             ),
         ),
         keySubject(() => require('~/server/services/ApiKeys/grants')),
+        subscriptionSubject(() => require('~/server/services/Events/subject')),
       ],
       () =>
         initializeWithScheduledMCPBearer(

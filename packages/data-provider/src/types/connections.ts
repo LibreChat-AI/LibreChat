@@ -22,3 +22,16 @@ export interface Connection {
   /** The user who bound the install. */
   createdBy: string;
 }
+
+/** A connection as its picker shows it: nothing of the install beyond its account and state. */
+export interface ConnectionChoice {
+  id: string;
+  provider: ConnectionProvider;
+  /** The provider-side account the app is installed on, by name. */
+  account: string;
+  status: ConnectionStatus;
+}
+
+export interface ConnectionChoicesResponse {
+  connections: ConnectionChoice[];
+}

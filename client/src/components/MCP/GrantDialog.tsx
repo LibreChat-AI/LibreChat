@@ -20,6 +20,8 @@ export interface GrantCopy {
   boundary: TranslationKeys;
   /** Replaces the status line for a state, where the default speaks of schedules. */
   status?: Partial<Record<RunGrantView['state'], TranslationKeys>>;
+  /** Replaces the notice that the subject's tools are refused until a grant is made. */
+  required?: TranslationKeys;
   confirmed?: TranslationKeys;
 }
 
@@ -161,7 +163,7 @@ function Grant({
           <p role="status">{localize(copy.status?.[data.state] ?? statusKeys[data.state])}</p>
           {data.required && (
             <p className="text-status-warning text-sm">
-              {localize('com_ui_schedule_consent_required')}
+              {localize(copy.required ?? 'com_ui_schedule_consent_required')}
             </p>
           )}
           {data.requireAfterMs != null && (

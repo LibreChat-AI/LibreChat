@@ -20,7 +20,11 @@ import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
 import type { ClearFileCodeEnvRefsParams } from '~/types/file';
 import type { FileStorageMethods } from './fileStorage';
 import { createToolApprovalGrantMethods } from './toolApprovalGrant';
-export { createScheduleMCPConsentStorage, createAgentKeyMCPConsentStorage } from './runGrant';
+export {
+  createScheduleMCPConsentStorage,
+  createAgentKeyMCPConsentStorage,
+  createSubscriptionGrantStorage,
+} from './runGrant';
 export type {
   RunGrantStorage,
   RunGrantSnapshot,

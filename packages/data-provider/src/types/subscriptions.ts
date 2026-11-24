@@ -84,6 +84,8 @@ export const subscriptionCreateSchema = z
   })
   .strict();
 export type SubscriptionCreate = z.infer<typeof subscriptionCreateSchema>;
+/** What a client sends to create one: fields with a default may be left out. */
+export type SubscriptionCreateInput = z.input<typeof subscriptionCreateSchema>;
 
 /**
  * An edit. A subscription stays on the connection and agent it was created for. `null`
@@ -104,6 +106,7 @@ export const subscriptionUpdateSchema = partialWithoutDefaults(
     Object.entries(input).some(([key, value]) => key !== 'expectedRevision' && value !== undefined),
   );
 export type SubscriptionUpdate = z.infer<typeof subscriptionUpdateSchema>;
+export type SubscriptionUpdateInput = z.input<typeof subscriptionUpdateSchema>;
 
 /** A standing instruction: when these events arrive on a connection, run this agent. */
 export interface Subscription {
@@ -125,4 +128,8 @@ export interface Subscription {
   enabled: boolean;
   /** Moves forward with every edit, so a run can tell it started under an older one. */
   revision: number;
+}
+
+export interface SubscriptionsResponse {
+  subscriptions: Subscription[];
 }

@@ -3626,6 +3626,13 @@ export const interfaceSchema = z
         public: z.boolean().optional(),
       })
       .optional(),
+    /** Seeds the AGENT_EVENTS role permissions at startup: who may subscribe agents to events. */
+    agentEvents: z
+      .object({
+        use: z.boolean().optional(),
+        create: z.boolean().optional(),
+      })
+      .optional(),
     skills: z
       .union([
         z.boolean(),
@@ -3856,6 +3863,10 @@ export const interfaceSchema = z
       create: false,
       share: false,
       public: false,
+    },
+    agentEvents: {
+      use: false,
+      create: false,
     },
     skills: {
       use: true,
