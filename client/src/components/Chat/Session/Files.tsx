@@ -3,7 +3,7 @@ import { Switch } from '@librechat/client';
 import { FileText, Image as ImageIcon } from 'lucide-react';
 import type { SessionFilesView } from './useFiles';
 import type { TranslationKeys } from '~/hooks';
-import type { FileRow } from './files';
+import type { FileRow } from './rows';
 import Section from '../BackgroundTasks/Section';
 import { cn, formatFileSize } from '~/utils';
 import { useLocalize } from '~/hooks';
