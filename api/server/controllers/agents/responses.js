@@ -1,6 +1,6 @@
 const { nanoid } = require('nanoid');
 const { logger } = require('@librechat/data-schemas');
-const { Callback, formatAgentMessages } = require('@librechat/agents');
+const { Callback } = require('@librechat/agents');
 const {
   hasSubagentCapability,
   EModelEndpoint,
@@ -84,6 +84,8 @@ const {
   convertInputToMessages,
   extractResponseInputFileContent,
   validateResponseRequest,
+  bindStoredClientResults,
+  formatResponseMessages,
   buildAggregatedResponse,
   buildResponsesUsage,
   createResponseAggregator,
@@ -612,8 +614,9 @@ const executeResponse = async (envelope, { req, res }) => {
       const previousMessages = request.previous_response_id
         ? await loadPreviousMessages(conversationId, principal.userId, previousMessageId)
         : [];
+      const submitted = bindStoredClientResults(inputMessages, previousMessages, previousMessageId);
       const inputChain = responseRuntime.inputChain(
-        buildResponseInputChain(inputMessages, previousMessageId, previousMessages),
+        buildResponseInputChain(submitted, previousMessageId, previousMessages),
       );
       const parentMessageId = inputChain.parentMessageId;
       if (request.previous_response_id) {
@@ -980,7 +983,7 @@ const executeResponse = async (envelope, { req, res }) => {
       const actuallyStreaming = isStreaming && !streamingDisabled;
 
       // Merge previous messages with new input
-      const allMessages = [...previousMessages, ...inputMessages];
+      const allMessages = [...previousMessages, ...submitted];
 
       /** The caller's function tools: declared to the model with no server-side
        *  executor, handed back when the model calls one, and reported on the
@@ -1008,9 +1011,8 @@ const executeResponse = async (envelope, { req, res }) => {
         allMessages,
         true,
       );
-      const formatted = formatAgentMessages(
+      const formatted = formatResponseMessages(
         stripUnusableSummaryParts(stripActivityLabelParts(allMessages)),
-        {},
         toolSet,
       );
       const formattedMessages = formatted.messages;

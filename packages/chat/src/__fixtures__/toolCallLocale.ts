@@ -11,6 +11,7 @@ export function translate(key: string, values?: Record<string, string | number>)
     com_ui_tool_calling: `Calling ${subject}`,
     com_ui_sign_in_to_domain: `Sign in to ${subject}`,
     com_ui_cancelled: 'Cancelled',
+    com_ui_client_tool_requested: `Requested ${subject} from client`,
     com_ui_requires_auth: 'Requires authentication',
     com_assistants_allow_sites_you_trust: 'Only allow sites you trust',
     com_ui_via_server: `via ${subject}`,
