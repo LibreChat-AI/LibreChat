@@ -249,11 +249,20 @@ try {
     }
     default { exit 1 }
   }
-} catch { exit 1 }
+} catch {
+  # Only return fixed diagnostics, never exception messages or input data.
+  if ($_.Exception.Message -in @('Not a local filesystem path', 'Unsupported filesystem',
+      'Invalid parent directory', 'Untrusted parent directory', 'Unknown ACE',
+      'Writable parent directory', 'Directory is not private')) { exit 5 }
+  exit 1
+}
 exit 0
 `;
 
-const failure = (): Error => new Error('Unable to guarantee private access on Windows.');
+function failure(reason?: 'path-policy' | 'launcher' | 'descriptor'): Error {
+  const message = 'Unable to guarantee private access on Windows.';
+  return new Error(reason ? `${message} (${reason})` : message);
+}
 
 function checkCanonical(requested: string, resolved: string): void {
   // Reject alternate drive mappings, short names and reparse paths rather than blessing their targets.
@@ -262,21 +271,40 @@ function checkCanonical(requested: string, resolved: string): void {
 
 let encodedScript: string | undefined;
 
+export function windowsPowerShell() {
+  const root = process.env.SystemRoot ?? '';
+  if (!/^[a-z]:\\[^/]+$/i.test(root) || win32.normalize(root) !== root) throw failure();
+  const system = win32.join(root, 'System32');
+  const home = win32.join(system, 'WindowsPowerShell', 'v1.0');
+  const env: NodeJS.ProcessEnv = {
+    SystemRoot: root,
+    SystemDrive: win32.parse(root).root.slice(0, 2),
+    windir: root,
+    PATH: `${system};${root}`,
+    PSModulePath: win32.join(home, 'Modules'),
+  };
+  for (const key of [
+    'USERPROFILE',
+    'LOCALAPPDATA',
+    'APPDATA',
+    'ProgramData',
+    'HOMEDRIVE',
+    'HOMEPATH',
+  ]) {
+    env[key] = process.env[key];
+  }
+  return { executable: win32.join(home, 'powershell.exe'), cwd: root, env };
+}
+
 function command(
   operation: 'directory' | 'read' | 'publish' | 'promote' | 'remove',
   target: string,
   stage?: string,
 ) {
-  const root = process.env.SystemRoot ?? '';
-  if (!/^[a-z]:\\[^/]+$/i.test(root) || win32.normalize(root) !== root) {
-    throw failure();
-  }
-  const system = win32.join(root, 'System32');
-  const home = win32.join(system, 'WindowsPowerShell', 'v1.0');
-  const temp =
-    operation === 'directory' || operation === 'publish' ? tmpdir() : realpathSync.native(tmpdir());
+  const { executable, cwd, env } = windowsPowerShell();
+  const temp = realpathSync.native(tmpdir());
   return {
-    executable: win32.join(home, 'powershell.exe'),
+    executable,
     args: [
       '-NoProfile',
       '-NonInteractive',
@@ -286,11 +314,9 @@ function command(
       (encodedScript ??= Buffer.from(script, 'utf16le').toString('base64')),
     ],
     options: {
-      cwd: root,
+      cwd,
       env: {
-        SystemRoot: root,
-        windir: root,
-        PSModulePath: win32.join(home, 'Modules'),
+        ...env,
         TEMP: temp,
         TMP: temp,
         LIBRECHAT_PRIVATE_OPERATION: operation,
@@ -356,8 +382,10 @@ export async function makeWindowsPrivateDirectory(prefix: string): Promise<strin
   const { executable, args, options } = command('directory', directory);
   return new Promise((resolve, reject) => {
     const child = execFile(executable, args, options, (error) => {
-      if (error) reject(failure());
-      else resolve(directory);
+      if (!error) resolve(directory);
+      else if (error.code === 5) reject(failure('path-policy'));
+      else if (typeof error.code === 'number') reject(failure('descriptor'));
+      else reject(failure('launcher'));
     });
     child.stdin?.end();
   });

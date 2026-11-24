@@ -30,6 +30,19 @@ jobs:
         with:
           node-version: '24.22.3'
           cache: npm
+      - name: Verify Windows PowerShell can start
+        run: |
+          node -e '
+            const { spawnSync } = require("node:child_process");
+            const { windowsPowerShell } = require("./packages/api/src/utils/windowsPrivate.ts");
+            const { executable, cwd, env } = windowsPowerShell();
+            for (const childEnv of [process.env, env]) {
+              const r = spawnSync(executable, ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], {
+                cwd, env: childEnv, stdio: "ignore", windowsHide: true, timeout: 10000,
+              });
+              if (r.status !== 0) throw new Error(`Windows PowerShell probe failed: ${r.error?.code ?? r.status}`);
+            }
+          '
       - run: npm ci
       - name: Verify native credential and snapshot ACLs
         working-directory: packages/api

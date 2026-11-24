@@ -1,5 +1,6 @@
-import { win32 } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { windowsPowerShell } from './windowsPrivate';
 
 const control = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -30,10 +31,9 @@ interface WindowsAcl {
 }
 
 function aclCommand(file: string, rights?: string, inherit = 'None'): string {
-  const root = process.env.SystemRoot!;
-  const home = win32.join(root, 'System32', 'WindowsPowerShell', 'v1.0');
-  return execFileSync(
-    win32.join(home, 'powershell.exe'),
+  const { executable, cwd, env } = windowsPowerShell();
+  const result = spawnSync(
+    executable,
     [
       '-NoProfile',
       '-NonInteractive',
@@ -43,10 +43,11 @@ function aclCommand(file: string, rights?: string, inherit = 'None'): string {
       Buffer.from(control, 'utf16le').toString('base64'),
     ],
     {
+      cwd,
       env: {
-        SystemRoot: root,
-        windir: root,
-        PSModulePath: win32.join(home, 'Modules'),
+        ...env,
+        TEMP: tmpdir(),
+        TMP: tmpdir(),
         LIBRECHAT_ACL_TEST_PATH: file,
         LIBRECHAT_ACL_TEST_GRANT: rights,
         LIBRECHAT_ACL_TEST_INHERIT: inherit,
@@ -57,6 +58,12 @@ function aclCommand(file: string, rights?: string, inherit = 'None'): string {
       windowsHide: true,
     },
   );
+  if (result.status !== 0 || result.error) {
+    throw new Error(
+      `Windows ACL test command failed (${(result.error as NodeJS.ErrnoException | undefined)?.code ?? result.status}).`,
+    );
+  }
+  return result.stdout;
 }
 
 export function inspectWindowsAcl(file: string): WindowsAcl {
