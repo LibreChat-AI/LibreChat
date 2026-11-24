@@ -8,6 +8,7 @@ import { execFile, spawnSync } from 'node:child_process';
 const script = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$script:failureStage = 6
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User
 $trustedOwners = @($identity.Value, 'S-1-5-18', 'S-1-5-32-544',
   'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464') # SYSTEM, Administrators, TrustedInstaller
@@ -55,6 +56,7 @@ function CheckPath([string] $path) {
 }
 
 function CheckParent([string] $path) {
+  $script:failureStage = 7
   CheckPath $path
   $dirs = [Collections.Generic.Stack[IO.DirectoryInfo]]::new()
   $dir = [IO.DirectoryInfo]::new($path).Parent
@@ -80,7 +82,9 @@ function CheckParent([string] $path) {
 function PrivateDirectory([string] $path) {
   CheckParent $path
   $dir = [IO.DirectoryInfo]::new($path)
+  $script:failureStage = 8
   $dir.Create((PrivateAcl $true))
+  $script:failureStage = 9
   $dir.Refresh()
   if (($dir.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
       !(IsPrivate ($dir.GetAccessControl('Access, Owner')) $true)) { throw 'Directory is not private' }
@@ -183,10 +187,13 @@ function ExistingFile([string] $path, [string] $operation, [string] $payload) {
   PrivateDirectory $scratch
   $env:TEMP = $env:TMP = $scratch
   try {
+    $script:failureStage = 10
     LoadNativeFile
+    $script:failureStage = 11
     $stream = [LibreChatPrivateFile]::Open($path, $operation -ne 'read')
     if ($null -eq $stream) { exit 2 }
     try {
+      $script:failureStage = 9
       $acl = $stream.GetAccessControl()
       if (!($acl.GetOwner([Security.Principal.SecurityIdentifier]).Equals($identity))) { exit 1 }
       if (!(IsPrivate $acl $false)) {
@@ -197,6 +204,7 @@ function ExistingFile([string] $path, [string] $operation, [string] $payload) {
         $stream.SetAccessControl($dacl)
         if (!(IsPrivate ($stream.GetAccessControl()) $false)) { exit 1 }
       }
+      $script:failureStage = 12
       if ($operation -eq 'read') {
         $stream.CopyTo([Console]::OpenStandardOutput())
       } else {
@@ -229,11 +237,14 @@ try {
       $stage = $env:LIBRECHAT_PRIVATE_STAGE
       CheckPath $stage
       if ([IO.Path]::GetDirectoryName($stage) -ne [IO.Path]::GetDirectoryName($target)) { exit 1 }
+      $script:failureStage = 8
       $stream = [IO.FileStream]::new($stage, 'CreateNew', 'FullControl', 'None', 4096, 'None', (PrivateAcl $false))
       $staged = $true
       try {
         try {
-          if (!(IsPrivate ($stream.GetAccessControl()) $false)) { exit 1 }
+          $script:failureStage = 9
+          if (!(IsPrivate ($stream.GetAccessControl()) $false)) { exit 9 }
+          $script:failureStage = 12
           if (!$payload) { exit 1 }
           $bytes = [Convert]::FromBase64String($payload)
           $stream.Write($bytes, 0, $bytes.Length)
@@ -254,13 +265,25 @@ try {
   if ($_.Exception.Message -in @('Not a local filesystem path', 'Unsupported filesystem',
       'Invalid parent directory', 'Untrusted parent directory', 'Unknown ACE',
       'Writable parent directory', 'Directory is not private')) { exit 5 }
-  exit 1
+  exit $script:failureStage
 }
 exit 0
 `;
 
-function failure(reason?: 'path-policy' | 'launcher' | 'descriptor'): Error {
+const failureReasons: Record<number, string> = {
+  5: 'path policy',
+  6: 'initialization',
+  7: 'inspect parent',
+  8: 'create object',
+  9: 'verify descriptor',
+  10: 'load native file API',
+  11: 'open handle',
+  12: 'transfer bytes',
+};
+
+function failure(status?: number | null, launch = false): Error {
   const message = 'Unable to guarantee private access on Windows.';
+  const reason = launch ? 'launcher' : failureReasons[status ?? 0];
   return new Error(reason ? `${message} (${reason})` : message);
 }
 
@@ -333,9 +356,9 @@ export function readWindowsPrivateFile(file: string): Buffer | undefined {
   checkCanonical(file, realpathSync.native(file));
   const { executable, args, options } = command('read', file);
   const result = spawnSync(executable, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] });
-  if (result.error) throw failure();
+  if (result.error) throw failure(null, true);
   if (result.status === 2) return undefined;
-  if (result.status !== 0) throw failure();
+  if (result.status !== 0) throw failure(result.status);
   return result.stdout;
 }
 
@@ -350,9 +373,9 @@ export function publishWindowsPrivateFile(
   const { executable, args, options } = command('publish', destination, stage);
   const payload = Buffer.from(contents, 'utf8').toString('base64');
   const result = spawnSync(executable, args, { ...options, input: `${payload}\n` });
-  if (result.error) throw failure();
+  if (result.error) throw failure(null, true);
   if (result.status === 3) return 'exists';
-  if (result.status !== 0) throw failure();
+  if (result.status !== 0) throw failure(result.status);
   return 'written';
 }
 
@@ -368,9 +391,9 @@ export function finishWindowsPrivateRepair(
     destination,
   );
   const result = spawnSync(executable, args, { ...options, input: `${digest}\n` });
-  if (result.error) throw failure();
+  if (result.error) throw failure(null, true);
   if (result.status === 2) return false;
-  if (result.status !== 0) throw failure();
+  if (result.status !== 0) throw failure(result.status);
   return true;
 }
 
@@ -383,9 +406,7 @@ export async function makeWindowsPrivateDirectory(prefix: string): Promise<strin
   return new Promise((resolve, reject) => {
     const child = execFile(executable, args, options, (error) => {
       if (!error) resolve(directory);
-      else if (error.code === 5) reject(failure('path-policy'));
-      else if (typeof error.code === 'number') reject(failure('descriptor'));
-      else reject(failure('launcher'));
+      else reject(typeof error.code === 'number' ? failure(error.code) : failure(null, true));
     });
     child.stdin?.end();
   });

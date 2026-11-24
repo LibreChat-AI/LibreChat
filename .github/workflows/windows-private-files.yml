@@ -30,18 +30,55 @@ jobs:
         with:
           node-version: '24.22.3'
           cache: npm
-      - name: Verify Windows PowerShell can start
+      - name: Verify private Windows filesystem operations
         run: |
-          node -e '
-            const { spawnSync } = require("node:child_process");
-            const { win32 } = require("node:path");
-            const cwd = process.env.SystemRoot;
-            const executable = win32.join(cwd, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-            const r = spawnSync(executable, ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], {
-              cwd, stdio: "ignore", windowsHide: true, timeout: 10000,
+          @'
+          import assert from 'node:assert/strict';
+          import { spawnSync } from 'node:child_process';
+          import { createHash } from 'node:crypto';
+          import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+          import { stripTypeScriptTypes } from 'node:module';
+          import { tmpdir } from 'node:os';
+          import { join } from 'node:path';
+          const source = readFileSync('packages/api/src/utils/windowsPrivate.ts', 'utf8');
+          const encoded = Buffer.from(stripTypeScriptTypes(source)).toString('base64');
+          const {
+            finishWindowsPrivateRepair,
+            makeWindowsPrivateDirectory,
+            publishWindowsPrivateFile,
+            readWindowsPrivateFile,
+            windowsPowerShell,
+          } = await import(`data:text/javascript;base64,${encoded}`);
+
+          const { executable, cwd, env } = windowsPowerShell();
+          const script = Buffer.from('[Console]::WriteLine("ready")', 'utf16le').toString('base64');
+          for (const [name, options] of [['default', {}], ['restricted', { env }]]) {
+            const result = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-EncodedCommand', script], {
+              cwd, ...options, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 10000,
             });
-            if (r.status !== 0) throw new Error(`Windows PowerShell probe failed: ${r.error?.code ?? r.status}`);
-          '
+            console.log(`PowerShell ${name} launch: ${result.error?.code ?? result.status}`);
+            assert.equal(result.status, 0, `PowerShell ${name} launch`);
+            assert.equal(result.stdout.toString().trim(), 'ready');
+          }
+
+          const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'lc-private-probe-')));
+          try {
+            const directory = await makeWindowsPrivateDirectory(join(root, 'snapshots-'));
+            console.log('Private directory created.');
+            const target = join(directory, 'fixture');
+            const contents = 'synthetic ACL test';
+            assert.equal(publishWindowsPrivateFile(join(directory, 'stage'), target, contents), 'written');
+            assert.equal(publishWindowsPrivateFile(join(directory, 'stage'), `${target}.lock`, contents), 'written');
+            console.log('Private files published.');
+            const bytes = readWindowsPrivateFile(target);
+            assert.equal(bytes?.toString(), contents);
+            const digest = createHash('sha256').update(bytes).digest('hex');
+            assert.equal(finishWindowsPrivateRepair(`${target}.lock`, digest, target), true);
+            console.log('Private file read and promoted.');
+          } finally {
+            rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+          }
+          '@ | node --input-type=module
       - run: npm ci
       - name: Verify native credential and snapshot ACLs
         working-directory: packages/api
