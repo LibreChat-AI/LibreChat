@@ -7,8 +7,10 @@ import {
   parseLangChainErrorCode,
 } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
-import { isSubmittableMessage } from '~/utils/messages';
-import { extractJson, isJson } from '~/utils/json';
+import { isSubmittableMessage } from '../turns/draft';
+import { extractJson, isJson } from '../json';
+
+let patterns: RegExp[] | undefined;
 
 /**
  * Failures that come from what a conversation carries rather than from the model or the network:
@@ -16,21 +18,25 @@ import { extractJson, isJson } from '~/utils/json';
  * gone, a turn over the attachment limits, documents the provider rejected, and a request too long
  * for the context window, which a conversation full of screenshots or documents reaches. Every
  * later turn resends the same files, so each of these recurs until the files leave the branch.
+ * Built on first use: a module must not read `librechat-data-provider` while it loads.
  */
-const attachmentErrorPatterns: RegExp[] = [
-  /code environment file/i,
-  new RegExp(ErrorTypes.RESOURCE_RECOVERY_REQUIRED, 'i'),
-  new RegExp(`"(${ErrorTypes.INPUT_LENGTH}|${ErrorTypes.FINAL_CONTEXT_OVERFLOW})"`, 'i'),
-  /prompt is too long|input is too long|context_length_exceeded|maximum context length/i,
-  /request_too_large|request entity too large|payload too large/i,
-  /\battach(ed|ments?)\b/i,
-  /duplicate document names?/i,
-  /\b(image|document|pdf|file)s?\b[^.\n]{0,60}\b(too large|too big|exceeds?|too many|could not be (processed|read)|unsupported|not supported)\b/i,
-];
+function attachmentErrorPatterns(): RegExp[] {
+  patterns ??= [
+    /code environment file/i,
+    new RegExp(ErrorTypes.RESOURCE_RECOVERY_REQUIRED, 'i'),
+    new RegExp(`"(${ErrorTypes.INPUT_LENGTH}|${ErrorTypes.FINAL_CONTEXT_OVERFLOW})"`, 'i'),
+    /prompt is too long|input is too long|context_length_exceeded|maximum context length/i,
+    /request_too_large|request entity too large|payload too large/i,
+    /\battach(ed|ments?)\b/i,
+    /duplicate document names?/i,
+    /\b(image|document|pdf|file)s?\b[^.\n]{0,60}\b(too large|too big|exceeds?|too many|could not be (processed|read)|unsupported|not supported)\b/i,
+  ];
+  return patterns;
+}
 
 /** Whether a failed turn's text reads as a failure caused by the conversation's files. */
 export function isAttachmentError(text: string): boolean {
-  return attachmentErrorPatterns.some((pattern) => pattern.test(text));
+  return attachmentErrorPatterns().some((pattern) => pattern.test(text));
 }
 
 /**
@@ -42,18 +48,23 @@ export function isCountLimitError(text: string): boolean {
   return /attachment count limit/i.test(text);
 }
 
+let fileAgnosticCodes: Set<string> | undefined;
+
 /**
  * Typed failures whose cause the payload already states, where files may still be to blame: the
  * provider refused or could not complete the request without saying it was the files.
  */
-const fileAgnosticErrorCodes = new Set<string>([
-  /** Anthropic's own error bodies are typed just `error`. */
-  'error',
-  ErrorTypes.UPSTREAM_MODEL_ERROR,
-  ErrorTypes.INVALID_REQUEST,
-  ErrorTypes.GOOGLE_ERROR,
-  ErrorTypes.EMPTY_MESSAGES,
-]);
+function fileAgnosticErrorCodes(): Set<string> {
+  fileAgnosticCodes ??= new Set<string>([
+    /** Anthropic's own error bodies are typed just `error`. */
+    'error',
+    ErrorTypes.UPSTREAM_MODEL_ERROR,
+    ErrorTypes.INVALID_REQUEST,
+    ErrorTypes.GOOGLE_ERROR,
+    ErrorTypes.EMPTY_MESSAGES,
+  ]);
+  return fileAgnosticCodes;
+}
 
 /** LangChain codes with a remedy of their own: the model, its key, or its rate limit. */
 const remedialLangChainCodes = new Set([
@@ -96,7 +107,7 @@ export function mayBeAttachmentError(text: string): boolean {
     return false;
   }
   const code = readErrorCode(text);
-  return code == null || fileAgnosticErrorCodes.has(code);
+  return code == null || fileAgnosticErrorCodes().has(code);
 }
 
 export type AttachmentRecovery = {
