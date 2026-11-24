@@ -360,6 +360,8 @@ jest.mock('@librechat/api', () => ({
   cleanupMCPRequestContext: (...args) => mockCleanupMCPRequestContext(...args),
   createMCPRequestContext: (...args) => mockCreateMCPRequestContext(...args),
   getMCPRequestContext: (...args) => mockGetMCPRequestContext(...args),
+  createChatFinalization: (...args) =>
+    jest.requireActual('@librechat/api').createChatFinalization(...args),
   filterPersistableAbortContent: (...args) => mockFilterPersistableAbortContent(...args),
   cleanupMCPRequestContextForReq: (...args) => mockCleanupMCPRequestContextForReq(...args),
   decrementPendingRequest: (...args) => mockDecrementPendingRequest(...args),

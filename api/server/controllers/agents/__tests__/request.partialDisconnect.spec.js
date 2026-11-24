@@ -121,6 +121,8 @@ jest.mock('@librechat/api', () => ({
     pending: new Map(),
     cleanupStarted: false,
   })),
+  createChatFinalization: (...args) =>
+    jest.requireActual('@librechat/api').createChatFinalization(...args),
   filterPersistableAbortContent: (...args) => mockFilterPersistableAbortContent(...args),
   cleanupMCPRequestContextForReq: jest.fn(),
   decrementPendingRequest: (...args) => mockDecrementPendingRequest(...args),

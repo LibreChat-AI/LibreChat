@@ -19,6 +19,7 @@ import type {
 import type { SummaryContentPart, TMessageContentParts } from 'librechat-data-provider';
 import type { IAgentEventActorSummary } from '@librechat/data-schemas';
 import type { ErrorTurnAnnouncement, ErrorTurnStampStore } from '~/conversations/announce';
+import type { filterPersistableAbortContent } from '../stream/abortContent';
 import { getPreliminaryResponseMessageId } from '~/utils/message';
 import { createAgentEventActorSummary } from './compatibility';
 import { announceErrorTurn } from '~/conversations/announce';
@@ -194,11 +195,10 @@ function compactionFailureContent(
 export function resolveFailedTurnContent(
   requestBody: { compact?: boolean } | null | undefined,
   errorText: string,
-): { content?: TMessageContentParts[] } {
-  if (requestBody?.compact !== true) {
-    return {};
-  }
-  return { content: compactionFailureContent(errorText) };
+  received?: ReturnType<typeof filterPersistableAbortContent>,
+): { content?: ReturnType<typeof filterPersistableAbortContent> } {
+  if (received?.length) return { content: received };
+  return requestBody?.compact === true ? { content: compactionFailureContent(errorText) } : {};
 }
 
 /**
