@@ -69,6 +69,10 @@ export enum PermissionTypes {
    */
   SHARED_LINKS = 'SHARED_LINKS',
   /**
+   * Type for Chat Project Sharing Permissions
+   */
+  PROJECTS = 'PROJECTS',
+  /**
    * Type for Scheduled Chats Permissions
    */
   SCHEDULES = 'SCHEDULES',
@@ -96,6 +100,7 @@ export const PERMISSION_TYPE_INTERFACE_FIELDS: Record<PermissionTypes, string> =
   [PermissionTypes.REMOTE_AGENTS]: 'remoteAgents',
   [PermissionTypes.SKILLS]: 'skills',
   [PermissionTypes.SHARED_LINKS]: 'sharedLinks',
+  [PermissionTypes.PROJECTS]: 'projects',
   [PermissionTypes.SCHEDULES]: 'schedules',
 };
 
@@ -272,6 +277,13 @@ export const sharedLinksPermissionsSchema = z.object({
 });
 export type TSharedLinksPermissions = z.infer<typeof sharedLinksPermissionsSchema>;
 
+/** Projects are always available to every user; only sharing them is gated. */
+export const projectsPermissionsSchema = z.object({
+  [Permissions.SHARE]: z.boolean().default(false),
+  [Permissions.SHARE_PUBLIC]: z.boolean().default(false),
+});
+export type TProjectsPermissions = z.infer<typeof projectsPermissionsSchema>;
+
 // Define a single permissions schema that holds all permission types.
 export const permissionsSchema = z.object({
   [PermissionTypes.PROMPTS]: promptPermissionsSchema,
@@ -290,5 +302,6 @@ export const permissionsSchema = z.object({
   [PermissionTypes.REMOTE_AGENTS]: remoteAgentsPermissionsSchema,
   [PermissionTypes.SKILLS]: skillPermissionsSchema,
   [PermissionTypes.SHARED_LINKS]: sharedLinksPermissionsSchema,
+  [PermissionTypes.PROJECTS]: projectsPermissionsSchema,
   [PermissionTypes.SCHEDULES]: schedulesPermissionsSchema,
 });

@@ -58,8 +58,9 @@ export default function SelectedPrincipalsList({
           const { displayName, subtitle } = getPrincipalDisplayInfo(share);
           const ownerRoleId = RESOURCE_CONFIGS[resourceType]?.defaultOwnerRoleId;
           const isOwner = share.accessRoleId === ownerRoleId;
-          const isSharedLink = resourceType === ResourceType.SHARED_LINK;
-          const lockOwner = isSharedLink && isOwner;
+          const hasFixedOwner =
+            resourceType === ResourceType.SHARED_LINK || resourceType === ResourceType.CHAT_PROJECT;
+          const lockOwner = hasFixedOwner && isOwner;
           const shareKey = principalKey(share);
           const hasAutomaticInsightsAccess = share.isAdmin === true;
           const insightsDescription = localize(

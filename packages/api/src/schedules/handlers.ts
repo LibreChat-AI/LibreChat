@@ -63,8 +63,8 @@ export interface SchedulesHandlersDeps {
     revision: number,
     options: { signal?: AbortSignal },
   ) => Promise<{ enrollment: ScheduledMCPEnrollment; basis: ScheduledMCPEnrollment | null }>;
-  /** Whether the requesting user owns this chat project. Projects are user-owned,
-   *  so existence and authorization are the same question. */
+  /** Whether the requesting user owns this chat project or was granted VIEW on it;
+   *  the lookup answers existence and authorization in one question. */
   canUseProject: (projectId: string, userId: string) => Promise<boolean>;
   /** Filters to file ids owned by the user. */
   filterOwnedFileIds: (fileIds: string[], userId: string) => Promise<string[]>;

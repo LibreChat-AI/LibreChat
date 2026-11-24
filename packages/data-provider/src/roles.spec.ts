@@ -16,6 +16,7 @@ const RESOURCE_MANAGEMENT_FIELDS: Permissions[] = [
 const RESOURCE_PERMISSION_TYPES: PermissionTypes[] = [
   PermissionTypes.MCP_SERVERS,
   PermissionTypes.REMOTE_AGENTS,
+  PermissionTypes.PROJECTS,
 ];
 
 describe('roleDefaults', () => {

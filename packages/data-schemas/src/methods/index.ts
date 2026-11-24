@@ -160,6 +160,8 @@ import { createConversationMetadataMethods } from './conversationMetadata';
 import type { ConversationMetadataMethods } from './conversationMetadata';
 export type {
   AssignConversationToProjectResult,
+  ChatProjectAccess,
+  ChatProjectDeps,
   ChatProjectSortBy,
   ChatProjectSortDirection,
   CreateChatProjectInput,
@@ -435,7 +437,17 @@ export function createMethods(
       }),
   });
 
+  /** Late-bound: chat project methods need ACL methods, which are created further down. */
+  const chatProjectAccess: {
+    current?: (user: string, projectId: string) => Promise<boolean>;
+    listIds?: (user: string) => Promise<string[]>;
+  } = {};
+
   const conversationMethods = createConversationMethods(mongoose, {
+    hasChatProjectAccess: (user, projectId) =>
+      chatProjectAccess.current?.(user, projectId) ?? Promise.resolve(false),
+    listAccessibleChatProjectIds: (user) =>
+      chatProjectAccess.listIds?.(user) ?? Promise.resolve([]),
     allowSharedLinks: deps.allowSharedLinks,
     getMessages: messageMethods.getMessages,
     deleteMessages: messageMethods.deleteMessages,
@@ -534,6 +546,16 @@ export function createMethods(
   const roleMethods = createRoleMethods(mongoose, roleDeps);
   const userGroupMethods = createUserGroupMethods(mongoose, userGroupDeps);
 
+  const chatProjectMethods = createChatProjectMethods(mongoose, {
+    getUserPrincipals: userGroupMethods.getUserPrincipals,
+    getEffectivePermissions: aclEntryMethods.getEffectivePermissions,
+    getEffectivePermissionsForResources: aclEntryMethods.getEffectivePermissionsForResources,
+    findAccessibleResources: aclEntryMethods.findAccessibleResources,
+    deleteAclEntries: aclEntryMethods.deleteAclEntries,
+  });
+  chatProjectAccess.current = chatProjectMethods.hasChatProjectAccess;
+  chatProjectAccess.listIds = chatProjectMethods.listAccessibleChatProjectIds;
+
   const promptDeps: PromptDeps = {
     removeAllPermissions,
     getSoleOwnedResourceIds: aclEntryMethods.getSoleOwnedResourceIds,
@@ -612,8 +634,8 @@ export function createMethods(
     ...createConversationImportMethods(mongoose),
     ...messageMethods,
     ...conversationMethods,
+    ...chatProjectMethods,
     ...createConversationMetadataMethods(mongoose),
-    ...createChatProjectMethods(mongoose),
     /* Tier 3 */
     ...txMethods,
     ...transactionMethods,

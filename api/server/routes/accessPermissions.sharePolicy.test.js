@@ -33,6 +33,7 @@ jest.mock('~/server/controllers/PermissionsController', () => ({
   searchPrincipals: jest.fn((_req, res) => res.json({ principals: [] })),
 }));
 
+const mongoose = require('mongoose');
 const express = require('express');
 const request = require('supertest');
 const {
@@ -54,6 +55,8 @@ const { getRoleByName, findSharedLinkById } = require('~/models');
 describe('Access permissions share policy', () => {
   let app;
   const mockSharedLinkFindById = findSharedLinkById;
+  const mockChatProjectFindById = jest.fn();
+  const originalChatProjectModel = mongoose.models.ChatProject;
 
   const resourceId = '507f1f77bcf86cd799439011';
   const sharePolicyCases = [
@@ -114,6 +117,17 @@ describe('Access permissions share policy', () => {
         idResolver: expect.any(Function),
       },
     },
+    {
+      label: 'chat project',
+      resourceType: ResourceType.CHAT_PROJECT,
+      permissionType: PermissionTypes.PROJECTS,
+      accessRoleId: AccessRoleIds.CHAT_PROJECT_VIEWER,
+      middlewareOptions: {
+        resourceType: ResourceType.CHAT_PROJECT,
+        requiredPermission: PermissionBits.SHARE,
+        resourceIdParam: 'resourceId',
+      },
+    },
   ];
 
   const createUpdatedPrincipal = (accessRoleId) => ({
@@ -139,6 +153,14 @@ describe('Access permissions share policy', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    if (mongoose.models.ChatProject) {
+      mongoose.models.ChatProject.findById = mockChatProjectFindById;
+    } else {
+      mongoose.models.ChatProject = { findById: mockChatProjectFindById };
+    }
+    mockChatProjectFindById.mockReturnValue({
+      lean: jest.fn().mockResolvedValue({ user: 'project-owner' }),
+    });
     hasCapability.mockResolvedValue(false);
 
     app = express();
@@ -148,6 +170,14 @@ describe('Access permissions share policy', () => {
       next();
     });
     app.use('/api/permissions', accessPermissionsRouter);
+  });
+
+  afterAll(() => {
+    if (originalChatProjectModel) {
+      mongoose.models.ChatProject = originalChatProjectModel;
+    } else {
+      delete mongoose.models.ChatProject;
+    }
   });
 
   it.each(sharePolicyCases)(
@@ -330,5 +360,52 @@ describe('Access permissions share policy', () => {
     expect(response.status).toBe(500);
     expect(response.body.message).toBe('Failed to validate shared link owner permissions');
     expect(updateResourcePermissions).not.toHaveBeenCalled();
+  });
+
+  describe('chat project owner', () => {
+    const allowProjectSharing = () => {
+      getRoleByName.mockResolvedValue({
+        permissions: {
+          [PermissionTypes.PROJECTS]: {
+            [Permissions.SHARE]: true,
+            [Permissions.SHARE_PUBLIC]: true,
+          },
+        },
+      });
+    };
+    const put = (body) =>
+      request(app).put(`/api/permissions/${ResourceType.CHAT_PROJECT}/${resourceId}`).send(body);
+
+    it('blocks granting the project owner role to someone else', async () => {
+      allowProjectSharing();
+      const response = await put({
+        updated: [createUpdatedPrincipal(AccessRoleIds.CHAT_PROJECT_OWNER)],
+        public: false,
+      });
+      expect(response.status).toBe(400);
+      expect(response.body.message).toBe('Project owner permissions cannot be changed');
+      expect(updateResourcePermissions).not.toHaveBeenCalled();
+    });
+
+    it("blocks a grantee from removing the project's owner", async () => {
+      allowProjectSharing();
+      const response = await put({
+        updated: [],
+        removed: [{ type: PrincipalType.USER, id: 'project-owner' }],
+        public: false,
+      });
+      expect(response.status).toBe(400);
+      expect(updateResourcePermissions).not.toHaveBeenCalled();
+    });
+
+    it('allows sharing a project with a viewer', async () => {
+      allowProjectSharing();
+      const response = await put({
+        updated: [createUpdatedPrincipal(AccessRoleIds.CHAT_PROJECT_VIEWER)],
+        public: false,
+      });
+      expect(response.status).toBe(200);
+      expect(updateResourcePermissions).toHaveBeenCalledTimes(1);
+    });
   });
 });

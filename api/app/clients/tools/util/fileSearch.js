@@ -31,10 +31,32 @@ const fileSearchJsonSchema = {
  * @param {string} [options.agentId] - The agent ID for file access control
  * @param {string} [options.agentResourceType] - Permission resource type for the authorized agent route
  * @returns {Promise<{
- *   files: Array<{ file_id: string; filename: string; fromAgent: boolean }>,
+ *   files: Array<{ file_id: string; filename: string; fromAgent: boolean; searchOwnerId?: string }>,
  *   toolContext: string
  * }>}
  */
+/**
+ * Files the server attached from the turn's project, keyed by file id, when that project
+ * belongs to someone else. Read only from the server-resolved project on the request, never
+ * from client input, so a member's search reaches the owner's vectors and nothing more.
+ * @param {ServerRequest | undefined} req
+ * @returns {Map<string, string>}
+ */
+const getSharedProjectFileOwners = (req) => {
+  const owners = new Map();
+  const context = req?.chatProjectContext;
+  const requesterId = req?.user?.id;
+  if (!context?.ownerId || !requesterId || context.ownerId === requesterId) {
+    return owners;
+  }
+  for (const file of req.chatProjectFiles ?? []) {
+    if (file?.file_id && file.user === context.ownerId) {
+      owners.set(file.file_id, context.ownerId);
+    }
+  }
+  return owners;
+};
+
 const primeFiles = async (options) => {
   const { tool_resources, req, agentId, agentResourceType } = options;
   const file_ids = tool_resources?.[EToolResources.file_search]?.file_ids ?? [];
@@ -62,6 +84,7 @@ const primeFiles = async (options) => {
 
   let toolContext = `- Note: Semantic search is available through the ${Tools.file_search} tool but no files are currently loaded. Request the user to upload documents to search through.`;
 
+  const sharedProjectFileOwners = getSharedProjectFileOwners(req);
   const files = [];
   for (let i = 0; i < dbFiles.length; i++) {
     const file = dbFiles[i];
@@ -74,10 +97,12 @@ const primeFiles = async (options) => {
     toolContext += `\n\t- ${file.filename}${
       agentResourceIds.has(file.file_id) ? '' : ' (just attached by user)'
     }`;
+    const searchOwnerId = sharedProjectFileOwners.get(file.file_id);
     files.push({
       file_id: file.file_id,
       filename: file.filename,
       fromAgent: agentResourceIds.has(file.file_id),
+      ...(searchOwnerId ? { searchOwnerId } : {}),
     });
   }
 

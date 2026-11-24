@@ -82,6 +82,19 @@ export const ROLE_LOCALIZATIONS = {
     name: 'com_ui_role_owner' as const,
     description: 'com_ui_role_owner_desc' as const,
   } as const,
+  // Chat project roles — generic names; descriptions say what each can do in a project.
+  chatProject_viewer: {
+    name: 'com_ui_role_viewer' as const,
+    description: 'com_ui_project_role_viewer_desc' as const,
+  } as const,
+  chatProject_editor: {
+    name: 'com_ui_role_editor' as const,
+    description: 'com_ui_project_role_editor_desc' as const,
+  } as const,
+  chatProject_owner: {
+    name: 'com_ui_role_owner' as const,
+    description: 'com_ui_project_role_owner_desc' as const,
+  } as const,
 };
 
 /**

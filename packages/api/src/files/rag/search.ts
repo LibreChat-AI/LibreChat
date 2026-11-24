@@ -5,7 +5,17 @@ import type { FileCitationSelectionConfig, selectFileCitationSources } from '../
 import type { logAxiosError } from '~/utils/axios';
 import { getOutboundTimeoutMs, outboundRequestBudget } from '~/utils/timeouts';
 
-type SearchFile = { file_id: string; filename?: string; fromAgent?: boolean };
+/**
+ * `searchOwnerId` is set only on files the server attached from a project the requester was
+ * authorized to view. Vectors are stored under their uploader, so a project shared by
+ * another user must be queried as that user; nothing the client sends can set it.
+ */
+type SearchFile = {
+  file_id: string;
+  filename?: string;
+  fromAgent?: boolean;
+  searchOwnerId?: string;
+};
 type FileSearchResult = [
   string,
   { file_search: { sources: FileSearchSource[]; fileCitations: boolean } } | undefined,
@@ -93,8 +103,17 @@ export async function executeFileSearchQuery({
   if (typeof query !== 'string' || query.trim().length === 0) {
     return ['A non-empty query is required to search the files.', undefined];
   }
-  const jwtToken = generateShortLivedToken(userId);
-  if (!jwtToken) {
+  const tokens = new Map<string, string>();
+  const tokenFor = (file: SearchFile): string => {
+    const owner = file.searchOwnerId || userId;
+    let token = tokens.get(owner);
+    if (token === undefined) {
+      token = generateShortLivedToken(owner);
+      tokens.set(owner, token);
+    }
+    return token;
+  };
+  if (!tokenFor({ file_id: '' })) {
     return ['There was an error authenticating the file search request.', undefined];
   }
 
@@ -118,7 +137,7 @@ export async function executeFileSearchQuery({
     httpClient
       .post<SearchResults>(`${ragApiUrl}/query`, createQueryBody(file), {
         headers: {
-          Authorization: `Bearer ${jwtToken}`,
+          Authorization: `Bearer ${tokenFor(file)}`,
           'Content-Type': 'application/json',
         },
         ...outboundRequestBudget(timeout, 'ragMs'),

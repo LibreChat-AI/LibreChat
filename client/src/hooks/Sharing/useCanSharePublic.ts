@@ -8,6 +8,7 @@ const resourceToPermissionMap: Partial<Record<ResourceType, PermissionTypes>> = 
   [ResourceType.REMOTE_AGENT]: PermissionTypes.REMOTE_AGENTS,
   [ResourceType.SKILL]: PermissionTypes.SKILLS,
   [ResourceType.SHARED_LINK]: PermissionTypes.SHARED_LINKS,
+  [ResourceType.CHAT_PROJECT]: PermissionTypes.PROJECTS,
 };
 
 /**

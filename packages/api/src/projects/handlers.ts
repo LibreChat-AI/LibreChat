@@ -1,4 +1,7 @@
 import {
+  AccessRoleIds,
+  PrincipalType,
+  ResourceType,
   MAX_CHAT_PROJECT_DESCRIPTION_LENGTH,
   MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH,
 } from 'librechat-data-provider';
@@ -51,6 +54,7 @@ type ProjectHandlerDependencies = Pick<
   | 'listChatProjects'
   | 'createChatProject'
   | 'getChatProject'
+  | 'getChatProjectView'
   | 'updateChatProject'
   | 'deleteChatProject'
   | 'assignConversationToProject'
@@ -61,6 +65,18 @@ type ProjectHandlerDependencies = Pick<
   getAvailableProjectFiles: (
     options: AvailableProjectFilesOptions,
   ) => Promise<AvailableProjectFilesResult>;
+  /**
+   * Records the creator as the project's ACL owner so the project can be shared. Optional:
+   * without it projects stay private to their creator, as they were before sharing existed.
+   */
+  grantPermission?: (params: {
+    principalType: string;
+    principalId: string;
+    resourceType: string;
+    resourceId: string | { toString(): string };
+    accessRoleId: string;
+    grantedBy: string;
+  }) => Promise<unknown>;
 };
 
 const getUserId = (req: ProjectRequest): string => req.user?.id ?? req.user?._id?.toString() ?? '';
@@ -175,11 +191,24 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies): {
     }
 
     try {
-      const project = await deps.createChatProject(
-        getUserId(req),
-        parsed.input,
-        req.config?.projects,
-      );
+      const userId = getUserId(req);
+      const project = await deps.createChatProject(userId, parsed.input, req.config?.projects);
+      if (deps.grantPermission && project._id) {
+        try {
+          await deps.grantPermission({
+            principalType: PrincipalType.USER,
+            principalId: userId,
+            resourceType: ResourceType.CHAT_PROJECT,
+            resourceId: project._id,
+            accessRoleId: AccessRoleIds.CHAT_PROJECT_OWNER,
+            grantedBy: userId,
+          });
+        } catch (error) {
+          /** The owner keeps full access through the project itself; only sharing is
+           *  unavailable until the migration backfills the entry. */
+          logger.error('[projects] Failed to grant project owner permission', error);
+        }
+      }
       return res.status(201).json(project);
     } catch (error) {
       logger.error('[projects] Error creating project', error);
@@ -224,7 +253,7 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies): {
     }
 
     try {
-      const project = await deps.getChatProject(getUserId(req), projectId);
+      const project = await deps.getChatProjectView(getUserId(req), projectId);
       if (!project) {
         return res.status(404).json({ error: PROJECT_NOT_FOUND });
       }
@@ -279,14 +308,18 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies): {
     }
 
     try {
-      const project = await deps.updateChatProject(
-        getUserId(req),
-        projectId,
-        input,
-        req.config?.projects,
-      );
+      const userId = getUserId(req);
+      const project = await deps.updateChatProject(userId, projectId, input, req.config?.projects);
       if (!project) {
         return res.status(404).json({ error: PROJECT_NOT_FOUND });
+      }
+      /** An editor gets their own view back: the stored document carries the owner's
+       *  chat stats, and the client caches this response as the project. */
+      if (project.user !== userId) {
+        const view = await deps.getChatProjectView(userId, projectId);
+        return view
+          ? res.status(200).json(view)
+          : res.status(404).json({ error: PROJECT_NOT_FOUND });
       }
       return res.status(200).json(project);
     } catch (error) {
@@ -313,7 +346,8 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies): {
       }
       const files = await listChatProjectFileViews({
         project,
-        userId: getUserId(req),
+        /** Project files are the owner's uploads, also for members of a shared project. */
+        userId: project.user || getUserId(req),
         tenantId: project.tenantId,
         getProjectFiles: deps.getProjectFiles,
       });
@@ -340,7 +374,12 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies): {
       parseAvailableProjectFilesCursor(cursor);
       const userId = getUserId(req);
       const project = await deps.getChatProject(userId, projectId);
-      if (!project || !isSameChatProjectTenant(project.tenantId, req.user?.tenantId)) {
+      /** Only the owner attaches files, so only the owner gets the picker. */
+      if (
+        !project ||
+        project.user !== userId ||
+        !isSameChatProjectTenant(project.tenantId, req.user?.tenantId)
+      ) {
         return res.status(404).json({ error: PROJECT_NOT_FOUND });
       }
       const result = await deps.getAvailableProjectFiles({
