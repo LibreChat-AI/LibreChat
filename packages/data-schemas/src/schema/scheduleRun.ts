@@ -10,6 +10,17 @@ const scheduleRunSchema: Schema<IScheduleRunDocument> = new Schema(
       type: String,
       required: true,
     },
+    /** Whose run the row records, where that is not a schedule: absent on a schedule's row. */
+    kind: {
+      type: String,
+      enum: ['subscription'],
+    },
+    /** That subject's id. A schedule's row holds its schedule's id as `scheduleId` instead,
+     *  and a row of any other kind holds its delivery's key there, so the row stands alone
+     *  under the two unique indexes on `scheduleId` and takes no schedule's place. */
+    subject: {
+      type: String,
+    },
     user: {
       type: Schema.Types.ObjectId,
       ref: 'User',
@@ -184,6 +195,14 @@ scheduleRunSchema.index(
     unique: true,
     partialFilterExpression: { status: 'started', capacitySlot: { $exists: true } },
   },
+);
+// One row per delivery for a run that is not a schedule's. A schedule's occurrence is unique
+// by {scheduleId, scheduledFor} above; two deliveries to one subscription can carry the same
+// event time, so theirs are told apart by the delivery's key. Partial on an equality, the
+// shape the active-run index already uses here, so no row without `kind` is in it.
+scheduleRunSchema.index(
+  { deliveryKey: 1 },
+  { unique: true, partialFilterExpression: { kind: 'subscription' } },
 );
 scheduleRunSchema.index({ scheduleId: 1, firedAt: -1 });
 // Reconciliation sweeps by status; keeps `started` (capacity) fetch cheap and

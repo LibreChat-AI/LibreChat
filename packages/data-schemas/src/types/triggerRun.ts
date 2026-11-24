@@ -7,15 +7,22 @@ import type { IScheduleRun } from './schedule';
  */
 export type TriggerRunRef = {
   readonly subject: { readonly kind: string; readonly id: string };
-  readonly delivery: { readonly event: { readonly occurredAt: number } };
+  readonly delivery: {
+    /** The delivery's key in the trigger queue. A subscription's run is found by it. */
+    readonly key?: string;
+    readonly event: { readonly occurredAt: number };
+  };
 };
 
+/** The kinds of subject whose runs are on record. */
+export type RecordedKind = 'schedule' | 'subscription';
+
 /**
- * The record of one run a trigger delivery started, as plain data. Every run on record
- * today is a schedule's.
+ * The record of one run a trigger delivery started, as plain data: a schedule's, or an event
+ * subscription's.
  */
 export type TriggerRun = {
-  subject: { kind: 'schedule'; id: string };
+  subject: { kind: RecordedKind; id: string };
   /** When the delivery's event occurred, and the delivery's key in the trigger queue. */
   delivery: { at: Date; key?: string };
   owner: string;
@@ -35,10 +42,18 @@ export type TriggerRun = {
   abortPersistedAt?: Date;
 };
 
-/** A ref to a run of the one kind of subject whose runs are on record. */
-export type RecordedRunRef = TriggerRunRef & {
-  readonly subject: { readonly kind: 'schedule' };
-};
+/**
+ * A ref that always names a row: a schedule's, by its id and the time of the event, or a
+ * subscription's with the key of its delivery.
+ */
+export type RecordedRunRef = TriggerRunRef &
+  (
+    | { readonly subject: { readonly kind: 'schedule' } }
+    | {
+        readonly subject: { readonly kind: 'subscription' };
+        readonly delivery: { readonly key: string };
+      }
+  );
 
 /**
  * The stored columns a run's row starts with, written as given. Which row it is comes from
@@ -49,7 +64,8 @@ export type TriggerRunRow = Partial<IScheduleRun>;
 /**
  * Outcome of recording that a delivery's run started. Each conflict is decided by a unique
  * index in the same insert: this delivery already has a row (`duplicate`), another run of the
- * same subject is active (`overlap`), or the capacity slot asked for is held (`slot-taken`).
+ * same schedule is active (`overlap`), or the capacity slot asked for is held (`slot-taken`).
+ * A subscription's runs may overlap one another, so its insert never answers `overlap`.
  */
 export type TriggerRunReservation =
   | { run: IScheduleRun }
@@ -62,7 +78,10 @@ export type TriggerRunReservation =
       existingStatus?: ScheduleRunStatus;
     };
 
-/** No record is kept for this kind of subject, so nothing was written. */
+/**
+ * No row is kept under this ref, so nothing was written: a kind of subject whose runs are not
+ * on record, or a subscription's delivery that names no key.
+ */
 export type TriggerRunUnrecorded = { conflict: 'unrecorded' };
 
 /**
