@@ -74,6 +74,7 @@ const BASE64_BYTES_PER_PDF_PAGE = 75_000;
 const PDF_TOKENS_PER_PAGE_CLAUDE = 2000;
 const PDF_TOKENS_PER_PAGE_OPENAI = 1500;
 const URL_DOCUMENT_FALLBACK_TOKENS = 2000;
+const BINARY_DOCUMENT_BYTES_PER_TOKEN = 4;
 
 type ContentBlock = {
   type?: string;
@@ -237,6 +238,23 @@ function estimateImageBlockTokens(block: ContentBlock, isClaude: boolean): numbe
   return estimateImageDataTokens(base64Data, isClaude);
 }
 
+/**
+ * A base64 document that is neither a PDF nor an image reaches the model as its contents, not as
+ * base64: a textual one is counted by its decoded text, a binary one (Office formats) by its
+ * decoded size. Tokenizing the base64 itself would count about twice a text file's real tokens.
+ */
+function estimateBase64DocumentTokens(
+  data: string,
+  mime: string,
+  countTokens?: (text: string) => number,
+): number {
+  if (!mime.startsWith('text/')) {
+    return Math.ceil((data.length * 3) / 4 / BINARY_DOCUMENT_BYTES_PER_TOKEN);
+  }
+  const text = Buffer.from(data, 'base64').toString('utf8');
+  return countTokens != null ? countTokens(text) : Math.ceil(text.length / 4);
+}
+
 function estimateDocumentBlockTokens(
   block: ContentBlock,
   isClaude: boolean,
@@ -256,7 +274,7 @@ function estimateDocumentBlockTokens(
       if (mime.startsWith('image/')) {
         return estimateImageDataTokens(block.data, isClaude);
       }
-      return countTokens != null ? countTokens(block.data) : Math.ceil(block.data.length / 4);
+      return estimateBase64DocumentTokens(block.data, mime, countTokens);
     }
     return URL_DOCUMENT_FALLBACK_TOKENS;
   }
@@ -276,9 +294,7 @@ function estimateDocumentBlockTokens(
       if (mime.startsWith('image/')) {
         return estimateImageDataTokens(block.source.data, isClaude);
       }
-      return countTokens != null
-        ? countTokens(block.source.data)
-        : Math.ceil(block.source.data.length / 4);
+      return estimateBase64DocumentTokens(block.source.data, mime, countTokens);
     }
     if (block.source.type === 'url') {
       return URL_DOCUMENT_FALLBACK_TOKENS;

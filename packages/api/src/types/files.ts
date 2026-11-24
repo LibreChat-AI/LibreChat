@@ -1,4 +1,3 @@
-import type { BedrockDocumentFormat } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { Readable } from 'stream';
 import type { FileStorageDeletionObserver } from '~/files/dispatch';
@@ -105,16 +104,16 @@ export interface OpenAIInputFileBlock {
   file_data: string;
 }
 
-/** Bedrock Converse API document block (passthrough via @langchain/aws) */
+/**
+ * Bedrock document as LangChain's standard base64 file block. The agents SDK decodes it into a
+ * Converse `document` at request time; until then it serializes as a string, not a byte array.
+ */
 export interface BedrockDocumentBlock {
-  type: 'document';
-  document: {
-    name: string;
-    format: BedrockDocumentFormat;
-    source: {
-      bytes: Buffer;
-    };
-  };
+  type: 'file';
+  source_type: 'base64';
+  mime_type: string;
+  data: string;
+  metadata: { name: string };
 }
 
 export type DocumentBlock =

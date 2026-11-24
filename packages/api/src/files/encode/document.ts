@@ -8,6 +8,7 @@ import {
   isDocumentSupportedProvider,
   isAnthropicTextDocumentType,
 } from 'librechat-data-provider';
+import type { BedrockDocumentFormat } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type {
   DocumentBlock,
@@ -38,12 +39,46 @@ import { runGuardedEncode } from './memoryGuard';
 /** The longest document name LibreChat sends to Bedrock. */
 const BEDROCK_DOCUMENT_NAME_LIMIT = 200;
 
+/**
+ * The MIME type the agents SDK's Converse converter reads each document format from. An upload
+ * can carry an alias (`application/csv`) that the converter does not list, so the block names
+ * the format through its canonical type.
+ */
+const BEDROCK_DOCUMENT_MIME_TYPES: Record<BedrockDocumentFormat, string> = {
+  pdf: 'application/pdf',
+  csv: 'text/csv',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  html: 'text/html',
+  txt: 'text/plain',
+  md: 'text/markdown',
+};
+
 /** A content part of a formatted message, as far as document naming needs to read it. */
 export interface PayloadContentPart {
   type?: string;
+  /** A native Converse document, as imported conversations can still carry. */
   document?: { name?: string };
+  /** A standard file block, as `encodeAndFormatDocuments` builds for Bedrock. */
+  metadata?: { name?: string };
   /** A replayed steer's own content, stamped for the formatter (`stampSteerPartMedia`). */
   media?: PayloadContentPart[];
+}
+
+/** The name Bedrock sees for a part that becomes a Converse document. */
+function getDocumentName(part: PayloadContentPart | undefined): string | undefined {
+  if (part?.type === 'document') {
+    return part.document?.name;
+  }
+  return part?.type === 'file' ? part.metadata?.name : undefined;
+}
+
+function withDocumentName(part: PayloadContentPart, name: string): PayloadContentPart {
+  return part.type === 'document'
+    ? { ...part, document: { ...part.document, name } }
+    : { ...part, metadata: { ...part.metadata, name } };
 }
 
 /** Hands out each name once, sharing suffix progress between colliding truncated prefixes. */
@@ -86,10 +121,10 @@ function renameDocumentParts(
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
     let next = part;
-    const original = part?.type === 'document' ? part.document?.name : undefined;
+    const original = getDocumentName(part);
     if (typeof original === 'string') {
       const name = nameOf(original);
-      next = name === original ? part : { ...part, document: { ...part.document, name } };
+      next = name === original ? part : withDocumentName(part, name);
     } else if (Array.isArray(part?.media)) {
       const media = renameDocumentParts(part.media, nameOf, budget, depth + 1);
       next = media === part.media ? part : { ...part, media };
@@ -434,15 +469,14 @@ export async function encodeAndFormatDocuments(
       const sanitizedName = (file.filename || 'document')
         .replace(/[^a-zA-Z0-9\s\-()[\]]/g, '_')
         .slice(0, BEDROCK_DOCUMENT_NAME_LIMIT);
+      /** Raw bytes would serialize as a number array in traces and checkpoints, and a restored
+       *  checkpoint would hold a plain object instead of bytes; base64 stays a string. */
       result.documents.push({
-        type: 'document',
-        document: {
-          name: sanitizedName,
-          format,
-          source: {
-            bytes: fileBuffer,
-          },
-        },
+        type: 'file',
+        source_type: 'base64',
+        mime_type: BEDROCK_DOCUMENT_MIME_TYPES[format],
+        data: content,
+        metadata: { name: sanitizedName },
       });
       result.files.push(metadata);
     } else if (file.type === 'application/pdf' && isDocSupported) {

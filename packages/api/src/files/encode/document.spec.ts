@@ -570,14 +570,11 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
       expect(result.documents).toHaveLength(1);
       expect(result.documents[0]).toMatchObject({
-        type: 'document',
-        document: {
-          name: 'test_pdf',
-          format: 'pdf',
-          source: {
-            bytes: expect.any(Buffer),
-          },
-        },
+        type: 'file',
+        source_type: 'base64',
+        mime_type: 'application/pdf',
+        data: mockContent,
+        metadata: { name: 'test_pdf' },
       });
     });
 
@@ -723,14 +720,11 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
       expect(result.documents).toHaveLength(1);
       expect(result.documents[0]).toMatchObject({
-        type: 'document',
-        document: {
-          name: 'data_csv',
-          format: 'csv',
-          source: {
-            bytes: expect.any(Buffer),
-          },
-        },
+        type: 'file',
+        source_type: 'base64',
+        mime_type: 'text/csv',
+        data: mockContent,
+        metadata: { name: 'data_csv' },
       });
     });
 
@@ -757,14 +751,11 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
       expect(result.documents).toHaveLength(1);
       expect(result.documents[0]).toMatchObject({
-        type: 'document',
-        document: {
-          name: 'report_docx',
-          format: 'docx',
-          source: {
-            bytes: expect.any(Buffer),
-          },
-        },
+        type: 'file',
+        source_type: 'base64',
+        mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        data: mockContent,
+        metadata: { name: 'report_docx' },
       });
     });
 
@@ -790,14 +781,11 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
       expect(result.documents).toHaveLength(1);
       expect(result.documents[0]).toMatchObject({
-        type: 'document',
-        document: {
-          name: 'notes_txt',
-          format: 'txt',
-          source: {
-            bytes: expect.any(Buffer),
-          },
-        },
+        type: 'file',
+        source_type: 'base64',
+        mime_type: 'text/plain',
+        data: mockContent,
+        metadata: { name: 'notes_txt' },
       });
     });
 
@@ -1340,15 +1328,34 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
 describe('dedupeDocumentNames', () => {
   const bedrock = (name: string): BedrockDocumentBlock => ({
-    type: 'document',
-    document: { name, format: 'pdf', source: { bytes: Buffer.from(name) } },
+    type: 'file',
+    source_type: 'base64',
+    mime_type: 'application/pdf',
+    data: Buffer.from(name).toString('base64'),
+    metadata: { name },
   });
   type Message = { content?: string | PayloadContentPart[] | null };
   const names = (parts: PayloadContentPart[] = []): string[] =>
-    parts.flatMap((part) =>
-      part.document?.name != null ? [part.document.name] : names(part.media ?? []),
-    );
+    parts.flatMap((part) => {
+      const name = part.metadata?.name ?? part.document?.name;
+      return name != null ? [name] : names(part.media ?? []);
+    });
   const contentOf = (message: Message) => (Array.isArray(message.content) ? message.content : []);
+
+  it('renames native Converse documents from imported history alongside base64 ones', () => {
+    const native = (name: string): PayloadContentPart => ({ type: 'document', document: { name } });
+    const imported = native('notes');
+    const messages: Message[] = [
+      { content: [imported, native('Notes')] },
+      { content: [bedrock('notes')] },
+    ];
+
+    dedupeDocumentNames(messages);
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes', 'Notes (2)']);
+    expect(names(contentOf(messages[1]))).toEqual(['notes (3)']);
+    expect(imported.document?.name).toBe('notes');
+  });
 
   it.each(Object.values(Providers).filter((provider) => provider !== Providers.BEDROCK))(
     'does not inspect replay content for %s',
@@ -1501,7 +1508,7 @@ describe('dedupeDocumentNames', () => {
 
     dedupeDocumentNames(messages);
 
-    expect(repeated.document.name).toBe('report');
+    expect(repeated.metadata.name).toBe('report');
     expect(secondContent[0]).toBe(repeated);
     expect(names(contentOf(messages[1]))).toEqual(['report (2)']);
   });
@@ -1538,7 +1545,7 @@ describe('dedupeDocumentNames', () => {
     expect(lookups).toBeLessThan(count * 6);
     expect(new Set(result.map((name) => name.toLowerCase())).size).toBe(count);
     expect(result.every((name) => name.length <= 200)).toBe(true);
-    expect(names(content)).toEqual(content.map((part) => part.document.name));
+    expect(names(content)).toEqual(content.map((part) => part.metadata.name));
   });
 
   it('shares progress after suffix digit widths change and skips occupied suffixes', () => {
@@ -1589,7 +1596,7 @@ describe('dedupeDocumentNames', () => {
       ]),
     ).toThrow(ContentTraversalLimitError);
     expect(messages[0].content).toBe(content);
-    expect(content[1].document.name).toBe('notes');
+    expect(content[1].metadata.name).toBe('notes');
   });
 
   it('allows long histories while keeping document names unique across messages', () => {
