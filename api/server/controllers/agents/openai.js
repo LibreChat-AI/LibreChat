@@ -33,7 +33,7 @@ const {
   createSafeUser,
   validateRequest,
   initializeAgent,
-  validateAgentModel,
+  assertAgentModelAllowed,
   getBalanceConfig,
   injectSkillPrimes,
   extractManualSkills,
@@ -494,23 +494,13 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       }
 
       const getEndpointModels = (endpoint) => getEndpointModelsConfig(req, endpoint);
-      const modelPolicy = await validateAgentModel({
+      await assertAgentModelAllowed({
         req,
         res,
         agent,
         getEndpointModels,
         logViolation,
       });
-      if (!modelPolicy.isValid) {
-        return sendErrorResponse(
-          res,
-          403,
-          'The configured agent model is unavailable for this request.',
-          'permission_error',
-          'model_not_allowed',
-        );
-      }
-
       req.turnStartedAt = envelope.receivedAt;
       const { decision: codeEnvironmentDecision, conversation: admittedConversation } =
         await resolveAdmittedCodeEnvironmentDecision({

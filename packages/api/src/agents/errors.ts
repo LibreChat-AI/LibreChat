@@ -12,6 +12,15 @@ import { OboTokenResolutionError } from '~/mcp/oauth/obo';
 export const AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE = 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE';
 export const AGENT_ATTACHMENT_LIMIT_EXCEEDED = 'AGENT_ATTACHMENT_LIMIT_EXCEEDED';
 
+export class AgentModelPolicyError extends Error {
+  readonly status = 403;
+  readonly code = 'model_not_allowed';
+
+  constructor() {
+    super('The configured agent model is unavailable for this request.');
+  }
+}
+
 const FATAL_AGENT_INITIALIZATION_CODES = new Set(
   [
     AGENT_ATTACHMENT_LIMIT_EXCEEDED,
@@ -204,6 +213,9 @@ export function resolveModelStreamError(error: unknown): string | undefined {
  * typed payloads the LibreChat client localizes.
  */
 export function getUserFacingProviderError(error: unknown, protectionEnabled: boolean): string {
+  if (error instanceof AgentModelPolicyError) {
+    return error.message;
+  }
   if (protectionEnabled) {
     return GENERIC_PROVIDER_ERROR;
   }

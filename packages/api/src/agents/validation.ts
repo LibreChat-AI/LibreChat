@@ -24,6 +24,7 @@ import type {
 } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import { getToolOptionsLimitError } from './options';
+import { AgentModelPolicyError } from './errors';
 
 /**
  * Permissive Request alias used by {@link validateAgentModel}. Accepts either
@@ -470,4 +471,12 @@ export async function validateAgentModel(
       message: `{ "type": "${ViolationTypes.ILLEGAL_MODEL_REQUEST}", "info": "${endpoint}|${model}" }`,
     },
   };
+}
+
+/** Enforces the primary remote agent's model policy before provider initialization. */
+export async function assertAgentModelAllowed(params: ValidateAgentModelParams): Promise<void> {
+  const result = await validateAgentModel(params);
+  if (!result.isValid) {
+    throw new AgentModelPolicyError();
+  }
 }

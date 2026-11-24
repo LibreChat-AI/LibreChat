@@ -339,7 +339,7 @@ jest.mock('@librechat/api', () => ({
     .mockImplementation(({ accessibleSkillIds }) => accessibleSkillIds),
   loadSkillStates: jest.fn().mockResolvedValue({ skillStates: {}, defaultActiveOnShare: false }),
   createSafeUser: jest.fn().mockReturnValue({ id: 'user-123' }),
-  validateAgentModel: jest.fn().mockResolvedValue({ isValid: true }),
+  assertAgentModelAllowed: jest.fn().mockResolvedValue(undefined),
   initializeAgent: jest.fn().mockResolvedValue({
     id: 'agent-123',
     model: 'claude-3',
@@ -415,6 +415,9 @@ jest.mock('@librechat/api', () => ({
   /** Mirrors the real helper's contract: generic copy under content protection, otherwise the
    *  provider's own message. Stripping of LangChain's docs URL is covered in its own unit test. */
   getUserFacingProviderError: (error, protectionEnabled) => {
+    if (error instanceof jest.requireActual('@librechat/api').AgentModelPolicyError) {
+      return error.message;
+    }
     if (protectionEnabled) {
       return 'An error occurred while processing the request';
     }
@@ -708,8 +711,8 @@ describe('createResponse controller', () => {
       const api = require('@librechat/api');
       const db = require('~/models');
       const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
-      api.validateAgentModel.mockImplementationOnce(
-        jest.requireActual('@librechat/api').validateAgentModel,
+      api.assertAgentModelAllowed.mockImplementationOnce(
+        jest.requireActual('@librechat/api').assertAgentModelAllowed,
       );
       db.getAgent.mockResolvedValueOnce({
         id: 'agent-123',
@@ -726,7 +729,7 @@ describe('createResponse controller', () => {
         res,
         403,
         'The configured agent model is unavailable for this request.',
-        'forbidden',
+        'invalid_request',
         'model_not_allowed',
       );
       expect(api.initializeAgent).not.toHaveBeenCalled();

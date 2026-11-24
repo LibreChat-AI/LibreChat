@@ -13,6 +13,7 @@ import {
   getUserFacingProviderError,
   isFatalAgentInitializationError,
   getAgentErrorMetadata,
+  AgentModelPolicyError,
   AGENT_ATTACHMENT_LIMIT_EXCEEDED,
   AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE,
   isStepLimitError,
@@ -180,6 +181,14 @@ describe('LangChain provider error text', () => {
   });
 
   describe('getUserFacingProviderError', () => {
+    it('keeps a model-policy rejection safe and actionable under content protection', () => {
+      const error = new AgentModelPolicyError();
+      expect(getUserFacingProviderError(error, true)).toBe(error.message);
+      expect(getAgentErrorMetadata(error)).toMatchObject({
+        status: 403,
+        code: 'model_not_allowed',
+      });
+    });
     it('strips the docs URL from the forwarded provider message', () => {
       const error = new Error(`429 budget exceeded${troubleshooting('MODEL_RATE_LIMIT')}`);
       expect(getUserFacingProviderError(error, false)).toBe('429 budget exceeded');
