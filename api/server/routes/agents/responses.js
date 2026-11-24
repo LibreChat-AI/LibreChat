@@ -20,6 +20,7 @@
  * @see https://openresponses.org/specification
  */
 const express = require('express');
+const { rejectBackgroundForRemoteModel } = require('@librechat/api');
 const {
   createResponse,
   getResponse,
@@ -31,10 +32,12 @@ const {
   authenticateBackgroundResponses,
 } = require('~/server/services/Responses');
 const {
-  checkAgentPermission,
+  remoteModelGuards,
+  preResolveModelGuards,
   preAuthTenantMiddleware,
   requireRemoteAgentAuth,
   checkRemoteAgentsFeature,
+  checkAgentOrModelPermission,
 } = require('./middleware');
 
 const router = express.Router();
@@ -56,7 +59,9 @@ router.use(checkRemoteAgentsFeature);
  *
  * Request body:
  * {
- *   "model": "agent_id",                // Required: The agent ID to use
+ *   "model": "agent_id",                // Required: an agent ID, or a model spec name or
+ *                                       //   "endpoint/model" the user can use (unless
+ *                                       //   remoteApi.models.enabled is false; not with background)
  *   "input": "..." | [...],             // Required: String or array of input items
  *   "stream": true,                     // Optional: Whether to stream (default: false)
  *   "previous_response_id": "...",      // Optional: Previous response for continuation
@@ -90,7 +95,14 @@ router.use(checkRemoteAgentsFeature);
  *   "usage": { ... }
  * }
  */
-router.post('/', checkAgentPermission, background.create);
+router.post(
+  '/',
+  ...preResolveModelGuards,
+  checkAgentOrModelPermission,
+  ...remoteModelGuards,
+  rejectBackgroundForRemoteModel,
+  background.create,
+);
 router.post('/:id/cancel', background.cancel);
 
 /**

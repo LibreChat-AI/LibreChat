@@ -1,5 +1,5 @@
 import { formatDistanceToNow } from 'date-fns';
-
+import { apiBaseUrl } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 
 export const EXPIRY_NEVER = 'never';
@@ -63,3 +63,10 @@ export function getExpiryStatus(expiresAt?: string, now: Date = new Date()): Exp
   }
   return null;
 }
+
+/** Where OpenAI-compatible clients send requests, including any deployment base path
+ *  (a relative or absolute `<base href>`). */
+export const getRemoteApiBaseUrl = (): string => {
+  const base = new URL(`${apiBaseUrl()}/`, window.location.origin);
+  return new URL('api/agents/v1', base).href;
+};

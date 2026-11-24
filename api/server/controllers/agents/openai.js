@@ -32,6 +32,7 @@ const {
   createSafeUser,
   validateRequest,
   initializeAgent,
+  isRemoteModelContinuationAllowed,
   getBalanceConfig,
   injectSkillPrimes,
   extractManualSkills,
@@ -113,6 +114,8 @@ const {
 } = require('~/server/services/Endpoints/agents/linkedInstructions');
 const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
+/** Loaded on first use: the service pulls in the endpoint and model config stack. */
+const remoteModels = () => require('~/server/services/Agents/remoteModels');
 const { resolveConfigServers } = require('~/server/services/MCP');
 const { getMCPManager } = require('~/config');
 const { logViolation } = require('~/cache');
@@ -449,7 +452,12 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       return handleExecutionError({ error, res, context, appConfig });
     },
     execute: async (execution) => {
-      const agentPromise = db.getAgent({ id: agentId });
+      /** Set by checkAgentOrModelPermission when `model` names a model spec or
+       *  `endpoint/model` (remoteApi.models), not an agent: run it as the same
+       *  ephemeral agent the chat UI builds for that selection. */
+      const agentPromise = req.remoteModel
+        ? remoteModels().buildAgent(req, req.remoteModel)
+        : db.getAgent({ id: agentId });
       // Validation may return before this promise is awaited; preserve the original
       // promise for the later await while avoiding an unhandled speculative rejection.
       agentPromise.catch(() => {});
@@ -474,6 +482,18 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
             project.status,
             project.message,
             project.reason === 'server_error' ? 'server_error' : 'invalid_request_error',
+          );
+        }
+        if (
+          req.remoteModel &&
+          !isRemoteModelContinuationAllowed(req.remoteModel, project.conversation, appConfig)
+        ) {
+          return sendErrorResponse(
+            res,
+            409,
+            'This conversation was not started with this model. Start a new conversation.',
+            'invalid_request_error',
+            'conversation_target_mismatch',
           );
         }
         req.resolvedConversation = project.conversation;
@@ -540,10 +560,13 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
 
       // Under `remoteApi.integrations.mode: delegated`, a personal key's run may use only
       // the MCP servers and tools its owner granted that key for this agent.
+      // A model run binds to a path-safe id no grant can match (`remoteModelGrantAgentId`).
       await require('~/server/services/ApiKeys/grants').prepare({
         req,
         res,
-        executionContext,
+        executionContext: req.remoteModel
+          ? { ...executionContext, agentId: remoteModels().grantAgentId(req.remoteModel) }
+          : executionContext,
         signal: execution.signal,
       });
 
@@ -640,6 +663,15 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         getUserById: db.getUserById,
         accessibleSkillIds,
       });
+
+      if (req.remoteModel) {
+        /** A spec's named skills resolve against the owner's skills, as in the chat. */
+        await remoteModels().applySpecSkills(agent, req.remoteModel, {
+          accessibleSkillIds,
+          getSkillByName: getSkillDbMethods().getSkillByName,
+          appConfig,
+        });
+      }
 
       const primaryScopedSkillIds = resolveAgentScopedSkillIds({
         agent,
@@ -1350,7 +1382,7 @@ const ListModelsController = async (req, res) => {
       agents = await db.getAgentModelSummaries(accessibleAgentIds);
     }
 
-    const models = agents.map((agent) => ({
+    const agentModels = agents.map((agent) => ({
       id: agent.id,
       object: 'model',
       created: Math.floor(new Date(agent.createdAt || Date.now()).getTime() / 1000),
@@ -1363,15 +1395,15 @@ const ListModelsController = async (req, res) => {
       description: agent.description,
       provider: agent.provider,
     }));
+    const remoteModelEntries = await remoteModels().list(req);
 
     res.json({
       object: 'list',
-      data: models,
+      data: [...agentModels, ...remoteModelEntries],
     });
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Failed to list models';
     logger.error('[OpenAI API] Error listing models:', getSafeErrorMetadata(error));
-    sendErrorResponse(res, 500, errorMessage, 'server_error');
+    sendErrorResponse(res, 500, 'Failed to list models', 'server_error');
   }
 };
 
@@ -1393,6 +1425,10 @@ const GetModelController = async (req, res) => {
     const agent = await db.getAgent({ id: model });
 
     if (!agent) {
+      const remoteModel = await remoteModels().describe(req, model);
+      if (remoteModel) {
+        return res.json(remoteModel);
+      }
       return sendErrorResponse(
         res,
         404,
@@ -1436,9 +1472,8 @@ const GetModelController = async (req, res) => {
       provider: agent.provider,
     });
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Failed to get model';
     logger.error('[OpenAI API] Error getting model:', getSafeErrorMetadata(error));
-    sendErrorResponse(res, 500, errorMessage, 'server_error');
+    sendErrorResponse(res, 500, 'Failed to get model', 'server_error');
   }
 };
 

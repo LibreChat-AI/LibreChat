@@ -40,7 +40,9 @@ const {
   getAgentTriggerDeliveryStatus,
 } = require('~/server/services/Agents/triggers');
 const {
-  checkAgentPermission,
+  remoteModelGuards,
+  preResolveModelGuards,
+  checkAgentOrModelPermission,
   checkAgentTriggerPermission,
   preAuthTenantMiddleware,
   requireRemoteAgentAuth,
@@ -111,7 +113,9 @@ router.get('/events/:id', eventHandlers.getEvent);
  *
  * Request body:
  * {
- *   "model": "agent_id",        // Required: The agent ID to use
+ *   "model": "agent_id",        // Required: an agent ID, or a model spec name or
+ *                               //   "endpoint/model" the user can use (unless
+ *                               //   remoteApi.models.enabled is false)
  *   "messages": [...],          // Required: Array of chat messages
  *   "stream": true,             // Optional: Whether to stream (default: false)
  *   "conversation_id": "...",   // Optional: Conversation ID for context
@@ -125,11 +129,18 @@ router.get('/events/:id', eventHandlers.getEvent);
  * Response (non-streaming):
  * - Standard OpenAI chat.completion format
  */
-router.post('/chat/completions', checkAgentPermission, OpenAIChatCompletionController);
+router.post(
+  '/chat/completions',
+  ...preResolveModelGuards,
+  checkAgentOrModelPermission,
+  ...remoteModelGuards,
+  OpenAIChatCompletionController,
+);
 
 /**
  * @route GET /v1/models
- * @desc List available agents as models
+ * @desc List available agents as models, plus the model specs and endpoint models the
+ *       user can use (unless remoteApi.models.enabled is false)
  * @access Private (API key auth required)
  *
  * Response:

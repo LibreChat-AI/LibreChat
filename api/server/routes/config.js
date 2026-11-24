@@ -28,6 +28,7 @@ const {
   resolvePullRequestCapabilities,
   resolvePreLoginAppConfig,
   withSafePolicyLinks,
+  isRemoteModelAccessEnabled,
 } = require('@librechat/api');
 const {
   DEFAULT_MCP_APP_CSP_LIMITS,
@@ -172,6 +173,7 @@ function buildPostLoginPayload(appConfig) {
       isEnabled(process.env.ALLOW_ACCOUNT_DELETION),
     allowEmailChange: resolveEmailChangeSettings(appConfig?.emailChange).enabled,
     maxPasskeysPerUser: resolveMaxPasskeysPerUser(appConfig?.passkeys),
+    remoteApiModelsEnabled: isRemoteModelAccessEnabled(appConfig),
   };
 
   return payload;

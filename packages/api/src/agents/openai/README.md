@@ -2,6 +2,21 @@
 
 This module projects an **agent run**, which can include several model invocations and server-executed tools, onto an OpenAI-compatible response. It is not a transparent proxy for a single model completion. Only explicitly client-owned calls in graph-accepted model responses may become outward `tool_calls`; SDK- and provider-executed calls never become client execution requests. Completed SDK executions can be observed separately with the opt-in extension below. Binding caller-supplied tool schemas and client execution remains a separate feature.
 
+## Model targets
+
+`model` names what a request runs. A saved agent ID is resolved first, through the remote-agent ACL (`createCheckRemoteAgentAccess`). When no agent has that ID, the chat completions route offers it to `models.ts`, which accepts what the key's owner can pick in the chat UI:
+
+- a model spec, by `name`, when the spec's model is in the owner's models for its endpoint (the allow-list `validateAgentModel` applies to the chat's ephemeral agents). Specs with `showInMenu: false` resolve by name but are neither listed nor described, as in `/api/config`;
+- `endpoint/model`, split at the first `/` (so `openrouter/anthropic/claude-sonnet-4` works), only on endpoints the model selector offers: none when `modelSpecs.enforce` is on or `interface.modelSelect` is false, only `modelSpecs.addedEndpoints` when that list is set, and only models in the owner's models config. An `endpoint/model` id that a spec is named after is not listed, since resolution tries specs first.
+
+Agents, assistants, and endpoints running on credentials the user supplies (`userProvide`, or Bedrock's `userProvide*` fields) are never targets.
+
+A target runs as the ephemeral agent the chat UI builds for that selection (`parseCompactConvo`, `applyModelSpecPreset` with preset defaults, `loadEphemeralAgent`), so the spec's preset, tools and enforcement apply unchanged. The API request body is not passed to `loadEphemeralAgent`, and `ephemeralAgent` and `manualSkills` are removed from it once the model resolves: a caller cannot toggle tools, MCP servers or skills per request. Model access is for personal API keys; OIDC-authenticated callers stay agent-only. For any `model` that is not a saved agent id (`agent_…`), the routes run the chat's ban check, the message limits (`LIMIT_MESSAGE_IP`, `LIMIT_MESSAGE_USER`, through API limiters that answer with a JSON 429 and never write chat messages) and a strict config load before resolution (`onlyForModelNames`). After a model resolves, `onlyForRemoteModel` adds the balance gate (no credits, no run, when balances are enabled) and, on an enforced spec, refuses caller `system`/`developer` messages. Agent requests are unchanged.
+
+`createRemoteModelService` reads the owner's endpoints config once per request object and loads models only for the endpoints a request names (`getEndpointModelsConfig`), so the access check and the run share reads and an unknown `model` loads no catalog. `GET /models` lists targets after agents, marked `librechat.type` = `model_spec` or `endpoint_model`; when a catalog fails to load, the list falls back to agents and the failure is logged.
+
+On by default; `endpoints.agents.remoteApi.models.enabled: false` keeps keys agent-only. Personal keys themselves still require the `REMOTE_AGENTS` `USE` permission. The Open Responses route (`/v1/responses`, and its `/responses/models` list) takes the same targets through the same check and guards. `background: true` with a model is refused with `background_requires_agent`, because background runs, resumes and owner reviews re-authorize a saved agent. The packaged `createAgentChatCompletion` service still accepts agents only.
+
 ## Owners and boundaries
 
 ```text
