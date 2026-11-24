@@ -1,6 +1,11 @@
 const rateLimit = require('express-rate-limit');
 const { ViolationTypes } = require('librechat-data-provider');
-const { limiterCache, removePorts, getRateLimitReset } = require('@librechat/api');
+const {
+  limiterCache,
+  removePorts,
+  getRateLimitReset,
+  createAgentEventLimiter,
+} = require('@librechat/api');
 const denyRequest = require('~/server/middleware/denyRequest');
 const { logViolation } = require('~/cache');
 
@@ -76,32 +81,11 @@ const messageIpLimiter = rateLimit(ipLimiterOptions);
 const messageUserLimiter = rateLimit(userLimiterOptions);
 
 /**
- * Event admission has its own API-principal bucket. The durable worker later
- * consumes the normal message-user bucket when it executes the delivery, so
- * sharing that limiter here would charge every event twice.
- *
- * Built on load: both server entries require the routes after startup checks
- * have applied `rateLimits.agentEvents` from librechat.yaml to the environment.
+ * Agent event admission, built after startup checks apply `rateLimits` from librechat.yaml.
  */
-const eventWindowMs = Number(process.env.AGENT_EVENT_USER_WINDOW ?? 1) * 60 * 1000;
-const agentEventUserLimiter = rateLimit({
-  windowMs: eventWindowMs,
-  max: Number(process.env.AGENT_EVENT_USER_MAX ?? 40),
-  handler: (req, res) => {
-    const { retryAfterSeconds } = getRateLimitReset(req.rateLimit, eventWindowMs);
-    res.set('Retry-After', String(retryAfterSeconds));
-    return res
-      .status(429)
-      .type('application/json')
-      .json({
-        error: {
-          code: 'agent_event_rate_limited',
-          message: 'Agent event admission rate limit exceeded.',
-          type: 'rate_limit_error',
-        },
-      });
-  },
-  keyGenerator: (req) => String(req.apiKeyId ?? req.user?.id),
+const agentEventUserLimiter = createAgentEventLimiter({
+  max: process.env.AGENT_EVENT_USER_MAX,
+  window: process.env.AGENT_EVENT_USER_WINDOW,
   store: limiterCache('agent_event_user_limiter'),
 });
 

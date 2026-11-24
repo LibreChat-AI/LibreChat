@@ -9,6 +9,7 @@ export * from './envelope';
 export * from './host';
 export * from './ingress';
 export * from './lease';
+export * from './limiter';
 export * from './outcome';
 export * from './service';
 export * from './engine';

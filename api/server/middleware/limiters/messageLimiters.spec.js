@@ -1,22 +1,17 @@
-const express = require('express');
-const request = require('supertest');
-
 const mockLimiter = jest.fn((_req, _res, next) => next());
 const mockRateLimit = jest.fn(() => mockLimiter);
+const mockEventLimiter = jest.fn((_req, _res, next) => next());
 
 jest.mock('express-rate-limit', () => mockRateLimit);
 jest.mock('@librechat/api', () => ({
   limiterCache: jest.fn((prefix) => ({ prefix })),
   removePorts: jest.fn(),
+  createAgentEventLimiter: jest.fn(() => mockEventLimiter),
   getRateLimitReset: jest.requireActual('../../../../packages/api/src/utils/limiter.ts')
     .getRateLimitReset,
 }));
 jest.mock('~/server/middleware/denyRequest', () => jest.fn());
 jest.mock('~/cache', () => ({ logViolation: jest.fn() }));
-
-/** The options a limiter was built with, found by its store so creation order is free to change. */
-const optionsFor = (prefix) =>
-  mockRateLimit.mock.calls.map(([options]) => options).find((o) => o.store?.prefix === prefix);
 
 describe('agent event rate limiter', () => {
   let originalEnv;
@@ -31,94 +26,20 @@ describe('agent event rate limiter', () => {
     jest.clearAllMocks();
   });
 
-  it('reads YAML-projected limits when the module loads', () => {
+  /** express-rate-limit rejects a limiter created while a request is being handled. */
+  it('is built when the module loads, from the YAML-projected limits', () => {
     process.env.AGENT_EVENT_USER_MAX = '80';
     process.env.AGENT_EVENT_USER_WINDOW = '2';
     const { agentEventUserLimiter } = require('./messageLimiters');
+    const { createAgentEventLimiter } = require('@librechat/api');
 
-    expect(optionsFor('agent_event_user_limiter')).toEqual(
-      expect.objectContaining({ max: 80, windowMs: 120_000 }),
-    );
-    expect(agentEventUserLimiter).toBe(mockLimiter);
-  });
-
-  it('keys the bucket by API key, falling back to the user', () => {
-    require('./messageLimiters');
-    const { keyGenerator } = optionsFor('agent_event_user_limiter');
-
-    expect(keyGenerator({ apiKeyId: 'key-1', user: { id: 'user-1' } })).toBe('key-1');
-    expect(keyGenerator({ user: { id: 'user-1' } })).toBe('user-1');
-  });
-
-  it('returns an actionable JSON 429 without recording a message violation', async () => {
-    process.env.AGENT_EVENT_USER_MAX = '80';
-    process.env.AGENT_EVENT_USER_WINDOW = '2';
-    require('./messageLimiters');
-    const { logViolation } = require('~/cache');
-    const denyRequest = require('~/server/middleware/denyRequest');
-    const options = optionsFor('agent_event_user_limiter');
-    const app = express();
-    app.use((req, _res, next) => {
-      req.rateLimit = { resetTime: new Date(Date.now() + 30_000) };
-      next();
+    expect(createAgentEventLimiter).toHaveBeenCalledTimes(1);
+    expect(createAgentEventLimiter).toHaveBeenCalledWith({
+      max: '80',
+      window: '2',
+      store: { prefix: 'agent_event_user_limiter' },
     });
-    app.post('/api/agents/v1/events', options.handler);
-    const response = await request(app).post('/api/agents/v1/events');
-
-    expect(response.status).toBe(429);
-    expect(response.headers['content-type']).toMatch(/^application\/json/);
-    expect(response.headers['retry-after']).toBe('30');
-    expect(response.body).toEqual({
-      error: {
-        code: 'agent_event_rate_limited',
-        message: 'Agent event admission rate limit exceeded.',
-        type: 'rate_limit_error',
-      },
-    });
-    expect(response.text).not.toContain('event:');
-    expect(logViolation).not.toHaveBeenCalled();
-    expect(denyRequest).not.toHaveBeenCalled();
-  });
-});
-
-describe('agent event rate limiter creation', () => {
-  let originalEnv;
-
-  beforeEach(() => {
-    originalEnv = { ...process.env };
-    jest.resetModules();
-    jest.doMock('express-rate-limit', () => jest.requireActual('express-rate-limit'));
-  });
-
-  afterEach(() => {
-    process.env = originalEnv;
-    jest.doMock('express-rate-limit', () => mockRateLimit);
-    console.error.mockRestore?.();
-  });
-
-  /** express-rate-limit reports a limiter built while a request is being handled. */
-  it('is built before the first request reaches it', async () => {
-    process.env.AGENT_EVENT_USER_MAX = '1';
-    require('@librechat/api').limiterCache.mockReturnValue(undefined);
-    const report = jest.spyOn(console, 'error').mockImplementation(() => {});
-    const { agentEventUserLimiter } = require('./messageLimiters');
-    const app = express();
-    app.use((req, _res, next) => {
-      req.apiKeyId = 'key-1';
-      next();
-    });
-    app.post('/api/agents/v1/events', agentEventUserLimiter, (_req, res) => res.sendStatus(202));
-
-    const admitted = await request(app).post('/api/agents/v1/events');
-    const limited = await request(app).post('/api/agents/v1/events');
-
-    expect(report.mock.calls.map(([error]) => error?.code)).not.toContain(
-      'ERR_ERL_CREATED_IN_REQUEST_HANDLER',
-    );
-    expect(admitted.status).toBe(202);
-    expect(limited.status).toBe(429);
-    expect(limited.headers['retry-after']).toBe('60');
-    expect(limited.body.error.code).toBe('agent_event_rate_limited');
+    expect(agentEventUserLimiter).toBe(mockEventLimiter);
   });
 });
 
@@ -144,7 +65,7 @@ describe('message rate limiter violation payload', () => {
     require('./messageLimiters');
     const { logViolation } = require('~/cache');
     const denyRequest = require('~/server/middleware/denyRequest');
-    const userOptions = optionsFor('message_user_limiter');
+    const userOptions = mockRateLimit.mock.calls.at(-1)[0];
     const resetTime = new Date(Date.now() + 7 * 60 * 1000);
     const expected = expect.objectContaining({
       type: 'message_limit',
@@ -167,7 +88,7 @@ describe('message rate limiter violation payload', () => {
     process.env.MESSAGE_IP_WINDOW = '1';
     require('./messageLimiters');
     const denyRequest = require('~/server/middleware/denyRequest');
-    const ipOptions = optionsFor('message_ip_limiter');
+    const ipOptions = mockRateLimit.mock.calls.at(-2)[0];
 
     await ipOptions.handler({}, {});
 
