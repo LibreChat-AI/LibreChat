@@ -73,10 +73,18 @@ export function createSetupPolicy(deps: SetupPolicyDependencies): {
     options?: { completed?: boolean },
   ) => Promise<ExistingSetupPolicy>;
 } {
-  async function deployment(options: { existing?: boolean } = {}): Promise<SetupPolicy> {
+  async function deployment(
+    options: { existing?: boolean; refresh?: boolean } = {},
+  ): Promise<SetupPolicy> {
     if (!deps.principalAuthEnabled()) throw new SetupPolicyError('SETUP_UNAVAILABLE');
     const [base] = await Promise.all([
-      deps.getAppConfig({ baseOnly: true, failClosed: true, refresh: true }),
+      deps.getAppConfig({
+        baseOnly: true,
+        failClosed: true,
+        // Request paths need a fresh policy; the background sweep reads the
+        // cached base config instead (see router.ts), so it never forces a reload.
+        refresh: options.refresh ?? true,
+      }),
       deps.principalAuthReady(),
     ]);
     const config = readSetupConfig(base, !options.existing);

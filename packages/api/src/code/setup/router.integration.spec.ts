@@ -104,6 +104,7 @@ describe('browser setup HTTP protocol boundary', () => {
   let base: AppConfig;
   let support = true;
   let refreshCount = 0;
+  let configCallCount = 0;
   const lifetimes: AbortController[] = [];
   let approval: BrowserEnrollmentApproval | undefined;
   let completed = false;
@@ -134,6 +135,7 @@ describe('browser setup HTTP protocol boundary', () => {
       role: 'USER',
     });
     refreshCount = 0;
+    configCallCount = 0;
     owner = user._id.toString();
     base = config();
     support = true;
@@ -213,6 +215,7 @@ describe('browser setup HTTP protocol boundary', () => {
         backend,
         signal: lifetime.signal,
         getAppConfig: async (options) => {
+          configCallCount++;
           if (options.refresh) refreshCount++;
           return base;
         },
@@ -385,6 +388,26 @@ describe('browser setup HTTP protocol boundary', () => {
     );
     expect(refreshCount).toBe(admitted);
   });
+
+  test('background sweep never forces a configuration reload', async () => {
+    app();
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    // The sweep ticks every second and reads its interval from the cached
+    // config, so sweeps run without a single forced reload.
+    expect(configCallCount).toBeGreaterThan(0);
+    expect(refreshCount).toBe(0);
+  }, 10000);
+
+  test('background sweep backs off when browser setup is withdrawn', async () => {
+    base.endpoints!.agents!.statefulCodeSessions!.principalWorkers!.browserSetup!.enabled = false;
+    app();
+    // Unpatched code re-reads the interval (and the whole base config) every
+    // 10s once the policy is unreadable; patched code falls back to the 60s
+    // schema maximum, so only the first sweep runs in this window.
+    await new Promise((resolve) => setTimeout(resolve, 14000));
+    expect(configCallCount).toBe(1);
+    expect(refreshCount).toBe(0);
+  }, 30000);
 
   test('capabilities fail closed when the required unique registration indexes cannot be enforced', async () => {
     const response = await request(app({ registrationUnavailable: true })).get(
