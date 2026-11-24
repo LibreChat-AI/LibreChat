@@ -641,6 +641,7 @@ test.describe('the recorded design-rule backlog', () => {
       join(emptyRoot, 'scripts/typecheck.mts'),
     );
     copyFileSync(resolve(repoRoot, 'scripts/imports.mts'), join(emptyRoot, 'scripts/imports.mts'));
+    copyFileSync(resolve(repoRoot, 'scripts/casing.mts'), join(emptyRoot, 'scripts/casing.mts'));
     mkdirSync(join(emptyRoot, 'scripts/eslint'), { recursive: true });
     copyFileSync(
       resolve(repoRoot, 'scripts/eslint/design.mjs'),
@@ -1123,6 +1124,7 @@ function syntheticRoot(): string {
     'scripts/i18n.mts',
     'scripts/typecheck.mts',
     'scripts/imports.mts',
+    'scripts/casing.mts',
     /** The local design rules the config registers and the runner validates against. */
     'scripts/eslint/design.mjs',
     'scripts/eslint/chat.mjs',
