@@ -6,8 +6,10 @@ import {
   imageGenTools,
   isOpaqueReasoning,
   isImageVisionTool,
+  hasToolCallPreview,
+  getToolCallPreviewRevision,
 } from 'librechat-data-provider';
-import type { PartMetadata } from 'librechat-data-provider';
+import type { PartMetadata, TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { ToolRenderer, AgentToolCall, PartRenderers, ToolRenderProps } from './partTypes';
 import { getActivityLabelPart, getActivityLabelText } from '../core/parts/activityLabels';
@@ -21,6 +23,7 @@ import AskUserQuestionCall from './parts/ask/Call';
 import { getPartKeyIndex } from '../core/content';
 import { WebSearchCall } from './parts/WebSearch';
 import ReadFileCall from './parts/ReadFileCall';
+import SubagentCall from './parts/SubagentCall';
 import AgentHandoff from './parts/AgentHandoff';
 import { isError } from '../core/parts/output';
 import RetrievalCall from './parts/Retrieval';
@@ -203,6 +206,39 @@ const renderWebSearch: ToolRenderer = ({
   />
 );
 
+const renderSubagent: ToolRenderer = ({
+  part,
+  toolCall,
+  attachments,
+  isSubmitting,
+  hideAttachments,
+}) => (
+  <SubagentCall
+    toolCallId={toolCall.id ?? ''}
+    args={toolCall.args}
+    output={toolCall.output ?? ''}
+    initialProgress={toolCall.progress ?? 0.1}
+    isSubmitting={isSubmitting}
+    runStepStatus={toolCall.runStepStatus}
+    attachments={attachments}
+    /** The child's activity the server saved onto the call, so it survives a reload. Runs saved
+     *  before that existed have none, and the card falls back to the live progress or the raw
+     *  output. */
+    persistedContent={(toolCall as { subagent_content?: TMessageContentParts[] }).subagent_content}
+    contentPreview={
+      hasToolCallPreview(toolCall)
+        ? {
+            revision: getToolCallPreviewRevision(toolCall),
+            stepId: toolCall.stepId,
+            agentId: part.agentId,
+          }
+        : undefined
+    }
+    subagentIdentity={toolCall.subagentIdentity}
+    hideAttachments={hideAttachments}
+  />
+);
+
 const renderHandoff: ToolRenderer = ({ toolCall }) => (
   <AgentHandoff args={toolCall.args ?? ''} name={toolCall.name || ''} />
 );
@@ -316,6 +352,7 @@ const buildTools = (): Record<string, ToolRenderer> => ({
   file_search: renderRetrieval,
   retrieval: renderRetrieval,
   [Tools.web_search]: renderWebSearch,
+  [Constants.SUBAGENT]: renderSubagent,
 });
 
 const renderDefaultTool: ToolRenderer = ({

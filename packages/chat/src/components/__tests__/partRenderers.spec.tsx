@@ -58,6 +58,15 @@ jest.mock('../parts/preparation', () => ({
   ToolPreparation: mockPassthrough,
 }));
 jest.mock('../parts/ToolCall', () => ({ __esModule: true, default: mockStub('tool-call') }));
+/** The props the package's subagent card was last drawn with. */
+let mockSubagentProps: Record<string, unknown> | undefined;
+jest.mock('../parts/SubagentCall', () => ({
+  __esModule: true,
+  default: (props: Record<string, unknown>) => {
+    mockSubagentProps = props;
+    return <div data-testid="subagent-call" />;
+  },
+}));
 jest.mock('../parts/WebSearch', () => ({
   __esModule: true,
   WebSearchCall: mockStub('web-search'),
@@ -180,8 +189,7 @@ const TOOL_NAMES: [string, string, string][] = [
   ['ask_user_question', '{}', 'ask-user-question-call'],
   [Constants.CHECK_BACKGROUND_TASK as string, '{}', 'background-task-call'],
   ['skill', '{}', 'skill-call'],
-  /** A subagent's card reads the host's state; without the host it is a generic tool card. */
-  [Constants.SUBAGENT as string, '{}', 'tool-call'],
+  [Constants.SUBAGENT as string, '{}', 'subagent-call'],
   ['set_memory', '{}', 'memory-call'],
   ['delete_memory', '{}', 'memory-call'],
   ['read_file', '{}', 'read-file-call'],
@@ -203,6 +211,48 @@ describe('the package’s part renderers', () => {
 
   it.each(TOOL_NAMES)('routes a %s call with args %s to the same card', (name, args, expected) => {
     expect(drawn(agentCall(name, args))).toBe(expected);
+  });
+});
+
+describe('the package’s subagent card', () => {
+  it('is given what the call carries: its saved activity, its preview and its identity', () => {
+    const saved = [{ type: ContentTypes.TEXT, text: 'child reply' }];
+    const identity = { subagentKind: 'agent', subagentAgentId: 'agent_child' };
+    drawn(
+      asPart({
+        type: ContentTypes.TOOL_CALL,
+        agentId: 'agent_parent',
+        [ContentTypes.TOOL_CALL]: {
+          id: 'call_sub',
+          name: Constants.SUBAGENT,
+          args: '{"subagent_type":"agent_child"}',
+          output: 'done',
+          progress: 1,
+          stepId: 'step_1',
+          subagent_content: saved,
+          subagentIdentity: identity,
+          subagentContentOmitted: true,
+          previewRevision: 'rev-1',
+        },
+      }),
+    );
+
+    expect(mockSubagentProps).toMatchObject({
+      toolCallId: 'call_sub',
+      args: '{"subagent_type":"agent_child"}',
+      output: 'done',
+      initialProgress: 1,
+      persistedContent: saved,
+      subagentIdentity: identity,
+      contentPreview: { stepId: 'step_1', agentId: 'agent_parent' },
+    });
+    expect((mockSubagentProps?.contentPreview as { revision: string }).revision).toMatch(/^rev-1:/);
+  });
+
+  it('passes no preview for a call the server sent whole', () => {
+    drawn(agentCall(Constants.SUBAGENT as string));
+    expect(mockSubagentProps?.contentPreview).toBeUndefined();
+    expect(mockSubagentProps?.toolCallId).toBe('call_1');
   });
 });
 
