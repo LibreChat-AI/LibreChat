@@ -213,7 +213,8 @@ export class InMemoryJobStore implements IJobStoreV2 {
   /** Store-lifetime generation clock. A completed job may be deleted before a
    * same-millisecond replacement starts, so the current jobs map alone cannot
    * guarantee a distinct checkpoint namespace. */
-  private lastGenerationEpoch = 0;
+  // Restart recovery compares enrolled epochs to the process start, even after clock rollback.
+  private lastGenerationEpoch = Math.ceil(performance.timeOrigin) - 1;
 
   /** Latest per-stream epoch retained briefly after its job disappears. This
    * is also the conditional-create fence: a delayed queue drain must not treat
