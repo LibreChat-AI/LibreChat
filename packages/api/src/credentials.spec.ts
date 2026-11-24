@@ -305,15 +305,18 @@ describe('credentials', () => {
       expect(fs.statSync(lock).nlink).toBe(2);
     });
 
-    it('does not stage credentials below a parent with unrelated delete-child rights', () => {
-      grantWindowsEveryone(tempDirectory, 'DeleteSubdirectoriesAndFiles');
+    it.each(['DeleteSubdirectoriesAndFiles', 'CreateFiles'])(
+      'does not stage credentials below a parent with unrelated %s rights',
+      (right) => {
+        grantWindowsEveryone(tempDirectory, right);
 
-      const state = bootstrapCredentials();
+        const state = bootstrapCredentials();
 
-      expect(state.loadedFromFile).toEqual([]);
-      expect(state.persistenceFailed).toBe(true);
-      expect(fs.readdirSync(tempDirectory)).toEqual([]);
-    });
+        expect(state.loadedFromFile).toEqual([]);
+        expect(state.persistenceFailed).toBe(true);
+        expect(fs.readdirSync(tempDirectory)).toEqual([]);
+      },
+    );
   }
 
   it('does not overwrite an explicitly selected environment file', () => {

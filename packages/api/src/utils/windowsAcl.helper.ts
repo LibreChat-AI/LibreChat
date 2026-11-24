@@ -17,11 +17,11 @@ if ($env:LIBRECHAT_ACL_TEST_GRANT) {
   else { [IO.File]::SetAccessControl($path, $acl) }
 } else {
   $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
-  $entries = @($raw.DiscretionaryAcl | ForEach-Object {
-    @{ sid = $_.SecurityIdentifier.Value; flags = [int]$_.AceFlags; mask = $_.AccessMask; type = [int]$_.AceType }
-  })
-  @{ current = $me.Value; owner = $raw.Owner.Value; protected = $acl.AreAccessRulesProtected; entries = $entries } |
-    ConvertTo-Json -Depth 4 -Compress
+  [Console]::WriteLine(('{0} {1} {2}' -f $me.Value, $raw.Owner.Value, [int]$acl.AreAccessRulesProtected))
+  foreach ($ace in $raw.DiscretionaryAcl) {
+    [Console]::WriteLine(('{0} {1} {2} {3}' -f $ace.SecurityIdentifier.Value, [int]$ace.AceType,
+      [int]$ace.AceFlags, $ace.AccessMask))
+  }
 }
 `;
 
@@ -39,6 +39,8 @@ function aclCommand(file: string, rights?: string, inherit = 'None'): string {
     [
       '-NoProfile',
       '-NonInteractive',
+      '-InputFormat',
+      'Text',
       '-EncodedCommand',
       Buffer.from(control, 'utf16le').toString('base64'),
     ],
@@ -53,7 +55,7 @@ function aclCommand(file: string, rights?: string, inherit = 'None'): string {
         LIBRECHAT_ACL_TEST_INHERIT: inherit,
       },
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
+      input: '\n',
       timeout: 10_000,
       windowsHide: true,
     },
@@ -67,7 +69,16 @@ function aclCommand(file: string, rights?: string, inherit = 'None'): string {
 }
 
 export function inspectWindowsAcl(file: string): WindowsAcl {
-  return JSON.parse(aclCommand(file)) as WindowsAcl;
+  const [header, ...rows] = aclCommand(file).trim().split(/\r?\n/);
+  const [current, owner, protectedFlag] = header.split(' ');
+  if (!current || !owner || (protectedFlag !== '0' && protectedFlag !== '1')) {
+    throw new Error('Invalid Windows ACL fixture output.');
+  }
+  const entries = rows.map((row) => {
+    const [sid, type, flags, mask] = row.split(' ');
+    return { sid, type: Number(type), flags: Number(flags), mask: Number(mask) };
+  });
+  return { current, owner, protected: protectedFlag === '1', entries };
 }
 
 export function grantWindowsEveryone(file: string, rights: string, inherit?: string): void {

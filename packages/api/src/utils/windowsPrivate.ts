@@ -67,8 +67,8 @@ function CheckParent([string] $path) {
     }
     $sd = Descriptor ($dir.GetAccessControl('Access, Owner'))
     if ($sd.Owner.Value -notin $trusted) { throw 'Untrusted parent directory' }
-    # Creation alone cannot retarget an existing entry.
-    CheckWriteAuthority $sd 0x500d0140
+    # FILE_WRITE_DATA (CreateFiles on directories) also permits reparse-point writes.
+    CheckWriteAuthority $sd 0x500d0142
   }
 }
 
