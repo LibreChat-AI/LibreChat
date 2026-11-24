@@ -12,16 +12,20 @@ import {
 } from './helpers';
 
 test('continues a saved chat whose hidden spec moved off a retired endpoint', async ({ page }) => {
-  await continueSavedSpec(page, false);
+  await continueSavedSpec(page);
 });
 
 test('retries a failed saved target and continues the same chat from the sidebar', async ({
   page,
 }) => {
-  await continueSavedSpec(page, true);
+  await continueSavedSpec(page, 'sidebar');
 });
 
-async function continueSavedSpec(page: Page, retry: boolean) {
+test('retries a failed saved target loaded directly by URL', async ({ page }) => {
+  await continueSavedSpec(page, 'url');
+});
+
+async function continueSavedSpec(page: Page, retry?: 'sidebar' | 'url') {
   const provider = MOCK_ENDPOINTS[0];
   const spec = 'e2e-handoff-specialist';
   await page.goto(NEW_CHAT_PATH);
@@ -59,7 +63,7 @@ async function continueSavedSpec(page: Page, retry: boolean) {
         });
       });
     }
-    if (retry) {
+    if (retry === 'sidebar') {
       await page.goto(NEW_CHAT_PATH);
       await page
         .locator(`[data-conversation-id="${conversationId}"] [data-conversation-link]`)

@@ -351,7 +351,7 @@ export async function fetchModels({
       }
     }
 
-    if (process.env.OPENAI_ORGANIZATION && baseURL?.includes('openai')) {
+    if (!baseURLIsUserProvided && process.env.OPENAI_ORGANIZATION && baseURL?.includes('openai')) {
       options.headers['OpenAI-Organization'] = process.env.OPENAI_ORGANIZATION;
     }
 
@@ -413,7 +413,9 @@ export interface GetOpenAIModelsOptions extends CatalogDiscoveryOptions {
   assistants?: boolean;
   /** OpenAI API key (if not using environment variable) */
   openAIApiKey?: string;
-  getUserApiKey?: () => Promise<string | undefined>;
+  getUserConnection?: () => Promise<{ apiKey?: string; baseURL?: string }>;
+  userBaseURL?: string;
+  allowedAddresses?: string[] | null;
   createTokenConfig?: boolean;
   /** Skip MODEL_QUERIES cache (e.g., for user-provided keys) */
   skipCache?: boolean;
@@ -443,7 +445,7 @@ export async function fetchOpenAIModels(
   const apiKey = resolveOpenAIApiKey(opts);
   const openaiBaseURL = 'https://api.openai.com/v1';
   let baseURL = openaiBaseURL;
-  let reverseProxyUrl = process.env.OPENAI_REVERSE_PROXY;
+  let reverseProxyUrl = opts.userBaseURL ?? process.env.OPENAI_REVERSE_PROXY;
 
   if (opts.assistants && process.env.ASSISTANTS_BASE_URL) {
     reverseProxyUrl = process.env.ASSISTANTS_BASE_URL;
@@ -455,7 +457,11 @@ export async function fetchOpenAIModels(
   }
 
   if (reverseProxyUrl) {
-    baseURL = extractBaseURL(reverseProxyUrl) ?? openaiBaseURL;
+    const normalized = extractBaseURL(reverseProxyUrl);
+    if (opts.userBaseURL && !normalized) {
+      throw new Error('OpenAI model catalog unavailable');
+    }
+    baseURL = normalized ?? openaiBaseURL;
   }
 
   if (baseURL || opts.azure) {
@@ -467,8 +473,11 @@ export async function fetchOpenAIModels(
       name: EModelEndpoint.openAI,
       skipCache: opts.skipCache,
       ...(opts.createTokenConfig === false ? { createTokenConfig: false } : {}),
-      headers: opts.headers,
+      headers: opts.userBaseURL ? undefined : opts.headers,
       userObject: opts.userObject,
+      ...(opts.userBaseURL
+        ? { baseURLIsUserProvided: true, allowedAddresses: opts.allowedAddresses }
+        : {}),
       ...(opts.strictDiscovery ? { strictDiscovery: true } : {}),
     });
   }
@@ -519,13 +528,18 @@ export async function getOpenAIModels(opts: GetOpenAIModelsOptions = {}): Promis
     return splitAndTrim(process.env[key]);
   }
 
-  if (isUserProvided(resolveOpenAIApiKey(opts))) {
-    if (!opts.strictDiscovery) return models;
-    const openAIApiKey = await opts.getUserApiKey?.();
-    if (!openAIApiKey || isUserProvided(openAIApiKey)) {
+  const userProvidesKey = isUserProvided(resolveOpenAIApiKey(opts));
+  if (!opts.strictDiscovery && userProvidesKey) return models;
+  const userProvidesURL =
+    !opts.assistants && !opts.azure && isUserProvided(process.env.OPENAI_REVERSE_PROXY);
+  if (opts.strictDiscovery && (userProvidesKey || userProvidesURL)) {
+    const connection = await opts.getUserConnection?.();
+    const openAIApiKey = connection?.apiKey;
+    const userBaseURL = userProvidesURL ? connection?.baseURL : undefined;
+    if (!openAIApiKey || isUserProvided(openAIApiKey) || (userProvidesURL && !userBaseURL)) {
       throw new Error('OpenAI model catalog unavailable');
     }
-    opts = { ...opts, openAIApiKey, skipCache: true, createTokenConfig: false };
+    opts = { ...opts, openAIApiKey, userBaseURL, skipCache: true, createTokenConfig: false };
   }
 
   return await fetchOpenAIModels(opts, models);

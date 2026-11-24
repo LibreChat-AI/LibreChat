@@ -11,6 +11,7 @@ import {
   getBedrockModels,
 } from '~/endpoints/models';
 import { getSafeErrorMetadata } from '~/utils/errors';
+import { isUserProvided } from '~/utils/common';
 import { mergeHeaders } from '~/utils/headers';
 import { configuredModelList } from './models';
 import { extractBaseURL } from '~/utils/url';
@@ -66,8 +67,14 @@ export async function loadDefaultEndpointModels(
         headers: mergeHeaders(allHeaders, appConfig.endpoints?.openAI?.headers),
         configuredModels: configuredModelList(appConfig, EModelEndpoint.openAI),
         ...strict,
-        ...(userKey && getUserKeyValues && canUseStoredKey(process.env.OPENAI_REVERSE_PROXY)
-          ? { getUserApiKey: async () => (await getUserKeyValues(userKey)).apiKey }
+        ...(userKey &&
+        getUserKeyValues &&
+        (isUserProvided(process.env.OPENAI_REVERSE_PROXY) ||
+          canUseStoredKey(process.env.OPENAI_REVERSE_PROXY))
+          ? {
+              getUserConnection: () => getUserKeyValues(userKey),
+              allowedAddresses: appConfig.endpoints?.allowedAddresses,
+            }
           : {}),
       }),
     [EModelEndpoint.anthropic]: () =>

@@ -239,6 +239,83 @@ describe('built-in saved-spec catalogs', () => {
       expect(mockedAxios.get).toHaveBeenCalledTimes(1);
     },
   );
+
+  it('uses an active owner connection for configured OpenAI proxy discovery', async () => {
+    jest.replaceProperty(process, 'env', {
+      ...process.env,
+      OPENAI_API_KEY: 'configured-key',
+      OPENAI_REVERSE_PROXY: AuthType.USER_PROVIDED,
+      OPENAI_MODELS: undefined,
+      OPENAI_ORGANIZATION: 'configured-organization',
+    });
+    const endpoint = EModelEndpoint.openAI;
+    const baseURL = 'https://openai-proxy.example.test/v1';
+    const allowedAddresses = ['openai-proxy.example.test'];
+    const owner = { id: 'owner', tenantId: 'tenant-1' };
+    const config: AppConfig = {
+      config: {},
+      fileStrategy: FileSources.local,
+      imageOutputType: 'png',
+      endpoints: {
+        allowedAddresses,
+        all: { headers: { Authorization: 'configured-authorization' } },
+        openAI: { headers: { 'X-Gateway': 'configured-gateway' } },
+      },
+      modelSpecs: { list: [{ name: 'saved-spec', preset: { endpoint, model: 'default-model' } }] },
+    };
+    const getAppConfig = async () => config;
+    const getUserKeyValues = jest.fn().mockResolvedValue({ apiKey: 'fixture-key', baseURL });
+    const service = createModelsService({
+      getAppConfig,
+      loadDefaultModels: async () => ({}),
+      loadConfigModels: async () => ({}),
+      defaultEndpointsConfig: {},
+      loadAsyncEndpoints: async () => ({}),
+      credentials: { getUserKeyValues },
+    });
+    const resolve = createSavedSpecTargetResolver({
+      getAppConfig,
+      getEndpointsConfig: async () => ({ [endpoint]: { order: 0 } }),
+      getEndpointModelsConfig: service.getEndpointModelsConfig,
+    });
+    const req = () => ({ config, user: owner }) as ServerRequest;
+    const stored = { endpoint: 'retired-endpoint', spec: 'saved-spec', model: 'saved-model' };
+    mockedAxios.get.mockClear().mockResolvedValueOnce({ data: { data: [{ id: stored.model }] } });
+
+    await expect(resolve(req(), stored)).resolves.toMatchObject({ endpoint, model: stored.model });
+    expect(getUserKeyValues).toHaveBeenCalledWith({
+      userId: owner.id,
+      name: endpoint,
+      activeOnly: true,
+    });
+    expect(mockValidateEndpointURL).toHaveBeenCalledWith(baseURL, endpoint, allowedAddresses);
+    expect(mockCreateSSRFSafeAgents).toHaveBeenCalledWith(allowedAddresses);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      `${baseURL}/models`,
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer fixture-key' },
+        httpAgent: mockHttpAgent,
+        httpsAgent: mockHttpsAgent,
+        maxRedirects: 0,
+        proxy: false,
+      }),
+    );
+    expect(mockCacheSet).not.toHaveBeenCalled();
+    expect(mockTokenConfigSet).not.toHaveBeenCalled();
+
+    getUserKeyValues.mockResolvedValueOnce({ baseURL });
+    await expect(resolve(req(), stored)).rejects.toThrow('OpenAI model catalog unavailable');
+    getUserKeyValues.mockResolvedValueOnce({ apiKey: 'fixture-key' });
+    await expect(resolve(req(), stored)).rejects.toThrow('OpenAI model catalog unavailable');
+    mockValidateEndpointURL.mockRejectedValueOnce(new Error('Destination unavailable'));
+    await expect(resolve(req(), stored)).rejects.toThrow('Destination unavailable');
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+
+    process.env.OPENAI_MODELS = stored.model;
+    await expect(resolve(req(), stored)).resolves.toMatchObject({ endpoint, model: stored.model });
+    expect(getUserKeyValues).toHaveBeenCalledTimes(4);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('custom Anthropic discovery', () => {
