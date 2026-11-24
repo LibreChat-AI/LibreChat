@@ -134,6 +134,22 @@ describe('agent builder ACL', () => {
     expect(subRequest.user.id).toBe('user-1');
   });
 
+  it('refuses a self-update that drops the agent_builder marker', async () => {
+    const deps = makeDeps(true, true);
+    const built = await buildAgentBuilderTool({
+      toolName: 'update_agent',
+      req: makeReq(),
+      agent: { id: target.id, tools: [marker] },
+      deps,
+    });
+    expect(await built!.invoke({ id: target.id, tools: ['web_search'] })).toBe(
+      `Error 400: keep ${marker} in tools when updating this agent`,
+    );
+    expect(deps.updateAgent).not.toHaveBeenCalled();
+    await built!.invoke({ id: target.id, tools: [marker, 'web_search'] });
+    expect(deps.updateAgent).toHaveBeenCalledTimes(1);
+  });
+
   it('filters list_agents by an escaped name or description search', async () => {
     const deps = makeDeps(true, true);
     (deps.findAccessibleResources as jest.Mock).mockResolvedValue([]);

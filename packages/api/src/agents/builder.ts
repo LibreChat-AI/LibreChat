@@ -57,11 +57,11 @@ const schemas = {
 
 const descriptions: Record<keyof typeof schemas, string> = {
   [LIST_AGENTS_TOOL_NAME]:
-    'List agents the user can view (id, name, description). `search` filters by name or description.',
+    'List agents the user can view (id, name, description). Omit `search` to list all agents; use it only when the user names or describes one.',
   [GET_AGENT_TOOL_NAME]: "Get an agent's configuration by id.",
   [CREATE_AGENT_TOOL_NAME]: 'Create an agent. The user must approve.',
   [UPDATE_AGENT_TOOL_NAME]:
-    'Update an agent by id. Omitted fields stay unchanged; `tools` replaces the list. The user must approve.',
+    'Update an agent by id. Omitted fields stay unchanged; `tools` replaces the list, so include the tools to keep (the calling agent must keep `agent_builder`). The user must approve.',
 };
 
 export function getAgentBuilderToolDefinitions(includeWrites: boolean): LCTool[] {
@@ -204,7 +204,7 @@ export async function buildAgentBuilderTool({
 }: {
   toolName: string;
   req: ServerRequest;
-  agent?: { tools?: unknown[] } | null;
+  agent?: { id?: string; tools?: unknown[] } | null;
   deps: AgentBuilderDeps;
 }): Promise<DynamicStructuredTool | null> {
   const user = req.user;
@@ -297,6 +297,9 @@ export async function buildAgentBuilderTool({
       const target = await deps.getAgent({ id });
       if (!target || !(await can(target, PermissionBits.EDIT))) {
         return 'Error 404: Agent not found or not editable';
+      }
+      if (id === agent?.id && input.tools && !input.tools.includes(AGENT_BUILDER_MARKER)) {
+        return `Error 400: keep ${AGENT_BUILDER_MARKER} in tools when updating this agent`;
       }
       return writeResult(await runWrite(deps.updateAgent, req, input, id));
     },
