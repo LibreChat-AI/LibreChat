@@ -196,7 +196,10 @@ it('stores canonical tool history and accounting, resolves the returned response
     expect(history[1].content).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          tool_call: expect.objectContaining({ output: 'tool-result-only-in-canonical-content' }),
+          tool_call: expect.objectContaining({
+            output: 'tool-result-only-in-canonical-content',
+            runStepStatus: 'completed',
+          }),
         }),
       ]),
     );

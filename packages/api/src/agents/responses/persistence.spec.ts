@@ -1,8 +1,8 @@
 import { formatAgentMessages } from '@librechat/agents';
 import { Constants, ContentTypes } from 'librechat-data-provider';
 import { ToolMessage } from '@librechat/agents/langchain/messages';
+import type { FunctionCallItem, FunctionCallOutputItem } from './types';
 import type { StoredResponseMessage } from './persistence';
-import type { Response } from './types';
 import {
   selectStoredResponse,
   selectResponseHistory,
@@ -17,23 +17,25 @@ describe('Responses assistant history projection', () => {
     expect(projectResponseMessage({ output: [], status: 'completed' }).unfinished).toBe(false);
     expect(projectResponseMessage({ output: [] })).not.toHaveProperty('unfinished');
   });
-  const response: Pick<Response, 'output'> = {
+  const call: FunctionCallItem = {
+    type: 'function_call',
+    id: 'fc_server',
+    call_id: 'call-server',
+    name: 'lookup',
+    arguments: '{"key":"a"}',
+    status: 'completed',
+  };
+  const result: FunctionCallOutputItem = {
+    type: 'function_call_output',
+    id: 'fco_server',
+    call_id: 'call-server',
+    output: '{"result":"server-only-result"}',
+    status: 'completed',
+  };
+  const response: Parameters<typeof projectResponseMessage>[0] = {
     output: [
-      {
-        type: 'function_call',
-        id: 'fc_server',
-        call_id: 'call-server',
-        name: 'lookup',
-        arguments: '{"key":"a"}',
-        status: 'completed',
-      },
-      {
-        type: 'function_call_output',
-        id: 'fco_server',
-        call_id: 'call-server',
-        output: '{"result":"server-only-result"}',
-        status: 'completed',
-      },
+      call,
+      result,
       {
         type: 'function_call',
         id: 'fc_client',
@@ -62,7 +64,8 @@ describe('Responses assistant history projection', () => {
             id: 'call-server',
             name: 'lookup',
             args: '{"key":"a"}',
-            output: '{"result":"server-only-result"}',
+            output: result.output,
+            runStepStatus: 'completed',
           },
         },
         { type: ContentTypes.TEXT, text: 'Done.' },
@@ -85,23 +88,38 @@ describe('Responses assistant history projection', () => {
     expect(toolMessages).toHaveLength(1);
     expect(toolMessages[0].content).toBe('{"result":"server-only-result"}');
   });
-  it('preserves empty server results instead of making the call look unanswered', () => {
-    const projected = projectResponseMessage({
-      output: [
-        response.output[0],
-        {
-          type: 'function_call_output',
-          id: 'fco_empty',
-          call_id: 'call-server',
-          output: '',
-          status: 'completed',
-        },
-      ],
-    });
-    expect(projected.content).toEqual([
-      expect.objectContaining({ tool_call: expect.objectContaining({ output: '' }) }),
-    ]);
+  it('marks a returned tool completed even when the response is still in progress', () => {
+    const projected = projectResponseMessage({ output: [call, result], status: 'in_progress' });
+    expect(projected.unfinished).toBe(true);
+    expect(projected.content[0]).toHaveProperty('tool_call.runStepStatus', 'completed');
   });
+
+  it.each([
+    ['completed', ''],
+    ['completed', 'Error budgets are documented here.'],
+    ['failed', 'Error: [lookup] tool call failed: denied'],
+    ['failed', 'Error processing tool: unavailable'],
+    ['failed', 'Error: invalid input\n Please fix your mistakes.'],
+  ])('persists %s for returned output %j without changing it', (runStepStatus, output) => {
+    const projected = projectResponseMessage({ output: [call, { ...result, output }] });
+    expect(projected.content).toHaveLength(1);
+    expect(projected.content[0]).toMatchObject({ tool_call: { output, runStepStatus } });
+  });
+
+  it.each(['in_progress', 'incomplete'] as const)(
+    'does not mark a %s tool pair completed',
+    (status) => {
+      for (const output of [
+        [{ ...call, status }, result],
+        [call, { ...result, status }],
+      ]) {
+        const projected = projectResponseMessage({ output, status: 'completed' });
+        expect(projected.content).toHaveLength(1);
+        expect(projected.content[0]).toMatchObject({ tool_call: { output: result.output } });
+        expect(projected.content[0]).not.toHaveProperty('tool_call.runStepStatus');
+      }
+    },
+  );
 });
 
 describe('Responses persistence references', () => {
