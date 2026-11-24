@@ -241,7 +241,8 @@ export function createRoute(deps: RouteDeps): Route {
       ),
     );
 
-    const pending: Promise<boolean>[] = [];
+    /** The first enqueue that failed, held in a box so a rejection with no reason still counts. */
+    let failure: { error: unknown } | undefined;
     const tasks: Promise<void>[] = [];
     for (const occurrence of occurrences) {
       const own =
@@ -263,30 +264,35 @@ export function createRoute(deps: RouteDeps): Route {
           skip(missed);
           continue;
         }
+        // Each enqueue is settled where it starts: one that fails while another subscription is
+        // still waiting on GitHub is recorded, never left as a rejection nothing handles yet.
         tasks.push(
-          admits(subscription, occurrence, installation).then((refused) => {
+          (async () => {
+            const refused = await admits(subscription, occurrence, installation);
             if (refused != null) {
               skip(refused);
               return;
             }
-            pending.push(enqueue(subscription, occurrence, verified.digest));
-          }),
+            try {
+              if (await enqueue(subscription, occurrence, verified.digest)) {
+                routed.enqueued += 1;
+              } else {
+                routed.duplicates += 1;
+              }
+            } catch (error) {
+              failure ??= { error };
+            }
+          })(),
         );
       }
     }
-    await Promise.all(tasks);
-    const settled = await Promise.allSettled(pending);
-    let failure: unknown;
-    for (const result of settled) {
-      if (result.status === 'rejected') {
-        failure ??= result.reason;
-      } else if (result.value) {
-        routed.enqueued += 1;
-      } else {
-        routed.duplicates += 1;
-      }
-    }
-    if (failure !== undefined) throw failure;
+    // Every task is awaited, so none settles unobserved; an admission that throws is a defect.
+    const settled = await Promise.allSettled(tasks);
+    const defect = settled.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    if (defect != null) throw defect.reason;
+    if (failure != null) throw failure.error;
     return routed;
   };
 }

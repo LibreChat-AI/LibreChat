@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { runInThisContext } from 'node:vm';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import {
   runAsSystem,
@@ -541,6 +542,32 @@ describe('createRoute', () => {
   });
 
   describe('a failed enqueue', () => {
+    it('leaves no rejection unhandled while another subscription still waits on GitHub', async () => {
+      const connection = await bind();
+      await subscribe(connection, { actors: 'any' });
+      await subscribe(connection, { actors: 'write', agentId: 'agent_other' }, OTHER);
+      // A spec's own `process` is Jest's copy; rejections are reported on the real one.
+      const real = runInThisContext('process') as NodeJS.Process;
+      const unhandled = jest.fn();
+      real.on('unhandledRejection', unhandled);
+      try {
+        // The open subscription's enqueue fails at once; the other's answer arrives later.
+        access.mockImplementation(
+          () => new Promise((resolve) => setTimeout(() => resolve('write'), 50)),
+        );
+        const outage = new Error('queue down');
+        enqueue.mockRejectedValueOnce(outage);
+        await expect(
+          route()({ verified: { digest: DIGEST }, occurrences: review(), connection }),
+        ).rejects.toBe(outage);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(unhandled).not.toHaveBeenCalled();
+        expect(await queued()).toHaveLength(1);
+      } finally {
+        real.off('unhandledRejection', unhandled);
+      }
+    });
+
     it('queues the other runs, then throws the failure', async () => {
       const connection = await bind();
       await subscribe(connection);
