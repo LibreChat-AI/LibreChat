@@ -129,9 +129,18 @@ export default function ToolsSection({ agentId }: Props) {
           setDialogItem(item);
           break;
         case 'subagents':
-          setValue('subagents', setSubagentsEnabled(getValues('subagents'), patch.enabled), {
-            shouldDirty: true,
-          });
+          setValue(
+            'subagents',
+            setSubagentsEnabled(getValues('subagents'), patch.enabled, agentsConfig?.capabilities),
+            { shouldDirty: true },
+          );
+          break;
+        case 'graphs-remove':
+          setValue(
+            'subagents',
+            { ...getValues('subagents'), graphsEnabled: false },
+            { shouldDirty: true },
+          );
           break;
         case 'handoffs-remove':
           setValue('edges', removeHandoffs(getValues('edges')), { shouldDirty: true });
@@ -175,7 +184,13 @@ export default function ToolsSection({ agentId }: Props) {
           break;
       }
     },
-    [getValues, setValue, uninstallToolCredentials, opensFileManagerOnRemove],
+    [
+      getValues,
+      setValue,
+      uninstallToolCredentials,
+      opensFileManagerOnRemove,
+      agentsConfig?.capabilities,
+    ],
   );
 
   const confirmMcpRemoval = useCallback(() => {

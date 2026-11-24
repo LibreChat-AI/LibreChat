@@ -123,6 +123,8 @@ export * from './types/channelRuns';
 export * from './types/connections';
 export * from './types/subscriptions';
 
+export * from './subagentGraphs';
+
 export * from './codeSetup';
 
 export * from './agents/references';
