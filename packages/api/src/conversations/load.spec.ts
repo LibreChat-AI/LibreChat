@@ -228,7 +228,8 @@ test('serves established history when target resolution fails', async () => {
   const { app, logger } = await setup({ stored, resolveTarget });
   const result = await request(app).get(`/${conversationId}`).expect(200);
 
-  expect(result.body).toEqual(stored);
+  expect(result.headers['cache-control']).toBe('no-store');
+  expect(result.body).toEqual({ ...stored, targetResolutionFailed: true });
   expect(resolveTarget).toHaveBeenCalledWith(expect.objectContaining({ user: owner }), stored);
   expect(logger.error).toHaveBeenCalledTimes(1);
   expect(JSON.stringify(logger.error.mock.calls)).not.toContain('private provider failure');

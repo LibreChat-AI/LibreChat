@@ -172,9 +172,22 @@ const useNavigateToConvo = (index = 0) => {
     try {
       // Fetch without publishing first. A turn can commit a different target
       // into the detail cache while this request is in flight.
-      const data = await dataService.getConversationById(conversationId);
+      const response = await dataService.getConversationById(conversationId);
       if (queryClient.getQueryData<TConversation>(key) !== cached) {
         return;
+      }
+      let data: TConversation = response;
+      if (response.targetResolutionFailed) {
+        const { targetResolutionFailed: _, ...stored } = response;
+        const endpoints = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
+        const keepTarget =
+          stored.spec &&
+          stored.spec === cached.spec &&
+          stored.endpoint &&
+          cached.endpoint &&
+          endpoints?.[cached.endpoint] &&
+          !endpoints[stored.endpoint];
+        data = keepTarget ? { ...stored, ...conversationTarget(cached) } : stored;
       }
       queryClient.setQueryData(key, data);
       logger.log('conversation', 'Refreshed cached conversation record', data);

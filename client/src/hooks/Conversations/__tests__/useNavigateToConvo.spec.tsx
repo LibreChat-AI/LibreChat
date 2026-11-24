@@ -3,7 +3,7 @@ import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { render, screen, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, useLocation, useNavigate } from 'react-router-dom';
-import type { TConversation, TEndpointsConfig } from 'librechat-data-provider';
+import type { TConversation, TConversationDetail, TEndpointsConfig } from 'librechat-data-provider';
 import useNavigateToConvo, { supersedeNavigation } from '../useNavigateToConvo';
 import { useRunningConversationsQuery } from '~/data-provider/queries';
 import { updateConvoInAllQueries } from '~/utils';
@@ -197,7 +197,7 @@ const click = (testId: string) => {
   });
 };
 
-const settle = async (id: string, outcome: TConversation | { status: number }) => {
+const settle = async (id: string, outcome: TConversationDetail | { status: number }) => {
   const deferred = mockPending.get(id);
   if (!deferred) {
     throw new Error(`no in-flight request for ${id}`);
@@ -256,6 +256,47 @@ describe('useNavigateToConvo', () => {
 
     expect(currentConvo()?.endpoint).toBe(recovered.endpoint);
     expect(queryClient.getQueryData([QueryKeys.messages, B])).toEqual(messages);
+  });
+
+  it('keeps a usable recovered target when the server returns the stored fallback', async () => {
+    const recovered = { ...recordB, spec: retiredRow.spec };
+    const queryClient = renderHarness([recovered]);
+
+    click('go-retired-spec');
+    await settle(B, {
+      ...retiredRow,
+      title: 'Updated remotely',
+      targetResolutionFailed: true,
+    });
+
+    const current = queryClient.getQueryData<TConversationDetail>([QueryKeys.conversation, B]);
+    expect(current).toMatchObject({
+      endpoint: recovered.endpoint,
+      model: recovered.model,
+      title: 'Updated remotely',
+    });
+    expect(current).not.toHaveProperty('targetResolutionFailed');
+    expect(current?.agent_id).toBeUndefined();
+    expect(sidebarRow(queryClient, B)).toMatchObject({
+      endpoint: recovered.endpoint,
+      model: recovered.model,
+    });
+    expect(sidebarRow(queryClient, B)?.agent_id).toBeUndefined();
+  });
+
+  it.each([
+    { spec: retiredRow.spec, failed: undefined },
+    { spec: 'different-spec', failed: true as const },
+  ])('accepts the server target when the response is %j', async ({ spec, failed }) => {
+    const recovered = { ...recordB, spec: retiredRow.spec };
+    const queryClient = renderHarness([recovered]);
+
+    click('go-retired-spec');
+    await settle(B, { ...retiredRow, spec, targetResolutionFailed: failed });
+
+    const expected = { endpoint: retiredRow.endpoint, spec, agent_id: retiredRow.agent_id };
+    expect(queryClient.getQueryData([QueryKeys.conversation, B])).toMatchObject(expected);
+    expect(sidebarRow(queryClient, B)).toMatchObject(expected);
   });
 
   it('refreshes the retired row and its provider-specific agent ID together', async () => {

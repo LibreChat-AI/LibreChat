@@ -46,6 +46,8 @@ export function createGetConversationHandler(deps: ConversationDependencies) {
             '[conversations] Saved target lookup failed',
             getSafeErrorMetadata(error),
           );
+          res.set('Cache-Control', 'no-store');
+          return res.status(200).json({ ...stored, targetResolutionFailed: true });
         }
         return res.status(200).json(view);
       }
