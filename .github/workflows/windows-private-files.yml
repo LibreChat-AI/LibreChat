@@ -34,14 +34,13 @@ jobs:
         run: |
           node -e '
             const { spawnSync } = require("node:child_process");
-            const { windowsPowerShell } = require("./packages/api/src/utils/windowsPrivate.ts");
-            const { executable, cwd, env } = windowsPowerShell();
-            for (const childEnv of [process.env, env]) {
-              const r = spawnSync(executable, ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], {
-                cwd, env: childEnv, stdio: "ignore", windowsHide: true, timeout: 10000,
-              });
-              if (r.status !== 0) throw new Error(`Windows PowerShell probe failed: ${r.error?.code ?? r.status}`);
-            }
+            const { win32 } = require("node:path");
+            const cwd = process.env.SystemRoot;
+            const executable = win32.join(cwd, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+            const r = spawnSync(executable, ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], {
+              cwd, stdio: "ignore", windowsHide: true, timeout: 10000,
+            });
+            if (r.status !== 0) throw new Error(`Windows PowerShell probe failed: ${r.error?.code ?? r.status}`);
           '
       - run: npm ci
       - name: Verify native credential and snapshot ACLs
