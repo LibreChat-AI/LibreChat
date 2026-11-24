@@ -1,13 +1,40 @@
 import { useEffect } from 'react';
 import axios from 'axios';
 import { render, act } from '@testing-library/react';
-import type { BrowserProductFact } from 'librechat-data-provider';
+import type {
+  BrowserProductFact,
+  BrowserProductEvent,
+  BrowserProductSink,
+} from 'librechat-data-provider';
 import type { InternalAxiosRequestConfig } from 'axios';
+import type { ReactNode } from 'react';
 import { TrackingProvider, useProductTracking } from '../TrackingContext';
+import { AuthContext } from '~/hooks/AuthContext';
 
+let mockEnabled = true;
 jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => ({ data: { productTracking: { enabled: true } } }),
+  useGetStartupConfig: () => ({ data: { productTracking: { enabled: mockEnabled } } }),
 }));
+
+/** Records each delivered event as `(fact, context, event)`, and each lifecycle call in `log`. */
+function sinkFor(track: jest.Mock | ((...args: unknown[]) => void), log: string[] = []) {
+  const sink: BrowserProductSink = {
+    deliver: (event) => {
+      log.push(`deliver:${event.fact.name}`);
+      track(event.fact, event.context, event);
+    },
+    flush: (reason) => void log.push(`flush:${reason}`),
+    resume: () => void log.push('resume'),
+    discard: () => void log.push('discard'),
+  };
+  return sink;
+}
+
+type AuthValue = NonNullable<React.ContextType<typeof AuthContext>>;
+
+function SignedIn({ user, children }: { user?: AuthValue['user']; children: ReactNode }) {
+  return <AuthContext.Provider value={{ user } as AuthValue}>{children}</AuthContext.Provider>;
+}
 
 function Observer({ fact }: { fact: BrowserProductFact }) {
   const track = useProductTracking();
@@ -28,7 +55,7 @@ const opened: BrowserProductFact = {
 it('passes valid facts to the browser host callback once', async () => {
   const track = jest.fn();
   render(
-    <TrackingProvider track={track}>
+    <TrackingProvider sink={sinkFor(track)}>
       <Observer fact={opened} />
     </TrackingProvider>,
   );
@@ -41,7 +68,7 @@ it('drops malformed facts without interrupting the browser action', async () => 
   const track = jest.fn();
   const malformed = { ...opened, arguments: 'private' };
   const view = render(
-    <TrackingProvider track={track}>
+    <TrackingProvider sink={sinkFor(track)}>
       <Observer fact={malformed} />
     </TrackingProvider>,
   );
@@ -84,7 +111,7 @@ async function pagehide() {
 
 it('adds the session header only to same-origin API requests without replacing one', async () => {
   render(
-    <TrackingProvider track={jest.fn()}>
+    <TrackingProvider sink={sinkFor(jest.fn())}>
       <span />
     </TrackingProvider>,
   );
@@ -102,7 +129,7 @@ it('adds the session header only to same-origin API requests without replacing o
 it('flushes unreported activity on pagehide once', async () => {
   const track = jest.fn();
   render(
-    <TrackingProvider track={track}>
+    <TrackingProvider sink={sinkFor(track)}>
       <span />
     </TrackingProvider>,
   );
@@ -117,45 +144,152 @@ it('flushes unreported activity on pagehide once', async () => {
   expect(activityFacts(track)).toHaveLength(1);
 });
 
+const userOne = { id: 'user-1', tenantId: 'tenant-1' } as AuthValue['user'];
+const userTwo = { id: 'user-2', tenantId: 'tenant-1' } as AuthValue['user'];
+
+it('builds the event envelope with the signed-in identity and the device', async () => {
+  const track = jest.fn();
+  render(
+    <SignedIn user={userOne}>
+      <TrackingProvider sink={sinkFor(track)}>
+        <span />
+      </TrackingProvider>
+    </SignedIn>,
+  );
+  await act(async () => {});
+  await pagehide();
+  const event: BrowserProductEvent = track.mock.calls[0][2];
+  expect(event).toEqual({
+    version: 1,
+    eventId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+    occurredAt: expect.any(String),
+    producer: 'browser',
+    identity: { userId: 'user-1', tenantId: 'tenant-1' },
+    context: { sessionId: event.fact.sessionId },
+    device: { type: expect.any(String), browser: expect.any(String), os: expect.any(String) },
+    fact: expect.objectContaining({ name: 'librechat.session.activity' }),
+  });
+});
+
 it('reports a marker shared by two tabs once', async () => {
   const one = jest.fn();
   const two = jest.fn();
-  const identity = { userId: 'user-1', tenantId: 'tenant-1' };
   render(
-    <TrackingProvider track={one} identity={identity}>
-      <span />
-    </TrackingProvider>,
+    <SignedIn user={userOne}>
+      <TrackingProvider sink={sinkFor(one)}>
+        <span />
+      </TrackingProvider>
+    </SignedIn>,
   );
   render(
-    <TrackingProvider track={two} identity={identity}>
-      <span />
-    </TrackingProvider>,
+    <SignedIn user={userOne}>
+      <TrackingProvider sink={sinkFor(two)}>
+        <span />
+      </TrackingProvider>
+    </SignedIn>,
   );
   await act(async () => {});
   await pagehide();
   expect(activityFacts(one, two)).toHaveLength(1);
 });
 
-it('starts a new session and flushes the old one when the identity changes', async () => {
-  const track = jest.fn();
+it('flushes the old session to the old sink, with the old identity, when the user changes', async () => {
+  const oldTrack = jest.fn();
+  const newTrack = jest.fn();
+  const oldLog: string[] = [];
   const view = render(
-    <TrackingProvider track={track} identity={{ userId: 'user-1' }}>
-      <span />
-    </TrackingProvider>,
+    <SignedIn user={userOne}>
+      <TrackingProvider sink={sinkFor(oldTrack, oldLog)}>
+        <span />
+      </TrackingProvider>
+    </SignedIn>,
   );
   await act(async () => {});
   const before = (await sentHeaders('/api/convos'))?.get(SESSION_HEADER);
   view.rerender(
-    <TrackingProvider track={track} identity={{ userId: 'user-2' }}>
-      <span />
-    </TrackingProvider>,
+    <SignedIn user={userTwo}>
+      <TrackingProvider sink={sinkFor(newTrack)}>
+        <span />
+      </TrackingProvider>
+    </SignedIn>,
   );
   await act(async () => {});
   const after = (await sentHeaders('/api/convos'))?.get(SESSION_HEADER);
   expect(after).toMatch(/^[0-9a-f-]{36}$/);
   expect(after).not.toBe(before);
+  expect(oldLog).toEqual(['deliver:librechat.session.activity', 'flush:session']);
+  expect(oldTrack.mock.calls[0][2]).toMatchObject({
+    identity: { userId: 'user-1' },
+    fact: { sessionId: before },
+  });
   await pagehide();
-  expect(activityFacts(track).map((fact) => fact.sessionId)).toEqual([before, after]);
+  expect(newTrack.mock.calls[0][2]).toMatchObject({
+    identity: { userId: 'user-2' },
+    fact: { sessionId: after },
+  });
+});
+
+it('asks the sink to send after the final checkpoint on pagehide and unmount', async () => {
+  const log: string[] = [];
+  const view = render(
+    <TrackingProvider sink={sinkFor(jest.fn(), log)}>
+      <span />
+    </TrackingProvider>,
+  );
+  await act(async () => {});
+  await pagehide();
+  await act(async () => {
+    window.dispatchEvent(new Event('pageshow'));
+  });
+  view.unmount();
+  expect(log).toEqual([
+    'deliver:librechat.session.activity',
+    'flush:pagehide',
+    'resume',
+    'flush:unmount',
+  ]);
+});
+
+it('discards without a final checkpoint when tracking is turned off', async () => {
+  const log: string[] = [];
+  const view = render(
+    <TrackingProvider sink={sinkFor(jest.fn(), log)}>
+      <span />
+    </TrackingProvider>,
+  );
+  await act(async () => {});
+  try {
+    mockEnabled = false;
+    view.rerender(
+      <TrackingProvider sink={sinkFor(jest.fn(), log)}>
+        <span />
+      </TrackingProvider>,
+    );
+    await act(async () => {});
+    expect(log).toEqual(['discard']);
+    expect((await sentHeaders('/api/convos'))?.has(SESSION_HEADER)).toBe(false);
+  } finally {
+    mockEnabled = true;
+  }
+});
+
+it('contains a sink that throws', async () => {
+  const sink: BrowserProductSink = {
+    deliver: () => {
+      throw new Error('offline');
+    },
+    flush: () => {
+      throw new Error('offline');
+    },
+  };
+  const view = render(
+    <TrackingProvider sink={sink}>
+      <Observer fact={opened} />
+    </TrackingProvider>,
+  );
+  await act(async () => {});
+  await pagehide();
+  expect(() => view.unmount()).not.toThrow();
 });
 
 it('reports on pagehide in the same task when locks are granted in a later task', async () => {
@@ -168,7 +302,7 @@ it('reports on pagehide in the same task when locks are granted in a later task'
   try {
     const track = jest.fn();
     render(
-      <TrackingProvider track={track}>
+      <TrackingProvider sink={sinkFor(track)}>
         <span />
       </TrackingProvider>,
     );
@@ -188,17 +322,17 @@ function setVisibility(state: DocumentVisibilityState) {
   Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
 }
 
-it('keeps one session when the host passes a new track on each render', async () => {
+it('keeps one session when the host passes a new sink on each render', async () => {
   const calls: unknown[] = [];
   const view = render(
-    <TrackingProvider track={(fact) => void calls.push(fact)}>
+    <TrackingProvider sink={sinkFor((fact) => void calls.push(fact))}>
       <span />
     </TrackingProvider>,
   );
   await act(async () => {});
   for (let i = 0; i < 3; i++) {
     view.rerender(
-      <TrackingProvider track={(fact) => void calls.push(fact)}>
+      <TrackingProvider sink={sinkFor((fact) => void calls.push(fact))}>
         <span />
       </TrackingProvider>,
     );
@@ -214,7 +348,7 @@ it('does not mark activity when it mounts in a hidden tab', async () => {
   try {
     const track = jest.fn();
     render(
-      <TrackingProvider track={track}>
+      <TrackingProvider sink={sinkFor(track)}>
         <span />
       </TrackingProvider>,
     );
@@ -226,10 +360,11 @@ it('does not mark activity when it mounts in a hidden tab', async () => {
   }
 });
 
-it('reports when the page becomes hidden', async () => {
+it('reports, then asks the sink to send, when the page becomes hidden', async () => {
   const track = jest.fn();
+  const log: string[] = [];
   render(
-    <TrackingProvider track={track}>
+    <TrackingProvider sink={sinkFor(track, log)}>
       <span />
     </TrackingProvider>,
   );
@@ -243,4 +378,8 @@ it('reports when the page becomes hidden', async () => {
   } finally {
     setVisibility('visible');
   }
+  act(() => {
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  expect(log).toEqual(['deliver:librechat.session.activity', 'flush:hidden', 'resume']);
 });

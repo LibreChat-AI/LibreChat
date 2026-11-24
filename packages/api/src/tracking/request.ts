@@ -1,6 +1,8 @@
-import { logger } from '@librechat/data-schemas';
+import { randomUUID } from 'crypto';
+import { logger, getTenantId } from '@librechat/data-schemas';
 import {
   safelyTrack,
+  toProductIdentity,
   serverProductFactSchema,
   PRODUCT_SESSION_HEADER,
   PRODUCT_SUBMISSION_HEADER,
@@ -8,24 +10,56 @@ import {
   productTrackingContextSchema,
 } from 'librechat-data-provider';
 import type {
-  ProductTracker,
   ServerProductFact,
   TTelemetryConfig,
+  ServerProductEvent,
+  ProductSinkDescriptor,
   ProductTrackingContext,
 } from 'librechat-data-provider';
 import type { NextFunction, Response } from 'express';
 import type { ServerRequest } from '~/types';
 
-export type ProductTrackerFactory = (req: ServerRequest) => ProductTracker<ServerProductFact>;
-
-export interface ProductTrackingMiddlewareOptions {
+/**
+ * The host's server delivery. LibreChat builds each event, including its identity; the host
+ * adds only what delivery needs, such as its own credentials, through `resolveScope`.
+ */
+export interface ServerProductSink<Scope> {
   /**
-   * Creates the host tracker for one tracked fact. The middleware calls it when a route
-   * tracks a fact, not when the request arrives, so `req.user` is already set by
-   * `requireJwtAuth`. The tracker builds the event envelope, including `identity`, from
-   * the authenticated request. Correlation headers never supply identity.
+   * Reads the delivery scope from the authenticated request. Called once for each tracked fact,
+   * after `requireJwtAuth`. Return `undefined` to skip delivery of that fact.
    */
-  createTracker?: ProductTrackerFactory;
+  resolveScope(req: ServerRequest): Scope | undefined;
+  deliver(event: ServerProductEvent, scope: Scope): void | Promise<void>;
+}
+
+export interface ProductTrackingMiddlewareOptions<Scope> {
+  sink?: ServerProductSink<Scope>;
+  /** Published unchanged as `productTracking.browserSink` while tracking is enabled. */
+  browserSink?: ProductSinkDescriptor;
+}
+
+function deliverServerFact<Scope>(
+  sink: ServerProductSink<Scope>,
+  req: ServerRequest,
+  fact: ServerProductFact,
+  context?: ProductTrackingContext,
+) {
+  const scope = sink.resolveScope(req);
+  if (scope === undefined) {
+    return;
+  }
+  return sink.deliver(
+    {
+      version: 1,
+      eventId: randomUUID(),
+      occurredAt: new Date().toISOString(),
+      producer: 'server',
+      identity: toProductIdentity(req.user?.id, getTenantId() ?? req.user?.tenantId),
+      ...(context ? { context } : {}),
+      fact,
+    },
+    scope,
+  );
 }
 
 function readContextHeader(
@@ -41,24 +75,29 @@ function readContextHeader(
  * Sets the deployment policy and the request tracker on each request.
  *
  * Tracking is enabled only when `telemetry.productTracking.enabled` is true and the host
- * supplies `createTracker`; `GET /api/config` reports the same policy to the browser.
- * Mount this before the routes. It may run before `requireJwtAuth` because it does not
- * read `req.user`. The browser host must also mount `TrackingProvider` to send the
- * correlation headers and browser facts.
+ * supplies a `sink`; `GET /api/config` reports the same policy to the browser. Mount this
+ * before the routes. It may run before `requireJwtAuth` because the sink resolves its scope
+ * and LibreChat reads the identity only when a fact is tracked. The browser host must also
+ * mount `TrackingProvider` to send the correlation headers and browser facts.
  *
  * The policy comes from the deployment config loaded at startup; requests do not read
  * config for tracking.
  */
-export function createProductTrackingMiddleware(
+export function createProductTrackingMiddleware<Scope>(
   telemetry?: TTelemetryConfig,
-  { createTracker }: ProductTrackingMiddlewareOptions = {},
+  { sink, browserSink }: ProductTrackingMiddlewareOptions<Scope> = {},
 ) {
   const resolved = getProductTrackingConfig(telemetry);
-  const policy = Object.freeze({ ...resolved, enabled: resolved.enabled && !!createTracker });
+  const enabled = resolved.enabled && !!sink;
+  const policy = Object.freeze({
+    ...resolved,
+    enabled,
+    ...(enabled && browserSink ? { browserSink: Object.freeze({ ...browserSink }) } : {}),
+  });
   return (req: ServerRequest, _res: Response, next: NextFunction): void => {
     req.productTracking = policy;
-    if (policy.enabled && createTracker) {
-      req.productTracker = (fact, context) => createTracker(req)(fact, context);
+    if (policy.enabled && sink) {
+      req.productTracker = (fact, context) => deliverServerFact(sink, req, fact, context);
       const context = {
         ...readContextHeader(req, PRODUCT_SESSION_HEADER, 'sessionId'),
         ...readContextHeader(req, PRODUCT_SUBMISSION_HEADER, 'submissionId'),

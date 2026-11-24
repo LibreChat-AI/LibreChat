@@ -1,9 +1,9 @@
 import express from 'express';
 import request from 'supertest';
-import { logger } from '@librechat/data-schemas';
-import type { ServerProductFact } from 'librechat-data-provider';
+import { logger, tenantStorage } from '@librechat/data-schemas';
+import type { ServerProductEvent, ServerProductFact } from 'librechat-data-provider';
 import type { RequestHandler, Response } from 'express';
-import type { ProductTrackerFactory } from './request';
+import type { ServerProductSink } from './request';
 import type { ServerRequest } from '~/types';
 import {
   trackRequestProductFact,
@@ -60,18 +60,34 @@ it.each([undefined, { enabled: false }])(
 const sessionId = 'd79706cc-4ddf-4cf7-b99a-333755af9be8';
 const submissionId = '1b7ff690-8b9b-4af6-b68d-9cab4a5f2f21';
 
+type Scope = { token: string };
+
+function createSink(scope: Scope = { token: 'host-token' }) {
+  const delivered: [ServerProductEvent, Scope][] = [];
+  const sink: ServerProductSink<Scope> = {
+    resolveScope: jest.fn(() => scope),
+    deliver: jest.fn((event: ServerProductEvent, resolved: Scope) => {
+      delivered.push([event, resolved]);
+    }),
+  };
+  return { sink, delivered };
+}
+
 function runMiddleware(
   req: Partial<ServerRequest>,
   enabled: boolean | undefined,
-  createTracker?: ProductTrackerFactory,
+  sink?: ServerProductSink<Scope>,
+  browserSink?: Record<string, string | number | boolean>,
 ) {
   const next = jest.fn();
   createProductTrackingMiddleware(
     enabled === undefined ? undefined : { productTracking: { enabled } },
-    { createTracker },
+    { sink, browserSink },
   )(req as ServerRequest, {} as Response, next);
   return next;
 }
+
+const signedIn = { id: 'user-1', tenantId: 'tenant-1' } as ServerRequest['user'];
 
 it.each([
   [undefined, true, false],
@@ -79,43 +95,89 @@ it.each([
   [true, false, false],
   [true, true, true],
 ])(
-  'enables tracking for telemetry %p with a factory %p only when both are set',
-  (enabled, withFactory, expected) => {
-    const productTracker = jest.fn();
-    const req: Partial<ServerRequest> = {};
-    const next = runMiddleware(req, enabled, withFactory ? () => productTracker : undefined);
+  'enables tracking for telemetry %p with a sink %p only when both are set',
+  (enabled, withSink, expected) => {
+    const { sink, delivered } = createSink();
+    const req: Partial<ServerRequest> = { user: signedIn };
+    const next = runMiddleware(req, enabled, withSink ? sink : undefined);
     trackRequestProductFact(req, fact);
     expect(req.productTracking).toMatchObject({ enabled: expected });
     expect(next).toHaveBeenCalledTimes(1);
-    expect(productTracker).toHaveBeenCalledTimes(expected ? 1 : 0);
+    expect(delivered).toHaveLength(expected ? 1 : 0);
   },
 );
 
-it('creates the tracker when a fact is tracked, after authentication sets the user', () => {
-  const productTracker = jest.fn();
-  const createTracker = jest.fn((req: ServerRequest) => {
-    expect(req.user?.id).toBe('user-1');
-    return productTracker;
-  });
+it('builds the event envelope, with identity from the authenticated request', () => {
+  const { sink, delivered } = createSink();
   const req: Partial<ServerRequest> = {};
-  runMiddleware(req, true, createTracker);
-  expect(createTracker).not.toHaveBeenCalled();
-  req.user = { id: 'user-1' } as ServerRequest['user'];
+  runMiddleware(req, true, sink);
+  expect(sink.resolveScope).not.toHaveBeenCalled();
+  req.user = signedIn;
   trackRequestProductFact(req, fact);
-  expect(createTracker).toHaveBeenCalledWith(req);
-  expect(productTracker.mock.calls).toEqual([[fact]]);
+  expect(sink.resolveScope).toHaveBeenCalledWith(req);
+  expect(delivered).toEqual([
+    [
+      {
+        version: 1,
+        eventId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        occurredAt: expect.any(String),
+        producer: 'server',
+        identity: { userId: 'user-1', tenantId: 'tenant-1' },
+        fact,
+      },
+      { token: 'host-token' },
+    ],
+  ]);
 });
 
-it('contains a factory that throws', () => {
-  const req: Partial<ServerRequest> = {};
-  runMiddleware(req, true, () => {
-    throw new Error('no identity');
+it('takes the tenant from the request tenant context before the stored user tenant', () => {
+  const { sink, delivered } = createSink();
+  const req: Partial<ServerRequest> = { user: signedIn };
+  runMiddleware(req, true, sink);
+  tenantStorage.run({ tenantId: 'tenant-2' }, () => trackRequestProductFact(req, fact));
+  expect(delivered[0][0].identity).toEqual({ userId: 'user-1', tenantId: 'tenant-2' });
+});
+
+it('delivers nothing when the sink resolves no scope', () => {
+  const sink: ServerProductSink<Scope> = { resolveScope: jest.fn(), deliver: jest.fn() };
+  const req: Partial<ServerRequest> = { user: signedIn };
+  runMiddleware(req, true, sink);
+  trackRequestProductFact(req, fact);
+  expect(sink.resolveScope).toHaveBeenCalledTimes(1);
+  expect(sink.deliver).not.toHaveBeenCalled();
+});
+
+it('contains a sink that throws or rejects', async () => {
+  const req: Partial<ServerRequest> = { user: signedIn };
+  runMiddleware(req, true, {
+    resolveScope: () => {
+      throw new Error('no identity');
+    },
+    deliver: jest.fn(),
   });
   expect(() => trackRequestProductFact(req, fact)).not.toThrow();
+  const rejecting: Partial<ServerRequest> = { user: signedIn };
+  runMiddleware(rejecting, true, {
+    resolveScope: () => ({ token: 'host-token' }),
+    deliver: () => Promise.reject(new Error('offline')),
+  });
+  expect(() => trackRequestProductFact(rejecting, fact)).not.toThrow();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+});
+
+it('publishes the browser sink settings only while tracking is enabled', () => {
+  const browserSink = { destination: 'https://events.example.com', flushIntervalMs: 5000 };
+  const enabled: Partial<ServerRequest> = {};
+  runMiddleware(enabled, true, createSink().sink, browserSink);
+  expect(enabled.productTracking?.browserSink).toEqual(browserSink);
+  expect(Object.isFrozen(enabled.productTracking?.browserSink)).toBe(true);
+  const disabled: Partial<ServerRequest> = {};
+  runMiddleware(disabled, false, createSink().sink, browserSink);
+  expect(disabled.productTracking).not.toHaveProperty('browserSink');
 });
 
 it('copies valid correlation IDs but never identity from headers', () => {
-  const productTracker = jest.fn();
+  const { sink, delivered } = createSink();
   const req: Partial<ServerRequest> = {
     headers: {
       'x-librechat-product-session-id': sessionId,
@@ -123,11 +185,11 @@ it('copies valid correlation IDs but never identity from headers', () => {
       'x-librechat-product-user-id': 'untrusted',
     },
   };
-  runMiddleware(req, true, () => productTracker);
+  runMiddleware(req, true, sink);
   expect(req.productTrackingContext).toEqual({ sessionId, submissionId });
   expect(req.user).toBeUndefined();
   trackRequestProductFact(req, fact);
-  expect(productTracker).toHaveBeenCalledWith(fact, { sessionId, submissionId });
+  expect(delivered[0][0]).toMatchObject({ identity: {}, context: { sessionId, submissionId } });
 });
 
 it.each([
@@ -142,7 +204,7 @@ it.each([
       ...bad,
     },
   };
-  runMiddleware(req, true, () => jest.fn());
+  runMiddleware(req, true, createSink().sink);
   expect(req.productTrackingContext).toEqual(expected);
 });
 
@@ -150,25 +212,21 @@ it.each([false, true])('ignores malformed correlation headers with enabled=%s', 
   const req: Partial<ServerRequest> = {
     headers: { 'x-librechat-product-session-id': ['not', 'one'] },
   };
-  runMiddleware(req, enabled, () => jest.fn());
+  runMiddleware(req, enabled, createSink().sink);
   expect(req.productTrackingContext).toBeUndefined();
 });
 
 it('delivers a fact from a real Express route after authentication', async () => {
-  const delivered: unknown[] = [];
+  const { sink, delivered } = createSink();
   const app = express();
   app.use(
     createProductTrackingMiddleware(
       { productTracking: { enabled: true } },
-      {
-        createTracker: (req) => (event, context) => {
-          delivered.push({ userId: req.user?.id, event, context });
-        },
-      },
+      { sink },
     ) as unknown as RequestHandler,
   );
   app.use((req, _res, next) => {
-    (req as ServerRequest).user = { id: 'user-1' } as ServerRequest['user'];
+    (req as ServerRequest).user = signedIn;
     next();
   });
   app.post('/api/settings', (req, res) => {
@@ -180,7 +238,16 @@ it('delivers a fact from a real Express route after authentication', async () =>
     .set('x-librechat-product-session-id', sessionId)
     .set('x-librechat-product-submission-id', 'not-a-uuid')
     .expect(204);
-  expect(delivered).toEqual([{ userId: 'user-1', event: fact, context: { sessionId } }]);
+  expect(delivered).toEqual([
+    [
+      expect.objectContaining({
+        identity: { userId: 'user-1', tenantId: 'tenant-1' },
+        context: { sessionId },
+        fact,
+      }),
+      { token: 'host-token' },
+    ],
+  ]);
 });
 
 it('joins drained queued turns by UUID without inventing a session', () => {

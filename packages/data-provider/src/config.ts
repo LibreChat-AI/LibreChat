@@ -4030,8 +4030,16 @@ export const productTrackingConfigSchema = z
   .strict();
 
 export type TProductTrackingConfig = z.infer<typeof productTrackingConfigSchema>;
+/**
+ * Settings a host publishes for its browser sink. LibreChat passes them to the browser unchanged
+ * in `GET /api/config`, also before login, so they must never hold credentials or identity.
+ */
+export type ProductSinkDescriptor = Readonly<Record<string, string | number | boolean>>;
 /** The resolved policy. Every session setting has a value. */
-export type TProductTrackingPolicy = Required<TProductTrackingConfig>;
+export type TProductTrackingPolicy = Required<TProductTrackingConfig> & {
+  /** Present only when tracking is enabled and the host supplies browser sink settings. */
+  browserSink?: ProductSinkDescriptor;
+};
 
 export const telemetrySchema = z
   .object({

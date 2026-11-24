@@ -3,15 +3,18 @@ import axios from 'axios';
 import { v4 as uuid } from 'uuid';
 import {
   safelyTrack,
-  browserProductFactSchema,
+  toProductIdentity,
   noopProductTracker,
+  browserProductFactSchema,
   getProductTrackingConfig,
   getProductTrackingHeaders,
 } from 'librechat-data-provider';
 import type {
-  BrowserProductFact,
-  ProductIdentity,
   ProductTracker,
+  ProductIdentity,
+  BrowserProductFact,
+  BrowserProductSink,
+  ProductFlushReason,
   ProductTrackingContext,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
@@ -21,57 +24,105 @@ import {
   createProductSession,
   PRODUCT_SESSION_KEY_PREFIX,
 } from '~/utils/productSession';
+import { getProductDevice } from '~/utils/productDevice';
 import { useGetStartupConfig } from '~/data-provider';
+import { AuthContext } from '~/hooks/AuthContext';
 import { getBrowserTabId } from '~/utils/drafts';
 
 const TrackingContext = createContext<ProductTracker<BrowserProductFact>>(noopProductTracker);
 const SessionContext = createContext<() => ProductTrackingContext | undefined>(() => undefined);
 
+type SinkRef = { readonly current: BrowserProductSink };
+
+/** A host sink must never interrupt the page. */
+function callSink(call: () => void) {
+  try {
+    call();
+  } catch {
+    // Delivery is best effort.
+  }
+}
+
+/** Builds the event envelope for one identity and passes it to the current sink. */
+function createDelivery(
+  sinkRef: SinkRef,
+  identity: ProductIdentity,
+): ProductTracker<BrowserProductFact> {
+  return (fact, context) => {
+    const parsed = browserProductFactSchema.safeParse(fact);
+    if (!parsed.success) return;
+    const device = getProductDevice();
+    return sinkRef.current.deliver({
+      version: 1,
+      eventId: uuid(),
+      occurredAt: new Date().toISOString(),
+      producer: 'browser',
+      identity,
+      ...(context ? { context } : {}),
+      ...(device ? { device } : {}),
+      fact: parsed.data,
+    });
+  };
+}
+
 /**
- * The host mounts this provider and supplies identity and delivery. Session state is scoped to
- * that identity. Tracking starts only when `GET /api/config` reports it enabled, which requires
- * a server tracker factory. Without this provider, requests carry no correlation headers.
+ * The host mounts this provider and supplies delivery. LibreChat builds each event, with the
+ * identity of the signed-in user and tenant and the device, and scopes the session to that
+ * identity. Tracking starts only when `GET /api/config` reports it enabled, which requires a
+ * server sink. Without this provider, requests carry no correlation headers.
+ *
+ * Lifecycle calls to the sink come after the final activity checkpoint for that moment:
+ * `flush('hidden' | 'pagehide')` when the page is hidden or unloads, `resume()` when it is
+ * visible again, `flush('session')` when the user, tenant or session settings change, and
+ * `flush('unmount')` when the provider unmounts. When tracking is turned off, `discard()` takes
+ * the place of the final checkpoint and flush. A sink that the host replaces receives no
+ * further calls.
  */
 export function TrackingProvider({
-  track,
-  identity,
+  sink,
   enabled: available = true,
   children,
 }: {
-  track: ProductTracker<BrowserProductFact>;
-  identity?: ProductIdentity;
+  sink: BrowserProductSink;
   enabled?: boolean;
   children: ReactNode;
 }) {
-  /** Read through a ref, so a host that passes a new `track` on each render keeps its session. */
-  const trackRef = useRef(track);
+  /** Read through a ref, so a host that passes a new sink on each render keeps its session. */
+  const sinkRef = useRef(sink);
   useLayoutEffect(() => {
-    trackRef.current = track;
-  }, [track]);
-  const dispatch = useMemo<ProductTracker<BrowserProductFact>>(
-    () => (fact, context) => {
-      const parsed = browserProductFactSchema.safeParse(fact);
-      if (parsed.success) return trackRef.current(parsed.data, context);
-    },
-    [],
-  );
+    sinkRef.current = sink;
+  }, [sink]);
+  const user = useContext(AuthContext)?.user;
+  const userId = user?.id;
+  const tenantId = user?.tenantId;
   const { data: startup } = useGetStartupConfig();
   const enabled = available && startup?.productTracking?.enabled === true;
+  /** Read at teardown: a session that tracking turned off is discarded; any other end flushes. */
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+  /** Declared before the session effect, so its cleanup runs first when the provider unmounts. */
+  const mountedRef = useRef(false);
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const { shareAcrossTabs, idleTimeoutMs, activityIntervalMs } = getProductTrackingConfig({
     productTracking: startup?.productTracking,
   }).session;
-  const key = `${PRODUCT_SESSION_KEY_PREFIX}${JSON.stringify([identity?.userId, identity?.tenantId])}`;
-  const holder = useMemo(
-    () => ({
-      key,
+  const holder = useMemo(() => {
+    const identity = toProductIdentity(userId, tenantId);
+    return {
+      key: `${PRODUCT_SESSION_KEY_PREFIX}${JSON.stringify([identity.userId, identity.tenantId])}`,
       enabled,
       shareAcrossTabs,
       idleTimeoutMs,
+      deliver: createDelivery(sinkRef, identity),
       session: undefined as ReturnType<typeof createProductSession> | undefined,
       ready: Promise.resolve<ProductTrackingContext | undefined>(undefined),
-    }),
-    [key, enabled, shareAcrossTabs, idleTimeoutMs],
-  );
+    };
+  }, [userId, tenantId, enabled, shareAcrossTabs, idleTimeoutMs]);
 
   useLayoutEffect(() => {
     if (!holder.enabled) return;
@@ -100,7 +151,7 @@ export function TrackingProvider({
         : session.activity().catch(() => undefined);
     const emit = (record: SessionRecord) =>
       safelyTrack(
-        dispatch,
+        holder.deliver,
         {
           name: 'librechat.session.activity',
           feature: 'session',
@@ -110,6 +161,8 @@ export function TrackingProvider({
         },
         { sessionId: record.sessionId },
       );
+    const notify = (reason: ProductFlushReason) => callSink(() => sinkRef.current.flush?.(reason));
+    const resume = () => callSink(() => sinkRef.current.resume?.());
     /** Any tab, visible or hidden, can report; the shared record lets only one report each marker. */
     const checkpoint = () => {
       void session.report(emit).catch(() => {});
@@ -118,7 +171,13 @@ export function TrackingProvider({
     const flush = () => session.reportNow(emit);
     /** Mobile browsers often skip `pagehide`, but they hide the page first. */
     const onVisibility = () => {
-      if (document.visibilityState === 'hidden') flush();
+      if (document.visibilityState !== 'hidden') return resume();
+      flush();
+      notify('hidden');
+    };
+    const onPageHide = () => {
+      flush();
+      notify('pagehide');
     };
     let lastActivityAt = 0;
     const onActivity = (event: Event) => {
@@ -128,13 +187,15 @@ export function TrackingProvider({
       lastActivityAt = now;
       void session.activity().catch(() => {});
     };
+    if (document.visibilityState === 'hidden') notify('hidden');
     const events = ['pointerdown', 'keydown', 'wheel', 'touchstart', 'popstate'] as const;
     for (const event of events) window.addEventListener(event, onActivity, { passive: true });
     const timer = window.setInterval(
       checkpoint,
       Math.min(activityIntervalMs, holder.idleTimeoutMs),
     );
-    window.addEventListener('pagehide', flush);
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('pageshow', resume);
     document.addEventListener('visibilitychange', onVisibility);
     const interceptor = axios.interceptors.request.use((config) => {
       try {
@@ -150,16 +211,23 @@ export function TrackingProvider({
       return config;
     });
     return () => {
-      flush();
-      session.stop();
-      holder.session = undefined;
       window.clearInterval(timer);
       axios.interceptors.request.eject(interceptor);
-      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pageshow', resume);
       document.removeEventListener('visibilitychange', onVisibility);
       for (const event of events) window.removeEventListener(event, onActivity);
+      const turnedOff = mountedRef.current && !enabledRef.current;
+      if (!turnedOff) flush();
+      session.stop();
+      holder.session = undefined;
+      if (turnedOff) {
+        callSink(() => sinkRef.current.discard?.());
+        return;
+      }
+      notify(mountedRef.current ? 'session' : 'unmount');
     };
-  }, [activityIntervalMs, holder, dispatch]);
+  }, [activityIntervalMs, holder]);
 
   const value = useMemo<ProductTracker<BrowserProductFact>>(
     () =>
@@ -169,10 +237,10 @@ export function TrackingProvider({
             if (!session) return;
             if (!context) await holder.ready;
             if (holder.session !== session) return;
-            safelyTrack(dispatch, fact, context ?? session.peek());
+            safelyTrack(holder.deliver, fact, context ?? session.peek());
           }
         : noopProductTracker,
-    [enabled, holder, dispatch],
+    [enabled, holder],
   );
   const context = useMemo(
     () => () => {

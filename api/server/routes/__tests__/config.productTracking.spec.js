@@ -30,10 +30,19 @@ const configRoute = require('../config');
 
 const user = { id: 'user123', role: 'USER', tenantId: undefined };
 
-function createApp({ telemetry, createTracker, signedIn }) {
+const sink = { resolveScope: () => ({}), deliver: jest.fn() };
+const browserSink = { destination: 'https://events.example.com', flushIntervalMs: 5000 };
+const session = { shareAcrossTabs: true, idleTimeoutMs: 1800000, activityIntervalMs: 60000 };
+
+function createApp({ telemetry, withSink, withBrowserSink, signedIn }) {
   const app = express();
   app.disable('x-powered-by');
-  app.use(createProductTrackingMiddleware(telemetry, { createTracker }));
+  app.use(
+    createProductTrackingMiddleware(telemetry, {
+      sink: withSink ? sink : undefined,
+      browserSink: withBrowserSink ? browserSink : undefined,
+    }),
+  );
   if (signedIn) {
     app.use((req, _res, next) => {
       req.user = user;
@@ -57,23 +66,29 @@ describe('GET /api/config product tracking', () => {
     [{ productTracking: { enabled: false } }, true, false],
     [enabled, true, true],
   ])(
-    'reports enabled for telemetry %p with a tracker factory %p as %p',
-    async (telemetry, withFactory, expected) => {
+    'reports enabled for telemetry %p with a sink %p as %p',
+    async (telemetry, withSink, expected) => {
       for (const signedIn of [false, true]) {
         mockGetAppConfig.mockResolvedValue({ config: { telemetry } });
-        const response = await request(
-          createApp({
-            telemetry,
-            signedIn,
-            createTracker: withFactory ? () => jest.fn() : undefined,
-          }),
-        ).get('/api/config');
+        const response = await request(createApp({ telemetry, signedIn, withSink })).get(
+          '/api/config',
+        );
         expect(response.status).toBe(200);
-        expect(response.body.productTracking).toEqual({
-          enabled: expected,
-          session: { shareAcrossTabs: true, idleTimeoutMs: 1800000, activityIntervalMs: 60000 },
-        });
+        expect(response.body.productTracking).toEqual({ enabled: expected, session });
       }
     },
   );
+
+  it.each([
+    [enabled, { enabled: true, session, browserSink }],
+    [{ productTracking: { enabled: false } }, { enabled: false, session }],
+  ])('publishes the browser sink settings for telemetry %p', async (telemetry, expected) => {
+    for (const signedIn of [false, true]) {
+      mockGetAppConfig.mockResolvedValue({ config: { telemetry } });
+      const response = await request(
+        createApp({ telemetry, signedIn, withSink: true, withBrowserSink: true }),
+      ).get('/api/config');
+      expect(response.body.productTracking).toEqual(expected);
+    }
+  });
 });

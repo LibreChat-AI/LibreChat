@@ -47,6 +47,24 @@ export type BrowserProductFact = z.infer<typeof browserProductFactSchema>;
 export type ServerProductFact = z.infer<typeof serverProductFactSchema>;
 export type ProductFact = BrowserProductFact | ServerProductFact;
 
+/**
+ * Every fact name is `librechat.<component>.<action>`. The component is one segment; the action
+ * can have more than one segment (`librechat.langfuse.connection.updated`).
+ */
+export const PRODUCT_FACT_NAME_PATTERN = /^librechat\.[a-z][A-Za-z0-9]*(\.[a-z][A-Za-z0-9]*)+$/;
+
+export type ProductFactNameParts = {
+  namespace: 'librechat';
+  component: string;
+  action: string;
+};
+
+/** Splits a fact name by the format in `PRODUCT_FACT_NAME_PATTERN`. */
+export function splitProductFactName(name: ProductFact['name']): ProductFactNameParts {
+  const [, component, ...action] = name.split('.');
+  return { namespace: 'librechat', component, action: action.join('.') };
+}
+
 export const productIdentitySchema = z.strictObject({
   userId: id.optional(),
   tenantId: id.optional(),
@@ -103,8 +121,46 @@ export const productEventSchema = z.discriminatedUnion('producer', [
 ]);
 
 export type ProductEvent = z.infer<typeof productEventSchema>;
+export type BrowserProductEvent = Extract<ProductEvent, { producer: 'browser' }>;
+export type ServerProductEvent = Extract<ProductEvent, { producer: 'server' }>;
 export type ProductIdentity = z.infer<typeof productIdentitySchema>;
 export type ProductDevice = z.infer<typeof productDeviceSchema>;
+
+/** Keeps each identity ID that satisfies the event contract and omits the others. */
+export function toProductIdentity(userId?: string, tenantId?: string): ProductIdentity {
+  const user = id.safeParse(userId);
+  const tenant = id.safeParse(tenantId);
+  return {
+    ...(user.success ? { userId: user.data } : {}),
+    ...(tenant.success ? { tenantId: tenant.data } : {}),
+  };
+}
+
+/** Why the browser asks its sink to send queued events now. */
+export type ProductFlushReason =
+  /** The page is hidden. It can be discarded without a later event. */
+  | 'hidden'
+  /** The page is unloading or entering the back-forward cache. */
+  | 'pagehide'
+  /** The session ended because the user, the tenant or the session settings changed. */
+  | 'session'
+  /** The provider unmounted. */
+  | 'unmount';
+
+/**
+ * The host's browser delivery. LibreChat builds each event, including its identity and device,
+ * and tells the sink when the page lifecycle requires a send. Every lifecycle call comes after
+ * the final `librechat.session.activity` for that moment, so a sink can send its queue at once.
+ */
+export interface BrowserProductSink {
+  deliver(event: BrowserProductEvent): void | Promise<void>;
+  /** Send queued events now: the page may not run another task. */
+  flush?(reason: ProductFlushReason): void;
+  /** The page is visible again after `flush('hidden')` or `flush('pagehide')`. */
+  resume?(): void;
+  /** Tracking was turned off: drop queued events. No final checkpoint precedes this call. */
+  discard?(): void;
+}
 export type ProductTracker<T = ProductFact> = (
   event: T,
   context?: ProductTrackingContext,

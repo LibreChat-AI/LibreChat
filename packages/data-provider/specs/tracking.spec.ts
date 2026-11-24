@@ -1,5 +1,14 @@
 import { productTrackingConfigSchema } from '../src/config';
-import { productEventSchema, safelyTrack, getProductTrackingConfig } from '../src/tracking';
+import {
+  safelyTrack,
+  toProductIdentity,
+  productEventSchema,
+  splitProductFactName,
+  serverProductFactSchema,
+  browserProductFactSchema,
+  getProductTrackingConfig,
+  PRODUCT_FACT_NAME_PATTERN,
+} from '../src/tracking';
 
 const event = {
   version: 1,
@@ -121,4 +130,46 @@ it.each([0, 999, 2147483648])('rejects an invalid activity interval %s', (activi
   expect(productTrackingConfigSchema.safeParse({ session: { activityIntervalMs } }).success).toBe(
     false,
   );
+});
+
+describe('fact names', () => {
+  const names = [...browserProductFactSchema.options, ...serverProductFactSchema.options].map(
+    (option) => option.shape.name.value,
+  );
+
+  it.each(names)('%s follows librechat.<component>.<action>', (name) => {
+    expect(name).toMatch(PRODUCT_FACT_NAME_PATTERN);
+  });
+
+  it('splits the component from an action of more than one segment', () => {
+    expect(splitProductFactName('librechat.langfuse.connection.updated')).toEqual({
+      namespace: 'librechat',
+      component: 'langfuse',
+      action: 'connection.updated',
+    });
+    expect(splitProductFactName('librechat.session.activity')).toEqual({
+      namespace: 'librechat',
+      component: 'session',
+      action: 'activity',
+    });
+  });
+});
+
+describe('toProductIdentity', () => {
+  it('keeps valid IDs', () => {
+    expect(toProductIdentity('user-1', 'tenant-1')).toEqual({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+    });
+  });
+
+  it.each([
+    [undefined, undefined, {}],
+    ['', 'tenant-1', { tenantId: 'tenant-1' }],
+    ['user-1', 'x'.repeat(129), { userId: 'user-1' }],
+  ])('omits an invalid ID (%p, %p)', (userId, tenantId, expected) => {
+    const identity = toProductIdentity(userId, tenantId);
+    expect(identity).toEqual(expected);
+    expect(productEventSchema.safeParse({ ...event, identity }).success).toBe(true);
+  });
 });
