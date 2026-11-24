@@ -128,6 +128,13 @@ export default function EventCard({
           <Chip tone="warning">{localize(grantState)}</Chip>
         </div>
       )}
+      {subscription.suspended != null && (
+        <p className="text-text-secondary mt-1 text-xs">
+          {localize('com_ui_events_suspended_failures', {
+            0: subscription.suspended.failures,
+          })}
+        </p>
+      )}
       {failure != null && (
         <p role="alert" className="text-text-destructive mt-1 text-xs">
           {localize(eventErrorLabel(failure))}

@@ -109,6 +109,19 @@ export type SubscriptionUpdate = z.infer<typeof subscriptionUpdateSchema>;
 export type SubscriptionUpdateInput = z.input<typeof subscriptionUpdateSchema>;
 
 /** A standing instruction: when these events arrive on a connection, run this agent. */
+/** Why the server turned a subscription off. `failures`: its runs failed too many times in a row. */
+export const subscriptionSuspendReasons = ['failures'] as const;
+export type SubscriptionSuspendReason = (typeof subscriptionSuspendReasons)[number];
+
+/** The server turned the subscription off; its owner turning it back on clears this. */
+export interface SubscriptionSuspension {
+  reason: SubscriptionSuspendReason;
+  /** When it was turned off, as an ISO date. */
+  at: string;
+  /** How many runs in a row had failed when it was turned off. */
+  failures: number;
+}
+
 export interface Subscription {
   id: string;
   /** The user who created it. Its runs act as this user. */
@@ -128,6 +141,8 @@ export interface Subscription {
   enabled: boolean;
   /** Moves forward with every edit, so a run can tell it started under an older one. */
   revision: number;
+  /** Present while the server holds it turned off. */
+  suspended?: SubscriptionSuspension;
 }
 
 export interface SubscriptionsResponse {
