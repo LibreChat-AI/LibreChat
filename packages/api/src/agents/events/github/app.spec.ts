@@ -673,3 +673,123 @@ describe('createApp disclosure', () => {
     expect(thrown).toBe(7);
   });
 });
+
+describe('createApp as the app itself', () => {
+  const page = { html_url: 'https://github.com/apps/example-events', slug: 'example-events' };
+  const installed = {
+    id: INSTALLATION,
+    account: { id: 9001, login: 'example-org', type: 'Organization' },
+    suspended_at: null,
+  };
+
+  it('reads the app page with the app token, not an installation token', async () => {
+    const { app, calls, exchanges } = harness({ permission: () => json(page) });
+    await expect(app.about()).resolves.toEqual({
+      ok: true,
+      value: { url: 'https://github.com/apps/example-events' },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://api.github.com/app');
+    expect(calls[0].method).toBe('GET');
+    expect(bearer(calls[0]).split('.')).toHaveLength(3);
+    expect(exchanges()).toHaveLength(0);
+  });
+
+  it.each([
+    ['another host', { html_url: 'https://example.com/apps/example-events' }],
+    ['plain HTTP', { html_url: 'http://github.com/apps/example-events' }],
+    ['a query', { html_url: 'https://github.com/apps/example-events?next=x' }],
+    ['no page', { slug: 'example-events' }],
+    ['a page that is not a URL', { html_url: 'not a url' }],
+  ])('throws an upstream failure for an app page on %s', async (_label, body) => {
+    expect.hasAssertions();
+    const { app } = harness({ permission: () => json(body) });
+    await outage(app.about(), 'upstream', 200);
+  });
+
+  it('keeps an Enterprise host with its port', async () => {
+    const { app, calls } = harness({
+      config: { host: 'git.example.com:8443' },
+      permission: () => json({ html_url: 'https://git.example.com:8443/github-apps/events/' }),
+    });
+    await expect(app.about()).resolves.toEqual({
+      ok: true,
+      value: { url: 'https://git.example.com:8443/github-apps/events' },
+    });
+    expect(calls[0].url).toBe('https://git.example.com:8443/api/v3/app');
+  });
+
+  it('reads one installation of the app: its account and whether it is suspended', async () => {
+    const { app, calls } = harness({ permission: () => json(installed) });
+    await expect(app.installation(INSTALLATION)).resolves.toEqual({
+      ok: true,
+      value: { account: { id: '9001', name: 'example-org' }, suspended: false },
+    });
+    expect(calls[0].url).toBe(`https://api.github.com/app/installations/${INSTALLATION}`);
+    const held = harness({
+      permission: () => json({ ...installed, suspended_at: '2026-11-20T00:00:00Z' }),
+    });
+    await expect(held.app.installation(INSTALLATION)).resolves.toMatchObject({
+      ok: true,
+      value: { suspended: true },
+    });
+  });
+
+  it.each([
+    [401, 'credential'],
+    [403, 'forbidden'],
+    [404, 'missing'],
+  ] as const)('answers GitHub status %i as %s', async (status, code) => {
+    const { app } = harness({ permission: () => json({ message: MARKER }, status) });
+    await expect(app.installation(INSTALLATION)).resolves.toEqual({ ok: false, error: { code } });
+    await expect(app.about()).resolves.toEqual({ ok: false, error: { code } });
+  });
+
+  it('answers a rate limit as limited with the wait GitHub asked for', async () => {
+    const { app } = harness({
+      permission: () => json({ message: MARKER }, 429, { 'retry-after': '30' }),
+    });
+    await expect(app.installation(INSTALLATION)).resolves.toEqual({
+      ok: false,
+      error: { code: 'limited', retryAfterMs: 30_000 },
+    });
+  });
+
+  it('throws an upstream failure for a server error or an account that does not read', async () => {
+    expect.hasAssertions();
+    await outage(
+      harness({ permission: () => json({ message: MARKER }, 502) }).app.installation(INSTALLATION),
+      'upstream',
+      502,
+    );
+    await outage(
+      harness({
+        permission: () => json({ ...installed, account: { id: 9001, login: '../x' } }),
+      }).app.installation(INSTALLATION),
+      'upstream',
+      200,
+    );
+    await outage(
+      harness({ permission: () => json({ id: INSTALLATION }) }).app.installation(INSTALLATION),
+      'upstream',
+      200,
+    );
+  });
+
+  it('asks nothing for an id that is not one', async () => {
+    const { app, calls } = harness();
+    for (const id of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 2]) {
+      await expect(app.installation(id)).resolves.toEqual({
+        ok: false,
+        error: { code: 'missing' },
+      });
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it('throws a key failure without asking when the key does not load', async () => {
+    const { app, calls } = harness({ config: { key: 'not a key' } });
+    await outage(app.about(), 'key');
+    expect(calls).toHaveLength(0);
+  });
+});

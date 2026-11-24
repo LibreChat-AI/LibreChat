@@ -682,6 +682,12 @@ export const adminDeadLetter = (id: string) =>
   `${BASE_URL}/api/admin/events/dead/${encodeURIComponent(id)}`;
 export const adminDeadLetterRequeue = (id: string) => `${adminDeadLetter(id)}/requeue`;
 
+/* Connections of agent events: installs of the GitHub App bound to the tenant (admin) */
+export const adminEventConnections = () => `${BASE_URL}/api/admin/events/connections`;
+export const adminEventConnectionInstall = () => `${adminEventConnections()}/install`;
+export const adminEventConnection = (id: string) =>
+  `${adminEventConnections()}/${encodeURIComponent(id)}`;
+
 /* Combined Pinned-section display order: favorite and pinned-chat entry keys interleaved. */
 export const pinnedOrder = () => `${BASE_URL}/api/user/settings/pinned-order`;
 

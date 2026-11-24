@@ -35,3 +35,51 @@ export interface ConnectionChoice {
 export interface ConnectionChoicesResponse {
   connections: ConnectionChoice[];
 }
+
+/** Stable codes an admin connection request can fail with; a UI maps each to its own copy. */
+export const ConnectionError = {
+  invalid: 'CONNECTION_INVALID',
+  state: 'CONNECTION_STATE_INVALID',
+  missing: 'CONNECTION_NOT_FOUND',
+  installation: 'CONNECTION_INSTALLATION_NOT_FOUND',
+  taken: 'CONNECTION_TAKEN',
+  unconfigured: 'CONNECTION_NOT_CONFIGURED',
+  refused: 'CONNECTION_APP_REFUSED',
+  unavailable: 'CONNECTION_GITHUB_UNAVAILABLE',
+  audit: 'CONNECTION_AUDIT_UNAVAILABLE',
+} as const;
+export type ConnectionErrorCode = (typeof ConnectionError)[keyof typeof ConnectionError];
+
+/** A connection as the admin API describes it: everything but the tenant, which is the caller's. */
+export type AdminConnection = Omit<Connection, 'tenantId'>;
+
+export interface AdminConnections {
+  connections: AdminConnection[];
+  /** The webhook URL to register on the GitHub App: where its signed deliveries are posted. */
+  ingress: string;
+  /** Whether events are on and the GitHub App's settings resolve, so an install can start. */
+  configured: boolean;
+}
+
+/** Where to send the admin to install the app; the link carries a state the bind checks. */
+export interface ConnectionInstall {
+  url: string;
+}
+
+/**
+ * What GitHub hands the app's Setup URL after an install: the installation's id and the
+ * `state` the install link carried.
+ */
+export interface ConnectionBindRequest {
+  installation: string;
+  state: string;
+}
+
+export interface ConnectionMarkRequest {
+  status: ConnectionStatus;
+}
+
+export interface ConnectionRemoved {
+  id: string;
+  removed: true;
+}

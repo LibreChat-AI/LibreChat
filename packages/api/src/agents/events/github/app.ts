@@ -81,6 +81,20 @@ export interface Access {
   write: boolean;
 }
 
+/** The app as GitHub describes it, read with the app's own token. */
+export interface About {
+  /** The app's page on its host, such as `https://github.com/apps/<slug>`; installs start there. */
+  url: string;
+}
+
+/** One installation of this app, as GitHub reports it. */
+export interface Installation {
+  /** The account the app is installed on: its numeric id and its login. */
+  account: { id: string; name: string };
+  /** True while GitHub holds the installation suspended. */
+  suspended: boolean;
+}
+
 export interface App {
   /**
    * Whether `login` may push to `repo` (`owner/name`), asked as the installation. An account
@@ -88,9 +102,19 @@ export interface App {
    * Rejects with a `GitHubError` when GitHub cannot be asked.
    */
   access(installation: number, repo: string, login: string): Promise<Reply<Access>>;
+  /** The app itself. Rejects with a `GitHubError` when GitHub cannot be asked. */
+  about(): Promise<Reply<About>>;
+  /**
+   * One installation of this app by id. `missing` when it is not one of this app's: GitHub
+   * answers only for the app whose token asks. Rejects with a `GitHubError` when GitHub
+   * cannot be asked.
+   */
+  installation(id: number): Promise<Reply<Installation>>;
 }
 
 const REPO = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
+/** An account's login: a user's or an organization's. */
+const ACCOUNT = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
 /** A user's login, or an app's with its `[bot]` suffix. No dots, so it is safe in a path. */
 const LOGIN = /^[A-Za-z0-9_-]{1,100}(?:\[bot\])?$/;
 /**
@@ -327,5 +351,72 @@ export function createApp(config: AppConfig, deps: AppDeps): App {
     return (await ask(installation, path)) ?? (await ask(installation, path)) ?? fail('credential');
   }
 
-  return { access };
+  /**
+   * A question asked with the app's own token. GitHub's refusals are results; a reply that
+   * does not read as `parse` expects is an outage.
+   */
+  async function asApp<T>(path: string, parse: (body: unknown) => T | null): Promise<Reply<T>> {
+    const response = await request(path, jwt(), 'GET');
+    if (!response.ok) {
+      const limit = await gitHubRateLimit(response);
+      if (limit != null) {
+        return fail('limited', Math.min(limit.waitMs ?? LIMIT_WAIT_MS, MAX_WAIT_MS));
+      }
+      if (response.status === 401) {
+        return fail('credential');
+      }
+      if (response.status === 403) {
+        return fail('forbidden');
+      }
+      if (response.status === 404) {
+        return fail('missing');
+      }
+      throw new GitHubError('upstream', response.status);
+    }
+    const value = parse(await read(response));
+    if (value == null) {
+      throw new GitHubError('upstream', response.status);
+    }
+    return { ok: true, value };
+  }
+
+  /** The app's page, only when GitHub names one on the configured host over HTTPS. */
+  function page(body: unknown): About | null {
+    if (!isRecord(body) || typeof body.html_url !== 'string') {
+      return null;
+    }
+    let url: URL;
+    try {
+      url = new URL(body.html_url);
+    } catch {
+      return null;
+    }
+    if (url.protocol !== 'https:' || url.host !== config.host || url.search || url.hash) {
+      return null;
+    }
+    return { url: `${url.origin}${url.pathname.replace(/\/+$/, '')}` };
+  }
+
+  function installed(body: unknown): Installation | null {
+    const account = isRecord(body) ? body.account : undefined;
+    if (!isRecord(body) || !isRecord(account)) {
+      return null;
+    }
+    const { id, login } = account;
+    if (!isId(id) || typeof login !== 'string' || !ACCOUNT.test(login)) {
+      return null;
+    }
+    return { account: { id: String(id), name: login }, suspended: body.suspended_at != null };
+  }
+
+  const about = (): Promise<Reply<About>> => asApp('/app', page);
+
+  async function installation(id: number): Promise<Reply<Installation>> {
+    if (!isId(id)) {
+      return fail('missing');
+    }
+    return asApp(`/app/installations/${id}`, installed);
+  }
+
+  return { access, about, installation };
 }
