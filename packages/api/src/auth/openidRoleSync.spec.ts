@@ -4,6 +4,7 @@ import {
   getOpenIdRolesForOpenIdSync,
   getLibreChatRolesForOpenIdSync,
   selectOpenIdRole,
+  writeIdpRoleChange,
   recordIdpRoleChange,
 } from './openidRoleSync';
 
@@ -466,5 +467,41 @@ describe('recordIdpRoleChange', () => {
         source: 'openid_login',
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('writeIdpRoleChange', () => {
+  it('throws instead of writing when the stored role changes before every attempt', async () => {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+    let reads = 0;
+    const updateUser = jest.fn().mockResolvedValue(null);
+    const findUser = jest.fn(async () => ({ role: `ROLE-${++reads}` }));
+
+    await expect(
+      writeIdpRoleChange({
+        userId: 'u1',
+        update: { role: SystemRoles.ADMIN },
+        observedRole: SystemRoles.USER,
+        updateUser,
+        findUser,
+        recordAuditEntry,
+        source: 'openid_login',
+      }),
+    ).rejects.toThrow('kept changing');
+
+    expect(updateUser).toHaveBeenCalledTimes(3);
+    expect(updateUser).toHaveBeenNthCalledWith(
+      1,
+      'u1',
+      { role: SystemRoles.ADMIN },
+      { role: 'USER' },
+    );
+    expect(updateUser).toHaveBeenNthCalledWith(
+      3,
+      'u1',
+      { role: SystemRoles.ADMIN },
+      { role: 'ROLE-2' },
+    );
+    expect(recordAuditEntry).not.toHaveBeenCalled();
   });
 });
