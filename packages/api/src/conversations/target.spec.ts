@@ -1,6 +1,7 @@
-import { EModelEndpoint, normalizeEndpointName } from 'librechat-data-provider';
+import { FileSources, EModelEndpoint, normalizeEndpointName } from 'librechat-data-provider';
 import type { TEndpointsConfig, TModelSpec } from 'librechat-data-provider';
-import { resolveSavedSpecTarget } from './target';
+import type { AppConfig } from '@librechat/data-schemas';
+import { resolveSavedSpecTarget, createSavedSpecTargetResolver } from './target';
 
 const endpoint = 'Replacement Provider';
 const spec: TModelSpec = {
@@ -27,6 +28,39 @@ function dependencies() {
     getModels: jest.fn(async () => ({ [normalizeEndpointName(endpoint)]: ['selected-model'] })),
   };
 }
+
+test('loads strict effective config for the requesting user before reading endpoint catalogs', async () => {
+  const config: AppConfig = {
+    config: {},
+    fileStrategy: FileSources.local,
+    imageOutputType: 'png',
+    modelSpecs: { list: [spec] },
+  };
+  const user = { id: 'owner', role: 'USER', tenantId: 'tenant' };
+  const req: { user: typeof user; config?: AppConfig } = { user };
+  const getAppConfig = jest.fn(async () => config);
+  const getEndpointsConfig = jest.fn(async (request: typeof req) => {
+    expect(request.config).toBe(config);
+    return { [endpoint]: replacement };
+  });
+  const getEndpointModelsConfig = jest.fn(async () => ({ [endpoint]: [stored.model] }));
+  const resolve = createSavedSpecTargetResolver({
+    getAppConfig,
+    getEndpointsConfig,
+    getEndpointModelsConfig,
+  });
+
+  await expect(resolve(req, stored)).resolves.toMatchObject({ endpoint, model: stored.model });
+  expect(getAppConfig).toHaveBeenCalledWith(
+    expect.objectContaining({
+      userId: user.id,
+      tenantId: user.tenantId,
+      failClosed: true,
+      skipRuntimeAugmentation: true,
+    }),
+  );
+  expect(getEndpointModelsConfig).toHaveBeenCalledWith(req, endpoint);
+});
 
 test('recovers a hidden spec and keeps the original model when the new endpoint serves it', async () => {
   const deps = dependencies();

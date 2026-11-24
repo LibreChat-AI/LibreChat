@@ -43,8 +43,7 @@ const {
   createFileExclusionHandler,
   createFileExclusionReadHandler,
   createGetConversationHandler,
-  resolveSavedSpecTarget,
-  loadStrictAppConfig,
+  createSavedSpecTargetResolver,
   resolveImportMaxFileSize,
   restoreTenantContextFromReq,
   deleteAllSharedLinksWithCleanup,
@@ -352,17 +351,11 @@ router.get(
     getConvo: db.getConvo,
     jobs: GenerationJobManager,
     logger,
-    resolveTarget: (req, stored) =>
-      resolveSavedSpecTarget(stored, {
-        getModelSpecs: async () => {
-          req.config = await loadStrictAppConfig(req, (options) =>
-            getAppConfig({ ...options, skipRuntimeAugmentation: true }),
-          );
-          return req.config.modelSpecs;
-        },
-        getEndpoints: () => getEndpointsConfig(req),
-        getModels: (endpoint) => getEndpointModelsConfig(req, endpoint),
-      }),
+    resolveTarget: createSavedSpecTargetResolver({
+      getAppConfig,
+      getEndpointsConfig,
+      getEndpointModelsConfig,
+    }),
   }),
 );
 

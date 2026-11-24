@@ -6,8 +6,10 @@ import {
   resolveModelSpecEndpoint,
   resolveModelCatalogKey,
 } from 'librechat-data-provider';
-import type { TEndpointsConfig, TModelsConfig, TSpecsConfig } from 'librechat-data-provider';
+import type { TEndpointsConfig, TModelsConfig } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
 import { findModelSpecByName } from '../modelSpecs';
+import { loadStrictAppConfig } from '../app/strict';
 
 export type ConversationTarget = {
   endpoint?: string | null;
@@ -25,10 +27,35 @@ export type ResolvedSpecTarget = {
 };
 
 type TargetDependencies = {
-  getModelSpecs: () => Promise<Pick<TSpecsConfig, 'enforce' | 'list'> | undefined>;
+  getModelSpecs: () => Promise<AppConfig['modelSpecs']>;
   getEndpoints: () => Promise<TEndpointsConfig>;
   getModels: (endpoint: string) => Promise<TModelsConfig>;
 };
+
+type ConfigRequest = Pick<Parameters<typeof loadStrictAppConfig>[0], 'user' | 'config'>;
+
+type TargetReaders<Request extends ConfigRequest> = {
+  getAppConfig: Parameters<typeof loadStrictAppConfig>[1];
+  getEndpointsConfig: (req: Request) => Promise<TEndpointsConfig>;
+  getEndpointModelsConfig: (req: Request, endpoint: string) => Promise<TModelsConfig>;
+};
+
+/** Reads the effective configuration only when the saved target can be recovered. */
+export function createSavedSpecTargetResolver<Request extends ConfigRequest>(
+  readers: TargetReaders<Request>,
+) {
+  return (req: Request, stored: ConversationTarget): Promise<ResolvedSpecTarget | undefined> =>
+    resolveSavedSpecTarget(stored, {
+      async getModelSpecs() {
+        req.config = await loadStrictAppConfig(req, (options) =>
+          readers.getAppConfig({ ...options, skipRuntimeAugmentation: true }),
+        );
+        return req.config.modelSpecs;
+      },
+      getEndpoints: () => readers.getEndpointsConfig(req),
+      getModels: (endpoint) => readers.getEndpointModelsConfig(req, endpoint),
+    });
+}
 
 /** Resolve a provider-backed conversation against its named spec after its old route is removed. */
 export async function resolveSavedSpecTarget(
@@ -49,12 +76,13 @@ export async function resolveSavedSpecTarget(
   const specs = await deps.getModelSpecs();
   const spec = findModelSpecByName(specs, stored.spec);
   const endpoint = resolveModelSpecEndpoint(spec);
+  const preset = spec?.preset;
   if (
-    !spec ||
+    !preset ||
     !endpoint ||
     endpoint === stored.endpoint ||
-    spec.preset.agent_id ||
-    spec.preset.assistant_id ||
+    preset.agent_id ||
+    preset.assistant_id ||
     isAgentsEndpoint(endpoint) ||
     isAssistantsEndpoint(endpoint)
   ) {
@@ -71,7 +99,7 @@ export async function resolveSavedSpecTarget(
     return undefined;
   }
 
-  let model = spec.preset.model;
+  let model = preset.model;
   if (!specs?.enforce && stored.model && stored.model !== model) {
     const models = await deps.getModels(endpoint);
     if (models[resolveModelCatalogKey(endpoint, models)]?.includes(stored.model)) {

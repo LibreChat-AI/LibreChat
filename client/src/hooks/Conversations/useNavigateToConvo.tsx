@@ -167,9 +167,16 @@ const useNavigateToConvo = (index = 0) => {
    * never left. The refreshed record is read by the next switch to this
    * conversation, which is where a cached record is consumed.
    */
-  const refreshConversationRecord = async (conversationId: string) => {
+  const refreshConversationRecord = async (conversationId: string, cached: TConversation) => {
+    const key = [QueryKeys.conversation, conversationId];
     try {
-      const data = await fetchConversationRecord(conversationId);
+      // Fetch without publishing first. A turn can commit a different target
+      // into the detail cache while this request is in flight.
+      const data = await dataService.getConversationById(conversationId);
+      if (queryClient.getQueryData<TConversation>(key) !== cached) {
+        return;
+      }
+      queryClient.setQueryData(key, data);
       logger.log('conversation', 'Refreshed cached conversation record', data);
       // Refresh only the routing fields so a stale row cannot undo a target change
       // on the next switch or overwrite a concurrent rename or pin.
@@ -187,7 +194,7 @@ const useNavigateToConvo = (index = 0) => {
        * cache on a transient failure would cancel an in-flight history fetch
        * (or discard one that already succeeded) with no route change left to
        * remount it, blanking a transcript that was fine. */
-      if (isNotFoundError(error)) {
+      if (isNotFoundError(error) && queryClient.getQueryData<TConversation>(key) === cached) {
         queryClient.removeQueries([QueryKeys.messages, conversationId]);
       }
     }
@@ -331,7 +338,11 @@ const useNavigateToConvo = (index = 0) => {
         QueryKeys.conversation,
         convo.conversationId,
       ]);
-      queryClient.invalidateQueries([QueryKeys.conversation, convo.conversationId]);
+      queryClient.invalidateQueries({
+        queryKey: [QueryKeys.conversation, convo.conversationId],
+        exact: true,
+        refetchType: 'none',
+      });
       // A retired row cannot supply the target, but a compatible cached detail
       // can still open immediately and revalidate in the background.
       const recoveredTarget =
@@ -354,7 +365,7 @@ const useNavigateToConvo = (index = 0) => {
        * will carry until they change it themselves. */
       applyConversation({ ...cachedConvo, ...convo, ...recoveredTarget });
       navigate(`/c/${convo.conversationId}`);
-      refreshConversationRecord(convo.conversationId);
+      refreshConversationRecord(convo.conversationId, cachedConvo);
     } else {
       setConversation(convo);
       requestChatFocus();

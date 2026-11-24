@@ -6,6 +6,7 @@ import { BrowserRouter, useLocation, useNavigate } from 'react-router-dom';
 import type { TConversation, TEndpointsConfig } from 'librechat-data-provider';
 import useNavigateToConvo, { supersedeNavigation } from '../useNavigateToConvo';
 import { useRunningConversationsQuery } from '~/data-provider/queries';
+import { updateConvoInAllQueries } from '~/utils';
 import { SetConvoProvider } from '~/Providers';
 import store from '~/store';
 
@@ -412,6 +413,30 @@ describe('useNavigateToConvo', () => {
       await settle(B, { ...recordB, model: 'gpt-4o-elsewhere' });
 
       await waitFor(() => expect(sidebarRow(queryClient, B)?.model).toBe('gpt-4o-elsewhere'));
+    });
+
+    it('keeps the agent committed by a new turn while the detail refresh was pending', async () => {
+      const previous = { ...recordB, agent_id: 'agent_old' };
+      const queryClient = renderHarness([previous]);
+      click('go-b');
+
+      act(() => {
+        updateConvoInAllQueries(
+          queryClient,
+          B,
+          (conversation) => ({
+            ...conversation,
+            endpoint: EModelEndpoint.agents,
+            agent_id: 'agent_new',
+          }),
+          true,
+        );
+      });
+      await settle(B, previous);
+
+      const committed = { endpoint: EModelEndpoint.agents, agent_id: 'agent_new' };
+      expect(queryClient.getQueryData([QueryKeys.conversation, B])).toMatchObject(committed);
+      expect(sidebarRow(queryClient, B)).toMatchObject(committed);
     });
 
     it('leaves list-owned row state alone when the refresh lands', async () => {
