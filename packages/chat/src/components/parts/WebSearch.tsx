@@ -30,13 +30,17 @@ import { collectSources, getCleanDomain, getUniqueDomainSources } from './source
 import useLazyCollapseBody from '../../react/parts/useLazyCollapseBody';
 import { parseJsonField } from '../../core/parts/parseJsonField';
 import { useToolCallIntent } from '../../react/parts/intent';
+import { useSearchContext } from '../../react/parts/search';
 import useRowHandoff from '../../react/parts/handoff';
+import Favicon, { StackedFavicons } from './Favicon';
 import useExpandCollapse from './useExpandCollapse';
 import { useToolPreparation } from './preparation';
 import { isError } from '../../core/parts/output';
+import { HeaderActionSlotContext } from './slot';
+import SearchVerticals from './verticals';
 import { ROW_GLYPH_SLOT } from './rows';
 import { classes } from './classes';
-import Favicon from './Favicon';
+import ToolCall from './ToolCall';
 
 /** What the app's tool card renders when a search fails. */
 export type WebSearchFailedCall = {
@@ -86,22 +90,7 @@ function SourceFaviconStack({ sources }: { sources: ValidSource[] }) {
   );
 }
 
-export default function WebSearch({
-  initialProgress: progress = 0.1,
-  isSubmitting,
-  isLast,
-  args,
-  output,
-  attachments,
-  hideAttachments = false,
-  onExpand,
-  runStepStatus,
-  searchResults,
-  headerSlot = null,
-  renderStackedFavicons,
-  renderVerticals,
-  renderFailedCall,
-}: {
+export type WebSearchProps = {
   isLast?: boolean;
   isSubmitting: boolean;
   args?: string | Record<string, unknown>;
@@ -121,7 +110,30 @@ export default function WebSearch({
   renderVerticals?: (attachments?: TAttachment[]) => ReactNode;
   /** The app's tool card for a failed search. Absent, a failure renders nothing. */
   renderFailedCall?: (props: WebSearchFailedCall) => ReactNode;
-}): ReactNode {
+};
+
+/** What a web search call gives its card; the rest the card reads from where it is drawn. */
+export type WebSearchCallProps = Omit<
+  WebSearchProps,
+  'searchResults' | 'headerSlot' | 'renderStackedFavicons' | 'renderVerticals' | 'renderFailedCall'
+>;
+
+export default function WebSearch({
+  initialProgress: progress = 0.1,
+  isSubmitting,
+  isLast,
+  args,
+  output,
+  attachments,
+  hideAttachments = false,
+  onExpand,
+  runStepStatus,
+  searchResults,
+  headerSlot = null,
+  renderStackedFavicons,
+  renderVerticals,
+  renderFailedCall,
+}: WebSearchProps): ReactNode {
   const localize = useLocalize();
   /** Model-authored live label (web_search carries `intent` natively);
    *  persists as the settled label like the other tool cards. */
@@ -471,5 +483,35 @@ export default function WebSearch({
       </span>
       <Shimmer className="tool-status-text min-w-0 truncate font-medium">{progressText}</Shimmer>
     </div>
+  );
+}
+
+const renderStack = ({ sources, start }: WebSearchStackProps): ReactNode => (
+  <StackedFavicons sources={sources} start={start} />
+);
+
+const renderVerticalStrips = (attachments?: TAttachment[]): ReactNode => (
+  <SearchVerticals attachments={attachments} />
+);
+
+const renderFailed = (failed: WebSearchFailedCall): ReactNode => <ToolCall {...failed} />;
+
+/**
+ * A web search call as the package draws it: the message's streaming results from
+ * `SearchContext`, the fold header's slot, stacked site icons, the image, shopping and place
+ * strips, and the generic tool card for a failed search.
+ */
+export function WebSearchCall(props: WebSearchCallProps): ReactNode {
+  const { searchResults } = useSearchContext();
+  const headerSlot = useContext(HeaderActionSlotContext);
+  return (
+    <WebSearch
+      {...props}
+      searchResults={searchResults}
+      headerSlot={headerSlot}
+      renderStackedFavicons={renderStack}
+      renderVerticals={renderVerticalStrips}
+      renderFailedCall={renderFailed}
+    />
   );
 }

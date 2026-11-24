@@ -1,40 +1,26 @@
+/** @jest-environment jsdom */
 import React from 'react';
-import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
-import { GeneratedToolLabelContext } from '@librechat/chat/react';
-import { ToolContentRequestContext } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
-import {
-  ROW_GLYPH_SLOT,
-  FailedRevealContext,
-  HeaderActionSlotContext,
-} from '@librechat/chat/components';
 import type {
   TAttachment,
   SearchResultData,
   ValidSource,
   PartMetadata,
 } from 'librechat-data-provider';
-import { SearchContext } from '~/Providers';
-import '~/Providers/MessagePartsHostContext';
-import WebSearch from '../WebSearch';
+import {
+  GeneratedToolLabelContext,
+  ToolContentRequestContext,
+} from '../../../react/parts/disclosure';
+import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
+import { setDefaultMessagePartsHost } from '../../../react/host';
+import { SearchContext } from '../../../react/parts/search';
+import { WebSearchCall as WebSearch } from '../WebSearch';
+import { HeaderActionSlotContext } from '../slot';
+import { FailedRevealContext } from '../reveal';
+import { ROW_GLYPH_SLOT } from '../rows';
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string, values?: Record<string, unknown>) => {
-    const translations: Record<string, string> = {
-      com_ui_web_searching: 'Searching the web',
-      com_ui_web_searching_again: 'Searching again',
-      com_ui_web_search_processing: 'Processing results',
-      com_ui_web_search_reading: 'Reading sources',
-      com_ui_web_searched: 'Searched the web',
-      com_ui_web_search_source: `${values?.count ?? 1} source`,
-      com_ui_web_search_sources: `${values?.count ?? 0} sources`,
-      com_ui_web_search_details: 'Search details',
-      com_ui_search_query: 'Query',
-    };
-    return translations[key] || key;
-  },
-}));
+setDefaultMessagePartsHost(createMessagePartsHost());
 
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
@@ -54,33 +40,16 @@ jest.mock('@librechat/client', () => ({
   },
 }));
 
-jest.mock('~/hooks/MCP', () => ({
-  useMCPIconMap: () => new Map(),
-  useMCPServerNames: () => [],
-}));
-
-jest.mock('~/utils/cn', () => ({
+jest.mock('../Favicon', () => ({
   __esModule: true,
-  default: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
-}));
-
-jest.mock('~/components/Web/SourceHovercard', () => ({
-  getCleanDomain: (url: string) => {
-    try {
-      return new URL(url).hostname.replace('www.', '');
-    } catch {
-      return url;
-    }
-  },
-}));
-
-jest.mock('~/components/Web/Sources', () => ({
+  ...jest.requireActual('../Favicon'),
   StackedFavicons: ({ sources }: { sources: ValidSource[] }) => (
     <span data-testid="stacked-favicons" data-count={sources.length} />
   ),
 }));
 
 jest.mock('lucide-react', () => ({
+  ...jest.requireActual('lucide-react'),
   Globe: () => <span data-testid="globe-icon" />,
   Info: () => <span data-testid="info-icon" />,
   Star: () => <span data-testid="star-icon" />,
@@ -133,7 +102,7 @@ function renderWebSearch({
   revealTick?: number;
 }) {
   const tree = (tick: number) => (
-    <RecoilRoot>
+    <>
       <SearchContext.Provider value={{ searchResults }}>
         <FailedRevealContext.Provider value={{ tick, claimFocus: () => true }}>
           <WebSearch
@@ -147,7 +116,7 @@ function renderWebSearch({
           />
         </FailedRevealContext.Provider>
       </SearchContext.Provider>
-    </RecoilRoot>
+    </>
   );
   const result = render(tree(revealTick));
   return { ...result, reveal: (tick: number) => result.rerender(tree(tick)) };
@@ -201,7 +170,7 @@ describe('WebSearch', () => {
 
     it('two instances under the same SearchContext show distinct sources', () => {
       const { container: container0 } = render(
-        <RecoilRoot>
+        <>
           <SearchContext.Provider value={{ searchResults }}>
             <WebSearch
               initialProgress={1}
@@ -209,11 +178,11 @@ describe('WebSearch', () => {
               attachments={[makeAttachment(0, searchResults['0'])]}
             />
           </SearchContext.Provider>
-        </RecoilRoot>,
+        </>,
       );
 
       const { container: container1 } = render(
-        <RecoilRoot>
+        <>
           <SearchContext.Provider value={{ searchResults }}>
             <WebSearch
               initialProgress={1}
@@ -221,7 +190,7 @@ describe('WebSearch', () => {
               attachments={[makeAttachment(1, searchResults['1'])]}
             />
           </SearchContext.Provider>
-        </RecoilRoot>,
+        </>,
       );
 
       fireEvent.click(container0.querySelector('button[aria-expanded]') as HTMLElement);
@@ -448,7 +417,7 @@ describe('WebSearch', () => {
     it('asks for the stored call when the details card opens', async () => {
       const request = jest.fn();
       render(
-        <RecoilRoot>
+        <>
           <SearchContext.Provider value={{ searchResults: undefined }}>
             <ToolContentRequestContext.Provider value={request}>
               <WebSearch
@@ -459,7 +428,7 @@ describe('WebSearch', () => {
               />
             </ToolContentRequestContext.Provider>
           </SearchContext.Provider>
-        </RecoilRoot>,
+        </>,
       );
       expect(request).not.toHaveBeenCalled();
       fireEvent.focus(screen.getByLabelText('Search details'));
@@ -612,7 +581,7 @@ describe('WebSearch', () => {
 describe('generated single-search label', () => {
   const search = () =>
     render(
-      <RecoilRoot>
+      <>
         <SearchContext.Provider
           value={{
             searchResults: makeSearchResults({
@@ -624,7 +593,7 @@ describe('generated single-search label', () => {
             <WebSearch initialProgress={1} isSubmitting={false} args={{ query: 'example' }} />
           </GeneratedToolLabelContext.Provider>
         </SearchContext.Provider>
-      </RecoilRoot>,
+      </>,
     );
   it('does not render a redundant searched-the-web disclosure', () => {
     search();
@@ -638,7 +607,7 @@ describe('generated single-search label', () => {
     const slot = document.createElement('span');
     document.body.appendChild(slot);
     render(
-      <RecoilRoot>
+      <>
         <SearchContext.Provider
           value={{
             searchResults: makeSearchResults({
@@ -652,7 +621,7 @@ describe('generated single-search label', () => {
             </GeneratedToolLabelContext.Provider>
           </HeaderActionSlotContext.Provider>
         </SearchContext.Provider>
-      </RecoilRoot>,
+      </>,
     );
     const details = screen.getByRole('button', { name: 'Search details' });
     expect(slot).toContainElement(details);

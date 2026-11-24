@@ -316,9 +316,9 @@ jest.mock('~/components/Web/Sources', () => ({
   },
 }));
 
-jest.mock('../WebSearch', () => ({
-  __esModule: true,
-  default: ({ attachments }: { attachments?: TAttachment[] }) => (
+jest.mock('@librechat/chat/dist/components/parts/WebSearch.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/WebSearch.cjs'),
+  WebSearchCall: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="web-search" data-count={attachments?.length ?? 0} />
   ),
 }));

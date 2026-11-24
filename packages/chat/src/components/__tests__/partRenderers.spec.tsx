@@ -58,6 +58,10 @@ jest.mock('../parts/preparation', () => ({
   ToolPreparation: mockPassthrough,
 }));
 jest.mock('../parts/ToolCall', () => ({ __esModule: true, default: mockStub('tool-call') }));
+jest.mock('../parts/WebSearch', () => ({
+  __esModule: true,
+  WebSearchCall: mockStub('web-search'),
+}));
 jest.mock('../parts/ask/Call', () => ({
   __esModule: true,
   default: mockStub('ask-user-question-call'),
@@ -176,8 +180,7 @@ const TOOL_NAMES: [string, string, string][] = [
   ['ask_user_question', '{}', 'ask-user-question-call'],
   [Constants.CHECK_BACKGROUND_TASK as string, '{}', 'background-task-call'],
   ['skill', '{}', 'skill-call'],
-  /** A subagent's card and a web search's read the host's state; without the host they are
-   *  generic tool cards. */
+  /** A subagent's card reads the host's state; without the host it is a generic tool card. */
   [Constants.SUBAGENT as string, '{}', 'tool-call'],
   ['set_memory', '{}', 'memory-call'],
   ['delete_memory', '{}', 'memory-call'],
@@ -185,7 +188,7 @@ const TOOL_NAMES: [string, string, string][] = [
   ['create_file', '{}', 'file-authoring-call'],
   ['edit_file', '{}', 'file-authoring-call'],
   [Tools.bash_tool, '{}', 'bash-call'],
-  [Tools.web_search, '{}', 'tool-call'],
+  [Tools.web_search, '{}', 'web-search'],
   ['file_search', '{}', 'retrieval-call'],
   ['retrieval', '{}', 'retrieval-call'],
   [`${Constants.LC_TRANSFER_TO_}research`, '{}', 'agent-handoff'],
