@@ -3237,6 +3237,13 @@ describe('agent trigger delivery methods', () => {
   });
 
   it('refuses to requeue a dead batch whose receipts its deadline already removed', async () => {
+    /** Stored before the batch, so a refusal that lost its root fence would reach it first. */
+    const bystander = await methods.enqueueAgentTriggerDelivery(
+      enqueueInput({
+        orderingKey: 'bystander-lane',
+        availableAt: new Date(Date.now() + 86_400_000),
+      }),
+    );
     const user = new mongoose.Types.ObjectId();
     const orderingKey = 'batch-requeue-expired-receipt-lane';
     const coalesceUntil = new Date(Date.now() + 60_000);
@@ -3288,8 +3295,26 @@ describe('agent trigger delivery methods', () => {
       left.filter((row) => String(row._id) === claim!.id && row.batchMembersSettledAt == null),
     ).toEqual([]);
     for (const row of left.filter((row) => String(row._id) === claim!.id)) {
-      expect(row.lastError).toMatchObject({ code: 'BATCH_RECEIPTS_EXPIRED', retryable: false });
+      expect(row.lastError).toEqual({
+        code: 'BATCH_RECEIPTS_EXPIRED',
+        message: 'Batch receipts expired before the delivery was requeued',
+        certainty: 'definite',
+        retryable: false,
+        attemptedAt: expect.any(Date),
+      });
+      expect(row.history?.[row.history.length - 1]).toMatchObject({
+        attempt: 1,
+        outcome: 'dead',
+        workerId: 'batch-requeue',
+        error: { code: 'BATCH_RECEIPTS_EXPIRED' },
+      });
+      expect(row.stagingRecoveryAt).toBeUndefined();
     }
+    await expect(Delivery.findById(bystander.delivery.id).lean()).resolves.toMatchObject({
+      status: 'pending',
+      requeueCount: 0,
+    });
+    expect((await Delivery.findById(bystander.delivery.id).lean())?.lastError).toBeUndefined();
     await expect(methods.recoverAgentTriggerLanePublications()).resolves.toBe(0);
     await expect(methods.recoverAgentTriggerBatchReceipts()).resolves.toBe(0);
 
@@ -5473,6 +5498,44 @@ describe('agent trigger delivery methods', () => {
     await expect(methods.getAgentTriggerDeadLetters(Number.NaN)).rejects.toThrow(
       'Agent trigger dead-letter limit must be a positive integer',
     );
+  });
+
+  it('lists every requeueable dead letter newest first', async () => {
+    const at = Date.now();
+    const store = async (fields: Record<string, unknown>, updatedAt: number): Promise<string> => {
+      const row = await Delivery.create({
+        ...enqueueInput({ orderingKey: `dead-read-${updatedAt}-${counter}` }),
+        laneSequence: 1,
+        attempts: 1,
+        requeueCount: 0,
+        ...fields,
+      });
+      await Delivery.collection.updateOne(
+        { _id: row._id },
+        { $set: { updatedAt: new Date(updatedAt) } },
+      );
+      return String(row._id);
+    };
+    const shielded = {
+      requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
+      capabilityStatus: 'dead',
+    };
+    /** Stored out of order, so neither insertion order nor one sort key alone passes. */
+    const pendingShield = await store({ status: 'pending', ...shielded }, at - 3_000);
+    const tiedFirst = await store({ status: 'dead' }, at - 2_000);
+    const tiedSecond = await store({ status: 'dead' }, at - 2_000);
+    const leasedShield = await store({ status: 'leased', ...shielded }, at - 1_000);
+    await store({ status: 'pending' }, at);
+    await store({ status: 'succeeded' }, at);
+
+    const letters = await methods.getAgentTriggerDeadLetters();
+
+    expect(letters.map((letter) => letter.id)).toEqual([
+      leasedShield,
+      tiedSecond,
+      tiedFirst,
+      pendingShield,
+    ]);
   });
 
   it('retires a dead letter when its admitted actor action later settles', async () => {
