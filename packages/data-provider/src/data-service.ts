@@ -36,6 +36,12 @@ import type {
   TTraceRecordDetail,
 } from './types/traces';
 import type {
+  DeadLetterDismissed,
+  DeadLetterRequeued,
+  DeadLetterParams,
+  DeadLetterPage,
+} from './types/dead';
+import type {
   ChannelIdentityClient,
   ChannelIdentityResult,
   ChannelLinkView,
@@ -1957,6 +1963,19 @@ export function deleteGitHubSkillSyncCredential(
   credentialKey: string,
 ): Promise<{ credentialKey: string; deleted: boolean }> {
   return request.delete(endpoints.adminSkillsSyncCredential(credentialKey));
+}
+
+/* Dead letters of the agent trigger queue (admin) */
+export function listDeadLetters(params?: DeadLetterParams): Promise<DeadLetterPage> {
+  return request.get(endpoints.adminDeadLetters(params));
+}
+
+export function requeueDeadLetter(id: string): Promise<DeadLetterRequeued> {
+  return request.post(endpoints.adminDeadLetterRequeue(id));
+}
+
+export function dismissDeadLetter(id: string): Promise<DeadLetterDismissed> {
+  return request.delete(endpoints.adminDeadLetter(id));
 }
 
 /* Roles */

@@ -1,4 +1,5 @@
 import type { StartupConfigContext } from './config';
+import type { DeadLetterParams } from './types/dead';
 import type { AssistantsEndpoint } from './schemas';
 import type * as t from './types';
 import { ResourceType } from './accessPermissions';
@@ -673,6 +674,13 @@ export const adminLangfusePrompts = (params: t.TLangfusePromptListParams = {}) =
 export const adminLangfuseSyncPrompts = () => `${BASE_URL}/api/admin/langfuse/prompts/sync`;
 export const adminLangfusePrompt = (name: string, version?: number) =>
   `${BASE_URL}/api/admin/langfuse/prompts/${encodeURIComponent(name)}${buildQuery({ version })}`;
+
+/* Dead letters of the agent trigger queue (admin) */
+export const adminDeadLetters = (params: DeadLetterParams = {}) =>
+  `${BASE_URL}/api/admin/events/dead${buildQuery({ ...params })}`;
+export const adminDeadLetter = (id: string) =>
+  `${BASE_URL}/api/admin/events/dead/${encodeURIComponent(id)}`;
+export const adminDeadLetterRequeue = (id: string) => `${adminDeadLetter(id)}/requeue`;
 
 /* Combined Pinned-section display order: favorite and pinned-chat entry keys interleaved. */
 export const pinnedOrder = () => `${BASE_URL}/api/user/settings/pinned-order`;

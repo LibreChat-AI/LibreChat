@@ -486,6 +486,7 @@ const startServer = async () => {
   app.use('/api/admin/skills', routes.adminSkills);
   app.use('/api/admin/users', routes.adminUsers);
   app.use('/api/admin/audit-log', routes.adminAuditLog);
+  app.use('/api/admin/events', routes.adminEvents);
   app.use('/api/actions', routes.actions);
   app.use('/api/keys', routes.keys);
   app.use('/api/api-keys', routes.apiKeys);

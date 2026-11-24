@@ -1314,6 +1314,12 @@ export const AUDIT_ACTIONS = [
   'skill_credential.deleted',
   'passkey.registered',
   'passkey.removed',
+  /**
+   * Admin action on a dead agent trigger delivery; target `{ type: 'dead_letter', id }`.
+   * Written `pending` before the action and again with its outcome.
+   */
+  'dead_letter.requeued',
+  'dead_letter.dismissed',
   /** Reads of the audit log itself and retention purges. */
   'audit.read',
   'audit.exported',
@@ -1359,6 +1365,8 @@ export const AUDIT_ACTION_CATEGORY: Record<AuditAction, AuditCategory> = {
   'skill_credential.deleted': 'credential',
   'passkey.registered': 'auth',
   'passkey.removed': 'auth',
+  'dead_letter.requeued': 'agent_run',
+  'dead_letter.dismissed': 'agent_run',
   'audit.read': 'audit',
   'audit.exported': 'audit',
   'audit.purged': 'audit',
