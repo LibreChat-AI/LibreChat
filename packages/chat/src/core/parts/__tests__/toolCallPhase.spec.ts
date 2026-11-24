@@ -11,6 +11,19 @@ const resolve = (overrides: Partial<ToolCallPhaseInput> = {}) =>
   });
 
 describe('resolveToolCallPhase', () => {
+  it('keeps a client handoff distinct from execution and preserves authoritative terminal states', () => {
+    const pending = {
+      clientToolPending: true,
+      displayProgress: 0.1,
+      reportedProgress: 0.1,
+      isSubmitting: false,
+    };
+    expect(resolve(pending)).toBe('delegated');
+    expect(resolve({ ...pending, runStepStatus: 'cancelled' })).toBe('cancelled');
+    expect(resolve({ ...pending, runStepStatus: 'failed' })).toBe('failed');
+    expect(resolve({ ...pending, runStepStatus: 'completed' })).toBe('completed');
+    expect(resolve({ ...pending, hasError: true })).toBe('failed');
+  });
   describe('with an explicit run-step status', () => {
     it('reports a completed close as completed', () => {
       expect(resolve({ runStepStatus: 'completed' })).toBe('completed');

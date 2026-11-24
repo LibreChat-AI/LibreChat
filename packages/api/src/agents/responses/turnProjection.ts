@@ -8,6 +8,7 @@ import type { ResponseTurnIntent } from './foreground';
 import type { InternalMessage } from './service';
 import type { Response } from './types';
 import { projectStoredResponseMessage } from './foreground';
+import { projectResponseInputContent } from './persistence';
 import { convertInputToMessages } from './service';
 
 /** Rebuild canonical writes from immutable request/receipt bytes, without a live request closure. */
@@ -54,7 +55,7 @@ export function projectCanonicalResponseTurn(
       content:
         typeof message.content === 'string'
           ? [{ type: ContentTypes.TEXT, text: message.content }]
-          : message.content,
+          : projectResponseInputContent(message.content),
       sender: { user: 'User', system: 'System', assistant: 'Agent' }[message.role],
       endpoint: EModelEndpoint.agents,
       model: record.agentId,

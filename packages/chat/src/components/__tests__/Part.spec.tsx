@@ -42,6 +42,18 @@ function createRenderers(overrides: Partial<PartRenderers> = {}): PartRenderers 
 const baseProps = { isSubmitting: false, showCursor: false, isCreatedByUser: false };
 
 describe('Part', () => {
+  it('renders caller-owned tools generically even when their names match native tools', () => {
+    const matcher = jest.fn(() => named('matched'));
+    render(
+      <Part
+        {...baseProps}
+        part={toolPart({ name: 'web_search', clientToolCall: true })}
+        renderers={createRenderers({ matchTool: matcher })}
+      />,
+    );
+    expect(screen.getByText('generic:web_search:none')).toBeTruthy();
+    expect(matcher).not.toHaveBeenCalled();
+  });
   it('routes a part to the renderer for its type, with its index from the message', () => {
     render(
       <MessageContext.Provider value={{ messageId: 'm1', isExpanded: false, partIndex: 3 }}>

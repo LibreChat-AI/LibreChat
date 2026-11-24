@@ -1,13 +1,15 @@
+import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { Constants, ContentTypes, isFailedToolOutput } from 'librechat-data-provider';
 import type { Agents } from 'librechat-data-provider';
 import type { FunctionCallOutputItem, Response } from './types';
+import type { InternalMessage } from './service';
 
 const rootParent = String(Constants.NO_PARENT);
 
-/** Retain completed server tool pairs for browser rendering and later model turns. */
+/** Keep canonical tool content, including caller-owned calls awaiting a result. */
 export function projectResponseMessage(
-  response: Pick<Response, 'output'> & Partial<Pick<Response, 'status'>>,
+  response: Pick<Response, 'output'> & Partial<Pick<Response, 'status' | 'tools'>>,
 ): {
   text: string;
   content: Agents.MessageContentComplex[];
@@ -18,21 +20,31 @@ export function projectResponseMessage(
     if (item.type === 'function_call_output') results.set(item.call_id, item);
   const content: Agents.MessageContentComplex[] = [];
   let text = '';
+  const clientTools = new Set(
+    response.tools?.flatMap((tool) => (tool.type === 'function' ? [tool.name] : [])),
+  );
   for (const item of response.output) {
     if (item.type === 'function_call') {
       const result = results.get(item.call_id);
-      if (result === undefined) continue;
+      const isClientTool = clientTools.has(item.name);
+      if (result === undefined && !isClientTool) continue;
+      let runStepStatus: Agents.RunStepClosedStatus | undefined;
+      if (result !== undefined) {
+        if (item.status === 'completed' && result.status === 'completed') {
+          runStepStatus = isFailedToolOutput(result.output) ? 'failed' : 'completed';
+        }
+      } else if (response.status === 'cancelled' || response.status === 'failed') {
+        runStepStatus = response.status;
+      }
       content.push({
         type: ContentTypes.TOOL_CALL,
         tool_call: {
           id: item.call_id,
           name: item.name,
           args: item.arguments,
-          output: result.output,
-          ...(item.status === 'completed' &&
-            result.status === 'completed' && {
-              runStepStatus: isFailedToolOutput(result.output) ? 'failed' : 'completed',
-            }),
+          ...(isClientTool && response.status === 'completed' ? { clientToolCall: true as const } : {}),
+          ...(runStepStatus ? { runStepStatus } : {}),
+          ...(result !== undefined ? { output: result.output } : {}),
         },
       });
       continue;
@@ -53,6 +65,17 @@ export function projectResponseMessage(
   };
 }
 
+/** UI lifecycle metadata belongs to canonical storage, not the provider input formatter. */
+export function projectResponseInputContent(
+  content: Exclude<InternalMessage['content'], string>,
+): Exclude<InternalMessage['content'], string> {
+  return content.map((part) =>
+    part.type === ContentTypes.TOOL_CALL && 'tool_call' in part && part.tool_call.output != null
+      ? { ...part, tool_call: { ...part.tool_call, runStepStatus: 'completed' as const } }
+      : part,
+  );
+}
+
 export type StoredResponseMessage = {
   messageId: string;
   conversationId?: string;
@@ -63,6 +86,33 @@ export type StoredResponseMessage = {
   tokenCount?: number;
   createdAt?: Date | string;
 };
+
+const pendingReceipt = z.object({
+  status: z.literal('completed'),
+  outputLayout: z.array(
+    z.object({
+      type: z.string(),
+      callId: z.string().optional(),
+      pendingClientTool: z.boolean().optional(),
+    }),
+  ),
+});
+
+/** Caller input cannot designate itself as a generated client-tool handoff. */
+export function pendingClientToolIds(
+  message: StoredResponseMessage & { metadata?: Record<string, unknown> },
+): Set<string> {
+  if (message.isCreatedByUser || message.isUserSubmitted) return new Set();
+  const receipt = pendingReceipt.safeParse(message.metadata?.responseReceipt);
+  if (!receipt.success) return new Set();
+  return new Set(
+    receipt.data.outputLayout.flatMap((item) =>
+      item.type === 'function_call' && item.pendingClientTool === true && item.callId
+        ? [item.callId]
+        : [],
+    ),
+  );
+}
 
 type ResponseReferenceDeps = {
   getMessage: (query: { user: string; messageId: string }) => Promise<StoredResponseMessage | null>;

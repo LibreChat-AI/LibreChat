@@ -11,6 +11,7 @@ import {
   projectStoredResponseMessage,
   saveForegroundResponseInputs,
   requireResponseStorageWrite,
+  withResponsePersistenceErrors,
   loadForegroundResponseHistory,
 } from './foreground';
 import {
@@ -215,6 +216,27 @@ it('stores canonical tool history and accounting, resolves the returned response
     expect(read.body.output).toEqual(response.output);
   }));
 
+it('keeps incomplete legacy tool rows out of the stored Responses output', () =>
+  scoped(async () => {
+    const response = result();
+    const saved = await save(response);
+    await mongoose.models.Message.updateOne(
+      { user: owner.userId, messageId: responseId },
+      {
+        $set: {
+          content: [
+            ...(saved?.content ?? []),
+            { type: 'tool_call', tool_call: { id: 'partial', name: 'existing_tool', args: '{}' } },
+          ],
+        },
+      },
+    );
+    const read = await request(appFor())
+      .get('/' + responseId)
+      .expect(200);
+    expect(read.body.output).toEqual(response.output);
+  }));
+
 it('retains submitted system/assistant tool replay provenance in the next selected history', () =>
   scoped(async () => {
     const context = { userId: owner.userId };
@@ -297,6 +319,46 @@ it('returns 404 for a foreign tenant or erased conversation without disclosing s
       .get('/' + responseId)
       .expect(404);
   }));
+
+it.each([
+  null,
+  'private-corrupt-content',
+  { privateField: 'private-corrupt-content' },
+  { type: 42 },
+  { type: 'text', text: { privateField: 'private-corrupt-content' } },
+])('fails closed with a safe 503 for malformed stored history %p', (part) =>
+  scoped(async () => {
+    await save(result());
+    // Bypass schema validation to reproduce corrupt or incompatible stored data.
+    const damaged = await mongoose.models.Message.collection.updateOne(
+      { user: owner.userId, tenantId: owner.tenantId, messageId: responseId },
+      { $set: { content: [part] } },
+    );
+    expect(damaged.matchedCount).toBe(1);
+
+    const app = express();
+    app.get(
+      '/',
+      withResponsePersistenceErrors(async (_req, res) => {
+        const history = await loadForegroundResponseHistory(
+          { conversationId, userId: owner.userId, previousResponseId: responseId },
+          db,
+        );
+        res.json(history);
+      }),
+    );
+    const read = await request(app).get('/').expect(503);
+    expect(read.body).toEqual({
+      error: {
+        message: 'Response storage is unavailable. Please try again.',
+        type: 'server_error',
+        code: 'response_storage_unavailable',
+        param: null,
+      },
+    });
+    expect(JSON.stringify(read.body)).not.toContain('private-corrupt-content');
+  }),
+);
 
 it('maps storage outages to a safe 503 and never returns an empty successful history', async () => {
   const failure = new Error('Authorization: Bearer private-secret');

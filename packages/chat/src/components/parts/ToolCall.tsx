@@ -39,6 +39,7 @@ const INFO_PANEL_CLASS = `${toolPanelSpacingClassName} border-border-light bg-su
 
 export type ToolCallProps = {
   initialProgress: number;
+  clientToolCall?: true;
   isLast?: boolean;
   isSubmitting: boolean;
   toolCallId?: string;
@@ -60,6 +61,7 @@ export type ToolCallProps = {
 
 export default function ToolCall({
   initialProgress = 0.1,
+  clientToolCall,
   isLast = false,
   isSubmitting,
   toolCallId,
@@ -192,7 +194,8 @@ export default function ToolCall({
    * `hasError`, so output parsing cannot demote a stopped step back into an
    * in-flight state.
    */
-  const isClosed = runStepStatus != null;
+  const clientToolPending = clientToolCall === true && output == null;
+  const isClosed = runStepStatus != null || clientToolPending;
 
   const args = useMemo(() => {
     if (typeof _args === 'string') {
@@ -234,6 +237,7 @@ export default function ToolCall({
    */
   const phase = resolveToolCallPhase({
     runStepStatus,
+    clientToolPending,
     displayProgress: rawProgress,
     reportedProgress: initialProgress,
     isSubmitting,
@@ -415,6 +419,9 @@ export default function ToolCall({
       return failedSubject
         ? localize('com_ui_failed_subject', { 0: failedSubject })
         : localize('com_ui_failed');
+    }
+    if (phase === 'delegated') {
+      return localize('com_ui_client_tool_requested', { 0: displayFunctionName });
     }
     if (intent != null) {
       return intent;

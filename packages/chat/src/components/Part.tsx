@@ -45,10 +45,11 @@ const renderToolCall = (
     toolCall,
     toolCallId: 'id' in toolCall && typeof toolCall.id === 'string' ? toolCall.id : undefined,
   };
-  const render =
-    renderers.matchTool?.(toolCall) ??
-    ownEntry(renderers.tools, toolCall.name) ??
-    renderers.defaultTool;
+  const render = toolCall.clientToolCall
+    ? renderers.defaultTool
+    : (renderers.matchTool?.(toolCall) ??
+      ownEntry(renderers.tools, toolCall.name) ??
+      renderers.defaultTool);
   const card = render(toolProps);
   return renderers.wrapTool ? renderers.wrapTool(card, toolProps) : card;
 };

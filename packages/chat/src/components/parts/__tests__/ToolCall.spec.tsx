@@ -3,7 +3,7 @@
  */
 import React from 'react';
 import { Tools, Constants } from 'librechat-data-provider';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type { ToolCallChrome } from '../../../react/host';
 import {
   LoneGroupContext,
@@ -117,6 +117,57 @@ describe('ToolCall', () => {
     jest.clearAllMocks();
     bindMCPOAuth.mockResolvedValue({ success: true });
     bindActionOAuth.mockResolvedValue({ success: true });
+  });
+
+  describe('client tool handoff', () => {
+    it('announces the handoff without claiming cancellation or execution', async () => {
+      await act(async () => {
+        renderWithRecoil(
+          <ToolCall
+            {...mockProps}
+            clientToolCall
+            initialProgress={0.1}
+            isSubmitting={false}
+            output={undefined}
+          />,
+        );
+      });
+      expect(screen.getByTestId('progress-text')).toHaveTextContent(
+        'Requested testFunction from client',
+      );
+      expect(screen.queryByText('Cancelled')).not.toBeInTheDocument();
+    });
+    it.each(['', 'client result'])(
+      'treats a received result %j as completed rather than a handoff',
+      async (output) => {
+        await act(async () => {
+          renderWithRecoil(
+            <ToolCall
+              {...mockProps}
+              clientToolCall
+              runStepStatus="completed"
+              isSubmitting={false}
+              output={output}
+            />,
+          );
+        });
+        expect(screen.getByTestId('progress-text')).toHaveTextContent('Completed testFunction');
+      },
+    );
+    it('keeps a genuinely cancelled client call cancelled', async () => {
+      await act(async () => {
+        renderWithRecoil(
+          <ToolCall
+            {...mockProps}
+            clientToolCall
+            runStepStatus="cancelled"
+            isSubmitting={false}
+            output={undefined}
+          />,
+        );
+      });
+      expect(screen.getByTestId('progress-text')).toHaveTextContent('Cancelled');
+    });
   });
 
   describe('tool preparation feedback', () => {
