@@ -143,7 +143,10 @@ describe('assistant route content filters', () => {
       const protectedApp = createApp(require(route), policy);
       const response = await request(protectedApp).post('/').send({ assistant_id: 'asst-valid' });
       expect(response.status).toBe(400);
-      expect(response.body).toMatchObject({ error: 'content_filter_block' });
+      expect(response.body).toMatchObject({
+        code: 'assistant_output_unsupported',
+        error: 'content_filter_block',
+      });
       expect(controller).not.toHaveBeenCalled();
       const defaultApp = createApp(require(route), {});
       const accepted = await request(defaultApp).post('/').send({ assistant_id: 'asst-valid' });

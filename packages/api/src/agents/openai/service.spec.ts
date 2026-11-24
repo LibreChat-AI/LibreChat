@@ -969,7 +969,7 @@ describe('createAgentChatCompletion - source-aware content protection', () => {
 
       await createAgentChatCompletion(req, res, deps);
 
-      expectRawFreeFilterError(res, text);
+      expectRawFreeFilterError(res, text, ErrorTypes.ASSISTANT_OUTPUT_UNSUPPORTED);
       expect(getResponseMock(res, 'flushHeaders')).not.toHaveBeenCalled();
       expect(getAgent).not.toHaveBeenCalled();
       expect(initializeAgent).not.toHaveBeenCalled();

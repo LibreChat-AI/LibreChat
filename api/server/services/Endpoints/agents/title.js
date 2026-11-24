@@ -2,7 +2,7 @@ const {
   isEnabled,
   publishConversationTitle,
   raceWithTimeout,
-  requiresAssistantProtection,
+  allowsAssistantSideEffects,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
@@ -56,7 +56,7 @@ const addTitle = async (
     return;
   }
 
-  if (requiresAssistantProtection(req?.config) || client.options.titleConvo === false) {
+  if (!allowsAssistantSideEffects(req?.config, client.options.titleConvo)) {
     return;
   }
 

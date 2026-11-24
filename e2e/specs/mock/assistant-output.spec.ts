@@ -81,6 +81,22 @@ test('assistant output is approved before chat delivery, saved history, and reus
     expect(saved).toContain(approved);
     expect(saved).not.toContain('Do not send this private');
     expect(saved).not.toContain(privateText);
+
+    const [rejected] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname.startsWith('/api/agents/chat') &&
+          response.request().method() === 'POST' &&
+          response.status() === 400,
+      ),
+      messagesView(page).getByRole('button', { name: 'Regenerate', exact: true }).last().click(),
+    ]);
+    expect(await rejected.json()).toMatchObject({ code: 'assistant_output_unsupported' });
+    await expect(
+      messagesView(page).getByText('Assistant reply protection requires a new text-only turn', {
+        exact: false,
+      }),
+    ).toBeVisible();
   } finally {
     await restoreRuntimeFilters(request, token);
   }

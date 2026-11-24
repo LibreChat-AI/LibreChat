@@ -2,6 +2,7 @@ import { AIMessageChunk } from '@librechat/agents/langchain/messages';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import {
   DEFAULT_PII_REDACTION_MAX_CHARACTERS,
+  ErrorTypes,
   assistantTextProtectionSchema,
 } from 'librechat-data-provider';
 import {
@@ -30,6 +31,21 @@ const sqlClause = /\b(?:FROM|AS|INTO|SET|TABLE)\b/i;
 
 export function requiresAssistantProtection(appConfig?: AssistantConfig | null): boolean {
   return appConfig?.config?.outputProtection !== undefined;
+}
+
+/** Auxiliary producers do not share the reply's release boundary. */
+export function allowsAssistantSideEffects(
+  config?: AssistantConfig | null,
+  enabled?: boolean,
+): boolean {
+  return enabled !== false && !requiresAssistantProtection(config);
+}
+
+export function runAssistantSideEffect<T>(
+  config: AssistantConfig | null | undefined,
+  run: () => T,
+): T | undefined {
+  return allowsAssistantSideEffects(config) ? run() : undefined;
 }
 
 export function isInteractiveAssistantRequest(req: object): boolean {
@@ -61,6 +77,7 @@ export const admitAssistantRequest: RequestHandler = (req, res, next) => {
     body.responseMessageId != null
   ) {
     res.status(400).json({
+      code: ErrorTypes.ASSISTANT_OUTPUT_UNSUPPORTED,
       error: 'content_filter_block',
       message: 'Start a regular text-only Agent turn to use assistant reply protection.',
     });
@@ -75,6 +92,7 @@ export const rejectLegacyAssistantOutput: RequestHandler = (req, res, next) => {
     return next();
   }
   res.status(400).json({
+    code: ErrorTypes.ASSISTANT_OUTPUT_UNSUPPORTED,
     error: 'content_filter_block',
     message: 'Assistant reply protection is not supported on this endpoint.',
   });

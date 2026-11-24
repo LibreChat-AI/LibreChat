@@ -24,7 +24,7 @@ import { validateChatIncludes } from './results';
  * ```
  */
 import { nanoid } from 'nanoid';
-import { AgentCapabilities, EModelEndpoint } from 'librechat-data-provider';
+import { ErrorTypes, AgentCapabilities, EModelEndpoint } from 'librechat-data-provider';
 import type {
   FiltersConfig,
   MessageFilterConfig,
@@ -662,7 +662,7 @@ export async function createAgentChatCompletion(
       400,
       'Assistant reply protection is not supported on this endpoint.',
       'invalid_request_error',
-      'content_filter_block',
+      ErrorTypes.ASSISTANT_OUTPUT_UNSUPPORTED,
     );
     return;
   }

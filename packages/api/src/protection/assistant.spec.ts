@@ -15,8 +15,13 @@ import {
 import type { MessageDeltaEvent, RunStep, TPayload } from '@librechat/agents';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import {
+  admitAssistantRequest,
+  isInteractiveAssistantRequest,
+  allowsAssistantSideEffects,
+  runAssistantSideEffect,
+} from './assistant';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
-import { admitAssistantRequest, isInteractiveAssistantRequest } from './assistant';
 import { createModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
@@ -214,6 +219,19 @@ it('only marks requests admitted by the authenticated interactive router', () =>
     expect(isInteractiveAssistantRequest(rejected)).toBe(false);
   }
   expect(json).toHaveBeenCalledTimes(4);
+  expect(json).toHaveBeenLastCalledWith(
+    expect.objectContaining({ code: 'assistant_output_unsupported' }),
+  );
+});
+
+it('suppresses auxiliary producers only when protection is required', () => {
+  const start = jest.fn(() => 'started');
+  expect(allowsAssistantSideEffects({ config })).toBe(false);
+  expect(runAssistantSideEffect({ config }, start)).toBeUndefined();
+  expect(start).not.toHaveBeenCalled();
+  expect(allowsAssistantSideEffects(undefined, false)).toBe(false);
+  expect(runAssistantSideEffect(undefined, start)).toBe('started');
+  expect(start).toHaveBeenCalledTimes(1);
 });
 
 it('withholds a match spanning provider chunks from deltas and run content', async () => {

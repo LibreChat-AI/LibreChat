@@ -60,6 +60,7 @@ it('blocks approval resume before reading a job when assistant protection is req
     .post('/resume')
     .send({ conversationId: 'response', text: 'Resume the conversation' })
     .expect(400, {
+      code: 'assistant_output_unsupported',
       error: 'content_filter_block',
       message: 'Start a regular text-only Agent turn to use assistant reply protection.',
     });

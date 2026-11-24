@@ -5920,6 +5920,7 @@ export enum ViolationTypes {
  * Enum for error message types that are not "violations" as above, used to identify client-facing errors.
  */
 export enum ErrorTypes {
+  ASSISTANT_OUTPUT_UNSUPPORTED = 'assistant_output_unsupported',
   ASSISTANT_OUTPUT_WITHHELD = 'assistant_output_withheld',
   /**
    * No User-provided Key.

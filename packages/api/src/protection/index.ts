@@ -16,6 +16,8 @@ export * from './private/copy';
 export * from './private/admission';
 export {
   requiresAssistantProtection,
+  allowsAssistantSideEffects,
+  runAssistantSideEffect,
   rejectLegacyAssistantOutput,
   admitAssistantRequest,
   isInteractiveAssistantRequest,
