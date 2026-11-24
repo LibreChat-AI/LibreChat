@@ -18,6 +18,8 @@ const {
   replaceEdgeSourceId,
   mergeDeploymentSkillIds,
   getAgentListAccess,
+  getAgentUploadTools,
+  getAgentChatParameters,
   getAgentListAvatarRefreshKey,
   mergeAgentOcrConversion,
   applyAgentInferenceInput,
@@ -112,10 +114,6 @@ const systemTools = {
 
 const MAX_SEARCH_LEN = 100;
 const escapeRegex = (str = '') => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const getSafeModelParameters = (modelParameters) => {
-  const { useResponsesApi } = modelParameters ?? {};
-  return typeof useResponsesApi === 'boolean' ? { useResponsesApi } : {};
-};
 const hasEditBit = (permission) => (permission & PermissionBits.EDIT) === PermissionBits.EDIT;
 
 const blockFilteredActionContent = (req, res, actions) => {
@@ -966,7 +964,7 @@ const createAgentHandler = async (req, res) => {
  * @returns {Promise<Agent>} 200 - success response - application/json
  * @returns {Error} 404 - Agent not found
  */
-const getAgentHandler = async (req, res, expandProperties = false) => {
+const getAgentHandler = async (req, res, expandProperties) => {
   try {
     const id = req.params.id;
     const author = req.user.id;
@@ -1019,7 +1017,8 @@ const getAgentHandler = async (req, res, expandProperties = false) => {
         author: agent.author,
         provider: agent.provider,
         model: agent.model,
-        model_parameters: getSafeModelParameters(agent.model_parameters),
+        model_parameters: getAgentChatParameters(agent.model_parameters),
+        tools: getAgentUploadTools(agent.tools),
         isPublic: agent.isPublic,
         version: agent.version,
         // Safe metadata
@@ -2338,7 +2337,8 @@ const getAgentCategories = async (_req, res) => {
 };
 module.exports = {
   createAgent: createAgentHandler,
-  getAgent: getAgentHandler,
+  getAgent: (req, res) => getAgentHandler(req, res, false),
+  getAgentExpanded: (req, res) => getAgentHandler(req, res, true),
   getAgentVersions: getAgentVersionsHandler,
   updateAgent: updateAgentHandler,
   duplicateAgent: duplicateAgentHandler,
