@@ -858,6 +858,42 @@ describe('SubagentThreadPanel', () => {
     expect(turn).toHaveTextContent('Ask the reviewer to');
   });
 
+  it('shows the child once it reports, even if the card never cleared its briefing snapshot', () => {
+    mockUseSubagentThreadQuery.mockReturnValue({ isLoading: false, isError: false });
+    const progressKey = subagentProgressKey(
+      selection.parentMessageId,
+      selection.toolCallId,
+      selection.partIndex,
+    );
+    render(
+      <Root
+        seed={(jotai) =>
+          jotai.set(subagentProgressByToolCallId(progressKey), {
+            subagentRunId: 'child-run',
+            subagentType: 'researcher',
+            status: 'message_delta',
+            contentParts: [{ type: ContentTypes.TEXT, text: 'Child is working.' }],
+            aggregatorState: initSubagentAggregatorState(),
+            tickerState: initSubagentTickerState(),
+            coverage: 'suffix',
+          })
+        }
+      >
+        <SubagentThreadPanel
+          selection={{
+            ...selection,
+            durable: undefined,
+            initialProgress: 0,
+            isSubmitting: true,
+            briefing: true,
+            prompt: 'Ask the reviewer to check the fix.',
+          }}
+        />
+      </Root>,
+    );
+    expect(screen.getByTestId('conversation-turn')).not.toHaveAttribute('data-briefing');
+  });
+
   it('names a call still being written by the saved agent its requested type is', () => {
     mockUseSubagentThreadQuery.mockReturnValue({ isLoading: false, isError: false });
     const { container } = render(

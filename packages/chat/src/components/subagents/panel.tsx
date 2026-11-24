@@ -1162,6 +1162,9 @@ export default function SubagentThreadPanel({
       ),
     [taskView, taskId],
   );
+  /** The card's snapshot says the brief is still being written; once the child reports, it has
+   *  started, even if the card that would refresh the snapshot has since unmounted. */
+  const briefing = selection.briefing === true && progress == null;
   const conversationTurns = useMemo(() => {
     const durableTurns = retainedTurnsValid
       ? mergeChildConversationTurns(
@@ -1226,7 +1229,7 @@ export default function SubagentThreadPanel({
       {
         taskId: taskId || `${selection.parentMessageId}:${selection.toolCallId}`,
         ...(selectedOutcome == null ? {} : { outcome: selectedOutcome }),
-        ...(selection.briefing === true ? { briefing: true } : {}),
+        ...(briefing ? { briefing: true } : {}),
         trigger: {
           kind:
             selection.event == null ? ('parent_dispatch' as const) : ('external_event' as const),
@@ -1250,6 +1253,7 @@ export default function SubagentThreadPanel({
     selectedOutcome,
     taskId,
     turnDetailOverrides,
+    briefing,
   ]);
   const effectiveTurnDetailStates = useMemo(() => {
     const states = new Map(turnDetailStates);
