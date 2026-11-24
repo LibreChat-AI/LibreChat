@@ -40,11 +40,12 @@ function build(): express.Express {
   server.use(express.json());
   server.use((req: Request, _res: Response, next: NextFunction) => {
     const tenantId = req.header('x-tenant') || undefined;
-    (req as Request & { user: Partial<IUser> }).user = {
-      id: req.header('x-user') ?? OWNER,
-      role: 'USER',
-      ...(tenantId && { tenantId }),
-    };
+    if (!req.header('x-anonymous'))
+      (req as Request & { user: Partial<IUser> }).user = {
+        id: req.header('x-user') ?? OWNER,
+        role: 'USER',
+        ...(tenantId && { tenantId }),
+      };
     // `x-unscoped`: the user has a tenant but none is in scope, so the store does not narrow.
     if (tenantId && !req.header('x-unscoped')) tenantStorage.run({ tenantId }, next);
     else next();
@@ -56,6 +57,8 @@ function build(): express.Express {
   server.patch('/subscriptions/:id', as(handlers.update));
   server.delete('/subscriptions/:id', as(handlers.remove));
   server.get('/subscriptions/:id/grant', as(handlers.grant.get));
+  server.post('/subscriptions/:id/grant', as(handlers.grant.confirm));
+  server.delete('/subscriptions/:id/grant', as(handlers.grant.revoke));
   return server;
 }
 
@@ -201,6 +204,14 @@ describe("another owner's subscription", () => {
     const grant = await request(app).get(`/subscriptions/${theirs.id}/grant`);
     expect(grant.status).toBe(404);
     expect(grant.body).toEqual({ code: 'consent_not_found' });
+    const confirmed = await request(app)
+      .post(`/subscriptions/${theirs.id}/grant`)
+      .send({ expectedRevision: null, allow: {} });
+    expect(confirmed.status).toBe(404);
+    const revoked = await request(app)
+      .delete(`/subscriptions/${theirs.id}/grant`)
+      .send({ expectedRevision: 'grant-1' });
+    expect(revoked.status).toBe(404);
     expect(view).not.toHaveBeenCalled();
     expect(await subscriptions.get(theirs.id, OTHER)).toMatchObject({
       prompt: theirs.prompt,
@@ -351,6 +362,22 @@ describe('deleting a subscription', () => {
     expect((await request(app).delete(`/subscriptions/${made.id}`)).status).toBe(204);
     expect(await stored()).toBe(0);
     expect((await request(app).delete(`/subscriptions/${made.id}`)).status).toBe(404);
+  });
+});
+
+describe('a request with no user', () => {
+  it('reads nothing and answers as if there were nothing', async () => {
+    const res = await request(app).get('/subscriptions').set('x-anonymous', '1');
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ code: 'subscription_not_found' });
+  });
+
+  it('refuses a list filter that is not one agent id', async () => {
+    for (const query of ['agentId=', 'agentId=a&agentId=b']) {
+      const res = await request(app).get(`/subscriptions?${query}`);
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ code: 'subscription_invalid' });
+    }
   });
 });
 
