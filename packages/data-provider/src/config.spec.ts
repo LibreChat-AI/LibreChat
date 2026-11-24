@@ -189,6 +189,29 @@ describe('stream keepalive interval', () => {
   });
 });
 
+describe('Redis finalization recovery', () => {
+  it.each([
+    [undefined, 30_000],
+    [1200, 1200],
+    [0, 0],
+  ])('parses %s with a %s ms budget', (timeout, expected) => {
+    const config = configSchema.parse({
+      version: '1.0',
+      endpoints: { agents: { redisFinalizationRecoveryTimeoutMs: timeout } },
+    });
+    expect(config.endpoints?.agents?.redisFinalizationRecoveryTimeoutMs).toBe(expected);
+  });
+
+  it.each([-1, 1.5, 300_001])('rejects a retry budget of %p', (timeout) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: { agents: { redisFinalizationRecoveryTimeoutMs: timeout } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe('authenticated 2FA management rate limits', () => {
   it('accepts an account budget and defaults an empty configuration to seven requests', () => {
     for (const [input, expected] of [
@@ -1479,6 +1502,73 @@ describe('agent pull request config', () => {
 
   it.each([4, 3601, 1.5])('rejects a cache lifetime of %s seconds', (cacheTtlSeconds) => {
     expect(parse({ cacheTtlSeconds }).success).toBe(false);
+  });
+});
+
+describe('agent events config', () => {
+  const github = {
+    appId: '${GITHUB_APP_ID}',
+    privateKey: '${GITHUB_APP_PRIVATE_KEY}',
+    webhookSecret: '${GITHUB_APP_WEBHOOK_SECRET}',
+  };
+  const parse = (events?: unknown) =>
+    configSchema.safeParse({ version: '1.0', endpoints: { agents: { events } } });
+
+  it('is absent unless configured and off unless enabled', () => {
+    const absent = configSchema.parse({ version: '1.0', endpoints: { agents: {} } });
+    expect(absent.endpoints?.agents?.events).toBeUndefined();
+    const empty = configSchema.parse({ version: '1.0', endpoints: { agents: { events: {} } } });
+    expect(empty.endpoints?.agents?.events).toEqual({ enabled: false });
+  });
+
+  it('keeps what an operator sets and leaves unset bounds to the reader', () => {
+    const parsed = parse({
+      enabled: true,
+      limits: { excerpt: 500 },
+      github: { ...github, host: 'github.example.com', requestTimeoutSeconds: 5 },
+    });
+    expect(parsed.success && parsed.data.endpoints?.agents?.events).toEqual({
+      enabled: true,
+      limits: { excerpt: 500 },
+      github: { ...github, host: 'github.example.com', requestTimeoutSeconds: 5 },
+    });
+  });
+
+  it.each(['appId', 'privateKey', 'webhookSecret'] as const)(
+    'takes %s as an environment variable reference, never a value',
+    (field) => {
+      expect(parse({ github: { ...github, [field]: 'a-literal-value' } }).success).toBe(false);
+      expect(parse({ github: { ...github, [field]: '${lower_Case_1}' } }).success).toBe(true);
+      const { [field]: _omitted, ...rest } = github;
+      expect(parse({ github: rest }).success).toBe(false);
+    },
+  );
+
+  it.each([
+    ['a URL as the host', { github: { ...github, host: 'https://github.example.com' } }],
+    ['a host with a path', { github: { ...github, host: 'github.example.com/api' } }],
+    ['a request timeout of zero', { github: { ...github, requestTimeoutSeconds: 0 } }],
+    ['a request timeout over a minute', { github: { ...github, requestTimeoutSeconds: 61 } }],
+    ['an excerpt under 16 characters', { limits: { excerpt: 15 } }],
+    ['an excerpt over 65,536 characters', { limits: { excerpt: 65_537 } }],
+    ['a fractional excerpt', { limits: { excerpt: 100.5 } }],
+    ['a fan-out of zero', { limits: { fanout: 0 } }],
+    ['a fan-out over 100', { limits: { fanout: 101 } }],
+    ['a switch that is not a boolean', { enabled: 'yes' }],
+  ])('rejects %s', (_name, events) => {
+    expect(parse(events).success).toBe(false);
+  });
+
+  it.each([
+    ['the smallest bounds', { limits: { excerpt: 16, fanout: 1 } }],
+    ['the largest bounds', { limits: { excerpt: 65_536, fanout: 100 } }],
+    ['the longest request timeout', { github: { ...github, requestTimeoutSeconds: 60 } }],
+  ])('accepts %s', (_name, events) => {
+    expect(parse(events).success).toBe(true);
+  });
+
+  it('is set in librechat.yaml only', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS['endpoints.agents.events']).toBe('operator');
   });
 });
 

@@ -164,6 +164,37 @@ every fixture server the mock profiles start as a `webServer` passes its server 
 `e2e/setup/keepalive.js`. A new fixture server that specs reach from Node does the same.
 `fixtures.spec.ts` checks that each harness server answers without an idle deadline.
 
+## Count budgets for a long thread
+
+`e2e/specs/mock/scenarios/thread-budgets.spec.ts` opens a generated 250-row agent conversation and
+holds what it costs the page to budgets. Every figure is a count taken from the built client, so
+it is the same on a busy runner as on a quiet one, where a duration is not:
+
+| Budget      | What it counts                                                  | What going over means                            |
+| ----------- | --------------------------------------------------------------- | ------------------------------------------------ |
+| `opened`    | Elements in the thread once it has mounted                      | Rows far from the reader hold more than they did |
+| `read`      | Elements after scrolling back through every row                 | Every row is heavier                             |
+| `step`      | Rows added in one frame while the thread mounts                 | The thread arrives in fewer, longer commits      |
+| `listeners` | Listeners on `document` and `window` after reading every row    | Something listens once per row                   |
+| `frame`     | Component renders in one streamed frame of a reply              | Each frame of a reply renders more               |
+| `around`    | Of those, the renders outside every row                         | The page around the thread renders per frame     |
+| `earlier`   | Renders inside rows that were already there, over a whole reply | Rows that did not change render again            |
+
+The thread comes from `buildThread(rows)` in `e2e/specs/mock/thread.ts`: the same parts in the
+same order on every machine, in the mix of a real working session (mostly tool calls under
+activity labels and phases, reasoning between them, user turns long enough to collapse).
+`seedThread(rows)` stores it as a conversation on the mock provider. The counting helpers are in
+`e2e/specs/mock/counts.ts`; `installCounts(page)` has to run before the page loads. Elements are
+counted inside the thread only, and the scenarios clear the user's other conversations first:
+what the sidebar holds depends on the tests that ran before, and each conversation listed there
+listens on the window.
+
+A run prints `thread budgets (measured/budget): ...` and records each figure as an annotation on
+the test. Each budget sits a little above today's figure. When a change goes over one, find out
+what it added before touching the number: raise a budget only for a cost the change means to add,
+and say so in the pull request. Lower a budget in the change that brings its figure down, so the
+gain is kept.
+
 ## Property-based browser testing
 
 Bombadil explores randomized sequences across the core chat loop, message branches,

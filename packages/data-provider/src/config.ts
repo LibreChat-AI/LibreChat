@@ -199,6 +199,7 @@ export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnl
   'registration.oauthStateTtlMs': 'startup',
   'endpoints.agents.subagentActivity': 'startup',
   'endpoints.agents.eventDriven': 'startup',
+  'endpoints.agents.events': 'operator',
   'endpoints.agents.channels.slackApp': 'operator',
   'endpoints.agents.backgroundTasks.shutdownInterruptGraceMs': 'startup',
   'endpoints.agents.backgroundTasks.completionResultBatchSize': 'startup',
@@ -673,6 +674,14 @@ const pullRequestTokenReferenceSchema = z
     message: 'must be an environment variable reference like ${GITHUB_PULL_REQUEST_TOKEN}',
   });
 
+/** `${NAME}`: the environment variable holding a GitHub App credential, never the value itself. */
+const agentEventReferenceSchema = z
+  .string()
+  .trim()
+  .regex(/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/, {
+    message: 'must be an environment variable reference like ${GITHUB_APP_WEBHOOK_SECRET}',
+  });
+
 export const skillSyncGitHubSourceSchema = z
   .object({
     id: skillSyncIdentifierSchema,
@@ -896,6 +905,7 @@ export enum AgentCapabilities {
   web_search = 'web_search',
   artifacts = 'artifacts',
   subagents = 'subagents',
+  subagent_graphs = 'subagent_graphs',
   actions = 'actions',
   context = 'context',
   skills = 'skills',
@@ -1847,6 +1857,7 @@ export const DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS = 300_000;
 /** Below the idle cutoff of common proxies (nginx 60 s, Cloudflare 100 s), so a
  * stream that is silent while a tool runs is not closed underneath the client. */
 export const DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS = 25_000;
+export const DEFAULT_REDIS_FINALIZATION_RECOVERY_TIMEOUT_MS: number = 30_000;
 export const DEFAULT_CACHE_CLEAR_TIMEOUT_MS = 1000;
 
 /** Deployment tuning cannot remove the parser's deadline or process admission ceiling. */
@@ -2039,6 +2050,13 @@ export const agentsEndpointSchema = baseEndpointSchema
           message: 'Use 0 to disable, or at least 1000 ms',
         })
         .default(DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS),
+      /** Shared Redis retry window after the first terminalization or drain failure; 0 disables retries. */
+      redisFinalizationRecoveryTimeoutMs: z
+        .number()
+        .int()
+        .min(0)
+        .max(300_000)
+        .default(DEFAULT_REDIS_FINALIZATION_RECOVERY_TIMEOUT_MS),
       /** Graph steps an agent run may take; a run with fewer than 1 cannot take a step. */
       recursionLimit: z.number().int().min(1).optional(),
       disableBuilder: z.boolean().optional().default(false),
@@ -2404,6 +2422,45 @@ export const agentsEndpointSchema = baseEndpointSchema
                 .max(300_000)
                 .optional()
                 .default(60_000),
+            })
+            .optional(),
+        })
+        .optional(),
+      /** Agent events: deliveries an outside service signs and posts, such as a review on a pull
+       *  request, read into the events an agent can be subscribed to. Off unless `enabled` is
+       *  true. Read from librechat.yaml only: the credentials named here belong to the whole
+       *  deployment, so no config document can change where they are sent. */
+      events: z
+        .object({
+          /** Turn on only once every replica runs a version that knows event subscriptions: an
+           *  older replica would run a subscription's delivery without its grant. */
+          enabled: z.boolean().optional().default(false),
+          /** Bounds on what one delivery becomes; each default is used when the field is unset. */
+          limits: z
+            .object({
+              /** Longest copy of a review's or a comment's text kept from a delivery, in
+               *  characters. The turn links to the full text. Default 2000. */
+              excerpt: z.number().int().min(16).max(65_536).optional(),
+              /** Most pull requests one finished check suite becomes events for. Default 10. */
+              fanout: z.number().int().min(1).max(100).optional(),
+            })
+            .optional(),
+          /** The GitHub App the operator registered for events: one app, one webhook secret and
+           *  one webhook URL for the deployment. The same app may also be the OAuth client of
+           *  `pullRequests`. */
+          github: z
+            .object({
+              /** Environment variable references, never the values. `appId` is the app's ID or
+               *  its client ID; `privateKey` is the PEM the app's settings page generated, with
+               *  its line breaks kept or written as `\n`. */
+              appId: agentEventReferenceSchema,
+              privateKey: agentEventReferenceSchema,
+              webhookSecret: agentEventReferenceSchema,
+              /** The host the app is registered on: `github.com` by default, a GitHub Enterprise
+               *  Server host or a `*.ghe.com` tenant otherwise. */
+              host: pullRequestHostSchema.optional(),
+              /** Longest one request to GitHub may take, in seconds. Default 10. */
+              requestTimeoutSeconds: z.number().int().min(1).max(60).optional(),
             })
             .optional(),
         })
@@ -3499,9 +3556,9 @@ export const interfaceSchema = z
      *  page (`true`), directly under the composer (`composer`), or not at all (`false`). A
      *  configured `customFooter` still renders when this is false. */
     landingFooter: z.union([z.boolean(), z.literal('composer')]).optional(),
-    /** Who a response names above its content: every author (`always`), or only an agent other
-     *  than the one the header's model selector already shows (`whenDifferent`), which drops the
-     *  avatar and name row from that agent's responses. */
+    /** Who a response names above its content: every author (`always`), or only an author other
+     *  than the agent, model spec or model the header's model selector already shows
+     *  (`whenDifferent`), which drops the avatar and name row from that author's responses. */
     messageAuthor: z.enum(['always', 'whenDifferent']).optional(),
     /** Shows the endpoint, agent or assistant icon on each row of the sidebar chat history. Set to
      *  false for a deployment where every chat uses the same one and the icon only adds noise. A
@@ -3624,6 +3681,13 @@ export const interfaceSchema = z
         create: z.boolean().optional(),
         share: z.boolean().optional(),
         public: z.boolean().optional(),
+      })
+      .optional(),
+    /** Seeds the AGENT_EVENTS role permissions at startup: who may subscribe agents to events. */
+    agentEvents: z
+      .object({
+        use: z.boolean().optional(),
+        create: z.boolean().optional(),
       })
       .optional(),
     skills: z
@@ -3856,6 +3920,10 @@ export const interfaceSchema = z
       create: false,
       share: false,
       public: false,
+    },
+    agentEvents: {
+      use: false,
+      create: false,
     },
     skills: {
       use: true,

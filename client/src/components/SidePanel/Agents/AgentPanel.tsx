@@ -47,6 +47,7 @@ import { useAgentPanelContext } from '~/Providers/AgentPanelContext';
 import { resolveCapabilityTools } from './Tools/items/capabilities';
 import { useModelCatalog } from '~/data-provider/Endpoints/models';
 import ResetApprovals from '~/components/Agents/ResetApprovals';
+import { LoadError } from './InstructionsPromptFields';
 import AgentPanelSkeleton from './AgentPanelSkeleton';
 import AdvancedPanel from './Advanced/AdvancedPanel';
 import { Panel, isEphemeralAgent } from '~/common';
@@ -54,6 +55,7 @@ import AgentConfig from './AgentConfig';
 import AgentSelect from './AgentSelect';
 import AgentFooter from './AgentFooter';
 import ModelPanel from './ModelPanel';
+import Events from './Events/Events';
 import Channels from './Channels';
 
 /* Helpers */
@@ -476,6 +478,14 @@ export default function AgentPanel() {
     permissionType: PermissionTypes.REMOTE_AGENTS,
     permission: Permissions.USE,
   });
+  const canUseEvents = useHasAccess({
+    permissionType: PermissionTypes.AGENT_EVENTS,
+    permission: Permissions.USE,
+  });
+  const canCreateEvents = useHasAccess({
+    permissionType: PermissionTypes.AGENT_EVENTS,
+    permission: Permissions.CREATE,
+  });
   const { showToast } = useToastContext();
   const {
     activePanel,
@@ -542,14 +552,14 @@ export default function AgentPanel() {
    *  the editor for a linked agent even without ACL EDIT on it. */
   const hasEditorAccess = canEdit || user?.role === SystemRoles.ADMIN;
 
+  const isPersistedAgent = Boolean(current_agent_id) && !isEphemeralAgent(current_agent_id);
   const expandedAgentQuery = useGetExpandedAgentByIdQuery(current_agent_id ?? '', {
-    enabled: !isEphemeralAgent(current_agent_id) && hasEditorAccess && !permissionsLoading,
+    enabled: isPersistedAgent && hasEditorAccess && !permissionsLoading,
   });
 
   const agentQuery =
     hasEditorAccess && expandedAgentQuery.data ? expandedAgentQuery : basicAgentQuery;
 
-  const isPersistedAgent = Boolean(current_agent_id) && !isEphemeralAgent(current_agent_id);
   /** `instructionsPrompt` only ever arrives on the expanded query. A persisted,
    *  editable agent stays in a disabled loading (or error) state here until that
    *  query resolves, instead of briefly reading a linked agent as unlinked. */
@@ -686,6 +696,11 @@ export default function AgentPanel() {
     [getValues, uploadAvatarMutation],
   );
   const agent_id = useWatch({ control, name: 'id' });
+  const selectionReady = !isPersistedAgent || agent_id === current_agent_id;
+  // The builder's fields subscribe after reset installs this selection's values.
+  const basicFailed = basicAgentQuery.isError && !basicAgentQuery.data;
+  const selectionFailed = !selectionReady && (basicFailed || instructionsPromptStatus === 'error');
+  const selectionLoading = !selectionReady && !selectionFailed;
   const previousVersionRef = useRef<number | undefined>();
   const submittedDirtyRef = useRef(false);
   const submittedRef = useRef<{ payload?: AgentUpdateParams; previous?: Agent }>({});
@@ -900,6 +915,9 @@ export default function AgentPanel() {
 
   const onSubmit = useCallback(
     async (data: AgentForm) => {
+      if (!selectionReady) {
+        return;
+      }
       const tools = Array.from(new Set([...(data.tools ?? []), ...resolveCapabilityTools(data)]));
 
       /** A persisted agent whose expanded query hasn't resolved (or failed) carries no
@@ -1002,6 +1020,7 @@ export default function AgentPanel() {
       instructionsPromptStatus,
       models,
       isProviderReady,
+      selectionReady,
       update,
       showToast,
       startupConfig,
@@ -1046,6 +1065,19 @@ export default function AgentPanel() {
       />
     ) : null;
 
+  /** Each user of the agent subscribes it for themselves, so editing it is not required. */
+  const eventsSection =
+    activePanel === Panel.builder &&
+    !agentQuery.isInitialLoading &&
+    Boolean(user?.id) &&
+    canUseAgents &&
+    canUseEvents ? (
+      <Events
+        agentId={isPersistedAgent ? current_agent_id! : undefined}
+        canCreate={canCreateEvents}
+      />
+    ) : null;
+
   return (
     <FormProvider {...methods}>
       <form
@@ -1062,7 +1094,7 @@ export default function AgentPanel() {
                 setCurrentAgentId={setCurrentAgentId}
                 selectedAgentId={agentQuery.isInitialLoading ? null : (current_agent_id ?? null)}
                 defaultStatefulCodeEnvironment={defaultStatefulCodeEnvironment}
-                instructionsPromptReady={instructionsPromptStatus === 'ready'}
+                formReady={!permissionsLoading && instructionsPromptStatus === 'ready'}
               />
             </div>
             {agent_id && (
@@ -1083,7 +1115,9 @@ export default function AgentPanel() {
                 </Button>
                 <Button
                   variant="submit"
-                  disabled={isEphemeralAgent(agent_id) || agentQuery.isInitialLoading}
+                  disabled={
+                    !selectionReady || isEphemeralAgent(agent_id) || agentQuery.isInitialLoading
+                  }
                   onClick={(e) => {
                     e.preventDefault();
                     handleSelectAgent();
@@ -1095,7 +1129,14 @@ export default function AgentPanel() {
               </div>
             )}
           </div>
-          {agentQuery.isInitialLoading && <AgentPanelSkeleton />}
+          {(agentQuery.isInitialLoading || selectionLoading) && <AgentPanelSkeleton />}
+          {selectionFailed && (
+            <LoadError
+              messageKey="com_agents_error_title"
+              onRetry={basicFailed ? () => void basicAgentQuery.refetch() : retryInstructionsPrompt}
+              retrying={basicFailed ? basicAgentQuery.isFetching : expandedAgentQuery.isFetching}
+            />
+          )}
           {!canEditAgent && !agentQuery.isInitialLoading && (
             <div
               className={
@@ -1117,50 +1158,59 @@ export default function AgentPanel() {
               </div>
             </div>
           )}
-          {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.model && (
-            <>
-              <ModelPanel
-                models={models}
-                providers={providers}
-                modelsError={modelsError}
-                modelsReady={modelsReady}
-                setActivePanel={setActivePanel}
+          {canEditAgent &&
+            selectionReady &&
+            !agentQuery.isInitialLoading &&
+            activePanel === Panel.model && (
+              <>
+                <ModelPanel
+                  models={models}
+                  providers={providers}
+                  modelsError={modelsError}
+                  modelsReady={modelsReady}
+                  setActivePanel={setActivePanel}
+                />
+                {providerEndpoints.map((endpoint) => {
+                  const query = modelsQuery.endpointQueries[endpoint];
+                  if (!query?.isError) {
+                    return null;
+                  }
+                  return (
+                    <Button
+                      key={endpoint}
+                      type="button"
+                      variant="outline"
+                      disabled={query.isFetching}
+                      onClick={() => {
+                        void query.refetch();
+                      }}
+                    >
+                      {localize('com_ui_retry')} ({endpoint})
+                    </Button>
+                  );
+                })}
+              </>
+            )}
+          {canEditAgent &&
+            selectionReady &&
+            !agentQuery.isInitialLoading &&
+            activePanel === Panel.builder && (
+              <AgentConfig
+                instructionsPromptStatus={instructionsPromptStatus}
+                onRetryInstructionsPrompt={retryInstructionsPrompt}
+                channels={channelsSection}
+                events={eventsSection}
               />
-              {providerEndpoints.map((endpoint) => {
-                const query = modelsQuery.endpointQueries[endpoint];
-                if (!query?.isError) {
-                  return null;
-                }
-                return (
-                  <Button
-                    key={endpoint}
-                    type="button"
-                    variant="outline"
-                    disabled={query.isFetching}
-                    onClick={() => {
-                      void query.refetch();
-                    }}
-                  >
-                    {localize('com_ui_retry')} ({endpoint})
-                  </Button>
-                );
-              })}
-            </>
-          )}
-          {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.builder && (
-            <AgentConfig
-              instructionsPromptStatus={instructionsPromptStatus}
-              onRetryInstructionsPrompt={retryInstructionsPrompt}
-              channels={channelsSection}
-            />
-          )}
+            )}
           {/* Without the editor the builder is not drawn, so a sharer still gets the section here. */}
           {!canEditAgent && channelsSection}
-          {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.advanced && (
-            <AdvancedPanel />
-          )}
+          {!canEditAgent && eventsSection}
+          {canEditAgent &&
+            selectionReady &&
+            !agentQuery.isInitialLoading &&
+            activePanel === Panel.advanced && <AdvancedPanel />}
         </div>
-        {canEditAgent && !agentQuery.isInitialLoading && (
+        {canEditAgent && selectionReady && !agentQuery.isInitialLoading && (
           <AgentFooter
             createMutation={create}
             updateMutation={update}

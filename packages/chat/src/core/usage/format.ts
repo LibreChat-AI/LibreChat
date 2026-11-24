@@ -1,3 +1,5 @@
+import { CREDITS_PER_USD } from 'librechat-data-provider';
+import type { BalanceDisplay } from 'librechat-data-provider';
 import { normalizeTokenCount } from './types';
 
 let tokenFormatter: Intl.NumberFormat | undefined;
@@ -116,4 +118,18 @@ export function formatCost(usd: number, currency: CurrencyConfig = DEFAULT_CURRE
     return currencyFormatter(code, base, base + 2).format(amount);
   }
   return currencyFormatter(code, base, base).format(amount);
+}
+
+/** A credit amount in the configured display: money for `currency`, whole credits otherwise. */
+export function formatBalanceAmount(
+  credits: number,
+  display: BalanceDisplay,
+  currency?: CurrencyConfig,
+): string {
+  if (display === 'currency') {
+    return formatCost(credits / CREDITS_PER_USD, currency);
+  }
+  /** Credits are fractional when pricing multipliers are; two places keep a shortfall like
+   *  100.4 against 100.3 visible, and whole amounts still print without decimals */
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(credits);
 }

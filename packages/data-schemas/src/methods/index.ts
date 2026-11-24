@@ -22,7 +22,11 @@ import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
 import type { ClearFileCodeEnvRefsParams } from '~/types/file';
 import type { FileStorageMethods } from './fileStorage';
 import { createToolApprovalGrantMethods } from './toolApprovalGrant';
-export { createScheduleMCPConsentStorage, createAgentKeyMCPConsentStorage } from './runGrant';
+export {
+  createScheduleMCPConsentStorage,
+  createAgentKeyMCPConsentStorage,
+  createSubscriptionGrantStorage,
+} from './runGrant';
 export type {
   RunGrantStorage,
   RunGrantSnapshot,
@@ -394,6 +398,8 @@ export interface CreateMethodsDeps {
   getMCPAppMessageBudget?: () => Promise<number | undefined>;
   /** Recognizes agent skill IDs supplied by an external, non-database registry. */
   isExternalSkillId?: AgentDeps['isExternalSkillId'];
+  /** Whether the deployment serves shared links; omitted means enabled. */
+  allowSharedLinks?: boolean;
 }
 
 /**
@@ -438,6 +444,7 @@ export function createMethods(
   });
 
   const conversationMethods = createConversationMethods(mongoose, {
+    allowSharedLinks: deps.allowSharedLinks,
     getMessages: messageMethods.getMessages,
     deleteMessages: messageMethods.deleteMessages,
     searchMessages: messageMethods.searchMessages,

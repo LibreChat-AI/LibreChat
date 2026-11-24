@@ -1,5 +1,6 @@
 const {
   createAgentTriggerService,
+  createDeadLetters,
   createCheckpointDeletionReclaimer,
   createAgentContinuationResolver,
   createAgentEventContinueResolver,
@@ -113,6 +114,7 @@ module.exports = {
   getAgentTriggerDelivery: service.getDelivery,
   getAgentTriggerDeliveryStatus: service.getDeliveryStatus,
   getAgentTriggerDeadLetters: service.getDeadLetters,
+  agentTriggerDeadLetters: createDeadLetters({ methods, requeue: service.requeue }),
   requeueAgentTrigger: service.requeue,
   retireAgentTrigger: service.retire,
   renewAgentTriggerProducerLease: service.renewProducerLease,

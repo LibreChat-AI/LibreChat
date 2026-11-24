@@ -115,6 +115,7 @@ const noop = () => {};
 type UploadRecovery = UploadLifecycleCallbacks & {
   status: 'staged' | 'uploading' | 'settled' | 'canceled';
   dispose?: () => void;
+  dismissWarning?: () => void;
   body?: FormData;
   controller?: AbortController;
   composerIndex?: number;
@@ -125,6 +126,11 @@ const uploadErrorCallbacks = new Map<string, UploadRecovery>();
 const canceledUploadBodies = new WeakSet<FormData>();
 const uploadSignals = new WeakMap<FormData, AbortSignal>();
 
+const dismissUploadWarning = (recovery: UploadRecovery): void => {
+  recovery.dismissWarning?.();
+  recovery.dismissWarning = undefined;
+};
+
 const takeUploadRecovery = (fileId: string, body?: FormData): UploadRecovery | undefined => {
   const callbacks = uploadErrorCallbacks.get(fileId);
   if (body && callbacks?.body !== body) {
@@ -133,6 +139,7 @@ const takeUploadRecovery = (fileId: string, body?: FormData): UploadRecovery | u
   uploadErrorCallbacks.delete(fileId);
   if (callbacks) {
     callbacks.status = 'settled';
+    dismissUploadWarning(callbacks);
   }
   return callbacks;
 };
@@ -152,6 +159,7 @@ const failUploadRecovery = (fileId: string, body?: FormData): UploadRecovery | u
   if (body && recovery?.body !== body) return undefined;
   if (recovery?.preserveOnError && recovery.isCurrent?.() !== false) {
     recovery.status = 'settled';
+    dismissUploadWarning(recovery);
     return undefined;
   }
   return takeUploadRecovery(fileId, body);
@@ -244,7 +252,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
   const queryClient = useQueryClient();
   const { showToast } = useToastContext();
   const [errors, setErrors] = useState<string[]>([]);
-  const { startUploadTimer, clearUploadTimer } = useDelayedUploadToast();
+  const startUploadWarning = useDelayedUploadToast();
   const { files, setFiles, conversation, index = 0 } = fileState;
   const owner = useMemo(
     () => ({ index, fileSetter: params?.fileSetter }),
@@ -417,7 +425,6 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
         }
         recovery.onFileSearchSuccess?.();
         recovery?.onSuccess?.(fileId);
-        clearUploadTimer(fileId);
         if (agent_id) {
           queryClient.refetchQueries([QueryKeys.agent, agent_id]);
           return;
@@ -455,7 +462,6 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
         const error = _error as TError | undefined;
         const file_id = body.get('file_id') as string;
         const uploadLifecycle = failUploadRecovery(file_id, body);
-        clearUploadTimer(file_id);
         if (!uploadLifecycle) {
           return;
         }
@@ -542,9 +548,10 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
 
   const uploadWithRecovery = (
     formData: FormData,
-    file_id: string,
+    extendedFile: ExtendedFile,
     uploadLifecycle: UploadRecovery,
   ) => {
+    const { file_id, file, pastedText, size } = extendedFile;
     /* Capture the originating conversation's setter, not the mutation observer's
      * current conversation. Removal clears this callback before any late success. */
     if (!canStageUpload(file_id, uploadLifecycle)) {
@@ -577,6 +584,9 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
       return;
     }
     if (callbacks.status === 'uploading') {
+      if (pastedText == null) {
+        callbacks.dismissWarning = startUploadWarning(file?.name ?? 'File', size);
+      }
       uploadFile.mutate(formData);
     }
   };
@@ -586,9 +596,6 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
       return;
     }
     const filename = extendedFile.file?.name ?? 'File';
-    if (extendedFile.pastedText == null) {
-      startUploadTimer(extendedFile.file_id, filename, extendedFile.size);
-    }
 
     const formData = new FormData();
     formData.append('endpoint', endpoint);
@@ -643,7 +650,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
         formData.append('agent_id', conversation.agent_id);
       }
 
-      uploadWithRecovery(formData, extendedFile.file_id, uploadLifecycle);
+      uploadWithRecovery(formData, extendedFile, uploadLifecycle);
       return;
     }
 
@@ -673,7 +680,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
       formData.append('model', convoModel);
     }
 
-    uploadWithRecovery(formData, extendedFile.file_id, uploadLifecycle);
+    uploadWithRecovery(formData, extendedFile, uploadLifecycle);
   };
 
   const loadImage = (
@@ -848,7 +855,7 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
             filesRef.current = remaining;
           }
         }
-        clearUploadTimer(file_id);
+        dismissUploadWarning(recovery);
         if (currentPreview) URL.revokeObjectURL(currentPreview);
       };
       try {

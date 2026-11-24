@@ -1,5 +1,13 @@
 /** Themed message and part components. Populated as the components move in. */
 export { Part } from './components/Part';
+export { ContentParts } from './components/ContentParts';
+export { contentPartsRenderer } from './components/contentRenderer';
+export type {
+  ContentEditProps,
+  ContentPartsProps,
+  ContentPartsSlots,
+  SubagentAttachmentCallsResult,
+} from './components/contentTypes';
 export { partRenderers, extendPartRenderers } from './components/partRenderers';
 export { ParallelColumns, ParallelContentRenderer } from './components/Parallel';
 export {
@@ -374,7 +382,7 @@ export type {
   ToolCallGroupExpansionState,
 } from './components/parts/ToolCallGroup';
 export type { StackedToolIconsProps } from './components/parts/StackedToolIcons';
-export { default as FaviconImage } from './components/parts/Favicon';
+export { default as FaviconImage, StackedFavicons } from './components/parts/Favicon';
 export { default as OutputRenderer } from './components/parts/OutputRenderer';
 export type { OutputRendererProps, OutputSegment } from './components/parts/OutputRenderer';
 export { default as ToolCallInfo } from './components/parts/ToolCallInfo';
@@ -452,8 +460,13 @@ export {
   ReasoningMarker,
   StreamingThoughtPeek,
 } from './components/parts/Reasoning';
-export { default as WebSearch } from './components/parts/WebSearch';
-export type { WebSearchFailedCall, WebSearchStackProps } from './components/parts/WebSearch';
+export { default as WebSearch, WebSearchCall } from './components/parts/WebSearch';
+export type {
+  WebSearchProps,
+  WebSearchCallProps,
+  WebSearchFailedCall,
+  WebSearchStackProps,
+} from './components/parts/WebSearch';
 export {
   collectSources,
   getCleanDomain,

@@ -20,6 +20,7 @@ import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { ReplayLimits, ReplayPublication } from '../internal/replay';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
+import type { RedisFinalizationRecovery } from '../redisOutage';
 import type { RecoveredSteerPayload } from '../SteerRecovery';
 import type { AuthoredSkillBinding } from '~/agents/authored';
 import type { RunTrigger } from '~/agents/authority/trigger';
@@ -96,7 +97,11 @@ export const PAUSE_PERSISTENCE_TIMEOUT_ERROR = 'Paused response persistence time
 /** Maximum time a terminal provider owner may remain undrained before its
  * process is treated as lost. Terminal host settlement retains the last
  * durable evidence through this grace period, then releases the lane from a
- * crashed owner instead of refreshing its fence forever. */
+ * crashed owner instead of refreshing its fence forever. A replacement
+ * generation gives a terminal predecessor's drain the same period, counted
+ * from the predecessor's `completedAt` when its receipt carries one and from
+ * the start of the handoff otherwise, then starts. Neither applies to a
+ * schedule-owned generation, which waits for a confirmed owner termination. */
 export const PROVIDER_DRAIN_TIMEOUT_MS = 30_000;
 
 /**
@@ -428,11 +433,14 @@ export type ActiveJobFilter = (job: SerializableJobData) => boolean;
 /** Exact active hash replaced by one atomic job creation. Built-in stores keep
  * this as non-enumerable transaction metadata; Redis also retains a private
  * receipt in the replacement hash so a committed create with a lost reply can
- * reconstruct it without exposing it through normal job serialization. */
+ * reconstruct it without exposing it through normal job serialization.
+ * `completedAt` is absent for a predecessor that was not terminal and on
+ * receipts written before the field existed. */
 export type ReplacedGeneration = Pick<
   SerializableJobData,
   | 'createdAt'
   | 'status'
+  | 'completedAt'
   | 'conversationId'
   | 'providerAbortReady'
   | 'providerExecutionId'
@@ -776,6 +784,8 @@ export interface JobStatusTransition {
   expectCreatedAt?: number;
   /** Fence an old provider segment after the same generation has resumed. */
   expectProviderExecutionId?: string;
+  /** Allow the Redis store to resume this exact persistence-owning terminal CAS. */
+  redisRecovery?: RedisFinalizationRecovery;
   /**
    * Additional guard: reject the transition when the store's clock has reached
    * this absolute deadline. The comparison is part of the same atomic operation
@@ -1256,6 +1266,8 @@ export interface IJobStoreV2 extends IJobStore {
     streamId: string,
     expectedCreatedAt: number,
     finalEvent: string,
+    /** Redis may replay the result only for this exact persistence attempt. */
+    attemptId?: string,
   ): Promise<boolean>;
 
   /**
@@ -1920,6 +1932,7 @@ export interface IEventTransport {
     streamId: string,
     generationId: number,
     providerExecutionId: string,
+    redisRecovery?: RedisFinalizationRecovery,
   ): Promise<boolean>;
   hasProviderDrain?(
     streamId: string,

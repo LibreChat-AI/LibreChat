@@ -56,6 +56,7 @@ const mockMongoAuthentication = {
   deleteAllUserSessions: jest.fn(async () => ({ deletedCount: 2 })),
   deletePasskeysByUser: jest.fn(async () => ({ deletedCount: 1 })),
 };
+const mockPurgeSubscriptions = jest.fn(async () => 0);
 
 jest.mock('../connect', () => jest.fn(async () => undefined));
 jest.mock('mongoose', () => ({ disconnect: jest.fn(async () => undefined) }));
@@ -70,6 +71,7 @@ jest.mock('@librechat/data-schemas', () => ({
   createToolFavoriteMethods: () => mockMongoFavorites,
   runAsSystem: (operation) => operation(),
   tenantStorage: mockTenantStorage,
+  createSubscriptions: () => ({ purge: mockPurgeSubscriptions }),
 }));
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
@@ -389,8 +391,11 @@ describe('Delete user CLI', () => {
         ...mockMethods,
         openCheckpointDeletion: mockOpenCheckpointDeletion,
         deleteSharedLinks: expect.any(Function),
+        deleteSubscriptions: expect.any(Function),
       }),
     );
+    await deps.deleteSubscriptions(USER_ID);
+    expect(mockPurgeSubscriptions).toHaveBeenCalledWith(USER_ID);
     await deps.deleteSharedLinks(USER_ID);
     expect(mockDeleteAllSharedLinksWithCleanup).toHaveBeenCalledWith(USER_ID, {
       awaitCleanup: true,

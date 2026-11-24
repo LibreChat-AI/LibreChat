@@ -5,6 +5,12 @@ import type { AgentRunProtocol } from '../envelope';
 import { readScheduleFireContext } from '~/schedules/trigger';
 import { toDelivery, readRunTrigger } from './trigger';
 
+/**
+ * The source type of a delivery an event subscription matched. Only code inside the server
+ * enqueues one: the public event route stamps every delivery it takes with the API key.
+ */
+export const SUBSCRIPTION_SOURCE = 'subscription';
+
 /** The user whose authority a run exercises. */
 export interface ExecutionPrincipal {
   readonly userId: string;
@@ -85,9 +91,10 @@ function triggered(
       manual,
       resumed,
     }),
-    // As the chat route has always run these: whether a triggered run may publish a sign-in
-    // prompt is not decided here.
-    unattended: false,
+    // Nobody follows a run an outside event started, on any of its turns, so it never asks
+    // for a sign-in. For any other subject the chat route runs these as it always has:
+    // whether such a run may publish a sign-in prompt is not decided here.
+    unattended: trigger.subject?.kind === 'subscription',
   });
 }
 
@@ -98,8 +105,9 @@ function triggered(
  * The delivery is the request's own: its key in the trigger queue and the identity of the
  * event it carried, which the host names in the body of every request it makes. The subject
  * is whoever the event's source names. A schedule's occurrence runs for the schedule. An
- * event an API key posted runs for that key, so the key's grant can be put over the run. A
- * delivery the server made for itself, such as a queued turn, has none.
+ * event an API key posted runs for that key, so the key's grant can be put over the run. An
+ * event a subscription matched runs for the subscription. A delivery the server made for
+ * itself, such as a queued turn, has none.
  *
  * A turn that reports work sent to the background is the exception: its delivery is the
  * server's own, and it acts for whoever the run that began the work acted for. The work
@@ -111,9 +119,9 @@ function triggered(
  * Nothing here is read from a field a caller sets: the public event route stamps the source
  * with the authenticated key, the captured trigger is written and read back by the server,
  * and only the trigger host can make a request that is a trigger. A delivery that names a
- * key as its source without saying which, or without an event to identify it by, is
- * refused, as is a turn whose captured trigger cannot be read, since running either with
- * no context would run it with no grant.
+ * key or a subscription as its source without saying which, or without an event to identify
+ * it by, is refused, as is a turn whose captured trigger cannot be read, since running either
+ * with no context would run it with no grant.
  */
 export function createTriggerExecutionContext(req: TriggerRequest): ExecutionContext | undefined {
   if (req?._isAgentTrigger !== true) return;
@@ -136,6 +144,13 @@ export function createTriggerExecutionContext(req: TriggerRequest): ExecutionCon
     );
   }
   const source = record(event?.source);
+  if (source?.type === SUBSCRIPTION_SOURCE) {
+    const id = typeof source.id === 'string' ? source.id.trim() : '';
+    if (id.length === 0 || !carried)
+      throw new Error('Agent trigger names a subscription as its source without identifying it.');
+    const who = Object.freeze({ kind: 'subscription', id } as const);
+    return triggered(req, body?.agent_id, { subject: who, delivery: carried }, false, false);
+  }
   if (source?.type !== 'remote_api_key') {
     // Only a delivery the server made for itself reports work an earlier run began: a task's
     // wake-up on its completion marker, a suspended actor's resumption on its delivery. One

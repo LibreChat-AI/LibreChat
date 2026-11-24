@@ -61,6 +61,8 @@ export interface UserErasureDeps extends ErasureMethods {
     cfg?: TCheckpointerConfig,
   ) => Promise<CheckpointDeletion>;
   deleteSharedLinks: (userId: string) => Promise<unknown>;
+  /** Removes the user's event subscriptions, and with them the grants they hold. */
+  deleteSubscriptions: (userId: string) => Promise<unknown>;
   /** Removes stored file objects (local disk, S3, Firebase, vector store) before their metadata. */
   deleteStoredFiles: (files: IMongoFile[]) => Promise<Required<FileDeletionOutcome>>;
   /** Runtime cleanup for a removed MCP server; each hook is best effort. */
@@ -392,4 +394,5 @@ export async function eraseUserData(
   await deps.removeUserFromAllGroups(userId);
   await deps.deleteAclEntries({ principalId: userObjectId });
   await deps.deleteSchedulesByUser(userId);
+  await deps.deleteSubscriptions(userId);
 }

@@ -178,7 +178,7 @@ jest.mock('@librechat/client', () => ({
 }));
 jest.mock('~/Providers/AgentsMapContext', () => ({ useAgentsMapContext: () => ({}) }));
 jest.mock('../Files/useDelayedUploadToast', () => ({
-  useDelayedUploadToast: () => ({ startUploadTimer: jest.fn(), clearUploadTimer: jest.fn() }),
+  useDelayedUploadToast: () => jest.fn(),
 }));
 jest.mock('../Files/useClientResize', () => ({
   __esModule: true,

@@ -2,7 +2,6 @@ import { memo } from 'react';
 import { getAskUserQuestionPart } from '@librechat/chat';
 import { Part as ChatPart, partRenderers, extendPartRenderers } from '@librechat/chat/components';
 import {
-  Tools,
   Constants,
   ContentTypes,
   hasToolCallPreview,
@@ -14,15 +13,14 @@ import { ErrorMessage } from './MessageContent';
 import AskUserQuestion from './AskUserQuestion';
 import ToolApproval from './ToolApproval';
 import { SubagentCall } from './Parts';
-import WebSearch from './WebSearch';
 import './toolCallSlots';
 
 /**
  * What this app draws that the chat package's own renderers do not: the cards that read this
- * app's state (a paused question, approval controls, a subagent's agents, search results) and
+ * app's state (a paused question, approval controls, a subagent's agents) and
  * its error message. Every other part is the package's to draw.
  */
-const renderers: PartRenderers = extendPartRenderers({
+export const renderers: PartRenderers = extendPartRenderers({
   claim: ({ part }) => {
     const askUserQuestion = getAskUserQuestionPart(part);
     if (!askUserQuestion) {
@@ -88,26 +86,6 @@ const renderers: PartRenderers = extendPartRenderers({
         />
       );
     },
-    [Tools.web_search]: ({
-      toolCall,
-      attachments,
-      isSubmitting,
-      isLast,
-      hideAttachments,
-      onToolExpand,
-    }) => (
-      <WebSearch
-        args={toolCall.args}
-        output={toolCall.output ?? ''}
-        initialProgress={toolCall.progress ?? 0.1}
-        isSubmitting={isSubmitting}
-        runStepStatus={toolCall.runStepStatus}
-        attachments={attachments}
-        hideAttachments={hideAttachments}
-        isLast={isLast}
-        onExpand={onToolExpand}
-      />
-    ),
   },
   /**
    * Approval controls for ANY paused agent tool, not just the generic card, so a HITL policy

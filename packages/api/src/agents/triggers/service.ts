@@ -202,6 +202,7 @@ export interface AgentTriggerDeliveryPersistence {
   requeueAgentTriggerDelivery: (
     id: string,
     availableAt: Date,
+    scope?: { tenantId: string | undefined; except?: readonly string[] },
   ) => Promise<AgentTriggerStoredRecord | null>;
   countActiveAgentTriggerDeliveriesByUser: (userId: string, now: Date) => Promise<number>;
   recoverAgentTriggerLanePublications: (
@@ -252,7 +253,12 @@ export interface AgentTriggerService {
     tenantId?: string,
   ) => Promise<AgentTriggerDeliveryStatusRecord | null>;
   getDeadLetters: (limit?: number) => Promise<AgentTriggerStoredRecord[]>;
-  requeue: (id: string, availableAt?: Date) => Promise<AgentTriggerStoredRecord | null>;
+  /** With a `scope`, only a dead delivery of that tenant partition is revived, and none from a source in `except`. */
+  requeue: (
+    id: string,
+    availableAt?: Date,
+    scope?: { tenantId: string | undefined; except?: readonly string[] },
+  ) => Promise<AgentTriggerStoredRecord | null>;
   retire: (
     deliveryKey: string,
     sourceId: string,
@@ -833,11 +839,14 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
       ),
     getDeadLetters: (limit) =>
       runAsSystem(async () => requireMethods().getAgentTriggerDeadLetters(limit)),
-    requeue: (id, availableAt = new Date()) =>
+    requeue: (id, availableAt = new Date(), scope) =>
       runAsSystem(async () => {
         const methods = requireMethods();
         const revived = await withMaintenanceRecovery(
-          () => methods.requeueAgentTriggerDelivery(id, availableAt),
+          () =>
+            scope == null
+              ? methods.requeueAgentTriggerDelivery(id, availableAt)
+              : methods.requeueAgentTriggerDelivery(id, availableAt, scope),
           () => purgeRecoveryLoop?.wake(),
         );
         if (revived != null) {

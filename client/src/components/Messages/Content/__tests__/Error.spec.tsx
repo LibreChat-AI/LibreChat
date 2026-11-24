@@ -298,6 +298,35 @@ describe('Error — reader-facing provider and fallback copy', () => {
     expectReadable();
   });
 
+  it.each([
+    [ErrorTypes.MODEL_RATE_LIMIT, 'com_error_model_rate_limit'],
+    [ErrorTypes.MODEL_NOT_FOUND, 'com_error_model_not_found'],
+  ])('keeps a long, multi-line gateway explanation of %s in view', (type, key) => {
+    const info = [
+      'You reached the budget assigned to your team for this month; it resets on the first.',
+      'To keep working now, request a higher budget at https://service.example.com/ai/budget and include your user id, the model you were using and the reason you need more.',
+    ].join('\n');
+    renderError({ type, info });
+
+    expect(info.length).toBeGreaterThan(240);
+    expect(screen.getByText(catalog[key])).toBeInTheDocument();
+    expect(
+      screen.getByText((_, element) => element?.textContent === info && element.tagName === 'DIV'),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole('button', { name: catalog.com_error_details_provider }),
+    ).not.toBeInTheDocument();
+    expectReadable();
+  });
+
+  it('does not promise that waiting clears a rate or spending limit', () => {
+    renderError({ type: ErrorTypes.MODEL_RATE_LIMIT });
+
+    const headline = screen.getByText(catalog.com_error_model_rate_limit);
+    expect(headline.textContent).toMatch(/rate or spending limit/);
+    expect(headline.textContent).not.toMatch(/wait a moment/i);
+  });
+
   it('keeps provider text for a LangChain code without localized copy, minus the URL', () => {
     const raw =
       'An error occurred while processing the request: could not parse output\n\nTroubleshooting URL: https://docs.langchain.com/oss/javascript/langchain/errors/OUTPUT_PARSING_FAILURE/\n';

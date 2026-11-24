@@ -8,6 +8,9 @@ export const DEFAULT_RUN_GRANT_LIFETIME_HOURS = 168;
  */
 export const SCHEDULE_APPROVAL_REASON = 'schedule_owner_approval';
 
+/** The same, for an approval that the owner of an event subscription asked for. */
+export const SUBSCRIPTION_APPROVAL_REASON = 'subscription_owner_approval';
+
 const identifier = z.string().trim().min(1).max(256);
 const timestamp = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const safeUrl = z
@@ -133,8 +136,23 @@ export const agentKeyMCPIdentitySchema = z
   .strict();
 export type AgentKeyMCPIdentity = z.infer<typeof agentKeyMCPIdentitySchema>;
 
-/** A grant's subject: the schedule, or the API key and agent, a run acts for. */
-export type RunGrantIdentity = ScheduledMCPIdentity | AgentKeyMCPIdentity;
+/**
+ * Who a grant made for an event subscription acts for. A subscription is for one agent, so
+ * it holds one grant.
+ */
+export const subscriptionIdentitySchema = z
+  .object({
+    subscriptionId: identifier,
+    ownerId: identifier,
+    tenantId: identifier.nullable(),
+    agentId: identifier,
+    invocationMode: z.literal('delegated'),
+  })
+  .strict();
+export type SubscriptionIdentity = z.infer<typeof subscriptionIdentitySchema>;
+
+/** A grant's subject: the schedule, the API key and agent, or the subscription a run acts for. */
+export type RunGrantIdentity = ScheduledMCPIdentity | AgentKeyMCPIdentity | SubscriptionIdentity;
 
 function consentSchema<Identity extends z.ZodTypeAny>(identity: Identity) {
   return runGrantTargetSchema
@@ -216,6 +234,10 @@ export type ScheduledMCPEnrollment = z.infer<typeof scheduledMCPEnrollmentSchema
 
 export const agentKeyMCPEnrollmentSchema = enrollmentSchema(
   consentSchema(agentKeyMCPIdentitySchema),
+);
+
+export const subscriptionEnrollmentSchema = enrollmentSchema(
+  consentSchema(subscriptionIdentitySchema),
 );
 
 /** One server's part of a grant, for whichever subject holds it. */

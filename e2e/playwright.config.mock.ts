@@ -266,6 +266,12 @@ function writeRuntimeMockConfig() {
     process.env.E2E_MODEL_SPECS_ENFORCE === 'true'
       ? template.replace('\n  enforce: false\n', '\n  enforce: true\n')
       : template;
+  if (process.env.E2E_GRAPH_SUBAGENTS === 'true') {
+    config = config.replace(
+      '    toolApproval:\n      enabled: true',
+      '    toolApproval:\n      enabled: false',
+    );
+  }
   config = config.replace('http://127.0.0.1:8765/mcp', httpMcpPlaceholder);
   if (process.env.E2E_MCP_CONNECTION_STATUS === 'true') {
     config = config.replace(

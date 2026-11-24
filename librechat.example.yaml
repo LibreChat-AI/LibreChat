@@ -226,8 +226,9 @@ interface:
   # hides them. When false, a CUSTOM_FOOTER still renders there, as it does in conversations.
   # landingFooter: true
   # Which responses show the author's avatar and name above their content (default: always).
-  # 'whenDifferent' drops them when the header's model selector already shows that agent; a
-  # response from another agent keeps them. The name stays available to screen readers.
+  # 'whenDifferent' drops them when the header's model selector already shows that agent, model
+  # spec or model; a response from another agent or model spec keeps them. The name stays
+  # available to screen readers.
   # messageAuthor: always
   # Show the endpoint, agent or assistant icon on each sidebar chat history row (default: true).
   # Set to false when every chat uses the same agent and the icon is noise. A running or unread
@@ -972,7 +973,7 @@ endpoints:
   #   # Both require WEB_SEARCH.USE, seeded by interface.webSearch. See UPGRADING.md.
   #   capabilities: ["deferred_tools", "execute_code", "file_search", "web_search", "artifacts", "subagents", "actions", "context", "skills", "memory", "ask_user_question", "tools", "ocr"]
   #   # The following capabilities are opt-in and must be added explicitly:
-  #   # "programmatic_tools", "stateful_code_sessions", "run_in_background", "tool_intents"
+  #   # "programmatic_tools", "stateful_code_sessions", "run_in_background", "tool_intents", "subagent_graphs"
   #   # "stateful_code_sessions" is highly experimental and may change substantially.
   #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
   #   statefulCodeSessions:

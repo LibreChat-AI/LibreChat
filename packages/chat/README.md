@@ -265,9 +265,57 @@ const renderers = extendPartRenderers({
 />;
 ```
 
-Four things have no card in the package yet, because LibreChat's read its own state: an error
-part, a paused question (`claim`), and the subagent and web search tools, which draw as generic
-tool cards until a host supplies them.
+Three things have no card in the package yet, because LibreChat's read its own state: an error
+part, a paused question (`claim`), and the subagent tool, which draws as a generic tool card until
+a host supplies one. A web search draws the package's card, with the message's streaming results
+from `SearchContext` and the image, shopping and place strips under it.
+
+### A whole message
+
+`ContentParts` draws all of a message's parts in order. It folds runs of tool calls into groups
+and finished work into activity phases, lays agents that ran side by side out in columns, keeps
+each file beside the call that wrote it, and holds the streaming cursor on the last thing shown:
+
+```tsx
+import { ContentParts } from '@librechat/chat/components';
+
+<ContentParts
+  content={message.content}
+  messageId={message.messageId}
+  conversationId={conversationId}
+  attachments={attachments}
+  isCreatedByUser={false}
+  isLast
+  isSubmitting={isStreaming}
+  isLatestMessage
+  showThinking={false}
+/>;
+```
+
+That is enough to draw a message. What a host adds goes in `slots`, one object that must stay the
+same for the life of the tree (two of its members are hooks):
+
+| Slot                         | What it adds                                                       | Without it                                  |
+| ---------------------------- | ------------------------------------------------------------------ | ------------------------------------------- |
+| `renderers`                  | The host's part table, from `extendPartRenderers`                  | The package's cards                         |
+| `renderApp`                  | One MCP App as a row after the part whose call returned it         | No App rows                                 |
+| `useAppsEnabled`             | A hook: whether the reader may run MCP Apps                        | `renderApp` alone decides                   |
+| `renderAppViews`             | The MCP Apps among the files of a tool group or a phase            | Those files draw as files only              |
+| `renderWorkspaceChanges`     | The files an agent changed in a stateful workspace, once a message | They stay beside the calls that wrote them  |
+| `renderEdit`                 | The message in edit mode                                           | A message asked to edit draws read-only     |
+| `renderSources`              | Web search sources above a reply that splits into columns          | No sources row                              |
+| `renderColumnHeader`         | The header of one column                                           | Columns have no header                      |
+| `useSubagentAttachmentCalls` | A hook that asks which subagent transcript holds a late file       | The file stays with the call matching by id |
+
+The package's own surfaces that nest a message, such as a subagent's transcript, draw it through
+the host's `renderContentParts`. A host that leaves it out gets `ContentParts` with no slots
+there. To give those surfaces the same slots, build the member from them:
+
+```tsx
+import { contentPartsRenderer } from '@librechat/chat/components';
+
+const host = { ...rest, renderContentParts: contentPartsRenderer(slots) };
+```
 
 ## What the app supplies
 

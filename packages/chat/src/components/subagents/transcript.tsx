@@ -22,6 +22,7 @@ import { useChatSurface } from '../../react/subagents/surface';
 import { useSubagentsHost } from '../../react/subagents/host';
 import MessageTimestamp from '../messages/MessageTimestamp';
 import ScrollToBottom from '../messages/ScrollToBottom';
+import { renderContentParts } from '../contentRenderer';
 import { useMessagePartsHost } from '../../react/host';
 import EmptyText from '../EmptyText';
 
@@ -486,7 +487,7 @@ export function SubagentActivityContent({
   } else {
     body = (
       <ToolContentQueryContext.Provider value={toolContentQuery ?? null}>
-        {host.renderContentParts({
+        {(host.renderContentParts ?? renderContentParts)({
           content: parts,
           messageId: activity.messageId ?? activityId ?? 'subagent-activity-panel',
           conversationId,

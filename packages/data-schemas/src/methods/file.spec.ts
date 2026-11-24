@@ -3378,6 +3378,109 @@ describe('File Methods', () => {
       expect(rewritten?.updatedAt).not.toEqual(stamp);
     });
 
+    describe('content versus bookkeeping writes', () => {
+      const stamp = new Date('2020-01-01T00:00:00.000Z');
+
+      async function seed(): Promise<string> {
+        const fileId = uuidv4();
+        await fileMethods.createFile({
+          file_id: fileId,
+          user: new mongoose.Types.ObjectId(),
+          filename: 'notes.txt',
+          filepath: '/uploads/notes.txt',
+          type: 'text/plain',
+          bytes: 100,
+          text: 'original',
+        });
+        await File.updateOne(
+          { file_id: fileId },
+          { $set: { updatedAt: stamp } },
+          { timestamps: false },
+        );
+        return fileId;
+      }
+
+      it('writes bookkeeping fields without advancing updatedAt', async () => {
+        const fileId = await seed();
+        const retryAt = new Date('2030-01-01T00:00:00.000Z');
+        const digest = { source: 'local', sha256: 'a'.repeat(64), bytes: 100 };
+
+        const updated = await fileMethods.updateFile({
+          file_id: fileId,
+          usage: 3,
+          deletionAttempts: 2,
+          deletionRetryAt: retryAt,
+          metadata: { workspaceImports: { digest } },
+        });
+
+        expect(updated?.usage).toBe(3);
+        expect(updated?.deletionAttempts).toBe(2);
+        expect(updated?.deletionRetryAt).toEqual(retryAt);
+        expect(updated?.metadata?.workspaceImports).toEqual({ digest });
+        expect(updated?.expiresAt).toBeUndefined();
+        expect(updated?.updatedAt).toEqual(stamp);
+      });
+
+      it('does not advance updatedAt for fields that write nothing', async () => {
+        const fileId = await seed();
+
+        const updated = await fileMethods.updateFile({
+          file_id: fileId,
+          text: undefined,
+          metadata: {},
+          embeddingOwnersComplete: true,
+        });
+
+        expect(updated?.text).toBe('original');
+        expect(updated?.updatedAt).toEqual(stamp);
+      });
+
+      it('advances updatedAt when a content field is written beside bookkeeping', async () => {
+        const fileId = await seed();
+
+        const updated = await fileMethods.updateFile({
+          file_id: fileId,
+          usage: 4,
+          status: 'failed',
+          previewError: 'orphaned',
+        });
+
+        expect(updated?.status).toBe('failed');
+        expect(updated?.updatedAt).not.toEqual(stamp);
+      });
+
+      it('advances updatedAt for content metadata and embedding owners', async () => {
+        const routed = await seed();
+        const routedUpdate = await fileMethods.updateFile({
+          file_id: routed,
+          metadata: { routingMimeType: 'text/markdown' },
+        });
+        expect(routedUpdate?.updatedAt).not.toEqual(stamp);
+
+        const owned = await seed();
+        const ownedUpdate = await fileMethods.updateFile({
+          file_id: owned,
+          metadata: { embeddedEntities: ['agent_a'] },
+        });
+        expect(ownedUpdate?.metadata?.embeddedEntities).toEqual(['agent_a']);
+        expect(ownedUpdate?.updatedAt).not.toEqual(stamp);
+      });
+
+      it('leaves the record untouched when the conditional filter excludes it', async () => {
+        const fileId = await seed();
+
+        const updated = await fileMethods.updateFile(
+          { file_id: fileId, usage: 9, status: 'failed' },
+          { status: 'pending' },
+        );
+
+        expect(updated).toBeNull();
+        const stored = await File.findOne({ file_id: fileId }).lean<IMongoFile>();
+        expect(stored?.usage).toBe(0);
+        expect(stored?.updatedAt).toEqual(stamp);
+      });
+    });
+
     /* The optional `extraFilter` enables conditional updates — used by
      * the deferred-preview render's `finalizePreview` to guard against
      * an older render of the same `file_id` overwriting a newer turn's

@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { isCodeWorkspaceSelectionErrorReason } from 'librechat-data-provider';
+import { codeWorkspaceErrorKeys as workspaceErrorKeys } from '@librechat/chat';
 import type { CodeWorkspaceSelectionErrorReason } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 
@@ -23,14 +24,11 @@ export const getResponseStatus = (error: unknown): number | undefined => {
 
 export const isNotFoundError = (error: unknown): boolean => getResponseStatus(error) === 404;
 
-export const codeWorkspaceErrorKeys: Record<CodeWorkspaceSelectionErrorReason, TranslationKeys> = {
-  required: 'com_error_code_workspace_required',
-  invalid: 'com_error_code_workspace_invalid',
-  worker_unavailable: 'com_error_code_workspace_worker_unavailable',
-  unsupported: 'com_error_code_workspace_unsupported',
-  missing: 'com_error_code_workspace_missing',
-  locked: 'com_error_code_workspace_locked',
-};
+/** The package's sentence keys for a refused workspace selection, typed as this app's keys. */
+export const codeWorkspaceErrorKeys = workspaceErrorKeys as Record<
+  CodeWorkspaceSelectionErrorReason,
+  TranslationKeys
+>;
 
 /** Reads the workspace rejection reason a failed request carried, when the server sent one. */
 export const getCodeWorkspaceErrorReason = (

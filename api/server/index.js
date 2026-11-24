@@ -83,6 +83,7 @@ const { connectDb, indexSync } = require('~/db');
 const {
   updateAccessPermissions,
   sweepOrphanedPreviews,
+  getPartitionRole,
   getRoleByName,
   seedDatabase,
   initializeFavorites,
@@ -334,6 +335,7 @@ const startServer = async () => {
       getRoleByName,
       updateAccessPermissions,
       recordAuditEntry,
+      getPartitionRole,
     });
   });
 
@@ -491,6 +493,7 @@ const startServer = async () => {
   app.use('/api/admin/skills', routes.adminSkills);
   app.use('/api/admin/users', routes.adminUsers);
   app.use('/api/admin/audit-log', routes.adminAuditLog);
+  app.use('/api/admin/events', routes.adminEvents);
   app.use('/api/actions', routes.actions);
   app.use('/api/keys', routes.keys);
   app.use('/api/api-keys', routes.apiKeys);
@@ -521,6 +524,8 @@ const startServer = async () => {
   app.use('/api/share', preAuthTenantMiddleware, routes.share);
   app.use('/api/roles', routes.roles);
   app.use('/api/agents/chat', rejectChatStartsUntilReady);
+  /** Before `/api/agents`, whose `/:id` routes would otherwise read `events` as an agent id. */
+  app.use('/api/agents/events', routes.events);
   app.use('/api/agents', routes.agents);
   app.use('/api/channels', routes.channels);
   app.use('/api/banner', routes.banner);

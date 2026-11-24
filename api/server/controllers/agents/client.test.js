@@ -6819,8 +6819,11 @@ describe('AgentClient - titleConvo', () => {
         ];
       }
       const bedrockDocument = (name) => ({
-        type: 'document',
-        document: { name, format: 'pdf', source: { bytes: Buffer.from(name) } },
+        type: 'file',
+        source_type: 'base64',
+        mime_type: 'application/pdf',
+        data: Buffer.from(name).toString('base64'),
+        metadata: { name },
       });
       const firstQuestion = {
         messageId: 'user-first',
@@ -6853,13 +6856,13 @@ describe('AgentClient - titleConvo', () => {
       const names = result.prompt.flatMap((message) =>
         Array.isArray(message.content)
           ? message.content
-              .filter((part) => part?.type === 'document')
-              .map((part) => part.document.name)
+              .filter((part) => part?.type === 'file')
+              .map((part) => part.metadata.name)
           : [],
       );
       expect(names).toEqual(['Stripe fees', 'Stripe fees (2)']);
-      expect(firstQuestion.documents[0].document.name).toBe('Stripe fees');
-      expect(secondQuestion.documents[0].document.name).toBe('Stripe fees');
+      expect(firstQuestion.documents[0].metadata.name).toBe('Stripe fees');
+      expect(secondQuestion.documents[0].metadata.name).toBe('Stripe fees');
       expect(resolve).not.toHaveBeenCalled();
     });
 
