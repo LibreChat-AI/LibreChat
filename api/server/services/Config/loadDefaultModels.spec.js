@@ -31,7 +31,7 @@ describe('loadDefaultModels', () => {
     getOpenAIModels.mockResolvedValue(['gpt-5']);
     getAnthropicModels.mockResolvedValue(['claude-sonnet']);
     getBedrockModels.mockReturnValue(['amazon.nova-pro-v1:0']);
-    getGoogleModels.mockReturnValue(['gemini-3.7-flash']);
+    getGoogleModels.mockResolvedValue(['gemini-3.7-flash']);
   });
 
   it('returns the Google catalog once under its configured endpoint', async () => {
@@ -49,9 +49,18 @@ describe('loadDefaultModels', () => {
     expect(getGoogleModels).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards the configured Google list and discovery opt-in', async () => {
+    const config = {
+      endpoints: { [EModelEndpoint.google]: { models: ['configured'], fetch: true } },
+    };
+    await loadDefaultModels({ ...request, config });
+
+    expect(getGoogleModels).toHaveBeenCalledWith({ configuredModels: ['configured'], fetch: true });
+  });
+
   it('keeps the configured Google catalog empty when its model source fails', async () => {
     const error = new Error('Google models unavailable');
-    getGoogleModels.mockReturnValue(Promise.reject(error));
+    getGoogleModels.mockRejectedValue(error);
 
     const models = await loadDefaultModels(request);
 

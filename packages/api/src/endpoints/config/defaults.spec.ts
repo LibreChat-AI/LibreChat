@@ -7,7 +7,7 @@ function loaders() {
   return {
     getOpenAIModels: jest.fn().mockResolvedValue(['gpt']),
     getAnthropicModels: jest.fn().mockResolvedValue(['claude']),
-    getGoogleModels: jest.fn().mockReturnValue(['gemini']),
+    getGoogleModels: jest.fn().mockResolvedValue(['gemini']),
     getBedrockModels: jest.fn().mockReturnValue(['nova']),
   };
 }
@@ -72,6 +72,18 @@ describe('scoped default model discovery', () => {
     expect(deps.getAnthropicModels).toHaveBeenCalledWith(
       expect.objectContaining({ configuredModels: ['configured'], vertexModels: ['vertex'] }),
     );
+  });
+
+  it('forwards the configured Google list and discovery opt-in', async () => {
+    const deps = loaders();
+    const configured = Object.assign({}, config, {
+      endpoints: { google: { models: ['configured'], fetch: true } },
+    });
+    await loadDefaultEndpointModels(req, configured, 'google', deps);
+    expect(deps.getGoogleModels).toHaveBeenCalledWith({
+      configuredModels: ['configured'],
+      fetch: true,
+    });
   });
 
   it('never falls through to OpenAI discovery for Azure Assistants', async () => {

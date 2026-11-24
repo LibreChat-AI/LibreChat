@@ -67,7 +67,10 @@ async function loadDefaultModels(req) {
           logger.error('Error fetching Azure OpenAI Assistants API models:', error);
           return [];
         }),
-        Promise.resolve(getGoogleModels()).catch((error) => {
+        getGoogleModels({
+          configuredModels: configuredModelList(appConfig, EModelEndpoint.google),
+          fetch: appConfig?.endpoints?.[EModelEndpoint.google]?.fetch,
+        }).catch((error) => {
           logger.error('Error getting Google models:', error);
           return [];
         }),
