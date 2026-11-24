@@ -101,7 +101,7 @@ export function createReadyCache(options: {
     },
     begin(key) {
       const name = id(key);
-      let settle: (snapshot?: MCPToolsSnapshot) => void = () => undefined;
+      let settle!: (snapshot?: MCPToolsSnapshot) => void;
       const flight = new Promise<MCPToolsSnapshot | undefined>((resolve) => {
         settle = resolve;
       });

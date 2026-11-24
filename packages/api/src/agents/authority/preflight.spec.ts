@@ -342,7 +342,11 @@ describe('reusing a server found ready', () => {
 
   it('asks the server itself when the kept listing lacks a tool the run needs', async () => {
     const stale = { tools: [], complete: true };
-    const kept: ReadyCache = { ...cache, get: () => stale, delete: jest.fn() };
+    const kept: ReadyCache = {
+      ...cache,
+      get: () => stale,
+      delete: jest.fn((key) => cache.delete(key)),
+    };
     const { preflight, probed } = await setup(undefined, kept);
     await expect(check(preflight)).resolves.toEqual(ok);
     expect(probed()).toEqual(['warehouse']);
@@ -433,6 +437,24 @@ describe('the ready cache', () => {
     expect(cache.get(key('c'))).toBe(listing);
   });
 
+  it('drops one entry by its key and leaves the others', () => {
+    const cache = createReadyCache({ ttlMs: async () => 1000, now: () => 0 });
+    cache.set(key('a'), listing, 1000);
+    cache.set(key('b'), listing, 1000);
+    cache.delete(key('a'));
+    expect(cache.get(key('a'))).toBeUndefined();
+    expect(cache.get(key('b'))).toBe(listing);
+  });
+
+  it('keeps an owner with no tenant apart from every tenant, settings or none', () => {
+    const cache = createReadyCache({ ttlMs: async () => 1000, now: () => 0 });
+    const plain = { ownerId: 'owner', server: 'a', settings: undefined };
+    cache.set(plain, listing, 1000);
+    expect(cache.get({ ...plain })).toBe(listing);
+    expect(cache.get({ ...plain, tenantId: 'tenant' })).toBeUndefined();
+    expect(cache.get({ ...plain, settings: null })).toBe(listing);
+  });
+
   it('keeps nothing for a lifetime of 0', () => {
     const cache = createReadyCache({ ttlMs: async () => 0, now: () => 0 });
     cache.set(key('a'), listing, 0);
@@ -441,9 +463,13 @@ describe('the ready cache', () => {
 
   it('reads equal settings alike whatever their key order, and other owners apart', () => {
     const cache = createReadyCache({ ttlMs: async () => 1000, now: () => 0 });
-    const settings = { url: 'u', headers: { b: '2', a: '1' } };
+    const settings = { url: 'u', headers: { b: '2', a: '1' }, args: ['x', { d: 1, c: 2 }] };
     cache.set(key('a', settings), listing, 1000);
-    expect(cache.get(key('a', { headers: { a: '1', b: '2' }, url: 'u' }))).toBe(listing);
+    expect(
+      cache.get(key('a', { args: ['x', { c: 2, d: 1 }], headers: { a: '1', b: '2' }, url: 'u' })),
+    ).toBe(listing);
+    // Order inside a list is part of the settings.
+    expect(cache.get(key('a', { ...settings, args: [{ d: 1, c: 2 }, 'x'] }))).toBeUndefined();
     expect(cache.get({ ...key('a', settings), ownerId: 'other' })).toBeUndefined();
     expect(cache.get({ ...key('a', settings), tenantId: 'other' })).toBeUndefined();
   });
