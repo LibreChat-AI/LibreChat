@@ -33,6 +33,7 @@ import { createConversationModel } from '../models/convo';
 import { createMessageModel } from '../models/message';
 import { createMessageMethods } from './message';
 import { createUserModel } from '../models/user';
+import logger from '~/config/winston';
 
 jest.mock('~/config/winston', () => ({
   error: jest.fn(),
@@ -5703,11 +5704,23 @@ describe('agent trigger delivery methods', () => {
       );
       const shielded = await claimCapable('shielded-claim');
       await kill(shielded!.id, 'shielded-claim', expiresAt);
-      await expect(Delivery.findById(shielded!.id).lean()).resolves.toMatchObject({
+      const shieldedDead = await Delivery.findById(shielded!.id).lean();
+      expect(shieldedDead).toMatchObject({
         status: 'capability_dead',
         capabilityStatus: 'dead',
         expiresAt,
       });
+      /** A dead letter holds no lease: neither the shield owner nor the capable worker's claim. */
+      for (const field of [
+        'leaseBy',
+        'leaseUntil',
+        'claimToken',
+        'capabilityLeaseBy',
+        'capabilityLeaseUntil',
+        'capabilityClaimToken',
+      ] as const) {
+        expect({ field, value: shieldedDead?.[field] }).toEqual({ field, value: undefined });
+      }
       await expect(LaneSequence.findById('shielded-dead-lane').lean()).resolves.toMatchObject({
         cleanupRequestedAt: new Date(expiresAt.getTime() + 60_000),
       });
@@ -5748,6 +5761,35 @@ describe('agent trigger delivery methods', () => {
       await expect(LaneSequence.findById(legacy.orderingKey).lean()).resolves.toMatchObject({
         cleanupRequestedAt: new Date(expiresAt.getTime() + 60_000),
       });
+    });
+
+    it('settles the dead letter when its lane cleanup request cannot be written', async () => {
+      const orderingKey = 'unwritable-request-lane';
+      const warn = jest.mocked(logger.warn);
+      warn.mockClear();
+      const updateOne = LaneSequence.collection.updateOne.bind(LaneSequence.collection);
+      const failed = jest
+        .spyOn(LaneSequence.collection, 'updateOne')
+        .mockImplementation(async (filter, update, options) => {
+          if (JSON.stringify(update).includes('cleanupRequestedAt')) {
+            throw new Error('lane write failed');
+          }
+          return updateOne(filter, update, options);
+        });
+      try {
+        const id = await deadLetter(orderingKey, new Date(Date.now() + 60 * 60_000));
+        await expect(Delivery.findById(id).lean()).resolves.toMatchObject({ status: 'dead' });
+      } finally {
+        failed.mockRestore();
+      }
+
+      await expect(LaneSequence.findById(orderingKey).lean()).resolves.not.toHaveProperty(
+        'cleanupRequestedAt',
+      );
+      expect(warn).toHaveBeenCalledWith(
+        '[agent-triggers] failed to request lane cleanup for a dead letter',
+        { orderingKey, error: 'lane write failed' },
+      );
     });
 
     it('leaves no request for a dead letter that has no deadline', async () => {
