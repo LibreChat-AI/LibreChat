@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
-import { Constants, ContentTypes } from 'librechat-data-provider';
+import { Constants, ContentTypes, isFailedToolOutput } from 'librechat-data-provider';
 import type { Agents } from 'librechat-data-provider';
-import type { Response } from './types';
+import type { FunctionCallOutputItem, Response } from './types';
 
 const rootParent = String(Constants.NO_PARENT);
 
@@ -13,22 +13,29 @@ export function projectResponseMessage(
   content: Agents.MessageContentComplex[];
   unfinished?: boolean;
 } {
-  const results = new Map<string, string>();
+  const results = new Map<string, FunctionCallOutputItem>();
   for (const item of response.output)
-    if (item.type === 'function_call_output') results.set(item.call_id, item.output);
+    if (item.type === 'function_call_output') results.set(item.call_id, item);
   const content: Agents.MessageContentComplex[] = [];
   let text = '';
   for (const item of response.output) {
-    if (item.type === 'function_call' && results.has(item.call_id)) {
+    if (item.type === 'function_call') {
+      const result = results.get(item.call_id);
+      if (result === undefined) continue;
       content.push({
         type: ContentTypes.TOOL_CALL,
         tool_call: {
           id: item.call_id,
           name: item.name,
           args: item.arguments,
-          output: results.get(item.call_id)!,
+          output: result.output,
+          ...(item.status === 'completed' &&
+            result.status === 'completed' && {
+              runStepStatus: isFailedToolOutput(result.output) ? 'failed' : 'completed',
+            }),
         },
       });
+      continue;
     }
     if (item.type !== 'message' || item.role !== 'assistant') continue;
     for (const part of item.content) {
