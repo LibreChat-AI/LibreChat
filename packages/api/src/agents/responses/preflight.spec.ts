@@ -1,8 +1,8 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { FileSources, Constants } from 'librechat-data-provider';
 import { HumanMessage } from '@librechat/agents/langchain/messages';
 import { emptyCheckpoint, INTERRUPT } from '@langchain/langgraph-checkpoint';
+import { FileSources, Constants, MAX_SUBAGENT_GRAPH_NODES } from 'librechat-data-provider';
 import {
   createModels,
   createMethods,
@@ -406,6 +406,18 @@ it('rejects an inaccessible configured graph member outside the retained partici
     f.denied.add('graph-member');
     expect(await f.validation.validateDecision(f.input)).toBe(false);
     expect(await f.validation.validateResume(f.input.record, f.input.job)).toEqual({ ok: false });
+  }));
+
+it('lets a graph too large to inspect fail the decision rather than declining it as unavailable', () =>
+  scoped(async () => {
+    const f = await fixture();
+    f.primary.agent_ids = Array.from(
+      { length: MAX_SUBAGENT_GRAPH_NODES + 1 },
+      (_, index) => `chain-${index}`,
+    );
+    await expect(f.validation.validateDecision(f.input)).rejects.toMatchObject({
+      code: 'content_filter_uninspectable',
+    });
   }));
 
 it('retains authority checks for a paused child removed from current graph settings', () =>

@@ -273,6 +273,22 @@ describe('resume agent snapshot budget', () => {
     },
   );
 
+  it('refuses a legacy agent chain longer than the root read budget before reading it', async () => {
+    const primary = {
+      ...agent('primary'),
+      agent_ids: Array.from(
+        { length: MAX_SUBAGENT_GRAPH_NODES + 1 },
+        (_, index) => `chain-${index}`,
+      ),
+    };
+    const getAgent = jest.fn(async ({ id }: { id: string }) => agent(id));
+
+    await expect(
+      getResumeAgentSnapshot({ primaryAgent: primary, capabilities: [], getAgent }),
+    ).rejects.toMatchObject({ code: 'content_filter_uninspectable' });
+    expect(getAgent).not.toHaveBeenCalled();
+  });
+
   it('stops fetching member chunks immediately after the admission budget is exceeded', async () => {
     const primary = agent('primary', teams(MAX_SUBAGENT_GRAPH_NODES - 1));
     primary.subagents = { ...primary.subagents, enabled: true, agent_ids: ['child'] };
