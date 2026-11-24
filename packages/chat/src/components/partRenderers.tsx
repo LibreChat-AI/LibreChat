@@ -19,6 +19,7 @@ import { getCachedPreview } from '../core/previewCache';
 import { ToolPreparation } from './parts/preparation';
 import AskUserQuestionCall from './parts/ask/Call';
 import { getPartKeyIndex } from '../core/content';
+import { WebSearchCall } from './parts/WebSearch';
 import ReadFileCall from './parts/ReadFileCall';
 import AgentHandoff from './parts/AgentHandoff';
 import { isError } from '../core/parts/output';
@@ -181,6 +182,27 @@ const renderBashProgrammatic: ToolRenderer = ({
   />
 );
 
+const renderWebSearch: ToolRenderer = ({
+  toolCall,
+  attachments,
+  isSubmitting,
+  isLast,
+  hideAttachments,
+  onToolExpand,
+}) => (
+  <WebSearchCall
+    args={toolCall.args}
+    output={toolCall.output ?? ''}
+    initialProgress={toolCall.progress ?? 0.1}
+    isSubmitting={isSubmitting}
+    runStepStatus={toolCall.runStepStatus}
+    attachments={attachments}
+    hideAttachments={hideAttachments}
+    isLast={isLast}
+    onExpand={onToolExpand}
+  />
+);
+
 const renderHandoff: ToolRenderer = ({ toolCall }) => (
   <AgentHandoff args={toolCall.args ?? ''} name={toolCall.name || ''} />
 );
@@ -293,6 +315,7 @@ const buildTools = (): Record<string, ToolRenderer> => ({
   ),
   file_search: renderRetrieval,
   retrieval: renderRetrieval,
+  [Tools.web_search]: renderWebSearch,
 });
 
 const renderDefaultTool: ToolRenderer = ({
