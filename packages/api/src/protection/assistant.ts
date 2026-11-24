@@ -1,19 +1,17 @@
-import {
-  Providers,
-  ProviderTextProtectionError,
-  PROVIDER_TEXT_PROTECTION_VERSION,
-} from '@librechat/agents';
+import { AIMessageChunk } from '@librechat/agents/langchain/messages';
+import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import {
   DEFAULT_PII_REDACTION_MAX_CHARACTERS,
   assistantTextProtectionSchema,
 } from 'librechat-data-provider';
-import type {
-  AgentInputs,
-  FallbackConfig,
-  OpenAIClientOptions,
-  ProviderTextProtection,
+import {
+  Providers,
+  initializeModel,
+  ProviderTextProtectionError,
+  PROVIDER_TEXT_PROTECTION_VERSION,
 } from '@librechat/agents';
 import type { AIMessage, BaseMessage } from '@librechat/agents/langchain/messages';
+import type { AgentInputs, ProviderTextProtection } from '@librechat/agents';
 import type { TCustomConfig } from 'librechat-data-provider';
 import type { RequestHandler } from 'express';
 import { createPatternContentInspector } from './detectors/pattern';
@@ -72,6 +70,16 @@ export const admitAssistantRequest: RequestHandler = (req, res, next) => {
   next();
 };
 
+export const rejectLegacyAssistantOutput: RequestHandler = (req, res, next) => {
+  if (!requiresAssistantProtection((req as typeof req & { config?: AssistantConfig }).config)) {
+    return next();
+  }
+  res.status(400).json({
+    error: 'content_filter_block',
+    message: 'Assistant reply protection is not supported on this endpoint.',
+  });
+};
+
 export function isAssistantProtectionError(error: unknown): boolean {
   return error instanceof ProviderTextProtectionError;
 }
@@ -81,6 +89,7 @@ function classify(content: string): 'prose' | 'unsupported' {
   return text.startsWith('{') ||
     text.startsWith('[') ||
     text.includes('`') ||
+    /<\/?think>/i.test(text) ||
     (sqlVerb.test(text) && sqlClause.test(text))
     ? 'unsupported'
     : 'prose';
@@ -135,18 +144,21 @@ export function createAssistantProtection(config: Policy): ProviderTextProtectio
 }
 
 /** The pilot never opens another output producer alongside the protected model. */
-export function assertAssistantGraph(agents: readonly AgentInputs[], multiAgent: boolean): void {
+export function createAssistantModel(
+  agents: readonly AgentInputs[],
+  multiAgent: boolean,
+): BaseChatModel {
   const agent = agents[0];
-  const options = agent?.clientOptions as
-    | (OpenAIClientOptions & { fallbacks?: FallbackConfig[] })
-    | undefined;
+  const options = agent?.clientOptions;
   if (
     agents.length !== 1 ||
     multiAgent ||
     agent.provider !== Providers.OPENAI ||
-    !supportedModel.test(options?.model ?? '') ||
-    options?.useResponsesApi ||
-    options?.fallbacks?.length ||
+    options == null ||
+    !supportedModel.test(options.model ?? '') ||
+    options.streaming === false ||
+    ('useResponsesApi' in options && options.useResponsesApi === true) ||
+    ('fallbacks' in options && Array.isArray(options.fallbacks) && options.fallbacks.length > 0) ||
     agent.tools?.length ||
     agent.graphTools?.length ||
     agent.toolDefinitions?.length ||
@@ -155,6 +167,42 @@ export function assertAssistantGraph(agents: readonly AgentInputs[], multiAgent:
   ) {
     throw new ProviderTextProtectionError('unsupported');
   }
+  const model = initializeModel({
+    provider: Providers.OPENAI,
+    clientOptions: options as OpenAIClientOptions,
+  });
+  if (!(model instanceof BaseChatModel)) {
+    throw new ProviderTextProtectionError('incompatible');
+  }
+  // The SDK's prose gate intentionally passes provider controls through. This chat profile
+  // admits only text, so check the native iterator before those controls reach graph state.
+  const stream = model._streamResponseChunks;
+  model._streamResponseChunks = async function* (messages, options) {
+    for await (const chunk of stream.call(this, messages, options)) {
+      const message = chunk.message;
+      if (
+        !AIMessageChunk.isInstance(message) ||
+        typeof message.content !== 'string' ||
+        message.tool_calls?.length ||
+        message.tool_call_chunks?.length ||
+        message.invalid_tool_calls?.length ||
+        message.additional_kwargs.reasoning != null ||
+        message.additional_kwargs.reasoning_content != null ||
+        message.additional_kwargs.reasoning_details != null ||
+        message.additional_kwargs.thinking != null ||
+        message.additional_kwargs.signature != null ||
+        message.additional_kwargs.function_call != null ||
+        message.additional_kwargs.tool_calls?.length
+      ) {
+        throw new ProviderTextProtectionError('unsupported');
+      }
+      yield chunk;
+    }
+  };
+  model._generate = async () => {
+    throw new ProviderTextProtectionError('unsupported');
+  };
+  return model;
 }
 
 function readText(message: BaseMessage): readonly string[] {

@@ -124,7 +124,7 @@ import {
   isSteerTerminalContinuationSupported,
 } from '~/agents/steering/runtime';
 import {
-  assertAssistantGraph,
+  createAssistantModel,
   createAssistantProtection,
   inspectAssistantHistory,
 } from '~/protection/assistant';
@@ -3330,9 +3330,10 @@ export async function createRun({
         }
       : customHandlers;
 
-  if (protection != null) {
-    assertAssistantGraph(agentInputs, graphConfig.type !== 'standard');
-  }
+  const assistantModel =
+    protection == null
+      ? undefined
+      : createAssistantModel(agentInputs, graphConfig.type !== 'standard');
   const runConfig = {
     runId: resolvedRunId,
     graphConfig,
@@ -3464,8 +3465,11 @@ export async function createRun({
         },
       })
     : await Run.create(runConfig);
-  if (protection != null && run.Graph?.providerTextProtection !== protection) {
-    throw new ProviderTextProtectionError('incompatible');
+  if (assistantModel != null) {
+    if (run.Graph == null || run.Graph.providerTextProtection !== protection) {
+      throw new ProviderTextProtectionError('incompatible');
+    }
+    run.Graph.overrideModel = assistantModel;
   }
   if (approvalWiring != null) bindRunToolApprovalSession(run, agentApprovalSession);
   runMCPToolAliases.set(run, mcpToolAliases);

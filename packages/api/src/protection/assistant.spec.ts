@@ -50,7 +50,7 @@ const writeChunk = (res: ServerResponse, delta: object, reason: string | null = 
 
 beforeAll(() => setPiiRegexProgramSizer(getPiiRegexProgramSize));
 
-async function fixture(parts: string[], hold?: Promise<void>) {
+async function fixture(parts: (string | Record<string, unknown>)[], hold?: Promise<void>) {
   const outbound: string[] = [];
   let started!: () => void;
   const firstChunk = new Promise<void>((resolve) => {
@@ -62,7 +62,10 @@ async function fixture(parts: string[], hold?: Promise<void>) {
     outbound.push(Buffer.concat(chunks).toString());
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     for (const [index, content] of parts.entries()) {
-      writeChunk(res, { ...(index === 0 && { role: 'assistant' }), content });
+      writeChunk(res, {
+        ...(index === 0 && { role: 'assistant' }),
+        ...(typeof content === 'string' ? { content } : content),
+      });
       if (index === 0) {
         started();
         await hold;
@@ -109,7 +112,10 @@ async function fixture(parts: string[], hold?: Promise<void>) {
 
 async function setup(
   agent: Awaited<ReturnType<typeof fixture>>['agent'],
-  options: Partial<Parameters<typeof createRun>[0]> = {},
+  {
+    reasoning,
+    ...options
+  }: Partial<Parameters<typeof createRun>[0]> & { reasoning?: jest.Mock } = {},
   manager?: GenerationJobManagerClass,
 ) {
   const { contentParts, aggregateContent } = createContentAggregator();
@@ -145,6 +151,7 @@ async function setup(
           aggregateContent({ event: GraphEvents.ON_RUN_STEP, data: data as RunStep }),
       },
       [GraphEvents.ON_MESSAGE_DELTA]: { handle: delta },
+      ...(reasoning && { [GraphEvents.ON_REASONING_DELTA]: { handle: reasoning } }),
     },
     ...options,
   });
@@ -222,6 +229,22 @@ it('withholds a match spanning provider chunks from deltas and run content', asy
     expect(getUserFacingGenerationError(error, { config }, 'fallback')).toBe(
       '{"type":"assistant_output_withheld"}',
     );
+    expect(provider.outbound).toHaveLength(1);
+  } finally {
+    await Promise.all([provider.close(), manager.destroy()]);
+  }
+});
+
+it('rejects a non-text provider payload before emitting any chat content', async () => {
+  const provider = await fixture([{ reasoning: 'Unapproved control text' }, allowed]);
+  const manager = jobManager();
+  const reasoning = jest.fn();
+  try {
+    const { delta, resume, stream } = await setup(provider.agent, { reasoning }, manager);
+    await expect(stream()).rejects.toMatchObject({ code: 'unsupported' });
+    expect(reasoning).not.toHaveBeenCalled();
+    expect(delta).not.toHaveBeenCalled();
+    expect(JSON.stringify(await resume())).not.toContain('Unapproved control text');
     expect(provider.outbound).toHaveLength(1);
   } finally {
     await Promise.all([provider.close(), manager.destroy()]);
