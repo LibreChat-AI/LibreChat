@@ -931,6 +931,16 @@ export function createAgentTriggerDeliveryMethods(
       ...lane,
       publisherRequeueCount: publicationGeneration,
     };
+    /** Any replica can hold the lane for a requeued root, including one admitting its own
+     * delivery behind it, so its receipts are prepared here rather than by the requeue alone.
+     * A refused batch is dead again, and publication below rolls the sequence back. */
+    if (
+      staged != null &&
+      isStagingDelivery(staged) &&
+      (staged.requeueCount ?? 0) === publicationGeneration
+    ) {
+      await prepareBatchMembersForRequeue(staged);
+    }
     let batchRoot: IAgentTriggerDelivery | null = null;
     if (
       staged?._id != null &&
@@ -1183,6 +1193,16 @@ export function createAgentTriggerDeliveryMethods(
       batchRootRequeueCount: requeueCount,
     });
     if (preparedCount === memberIds.length) {
+      return true;
+    }
+    /** Every replica that holds or recovers the lane can prepare the same root. One that read
+     * it as staged may find its receipts already run and settled by the publisher that won. */
+    const staged = await Delivery().exists({
+      _id: root._id,
+      requeueCount,
+      ...stagingDeliveryScope,
+    });
+    if (staged == null) {
       return true;
     }
     const remaining = await Delivery().countDocuments({ _id: { $in: memberIds } });
