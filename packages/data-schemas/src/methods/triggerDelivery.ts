@@ -1461,10 +1461,11 @@ export function createAgentTriggerDeliveryMethods(
     if (deadline == null) {
       return;
     }
+    const cleanupRequestedAt = afterDeadline(deadline);
     try {
       await LaneSequence().updateOne(
         { _id: orderingKey, cleanupRequestedAt: { $exists: false } },
-        { $set: { cleanupRequestedAt: afterDeadline(deadline) } },
+        { $set: { cleanupRequestedAt } },
       );
     } catch (error) {
       // The dead letter is authoritative. A lost request only leaves the lane row behind.
