@@ -7,20 +7,23 @@ export type SubagentDispatch = {
   subagentType: string;
   identity?: SubagentIdentity;
   agentId?: string;
+  /** The dispatching call's arguments, as stored, for its model-authored intent. */
+  args?: string | Record<string, unknown>;
 };
 
-const indexes = new WeakMap<TMessage[], Map<string, SubagentDispatch>>();
+type DispatchIndex = {
+  /** First dispatch per child thread; continuations reuse the thread id. */
+  threads: Map<string, SubagentDispatch>;
+  /** Each dispatch by the background task it started. */
+  tasks: Map<string, SubagentDispatch>;
+};
 
-/** Public transcripts carry dispatch metadata instead of an authenticated child
- *  index. Match the host-issued handle, sharing one scan per transcript snapshot. */
-export function findSubagentDispatch(
-  messages: TMessage[] | undefined,
-  threadId: string | undefined,
-): SubagentDispatch | undefined {
-  if (messages == null || !threadId) return undefined;
+const indexes = new WeakMap<TMessage[], DispatchIndex>();
+
+function indexDispatches(messages: TMessage[]): DispatchIndex {
   let index = indexes.get(messages);
   if (index == null) {
-    index = new Map();
+    index = { threads: new Map(), tasks: new Map() };
     for (const message of messages) {
       if (message.isCreatedByUser === true) continue;
       for (const part of message.content ?? []) {
@@ -40,16 +43,43 @@ export function findSubagentDispatch(
           args = call.args;
         }
         const handle = parseSubagentBackgroundHandle(output, args);
-        if (handle == null || index.has(handle.subagent_thread_id)) continue;
-        index.set(handle.subagent_thread_id, {
+        if (handle == null) continue;
+        const dispatch: SubagentDispatch = {
           message,
           subagentType: handle.subagent_type,
           identity: call.subagentIdentity,
           agentId: part.agentId,
-        });
+          args,
+        };
+        if (!index.threads.has(handle.subagent_thread_id)) {
+          index.threads.set(handle.subagent_thread_id, dispatch);
+        }
+        if (!index.tasks.has(handle.background_task_id)) {
+          index.tasks.set(handle.background_task_id, dispatch);
+        }
       }
     }
     indexes.set(messages, index);
   }
-  return index.get(threadId);
+  return index;
+}
+
+/** Public transcripts carry dispatch metadata instead of an authenticated child
+ *  index. Match the host-issued handle, sharing one scan per transcript snapshot. */
+export function findSubagentDispatch(
+  messages: TMessage[] | undefined,
+  threadId: string | undefined,
+): SubagentDispatch | undefined {
+  if (messages == null || !threadId) return undefined;
+  return indexDispatches(messages).threads.get(threadId);
+}
+
+/** The call that started one background task, which a continued thread does not share
+ *  with the thread's first dispatch. */
+export function findSubagentTaskDispatch(
+  messages: TMessage[] | undefined,
+  taskId: string | undefined,
+): SubagentDispatch | undefined {
+  if (messages == null || !taskId) return undefined;
+  return indexDispatches(messages).tasks.get(taskId);
 }

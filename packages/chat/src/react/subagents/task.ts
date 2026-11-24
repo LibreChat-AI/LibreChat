@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from 'react';
+import type { ParentSubagentSummary } from 'librechat-data-provider';
 import type { ActiveSubagentPanel } from './state';
 import { durableSubagentSelection } from './eventSelection';
 import { useOpenSubagentPanel } from './surface';
@@ -22,7 +23,12 @@ export interface DurableSubagentTask {
 export function useSubagentTaskPanel(
   task: DurableSubagentTask | null,
   conversationId?: string | null,
-): { selection: ActiveSubagentPanel | null; open: (() => void) | null } {
+): {
+  selection: ActiveSubagentPanel | null;
+  open: (() => void) | null;
+  /** The child as the parent's bounded index lists it, when it does. */
+  child: ParentSubagentSummary | undefined;
+} {
   const { isSharedConvo } = useMessagePartsHost().useShare();
   const { messageId } = useMessageContext();
   const { byThreadId } = useParentSubagents();
@@ -62,5 +68,5 @@ export function useSubagentTaskPanel(
       openPanel?.(selection);
     }
   }, [openPanel, selection]);
-  return { selection, open: selection == null || openPanel == null ? null : open };
+  return { selection, open: selection == null || openPanel == null ? null : open, child };
 }
