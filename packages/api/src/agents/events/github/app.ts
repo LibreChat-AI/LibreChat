@@ -32,17 +32,44 @@ export interface AppDeps {
 }
 
 /**
- * Why GitHub could not be asked. None of them is an answer, so a caller deciding whether to
- * act on an event treats every one as a refusal and does not remember it as a "no".
- * - `credential`: GitHub rejected the app's identity, or its private key could not be loaded.
- * - `missing`: there is no such installation of this app, or the id is not one.
+ * Why GitHub would not answer, as GitHub said it. None of them is an answer, so a caller
+ * deciding whether to act on an event treats every one as a refusal and does not remember it
+ * as a "no".
+ * - `credential`: GitHub rejected the app's identity, or rejected a fresh installation token.
+ * - `missing`: GitHub has no such installation of this app, or the id is not one.
  * - `forbidden`: the installation exists but may not ask, such as a suspended one or an app
  *   without the repository permission the question needs.
  * - `limited`: GitHub is rate limiting the installation; `retryAfterMs` is how long it asked
  *   callers to wait.
- * - `unavailable`: the request failed, timed out, or the reply did not read.
+ *
+ * Everything else is an outage and is thrown as a `GitHubError`.
  */
-export type AppFailure = 'credential' | 'missing' | 'forbidden' | 'limited' | 'unavailable';
+export type AppFailure = 'credential' | 'missing' | 'forbidden' | 'limited';
+
+/**
+ * Why GitHub could not be asked at all:
+ * - `key`: the app's private key does not load as an RSA key, or signing with it failed.
+ * - `network`: the request did not complete.
+ * - `timeout`: the request outlasted `timeoutMs`.
+ * - `upstream`: GitHub answered with a server error, a status nothing here expects, or a reply
+ *   that does not read; `status` is its HTTP status.
+ */
+export type GitHubErrorCode = 'key' | 'network' | 'timeout' | 'upstream';
+
+/**
+ * An outage, thrown so the request or job that asked sees it. Its message is the code and
+ * nothing else: no token, key, address or reply, and no cause is attached.
+ */
+export class GitHubError extends Error {
+  constructor(
+    readonly code: GitHubErrorCode,
+    /** GitHub's HTTP status, for `upstream`. */
+    readonly status?: number,
+  ) {
+    super(`GitHub app request failed: ${code}`);
+    this.name = 'GitHubError';
+  }
+}
 
 export type Reply<T> =
   | { ok: true; value: T }
@@ -58,6 +85,7 @@ export interface App {
   /**
    * Whether `login` may push to `repo` (`owner/name`), asked as the installation. An account
    * GitHub does not know as a collaborator, including every bot account, is a plain "no".
+   * Rejects with a `GitHubError` when GitHub cannot be asked.
    */
   access(installation: number, repo: string, login: string): Promise<Reply<Access>>;
 }
@@ -96,8 +124,8 @@ function encode(value: object): string {
 }
 
 /**
- * Asks GitHub questions as the operator's app. Only decisions leave this module: a failure is
- * a code, never GitHub's reply, an exception's text, the app token or an installation token.
+ * Asks GitHub questions as the operator's app. Only decisions and codes leave this module,
+ * never GitHub's reply, an exception's text, the app token or an installation token.
  */
 export function createApp(config: AppConfig, deps: AppDeps): App {
   const now = deps.now ?? Date.now;
@@ -120,22 +148,25 @@ export function createApp(config: AppConfig, deps: AppDeps): App {
     map.set(installation, value);
   }
 
-  /** The private key, loaded once. `null` when it is not an RSA key GitHub could have issued. */
-  function signer(): KeyObject | null {
-    if (key !== undefined) {
-      return key;
+  /** The private key, loaded once. A key that is not an RSA key GitHub could have issued throws. */
+  function signer(): KeyObject {
+    if (key === undefined) {
+      try {
+        const loaded = createPrivateKey(config.key);
+        key = loaded.asymmetricKeyType === 'rsa' ? loaded : null;
+      } catch {
+        key = null;
+      }
     }
-    try {
-      const loaded = createPrivateKey(config.key);
-      key = loaded.asymmetricKeyType === 'rsa' ? loaded : null;
-    } catch {
-      key = null;
+    if (key == null) {
+      throw new GitHubError('key');
     }
     return key;
   }
 
   /** The short-lived token that proves the app's identity when it asks for an installation's. */
-  function jwt(signing: KeyObject): string {
+  function jwt(): string {
+    const signing = signer();
     const seconds = Math.floor(now() / 1000);
     const head = encode({ alg: 'RS256', typ: 'JWT' });
     const claims = encode({
@@ -143,21 +174,37 @@ export function createApp(config: AppConfig, deps: AppDeps): App {
       exp: seconds + JWT_LIFETIME_S,
       iss: config.id,
     });
-    const signature = createSign('RSA-SHA256').update(`${head}.${claims}`).sign(signing);
+    let signature: Buffer;
+    try {
+      signature = createSign('RSA-SHA256').update(`${head}.${claims}`).sign(signing);
+    } catch {
+      throw new GitHubError('key');
+    }
     return `${head}.${claims}.${signature.toString('base64url')}`;
   }
 
   async function request(path: string, bearer: string, method: 'GET' | 'POST'): Promise<Response> {
-    return deps.fetch(`${api}${path}`, {
-      method,
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${bearer}`,
-        'X-GitHub-Api-Version': '2022-11-28',
-        'User-Agent': 'LibreChat-Agent-Events',
-      },
-      signal: AbortSignal.timeout(config.timeoutMs),
-    });
+    const signal = AbortSignal.timeout(config.timeoutMs);
+    try {
+      return await deps.fetch(`${api}${path}`, {
+        method,
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${bearer}`,
+          'X-GitHub-Api-Version': '2022-11-28',
+          'User-Agent': 'LibreChat-Agent-Events',
+        },
+        signal,
+      });
+    } catch {
+      /** Told by the signal, not the rejection, which each HTTP client words its own way. */
+      throw new GitHubError(signal.aborted ? 'timeout' : 'network');
+    }
+  }
+
+  /** A reply's JSON, or `null` when it does not parse; the caller rejects both alike. */
+  function read(response: Response): Promise<unknown> {
+    return response.json().catch(() => null);
   }
 
   /** A limited reply starts a pause for the installation, so a burst does not keep asking. */
@@ -172,20 +219,8 @@ export function createApp(config: AppConfig, deps: AppDeps): App {
   }
 
   async function exchange(installation: number): Promise<Reply<string>> {
-    const signing = signer();
-    if (signing == null) {
-      return fail('credential');
-    }
-    let response: Response;
-    try {
-      response = await request(
-        `/app/installations/${installation}/access_tokens`,
-        jwt(signing),
-        'POST',
-      );
-    } catch {
-      return fail('unavailable');
-    }
+    const path = `/app/installations/${installation}/access_tokens`;
+    const response = await request(path, jwt(), 'POST');
     if (!response.ok) {
       const pause = await limited(installation, response);
       if (pause != null) {
@@ -194,23 +229,21 @@ export function createApp(config: AppConfig, deps: AppDeps): App {
       if (response.status === 401) {
         return fail('credential');
       }
+      if (response.status === 403) {
+        return fail('forbidden');
+      }
       if (response.status === 404) {
         return fail('missing');
       }
-      return fail(response.status === 403 ? 'forbidden' : 'unavailable');
+      throw new GitHubError('upstream', response.status);
     }
-    let body: unknown;
-    try {
-      body = await response.json();
-    } catch {
-      return fail('unavailable');
-    }
+    const body = await read(response);
     if (!isRecord(body) || typeof body.token !== 'string' || !TOKEN.test(body.token)) {
-      return fail('unavailable');
+      throw new GitHubError('upstream', response.status);
     }
     const expires = typeof body.expires_at === 'string' ? Date.parse(body.expires_at) : NaN;
     if (!Number.isFinite(expires)) {
-      return fail('unavailable');
+      throw new GitHubError('upstream', response.status);
     }
     hold(tokens, installation, {
       token: body.token,
@@ -243,12 +276,7 @@ export function createApp(config: AppConfig, deps: AppDeps): App {
     if (!bearer.ok) {
       return bearer;
     }
-    let response: Response;
-    try {
-      response = await request(path, bearer.value, 'GET');
-    } catch {
-      return fail('unavailable');
-    }
+    const response = await request(path, bearer.value, 'GET');
     if (response.status === 404) {
       return { ok: true, value: { write: false } };
     }
@@ -263,14 +291,12 @@ export function createApp(config: AppConfig, deps: AppDeps): App {
         }
         return null;
       }
-      return fail(response.status === 403 ? 'forbidden' : 'unavailable');
+      if (response.status === 403) {
+        return fail('forbidden');
+      }
+      throw new GitHubError('upstream', response.status);
     }
-    let body: unknown;
-    try {
-      body = await response.json();
-    } catch {
-      return fail('unavailable');
-    }
+    const body = await read(response);
     const level = isRecord(body) ? body.permission : undefined;
     if (level === 'admin' || level === 'write') {
       return { ok: true, value: { write: true } };
@@ -278,7 +304,7 @@ export function createApp(config: AppConfig, deps: AppDeps): App {
     if (level === 'read' || level === 'none') {
       return { ok: true, value: { write: false } };
     }
-    return fail('unavailable');
+    throw new GitHubError('upstream', response.status);
   }
 
   async function access(installation: number, repo: string, login: string): Promise<Reply<Access>> {

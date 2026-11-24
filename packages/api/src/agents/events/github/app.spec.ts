@@ -1,7 +1,7 @@
 import crypto, { createVerify, generateKeyPairSync } from 'node:crypto';
+import type { App, AppConfig, GitHubErrorCode } from './app';
 import type { PullRequestFetch } from '~/pulls/shared';
-import type { App, AppConfig } from './app';
-import { createApp } from './app';
+import { GitHubError, createApp } from './app';
 
 const INSTALLATION = 4400;
 const REPO = 'example-org/widgets';
@@ -81,6 +81,26 @@ function harness(
 /** The installation an exchange asks a token for. */
 function installationOf(call: Call): string | undefined {
   return /\/installations\/(\d+)\//.exec(call.url)?.[1];
+}
+
+/** The rejection of `pending`, which must be a `GitHubError` with this code and status. */
+async function outage(
+  pending: Promise<unknown>,
+  code: GitHubErrorCode,
+  status?: number,
+): Promise<GitHubError> {
+  const error = await pending.then(
+    () => {
+      throw new Error('expected a GitHubError');
+    },
+    (reason: unknown) => reason,
+  );
+  expect(error).toBeInstanceOf(GitHubError);
+  const thrown = error as GitHubError;
+  expect({ code: thrown.code, status: thrown.status }).toEqual({ code, status });
+  expect(thrown.message).toBe(`GitHub app request failed: ${code}`);
+  expect(thrown.cause).toBeUndefined();
+  return thrown;
 }
 
 function bearer(call: Call): string {
@@ -300,10 +320,7 @@ describe('createApp installation tokens', () => {
         return json({ token: 'ghs_later', expires_at: new Date(START + HOUR).toISOString() }, 201);
       },
     });
-    await expect(app.access(INSTALLATION, REPO, LOGIN)).resolves.toEqual({
-      ok: false,
-      error: { code: 'unavailable' },
-    });
+    await outage(app.access(INSTALLATION, REPO, LOGIN), 'upstream', 500);
     fail = false;
     await expect(app.access(INSTALLATION, REPO, LOGIN)).resolves.toEqual({
       ok: true,
@@ -316,50 +333,71 @@ describe('createApp installation tokens', () => {
     ['rejects the app token', () => json({ message: MARKER }, 401), 'credential'],
     ['has no such installation', () => json({ message: MARKER }, 404), 'missing'],
     ['forbids the installation', () => json({ message: MARKER }, 403), 'forbidden'],
-    ['fails', () => json({ message: MARKER }, 500), 'unavailable'],
-    [
-      'answers with something that is not JSON',
-      () => new Response(MARKER, { status: 201 }),
-      'unavailable',
-    ],
-    [
-      'answers without a token',
-      () => json({ expires_at: '2026-11-23T13:00:00Z' }, 201),
-      'unavailable',
-    ],
-    [
-      'answers with a token that is not text',
-      () => json({ token: 7, expires_at: '2026-11-23T13:00:00Z' }, 201),
-      'unavailable',
-    ],
-    [
-      'answers with a token holding a line break',
-      () => json({ token: 'ghs_a\r\nx: y', expires_at: '2026-11-23T13:00:00Z' }, 201),
-      'unavailable',
-    ],
-    ['answers without an expiry', () => json({ token: 'ghs_a' }, 201), 'unavailable'],
-    [
-      'answers with an expiry that is not a time',
-      () => json({ token: 'ghs_a', expires_at: MARKER }, 201),
-      'unavailable',
-    ],
-  ] as const)('asks no question when GitHub %s', async (_name, exchange, code) => {
+  ] as const)('answers that GitHub %s and asks no question', async (_name, exchange, code) => {
     const { app, questions } = harness({ exchange });
     const answer = await app.access(INSTALLATION, REPO, LOGIN);
     expect(answer).toEqual({ ok: false, error: { code } });
     expect(questions()).toEqual([]);
   });
 
-  it('reports a request that throws as unavailable, without its text', async () => {
+  it.each([
+    ['fails', () => json({ message: MARKER }, 500), 500],
+    ['answers with a status nothing expects', () => json({ message: MARKER }, 422), 422],
+    ['answers with something that is not JSON', () => new Response(MARKER, { status: 201 }), 201],
+    ['answers without a token', () => json({ expires_at: '2026-11-23T13:00:00Z' }, 201), 201],
+    [
+      'answers with a token that is not text',
+      () => json({ token: 7, expires_at: '2026-11-23T13:00:00Z' }, 201),
+      201,
+    ],
+    [
+      'answers with a token holding a line break',
+      () => json({ token: 'ghs_a\r\nx: y', expires_at: '2026-11-23T13:00:00Z' }, 201),
+      201,
+    ],
+    ['answers without an expiry', () => json({ token: 'ghs_a' }, 201), 201],
+    [
+      'answers with an expiry that is not a time',
+      () => json({ token: 'ghs_a', expires_at: MARKER }, 201),
+      201,
+    ],
+  ] as const)('throws when GitHub %s and asks no question', async (_name, exchange, status) => {
+    const { app, questions } = harness({ exchange });
+    await outage(app.access(INSTALLATION, REPO, LOGIN), 'upstream', status);
+    expect(questions()).toEqual([]);
+  });
+
+  it('throws a network failure when the exchange cannot be sent, without its text', async () => {
     const { app } = harness({
       exchange: () => {
         throw new Error(`connect failed ${MARKER}`);
       },
     });
-    await expect(app.access(INSTALLATION, REPO, LOGIN)).resolves.toEqual({
-      ok: false,
-      error: { code: 'unavailable' },
+    const error = await outage(app.access(INSTALLATION, REPO, LOGIN), 'network');
+    expect(String(error.stack)).not.toContain(MARKER);
+  });
+
+  it('lets the next question exchange again after an exchange threw', async () => {
+    let fail = true;
+    const { app, exchanges } = harness({
+      exchange: () => {
+        if (fail) {
+          throw new Error('connect failed');
+        }
+        return json({ token: 'ghs_later', expires_at: new Date(START + HOUR).toISOString() }, 201);
+      },
     });
+    await Promise.all([
+      outage(app.access(INSTALLATION, REPO, LOGIN), 'network'),
+      outage(app.access(INSTALLATION, REPO, 'another-author'), 'network'),
+    ]);
+    expect(exchanges()).toHaveLength(1);
+    fail = false;
+    await expect(app.access(INSTALLATION, REPO, LOGIN)).resolves.toEqual({
+      ok: true,
+      value: { write: true },
+    });
+    expect(exchanges()).toHaveLength(2);
   });
 
   it.each([
@@ -371,15 +409,26 @@ describe('createApp installation tokens', () => {
         .privateKey.export({ type: 'pkcs8', format: 'pem' })
         .toString(),
     ],
-  ])('reports a private key that %s as a credential failure without asking', async (_name, key) => {
+  ])('throws a key failure for a private key that %s, without asking', async (_name, key) => {
     const { app, calls } = harness({ config: { key } });
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      await expect(app.access(INSTALLATION, REPO, LOGIN)).resolves.toEqual({
-        ok: false,
-        error: { code: 'credential' },
-      });
+      await outage(app.access(INSTALLATION, REPO, LOGIN), 'key');
     }
     expect(calls).toEqual([]);
+  });
+
+  it('throws a key failure when signing fails, without asking', async () => {
+    const sign = jest.spyOn(crypto, 'createSign').mockImplementation(() => {
+      throw new Error(`sign failed ${MARKER}`);
+    });
+    try {
+      const { app, calls } = harness();
+      const error = await outage(app.access(INSTALLATION, REPO, LOGIN), 'key');
+      expect(String(error.stack)).not.toContain(MARKER);
+      expect(calls).toEqual([]);
+    } finally {
+      sign.mockRestore();
+    }
   });
 
   it('accepts the key in PKCS#8 as well as the PKCS#1 GitHub issues', async () => {
@@ -444,49 +493,61 @@ describe('createApp access failures', () => {
     expect(questions().map(bearer)).toEqual(['ghs_token1', 'ghs_token2', 'ghs_token2']);
   });
 
-  it.each([
-    ['forbids the question', () => json({ message: MARKER }, 403), 'forbidden'],
-    ['fails', () => json({ message: MARKER }, 502), 'unavailable'],
-    ['answers with something that is not JSON', () => new Response(MARKER), 'unavailable'],
-    [
-      'answers with a permission it does not document',
-      () => json({ permission: 'maintain' }),
-      'unavailable',
-    ],
-    ['answers without a permission', () => json({ role_name: 'admin' }), 'unavailable'],
-    ['answers with a list', () => json([{ permission: 'admin' }]), 'unavailable'],
-  ] as const)('does not answer when GitHub %s', async (_name, permission, code) => {
-    const { app } = harness({ permission });
+  it('answers forbidden when GitHub forbids the question', async () => {
+    const { app } = harness({ permission: () => json({ message: MARKER }, 403) });
     await expect(app.access(INSTALLATION, REPO, LOGIN)).resolves.toEqual({
       ok: false,
-      error: { code },
+      error: { code: 'forbidden' },
     });
   });
 
-  it('reports a question that throws as unavailable', async () => {
+  it.each([
+    ['fails', () => json({ message: MARKER }, 502), 502],
+    ['answers with a status nothing expects', () => json({ message: MARKER }, 422), 422],
+    ['answers with something that is not JSON', () => new Response(MARKER), 200],
+    ['answers with a permission it does not document', () => json({ permission: 'maintain' }), 200],
+    ['answers without a permission', () => json({ role_name: 'admin' }), 200],
+    ['answers with a list', () => json([{ permission: 'admin' }]), 200],
+  ] as const)('throws when GitHub %s', async (_name, permission, status) => {
+    const { app, questions } = harness({ permission });
+    await outage(app.access(INSTALLATION, REPO, LOGIN), 'upstream', status);
+    expect(questions()).toHaveLength(1);
+  });
+
+  it('throws a network failure when the question cannot be sent, without its text', async () => {
     const { app } = harness({
       permission: () => {
         throw new Error(`socket hang up ${MARKER}`);
       },
     });
-    await expect(app.access(INSTALLATION, REPO, LOGIN)).resolves.toEqual({
-      ok: false,
-      error: { code: 'unavailable' },
-    });
+    const error = await outage(app.access(INSTALLATION, REPO, LOGIN), 'network');
+    expect(String(error.stack)).not.toContain(MARKER);
   });
 
-  it('gives up on a request that outlasts its timeout', async () => {
-    const { app } = harness({
+  it('throws a timeout for a request that outlasts its timeout', async () => {
+    const { app, questions } = harness({
       config: { timeoutMs: 20 },
       permission: (call) =>
         new Promise<Response>((_resolve, reject) => {
           call.signal?.addEventListener('abort', () => reject(call.signal?.reason));
         }),
     });
-    await expect(app.access(INSTALLATION, REPO, LOGIN)).resolves.toEqual({
-      ok: false,
-      error: { code: 'unavailable' },
+    await outage(app.access(INSTALLATION, REPO, LOGIN), 'timeout');
+    expect(questions()[0].signal?.aborted).toBe(true);
+  });
+
+  it('keeps the held token after a question throws', async () => {
+    let fail = true;
+    const { app, exchanges } = harness({
+      permission: () => (fail ? json({}, 500) : json({ permission: 'write' })),
     });
+    await outage(app.access(INSTALLATION, REPO, LOGIN), 'upstream', 500);
+    fail = false;
+    await expect(app.access(INSTALLATION, REPO, LOGIN)).resolves.toEqual({
+      ok: true,
+      value: { write: true },
+    });
+    expect(exchanges()).toHaveLength(1);
   });
 });
 
@@ -558,7 +619,7 @@ describe('createApp rate limits', () => {
 });
 
 describe('createApp disclosure', () => {
-  it("never returns a token, the key or GitHub's words", async () => {
+  it("never returns or throws a token, the key or GitHub's words", async () => {
     const replies: Array<[Handler | undefined, Handler | undefined]> = [
       [undefined, undefined],
       [undefined, () => json({ message: MARKER }, 401)],
@@ -570,19 +631,38 @@ describe('createApp disclosure', () => {
       [() => json({ message: MARKER }, 401), undefined],
       [() => json({ message: MARKER }, 500), undefined],
       [() => json({ token: MARKER.repeat(200), expires_at: MARKER }, 201), undefined],
+      [() => json({ token: 'ghs_ok' }, 201), undefined],
       [
         () => {
           throw new Error(MARKER);
         },
         undefined,
       ],
+      [
+        undefined,
+        () => {
+          throw new Error(MARKER);
+        },
+      ],
     ];
+    let thrown = 0;
     for (const [exchange, permission] of replies) {
       const { app, calls } = harness({
         ...(exchange != null && { exchange }),
         ...(permission != null && { permission }),
       });
-      const text = JSON.stringify(await app.access(INSTALLATION, REPO, LOGIN));
+      const text = await app.access(INSTALLATION, REPO, LOGIN).then(
+        (answer) => JSON.stringify(answer),
+        (error: GitHubError) => {
+          thrown += 1;
+          return [
+            JSON.stringify(error),
+            String(error),
+            String(error.stack),
+            JSON.stringify(Object.entries(error)),
+          ].join('\n');
+        },
+      );
       expect(text).not.toContain(MARKER);
       expect(text).not.toContain('ghs_');
       expect(text).not.toContain(KEY_BODY);
@@ -590,5 +670,6 @@ describe('createApp disclosure', () => {
         expect(text).not.toContain(bearer(call));
       }
     }
+    expect(thrown).toBe(7);
   });
 });

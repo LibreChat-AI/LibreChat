@@ -103,7 +103,9 @@ describe('eventSettings', () => {
         return new Response('{}', { status: 500 });
       },
     });
-    await app.access(4400, 'example-org/widgets', 'example-author');
+    await expect(app.access(4400, 'example-org/widgets', 'example-author')).rejects.toThrow(
+      'GitHub app request failed: upstream',
+    );
     const [head, claims, signature] = token.split('.');
     expect(
       createVerify('RSA-SHA256')
