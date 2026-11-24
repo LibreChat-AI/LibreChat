@@ -90,139 +90,122 @@ function PrivateDirectory([string] $path) {
       !(IsPrivate ($dir.GetAccessControl('Access, Owner')) $true)) { throw 'Directory is not private' }
 }
 
-# Open an existing object without following a leaf reparse point. The same handle supplies
-# link count, security descriptor and bytes, and excludes outstanding reads, writes and deletes.
-function LoadNativeFile {
-  Add-Type -TypeDefinition @'
-using System;
-using System.ComponentModel;
-using System.IO;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading;
-using Microsoft.Win32.SafeHandles;
-
-public static class LibreChatPrivateFile {
-    [StructLayout(LayoutKind.Sequential)]
-    private struct FileInfo {
-        public uint Attributes, CreationLow, CreationHigh, AccessLow, AccessHigh,
-            WriteLow, WriteHigh, Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
-    }
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
-    private static extern SafeFileHandle CreateFileW(string path, uint access, uint share,
-        IntPtr security, uint disposition, uint flags, IntPtr template);
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool GetFileInformationByHandle(SafeFileHandle file, out FileInfo info);
-    [DllImport("kernel32.dll")]
-    private static extern uint GetFileType(SafeFileHandle file);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool SetFileInformationByHandle(SafeFileHandle file, int kind,
-        IntPtr info, uint size);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RenameInfo {
-        public uint ReplaceIfExists;
-        public IntPtr RootDirectory;
-        public uint FileNameLength;
-        public ushort FileName;
-    }
-
-    public static FileStream Open(string path, bool mutate) {
-        // GENERIC_READ | WRITE_DAC (| DELETE), no sharing, OPEN_EXISTING, OPEN_REPARSE_POINT.
-        uint access = mutate ? 0x80050000 : 0x80040000;
-        SafeFileHandle handle;
-        for (int retry = 0; ; retry++) {
-            handle = CreateFileW(path, access, 0, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero);
-            if (!handle.IsInvalid) break;
-            int error = Marshal.GetLastWin32Error();
-            handle.Dispose();
-            if (error == 2) return null;
-            if (error != 32 || retry >= 10) throw new Win32Exception(error);
-            Thread.Sleep(50);
-        }
-        try {
-            FileInfo info;
-            if (GetFileType(handle) != 1 || !GetFileInformationByHandle(handle, out info) ||
-                (info.Attributes & 0x410) != 0 || info.Links != 1) throw new IOException();
-            return new FileStream(handle, FileAccess.Read);
-        } catch {
-            handle.Dispose();
-            throw;
-        }
-    }
-
-    public static void Promote(SafeFileHandle handle, string destination) {
-        // FILE_RENAME_INFO, with an absolute name and a null root handle.
-        var name = Encoding.Unicode.GetBytes(destination + "\0");
-        int offset = Marshal.OffsetOf(typeof(RenameInfo), "FileName").ToInt32();
-        var payload = new byte[offset + name.Length];
-        payload[0] = 1; // ReplaceIfExists
-        Array.Copy(BitConverter.GetBytes(name.Length - 2), 0, payload,
-            Marshal.OffsetOf(typeof(RenameInfo), "FileNameLength").ToInt32(), sizeof(uint));
-        Array.Copy(name, 0, payload, offset, name.Length);
-        Apply(handle, 3, payload);
-    }
-
-    public static void Remove(SafeFileHandle handle) {
-        Apply(handle, 4, new byte[] { 1 }); // FILE_DISPOSITION_INFO.DeleteFile
-    }
-
-    private static void Apply(SafeFileHandle handle, int kind, byte[] payload) {
-        var pinned = GCHandle.Alloc(payload, GCHandleType.Pinned);
-        try {
-            if (!SetFileInformationByHandle(handle, kind, pinned.AddrOfPinnedObject(), (uint)payload.Length))
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-        } finally { pinned.Free(); }
-    }
+# Bind the four kernel calls in memory. Add-Type invokes a compiler on Windows PowerShell.
+function NativeFileApi {
+  $name = [Reflection.AssemblyName]::new('LibreChat.PrivateFiles')
+  $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly($name, 'Run')
+  $type = $assembly.DefineDynamicModule($name.Name).DefineType($name.Name, 'Public, Abstract, Sealed')
+  $attribute = [Runtime.InteropServices.DllImportAttribute]
+  $constructor = $attribute.GetConstructor([type[]]@([string]))
+  $fields = [Reflection.FieldInfo[]]@($attribute.GetField('SetLastError'),
+    $attribute.GetField('ExactSpelling'), $attribute.GetField('CharSet'))
+  $values = [object[]]@($true, $true, [Runtime.InteropServices.CharSet]::Unicode)
+  $import = [Reflection.Emit.CustomAttributeBuilder]::new($constructor,
+    [object[]]@('kernel32.dll'), $fields, $values)
+  $handle = [Microsoft.Win32.SafeHandles.SafeFileHandle]
+  $methods = @(
+    @{ name = 'CreateFileW'; returns = $handle; parameters = [type[]]@(
+      [string], [uint32], [uint32], [IntPtr], [uint32], [uint32], [IntPtr]) },
+    @{ name = 'GetFileInformationByHandle'; returns = [bool]; parameters = [type[]]@($handle, [IntPtr]) },
+    @{ name = 'GetFileType'; returns = [uint32]; parameters = [type[]]@($handle) },
+    @{ name = 'SetFileInformationByHandle'; returns = [bool]; parameters = [type[]]@(
+      $handle, [int], [IntPtr], [uint32]) }
+  )
+  foreach ($method in $methods) {
+    $binding = $type.DefineMethod($method.name, 'Public, Static, PinvokeImpl',
+      $method.returns, $method.parameters)
+    $binding.SetCustomAttribute($import)
+    $binding.SetImplementationFlags('PreserveSig')
+  }
+  return $type.CreateType()
 }
-'@
+
+# Use one exclusive handle for link count, the security descriptor and file bytes.
+function OpenPrivateFile($native, [string] $path, [bool] $mutate) {
+  # GENERIC_READ | WRITE_DAC (| DELETE), no sharing, OPEN_EXISTING, OPEN_REPARSE_POINT.
+  $access = [uint32]2147745792
+  if ($mutate) { $access = $access -bor 0x10000 }
+  for ($retry = 0; ; $retry++) {
+    $handle = $native::CreateFileW($path, $access, 0, [IntPtr]::Zero, 3, 0x00200000, [IntPtr]::Zero)
+    if (!$handle.IsInvalid) { break }
+    $winError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    $handle.Dispose()
+    if ($winError -eq 2) { return $null }
+    if ($winError -ne 32 -or $retry -ge 10) { throw 'Could not open file handle' }
+    [Threading.Thread]::Sleep(50)
+  }
+  try {
+    # BY_HANDLE_FILE_INFORMATION: 13 DWORDs, with flags at 0 and link count at 40.
+    $info = [Runtime.InteropServices.Marshal]::AllocHGlobal(52)
+    try {
+      if ($native::GetFileType($handle) -ne 1 -or !$native::GetFileInformationByHandle($handle, $info) -or
+          ([Runtime.InteropServices.Marshal]::ReadInt32($info) -band 0x410) -or
+          [Runtime.InteropServices.Marshal]::ReadInt32($info, 40) -ne 1) { throw 'Not a single-link disk file' }
+    } finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($info) }
+    return [IO.FileStream]::new($handle, 'Read')
+  } catch {
+    $handle.Dispose()
+    throw
+  }
+}
+
+function ChangeRepairFile($native, $handle, [string] $destination) {
+  if ($destination) {
+    # FILE_RENAME_INFO: allow replacement and use a full path with a null root handle.
+    $name = [Text.Encoding]::Unicode.GetBytes($destination + [char]0)
+    $offset = 2 * [IntPtr]::Size
+    $buffer = [byte[]]::new($offset + 4 + $name.Length)
+    $buffer[0] = 1
+    [Array]::Copy([BitConverter]::GetBytes([int]($name.Length - 2)), 0, $buffer, $offset, 4)
+    [Array]::Copy($name, 0, $buffer, ($offset + 4), $name.Length)
+    $operation = 3
+  } else {
+    $buffer = [byte[]]@(1) # FILE_DISPOSITION_INFO.DeleteFile
+    $operation = 4
+  }
+  $pin = [Runtime.InteropServices.GCHandle]::Alloc($buffer, 'Pinned')
+  try {
+    if (!$native::SetFileInformationByHandle($handle, $operation, $pin.AddrOfPinnedObject(), $buffer.Length)) {
+      throw 'Could not update repair candidate'
+    }
+  } finally { $pin.Free() }
 }
 
 function ExistingFile([string] $path, [string] $operation, [string] $payload) {
   CheckParent $path
-  # Windows PowerShell's compiler writes scratch files. Keep those in a verified private directory.
-  $scratch = [IO.Path]::Combine($env:TEMP, 'librechat-acl-' + [Guid]::NewGuid().ToString('N'))
-  PrivateDirectory $scratch
-  $env:TEMP = $env:TMP = $scratch
+  $script:failureStage = 10
+  $native = NativeFileApi
+  $script:failureStage = 11
+  $stream = OpenPrivateFile $native $path ($operation -ne 'read')
+  if ($null -eq $stream) { exit 2 }
   try {
-    $script:failureStage = 10
-    LoadNativeFile
-    $script:failureStage = 11
-    $stream = [LibreChatPrivateFile]::Open($path, $operation -ne 'read')
-    if ($null -eq $stream) { exit 2 }
-    try {
-      $script:failureStage = 9
-      $acl = $stream.GetAccessControl()
-      if (!($acl.GetOwner([Security.Principal.SecurityIdentifier]).Equals($identity))) { exit 1 }
-      if (!(IsPrivate $acl $false)) {
-        # Apply only the DACL. Do not take ownership or change auditing.
-        $acl = PrivateAcl $false
-        $dacl = [Security.AccessControl.FileSecurity]::new()
-        $dacl.SetSecurityDescriptorBinaryForm($acl.GetSecurityDescriptorBinaryForm(), 'Access')
-        $stream.SetAccessControl($dacl)
-        if (!(IsPrivate ($stream.GetAccessControl()) $false)) { exit 1 }
+    $script:failureStage = 9
+    $acl = $stream.GetAccessControl()
+    if (!($acl.GetOwner([Security.Principal.SecurityIdentifier]).Equals($identity))) { exit 9 }
+    if (!(IsPrivate $acl $false)) {
+      $acl = PrivateAcl $false
+      $dacl = [Security.AccessControl.FileSecurity]::new()
+      $dacl.SetSecurityDescriptorBinaryForm($acl.GetSecurityDescriptorBinaryForm(), 'Access')
+      $stream.SetAccessControl($dacl)
+      if (!(IsPrivate ($stream.GetAccessControl()) $false)) { exit 9 }
+    }
+    $script:failureStage = 12
+    if ($operation -eq 'read') {
+      $stream.CopyTo([Console]::OpenStandardOutput())
+    } else {
+      $sha256 = [Security.Cryptography.SHA256]::Create()
+      try { $digest = [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '') }
+      finally { $sha256.Dispose() }
+      if ($digest -ne $payload) { exit 2 }
+      $destination = $null
+      if ($operation -eq 'promote') {
+        $destination = $env:LIBRECHAT_PRIVATE_STAGE
+        CheckPath $destination
+        if ($path -ne ($destination + '.lock')) { exit 1 }
       }
-      $script:failureStage = 12
-      if ($operation -eq 'read') {
-        $stream.CopyTo([Console]::OpenStandardOutput())
-      } else {
-        $sha256 = [Security.Cryptography.SHA256]::Create()
-        try { $digest = [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '') }
-        finally { $sha256.Dispose() }
-        if ($digest -ne $payload) { exit 2 }
-        if ($operation -eq 'remove') {
-          [LibreChatPrivateFile]::Remove($stream.SafeFileHandle)
-        } else {
-          $destination = $env:LIBRECHAT_PRIVATE_STAGE
-          CheckPath $destination
-          if ($path -ne ($destination + '.lock')) { exit 1 }
-          [LibreChatPrivateFile]::Promote($stream.SafeFileHandle, $destination)
-        }
-      }
-    } finally { $stream.Dispose() }
-  } finally { [IO.Directory]::Delete($scratch, $true) }
+      ChangeRepairFile $native $stream.SafeFileHandle $destination
+    }
+  } finally { $stream.Dispose() }
 }
 
 try {
