@@ -523,6 +523,23 @@ describe('createRoute', () => {
     });
   });
 
+  describe('filters', () => {
+    it('starts nothing for a subscription whose filter the event fails, and runs the rest', async () => {
+      const connection = await bind();
+      const narrow = await subscribe(connection, { filters: { branches: ['main'] } });
+      const wide = await subscribe(connection, {}, OTHER);
+      const routed = await route()({
+        verified: { digest: DIGEST },
+        occurrences: comment(),
+        connection,
+      });
+      expect(routed).toEqual({ enqueued: 1, duplicates: 0, skipped: { branch: 1 } });
+      const sources = (await queued()).map(({ envelope }) => envelope.event.source.id);
+      expect(sources).toEqual([wide.id]);
+      expect(sources).not.toContain(narrow.id);
+    });
+  });
+
   describe('a failed enqueue', () => {
     it('queues the other runs, then throws the failure', async () => {
       const connection = await bind();
