@@ -1,7 +1,7 @@
 /** Agent builder: tools an agent calls to list, read, create and update other agents. */
 import { z } from 'zod';
-import { logger } from '@librechat/data-schemas';
 import { tool } from '@librechat/agents/langchain/tools';
+import { logger, escapeRegExp } from '@librechat/data-schemas';
 import {
   Permissions,
   ResourceType,
@@ -14,7 +14,6 @@ import type { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import type { LCTool, HookCallback, LCToolRegistry } from '@librechat/agents';
 import type { AgentToolOptions } from 'librechat-data-provider';
 import type { IRole } from '@librechat/data-schemas';
-import type { Response } from 'express';
 import type { ServerRequest } from '~/types';
 import { agentCreateSchema, agentUpdateSchema } from './validation';
 import { checkAccess } from '~/middleware/access';
@@ -47,6 +46,7 @@ const editableFields = {
 
 const schemas = {
   [LIST_AGENTS_TOOL_NAME]: z.object({
+    search: z.string().max(100).optional(),
     limit: z.number().int().min(1).max(50).optional(),
     cursor: z.string().optional(),
   }),
@@ -56,7 +56,8 @@ const schemas = {
 };
 
 const descriptions: Record<keyof typeof schemas, string> = {
-  [LIST_AGENTS_TOOL_NAME]: 'List agents the user can view (id, name, description).',
+  [LIST_AGENTS_TOOL_NAME]:
+    'List agents the user can view (id, name, description). `search` filters by name or description.',
   [GET_AGENT_TOOL_NAME]: "Get an agent's configuration by id.",
   [CREATE_AGENT_TOOL_NAME]: 'Create an agent. The user must approve.',
   [UPDATE_AGENT_TOOL_NAME]:
@@ -135,8 +136,12 @@ type AgentRecord = {
   tools?: string[];
 };
 
-/** Express-shaped handler; the browser `POST /agents` and `PATCH /agents/:id` controllers. */
-type AgentWriteHandler = (req: ServerRequest, res: Response) => unknown;
+type AgentWriteResult = {
+  status: number;
+  body?: { id?: string; name?: string; tools?: string[]; error?: string };
+};
+/** The browser `POST /agents` and `PATCH /agents/:id` logic, without the Express response. */
+type AgentWrite = (req: ServerRequest) => Promise<AgentWriteResult>;
 
 export interface AgentBuilderDeps {
   getRoleByName: (roleName: string, fieldsToSelect?: string | string[]) => Promise<IRole | null>;
@@ -149,6 +154,7 @@ export interface AgentBuilderDeps {
   }) => Promise<Array<{ toString(): string }>>;
   getListAgentsByAccess: (params: {
     accessibleIds: Array<{ toString(): string }>;
+    otherParams?: Record<string, unknown>;
     limit: number;
     after: string | null;
   }) => Promise<{ data: Array<Partial<AgentRecord>>; has_more: boolean; after: string | null }>;
@@ -159,44 +165,23 @@ export interface AgentBuilderDeps {
     resourceId: { toString(): string };
     requiredPermission: PermissionBits;
   }) => Promise<boolean>;
-  createAgent: AgentWriteHandler;
-  updateAgent: AgentWriteHandler;
+  createAgent: AgentWrite;
+  updateAgent: AgentWrite;
 }
 
-/**
- * Runs a browser agent controller with a substitute body and id, so the agent-builder writes
- * pass the same validation, tool authorization, content filtering and owner grants as the UI.
- */
-async function runWriteHandler(
-  handler: AgentWriteHandler,
+/** Runs a browser write with a substitute body and id, so it passes the same validation, tool authorization, content filtering and owner grants as the UI. */
+function runWrite(
+  write: AgentWrite,
   req: ServerRequest,
   body: Record<string, unknown>,
   id?: string,
-): Promise<{
-  status: number;
-  body?: { id?: string; name?: string; tools?: string[]; error?: string };
-}> {
-  const subRequest = Object.assign(Object.create(req) as ServerRequest, {
-    body,
-    params: id ? { id } : {},
-  });
-  const result: { status: number; body?: Record<string, never> } = { status: 200 };
-  // shortcut: the controllers only call `status().json()`; use a real Response if they stream or set headers.
-  const res = {
-    status(code: number) {
-      result.status = code;
-      return res;
-    },
-    json(payload: Record<string, never>) {
-      result.body = payload;
-      return res;
-    },
-  } as unknown as Response;
-  await handler(subRequest, res);
-  return result;
+): Promise<AgentWriteResult> {
+  return write(
+    Object.assign(Object.create(req) as ServerRequest, { body, params: id ? { id } : {} }),
+  );
 }
 
-function writeResult(result: Awaited<ReturnType<typeof runWriteHandler>>): string {
+function writeResult(result: AgentWriteResult): string {
   if (result.status < 300 && result.body?.id) {
     const { id, name, tools } = result.body;
     return JSON.stringify({ id, name, tools });
@@ -263,6 +248,7 @@ export async function buildAgentBuilderTool({
 
   const handlers = {
     [LIST_AGENTS_TOOL_NAME]: async ({
+      search,
       limit,
       cursor,
     }: z.infer<(typeof schemas)['list_agents']>) => {
@@ -272,9 +258,10 @@ export async function buildAgentBuilderTool({
         resourceType: ResourceType.AGENT,
         requiredPermissions: PermissionBits.VIEW,
       });
-      // shortcut: no search filter; add one when users routinely have more agents than a few pages.
+      const regex = search?.trim() ? new RegExp(escapeRegExp(search.trim()), 'i') : undefined;
       const page = await deps.getListAgentsByAccess({
         accessibleIds,
+        otherParams: regex ? { $or: [{ name: regex }, { description: regex }] } : undefined,
         limit: limit ?? 20,
         after: cursor ?? null,
       });
@@ -302,7 +289,7 @@ export async function buildAgentBuilderTool({
       );
     },
     [CREATE_AGENT_TOOL_NAME]: async (input: z.infer<(typeof schemas)['create_agent']>) =>
-      writeResult(await runWriteHandler(deps.createAgent, req, input)),
+      writeResult(await runWrite(deps.createAgent, req, input)),
     [UPDATE_AGENT_TOOL_NAME]: async ({
       id,
       ...input
@@ -311,7 +298,7 @@ export async function buildAgentBuilderTool({
       if (!target || !(await can(target, PermissionBits.EDIT))) {
         return 'Error 404: Agent not found or not editable';
       }
-      return writeResult(await runWriteHandler(deps.updateAgent, req, input, id));
+      return writeResult(await runWrite(deps.updateAgent, req, input, id));
     },
   };
 

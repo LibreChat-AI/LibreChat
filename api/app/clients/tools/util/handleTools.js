@@ -472,8 +472,8 @@ const loadTools = async ({
             getListAgentsByAccess,
             findAccessibleResources,
             checkPermission,
-            createAgent: agentsController.createAgent,
-            updateAgent: agentsController.updateAgent,
+            createAgent: agentsController.createAgentResult,
+            updateAgent: agentsController.updateAgentResult,
           },
         });
       continue;

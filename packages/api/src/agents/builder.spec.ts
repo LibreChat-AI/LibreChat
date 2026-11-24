@@ -52,7 +52,7 @@ function makeDeps(canView: boolean, canEdit: boolean): AgentBuilderDeps {
       requiredPermission === PermissionBits.VIEW ? canView : canEdit,
     ),
     createAgent: jest.fn(),
-    updateAgent: jest.fn((_req, res) => res.status(200).json({ id: target.id, name: 'New' })),
+    updateAgent: jest.fn(async () => ({ status: 200, body: { id: target.id, name: 'New' } })),
   };
 }
 
@@ -132,6 +132,25 @@ describe('agent builder ACL', () => {
     expect(subRequest.params).toEqual({ id: target.id });
     expect(subRequest.body).toEqual({ name: 'New' });
     expect(subRequest.user.id).toBe('user-1');
+  });
+
+  it('filters list_agents by an escaped name or description search', async () => {
+    const deps = makeDeps(true, true);
+    (deps.findAccessibleResources as jest.Mock).mockResolvedValue([]);
+    (deps.getListAgentsByAccess as jest.Mock).mockResolvedValue({
+      data: [],
+      has_more: false,
+      after: null,
+    });
+    const built = await buildAgentBuilderTool({
+      toolName: 'list_agents',
+      req: makeReq(),
+      agent,
+      deps,
+    });
+    await built!.invoke({ search: 'a.b' });
+    const [{ otherParams }] = (deps.getListAgentsByAccess as jest.Mock).mock.calls[0];
+    expect(otherParams).toEqual({ $or: [{ name: /a\.b/i }, { description: /a\.b/i }] });
   });
 
   it('hides instructions and tools from VIEW-only readers', async () => {
