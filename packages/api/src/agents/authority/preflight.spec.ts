@@ -14,9 +14,11 @@ import type {
 } from '@librechat/data-schemas';
 import type { AgentKeyMCPIdentity, RunGrant } from 'librechat-data-provider';
 import type { PreflightCredentials, PreflightDeps } from './preflight';
+import type { ReadyCache } from './ready';
 import { pinStorage, untouchedSince, admitsDefinitions } from './execution.helper';
 import { createAgentKeyMCPGrantHost } from '~/apiKeys/grants';
 import { createPreflight, PreflightError } from './preflight';
+import { createReadyCache } from './ready';
 
 const warehouse = { type: 'streamable-http' as const, url: 'https://resource.example/mcp' };
 const docs = { type: 'streamable-http' as const, url: 'https://docs.example/mcp' };
@@ -35,7 +37,7 @@ const identity: AgentKeyMCPIdentity = {
  * granted it the warehouse tool only. No schedule exists: the grant is the key's, read by
  * the key's own host.
  */
-async function setup(credentials?: PreflightCredentials<AgentKeyMCPIdentity>) {
+async function setup(credentials?: PreflightCredentials<AgentKeyMCPIdentity>, cache?: ReadyCache) {
   const config = {
     interfaceConfig: {},
     endpoints: {
@@ -86,7 +88,12 @@ async function setup(credentials?: PreflightCredentials<AgentKeyMCPIdentity>) {
       grants.set(subject.agentId, structuredClone(enrollment));
       return true;
     },
-    revokeRunGrant: async () => true,
+    revokeRunGrant: async (subject, revision) => {
+      const grant = grants.get(subject.agentId);
+      if (!found(subject) || grant?.revision !== revision) return false;
+      grants.set(subject.agentId, { ...grant, revokedAtMs: Date.now() });
+      return true;
+    },
     admitRunGrant: async ({ identity: subject, revision, consentId, definitions }) => {
       const grant = grants.get(subject.agentId);
       return (
@@ -142,6 +149,13 @@ async function setup(credentials?: PreflightCredentials<AgentKeyMCPIdentity>) {
   const ready = new Set(['warehouse', 'docs']);
   /** Servers that answer, but only after asking the owner to sign in again. */
   const expired = new Set<string>();
+  /** The servers as the registry has them set up now. */
+  const servers: Partial<Record<'warehouse' | 'docs', typeof warehouse>> = {
+    warehouse: { ...warehouse },
+    docs: { ...docs },
+  };
+  /** The tools each server lists. */
+  const listed: Record<string, string[]> = { warehouse: ['query'], docs: ['search'] };
   const deps: PreflightDeps<AgentKeyMCPIdentity> = {
     resolveAgentGraphAccess: async () => ({}) as AgentGraphAccessContext,
     getAgentGraphNodes: nodes,
@@ -150,7 +164,7 @@ async function setup(credentials?: PreflightCredentials<AgentKeyMCPIdentity>) {
     getUser: async () => ({ ...user }) as IUser,
     getAppConfig: async () => config,
     ensureConfigServers: async () => ({}),
-    getServerConfigs: async () => ({ warehouse, docs }),
+    getServerConfigs: async () => structuredClone(servers),
     findPluginAuthsByKeys: async () => [],
     execution: host.execution,
     connect: jest.fn(async ({ serverName, oauthStart }) => {
@@ -158,22 +172,20 @@ async function setup(credentials?: PreflightCredentials<AgentKeyMCPIdentity>) {
       if (expired.has(serverName)) await oauthStart?.('https://resource.example/authorize');
       return {
         fetchToolsSnapshot: async () => ({
-          tools: [
-            {
-              name: serverName === 'warehouse' ? 'query' : 'search',
-              description: 'Read',
-              inputSchema: { type: 'object' as const, properties: {} },
-            },
-          ],
+          tools: (listed[serverName] ?? []).map((name) => ({
+            name,
+            description: 'Read',
+            inputSchema: { type: 'object' as const, properties: {} },
+          })),
           complete: true,
         }),
       };
     }),
   };
-  const preflight = createPreflight<AgentKeyMCPIdentity>(deps, credentials);
+  const preflight = createPreflight<AgentKeyMCPIdentity>(deps, credentials, cache);
   const probed = () =>
     (deps.connect as jest.Mock).mock.calls.map(([options]) => options.serverName).sort();
-  return { preflight, probed, ready, expired, state };
+  return { preflight, probed, ready, expired, state, servers, listed, host };
 }
 
 it("checks the servers an API key's grant allows, with no schedule to name", async () => {
@@ -251,4 +263,199 @@ it("connects each probe with the subject's credentials, and with none for a subj
   attach.mockClear();
   await preflight('agent_a', principal, { concurrency: 2 });
   expect(attach).not.toHaveBeenCalled();
+});
+
+describe('reusing a server found ready', () => {
+  const ttlMs = 300_000;
+  let clock: number;
+  let cache: ReadyCache;
+  beforeEach(() => {
+    clock = 1_000_000;
+    cache = createReadyCache({ ttlMs: async () => ttlMs, now: () => clock });
+  });
+  const check = (preflight: Awaited<ReturnType<typeof setup>>['preflight']) =>
+    preflight('agent_a', principal, { identity, concurrency: 2 });
+  const ok = [{ server: 'warehouse', status: 'ready' }];
+
+  it('does not connect again within the lifetime', async () => {
+    const { preflight, probed } = await setup(undefined, cache);
+    await expect(check(preflight)).resolves.toEqual(ok);
+    await expect(check(preflight)).resolves.toEqual(ok);
+    expect(probed()).toEqual(['warehouse']);
+  });
+
+  it('connects again once the lifetime is over', async () => {
+    const { preflight, probed } = await setup(undefined, cache);
+    await check(preflight);
+    clock += ttlMs;
+    await expect(check(preflight)).resolves.toEqual(ok);
+    expect(probed()).toEqual(['warehouse', 'warehouse']);
+  });
+
+  it('connects again when the server is set up differently', async () => {
+    const { preflight, probed, servers } = await setup(undefined, cache);
+    await check(preflight);
+    // A setting the grant is not bound to, so only the readiness changes.
+    Object.assign(servers.warehouse!, { initTimeout: 5000 });
+    await check(preflight);
+    expect(probed()).toEqual(['warehouse', 'warehouse']);
+  });
+
+  it('reports a server removed since as missing, whatever listing was kept', async () => {
+    const { preflight, probed, servers } = await setup(undefined, cache);
+    await check(preflight);
+    delete servers.warehouse;
+    await expect(check(preflight)).rejects.toMatchObject({
+      outcomes: [{ server: 'warehouse', status: 'mcp_configuration_missing' }],
+    });
+    expect(probed()).toEqual(['warehouse']);
+  });
+
+  it('reads the grant on every check, however recent the listing', async () => {
+    const { preflight, probed, state } = await setup(undefined, cache);
+    await check(preflight);
+    state.down = true;
+    await expect(check(preflight)).rejects.toEqual(new Error('database unavailable'));
+    expect(probed()).toEqual(['warehouse']);
+  });
+
+  it('answers as a check with no cache would once the grant changes', async () => {
+    const settle = (promise: Promise<unknown>) =>
+      promise.then(
+        (value) => ({ value }),
+        (error: { code?: string; outcomes?: unknown }) => ({
+          code: error.code,
+          outcomes: error.outcomes,
+        }),
+      );
+    const cached = await setup(undefined, cache);
+    const fresh = await setup();
+    await check(cached.preflight);
+    await check(fresh.preflight);
+    for (const { host } of [cached, fresh]) {
+      const { revision } = await host.service.view(identity);
+      await host.service.revoke(identity, revision!);
+      expect((await host.service.view(identity)).state).toBe('revoked');
+    }
+    expect(await settle(check(cached.preflight))).toEqual(await settle(check(fresh.preflight)));
+  });
+
+  it('asks the server itself when the kept listing lacks a tool the run needs', async () => {
+    const stale = { tools: [], complete: true };
+    const kept: ReadyCache = { ...cache, get: () => stale, delete: jest.fn() };
+    const { preflight, probed } = await setup(undefined, kept);
+    await expect(check(preflight)).resolves.toEqual(ok);
+    expect(probed()).toEqual(['warehouse']);
+    expect(kept.delete).toHaveBeenCalledWith(expect.objectContaining({ server: 'warehouse' }));
+  });
+
+  it('never keeps a server that was not ready', async () => {
+    const { preflight, probed, ready } = await setup(undefined, cache);
+    ready.delete('warehouse');
+    await expect(check(preflight)).rejects.toBeInstanceOf(PreflightError);
+    ready.add('warehouse');
+    await expect(check(preflight)).resolves.toEqual(ok);
+    await expect(check(preflight)).resolves.toEqual(ok);
+    expect(probed()).toEqual(['warehouse', 'warehouse']);
+  });
+
+  it('keeps nothing from a check that found the server asking for a new sign-in', async () => {
+    const { preflight, probed, expired } = await setup(undefined, cache);
+    expired.add('warehouse');
+    await expect(check(preflight)).rejects.toMatchObject({ code: 'mcp_reauth_required' });
+    expired.delete('warehouse');
+    await expect(check(preflight)).resolves.toEqual(ok);
+    await expect(check(preflight)).resolves.toEqual(ok);
+    expect(probed()).toEqual(['warehouse', 'warehouse']);
+  });
+
+  it('stops reusing a server the owner was refused by during a run', async () => {
+    const { preflight, probed } = await setup(undefined, cache);
+    await check(preflight);
+    cache.forget('owner', 'warehouse');
+    await check(preflight);
+    expect(probed()).toEqual(['warehouse', 'warehouse']);
+  });
+
+  it('reuses nothing at a lifetime of 0, or when the lifetime cannot be read', async () => {
+    const off = await setup(undefined, createReadyCache({ ttlMs: async () => 0 }));
+    await check(off.preflight);
+    await check(off.preflight);
+    expect(off.probed()).toEqual(['warehouse', 'warehouse']);
+    const unread = await setup(
+      undefined,
+      createReadyCache({ ttlMs: () => Promise.reject(new Error('config unavailable')) }),
+    );
+    await check(unread.preflight);
+    await check(unread.preflight);
+    expect(unread.probed()).toEqual(['warehouse', 'warehouse']);
+  });
+
+  it('connects once for a burst of deliveries checking the same server at once', async () => {
+    const { preflight, probed } = await setup(undefined, cache);
+    const burst = await Promise.all(Array.from({ length: 20 }, () => check(preflight)));
+    expect(burst).toEqual(Array.from({ length: 20 }, () => ok));
+    expect(probed()).toEqual(['warehouse']);
+  });
+
+  it('has each delivery of a burst check for itself when the shared check was not ready', async () => {
+    const { preflight, probed, ready } = await setup(undefined, cache);
+    ready.delete('warehouse');
+    const burst = await Promise.allSettled(Array.from({ length: 3 }, () => check(preflight)));
+    expect(burst.map(({ status }) => status)).toEqual(['rejected', 'rejected', 'rejected']);
+    expect(probed()).toEqual(['warehouse', 'warehouse', 'warehouse']);
+  });
+
+  it('connects every time when given no cache, as schedules and keys are', async () => {
+    const { preflight, probed } = await setup();
+    await check(preflight);
+    await check(preflight);
+    expect(probed()).toEqual(['warehouse', 'warehouse']);
+  });
+});
+
+describe('the ready cache', () => {
+  const key = (server: string, settings: unknown = { url: 'https://a.example' }) => ({
+    tenantId: 'tenant',
+    ownerId: 'owner',
+    server,
+    settings,
+  });
+  const listing = { tools: [], complete: true };
+
+  it('keeps its newest entries up to its bound', () => {
+    const cache = createReadyCache({ ttlMs: async () => 1000, max: 2, now: () => 0 });
+    cache.set(key('a'), listing, 1000);
+    cache.set(key('b'), listing, 1000);
+    cache.set(key('c'), listing, 1000);
+    expect(cache.get(key('a'))).toBeUndefined();
+    expect(cache.get(key('b'))).toBe(listing);
+    expect(cache.get(key('c'))).toBe(listing);
+  });
+
+  it('keeps nothing for a lifetime of 0', () => {
+    const cache = createReadyCache({ ttlMs: async () => 0, now: () => 0 });
+    cache.set(key('a'), listing, 0);
+    expect(cache.get(key('a'))).toBeUndefined();
+  });
+
+  it('reads equal settings alike whatever their key order, and other owners apart', () => {
+    const cache = createReadyCache({ ttlMs: async () => 1000, now: () => 0 });
+    const settings = { url: 'u', headers: { b: '2', a: '1' } };
+    cache.set(key('a', settings), listing, 1000);
+    expect(cache.get(key('a', { headers: { a: '1', b: '2' }, url: 'u' }))).toBe(listing);
+    expect(cache.get({ ...key('a', settings), ownerId: 'other' })).toBeUndefined();
+    expect(cache.get({ ...key('a', settings), tenantId: 'other' })).toBeUndefined();
+  });
+
+  it("forgets one owner's server under every settings it was kept with", () => {
+    const cache = createReadyCache({ ttlMs: async () => 1000, now: () => 0 });
+    cache.set(key('a', 1), listing, 1000);
+    cache.set(key('a', 2), listing, 1000);
+    cache.set(key('b', 1), listing, 1000);
+    cache.forget('owner', 'a');
+    expect(cache.get(key('a', 1))).toBeUndefined();
+    expect(cache.get(key('a', 2))).toBeUndefined();
+    expect(cache.get(key('b', 1))).toBe(listing);
+  });
 });

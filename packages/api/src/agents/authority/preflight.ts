@@ -29,6 +29,7 @@ import type { CheckAccessParams } from '~/middleware/access';
 import type { MCPToolsSnapshot } from '~/mcp/connection';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { RequirementDeps } from './requirements';
+import type { ReadyCache, ReadyKey } from './ready';
 import {
   ScheduledMCPBearerError,
   MCPAuthenticationRejectedError,
@@ -154,6 +155,8 @@ export interface PreflightCredentials<Identity extends RunGrantIdentity = Schedu
 export function createPreflight<Identity extends RunGrantIdentity = ScheduledMCPIdentity>(
   deps: PreflightDeps<Identity>,
   credentials: PreflightCredentials<Identity> = {},
+  /** Ready listings this check may reuse. Absent, every server is connected to each time. */
+  cache?: ReadyCache,
 ): Preflight<Identity> {
   const sharedProbeLimit = createConcurrencyLimiter(MAX_SHARED_MCP_PREFLIGHT_CONCURRENCY);
   const runPreflight: Preflight<Identity> = async (agentId, principal, options) => {
@@ -408,143 +411,205 @@ export function createPreflight<Identity extends RunGrantIdentity = ScheduledMCP
       conversationId: randomUUID(),
       parentMessageId: String(Constants.NO_PARENT),
     };
+    // A ready listing may be reused, and is read from here once for the whole check. Config
+    // that cannot be read reuses nothing: every server is then checked as before.
+    const ttlMs = cache ? await cache.ttlMs().catch(() => 0) : 0;
+    throwIfAborted();
+    /**
+     * What a server's listing says about it for this run: each grant check the run's tools
+     * need, made against that listing, and whether every tool the agents select is there.
+     */
+    const judge = async (
+      server: string,
+      required: string[],
+      serverConfig: ParsedServerConfig,
+      snapshot: MCPToolsSnapshot,
+      reauth: boolean,
+    ): Promise<ScheduleMCPOutcome[]> => {
+      if (snapshot.authenticationError) throw snapshot.authenticationError;
+      if (execution) {
+        const authorizations: Array<Promise<unknown>> = [];
+        for (const [toolKey, owners] of toolAgentIds.get(server) ?? []) {
+          const [selectionName] = splitMCPToolKey(toolKey, authoritativeCandidates);
+          const definitions = snapshot.tools.filter(
+            (tool) =>
+              tool.name === selectionName ||
+              stripServerNamePrefix(tool.name, normalizeServerName(server)) === selectionName,
+          );
+          for (const ownerId of owners) {
+            authorizations.push(
+              execution.bind(ownerId, selectionName).authorize({
+                user,
+                serverName: server,
+                serverConfig,
+                toolName: definitions.length === 1 ? definitions[0].name : '',
+                loadTools: async () => snapshot,
+                signal,
+                readiness: true,
+              }),
+            );
+          }
+        }
+        await Promise.all(authorizations);
+      }
+      const available = new Set(Object.keys(formatMCPServerTools(server, snapshot.tools)));
+      for (const tool of snapshot.tools) {
+        available.add(`${tool.name}${Constants.mcp_delimiter}${normalizeServerName(server)}`);
+      }
+      let status: ScheduleMCPStatus = 'ready';
+      if (reauth) {
+        status = 'mcp_reauth_required';
+      } else if (!snapshot.complete) {
+        status = 'mcp_unavailable';
+      } else if (available.size === 0 || !required.every((tool) => available.has(tool))) {
+        status = 'mcp_configuration_missing';
+      }
+      const missingTools =
+        status === 'mcp_configuration_missing'
+          ? required.filter((tool) => !available.has(tool))
+          : [];
+      const missingOwners = new Set<string>();
+      for (const missingTool of missingTools) {
+        for (const ownerId of toolAgentIds.get(server)?.get(missingTool) ?? []) {
+          missingOwners.add(ownerId);
+        }
+      }
+      return outcomesForOwners(server, status, missingOwners.size > 0 ? missingOwners : undefined);
+    };
+    /** A failure reaching or judging a server, as the outcome it stands for. */
+    const failed = (server: string, error: unknown, reauth: boolean): ScheduleMCPOutcome[] => {
+      if (error instanceof ScheduledMCPBearerError || error instanceof RunGrantPolicyError)
+        return error.outcomes;
+      if (
+        error instanceof OboTokenResolutionError &&
+        error.reason === 'missing_upstream_provider'
+      ) {
+        return outcomesForOwners(server, 'mcp_configuration_missing').map((outcome) => ({
+          ...outcome,
+          detail: 'unattended_auth_required' as const,
+        }));
+      }
+      return outcomesForOwners(
+        server,
+        reauth ||
+          error instanceof MCPAuthenticationRejectedError ||
+          error instanceof OpenIDReauthRequiredError ||
+          (error instanceof OboTokenResolutionError && !error.retryable) ||
+          error instanceof MCPOAuthSecretReentryRequiredError ||
+          isOAuthAuthenticationError(error)
+          ? 'mcp_reauth_required'
+          : 'mcp_unavailable',
+      );
+    };
+    const isReady = (outcomes: ScheduleMCPOutcome[]) =>
+      outcomes.every((outcome) => outcome.status === 'ready');
+    /** Connects to a server for this run and judges its listing; `ready` is told a ready one. */
+    const probe = (
+      server: string,
+      required: string[],
+      serverConfig: ParsedServerConfig,
+      customUserVars: Record<string, string> | undefined,
+      ready: (snapshot: MCPToolsSnapshot) => void,
+    ): Promise<ScheduleMCPOutcome[]> =>
+      requestProbeLimit(() =>
+        sharedProbeLimit(async (): Promise<ScheduleMCPOutcome[]> => {
+          const context = createMCPRequestContext();
+          if (identity)
+            credentials.attach?.(context, identity, options.stage ?? 'invoke', signal, {
+              manual: options.manual === true,
+            });
+          try {
+            throwIfAborted();
+            let reauth = false;
+            try {
+              const connection = await deps.connect({
+                user,
+                serverName: server,
+                serverConfig,
+                customUserVars,
+                requestBody,
+                requestScopedConnections: context,
+                upstreamTokenProviderResolver,
+                ephemeralConnection: true,
+                returnOnOAuth: true,
+                oauthStart: async () => {
+                  reauth = true;
+                },
+                signal,
+              });
+              const snapshot = await connection.fetchToolsSnapshot(options.deadlineMs, signal);
+              const result = await judge(server, required, serverConfig, snapshot, reauth);
+              if (isReady(result)) ready(snapshot);
+              return result;
+            } catch (error) {
+              return failed(server, error, reauth);
+            }
+          } finally {
+            // The shared slot bounds live transports, not only tools/list calls.
+            // Dispose this probe's isolated connection before releasing the slot.
+            await cleanupMCPRequestContext(context);
+          }
+        }),
+      );
     const outcomes = (
       await Promise.all(
-        [...selected].map(([server, required]) =>
-          requestProbeLimit(() =>
-            sharedProbeLimit(async (): Promise<ScheduleMCPOutcome[]> => {
-              const context = createMCPRequestContext();
-              if (identity)
-                credentials.attach?.(context, identity, options.stage ?? 'invoke', signal, {
-                  manual: options.manual === true,
-                });
-              try {
-                throwIfAborted();
-                const serverConfig = servers[server];
-                const customUserVars = auth[`${Constants.mcp_prefix}${server}`];
-                if (
-                  !serverConfig ||
-                  shadowed.has(server) ||
-                  getMissingCustomUserVars(serverConfig, customUserVars).length > 0
-                ) {
-                  return outcomesForOwners(server, 'mcp_configuration_missing');
+        [...selected].map(async ([server, required]): Promise<ScheduleMCPOutcome[]> => {
+          throwIfAborted();
+          const serverConfig = servers[server];
+          const customUserVars = auth[`${Constants.mcp_prefix}${server}`];
+          if (
+            !serverConfig ||
+            shadowed.has(server) ||
+            getMissingCustomUserVars(serverConfig, customUserVars).length > 0
+          ) {
+            return outcomesForOwners(server, 'mcp_configuration_missing');
+          }
+          // A listing is reused only for the same owner and the server as it is set up now;
+          // the grant is still checked against it, every time.
+          const key: ReadyKey | undefined =
+            ttlMs > 0
+              ? {
+                  tenantId: principal.tenantId,
+                  ownerId: user.id,
+                  server,
+                  settings: { serverConfig, customUserVars },
                 }
-                let reauth = false;
-                try {
-                  const connection = await deps.connect({
-                    user,
-                    serverName: server,
-                    serverConfig,
-                    customUserVars,
-                    requestBody,
-                    requestScopedConnections: context,
-                    upstreamTokenProviderResolver,
-                    ephemeralConnection: true,
-                    returnOnOAuth: true,
-                    oauthStart: async () => {
-                      reauth = true;
-                    },
-                    signal,
-                  });
-                  const snapshot = await connection.fetchToolsSnapshot(options.deadlineMs, signal);
-                  if (snapshot.authenticationError) throw snapshot.authenticationError;
-                  if (execution) {
-                    const authorizations: Array<Promise<unknown>> = [];
-                    for (const [toolKey, owners] of toolAgentIds.get(server) ?? []) {
-                      const [selectionName] = splitMCPToolKey(toolKey, authoritativeCandidates);
-                      const definitions = snapshot.tools.filter(
-                        (tool) =>
-                          tool.name === selectionName ||
-                          stripServerNamePrefix(tool.name, normalizeServerName(server)) ===
-                            selectionName,
-                      );
-                      for (const ownerId of owners) {
-                        authorizations.push(
-                          execution.bind(ownerId, selectionName).authorize({
-                            user,
-                            serverName: server,
-                            serverConfig,
-                            toolName: definitions.length === 1 ? definitions[0].name : '',
-                            loadTools: async () => snapshot,
-                            signal,
-                            readiness: true,
-                          }),
-                        );
-                      }
-                    }
-                    await Promise.all(authorizations);
-                  }
-                  const available = new Set(
-                    Object.keys(formatMCPServerTools(server, snapshot.tools)),
-                  );
-                  for (const tool of snapshot.tools) {
-                    available.add(
-                      `${tool.name}${Constants.mcp_delimiter}${normalizeServerName(server)}`,
-                    );
-                  }
-                  let status: ScheduleMCPStatus = 'ready';
-                  if (reauth) {
-                    status = 'mcp_reauth_required';
-                  } else if (!snapshot.complete) {
-                    status = 'mcp_unavailable';
-                  } else if (
-                    available.size === 0 ||
-                    !required.every((tool) => available.has(tool))
-                  ) {
-                    status = 'mcp_configuration_missing';
-                  }
-                  const missingTools =
-                    status === 'mcp_configuration_missing'
-                      ? required.filter((tool) => !available.has(tool))
-                      : [];
-                  const missingOwners = new Set<string>();
-                  for (const missingTool of missingTools) {
-                    for (const ownerId of toolAgentIds.get(server)?.get(missingTool) ?? []) {
-                      missingOwners.add(ownerId);
-                    }
-                  }
-                  return outcomesForOwners(
-                    server,
-                    status,
-                    missingOwners.size > 0 ? missingOwners : undefined,
-                  );
-                } catch (error) {
-                  if (
-                    error instanceof ScheduledMCPBearerError ||
-                    error instanceof RunGrantPolicyError
-                  )
-                    return error.outcomes;
-                  if (
-                    error instanceof OboTokenResolutionError &&
-                    error.reason === 'missing_upstream_provider'
-                  ) {
-                    return outcomesForOwners(server, 'mcp_configuration_missing').map(
-                      (outcome) => ({
-                        ...outcome,
-                        detail: 'unattended_auth_required' as const,
-                      }),
-                    );
-                  }
-                  return outcomesForOwners(
-                    server,
-                    reauth ||
-                      error instanceof MCPAuthenticationRejectedError ||
-                      error instanceof OpenIDReauthRequiredError ||
-                      (error instanceof OboTokenResolutionError && !error.retryable) ||
-                      error instanceof MCPOAuthSecretReentryRequiredError ||
-                      isOAuthAuthenticationError(error)
-                      ? 'mcp_reauth_required'
-                      : 'mcp_unavailable',
-                  );
-                }
-              } finally {
-                // The shared slot bounds live transports, not only tools/list calls.
-                // Dispose this probe's isolated connection before releasing the slot.
-                await cleanupMCPRequestContext(context);
-              }
-            }),
-          ),
-        ),
+              : undefined;
+          /** This run's outcome from a listing it did not fetch, or nothing unless ready. */
+          const reuse = async (snapshot: MCPToolsSnapshot) => {
+            const reused = await judge(server, required, serverConfig, snapshot, false).catch(
+              (error: unknown) => failed(server, error, false),
+            );
+            return isReady(reused) ? reused : undefined;
+          };
+          const kept = key && cache?.get(key);
+          if (key && kept) {
+            const reused = await reuse(kept);
+            if (reused) return reused;
+            // It no longer says ready for this run: drop it and ask the server itself.
+            cache?.delete(key);
+          }
+          // Another delivery for the same owner is checking this server now: use its listing,
+          // and check for itself only if that one did not find the server ready.
+          const shared = key && cache?.pending(key);
+          if (shared) {
+            const listing = await shared;
+            throwIfAborted();
+            const reused = listing && (await reuse(listing));
+            if (reused) return reused;
+          }
+          const finish = key && cache?.begin(key);
+          try {
+            // Only a listing that found the server ready is kept or handed to those waiting.
+            return await probe(server, required, serverConfig, customUserVars, (listing) => {
+              if (!key) return;
+              cache?.set(key, listing, ttlMs);
+              finish?.(listing);
+            });
+          } finally {
+            finish?.();
+          }
+        }),
       )
     ).flat();
     if (outcomes.some((item) => item.status !== 'ready')) throw new PreflightError(outcomes);

@@ -13,6 +13,7 @@ const {
 const { resolveAgentFireAccess } = require('~/server/services/Schedules/access');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { getAppConfig } = require('~/server/services/Config/app');
+const { readinessDeps } = require('~/server/services/Schedules/mcp');
 const { getMCPServersRegistry } = require('~/config');
 const methods = require('~/models');
 
@@ -47,4 +48,7 @@ module.exports = createSubscriptionHost({
     getServers: (user, config) =>
       getMCPServersRegistry().getAllServerConfigs(user.id, config, user.role),
   },
+  readiness: readinessDeps,
+  readyTtlSeconds: async () =>
+    (await getAppConfig({ baseOnly: true }))?.endpoints?.agents?.events?.readyTtlSeconds,
 });

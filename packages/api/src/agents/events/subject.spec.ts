@@ -27,6 +27,7 @@ import type {
 import type { RunGrant, Subscription, SubscriptionIdentity } from 'librechat-data-provider';
 import type { ExecutionContext, SavedRun } from '~/agents/authority/context';
 import type { SubscriptionHost, SubscriptionInput } from './subject';
+import type { MCPToolsSnapshot } from '~/mcp/connection';
 import type { AgentAccess } from '~/schedules/access';
 import {
   restoreExecutionContext,
@@ -920,5 +921,127 @@ describe('the later turns of a run a subscription started', () => {
       stage: 'invoke',
       completion: true,
     });
+  });
+});
+
+describe("the subscription's readiness check", () => {
+  const warehouse = { type: 'streamable-http' as const, url: 'https://warehouse.example/mcp' };
+  const config = {
+    interfaceConfig: {},
+    endpoints: { agents: { capabilities: [AgentCapabilities.tools] } },
+    mcpConfig: { warehouse },
+  } as unknown as AppConfig;
+  const mcp = { [PermissionTypes.MCP_SERVERS]: { [Permissions.USE]: true } };
+  let connect: jest.Mock;
+  /** The listing the warehouse answers with; it may say the owner's sign-in was refused. */
+  let listing: () => MCPToolsSnapshot;
+
+  const readiness = (): NonNullable<HostDeps['readiness']> => ({
+    resolveAgentGraphAccess: async () => ({}) as AgentGraphAccessContext,
+    getAgentGraphNodes: async (ids: string[]) =>
+      ids.map((id) => ({
+        id,
+        provider: 'test',
+        model: 'test',
+        tools: ['query_mcp_warehouse'],
+        agent_ids: [],
+      })),
+    getModelsConfig: async () => ({ test: ['test'] }),
+    getRoleByName: async () => ({ permissions: { ...subscriber, ...mcp } }) as IRole,
+    getUser: async (id: string) => ({ id, role: 'USER' }) as IUser,
+    getAppConfig: async () => config,
+    ensureConfigServers: async () => ({}),
+    getServerConfigs: async () => ({ warehouse: { ...warehouse } }),
+    findPluginAuthsByKeys: async () => [],
+    connect,
+  });
+
+  beforeEach(() => {
+    listing = () => ({
+      tools: [{ name: 'query', inputSchema: { type: 'object' as const, properties: {} } }],
+      complete: true,
+    });
+    connect = jest.fn(async () => ({ fetchToolsSnapshot: async () => listing() }));
+    getAppConfig.mockResolvedValue(config as never);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  /** A subscription granted the whole agent, and a check of its servers for one delivery. */
+  async function subscribed(overrides: Partial<HostDeps> = {}) {
+    host = build({
+      getRoleByName: async () => ({ permissions: { ...subscriber, ...mcp } }) as IRole,
+      readiness: readiness(),
+      ...overrides,
+    });
+    const subscription = await made();
+    await grant(subscription, { everything: true });
+    const check = () =>
+      host.preflight!(AGENT, { id: OWNER }, { subscriptionId: subscription.id, concurrency: 2 });
+    return { subscription, check };
+  }
+
+  it('is offered only to a host given what it reads', () => {
+    expect(build().preflight).toBeUndefined();
+    expect(build({ readiness: readiness() }).preflight).toEqual(expect.any(Function));
+  });
+
+  it('reuses a server found ready for five minutes when nothing sets how long', async () => {
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(NOW);
+    const { check } = await subscribed();
+    await expect(check()).resolves.toEqual([{ server: 'warehouse', status: 'ready' }]);
+    clock.mockReturnValue(NOW + 300_000 - 1);
+    await check();
+    expect(connect).toHaveBeenCalledTimes(1);
+    clock.mockReturnValue(NOW + 300_000);
+    await check();
+    expect(connect).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses for as long as the deployment sets, and checks every delivery at 0', async () => {
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(NOW);
+    const longer = await subscribed({ readyTtlSeconds: async () => 600 });
+    await longer.check();
+    clock.mockReturnValue(NOW + 599_000);
+    await longer.check();
+    expect(connect).toHaveBeenCalledTimes(1);
+    connect.mockClear();
+    const never = await subscribed({ readyTtlSeconds: async () => 0 });
+    await never.check();
+    await never.check();
+    expect(connect).toHaveBeenCalledTimes(2);
+  });
+
+  it("checks a server again once one of the run's calls finds the owner's sign-in refused", async () => {
+    const { subscription, check } = await subscribed();
+    await check();
+    const input = inputFor(delivery(subscription.id));
+    await place(input);
+    // What the MCP call path says when the server rejects or asks for the owner's sign-in.
+    grantExecution(input.context)!.bind(AGENT, 'query').rejected!('warehouse');
+    await check();
+    expect(connect).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps reusing a server another call was refused by, or another owner was', async () => {
+    const { subscription, check } = await subscribed();
+    await check();
+    const input = inputFor(delivery(subscription.id));
+    await place(input);
+    grantExecution(input.context)!.bind(AGENT, 'query').rejected!('docs');
+    await check();
+    expect(connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('is told of a refused sign-in only by a call, never by its own check', async () => {
+    const { check } = await subscribed();
+    listing = () => ({ tools: [], complete: false, authenticationError: new Error('401') });
+    await expect(check()).rejects.toMatchObject({ code: 'mcp_reauth_required' });
+    listing = () => ({
+      tools: [{ name: 'query', inputSchema: { type: 'object' as const, properties: {} } }],
+      complete: true,
+    });
+    await check();
+    await check();
+    expect(connect).toHaveBeenCalledTimes(2);
   });
 });
