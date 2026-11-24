@@ -601,7 +601,9 @@ describe('Slack Stop after API restart', () => {
         config: {},
         fileStrategy: FileSources.local,
         imageOutputType: 'png',
-        endpoints: { agents: { remoteApi: { background: { enabled: true } } } },
+        endpoints: {
+          agents: { remoteApi: { background: { enabled: true, acknowledgementTimeoutMs: 1000 } } },
+        },
       }),
       isPrincipalActive: async () => true,
       getAgentPermissions: async () => PermissionBits.VIEW,

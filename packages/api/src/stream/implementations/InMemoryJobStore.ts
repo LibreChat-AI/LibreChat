@@ -213,8 +213,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
   /** Store-lifetime generation clock. A completed job may be deleted before a
    * same-millisecond replacement starts, so the current jobs map alone cannot
    * guarantee a distinct checkpoint namespace. */
-  // Restart recovery compares enrolled epochs to the process start, even after clock rollback.
-  private lastGenerationEpoch = Math.ceil(performance.timeOrigin) - 1;
+  private lastGenerationEpoch = 0;
 
   /** Latest per-stream epoch retained briefly after its job disappears. This
    * is also the conditional-create fence: a delayed queue drain must not treat
@@ -514,6 +513,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
       now,
       previousCreatedAt == null ? 0 : previousCreatedAt + 1,
       this.lastGenerationEpoch + 1,
+      // The Responses restart fence compares journaled epochs to process start.
+      safeInitialMetadata.endpoint === 'responses' &&
+        safeInitialMetadata.terminalPersistenceOwner === 'external'
+        ? Math.ceil(performance.timeOrigin)
+        : 0,
     );
     const replacedJobs: ReplacedGeneration[] = [];
     const replacedEpochs = new Set<number>();

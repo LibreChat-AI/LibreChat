@@ -13,9 +13,12 @@ describe('InMemoryJobStore eviction at capacity', () => {
     await store.destroy();
   });
 
-  it('keeps new generation epochs at or after process start when the clock moves backward', async () => {
+  it('keeps enrolled Responses epochs at or after process start when the clock moves backward', async () => {
     jest.spyOn(Date, 'now').mockReturnValue(Math.floor(performance.timeOrigin) - 1000);
-    const job = await store.createJob('after-rollback', 'owner');
+    const job = await store.createJob('after-rollback', 'owner', undefined, undefined, {
+      endpoint: 'responses',
+      terminalPersistenceOwner: 'external',
+    });
     expect(job.createdAt).toBeGreaterThanOrEqual(performance.timeOrigin);
   });
 
