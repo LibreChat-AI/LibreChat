@@ -63,6 +63,20 @@ jobs:
 
           const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'lc-private-probe-')));
           try {
+            const program = source.split('String.raw`')[1].split('`;')[0].replace(
+              '  exit $script:failureStage',
+              '  [Console]::Error.WriteLine(("ACL probe: {0} line {1} {2}" -f $_.Exception.GetType().Name,$_.InvocationInfo.ScriptLineNumber,$_.FullyQualifiedErrorId)); exit $script:failureStage',
+            );
+            const probe = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-EncodedCommand',
+              Buffer.from(program, 'utf16le').toString('base64')], {
+              cwd, env: { ...env, TMP: root, TEMP: root, LIBRECHAT_PRIVATE_OPERATION: 'directory',
+                LIBRECHAT_PRIVATE_TARGET: join(root, 'probe') },
+              encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, timeout: 10000,
+            });
+            if (probe.status !== 0) {
+              const diagnostic = probe.stderr?.match(/ACL probe: [a-zA-Z]+ line \d+ [\w.,]+/)?.[0];
+              console.log(diagnostic ?? `ACL probe could not report a stage: ${probe.error?.code ?? probe.status}`);
+            }
             const directory = await makeWindowsPrivateDirectory(join(root, 'snapshots-'));
             console.log('Private directory created.');
             const target = join(directory, 'fixture');
