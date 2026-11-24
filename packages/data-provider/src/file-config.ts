@@ -455,6 +455,7 @@ export const codeTypeMapping: { [key: string]: string } = {
   conf: 'text/plain', // .conf - Config file
   env: 'text/plain', // .env - Environment file
   properties: 'text/plain', // .properties - Java properties
+  csproj: 'text/plain', // .csproj - MSBuild project file
   graphql: 'text/plain', // .graphql - GraphQL schema/query
   gql: 'text/plain', // .gql - GraphQL schema/query
   proto: 'text/plain', // .proto - Protocol Buffers
@@ -470,6 +471,10 @@ export const codeTypeMapping: { [key: string]: string } = {
   psm1: 'text/plain', // .psm1 - PowerShell module
   bat: 'text/plain', // .bat - Batch script
   cmd: 'text/plain', // .cmd - Windows command script
+  ahk: 'text/plain', // .ahk - AutoHotkey script
+  vbs: 'text/plain', // .vbs - VBScript
+  vb: 'text/plain', // .vb - Visual Basic source
+  bas: 'text/plain', // .bas - BASIC source
   asm: 'text/plain', // .asm - Assembly source
   s: 'text/plain', // .s - Assembly source
   v: 'text/plain', // .v - V or Verilog source
@@ -479,6 +484,8 @@ export const codeTypeMapping: { [key: string]: string } = {
   d: 'text/plain', // .d - D source
   pas: 'text/plain', // .pas - Pascal source
   pp: 'text/plain', // .pp - Pascal/Puppet source
+  dpr: 'text/plain', // .dpr - Delphi project source
+  dfm: 'text/plain', // .dfm - Delphi form definition
   f90: 'text/plain', // .f90 - Fortran 90 source
   f95: 'text/plain', // .f95 - Fortran 95 source
   f03: 'text/plain', // .f03 - Fortran 2003 source
