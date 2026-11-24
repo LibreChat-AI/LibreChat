@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { ErrorTypes } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { createKeyMethods as CreateKeyMethods } from './key';
 import type * as Crypto from '~/crypto';
@@ -42,6 +43,22 @@ describe('user provider keys', () => {
     expect(first.value).toMatch(/^v3:[0-9a-f]{32}:[0-9a-f]+$/);
     expect(first.value).not.toBe(second.value);
     await expect(methods.getUserKey({ userId, name: 'openAI' })).resolves.toBe('sk-test');
+  });
+
+  it('reads only active keys for discovery even before the TTL monitor removes an expired key', async () => {
+    await methods.updateUserKey({
+      userId,
+      name: 'openAI',
+      value: JSON.stringify({ apiKey: 'fixture-key' }),
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    await expect(
+      methods.getUserKeyValues({ userId, name: 'openAI', activeOnly: true }),
+    ).resolves.toEqual({ apiKey: 'fixture-key' });
+    await mongoose.models.Key.updateOne({ userId, name: 'openAI' }, { expiresAt: new Date(0) });
+    await expect(
+      methods.getUserKeyValues({ userId, name: 'openAI', activeOnly: true }),
+    ).rejects.toThrow(ErrorTypes.NO_USER_KEY);
   });
 
   it('writes the fixed-IV format only when writeFormat is legacy', async () => {

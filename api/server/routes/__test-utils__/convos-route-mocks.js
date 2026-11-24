@@ -85,6 +85,8 @@ module.exports = {
   agents: () => ({ sleep: jest.fn() }),
 
   api: (overrides = {}) => ({
+    createModelsService: jest.fn(() => ({ getEndpointModelsConfig: jest.fn() })),
+    createSavedSpecTargetResolver: jest.fn(() => jest.fn()),
     createGetConversationHandler: jest.requireActual(
       '../../../../packages/api/src/conversations/load.ts',
     ).createGetConversationHandler,
