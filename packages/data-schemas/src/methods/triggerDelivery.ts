@@ -776,6 +776,16 @@ export function createAgentTriggerDeliveryMethods(
       ...lane,
       publisherRequeueCount: publicationGeneration,
     };
+    /** Any replica can hold the lane for a requeued root, including one admitting its own
+     * delivery behind it, so its receipts are prepared here rather than by the requeue alone.
+     * A refused batch is dead again, and publication below rolls the sequence back. */
+    if (
+      staged != null &&
+      isStagingDelivery(staged) &&
+      (staged.requeueCount ?? 0) === publicationGeneration
+    ) {
+      await prepareBatchMembersForRequeue(staged);
+    }
     let batchRoot: IAgentTriggerDelivery | null = null;
     if (
       staged?._id != null &&

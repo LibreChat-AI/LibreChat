@@ -3352,6 +3352,156 @@ describe('agent trigger delivery methods', () => {
     });
   });
 
+  it('prepares a requeued batch when a later admission on its lane publishes it', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const orderingKey = 'batch-requeue-helper-lane';
+    const coalesceUntil = new Date(Date.now() + 60_000);
+    const shared = {
+      user,
+      orderingKey,
+      coalesceKey: 'trigger_batch_requeue_helper',
+      coalesceFrom: new Date(coalesceUntil.getTime() - 750),
+      coalesceUntil,
+      availableAt: coalesceUntil,
+      envelopeBytes: 128,
+    };
+    await Promise.all(
+      Array.from({ length: 2 }, () => methods.enqueueAgentTriggerDelivery(enqueueInput(shared))),
+    );
+    const claim = await methods.claimNextAgentTriggerDelivery({
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+      leaseUntil: new Date(coalesceUntil.getTime() + 60_000),
+    });
+    const attempt = await methods.beginAgentTriggerDeliveryAttempt({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+    });
+    await methods.deadLetterAgentTriggerDelivery({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      attempt: attempt!,
+      error: transientFailure({ retryable: false }),
+      settledAt: coalesceUntil,
+    });
+    const interrupted = jest.spyOn(Delivery, 'updateMany').mockImplementationOnce(() => {
+      throw new Error('process interrupted before member preparation');
+    });
+    await expect(methods.requeueAgentTriggerDelivery(claim!.id, coalesceUntil)).rejects.toThrow(
+      'process interrupted before member preparation',
+    );
+    interrupted.mockRestore();
+
+    await methods.enqueueAgentTriggerDelivery(
+      enqueueInput({ user, orderingKey, availableAt: coalesceUntil }),
+    );
+
+    const member = await Delivery.findOne({ batchRootId: claim!.id }).lean();
+    expect(member).toMatchObject({ status: 'batched', batchRootRequeueCount: 1 });
+    const requeued = await methods.claimNextAgentTriggerDelivery({
+      workerId: 'worker-2',
+      claimToken: 'claim-2',
+      now: coalesceUntil,
+      leaseUntil: new Date(coalesceUntil.getTime() + 60_000),
+    });
+    expect(requeued).toMatchObject({ id: claim!.id, requeueCount: 1 });
+    const retried = await methods.beginAgentTriggerDeliveryAttempt({
+      id: claim!.id,
+      workerId: 'worker-2',
+      claimToken: 'claim-2',
+      now: coalesceUntil,
+    });
+    const recovery = { required: false };
+    await expect(
+      methods.completeAgentTriggerDelivery(
+        {
+          id: claim!.id,
+          workerId: 'worker-2',
+          claimToken: 'claim-2',
+          attempt: retried!,
+          result: { ok: true },
+          settledAt: coalesceUntil,
+        },
+        recovery,
+      ),
+    ).resolves.toBe(true);
+    expect(recovery.required).toBe(false);
+    await expect(Delivery.findById(member!._id).lean()).resolves.toMatchObject({
+      status: 'succeeded',
+    });
+    await expect(methods.recoverAgentTriggerBatchReceipts()).resolves.toBe(0);
+  });
+
+  it('refuses an expired requeued batch when a later admission on its lane reaches it', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const orderingKey = 'batch-requeue-helper-expired-lane';
+    const coalesceUntil = new Date(Date.now() + 60_000);
+    const shared = {
+      user,
+      orderingKey,
+      coalesceKey: 'trigger_batch_requeue_helper_expired',
+      coalesceFrom: new Date(coalesceUntil.getTime() - 750),
+      coalesceUntil,
+      availableAt: coalesceUntil,
+      envelopeBytes: 128,
+    };
+    await Promise.all(
+      Array.from({ length: 2 }, () => methods.enqueueAgentTriggerDelivery(enqueueInput(shared))),
+    );
+    const claim = await methods.claimNextAgentTriggerDelivery({
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+      leaseUntil: new Date(coalesceUntil.getTime() + 60_000),
+    });
+    const attempt = await methods.beginAgentTriggerDeliveryAttempt({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+    });
+    await methods.deadLetterAgentTriggerDelivery({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      attempt: attempt!,
+      error: transientFailure({ retryable: false }),
+      settledAt: coalesceUntil,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const interrupted = jest.spyOn(Delivery, 'updateMany').mockImplementationOnce(() => {
+      throw new Error('process interrupted before member preparation');
+    });
+    await expect(methods.requeueAgentTriggerDelivery(claim!.id, coalesceUntil)).rejects.toThrow(
+      'process interrupted before member preparation',
+    );
+    interrupted.mockRestore();
+    await Delivery.deleteOne({ batchRootId: claim!.id });
+
+    const later = await methods.enqueueAgentTriggerDelivery(
+      enqueueInput({ user, orderingKey, availableAt: coalesceUntil }),
+    );
+
+    expect(later.delivery).toMatchObject({ status: 'pending', laneSequence: 3 });
+    await expect(Delivery.findById(claim!.id).lean()).resolves.toMatchObject({
+      status: 'dead',
+      laneSequence: 0,
+      lastError: { code: 'BATCH_RECEIPTS_EXPIRED' },
+    });
+    await expect(
+      methods.claimNextAgentTriggerDelivery({
+        workerId: 'worker-2',
+        claimToken: 'claim-2',
+        now: coalesceUntil,
+        leaseUntil: new Date(coalesceUntil.getTime() + 60_000),
+      }),
+    ).resolves.toMatchObject({ id: later.delivery.id });
+  });
+
   it('publishes an abandoned lane owner before allocating the next sequence', async () => {
     const user = new mongoose.Types.ObjectId();
     const orderingKey = 'publication-race';
