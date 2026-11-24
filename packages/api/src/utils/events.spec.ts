@@ -1,9 +1,10 @@
-import { writeGuarded, sendEvent, handleError } from './events';
+import { writeGuarded, writeStreaming, sendEvent, handleError } from './events';
 
 type FakeRes = {
   write: jest.Mock;
   end: jest.Mock;
   writableEnded?: boolean;
+  headersSent?: boolean;
   destroyed?: boolean;
 };
 
@@ -29,6 +30,26 @@ describe('writeGuarded', () => {
   it('skips a destroyed response', () => {
     const res = makeRes({ destroyed: true });
     expect(writeGuarded(res, 'x')).toBe(false);
+    expect(res.write).not.toHaveBeenCalled();
+  });
+});
+
+describe('writeStreaming', () => {
+  it('writes once the headers are sent', () => {
+    const res = makeRes({ headersSent: true });
+    expect(writeStreaming(res, 'x')).toBe(true);
+    expect(res.write).toHaveBeenCalledWith('x');
+  });
+
+  it('skips a response whose headers are unsent', () => {
+    const res = makeRes({ headersSent: false });
+    expect(writeStreaming(res, 'x')).toBe(false);
+    expect(res.write).not.toHaveBeenCalled();
+  });
+
+  it('skips an ended response', () => {
+    const res = makeRes({ headersSent: true, writableEnded: true });
+    expect(writeStreaming(res, 'x')).toBe(false);
     expect(res.write).not.toHaveBeenCalled();
   });
 });

@@ -5,8 +5,8 @@ jest.mock('nanoid', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
-  writeGuarded: (res, chunk) => {
-    if (res.writableEnded === true || res.destroyed === true) {
+  writeStreaming: (res, chunk) => {
+    if (res.headersSent !== true || res.writableEnded === true || res.destroyed === true) {
       return false;
     }
     res.write(chunk);

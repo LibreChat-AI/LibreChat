@@ -5,6 +5,7 @@ import type { ServerSentEvent } from '~/types';
 export interface GuardedWriter {
   write(chunk: string): boolean | void;
   writableEnded?: boolean;
+  headersSent?: boolean;
   destroyed?: boolean;
 }
 
@@ -19,6 +20,18 @@ export function writeGuarded(res: GuardedWriter, chunk: string): boolean {
   }
   res.write(chunk);
   return true;
+}
+
+/**
+ * Writes a chunk only to a response that is already streaming. One whose headers are
+ * unsent is still owed its JSON body, and a write would send the headers first.
+ * @returns whether the chunk was handed to the transport.
+ */
+export function writeStreaming(res: GuardedWriter, chunk: string): boolean {
+  if (res.headersSent !== true) {
+    return false;
+  }
+  return writeGuarded(res, chunk);
 }
 
 /**
