@@ -274,11 +274,11 @@ function handleExecutionError({ error, res, context, appConfig }) {
       error.body.error,
     );
   }
-  const errorMetadata = getAgentErrorMetadata(error);
+  const errorMetadata = getAgentErrorMetadata(error, protectionEnabled);
   const statusCode = errorMetadata?.status ?? 500;
   const errorType =
     statusCode >= 400 && statusCode < 500 ? 'invalid_request_error' : 'server_error';
-  const errorCode = !protectionEnabled ? (errorMetadata?.code ?? null) : null;
+  const errorCode = errorMetadata?.code ?? null;
   sendErrorResponse(res, statusCode, errorMessage, errorType, errorCode);
 }
 

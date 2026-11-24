@@ -542,9 +542,14 @@ describe('OpenAIChatCompletionController', () => {
     };
   });
 
-  it.each([true, false])(
-    'enforces the primary agent model policy before execution (stream=%s)',
-    async (stream) => {
+  it.each([
+    [true, true],
+    [false, true],
+    [true, false],
+    [false, false],
+  ])(
+    'enforces the primary agent model policy before execution (stream=%s, protection=%s)',
+    async (stream, protection) => {
       const api = require('@librechat/api');
       const db = require('~/models');
       const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
@@ -558,9 +563,14 @@ describe('OpenAIChatCompletionController', () => {
       });
       getEndpointModelsConfig.mockResolvedValueOnce({ openAI: ['available-model'] });
       req.body.stream = stream;
+      if (protection) req.config.filters = { messages: { pii: {} } };
+      api.validateRequest.mockImplementationOnce(
+        jest.requireActual('@librechat/api').validateRequest,
+      );
 
       await OpenAIChatCompletionController(req, res);
 
+      expect(mockCreateAgentRunEnvelope.mock.results[0].value.payload.stream).toBe(stream);
       expect(getEndpointModelsConfig).toHaveBeenCalledWith(req, 'openAI');
       expect(res.status).toHaveBeenCalledWith(403);
       expect(api.createErrorResponse).toHaveBeenCalledWith(
@@ -573,6 +583,22 @@ describe('OpenAIChatCompletionController', () => {
       expect(res.flushHeaders).not.toHaveBeenCalled();
     },
   );
+
+  it('withholds a provider error that uses the local model-policy code', async () => {
+    const api = require('@librechat/api');
+    req.config.filters = { messages: { pii: {} } };
+    api.initializeAgent.mockRejectedValueOnce(
+      Object.assign(new Error('private provider text'), { status: 403, code: 'model_not_allowed' }),
+    );
+
+    await OpenAIChatCompletionController(req, res);
+
+    expect(api.createErrorResponse).toHaveBeenCalledWith(
+      'An error occurred while processing the request',
+      'invalid_request_error',
+      null,
+    );
+  });
 
   it.each([
     [false, false],

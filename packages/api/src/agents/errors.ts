@@ -313,13 +313,19 @@ export function isStepLimitError(error: unknown): boolean {
 /** Outward metadata shared by UI generation failures and both remote agent APIs. */
 export function getAgentErrorMetadata(
   error: unknown,
+  protectionEnabled = false,
 ): { status?: number; code?: string; retryable?: boolean } | undefined {
+  if (error instanceof AgentModelPolicyError) {
+    return { status: 403, code: 'model_not_allowed' };
+  }
   if (error instanceof OboTokenResolutionError) {
     return {
       status: error.retryable ? 503 : 403,
-      code: error.retryable
-        ? MCPErrorCodes.AUTHENTICATION_REFRESH_FAILED
-        : MCPErrorCodes.AUTHENTICATION_REJECTED,
+      ...(!protectionEnabled && {
+        code: error.retryable
+          ? MCPErrorCodes.AUTHENTICATION_REFRESH_FAILED
+          : MCPErrorCodes.AUTHENTICATION_REJECTED,
+      }),
       retryable: error.retryable,
     };
   }
@@ -332,6 +338,6 @@ export function getAgentErrorMetadata(
     ...(typeof status === 'number' && Number.isInteger(status) && status >= 400 && status < 600
       ? { status }
       : {}),
-    ...(typeof candidate.code === 'string' ? { code: candidate.code } : {}),
+    ...(!protectionEnabled && typeof candidate.code === 'string' ? { code: candidate.code } : {}),
   };
 }

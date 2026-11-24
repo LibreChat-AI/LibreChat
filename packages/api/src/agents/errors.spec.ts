@@ -184,11 +184,20 @@ describe('LangChain provider error text', () => {
     it('keeps a model-policy rejection safe and actionable under content protection', () => {
       const error = new AgentModelPolicyError();
       expect(getUserFacingProviderError(error, true)).toBe(error.message);
-      expect(getAgentErrorMetadata(error)).toMatchObject({
+      expect(getAgentErrorMetadata(error, true)).toMatchObject({
         status: 403,
         code: 'model_not_allowed',
       });
     });
+    it.each(['model_not_allowed', 'ERR_REMOTE'])(
+      'withholds provider code %s under protection',
+      (code) => {
+        const error = Object.assign(new Error('private provider text'), { status: 403, code });
+        expect(getAgentErrorMetadata(error, true)).toEqual({ status: 403 });
+        expect(getUserFacingProviderError(error, true)).toBe(GENERIC_PROVIDER_ERROR);
+      },
+    );
+
     it('strips the docs URL from the forwarded provider message', () => {
       const error = new Error(`429 budget exceeded${troubleshooting('MODEL_RATE_LIMIT')}`);
       expect(getUserFacingProviderError(error, false)).toBe('429 budget exceeded');

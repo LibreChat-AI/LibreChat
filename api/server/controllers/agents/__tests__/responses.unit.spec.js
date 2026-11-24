@@ -705,9 +705,14 @@ describe('createResponse controller', () => {
     };
   });
 
-  it.each([true, false])(
-    'enforces the primary agent model policy before execution (stream=%s)',
-    async (stream) => {
+  it.each([
+    [true, true],
+    [false, true],
+    [true, false],
+    [false, false],
+  ])(
+    'enforces the primary agent model policy before execution (stream=%s, protection=%s)',
+    async (stream, protection) => {
       const api = require('@librechat/api');
       const db = require('~/models');
       const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
@@ -721,9 +726,14 @@ describe('createResponse controller', () => {
       });
       getEndpointModelsConfig.mockResolvedValueOnce({ openAI: ['available-model'] });
       req.body.stream = stream;
+      if (protection) req.config.filters = { messages: { pii: {} } };
+      api.validateResponseRequest.mockImplementationOnce(
+        jest.requireActual('@librechat/api').validateResponseRequest,
+      );
 
       await createResponse(req, res);
 
+      expect(mockCreateAgentRunEnvelope.mock.results[0].value.payload.stream).toBe(stream);
       expect(getEndpointModelsConfig).toHaveBeenCalledWith(req, 'openAI');
       expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
         res,
@@ -737,6 +747,23 @@ describe('createResponse controller', () => {
       expect(res.flushHeaders).not.toHaveBeenCalled();
     },
   );
+
+  it('withholds a provider error that uses the local model-policy code', async () => {
+    const api = require('@librechat/api');
+    req.config.filters = { messages: { pii: {} } };
+    api.initializeAgent.mockRejectedValueOnce(
+      Object.assign(new Error('private provider text'), { status: 403, code: 'model_not_allowed' }),
+    );
+
+    await createResponse(req, res);
+
+    expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
+      res,
+      403,
+      'An error occurred while processing the request',
+      'invalid_request',
+    );
+  });
 
   it.each(['false', 'true', null, 0, 1, {}, []].map((store) => [store]))(
     'rejects malformed storage intent before creating an execution envelope: %p',
