@@ -21,6 +21,7 @@ import { channelErrorLabel } from '~/utils/channelErrors';
 import { useAuthContext, useLocalize } from '~/hooks';
 import BotManagers from './BotManagers';
 import Loading from './Loading';
+import Notice from './Notice';
 import Apps from './Apps';
 
 function workspaceStatusLabel(workspace: SlackWorkspace, configured?: boolean) {
@@ -388,12 +389,11 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
         </Button>
       </div>
       {status.isError && (
-        <Alert variant="error">
-          <p>{localize('com_ui_slack_workspaces_error')}</p>
-          <Button variant="outline" onClick={() => void status.refetch()}>
-            {localize('com_ui_retry')}
-          </Button>
-        </Alert>
+        <Notice
+          message={localize('com_ui_slack_workspaces_error')}
+          action={localize('com_ui_retry')}
+          onAction={() => void status.refetch()}
+        />
       )}
       <OGDialog open={open} onOpenChange={setOpen} triggerRef={manageRef}>
         <OGDialogTemplate
@@ -413,25 +413,19 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
             <div className="space-y-4">
               {status.isLoading && <Loading />}
               {(status.isError || retire.isError) && (
-                <div className="flex flex-col items-start gap-2">
-                  <Alert variant="error">
-                    {localize(
-                      channelErrorLabel(
-                        retire.error ?? status.error,
-                        'com_ui_slack_workspaces_error',
-                      ),
-                    )}
-                  </Alert>
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      retire.reset();
-                      void status.refetch();
-                    }}
-                  >
-                    {localize('com_ui_retry')}
-                  </Button>
-                </div>
+                <Notice
+                  message={localize(
+                    channelErrorLabel(
+                      retire.error ?? status.error,
+                      'com_ui_slack_workspaces_error',
+                    ),
+                  )}
+                  action={localize('com_ui_retry')}
+                  onAction={() => {
+                    retire.reset();
+                    void status.refetch();
+                  }}
+                />
               )}
               {first && (
                 <Apps

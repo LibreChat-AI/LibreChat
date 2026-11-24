@@ -1,8 +1,8 @@
 import React from 'react';
 import userEvent from '@testing-library/user-event';
 import { QueryKeys, dataService } from 'librechat-data-provider';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-query';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type {
   DiscordApplicationPage,
   DiscordApplication,
@@ -13,6 +13,11 @@ import type {
 import { OAUTH_SETTLED_CHANNEL } from '~/data-provider/PullRequest/signIn';
 import Discord, { DiscordSettings } from './Discord';
 
+const mockShowToast = jest.fn();
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useToastContext: () => ({ showToast: mockShowToast }),
+}));
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
   return {
@@ -26,11 +31,17 @@ jest.mock('librechat-data-provider', () => {
       connectDiscordGuild: jest.fn(),
       cancelDiscordInstall: jest.fn(),
       disconnectDiscordGuild: jest.fn(),
+      listDiscordDmSelections: jest.fn(async () => ({ enabled: false, selections: [] })),
+      channelIdentityClient: {
+        ...actual.dataService.channelIdentityClient,
+        list: jest.fn(async () => []),
+      },
     },
   };
 });
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
+  useCopyToClipboard: () => () => true,
   useAuthContext: () => ({ user: { id: 'admin', tenantId: 'org' } }),
 }));
 const app: DiscordApplication = {
@@ -67,7 +78,12 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-async function page({ configuration = true } = {}) {
+/** The connection settings of the first application, opened the way a person would. */
+async function openSettings(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_settings_named' }));
+  return screen.findByRole('dialog', { name: 'com_ui_discord_settings' });
+}
+async function page({ settings = false } = {}) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     logger: { log: () => {}, warn: () => {}, error: () => {} },
@@ -82,13 +98,8 @@ async function page({ configuration = true } = {}) {
     expect(screen.getByRole('button', { name: 'com_ui_discord_app_create' })).toBeEnabled(),
   );
   const user = userEvent.setup();
-  // Configuration scenarios enter through the same disclosure as a person using the app.
-  if (configuration) {
-    for (const summary of screen.getAllByText('com_ui_discord_setup_details')) {
-      await user.click(summary);
-    }
-  }
-  return { ...view, client, user };
+  const dialog = settings ? await openSettings(user) : null;
+  return { ...view, client, user, dialog };
 }
 /** A rotation whose save is rejected, settled and ready to be dismissed with Refresh. */
 async function failedSave() {
@@ -98,13 +109,14 @@ async function failedSave() {
   const view = await page();
   const trigger = screen.getByRole('button', { name: 'com_ui_discord_rotate_named' });
   await view.user.click(trigger);
-  await view.user.type(screen.getByLabelText('com_ui_discord_bot_token'), 'private-bot-token');
+  await view.user.type(screen.getByLabelText(/^com_ui_discord_bot_token/), 'private-bot-token');
   await view.user.click(screen.getByRole('button', { name: 'com_ui_save' }));
   expect(await screen.findByText('com_ui_discord_code_grant')).toBeVisible();
   await waitFor(() => expect(trigger).toBeEnabled());
   return { ...view, trigger };
 }
 beforeEach(() => {
+  mockShowToast.mockReset();
   jest.spyOn(dataService, 'getDiscordApps').mockResolvedValue({
     applications: [app],
     setup: { oauthCallbackUrl: 'https://chat.example/api/channels/discord/callback' },
@@ -138,14 +150,32 @@ test('loads independent metadata, server URLs and configuration-needed state', a
       <Discord userId="admin" />
     </QueryClientProvider>,
   );
-  expect(screen.getByRole('status')).toHaveTextContent('com_ui_channels_loading');
+  expect(screen.getByRole('status')).toHaveTextContent('com_ui_loading');
   expect(dataService.getDiscordGuilds).toHaveBeenCalled();
   await act(async () => apps.resolve({ applications: [] }));
-  expect(await screen.findByText('com_ui_discord_empty')).toBeVisible();
+  expect(await screen.findByRole('progressbar')).toBeVisible();
+  expect(screen.getByText('com_ui_discord_wizard_create_title')).toBeVisible();
   expect(screen.queryByLabelText('com_ui_discord_callback')).toBeNull();
 });
 
-test.each([403, 404])(
+test('hides server management from people without organization authority', async () => {
+  jest
+    .mocked(dataService.getDiscordApps)
+    .mockRejectedValueOnce(Object.assign(new Error('safe'), { status: 403 }));
+  const client = new QueryClient({ logger: { log: () => {}, warn: () => {}, error: () => {} } });
+  render(
+    <QueryClientProvider client={client}>
+      <Discord userId="member" />
+    </QueryClientProvider>,
+  );
+  await waitFor(() => expect(dataService.getDiscordApps).toHaveBeenCalled());
+  await waitFor(() =>
+    expect(screen.queryByRole('button', { name: 'com_ui_discord_app_create' })).toBeNull(),
+  );
+  expect(screen.queryByText('com_ui_discord_admin')).toBeNull();
+});
+
+test.each([404])(
   'explains management authority status %s and retries without Slack',
   async (status) => {
     jest
@@ -160,7 +190,7 @@ test.each([403, 404])(
     expect(
       await screen.findByText(status === 403 ? 'com_ui_discord_admin' : 'com_ui_discord_disabled'),
     ).toBeVisible();
-    expect(screen.getByRole('button', { name: 'com_ui_discord_app_create' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'com_ui_discord_app_create' })).toBeNull();
     await userEvent.setup().click(screen.getByRole('button', { name: 'com_ui_retry' }));
     expect(await screen.findByText('Engineering')).toBeVisible();
   },
@@ -174,14 +204,10 @@ test('submits write-only rotation credentials without retaining them in mutation
     return pending.promise;
   });
   const { user, client } = await page();
-  expect(screen.getByLabelText('com_ui_discord_callback')).toHaveValue(
-    'https://chat.example/api/channels/discord/callback',
-  );
-  expect(screen.getByText('com_ui_discord_ingress_required')).toBeVisible();
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' }));
-  expect(screen.getByLabelText('com_ui_discord_application_id')).toHaveAttribute('readonly');
-  expect(screen.getByLabelText('com_ui_discord_bot_token')).toHaveFocus();
-  await user.type(screen.getByLabelText('com_ui_discord_bot_token'), 'private-bot-token');
+  expect(screen.getByLabelText('com_ui_discord_application_id')).toBeDisabled();
+  expect(screen.getByLabelText(/^com_ui_discord_bot_token/)).toHaveFocus();
+  await user.type(screen.getByLabelText(/^com_ui_discord_bot_token/), 'private-bot-token');
   await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
   await waitFor(() =>
     expect(submitted).toEqual({
@@ -191,7 +217,7 @@ test('submits write-only rotation credentials without retaining them in mutation
       botToken: 'private-bot-token',
     }),
   );
-  expect(screen.getByLabelText('com_ui_discord_bot_token')).toHaveValue('');
+  expect(screen.getByLabelText(/^com_ui_discord_bot_token/)).toHaveValue('');
   expect(
     client
       .getMutationCache()
@@ -199,7 +225,12 @@ test('submits write-only rotation credentials without retaining them in mutation
       .map((mutation) => mutation.state.variables),
   ).not.toContainEqual(expect.objectContaining({ botToken: expect.anything() }));
   await act(async () => pending.resolve(app));
-  expect(await screen.findByText('com_ui_discord_saved')).toBeVisible();
+  await waitFor(() =>
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_ui_discord_saved',
+      status: 'success',
+    }),
+  );
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' })).toHaveFocus(),
   );
@@ -209,16 +240,16 @@ test('requires both credentials for a new application and clears them on cancel'
   const { user } = await page();
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_app_create' }));
   await user.type(screen.getByLabelText('com_ui_discord_application_id'), app.applicationId);
-  await user.type(screen.getByLabelText('com_ui_discord_bot_token'), 'private-token');
+  await user.type(screen.getByLabelText(/^com_ui_discord_bot_token/), 'private-token');
   await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
   expect(dataService.configureDiscordApplication).not.toHaveBeenCalled();
-  expect(screen.getByLabelText('com_ui_discord_client_secret')).toHaveAttribute(
+  expect(screen.getByLabelText(/^com_ui_discord_client_secret/)).toHaveAttribute(
     'aria-invalid',
     'true',
   );
-  await user.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_app_create' }));
-  expect(screen.getByLabelText('com_ui_discord_bot_token')).toHaveValue('');
+  expect(screen.getByLabelText(/^com_ui_discord_bot_token/)).toHaveValue('');
 });
 
 test('cancels an attempt whose creation response arrives after cancellation', async () => {
@@ -318,7 +349,7 @@ test('confirms disconnect with revision and keeps failed canonical reads disable
       guild.revision,
     ),
   );
-  expect(await screen.findByText('com_ui_discord_error')).toBeVisible();
+  expect(await screen.findByText('com_ui_discord_load_failed')).toBeVisible();
   expect(screen.getByRole('button', { name: 'com_ui_discord_connect_named' })).toBeDisabled();
 });
 
@@ -332,7 +363,7 @@ test('retries a failed next cursor without refetching the loaded prefix', async 
     });
   const { user } = await page();
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_more_apps' }));
-  expect(await screen.findByText('com_ui_discord_error')).toBeVisible();
+  expect(await screen.findByText('com_ui_discord_load_failed')).toBeVisible();
   expect(screen.getByText('Engineering')).toBeVisible();
   await user.click(screen.getByRole('button', { name: 'com_ui_retry' }));
   expect(await screen.findByText('Support')).toBeVisible();
@@ -351,11 +382,105 @@ test('returns keyboard focus to the settings entry after Escape', async () => {
       <DiscordSettings />
     </QueryClientProvider>,
   );
-  const trigger = screen.getByRole('button', { name: 'com_ui_discord_title' });
+  const trigger = screen.getByRole('button', { name: 'com_ui_manage' });
   await user.click(trigger);
-  expect(await screen.findByRole('dialog', { name: 'com_ui_discord_title' })).toBeVisible();
+  expect(await screen.findByRole('dialog', { name: 'com_ui_discord_manage_title' })).toBeVisible();
   await user.keyboard('{Escape}');
   await waitFor(() => expect(trigger).toHaveFocus());
+});
+
+describe('the Manage Discord dialog when LibreChat is unreachable', () => {
+  const down = () => Object.assign(new Error('network'), { code: 'unavailable' });
+  const dmLink = {
+    linkId: 'link',
+    revision: 'link-v1',
+    state: 'active',
+    expiresAtMs: Date.now() + 3600000,
+    identity: {
+      provider: 'discord',
+      tenantId: 'org',
+      agentId: 'agent',
+      applicationId: app.applicationId,
+      guildId: guild.guildId,
+      externalUserId: '789',
+    },
+  } as never;
+  beforeEach(() => {
+    jest
+      .mocked(dataService.listDiscordDmSelections)
+      .mockReset()
+      .mockResolvedValue({ enabled: false, selections: [] });
+    jest.mocked(dataService.channelIdentityClient.list).mockReset().mockResolvedValue([]);
+  });
+  async function openDialog() {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      logger: { log: () => {}, warn: () => {}, error: () => {} },
+    });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={client}>
+        <DiscordSettings />
+      </QueryClientProvider>,
+    );
+    await user.click(screen.getByRole('button', { name: 'com_ui_manage' }));
+    return { user, client, dialog: await screen.findByRole('dialog') };
+  }
+
+  test('shows one notice and one Retry when the management and DM reads all fail', async () => {
+    jest.mocked(dataService.getDiscordApps).mockRejectedValue(down());
+    jest.mocked(dataService.getDiscordGuilds).mockRejectedValue(down());
+    jest.mocked(dataService.listDiscordDmSelections).mockRejectedValue(down());
+    jest.mocked(dataService.channelIdentityClient.list).mockRejectedValue(down());
+    const { dialog } = await openDialog();
+    await within(dialog).findByText('com_ui_discord_unreachable');
+    await waitFor(() => expect(dataService.listDiscordDmSelections).toHaveBeenCalled());
+    await waitFor(() => expect(dataService.channelIdentityClient.list).toHaveBeenCalled());
+    expect(within(dialog).getAllByText('com_ui_discord_unreachable')).toHaveLength(1);
+    expect(within(dialog).queryByText('com_ui_discord_dm_title')).toBeNull();
+    expect(within(dialog).getAllByRole('button', { name: 'com_ui_retry' })).toHaveLength(1);
+  });
+
+  test('Retry reads the Direct messages again along with the management reads', async () => {
+    jest.mocked(dataService.getDiscordApps).mockRejectedValueOnce(down());
+    jest.mocked(dataService.listDiscordDmSelections).mockRejectedValueOnce(down());
+    jest.mocked(dataService.channelIdentityClient.list).mockRejectedValueOnce(down());
+    const { user, dialog } = await openDialog();
+    await user.click(await within(dialog).findByRole('button', { name: 'com_ui_retry' }));
+    jest.mocked(dataService.listDiscordDmSelections).mockResolvedValue({
+      enabled: true,
+      selections: [],
+    });
+    jest.mocked(dataService.channelIdentityClient.list).mockResolvedValue([dmLink]);
+    await waitFor(() => expect(dataService.getDiscordApps).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(dataService.listDiscordDmSelections).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(dataService.channelIdentityClient.list).toHaveBeenCalledTimes(2));
+  });
+
+  test('keeps a failure that only affects the Direct messages in that section', async () => {
+    jest
+      .mocked(dataService.listDiscordDmSelections)
+      .mockRejectedValue(Object.assign(new Error('x'), { code: 'unavailable', status: 500 }));
+    const { dialog } = await openDialog();
+    await within(dialog).findByText('com_ui_discord_dm_load_failed');
+    expect(within(dialog).queryByText('com_ui_discord_unreachable')).toBeNull();
+  });
+
+  test('a non-admin cannot tell they lack access while offline, so still sees the one unreachable notice', async () => {
+    jest.mocked(dataService.getDiscordApps).mockRejectedValue(down());
+    jest.mocked(dataService.getDiscordGuilds).mockRejectedValue(down());
+    const { dialog } = await openDialog();
+    expect(await within(dialog).findByText('com_ui_discord_unreachable')).toBeVisible();
+  });
+
+  test('a 403 hides the management section and shows no error', async () => {
+    const forbidden = Object.assign(new Error('x'), { code: 'forbidden', status: 403 });
+    jest.mocked(dataService.getDiscordApps).mockRejectedValue(forbidden);
+    jest.mocked(dataService.getDiscordGuilds).mockRejectedValue(forbidden);
+    const { dialog } = await openDialog();
+    await waitFor(() => expect(dataService.getDiscordApps).toHaveBeenCalled());
+    expect(within(dialog).queryByRole('alert')).toBeNull();
+  });
 });
 
 test('refreshes an uncertain credential update before reopening a current revision', async () => {
@@ -364,7 +489,7 @@ test('refreshes an uncertain credential update before reopening a current revisi
     .mockRejectedValueOnce(Object.assign(new Error('safe'), { code: 'application_changed' }));
   const { user } = await page();
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' }));
-  await user.type(screen.getByLabelText('com_ui_discord_bot_token'), 'private-token');
+  await user.type(screen.getByLabelText(/^com_ui_discord_bot_token/), 'private-token');
   jest
     .mocked(dataService.getDiscordApps)
     .mockResolvedValue({ applications: [{ ...app, revision: 'app-r2' }] });
@@ -376,8 +501,8 @@ test('refreshes an uncertain credential update before reopening a current revisi
     expect(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' })).toBeEnabled(),
   );
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' }));
-  expect(screen.getByLabelText('com_ui_discord_bot_token')).toHaveValue('');
-  await user.type(screen.getByLabelText('com_ui_discord_bot_token'), 'replacement-token');
+  expect(screen.getByLabelText(/^com_ui_discord_bot_token/)).toHaveValue('');
+  await user.type(screen.getByLabelText(/^com_ui_discord_bot_token/), 'replacement-token');
   await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
   await waitFor(() =>
     expect(jest.mocked(dataService.configureDiscordApplication).mock.calls[1][0]).toMatchObject({
@@ -394,7 +519,7 @@ test('returns focus to the editor trigger only after the refresh settles', async
   await waitFor(() => expect(trigger).toBeDisabled());
   expect(trigger).not.toHaveFocus();
   expect(screen.getByRole('button', { name: 'com_ui_discord_app_create' })).toBeDisabled();
-  expect(screen.queryByLabelText('com_ui_discord_bot_token')).toBeNull();
+  expect(screen.queryByLabelText(/^com_ui_discord_bot_token/)).toBeNull();
   await act(async () => reads.resolve({ applications: [{ ...app, revision: 'app-r2' }] }));
   await waitFor(() => expect(trigger).toBeEnabled());
   await waitFor(() => expect(trigger).toHaveFocus());
@@ -404,7 +529,7 @@ test('moves focus to the load failure when the refresh cannot reconcile, then ba
   const { user, trigger } = await failedSave();
   jest.mocked(dataService.getDiscordApps).mockRejectedValueOnce(new Error('network'));
   await user.click(screen.getByRole('button', { name: 'com_ui_refresh' }));
-  const failure = (await screen.findByText('com_ui_discord_error')).closest(
+  const failure = (await screen.findByText('com_ui_discord_load_failed')).closest(
     '[role="alert"]',
   ) as HTMLElement;
   await waitFor(() => expect(failure).toHaveFocus());
@@ -450,18 +575,14 @@ const observed = (credentialHealth: unknown) =>
   ({ ...app, credentialHealth }) as unknown as DiscordApplication;
 
 test.each([
-  ['valid', 'com_ui_discord_health_valid'],
-  ['invalid', 'com_ui_discord_health_invalid'],
-])('shows the %s bot token observation with its last checked time', async (state, key) => {
+  ['valid', 'com_ui_discord_token_valid'],
+  ['invalid', 'com_ui_discord_token_invalid'],
+])('shows the %s bot token observation as a chip', async (state, key) => {
   jest
     .mocked(dataService.getDiscordApps)
     .mockResolvedValue({ applications: [observed({ state, checkedAt })] });
   await page();
   expect(screen.getByText(key)).toBeVisible();
-  expect(screen.getByText('com_ui_discord_health_checked', { exact: false })).toBeVisible();
-  const time = screen.getByText(new Date(checkedAt).toLocaleString());
-  expect(time.tagName).toBe('TIME');
-  expect(time).toHaveAttribute('datetime', new Date(checkedAt).toISOString());
 });
 
 test.each([
@@ -480,9 +601,9 @@ test.each([
     .mocked(dataService.getDiscordApps)
     .mockResolvedValue({ applications: [observed(credentialHealth)] });
   await page();
-  expect(screen.getByText('com_ui_discord_health_unknown')).toBeVisible();
-  expect(screen.queryByText('com_ui_discord_health_valid')).toBeNull();
-  expect(screen.queryByText('com_ui_discord_health_invalid')).toBeNull();
+  expect(screen.getByText('com_ui_discord_token_unknown')).toBeVisible();
+  expect(screen.queryByText('com_ui_discord_token_valid')).toBeNull();
+  expect(screen.queryByText('com_ui_discord_token_invalid')).toBeNull();
   expect(document.querySelector('time')).toBeNull();
 });
 
@@ -491,20 +612,16 @@ test('replaces the observation once updated credentials are saved', async () => 
     .mocked(dataService.getDiscordApps)
     .mockResolvedValue({ applications: [observed({ state: 'invalid', checkedAt })] });
   const { user } = await page();
-  expect(screen.getByText('com_ui_discord_health_invalid')).toBeVisible();
+  expect(screen.getByText('com_ui_discord_token_invalid')).toBeVisible();
   const later = checkedAt + 3_600_000;
   jest.mocked(dataService.getDiscordApps).mockResolvedValue({
     applications: [{ ...observed({ state: 'valid', checkedAt: later }), revision: 'app-r2' }],
   });
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' }));
-  await user.type(screen.getByLabelText('com_ui_discord_bot_token'), 'private-bot-token');
+  await user.type(screen.getByLabelText(/^com_ui_discord_bot_token/), 'private-bot-token');
   await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
-  expect(await screen.findByText('com_ui_discord_health_valid')).toBeVisible();
-  expect(screen.queryByText('com_ui_discord_health_invalid')).toBeNull();
-  expect(screen.getByText(new Date(later).toLocaleString())).toHaveAttribute(
-    'datetime',
-    new Date(later).toISOString(),
-  );
+  expect(await screen.findByText('com_ui_discord_token_valid')).toBeVisible();
+  expect(screen.queryByText('com_ui_discord_token_invalid')).toBeNull();
 });
 
 test('reconciles the observation when a failed save is dismissed with Refresh', async () => {
@@ -512,13 +629,13 @@ test('reconciles the observation when a failed save is dismissed with Refresh', 
     .mocked(dataService.getDiscordApps)
     .mockResolvedValue({ applications: [observed({ state: 'valid', checkedAt })] });
   const { user, trigger } = await failedSave();
-  expect(screen.getByText('com_ui_discord_health_valid')).toBeVisible();
+  expect(screen.getByText('com_ui_discord_token_valid')).toBeVisible();
   jest.mocked(dataService.getDiscordApps).mockResolvedValue({
     applications: [observed({ state: 'invalid', checkedAt: checkedAt + 1000 })],
   });
   await user.click(screen.getByRole('button', { name: 'com_ui_refresh' }));
-  expect(await screen.findByText('com_ui_discord_health_invalid')).toBeVisible();
-  expect(screen.queryByText('com_ui_discord_health_valid')).toBeNull();
+  expect(await screen.findByText('com_ui_discord_token_invalid')).toBeVisible();
+  expect(screen.queryByText('com_ui_discord_token_valid')).toBeNull();
   await waitFor(() => expect(trigger).toHaveFocus());
 });
 
@@ -527,7 +644,7 @@ test('never shows the previous account observation to the next account', async (
     .mocked(dataService.getDiscordApps)
     .mockResolvedValue({ applications: [observed({ state: 'valid', checkedAt })] });
   const { client, rerender } = await page();
-  expect(screen.getByText('com_ui_discord_health_valid')).toBeVisible();
+  expect(screen.getByText('com_ui_discord_token_valid')).toBeVisible();
   const next = deferred<{ applications: DiscordApplication[] }>();
   jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(next.promise);
   rerender(
@@ -535,11 +652,11 @@ test('never shows the previous account observation to the next account', async (
       <Discord userId="next-admin" tenantId="other-org" />
     </QueryClientProvider>,
   );
-  await waitFor(() => expect(screen.queryByText('com_ui_discord_health_valid')).toBeNull());
+  await waitFor(() => expect(screen.queryByText('com_ui_discord_token_valid')).toBeNull());
   expect(document.querySelector('time')).toBeNull();
   await act(async () => next.resolve({ applications: [app] }));
-  expect(await screen.findByText('com_ui_discord_health_unknown')).toBeVisible();
-  expect(screen.queryByText('com_ui_discord_health_valid')).toBeNull();
+  expect(await screen.findByText('com_ui_discord_token_unknown')).toBeVisible();
+  expect(screen.queryByText('com_ui_discord_token_valid')).toBeNull();
 });
 
 type User = ReturnType<typeof userEvent.setup>;
@@ -551,6 +668,7 @@ async function failedCommand(user: User): Promise<Dismissal> {
   jest
     .mocked(dataService.registerDiscordCommands)
     .mockRejectedValueOnce(Object.assign(new Error('safe'), { code: 'rate_limited' }));
+  await openSettings(user);
   const origin = screen.getByRole('button', { name: 'com_ui_discord_commands_named' });
   await user.click(origin);
   const alert = (await screen.findByText('com_ui_discord_rate_limited')).closest(
@@ -618,7 +736,7 @@ test.each(dismissals)(
     const { origin, dismiss } = await arrange(user);
     jest.mocked(dataService.getDiscordApps).mockRejectedValueOnce(new Error('network'));
     await dismiss();
-    const failure = (await screen.findByText('com_ui_discord_error')).closest(
+    const failure = (await screen.findByText('com_ui_discord_load_failed')).closest(
       '[role="alert"]',
     ) as HTMLElement;
     await waitFor(() => expect(failure).toHaveFocus());
@@ -693,7 +811,7 @@ test('keeps focus on a failed cancellation and restores it only once the retry s
   await waitFor(() => expect(failed).toHaveFocus());
   expect(origin).toBeDisabled();
   expect(origin).not.toHaveFocus();
-  await user.click(within(failed).getByRole('button', { name: 'com_ui_cancel' }));
+  await user.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
   await waitFor(() => expect(screen.queryByText('com_ui_discord_unconfirmed')).toBeNull());
   await waitFor(() => expect(origin).toBeEnabled());
   await waitFor(() => expect(origin).toHaveFocus());
@@ -716,8 +834,8 @@ test('returns focus to the reconnect control after a cancelled reconnection', as
 
 test('returns focus to the editor trigger when a failed save is dismissed after its editor was cancelled', async () => {
   const { user, trigger } = await failedSave();
-  await user.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
-  await waitFor(() => expect(screen.queryByLabelText('com_ui_discord_bot_token')).toBeNull());
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  await waitFor(() => expect(screen.queryByLabelText(/^com_ui_discord_bot_token/)).toBeNull());
   await user.click(screen.getByRole('button', { name: 'com_ui_refresh' }));
   await waitFor(() => expect(screen.queryByText('com_ui_discord_code_grant')).toBeNull());
   await waitFor(() => expect(trigger).toBeEnabled());
@@ -743,15 +861,17 @@ test('registers commands only after explicit action using current revision and m
     manifestVersion: '2';
   }>();
   jest.mocked(dataService.registerDiscordCommands).mockReturnValueOnce(pending.promise);
-  const { user, client } = await page();
+  const { user, client } = await page({ settings: true });
   expect(dataService.registerDiscordCommands).not.toHaveBeenCalled();
-  expect(screen.getByText('com_ui_discord_commands_help')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'com_ui_discord_commands_help' })).toBeVisible();
   const trigger = screen.getByRole('button', { name: 'com_ui_discord_commands_named' });
   await user.click(trigger);
   expect(await screen.findByText('com_ui_discord_commands_registering')).toBeVisible();
   expect(trigger).toHaveAttribute('aria-busy', 'true');
   expect(trigger).toBeDisabled();
-  expect(screen.getByRole('button', { name: 'com_ui_discord_connect_named' })).toBeDisabled();
+  expect(
+    screen.getByRole('button', { name: 'com_ui_discord_connect_named', hidden: true }),
+  ).toBeDisabled();
   const input = {
     applicationId: app.applicationId,
     expectedRevision: app.revision,
@@ -792,7 +912,7 @@ test.each([
   jest
     .mocked(dataService.registerDiscordCommands)
     .mockRejectedValueOnce(Object.assign(new Error('private provider payload'), { code }));
-  const { user } = await page();
+  const { user } = await page({ settings: true });
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
   expect(await screen.findByText(label)).toBeVisible();
   expect(screen.queryByText(/private provider payload/)).toBeNull();
@@ -829,23 +949,39 @@ test.each([
   jest
     .mocked(dataService.registerDiscordCommands)
     .mockRejectedValueOnce(Object.assign(new Error('private provider payload'), { code }));
-  const { user } = await page();
+  const { user } = await page({ settings: true });
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
   expect(await screen.findByText(label)).toBeVisible();
-  expect(screen.queryByText('com_ui_discord_error')).toBeNull();
+  expect(screen.queryByText('com_ui_discord_load_failed')).toBeNull();
   expect(screen.queryByText(/private provider payload/)).toBeNull();
 });
 
-test.each(['unavailable', 'unrecognized_code'])(
-  'keeps the generic unconfirmed state for the %s code',
-  async (code) => {
+test.each([
+  ['unavailable', 500],
+  ['unrecognized_code', undefined],
+])('keeps the unconfirmed write wording for the %s code', async (code, status) => {
+  jest
+    .mocked(dataService.registerDiscordCommands)
+    .mockRejectedValueOnce(Object.assign(new Error('private provider payload'), { code, status }));
+  const { user } = await page({ settings: true });
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
+  expect(await screen.findByText('com_ui_discord_error')).toBeVisible();
+  expect(screen.queryByText(/private provider payload/)).toBeNull();
+});
+
+test.each([
+  ['a network failure', undefined],
+  ['a gateway timeout', 504],
+])(
+  'says LibreChat cannot be reached for %s, not that a change is unconfirmed',
+  async (_name, status) => {
     jest
       .mocked(dataService.registerDiscordCommands)
-      .mockRejectedValueOnce(Object.assign(new Error('private provider payload'), { code }));
-    const { user } = await page();
+      .mockRejectedValueOnce(Object.assign(new Error('x'), { code: 'unavailable', status }));
+    const { user } = await page({ settings: true });
     await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
-    expect(await screen.findByText('com_ui_discord_error')).toBeVisible();
-    expect(screen.queryByText(/private provider payload/)).toBeNull();
+    expect(await screen.findByText('com_ui_discord_unreachable')).toBeVisible();
+    expect(screen.queryByText('com_ui_discord_error')).toBeNull();
   },
 );
 
@@ -859,7 +995,7 @@ test.each([
       code: 'provider_refused',
     }),
   );
-  const { user } = await page();
+  const { user } = await page({ settings: true });
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
   expect(await screen.findByText(label)).toBeVisible();
   expect(screen.queryByText('com_ui_discord_refused')).toBeNull();
@@ -875,12 +1011,12 @@ test.each([
     .mockRejectedValueOnce(Object.assign(new Error('Bot private-bot-token refused'), { code }));
   const { user } = await page();
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' }));
-  await user.type(screen.getByLabelText('com_ui_discord_bot_token'), 'private-bot-token');
+  await user.type(screen.getByLabelText(/^com_ui_discord_bot_token/), 'private-bot-token');
   await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
   expect(await screen.findByText(label)).toBeVisible();
-  expect(screen.queryByText('com_ui_discord_error')).toBeNull();
+  expect(screen.queryByText('com_ui_discord_load_failed')).toBeNull();
   expect(screen.queryByText(/private-bot-token/)).toBeNull();
-  expect(screen.getByLabelText('com_ui_discord_bot_token')).toHaveValue('');
+  expect(screen.getByLabelText(/^com_ui_discord_bot_token/)).toHaveValue('');
   expect(await screen.findByRole('button', { name: 'com_ui_refresh' })).toBeVisible();
 });
 
@@ -890,7 +1026,7 @@ test('moves focus to a failed save so a scrolled form cannot hide it', async () 
     .mockRejectedValueOnce(Object.assign(new Error('safe'), { code: 'unsupported_installation' }));
   const { user } = await page();
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' }));
-  await user.type(screen.getByLabelText('com_ui_discord_bot_token'), 'private-bot-token');
+  await user.type(screen.getByLabelText(/^com_ui_discord_bot_token/), 'private-bot-token');
   await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
   const alert = (await screen.findByText('com_ui_discord_code_grant')).closest('[role="alert"]');
   await waitFor(() => expect(alert).toHaveFocus());
@@ -903,7 +1039,7 @@ test('moves focus to a failed command registration beside its application', asyn
   jest
     .mocked(dataService.registerDiscordCommands)
     .mockRejectedValueOnce(Object.assign(new Error('safe'), { code: 'rate_limited' }));
-  const { user } = await page();
+  const { user } = await page({ settings: true });
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
   const alert = (await screen.findByText('com_ui_discord_rate_limited')).closest('[role="alert"]');
   await waitFor(() => expect(alert).toHaveFocus());
@@ -912,7 +1048,7 @@ test('moves focus to a failed command registration beside its application', asyn
 test('moves focus to a failed authorization but leaves a pending one alone', async () => {
   const { user } = await page();
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_connect_named' }));
-  const pending = (await screen.findByText('com_ui_discord_pending')).closest('[role="alert"]');
+  const pending = (await screen.findByText('com_ui_discord_pending')).closest('[role="status"]');
   expect(pending).not.toHaveFocus();
   await user.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
   await waitFor(() => expect(screen.queryByText('com_ui_discord_pending')).toBeNull());
@@ -926,7 +1062,7 @@ test('moves focus to the alert when the callback settles a pending authorization
   const { user } = await page();
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_connect_named' }));
   await waitFor(() => expect(popup.location.href).toBe(connectResponse.url));
-  const pending = screen.getByText('com_ui_discord_pending').closest('[role="alert"]');
+  const pending = screen.getByText('com_ui_discord_pending').closest('[role="status"]');
   expect(pending).not.toHaveFocus();
   act(() =>
     window.dispatchEvent(
@@ -941,21 +1077,23 @@ test('moves focus to the alert when the callback settles a pending authorization
 });
 
 test('clears old registration success when credentials rotate and uses the refreshed app revision', async () => {
-  const { user } = await page();
+  const { user } = await page({ settings: true });
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
   expect(await screen.findByText('com_ui_discord_commands_success')).toBeVisible();
+  await user.click(screen.getByRole('button', { name: 'Close' }));
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' })).toBeEnabled(),
   );
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' }));
-  await user.type(screen.getByLabelText('com_ui_discord_bot_token'), 'private-rotated-token');
+  await user.type(screen.getByLabelText(/^com_ui_discord_bot_token/), 'private-rotated-token');
   jest
     .mocked(dataService.getDiscordApps)
     .mockResolvedValue({ applications: [{ ...app, revision: 'app-r2' }] });
   await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
   await waitFor(() =>
-    expect(screen.getByRole('button', { name: 'com_ui_discord_commands_named' })).toBeEnabled(),
+    expect(screen.getByRole('button', { name: 'com_ui_discord_settings_named' })).toBeEnabled(),
   );
+  await openSettings(user);
   expect(screen.queryByText('com_ui_discord_commands_success')).toBeNull();
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
   await waitFor(() =>
@@ -975,7 +1113,7 @@ test('does not attach a previous account registration result to the next account
     manifestVersion: '2';
   }>();
   jest.mocked(dataService.registerDiscordCommands).mockReturnValueOnce(pending.promise);
-  const { user, client, rerender } = await page();
+  const { user, client, rerender } = await page({ settings: true });
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
   rerender(
     <QueryClientProvider client={client}>
@@ -1000,14 +1138,28 @@ test('keeps failures scoped to their application card', async () => {
   });
   jest.mocked(dataService.registerDiscordCommands).mockRejectedValueOnce(new Error('safe'));
   const { user } = await page();
-  const first = within(screen.getByText('Engineering').closest('li')!);
-  const second = within(screen.getByText('Support').closest('li')!);
-  await user.click(first.getByRole('button', { name: 'com_ui_discord_commands_named' }));
-  expect(await first.findByText('com_ui_discord_error')).toBeVisible();
+  const settingsOf = (name: string) =>
+    within(screen.getByText(name).closest('.rounded-lg') as HTMLElement).getByRole('button', {
+      name: 'com_ui_discord_settings_named',
+    });
+  await user.click(settingsOf('Engineering'));
+  let dialog = await screen.findByRole('dialog', { name: 'com_ui_discord_settings' });
+  await user.click(within(dialog).getByRole('button', { name: 'com_ui_discord_commands_named' }));
+  expect(await within(dialog).findByText('com_ui_discord_error')).toBeVisible();
+  expect(
+    within(dialog).getByRole('button', { name: 'com_ui_discord_commands_named' }),
+  ).toBeDisabled();
+  await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await user.click(settingsOf('Support'));
+  dialog = await screen.findByRole('dialog', { name: 'com_ui_discord_settings' });
+  expect(within(dialog).getByText(/823456789012345678/)).toBeVisible();
+  expect(within(dialog).queryByText('com_ui_discord_error')).toBeNull();
   await waitFor(() =>
-    expect(second.getByRole('button', { name: 'com_ui_discord_commands_named' })).toBeEnabled(),
+    expect(
+      within(dialog).getByRole('button', { name: 'com_ui_discord_commands_named' }),
+    ).toBeEnabled(),
   );
-  expect(first.getByRole('button', { name: 'com_ui_discord_commands_named' })).toBeDisabled();
 });
 
 test('rejects a mismatched registration acknowledgement without claiming success', async () => {
@@ -1017,7 +1169,7 @@ test('rejects a mismatched registration acknowledgement without claiming success
     providerVersion: '723456789012345678',
     manifestVersion: '2',
   });
-  const { user } = await page();
+  const { user } = await page({ settings: true });
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
   expect(await screen.findByText('com_ui_discord_error')).toBeVisible();
   expect(screen.queryByText('com_ui_discord_commands_success')).toBeNull();
@@ -1114,7 +1266,7 @@ test('moves focus to the load failure when the reads fail behind a failed discon
     Promise.reject(new Error('network')),
   );
   await user.click(cancel());
-  const failure = (await screen.findByText('com_ui_discord_error')).closest(
+  const failure = (await screen.findByText('com_ui_discord_load_failed')).closest(
     '[role="alert"]',
   ) as HTMLElement;
   await waitFor(() => expect(failure).toHaveFocus());
@@ -1149,7 +1301,7 @@ test('moves focus to the load failure when the reads fail after a disconnect suc
   jest.mocked(dataService.getDiscordGuilds).mockRejectedValueOnce(new Error('network'));
   const { confirm } = await openConfirmation(user);
   await user.click(confirm());
-  const failure = (await screen.findByText('com_ui_discord_error')).closest(
+  const failure = (await screen.findByText('com_ui_discord_load_failed')).closest(
     '[role="alert"]',
   ) as HTMLElement;
   await waitFor(() => expect(failure).toHaveFocus());
@@ -1223,7 +1375,7 @@ test.each([
     settle({ outcome: 'failed', flowId: connectResponse.flowId, errorCode: code });
     const notice = await failedNotice();
     expect(within(notice).getByText(key)).toBeVisible();
-    expect(within(notice).getByRole('button', { name: 'com_ui_cancel' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'com_ui_cancel' })).toBeEnabled();
     await waitFor(() => expect(notice).toHaveFocus());
     expect(screen.queryByText('com_ui_discord_refused')).toBeNull();
   },
@@ -1277,7 +1429,7 @@ test('clears the reason when the notice is dismissed and for the next attempt', 
   settle(refused);
   const notice = await failedNotice();
   expect(within(notice).getByText('com_ui_discord_oauth_refused')).toBeVisible();
-  await user.click(within(notice).getByRole('button', { name: 'com_ui_cancel' }));
+  await user.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
   await waitFor(() => expect(screen.queryByText('com_ui_discord_unconfirmed')).toBeNull());
   expect(screen.queryByText('com_ui_discord_oauth_refused')).toBeNull();
   await waitFor(() => expect(origin).toBeEnabled());
@@ -1313,7 +1465,7 @@ const silent = { log: () => {}, warn: () => {}, error: () => {} };
 const appsHeading = () => screen.getByRole('heading', { name: 'com_ui_discord_apps' });
 const retryOf = (alert: HTMLElement) => within(alert).getByRole('button', { name: 'com_ui_retry' });
 const loadFailure = async () =>
-  (await screen.findByText('com_ui_discord_error')).closest('[role="alert"]') as HTMLElement;
+  (await screen.findByText('com_ui_discord_load_failed')).closest('[role="alert"]') as HTMLElement;
 const nextAccount = (client: QueryClient) => (
   <QueryClientProvider client={client}>
     <Discord userId="next-admin" tenantId="other-org" />
@@ -1353,7 +1505,7 @@ test('returns focus to the load failure when an initial retry fails again, then 
   const again = deferred<DiscordApplicationPage>();
   jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(again.promise);
   await user.click(retryOf(failure));
-  await waitFor(() => expect(screen.queryByText('com_ui_discord_error')).toBeNull());
+  await waitFor(() => expect(screen.queryByText('com_ui_discord_load_failed')).toBeNull());
   await act(async () => again.reject(new Error('network')));
   const repeated = await loadFailure();
   await waitFor(() => expect(repeated).toHaveFocus());
@@ -1367,12 +1519,14 @@ test('leaves focus alone when the user moved on while an initial retry waited', 
   const reads = deferred<DiscordApplicationPage>();
   jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(reads.promise);
   await user.click(retryOf(failure));
-  const link = screen.getByRole('link', { name: 'com_ui_discord_developer_portal' });
+  // The user moves on to a control outside the Discord view.
+  const link = document.body.appendChild(document.createElement('button'));
   link.focus();
   await act(async () => reads.resolve({ applications: [app] }));
   expect(await screen.findByText('Engineering')).toBeVisible();
   expect(link).toHaveFocus();
   expect(appsHeading()).not.toHaveFocus();
+  link.remove();
 });
 
 test('does not move focus in the next account when an initial retry settles after the switch', async () => {
@@ -1488,7 +1642,7 @@ test.each(sections)(
     const failure = await loadFailure();
     await waitFor(() => expect(failure).toHaveFocus());
     await user.click(retryOf(failure));
-    await waitFor(() => expect(screen.queryByText('com_ui_discord_error')).toBeNull());
+    await waitFor(() => expect(screen.queryByText('com_ui_discord_load_failed')).toBeNull());
     await waitFor(() => expect(screen.getByRole('heading', { name: heading })).toHaveFocus());
     expect(cursors()).toEqual([undefined, 'c2', 'c2']);
   },
@@ -1504,12 +1658,14 @@ test.each(sections)(
     await user.click(button);
     await waitFor(() => expect(button).toBeDisabled());
     dropsFocus();
-    const link = screen.getByRole('link', { name: 'com_ui_discord_developer_portal' });
+    // The user moves on to a control outside the Discord view.
+    const link = document.body.appendChild(document.createElement('button'));
     link.focus();
     await act(async () => reads.resolve({ next: 'c3' }));
     expect(await screen.findByText(added)).toBeVisible();
     expect(link).toHaveFocus();
     expect(button).not.toHaveFocus();
+    link.remove();
   },
 );
 
@@ -1645,13 +1801,13 @@ test.each(sections)(
     await user.click(screen.getByRole('button', { name: more }));
     await loadFailure();
     await refocus();
-    await waitFor(() => expect(screen.queryByText('com_ui_discord_error')).toBeNull());
+    await waitFor(() => expect(screen.queryByText('com_ui_discord_load_failed')).toBeNull());
     await waitFor(() => expect(screen.getByRole('button', { name: more })).toHaveFocus());
     await refocus();
     const failure = await loadFailure();
     expect(failure).not.toHaveFocus();
     await user.click(retryOf(failure));
-    await waitFor(() => expect(screen.queryByText('com_ui_discord_error')).toBeNull());
+    await waitFor(() => expect(screen.queryByText('com_ui_discord_load_failed')).toBeNull());
     expect(cursors()).toEqual([undefined, 'c2', undefined, undefined, undefined]);
     expect(screen.queryByText(added)).toBeNull();
     expect(screen.getByRole('button', { name: more })).toBeVisible();
@@ -1669,7 +1825,7 @@ test.each(sections)(
     await refocus();
     await waitFor(() => expect(cursors()).toHaveLength(3));
     await user.click(retryOf(await loadFailure()));
-    await waitFor(() => expect(screen.queryByText('com_ui_discord_error')).toBeNull());
+    await waitFor(() => expect(screen.queryByText('com_ui_discord_load_failed')).toBeNull());
     expect(cursors()).toEqual([undefined, 'c2', undefined, undefined]);
     expect(screen.queryByText(added)).toBeNull();
   },
@@ -1707,41 +1863,403 @@ test('does not carry a failed page from one account into the next account retry'
   expect(cursors()).toEqual([undefined, 'c2', undefined, undefined]);
 });
 
-test('keeps setup details quiet until opened without hiding connection actions', async () => {
-  const { user } = await page({ configuration: false });
+test('keeps connection settings out of the page until opened without hiding connection actions', async () => {
+  const { user } = await page();
   expect(screen.getByRole('button', { name: 'com_ui_discord_connect_named' })).toBeVisible();
   expect(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' })).toBeVisible();
-  expect(screen.getByRole('button', { name: 'com_ui_discord_commands_named' })).not.toBeVisible();
-  expect(screen.getByLabelText('com_ui_discord_callback')).not.toBeVisible();
-  await user.click(screen.getByText('com_ui_discord_setup_details'));
-  expect(screen.getByRole('button', { name: 'com_ui_discord_commands_named' })).toBeVisible();
-  expect(screen.getByLabelText('com_ui_discord_callback')).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'com_ui_discord_commands_named' })).toBeNull();
+  expect(screen.queryByLabelText('com_ui_discord_callback')).toBeNull();
+  const dialog = await openSettings(user);
+  expect(
+    within(dialog).getByRole('button', { name: 'com_ui_discord_commands_named' }),
+  ).toBeVisible();
+  expect(within(dialog).getByLabelText('com_ui_discord_callback')).toBeVisible();
   expect(dataService.registerDiscordCommands).not.toHaveBeenCalled();
 });
 
-test('reveals a command failure even when setup details were closed while waiting', async () => {
-  const pending = deferred<never>();
-  jest.mocked(dataService.registerDiscordCommands).mockReturnValueOnce(pending.promise);
+test('shows the callback and interactions URLs as copyable read-only rows', async () => {
+  jest.mocked(dataService.getDiscordApps).mockResolvedValue({
+    applications: [app],
+    setup: {
+      oauthCallbackUrl: 'https://chat.example/api/channels/discord/callback',
+      interactionBaseUrl: 'https://chat.example/api/channels/discord/interactions/',
+    },
+  });
   const { user } = await page();
-  await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
-  await user.click(screen.getByText('com_ui_discord_setup_details'));
-  await act(async () => pending.reject(new Error('safe')));
-  expect(await screen.findByText('com_ui_discord_error')).toBeVisible();
-  expect(screen.getByRole('button', { name: 'com_ui_refresh' })).toBeVisible();
+  const dialog = await openSettings(user);
+  const callback = within(dialog).getByLabelText('com_ui_discord_callback');
+  expect(callback).toHaveValue('https://chat.example/api/channels/discord/callback');
+  expect(callback).toHaveAttribute('readonly');
+  const interactions = within(dialog).getByLabelText('com_ui_discord_interactions');
+  expect(interactions).toHaveValue(
+    `https://chat.example/api/channels/discord/interactions/${app.applicationId}/interactions`,
+  );
+  expect(interactions).toHaveAttribute('readonly');
+  expect(
+    within(dialog).getAllByRole('button', { name: 'com_ui_discord_copy_setting' }),
+  ).toHaveLength(2);
+  expect(within(dialog).queryByText('com_ui_discord_ingress_required')).toBeNull();
+  expect(
+    within(dialog).queryByRole('link', { name: 'com_ui_discord_developer_portal' }),
+  ).toBeNull();
 });
 
-test('keeps command setup details open while Refresh restores focus', async () => {
+test('explains the missing public interactions endpoint instead of showing its row', async () => {
+  const { user } = await page();
+  const dialog = await openSettings(user);
+  expect(within(dialog).getByText('com_ui_discord_ingress_required')).toBeVisible();
+  expect(within(dialog).queryByLabelText('com_ui_discord_interactions')).toBeNull();
+  expect(within(dialog).getByLabelText('com_ui_discord_callback')).toHaveValue(
+    'https://chat.example/api/channels/discord/callback',
+  );
+});
+
+test('reveals a command failure in the connection settings even when they were closed while waiting', async () => {
+  const pending = deferred<never>();
+  jest.mocked(dataService.registerDiscordCommands).mockReturnValueOnce(pending.promise);
+  const { user } = await page({ settings: true });
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_commands_named' }));
+  await user.click(screen.getByRole('button', { name: 'Close' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await act(async () => pending.reject(new Error('safe')));
+  const dialog = await screen.findByRole('dialog', { name: 'com_ui_discord_settings' });
+  expect(within(dialog).getByText('com_ui_discord_error')).toBeVisible();
+  expect(within(dialog).getByRole('button', { name: 'com_ui_refresh' })).toBeVisible();
+});
+
+test('keeps the connection settings open while Refresh restores focus', async () => {
   const { user } = await page();
   const { origin, dismiss } = await failedCommand(user);
-  const details = origin.closest('details');
-  expect(details).toHaveAttribute('open');
+  const dialog = screen.getByRole('dialog', { name: 'com_ui_discord_settings' });
+  expect(dialog).toContainElement(origin);
   const reads = deferred<{ applications: DiscordApplication[] }>();
   jest.mocked(dataService.getDiscordApps).mockReturnValueOnce(reads.promise);
   await dismiss();
-  expect(details).toHaveAttribute('open');
+  expect(dialog).toBeInTheDocument();
   await act(async () => reads.resolve({ applications: [app] }));
   await waitFor(() => expect(origin).toBeEnabled());
   expect(origin).toBeVisible();
   await waitFor(() => expect(origin).toHaveFocus());
-  expect(details).toHaveAttribute('open');
+  expect(dialog).toBeInTheDocument();
+});
+
+const cardOf = (name: string) => screen.getByText(name).closest('div.border') as HTMLElement;
+const supportGuild: DiscordGuild = {
+  ...other,
+  applicationId: second.applicationId,
+  installationId: 'installation-3',
+  guildName: 'Support community',
+};
+const stray: DiscordGuild = {
+  ...guild,
+  applicationId: '923456789012345678',
+  installationId: 'installation-4',
+  guildName: 'Stray server',
+};
+
+test('nests each server inside its application and keeps unmatched servers in a trailing group', async () => {
+  jest.mocked(dataService.getDiscordApps).mockResolvedValue({ applications: [app, second] });
+  jest
+    .mocked(dataService.getDiscordGuilds)
+    .mockResolvedValue({ guilds: [guild, supportGuild, stray] });
+  await page();
+  const engineering = within(cardOf('Engineering'));
+  expect(engineering.getByText('Developers')).toBeVisible();
+  expect(engineering.queryByText('Support community')).toBeNull();
+  expect(engineering.queryByText('Stray server')).toBeNull();
+  expect(engineering.getByRole('button', { name: 'com_ui_discord_connect_named' })).toBeVisible();
+  const support = within(cardOf('Support'));
+  expect(support.getByText('Support community')).toBeVisible();
+  expect(support.queryByText('Developers')).toBeNull();
+  const group = within(
+    screen.getByRole('heading', { name: 'com_ui_discord_guilds_other' })
+      .parentElement as HTMLElement,
+  );
+  expect(group.getByText('Stray server')).toBeVisible();
+  expect(group.getByRole('button', { name: 'com_ui_discord_reconnect_named' })).toBeVisible();
+  expect(group.queryByText('Developers')).toBeNull();
+});
+
+test('shows each server state as a chip with reconnect for both states and disconnect only when active', async () => {
+  jest.mocked(dataService.getDiscordGuilds).mockResolvedValue({
+    guilds: [guild, { ...other, applicationId: app.applicationId, status: 'disconnected' }],
+  });
+  await page();
+  const active = within(screen.getByRole('group', { name: 'Developers' }));
+  expect(active.getByText('com_ui_discord_connected')).toBeVisible();
+  expect(active.getByRole('button', { name: 'com_ui_discord_reconnect_named' })).toBeVisible();
+  expect(active.getByRole('button', { name: 'com_ui_discord_disconnect_named' })).toBeVisible();
+  const inactive = within(screen.getByRole('group', { name: 'Support server' }));
+  expect(inactive.getByText('com_ui_discord_disconnected')).toBeVisible();
+  expect(inactive.getByRole('button', { name: 'com_ui_discord_reconnect_named' })).toBeVisible();
+  expect(inactive.queryByRole('button', { name: 'com_ui_discord_disconnect_named' })).toBeNull();
+});
+
+test('collapses an application to hide its servers and connect action', async () => {
+  const { user } = await page();
+  expect(screen.getByText('Developers')).toBeVisible();
+  await user.click(screen.getByRole('button', { name: /Engineering/ }));
+  expect(screen.queryByText('Developers')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'com_ui_discord_connect_named' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: /Engineering/ }));
+  expect(screen.getByText('Developers')).toBeVisible();
+});
+
+test.each([
+  ['valid', 'com_ui_discord_token_valid', 'text-status-success'],
+  ['invalid', 'com_ui_discord_token_invalid', 'text-status-error'],
+])('summarizes a %s bot token as a header chip', async (state, key, tone) => {
+  jest
+    .mocked(dataService.getDiscordApps)
+    .mockResolvedValue({ applications: [observed({ state, checkedAt })] });
+  await page();
+  expect(within(cardOf('Engineering')).getByText(key).parentElement).toHaveClass(tone);
+});
+
+test('summarizes an unchecked bot token as a neutral header chip', async () => {
+  await page();
+  expect(
+    within(cardOf('Engineering')).getByText('com_ui_discord_token_unknown').parentElement,
+  ).toHaveClass('text-status-neutral');
+});
+
+test('adds an application in a dialog with write-only secret controls and the portal link', async () => {
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_app_create' }));
+  const dialog = await screen.findByRole('dialog', { name: 'com_ui_discord_app_create' });
+  expect(within(dialog).getByText('com_ui_discord_credentials')).toBeVisible();
+  expect(within(dialog).getByLabelText(/^com_ui_name/)).toHaveTextContent('');
+  expect(within(dialog).getByText('com_ui_optional')).toBeVisible();
+  expect(within(dialog).getByLabelText('com_ui_discord_application_id')).toBeEnabled();
+  expect(within(dialog).queryByText('com_ui_unset')).toBeNull();
+  expect(within(dialog).queryByText('com_ui_discord_rotation')).toBeNull();
+  expect(
+    within(dialog).getByRole('link', { name: 'com_ui_discord_developer_portal' }),
+  ).toHaveAttribute('href', 'https://discord.com/developers/applications');
+  expect(within(dialog).getByRole('button', { name: 'com_ui_save' })).toHaveAttribute(
+    'form',
+    dialog.querySelector('form')?.id,
+  );
+});
+
+test('edits an application with its identity fixed and a keep-current hint on each secret', async () => {
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' }));
+  const dialog = await screen.findByRole('dialog', { name: 'com_ui_discord_app_rotate' });
+  expect(within(dialog).getByLabelText('com_ui_discord_application_id')).toBeDisabled();
+  expect(within(dialog).getByLabelText('com_ui_discord_application_id')).toHaveValue(
+    app.applicationId,
+  );
+  expect(within(dialog).queryByText('com_ui_set')).toBeNull();
+  expect(within(dialog).getAllByText('com_ui_discord_rotation')).toHaveLength(2);
+  expect(within(dialog).getByLabelText(/^com_ui_name/)).toHaveValue('Engineering');
+});
+
+test('rejects a malformed application id before saving', async () => {
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_app_create' }));
+  await user.type(screen.getByLabelText('com_ui_discord_application_id'), '12ab');
+  await user.type(screen.getByLabelText(/^com_ui_discord_bot_token/), 'token');
+  await user.type(screen.getByLabelText(/^com_ui_discord_client_secret/), 'secret');
+  await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+  expect(dataService.configureDiscordApplication).not.toHaveBeenCalled();
+  expect(screen.getByLabelText('com_ui_discord_application_id')).toHaveAttribute(
+    'aria-invalid',
+    'true',
+  );
+});
+
+test('confirms a saved application with a success toast', async () => {
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_rotate_named' }));
+  await user.type(screen.getByLabelText(/^com_ui_discord_bot_token/), 'private-bot-token');
+  await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+  await waitFor(() =>
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_ui_discord_saved',
+      status: 'success',
+    }),
+  );
+  expect(screen.queryByText('com_ui_discord_saved')).toBeNull();
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+});
+
+test('blocks the connect dialog while pending and ends the attempt only through Cancel', async () => {
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_connect_named' }));
+  const dialog = await screen.findByRole('dialog', { name: 'com_ui_discord_connecting' });
+  expect(within(dialog).getByRole('status')).toHaveTextContent('com_ui_discord_pending');
+  await user.keyboard('{Escape}');
+  fireEvent.pointerDown(document.body);
+  expect(screen.getByRole('dialog', { name: 'com_ui_discord_connecting' })).toBeVisible();
+  expect(within(dialog).queryByRole('button', { name: 'com_ui_retry' })).toBeNull();
+  await user.click(within(dialog).getByRole('button', { name: 'com_ui_cancel' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+});
+
+test('offers Retry beside the unconfirmed notice when the connection fails and restarts it', async () => {
+  jest.mocked(window.open).mockReturnValueOnce(null);
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_connect_named' }));
+  const dialog = await screen.findByRole('dialog', { name: 'com_ui_discord_connection_failed' });
+  expect(within(dialog).getByText('com_ui_discord_unconfirmed')).toBeVisible();
+  expect(dataService.connectDiscordGuild).not.toHaveBeenCalled();
+  await user.click(within(dialog).getByRole('button', { name: 'com_ui_retry' }));
+  await waitFor(() =>
+    expect(dataService.connectDiscordGuild).toHaveBeenCalledWith(app.applicationId, undefined),
+  );
+  await waitFor(() => expect(popup.location.href).toBe(connectResponse.url));
+  expect(screen.getByRole('dialog', { name: 'com_ui_discord_connecting' })).toBeVisible();
+});
+
+test('retries a failed reconnection against the same installation', async () => {
+  jest.mocked(window.open).mockReturnValueOnce(null);
+  const { user } = await page();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_reconnect_named' }));
+  await user.click(await screen.findByRole('button', { name: 'com_ui_retry' }));
+  await waitFor(() =>
+    expect(dataService.connectDiscordGuild).toHaveBeenCalledWith(
+      app.applicationId,
+      guild.installationId,
+    ),
+  );
+});
+
+/** Renders the first-run state: no applications yet, so the wizard is showing. */
+async function wizardPage() {
+  jest.mocked(dataService.getDiscordApps).mockResolvedValue({ applications: [] });
+  jest.mocked(dataService.getDiscordGuilds).mockResolvedValue({ guilds: [] });
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    logger: { log: () => {}, warn: () => {}, error: () => {} },
+  });
+  const view = render(
+    <QueryClientProvider client={client}>
+      <Discord userId="admin" tenantId="org" />
+    </QueryClientProvider>,
+  );
+  await screen.findByRole('progressbar');
+  return { ...view, client, user: userEvent.setup() };
+}
+const current = () =>
+  screen.getAllByRole('listitem').find((item) => item.getAttribute('aria-current') === 'step')
+    ?.textContent;
+async function fillCredentials(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(screen.getByLabelText('com_ui_discord_application_id'), app.applicationId);
+  await user.type(screen.getByLabelText(/^com_ui_discord_bot_token/), 'private-bot-token');
+  await user.type(screen.getByLabelText(/^com_ui_discord_client_secret/), 'private-secret');
+}
+/** The wizard saved an application and sits on its last step. */
+async function savedWizard() {
+  const view = await wizardPage();
+  /** From here on the server lists the application the wizard is about to save. */
+  jest.mocked(dataService.getDiscordApps).mockResolvedValue({ applications: [app] });
+  await view.user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
+  await fillCredentials(view.user);
+  await view.user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+  await screen.findByText('com_ui_discord_wizard_connect_help');
+  return view;
+}
+
+describe('first-run wizard', () => {
+  test('shows the progress header for each step and moves with Continue and Back', async () => {
+    const { user } = await wizardPage();
+    const bar = screen.getByRole('progressbar', { name: 'com_ui_channels_setup_progress' });
+    expect(bar).toHaveAttribute('aria-valuenow', '0');
+    expect(current()).toBe('com_ui_discord_wizard_create');
+    expect(screen.getByRole('link', { name: /com_ui_discord_wizard_portal/ })).toHaveAttribute(
+      'href',
+      'https://discord.com/developers/applications',
+    );
+    expect(screen.queryByRole('button', { name: 'com_ui_back' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
+    expect(bar).toHaveAttribute('aria-valuenow', '50');
+    expect(current()).toBe('com_ui_discord_wizard_credentials');
+    expect(screen.getByLabelText('com_ui_discord_application_id')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'com_ui_back' }));
+    expect(bar).toHaveAttribute('aria-valuenow', '0');
+    expect(screen.getByText('com_ui_discord_wizard_create_title')).toBeVisible();
+  });
+
+  test('keeps typed credentials when going back, and validates before saving', async () => {
+    const { user } = await wizardPage();
+    await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
+    await user.type(screen.getByLabelText('com_ui_discord_application_id'), 'not-a-snowflake');
+    await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+    expect(dataService.configureDiscordApplication).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('com_ui_discord_application_id')).toHaveAttribute(
+      'aria-invalid',
+      'true',
+    );
+    expect(screen.getByLabelText(/^com_ui_discord_bot_token/)).toHaveAttribute(
+      'aria-invalid',
+      'true',
+    );
+    await user.click(screen.getByRole('button', { name: 'com_ui_back' }));
+    await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
+    expect(screen.getByLabelText('com_ui_discord_application_id')).toHaveValue('not-a-snowflake');
+  });
+
+  test('saves the application and advances to connecting a server', async () => {
+    let submitted: unknown;
+    jest.mocked(dataService.configureDiscordApplication).mockImplementation(async (input) => {
+      submitted = { ...input };
+      return app;
+    });
+    await savedWizard();
+    expect(submitted).toEqual({
+      applicationId: app.applicationId,
+      name: '',
+      botToken: 'private-bot-token',
+      clientSecret: 'private-secret',
+    });
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100');
+    expect(current()).toBe('com_ui_discord_connect');
+    expect(screen.queryByRole('button', { name: 'com_ui_back' })).toBeNull();
+  });
+
+  test('shows a failed save inside the wizard and stays on credentials', async () => {
+    jest
+      .mocked(dataService.configureDiscordApplication)
+      .mockRejectedValueOnce(
+        Object.assign(new Error('safe'), { code: 'unsupported_installation' }),
+      );
+    const { user } = await wizardPage();
+    await user.click(screen.getByRole('button', { name: 'com_ui_continue' }));
+    await fillCredentials(user);
+    await user.click(screen.getByRole('button', { name: 'com_ui_save' }));
+    expect(await screen.findByText('com_ui_discord_code_grant')).toBeVisible();
+    expect(screen.getByLabelText('com_ui_discord_application_id')).toBeVisible();
+    expect(current()).toBe('com_ui_discord_wizard_credentials');
+  });
+
+  test('stays mounted when the applications list goes from zero to one', async () => {
+    const view = await savedWizard();
+    await act(async () => {
+      await view.client.invalidateQueries();
+    });
+    await waitFor(() => expect(screen.queryByText('Engineering')).toBeNull());
+    expect(screen.getByText('com_ui_discord_wizard_connect_help')).toBeVisible();
+    expect(screen.queryByText('Engineering')).toBeNull();
+  });
+
+  test('connect starts the existing connect flow for the saved application', async () => {
+    const { user } = await savedWizard();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'com_ui_discord_connect' })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole('button', { name: 'com_ui_discord_connect' }));
+    await waitFor(() =>
+      expect(dataService.connectDiscordGuild).toHaveBeenCalledWith(app.applicationId, undefined),
+    );
+    expect(window.open).toHaveBeenCalled();
+  });
+
+  test('finishing shows the application cards', async () => {
+    const { user } = await savedWizard();
+    await user.click(screen.getByRole('button', { name: 'com_ui_done' }));
+    expect(await screen.findByText('Engineering')).toBeVisible();
+    expect(screen.queryByRole('progressbar')).toBeNull();
+    expect(screen.getByRole('button', { name: 'com_ui_discord_app_create' })).toBeVisible();
+  });
 });

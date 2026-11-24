@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useAtom } from 'jotai';
 import * as Tabs from '@radix-ui/react-tabs';
 import { X, ChevronLeft } from 'lucide-react';
 import { SettingsTabValues } from 'librechat-data-provider';
@@ -12,6 +13,7 @@ import {
 } from '@librechat/client';
 import type { TDialogProps } from '~/common';
 import type { SettingsTab } from './types';
+import { settingsTargetAtom } from '../Settings';
 import { useSettingsContext } from './context';
 import { useLocalize } from '~/hooks';
 import Sidebar from './Sidebar';
@@ -27,7 +29,11 @@ export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
    *  layout at scales where the scaled sidebar leaves the content pane too narrow. */
   const remScale = useRemScale();
   const isSmallScreen = useMediaQuery(`(max-width: ${767 * remScale}px)`);
-  const [activeTab, setActiveTab] = useState<SettingsTab>(SettingsTabValues.GENERAL);
+  const [target, setTarget] = useAtom(settingsTargetAtom);
+  const [activeTab, setActiveTab] = useState<SettingsTab>(
+    () => target?.tab ?? SettingsTabValues.GENERAL,
+  );
+  useEffect(() => () => setTarget(null), [setTarget]);
   const [query, setQuery] = useState('');
   const [mobileDetail, setMobileDetail] = useState(!isSmallScreen);
 

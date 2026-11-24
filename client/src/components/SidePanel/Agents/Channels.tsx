@@ -1,7 +1,8 @@
 import { useId, useRef, useState, useEffect, useCallback } from 'react';
+import { useSetAtom } from 'jotai';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { dataService, MutationKeys, QueryKeys } from 'librechat-data-provider';
 import { X, Info, Plus, Power, User, Users, Pencil, Link2Off, Settings } from 'lucide-react';
+import { dataService, MutationKeys, QueryKeys, SettingsTabValues } from 'librechat-data-provider';
 import {
   Alert,
   Button,
@@ -19,6 +20,7 @@ import {
 import type { AgentChannel, ListedAgentChannel } from 'librechat-data-provider';
 import type { SetupStep } from './ChannelSetup';
 import type { TranslationKeys } from '~/hooks';
+import { settingsOpenAtom, settingsTargetAtom } from '~/components/Nav/Settings';
 import { useSlackWorkspaces } from '~/components/Channels/useSlackWorkspaces';
 import ChannelSetup, { ManifestView, SetupActions } from './ChannelSetup';
 import ChannelStatus, { statusColors } from './ChannelStatus';
@@ -27,6 +29,7 @@ import DeleteChannelDialog from './DeleteChannelDialog';
 import { ChannelHeaderIcon } from './ChannelDetails';
 import Loading from '~/components/Channels/Loading';
 import WorkspaceChannel from './WorkspaceChannel';
+import Notice from '~/components/Channels/Notice';
 import DiscordBinding from './DiscordBinding';
 import ChannelsDialog from './ChannelsDialog';
 import ChannelUsage from './ChannelUsage';
@@ -496,6 +499,13 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
     setContentElement(element);
   }, []);
   const [dialog, setDialog] = useState<string | null>(null);
+  const setSettingsOpen = useSetAtom(settingsOpenAtom);
+  const setSettingsTarget = useSetAtom(settingsTargetAtom);
+  const openDiscordServers = useCallback(() => {
+    setDialog(null);
+    setSettingsTarget({ tab: SettingsTabValues.ACCOUNT, entry: 'discordApps' });
+    setSettingsOpen(true);
+  }, [setSettingsOpen, setSettingsTarget]);
   const [newWorkspaceConnection, setNewWorkspaceConnection] = useState<string | null>(null);
   const [credentialMode, setCredentialMode] = useState<AgentChannel['credentialMode']>('per_user');
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -617,12 +627,11 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
         </p>
       )}
       {channels.isError && (
-        <div className="flex flex-col items-start gap-2">
-          <Alert variant="error">{localize('com_ui_channels_list_error')}</Alert>
-          <Button type="button" variant="outline" onClick={() => void channels.refetch()}>
-            {localize('com_ui_channels_retry')}
-          </Button>
-        </div>
+        <Notice
+          message={localize('com_ui_channels_list_error')}
+          action={localize('com_ui_channels_retry')}
+          onAction={() => void channels.refetch()}
+        />
       )}
       {channels.data != null && channels.data.length > 0 && (
         <ul className="flex flex-col gap-0.5">
@@ -805,16 +814,11 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                 <div className="space-y-4 overflow-y-auto px-6 pb-6">
                   {workspaces.isLoading && <Loading label="com_ui_channels_loading" />}
                   {workspaces.isError && (
-                    <Alert variant="error">
-                      <p>{localize('com_ui_channels_workspace_load_error')}</p>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => void workspaces.refetch()}
-                      >
-                        {localize('com_ui_retry')}
-                      </Button>
-                    </Alert>
+                    <Notice
+                      message={localize('com_ui_channels_workspace_load_error')}
+                      action={localize('com_ui_retry')}
+                      onAction={() => void workspaces.refetch()}
+                    />
                   )}
                   {workspaces.isSuccess && useWorkspace && (
                     <div className="space-y-3">
@@ -929,6 +933,7 @@ function OwnedChannels({ agentId, userId, tenantId, isAdmin = false }: ChannelsP
                     channel={selected?.type === 'discord' ? selected : undefined}
                     enabled={channels.isSuccess && !channels.isFetching}
                     onClose={() => setDialog(null)}
+                    onOpenServers={openDiscordServers}
                   />
                 </div>
               )}

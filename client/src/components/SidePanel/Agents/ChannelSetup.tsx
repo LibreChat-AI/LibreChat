@@ -1,17 +1,11 @@
 import { useState } from 'react';
 import { CopyButton } from '@librechat/chat/components';
 import { Info, ChevronDown, ExternalLink } from 'lucide-react';
-import {
-  Alert,
-  Button,
-  Input,
-  Label,
-  Textarea,
-  SecretInput,
-  InfoHoverCard,
-} from '@librechat/client';
+import { Button, Input, Label, Textarea, SecretInput, InfoHoverCard } from '@librechat/client';
 import type { TranslationKeys } from '~/hooks';
+import SetupProgress from '~/components/Channels/SetupProgress';
 import { AutoHeight, Collapse } from '~/components/ui';
+import Notice from '~/components/Channels/Notice';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -80,12 +74,11 @@ export function ManifestView({
     <>
       {loading && <p role="status">{localize('com_ui_channels_loading')}</p>}
       {failed && (
-        <div className="flex flex-col items-start gap-2">
-          <Alert variant="error">{localize('com_ui_channels_manifest_error')}</Alert>
-          <Button type="button" variant="outline" onClick={onRetry}>
-            {localize('com_ui_channels_retry')}
-          </Button>
-        </div>
+        <Notice
+          message={localize('com_ui_channels_manifest_error')}
+          action={localize('com_ui_channels_retry')}
+          onAction={onRetry}
+        />
       )}
       {text !== '' && (
         <div className="text-sm">
@@ -160,38 +153,14 @@ export default function ChannelSetup({
   busy,
 }: ChannelSetupProps) {
   const localize = useLocalize();
-  const progress = ((step - 1) / (STEPS.length - 1)) * 100;
 
   return (
     <div className="space-y-5">
-      <div className="space-y-3">
-        <div
-          role="progressbar"
-          aria-label={localize('com_ui_channels_setup_progress')}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(progress)}
-          className="bg-surface-tertiary h-1.5 overflow-hidden rounded-full"
-        >
-          <div
-            className="bg-surface-inverted h-full rounded-full transition-all duration-500 ease-out motion-reduce:transition-none"
-            style={{ width: `${progress}%` }}
-          />
-        </div>
-        <ol className="flex justify-between text-xs">
-          {STEPS.map((item) => (
-            <li
-              key={item.step}
-              aria-current={item.step === step ? 'step' : undefined}
-              className={
-                item.step <= step ? 'text-text-primary font-medium' : 'text-text-secondary'
-              }
-            >
-              {localize(item.label)}
-            </li>
-          ))}
-        </ol>
-      </div>
+      <SetupProgress
+        steps={STEPS.map((item) => ({ label: localize(item.label) }))}
+        current={step}
+        label={localize('com_ui_channels_setup_progress')}
+      />
 
       <AutoHeight>
         <div

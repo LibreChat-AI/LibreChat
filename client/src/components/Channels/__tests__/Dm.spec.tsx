@@ -173,9 +173,7 @@ test('failed code issuance exposes safe guidance and permits a fresh explicit at
     );
   const f = page();
   await openCode(f.user);
-  await screen.findByText(
-    'Too many pending selections. Wait for an unused code to expire, then try again.',
-  );
+  await screen.findByText('Too many pending codes. Wait for one to expire, then try again.');
   expect(screen.queryByText('private provider response')).not.toBeInTheDocument();
   expect(screen.queryByLabelText('Selection code')).not.toBeInTheDocument();
   await f.user.click(screen.getByRole('button', { name: 'Generate Code' }));
@@ -187,9 +185,9 @@ test.each(['pending', 'accepted', 'expired', 'revoked', 'unavailable'] as const)
   async (state) => {
     jest.mocked(dataService.channelIdentityClient.list).mockResolvedValue([{ ...link, state }]);
     page();
-    await screen.findByText(
-      'Link your Discord account to an agent in a server channel and confirm it in Discord before selecting that agent for direct messages.',
-    );
+    await waitFor(() => expect(dataService.channelIdentityClient.list).toHaveBeenCalled());
+    await waitFor(() => expect(dataService.listDiscordDmSelections).toHaveBeenCalled());
+    expect(screen.queryByRole('heading', { name: 'Direct messages' })).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', {
         name: /^Use for DMs: agent agent, Discord user 789/,
@@ -213,9 +211,9 @@ test('does not offer Slack links for Discord selection', async () => {
     },
   ]);
   page();
-  await screen.findByText(
-    'Link your Discord account to an agent in a server channel and confirm it in Discord before selecting that agent for direct messages.',
-  );
+  await waitFor(() => expect(dataService.channelIdentityClient.list).toHaveBeenCalled());
+  await waitFor(() => expect(dataService.listDiscordDmSelections).toHaveBeenCalled());
+  expect(screen.queryByRole('heading', { name: 'Direct messages' })).not.toBeInTheDocument();
   expect(
     screen.queryByRole('button', {
       name: /^Use for DMs: agent agent, Discord user 789/,
@@ -282,9 +280,7 @@ test('failed revocation stays open with safe copy and refreshes server metadata'
       name: 'Revoke DM Selection',
     }),
   );
-  await screen.findByText(
-    'This link or selection is no longer available. Refresh the list and try again.',
-  );
+  await screen.findByText('This link or selection is no longer available. Refresh and try again.');
   expect(screen.getByRole('alertdialog')).toBeVisible();
   expect(screen.queryByText('private provider payload')).not.toBeInTheDocument();
   await waitFor(() => expect(dataService.listDiscordDmSelections).toHaveBeenCalledTimes(2));
@@ -297,9 +293,7 @@ test('a failed cursor page keeps the loaded prefix and retries only that page', 
   });
   const f = page();
   await f.user.click(await screen.findByRole('button', { name: 'Load more' }));
-  await screen.findByText(
-    'The operation could not be confirmed. Refresh the configuration before trying again.',
-  );
+  await screen.findByText("Couldn't load your Direct messages.");
   expect(
     screen.getByRole('button', { name: /^Revoke DM Selection: agent agent, channel 999$/ }),
   ).toBeVisible();
@@ -324,6 +318,43 @@ test('a failed cursor page keeps the loaded prefix and retries only that page', 
     ['next-page'],
     ['next-page'],
   ]);
+});
+
+const unreachable = () => Object.assign(new Error('x'), { code: 'unavailable' });
+
+test('names an unreachable server, not a failed read', async () => {
+  jest.mocked(dataService.listDiscordDmSelections).mockRejectedValueOnce(unreachable());
+  page();
+  await screen.findByText("Can't reach the server right now.");
+  expect(screen.queryByText("Couldn't load your Direct messages.")).not.toBeInTheDocument();
+});
+
+test('names a failed account link read once, with one retry, when the selections load', async () => {
+  jest.mocked(dataService.channelIdentityClient.list).mockRejectedValueOnce(new Error('x'));
+  page();
+  await screen.findByText("Couldn't load your Direct messages.");
+  expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(1);
+});
+
+test('worded as an unconfirmed change when revoking fails without a named cause', async () => {
+  jest
+    .mocked(dataService.listDiscordDmSelections)
+    .mockResolvedValue({ enabled: true, selections: [selection] });
+  jest
+    .mocked(dataService.revokeDiscordDmSelection)
+    .mockRejectedValue(Object.assign(new Error('x'), { code: 'unavailable', status: 500 }));
+  const f = page();
+  await f.user.click(
+    await screen.findByRole('button', { name: /^Revoke DM Selection: agent agent, channel 999$/ }),
+  );
+  await f.user.click(
+    within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Revoke DM Selection' }),
+  );
+  expect(
+    await screen.findByText(
+      'The change may not have been saved. Refresh to see the current state.',
+    ),
+  ).toBeVisible();
 });
 
 test('an initial list failure can be retried without issuing a code', async () => {
@@ -375,4 +406,53 @@ test('copies the temporary selection code explicitly and offers manual copy on f
   expect(screen.getByLabelText('Selection code')).toHaveValue(secret);
   await f.user.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(screen.queryByRole('button', { name: 'Copy code' })).not.toBeInTheDocument();
+});
+
+test('shows an active link as a grouped row with its state chip and a labelled action', async () => {
+  page();
+  const row = await screen.findByRole('group', { name: /agent/i });
+  expect(within(row).getByText('Active')).toBeVisible();
+  expect(within(row).getByText(/789/)).toBeVisible();
+  expect(
+    within(row).getByRole('button', { name: /^Use for DMs: agent agent, Discord user 789/ }),
+  ).toBeVisible();
+});
+
+test.each([
+  ['active', 'Active'],
+  ['revoked', 'Revoked'],
+  ['expired', 'Expired'],
+  ['unavailable', 'Unavailable'],
+] as const)('shows a %s selection as a chip beside its destination', async (state, label) => {
+  jest
+    .mocked(dataService.listDiscordDmSelections)
+    .mockResolvedValue({ enabled: true, selections: [{ ...selection, state }] });
+  jest.mocked(dataService.channelIdentityClient.list).mockResolvedValue([]);
+  page();
+  const row = await screen.findByText('Discord DM channel: 999');
+  const group = within(row.closest('[role="group"]') as HTMLElement);
+  expect(group.getByText(label)).toBeVisible();
+  expect(group.getByText(/^Expires:/)).toBeVisible();
+  const revoke = group.queryByRole('button', { name: /^Revoke DM Selection: agent agent/ });
+  if (state === 'revoked') expect(revoke).toBeNull();
+  else expect(revoke).toBeVisible();
+});
+
+test('reveals the link details only when their disclosure is opened', async () => {
+  const f = page();
+  await openCode(f.user);
+  const toggle = await screen.findByRole('button', { name: 'Connection details' });
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  const dialog = within(screen.getByRole('dialog'));
+  expect(dialog.queryByText(/789/)).toBeNull();
+  await f.user.click(toggle);
+  expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  expect(dialog.getByText(/789/)).toBeVisible();
+});
+
+test('offers an icon-only copy control for the selection code', async () => {
+  const f = page();
+  await openCode(f.user);
+  const copy = await screen.findByRole('button', { name: 'Copy code' });
+  expect(copy).toHaveTextContent('');
 });

@@ -28,6 +28,7 @@ import { channelErrorLabel } from '~/utils/channelErrors';
 import { useAuthContext, useLocalize } from '~/hooks';
 import Configuration from './Configuration';
 import Loading from './Loading';
+import Notice from './Notice';
 
 /** Organization administrators own the Slack app; operators only provide its callback service. */
 export default function Apps({
@@ -183,22 +184,16 @@ export default function Apps({
       </div>
       {apps.isInitialLoading && <Loading />}
       {apps.isError && (
-        <div className="flex flex-col items-start gap-2">
-          <Alert variant="error">
-            {localize(channelErrorLabel(apps.error, 'com_ui_slack_apps_error'))}
-          </Alert>
-          <Button
-            variant="outline"
-            disabled={disabled}
-            onClick={() => {
-              save.reset();
-              remove.reset();
-              void apps.refetch();
-            }}
-          >
-            {localize('com_ui_retry')}
-          </Button>
-        </div>
+        <Notice
+          message={localize(channelErrorLabel(apps.error, 'com_ui_slack_apps_error'))}
+          action={localize('com_ui_retry')}
+          disabled={disabled}
+          onAction={() => {
+            save.reset();
+            remove.reset();
+            void apps.refetch();
+          }}
+        />
       )}
       {saved && (
         <Alert variant="success" role="status">

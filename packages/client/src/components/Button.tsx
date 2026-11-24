@@ -28,6 +28,7 @@ type ButtonVariantOptions =
         | 'message-hover-reveal'
         | 'popover-option'
         | 'inline-link'
+        | 'alert-action'
         | 'carousel-nav'
         | 'toolbar'
         | 'starter'
@@ -166,6 +167,10 @@ const buttonVariantRecipe = cva(
          *  and a ring flush against the control. */
         'inline-link':
           'h-auto justify-start gap-2 rounded-none p-0 font-normal text-text-secondary hover:bg-transparent hover:text-text-primary focus-visible:ring-offset-0',
+        /** A text action inside an Alert, such as Try again: it takes the alert's own ink and is
+         *  underlined, so it reads as part of the message in every tone without a second box. */
+        'alert-action':
+          'h-auto rounded-sm p-0 align-baseline font-medium text-current underline underline-offset-2 hover:bg-transparent hover:opacity-80 focus-visible:ring-offset-0',
         /** A previous or next arrow floating over a carousel's content, on the fixed surface. */
         'carousel-nav':
           'rounded-xl bg-surface-fixed p-2 text-text-fixed shadow-lg hover:bg-surface-fixed-hover hover:shadow-xl',
@@ -422,6 +427,7 @@ const buttonVariantRecipe = cva(
       { variant: 'section-add', size: 'default', class: 'h-theme-button-xs px-2' },
       { variant: 'popover-option', size: 'default', class: 'h-auto p-2' },
       { variant: 'inline-link', size: 'default', class: 'h-auto p-0' },
+      { variant: 'alert-action', size: 'default', class: 'h-auto p-0' },
       { variant: 'carousel-nav', size: 'default', class: 'h-auto p-2' },
       { variant: 'toolbar', size: 'default', class: 'h-auto px-2 py-1' },
       { variant: 'starter', size: 'default', class: 'h-auto px-4 py-2.5' },

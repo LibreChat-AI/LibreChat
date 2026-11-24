@@ -1,17 +1,16 @@
 import { useId, useRef, useState } from 'react';
 import { ExternalLink, Settings2 } from 'lucide-react';
-import { CopyButton } from '@librechat/chat/components';
 import {
   Button,
   IconButton,
-  Input,
   Label,
   OGDialog,
   OGDialogTemplate,
   TooltipAnchor,
 } from '@librechat/client';
 import type { SlackAppPage, SlackAppRegistration } from 'librechat-data-provider';
-import { useCopyToClipboard, useLocalize } from '~/hooks';
+import { useLocalize } from '~/hooks';
+import Callback from './Callback';
 
 type ConfigurationProps = {
   app: SlackAppRegistration;
@@ -111,26 +110,13 @@ function Urls({
       ).map(([key, value]) => (
         <div key={key} className="space-y-1">
           <Label htmlFor={`${id}-${key}`}>{localize(key)}</Label>
-          <Callback id={`${id}-${key}`} value={value} label={localize(key)} />
+          <Callback
+            id={`${id}-${key}`}
+            value={value}
+            copyLabel={localize('com_ui_slack_apps_copy_setting', { 0: localize(key) })}
+          />
         </div>
       ))}
-    </div>
-  );
-}
-
-function Callback({ id, value, label }: { id: string; value: string; label: string }) {
-  const localize = useLocalize();
-  const [copied, setCopied] = useState(false);
-  const copy = useCopyToClipboard({ text: value });
-  return (
-    <div className="flex items-center gap-2">
-      <Input id={id} readOnly value={value} onFocus={(event) => event.target.select()} />
-      <CopyButton
-        isCopied={copied}
-        onClick={() => copy(setCopied)}
-        iconOnly
-        label={localize('com_ui_slack_apps_copy_setting', { 0: label })}
-      />
     </div>
   );
 }

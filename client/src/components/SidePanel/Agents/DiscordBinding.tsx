@@ -26,12 +26,14 @@ import {
   AlertDialogTitle,
   Button,
   ControlCombobox,
+  InfoHoverCard,
   Input,
   Label,
 } from '@librechat/client';
 import type { DiscordAgentChannel, DiscordBindingTarget } from 'librechat-data-provider';
-import type { TranslationKeys } from '~/hooks';
+import { discordErrorLabel } from '~/components/Channels/discord/errors';
 import { useDebounce, useLocalize } from '~/hooks';
+import Notice from '~/components/Channels/Notice';
 
 const targetAtom = atom({ installationId: '', externalChannelId: '' });
 const uncertainAtom = atom(false);
@@ -48,38 +50,18 @@ interface Props {
   enabled: boolean;
   portalElement?: HTMLElement | null;
   onClose: () => void;
+  /** Leaves the dialog for Settings > Account > Discord to connect a server. */
+  onOpenServers?: () => void;
 }
-/** The server returns a provider failure before it writes, so one can be named; anything else stays uncertain. */
-function label(error: unknown): TranslationKeys {
-  if (!(error instanceof Error)) return 'com_ui_discord_binding_uncertain';
-  if ('status' in error && error.status === 403) return 'com_ui_discord_binding_forbidden';
-  if ('status' in error && error.status === 404) return 'com_ui_discord_disabled';
-  if (!('code' in error)) return 'com_ui_discord_binding_uncertain';
-  switch (error.code) {
-    case 'unsupported_channel':
-      return 'com_ui_discord_binding_unsupported';
-    case 'missing_permissions':
-      return 'com_ui_discord_binding_permissions';
-    case 'transactions_unavailable':
-      return 'com_ui_channels_transaction_required';
-    case 'route_changed':
-    case 'application_changed':
-    case 'installation_unavailable':
-    case 'guild_changed':
-      return 'com_ui_discord_changed';
-    case 'provider_refused':
-      return 'com_ui_discord_binding_refused';
-    case 'unsupported_installation':
-      return 'com_ui_discord_code_grant';
-    case 'rate_limited':
-      return 'com_ui_discord_rate_limited';
-    case 'provider_unavailable':
-    case 'timeout':
-      return 'com_ui_discord_provider_unavailable';
-    default:
-      return 'com_ui_discord_binding_uncertain';
-  }
-}
+const bindingOverrides = {
+  read: 'com_ui_discord_binding_load_failed',
+  write: 'com_ui_discord_binding_uncertain',
+  known: {
+    '403': 'com_ui_discord_binding_forbidden',
+    forbidden: 'com_ui_discord_binding_forbidden',
+    provider_refused: 'com_ui_discord_binding_refused',
+  },
+} as const;
 /** Account, agent and immutable channel identity each own a fresh feature store. */
 export default function DiscordBinding(props: Props) {
   return (
@@ -90,7 +72,16 @@ export default function DiscordBinding(props: Props) {
     </Provider>
   );
 }
-function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, onClose }: Props) {
+function Binding({
+  agentId,
+  userId,
+  tenantId,
+  channel,
+  enabled,
+  portalElement,
+  onClose,
+  onOpenServers,
+}: Props) {
   useHydrateAtoms([
     [
       targetAtom,
@@ -130,6 +121,11 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
   const installations = guilds.data?.pages.flatMap((page) => page.guilds) ?? [];
   const selected = installations.find((guild) => guild.installationId === target.installationId);
   const guildReady = guilds.isSuccess && !guilds.isFetching;
+  // Background refetches (window focus) must not hide loaded state, so the layout stays put.
+  const noActiveServers =
+    guilds.isSuccess &&
+    !guilds.hasNextPage &&
+    !installations.some((guild) => guild.status === 'active');
   const debounced = useDebounce(target.externalChannelId.trim(), 250);
   const valid = channelSnowflakeSchema.safeParse(debounced).success;
   const invalidChannel =
@@ -274,30 +270,30 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
       )}
       {guilds.isLoading && <p role="status">{localize('com_ui_channels_loading')}</p>}
       {guilds.isError && (
-        <Alert variant="error">
-          {localize(label(guilds.error))}
-          <Button
-            type="button"
-            variant="outline"
-            disabled={busy}
-            onClick={() => {
-              if (nextPageFailed.current)
-                void guilds.fetchNextPage().then((result) => {
-                  nextPageFailed.current = result.isError;
-                });
-              else void guilds.refetch();
-            }}
-          >
-            {localize('com_ui_retry')}
-          </Button>
+        <Notice
+          message={localize(discordErrorLabel(guilds.error, 'read', bindingOverrides))}
+          action={localize('com_ui_retry')}
+          disabled={busy}
+          onAction={() => {
+            if (nextPageFailed.current)
+              void guilds.fetchNextPage().then((result) => {
+                nextPageFailed.current = result.isError;
+              });
+            else void guilds.refetch();
+          }}
+        />
+      )}
+      {noActiveServers && (
+        <Alert variant="warning">
+          <p>{localize('com_ui_discord_binding_empty')}</p>
+          {onOpenServers && (
+            <Button type="button" variant="inline-link" onClick={onOpenServers}>
+              {localize('com_ui_take_me_there')}
+            </Button>
+          )}
         </Alert>
       )}
-      {guildReady &&
-        !guilds.hasNextPage &&
-        !installations.some((guild) => guild.status === 'active') && (
-          <Alert variant="warning">{localize('com_ui_discord_binding_empty')}</Alert>
-        )}
-      {guildReady && immutable && !selected && !guilds.hasNextPage && (
+      {guilds.isSuccess && immutable && !selected && !guilds.hasNextPage && (
         <Alert variant="warning">{localize('com_ui_discord_binding_missing')}</Alert>
       )}
       <div>
@@ -333,7 +329,13 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
           portal={Boolean(portalElement)}
           portalElement={portalElement ?? undefined}
           disabled={
-            immutable || busy || uncertain || !enabled || !guildReady || Boolean(confirmation)
+            immutable ||
+            busy ||
+            uncertain ||
+            !enabled ||
+            !guilds.isSuccess ||
+            noActiveServers ||
+            Boolean(confirmation)
           }
           selectPlaceholder={localize('com_ui_select')}
         />
@@ -354,12 +356,26 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
         </Button>
       )}
       <div>
-        <Label htmlFor={`${id}-channel`}>{localize('com_ui_discord_binding_channel')}</Label>
+        <div className="flex items-center gap-1.5">
+          <Label htmlFor={`${id}-channel`} className="w-auto">
+            {localize('com_ui_discord_binding_channel')}
+          </Label>
+          {!immutable && (
+            <InfoHoverCard text={localize('com_ui_discord_binding_channel_help')} icon="info" />
+          )}
+        </div>
         <Input
           id={`${id}-channel`}
           value={target.externalChannelId}
           readOnly={immutable}
-          disabled={busy || uncertain || !enabled || Boolean(confirmation)}
+          disabled={
+            busy ||
+            uncertain ||
+            !enabled ||
+            noActiveServers ||
+            (!immutable && !selected) ||
+            Boolean(confirmation)
+          }
           inputMode="numeric"
           maxLength={20}
           autoComplete="off"
@@ -373,7 +389,7 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
           </p>
         )}
         {(!immutable || invalidChannel) && (
-          <p id={`${id}-channel-help`} className="text-text-secondary text-xs">
+          <p id={`${id}-channel-help`} className="sr-only">
             {localize('com_ui_discord_binding_channel_help')}
           </p>
         )}
@@ -382,18 +398,18 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
         <p role="status">{localize('com_ui_channels_loading')}</p>
       )}
       {status.isError && (
-        <Alert variant="error">
-          {localize(label(status.error))}
-          <Button type="button" variant="outline" disabled={busy} onClick={() => void check()}>
-            {localize('com_ui_retry')}
-          </Button>
-        </Alert>
+        <Notice
+          message={localize(discordErrorLabel(status.error, 'read', bindingOverrides))}
+          action={localize('com_ui_retry')}
+          disabled={busy}
+          onAction={() => void check()}
+        />
       )}
       {mutation.isError && (
-        <Alert variant="warning">
-          <p>{localize(label(mutation.error))}</p>
-          <p>{localize('com_ui_discord_binding_check_help')}</p>
-        </Alert>
+        <Notice
+          variant="warning"
+          message={localize(discordErrorLabel(mutation.error, 'write', bindingOverrides))}
+        />
       )}
       {(uncertain || mutation.isError) && (
         <Button
@@ -482,7 +498,7 @@ function Binding({ agentId, userId, tenantId, channel, enabled, portalElement, o
             </AlertDialogDescription>
           </AlertDialogHeader>
           {!confirmReady && !busy && (
-            <Alert variant="warning">{localize('com_ui_discord_changed')}</Alert>
+            <Notice variant="warning" message={localize('com_ui_discord_changed')} />
           )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy}>{localize('com_ui_cancel')}</AlertDialogCancel>

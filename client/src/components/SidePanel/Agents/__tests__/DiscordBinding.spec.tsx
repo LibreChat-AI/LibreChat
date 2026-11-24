@@ -182,6 +182,66 @@ test('explains an empty installation list and only offers active guilds for new 
   expect(dataService.getDiscordBinding).not.toHaveBeenCalled();
 });
 
+test('disables both fields and keeps the empty warning through a background refetch', async () => {
+  jest
+    .mocked(dataService.getDiscordGuilds)
+    .mockResolvedValue({ guilds: [{ ...guild, status: 'disconnected' }] });
+  const view = await page(null);
+  expect(await screen.findByText('com_ui_discord_binding_empty')).toBeVisible();
+  expect(screen.getByRole('combobox', { name: 'com_ui_discord_binding_server' })).toBeDisabled();
+  expect(screen.getByLabelText('com_ui_discord_binding_channel')).toBeDisabled();
+  const refetch = deferred<{ guilds: DiscordGuild[] }>();
+  jest.mocked(dataService.getDiscordGuilds).mockReturnValue(refetch.promise);
+  void view.client.refetchQueries();
+  await waitFor(() => expect(dataService.getDiscordGuilds).toHaveBeenCalledTimes(2));
+  expect(screen.getByText('com_ui_discord_binding_empty')).toBeVisible();
+  expect(screen.getByLabelText('com_ui_discord_binding_channel')).toBeDisabled();
+  await act(async () => refetch.resolve({ guilds: [{ ...guild, status: 'disconnected' }] }));
+  expect(screen.getByText('com_ui_discord_binding_empty')).toBeVisible();
+});
+
+test('links to the Discord server settings when no active server exists', async () => {
+  jest
+    .mocked(dataService.getDiscordGuilds)
+    .mockResolvedValue({ guilds: [{ ...guild, status: 'disconnected' }] });
+  const onOpenServers = jest.fn();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <DiscordBinding
+        agentId="agent-1"
+        userId="admin"
+        tenantId="org"
+        enabled
+        onClose={jest.fn()}
+        onOpenServers={onOpenServers}
+      />
+    </QueryClientProvider>,
+  );
+  await userEvent.click(await screen.findByRole('button', { name: 'com_ui_take_me_there' }));
+  expect(onOpenServers).toHaveBeenCalledTimes(1);
+});
+
+test('keeps the channel ID field disabled until a server is selected', async () => {
+  const { user } = await page(null);
+  const input = await screen.findByLabelText('com_ui_discord_binding_channel');
+  expect(input).toBeDisabled();
+  await user.click(await screen.findByRole('combobox', { name: 'com_ui_discord_binding_server' }));
+  await user.click(
+    await screen.findByRole('option', { name: 'com_ui_discord_binding_server_named' }),
+  );
+  await waitFor(() => expect(input).toBeEnabled());
+});
+
+test('offers the channel ID help behind an info button and as the field description', async () => {
+  await page(null);
+  const help = await screen.findByRole('button', { name: 'com_ui_discord_binding_channel_help' });
+  expect(help).toBeVisible();
+  expect(screen.getByLabelText('com_ui_discord_binding_channel')).toHaveAccessibleDescription(
+    'com_ui_discord_binding_channel_help',
+  );
+});
+
 test('creates a new binding after selecting a guild and validating a string snowflake', async () => {
   const { user, onClose } = await page(null);
   await target(user);
@@ -321,7 +381,7 @@ test.each([
   ['provider_refused', 'com_ui_discord_binding_refused'],
   ['rate_limited', 'com_ui_discord_rate_limited'],
   ['provider_unavailable', 'com_ui_discord_provider_unavailable'],
-  ['timeout', 'com_ui_discord_provider_unavailable'],
+  ['timeout', 'com_ui_discord_timeout'],
   ['unsupported_installation', 'com_ui_discord_code_grant'],
 ])('explains provider code %s and still requires a status check', async (code, label) => {
   jest
@@ -334,7 +394,7 @@ test.each([
   await user.click(screen.getByRole('button', { name: 'com_ui_discord_binding_connect' }));
   expect(await screen.findByText(label)).toBeVisible();
   expect(screen.queryByText('com_ui_discord_binding_uncertain')).toBeNull();
-  expect(screen.getByText('com_ui_discord_binding_check_help')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'com_ui_discord_binding_check' })).toBeVisible();
   expect(screen.queryByText(/private-token/)).toBeNull();
   expect(screen.getByRole('button', { name: 'com_ui_discord_binding_connect' })).toBeDisabled();
   await waitFor(() =>
@@ -343,19 +403,31 @@ test.each([
   expect(dataService.bindDiscordChannel).toHaveBeenCalledTimes(1);
 });
 
-test.each(['binding_uncertain', 'unavailable', 'unrecognized_code'])(
-  'keeps the uncertain wording for the %s code',
-  async (code) => {
-    jest
-      .mocked(dataService.bindDiscordChannel)
-      .mockRejectedValueOnce(Object.assign(new Error('safe'), { code }));
-    const { user } = await page();
-    await ready();
-    await user.click(screen.getByRole('button', { name: 'com_ui_discord_binding_connect' }));
-    expect(await screen.findByText('com_ui_discord_binding_uncertain')).toBeVisible();
-    expect(screen.getByText('com_ui_discord_binding_check_help')).toBeVisible();
-  },
-);
+test.each([
+  ['binding_uncertain', undefined],
+  ['unavailable', 500],
+  ['unrecognized_code', undefined],
+])('keeps the uncertain wording for the %s code', async (code, status) => {
+  jest
+    .mocked(dataService.bindDiscordChannel)
+    .mockRejectedValueOnce(Object.assign(new Error('safe'), { code, status }));
+  const { user } = await page();
+  await ready();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_binding_connect' }));
+  expect(await screen.findByText('com_ui_discord_binding_uncertain')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'com_ui_discord_binding_check' })).toBeVisible();
+});
+
+test('says LibreChat cannot be reached when the write has no response', async () => {
+  jest
+    .mocked(dataService.bindDiscordChannel)
+    .mockRejectedValueOnce(Object.assign(new Error('network'), { code: 'unavailable' }));
+  const { user } = await page();
+  await ready();
+  await user.click(screen.getByRole('button', { name: 'com_ui_discord_binding_connect' }));
+  expect(await screen.findByText('com_ui_discord_unreachable')).toBeVisible();
+  expect(screen.queryByText('com_ui_discord_binding_uncertain')).toBeNull();
+});
 
 test('keeps controls disabled when an uncertain write cannot be reconciled', async () => {
   const { user } = await page();
