@@ -5363,6 +5363,184 @@ describe('agent trigger delivery methods', () => {
     ).toBeUndefined();
   });
 
+  describe('lane of an expiring dead letter', () => {
+    /** Moves only the wall clock, so the driver's own timers keep running. */
+    function setClock(now: Date) {
+      jest.useFakeTimers({
+        now,
+        doNotFake: [
+          'hrtime',
+          'nextTick',
+          'performance',
+          'queueMicrotask',
+          'setImmediate',
+          'clearImmediate',
+          'setInterval',
+          'clearInterval',
+          'setTimeout',
+          'clearTimeout',
+        ],
+      });
+    }
+
+    async function deadLetter(orderingKey: string, expiresAt?: Date) {
+      const queued = await methods.enqueueAgentTriggerDelivery(enqueueInput({ orderingKey }));
+      const claim = await methods.claimNextAgentTriggerDelivery({
+        workerId: 'worker-1',
+        claimToken: 'claim-dead',
+        now: START,
+        leaseUntil: new Date(START.getTime() + 60_000),
+      });
+      expect(claim?.id).toBe(queued.delivery.id);
+      const attempt = await methods.beginAgentTriggerDeliveryAttempt({
+        id: claim!.id,
+        workerId: 'worker-1',
+        claimToken: 'claim-dead',
+        now: START,
+      });
+      await methods.deadLetterAgentTriggerDelivery({
+        id: claim!.id,
+        workerId: 'worker-1',
+        claimToken: 'claim-dead',
+        attempt: attempt!,
+        error: transientFailure({ retryable: false }),
+        settledAt: START,
+        ...(expiresAt != null && { expiresAt }),
+      });
+      return claim!.id;
+    }
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('reclaims the lane once the deadline has removed its last dead letter', async () => {
+      const orderingKey = 'one-shot-dead-letter-lane';
+      const expiresAt = new Date(Date.now() + 60 * 60_000);
+      const id = await deadLetter(orderingKey, expiresAt);
+
+      const requested = new Date(expiresAt.getTime() + 60_000);
+      await expect(LaneSequence.findById(orderingKey).lean()).resolves.toMatchObject({
+        cleanupRequestedAt: requested,
+      });
+      const activity = { found: false };
+      await expect(methods.reclaimInactiveAgentTriggerLanes(25, activity)).resolves.toBe(0);
+      expect(activity.found).toBe(false);
+
+      /** The request is due while the monitor is late: the dead letter is still stored. */
+      const late = new Date(requested.getTime() + 1_000);
+      setClock(late);
+      await expect(methods.reclaimInactiveAgentTriggerLanes()).resolves.toBe(0);
+      await expect(LaneSequence.findById(orderingKey).lean()).resolves.toMatchObject({
+        cleanupRequestedAt: new Date(late.getTime() + 60_000),
+      });
+
+      await Delivery.deleteOne({ _id: id });
+      await expect(methods.reclaimInactiveAgentTriggerLanes()).resolves.toBe(0);
+      jest.setSystemTime(new Date(late.getTime() + 60_000));
+      await expect(methods.reclaimInactiveAgentTriggerLanes()).resolves.toBe(1);
+      await expect(LaneSequence.findById(orderingKey)).resolves.toBeNull();
+    });
+
+    it('keeps the request when a later delivery on the lane succeeds first', async () => {
+      const orderingKey = 'dead-letter-lane-with-successor';
+      const expiresAt = new Date(Date.now() + 60 * 60_000);
+      const id = await deadLetter(orderingKey, expiresAt);
+      await methods.enqueueAgentTriggerDelivery(enqueueInput({ orderingKey }));
+      await expect(LaneSequence.findById(orderingKey).lean()).resolves.not.toHaveProperty(
+        'cleanupRequestedAt',
+      );
+      const claim = await methods.claimNextAgentTriggerDelivery({
+        workerId: 'worker-2',
+        claimToken: 'claim-successor',
+        now: START,
+        leaseUntil: new Date(START.getTime() + 60_000),
+      });
+      const attempt = await methods.beginAgentTriggerDeliveryAttempt({
+        id: claim!.id,
+        workerId: 'worker-2',
+        claimToken: 'claim-successor',
+        now: START,
+      });
+      await methods.completeAgentTriggerDelivery({
+        id: claim!.id,
+        workerId: 'worker-2',
+        claimToken: 'claim-successor',
+        attempt: attempt!,
+        result: { ok: true },
+        settledAt: START,
+      });
+
+      await expect(LaneSequence.findById(orderingKey).lean()).resolves.toMatchObject({
+        cleanupRequestedAt: new Date(expiresAt.getTime() + 60_000),
+      });
+      await Delivery.deleteOne({ _id: id });
+      setClock(new Date(expiresAt.getTime() + 61_000));
+      await expect(methods.reclaimInactiveAgentTriggerLanes()).resolves.toBe(1);
+      await expect(LaneSequence.findById(orderingKey)).resolves.toBeNull();
+    });
+
+    it('reclaims the lane of a batch whose requeue was refused for expired receipts', async () => {
+      const user = new mongoose.Types.ObjectId();
+      const orderingKey = 'refused-batch-requeue-lane';
+      const coalesceUntil = new Date(Date.now() + 60_000);
+      const shared = {
+        user,
+        orderingKey,
+        coalesceKey: 'trigger_refused_batch_requeue',
+        coalesceFrom: new Date(coalesceUntil.getTime() - 750),
+        coalesceUntil,
+        availableAt: coalesceUntil,
+        envelopeBytes: 128,
+      };
+      await Promise.all(
+        Array.from({ length: 2 }, () => methods.enqueueAgentTriggerDelivery(enqueueInput(shared))),
+      );
+      const claim = await methods.claimNextAgentTriggerDelivery({
+        workerId: 'worker-1',
+        claimToken: 'claim-1',
+        now: coalesceUntil,
+        leaseUntil: new Date(coalesceUntil.getTime() + 60_000),
+      });
+      const attempt = await methods.beginAgentTriggerDeliveryAttempt({
+        id: claim!.id,
+        workerId: 'worker-1',
+        claimToken: 'claim-1',
+        now: coalesceUntil,
+      });
+      await methods.deadLetterAgentTriggerDelivery({
+        id: claim!.id,
+        workerId: 'worker-1',
+        claimToken: 'claim-1',
+        attempt: attempt!,
+        error: transientFailure({ retryable: false }),
+        settledAt: coalesceUntil,
+      });
+      await Delivery.deleteOne({ batchRootId: claim!.id });
+
+      const refusedAt = Date.now();
+      await expect(
+        methods.requeueAgentTriggerDelivery(claim!.id, coalesceUntil),
+      ).resolves.toBeNull();
+
+      const lane = await LaneSequence.findById(orderingKey).lean();
+      expect(lane?.cleanupRequestedAt?.getTime()).toBeGreaterThanOrEqual(refusedAt + 60_000);
+      await Delivery.deleteMany({ orderingKey });
+      setClock(new Date(lane!.cleanupRequestedAt!.getTime() + 1_000));
+      await expect(methods.reclaimInactiveAgentTriggerLanes()).resolves.toBe(1);
+      await expect(LaneSequence.findById(orderingKey)).resolves.toBeNull();
+    });
+
+    it('leaves no request for a dead letter that has no deadline', async () => {
+      const orderingKey = 'retained-dead-letter-lane';
+      await deadLetter(orderingKey);
+
+      await expect(LaneSequence.findById(orderingKey).lean()).resolves.not.toHaveProperty(
+        'cleanupRequestedAt',
+      );
+    });
+  });
+
   it('restores the retry budget when dispatch is deferred before execution', async () => {
     const queued = await methods.enqueueAgentTriggerDelivery(enqueueInput());
     const claim = await methods.claimNextAgentTriggerDelivery({
