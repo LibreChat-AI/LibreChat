@@ -110,8 +110,8 @@ export async function purgeExpiredAuthentication(
   ] as const) {
     await db.query(
       `DELETE FROM ${table} WHERE id IN (
-      SELECT id FROM ${table} WHERE ${expiry}<=clock_timestamp()
-      ${table === 'auth_refresh_flights' ? 'AND (delivery_expires_at IS NULL OR delivery_expires_at<=clock_timestamp())' : ''}
+      SELECT id FROM ${table} WHERE ${expiry}<=statement_timestamp()
+      ${table === 'auth_refresh_flights' ? 'AND (delivery_expires_at IS NULL OR delivery_expires_at<=statement_timestamp())' : ''}
       ORDER BY ${expiry},id LIMIT $1 FOR UPDATE SKIP LOCKED
     )`,
       [limit],

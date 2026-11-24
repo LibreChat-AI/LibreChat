@@ -73,7 +73,7 @@ const AuthTokenTypes = Object.freeze({
   PASSWORD_RESET: 'password_reset',
 });
 
-const latestAuthTokenOptions = Object.freeze({ sort: { createdAt: -1 } });
+const latestAuthTokenOptions = Object.freeze({ unexpired: true, sort: { createdAt: -1 } });
 const genericVerificationMessage = 'Please check your email to verify your email address.';
 const genericResetMessage = PASSWORD_RESET_REQUEST_MESSAGE;
 const domainNotAllowedMessage =

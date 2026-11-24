@@ -1,6 +1,7 @@
 import type mongoose from 'mongoose';
 import type { AuthenticationCollection, AuthenticationSnapshotSource } from './import';
 import { AUTHENTICATION_COLUMNS, AUTHENTICATION_KINDS } from './import';
+import { AuthenticationMigrationError } from './schema';
 import flightSchema from '~/schema/openidRefreshFlight';
 import bridgeSchema from '~/schema/refreshTokenBridge';
 import sessionSchema from '~/schema/session';
@@ -121,7 +122,7 @@ export function createMongoAuthenticationSource(
                 value.buffer instanceof Uint8Array
               )
                 value = Buffer.from(value.buffer);
-              else throw new Error('Invalid imported passkey bytes');
+              else throw new AuthenticationMigrationError('INVALID_SNAPSHOT');
             }
             if (column === 'revision' && value === null) value = 0;
             if (column === 'metadata' && value instanceof Map) value = Object.fromEntries(value);

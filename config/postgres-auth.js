@@ -8,17 +8,20 @@ const {
   createPostgresDatabase,
   createMongoAuthenticationSource,
 } = require('@librechat/data-schemas');
-const { runAuthenticationCommand } = require('@librechat/api');
+const { authenticationCommandDiagnostic, runAuthenticationCommand } = require('@librechat/api');
 const loadCustomConfig = require('~/server/services/Config/loadCustomConfig');
+let source;
 runAuthenticationCommand({
   args: process.argv.slice(2),
   env: process.env,
-  source: createMongoAuthenticationSource(mongoose),
+  source: () => (source ??= createMongoAuthenticationSource(mongoose))(),
   createDatabase: createPostgresDatabase,
   connectDb: () => mongoose.connect(process.env.MONGO_URI, { autoCreate: false, autoIndex: false }),
   disconnectDb: () => mongoose.disconnect(),
   loadCustomConfig,
-}).catch(() => {
-  console.error('Authentication migration failed. No automatic storage cutover was performed.');
+}).catch((error) => {
+  console.error(
+    `${authenticationCommandDiagnostic(error)} No automatic storage cutover was performed.`,
+  );
   process.exitCode = 1;
 });

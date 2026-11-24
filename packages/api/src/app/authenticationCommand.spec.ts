@@ -5,21 +5,30 @@ import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { createPostgresDatabase, createMongoAuthenticationSource } from '@librechat/data-schemas';
+import {
+  AuthenticationMigrationError,
+  createMongoAuthenticationSource,
+  createPostgresDatabase,
+  importAuthentication,
+} from '@librechat/data-schemas';
 import type { PostgresDatabase } from '@librechat/data-schemas';
-import { runAuthenticationCommand } from './authenticationCommand';
+import { authenticationCommandDiagnostic, runAuthenticationCommand } from './authenticationCommand';
 
 describe('authentication command arguments', () => {
   it.each([
     [],
     ['migrate', '--dry-run'],
     ['migrate', '--offline'],
+    ['migrate', '--restart'],
     ['verify', '--dry-run'],
+    ['verify', '--offline', '--restart'],
     ['unknown'],
     ['__proto__'],
     ['import'],
+    ['import', '--restart'],
     ['verify'],
     ['import', '--offline', '--offline'],
+    ['import', '--offline', '--restart', '--restart'],
   ])('refuses %j before config or database construction', async (...args) => {
     const loadCustomConfig = jest.fn();
     const connectDb = jest.fn();
@@ -39,7 +48,19 @@ describe('authentication command arguments', () => {
     expect(loadCustomConfig).not.toHaveBeenCalled();
     expect(createDatabase).not.toHaveBeenCalled();
     expect(connectDb).not.toHaveBeenCalled();
-    expect(disconnectDb).toHaveBeenCalledTimes(1);
+    expect(disconnectDb).not.toHaveBeenCalled();
+  });
+  it('reports approved diagnostics without forwarding raw error messages or arbitrary codes', () => {
+    const secret = 'postgres://user:password@db';
+    const error = new AuthenticationMigrationError('SNAPSHOT_CHANGED');
+    error.message = secret;
+    expect(authenticationCommandDiagnostic(error)).toContain('import --offline --restart');
+    expect(authenticationCommandDiagnostic(error)).not.toContain(secret);
+    expect(
+      authenticationCommandDiagnostic(Object.assign(new Error(secret), { code: error.code })),
+    ).toBe(
+      'Authentication operation failed. Check PostgreSQL connectivity, schema and permissions.',
+    );
   });
 });
 const postgres = process.env.PG_TEST_URL ? describe : describe.skip;
@@ -56,11 +77,11 @@ postgres('real authentication migration commands', () => {
   const source = createMongoAuthenticationSource(mongoose);
   const connectDb = () =>
     mongoose.connect(mongo!.getUri(), { autoCreate: false, autoIndex: false });
-  const run = (args: string[]) =>
+  const run = (args: string[], input = source) =>
     runAuthenticationCommand({
       args,
       env,
-      source,
+      source: input,
       loadCustomConfig,
       connectDb,
       disconnectDb: () => mongoose.disconnect(),
@@ -119,7 +140,7 @@ postgres('real authentication migration commands', () => {
           timeout: 15000,
           killSignal: 'SIGKILL',
         }),
-      ).rejects.toMatchObject({ code: 1 });
+      ).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('Usage: postgres-auth') });
       expect((await db!.query('SELECT * FROM librechat_auth_migrations')).rows).toEqual(before);
     } finally {
       rmSync(scratch, { recursive: true, force: true });
@@ -155,7 +176,28 @@ postgres('real authentication migration commands', () => {
     await run(['import', '--offline', '--dry-run']);
     expect((await db!.query('SELECT count(*) FROM auth_sessions')).rows).toEqual([{ count: '0' }]);
     await run(['import', '--offline']);
-    await run(['verify', '--offline']);
+    let signal!: () => void;
+    let release!: () => void;
+    const scanning = new Promise<void>((resolve) => {
+      signal = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const verifying = run(['verify', '--offline'], async function* () {
+      signal();
+      await blocked;
+      yield* source();
+    });
+    try {
+      await Promise.race([scanning, verifying]);
+      await expect(
+        importAuthentication(db!, source, { offline: true, restart: true }),
+      ).rejects.toMatchObject({ code: 'MIGRATION_BUSY' });
+    } finally {
+      release();
+      await verifying;
+    }
     expect(
       (await db!.query('SELECT verified,activated,imported FROM auth_readiness')).rows,
     ).toEqual([{ verified: true, activated: false, imported: '2' }]);
@@ -164,6 +206,16 @@ postgres('real authentication migration commands', () => {
     );
     await connectDb();
     expect(await mongoose.connection.db!.listCollections().toArray()).toEqual(before);
+    await mongoose.connection.collection('sessions').updateOne(
+      {},
+      {
+        $set: { refreshTokenHash: 'changed-session' },
+      },
+    );
     await mongoose.disconnect();
+    await expect(run(['verify', '--offline'])).rejects.toThrow('snapshots differ');
+    await expect(run(['import', '--offline'])).rejects.toThrow('import --offline --restart');
+    await run(['import', '--offline', '--restart']);
+    await run(['verify', '--offline']);
   });
 });

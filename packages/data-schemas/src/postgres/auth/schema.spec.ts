@@ -22,14 +22,14 @@ postgres('authentication schema and offline import', () => {
   afterEach(async () => {
     await db?.close();
   });
-  const row = (index: number): AuthenticationSnapshotRow => ({
+  const row = (index: number, expiration = '2030-01-01'): AuthenticationSnapshotRow => ({
     kind: 'sessions',
     values: {
       id: index.toString(16).padStart(24, '0'),
       user_id: '0123456789abcdef01234567',
       tenant_id: null,
       refresh_token_hash: `hashed-${index}`,
-      expiration: new Date('2030-01-01'),
+      expiration: new Date(expiration),
     },
   });
   const source = (rows: AuthenticationSnapshotRow[]): AuthenticationSnapshotSource =>
@@ -48,7 +48,7 @@ postgres('authentication schema and offline import', () => {
     await assertPostgresAuthenticationReady(db!);
     await expect(
       importAuthentication(db!, source([]), { offline: true, verifiedEmpty: true }),
-    ).rejects.toThrow('authority');
+    ).rejects.toMatchObject({ code: 'ACTIVATED' });
   });
   it('adds authentication schema without changing the deployed favorites schema or activation', async () => {
     await migratePostgres(db!);
@@ -99,8 +99,17 @@ postgres('authentication schema and offline import', () => {
     ]);
     await expect(
       importAuthentication(db!, source(rows.slice(1)), { offline: true }),
-    ).rejects.toThrow('authority');
+    ).rejects.toMatchObject({ code: 'SNAPSHOT_CHANGED' });
     const expected = await fingerprintAuthentication(source(rows));
+    let attempts = 0;
+    const transient: AuthenticationSnapshotSource = async function* () {
+      if (++attempts === 2) yield* rows.slice(1);
+      else yield* rows;
+    };
+    // Even the part skipped by the checkpoint must match during the write pass.
+    await expect(importAuthentication(db!, transient, { offline: true })).rejects.toMatchObject({
+      code: 'SOURCE_CHANGED',
+    });
     await expect(importAuthentication(db!, source(rows), { offline: true })).resolves.toEqual(
       expected,
     );
@@ -110,13 +119,96 @@ postgres('authentication schema and offline import', () => {
     );
     await assertPostgresAuthenticationReady(db!);
   });
-  it('rejects destination drift and altered source without marking partial imports ready', async () => {
+  it('requires an owned import to recover from an exact source that shrank after the write pass', async () => {
+    const expired = row(1, '2000-01-01');
+    const live = row(2);
+    const replacement = source([live]);
+    let pass = 0;
+    const shrinking: AuthenticationSnapshotSource = async function* () {
+      if (++pass < 3) yield expired;
+      yield live;
+    };
+    await db!.query("CREATE TABLE unrelated(value text); INSERT INTO unrelated VALUES ('keep')");
+    await expect(importAuthentication(db!, shrinking, { offline: true })).rejects.toMatchObject({
+      code: 'SOURCE_CHANGED',
+    });
+    const before = (await db!.query('SELECT * FROM auth_readiness')).rows;
+    expect(before[0]).toMatchObject({
+      activated: false,
+      verified: false,
+      checkpoint: expect.any(String),
+    });
+    const original = await fingerprintAuthentication(source([expired, live]));
+    expect(await fingerprintAuthentication(readPostgresAuthentication(db!))).toEqual(original);
+    await expect(importAuthentication(db!, replacement, { offline: true })).rejects.toMatchObject({
+      code: 'SNAPSHOT_CHANGED',
+    });
+    const expected = await fingerprintAuthentication(replacement);
+    await expect(
+      importAuthentication(db!, replacement, { offline: true, restart: true, dryRun: true }),
+    ).resolves.toEqual(expected);
+    await expect(
+      importAuthentication(db!, source([{ ...live, values: { ...live.values, user_id: 'bad' } }]), {
+        offline: true,
+        restart: true,
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_SNAPSHOT' });
+    await expect(
+      importAuthentication(db!, source([]), { offline: true, restart: true }),
+    ).rejects.toMatchObject({ code: 'EMPTY_ASSERTION' });
+    expect((await db!.query('SELECT * FROM auth_readiness')).rows).toEqual(before);
+    expect(await fingerprintAuthentication(readPostgresAuthentication(db!))).toEqual(original);
+
+    await expect(
+      importAuthentication(db!, replacement, { offline: true, restart: true }),
+    ).resolves.toEqual(expected);
+    expect(await fingerprintAuthentication(readPostgresAuthentication(db!))).toEqual(expected);
+    expect((await db!.query('SELECT * FROM unrelated')).rows).toEqual([{ value: 'keep' }]);
+    await assertPostgresAuthenticationReady(db!);
+    await expect(
+      importAuthentication(db!, source([]), { offline: true, restart: true, verifiedEmpty: true }),
+    ).rejects.toMatchObject({ code: 'ACTIVATED' });
+    expect(await fingerprintAuthentication(readPostgresAuthentication(db!))).toEqual(expected);
+  });
+  it('does not claim or reset a nonempty or legacy destination', async () => {
     await db!.query(
       "INSERT INTO auth_sessions VALUES('000000000000000000000099','0123456789abcdef01234567',NULL,'unrelated','2030-01-01')",
     );
-    await expect(importAuthentication(db!, source([row(1)]), { offline: true })).rejects.toThrow(
-      'verification',
+    const before = (await db!.query('SELECT * FROM auth_readiness')).rows;
+    const expected = await fingerprintAuthentication(readPostgresAuthentication(db!));
+    const input = source([row(1)]);
+    await expect(importAuthentication(db!, input, { offline: true })).rejects.toMatchObject({
+      code: 'UNSAFE_DESTINATION',
+    });
+    await expect(
+      importAuthentication(db!, input, { offline: true, restart: true }),
+    ).rejects.toMatchObject({ code: 'NOT_OWNED' });
+    expect((await db!.query('SELECT * FROM auth_readiness')).rows).toEqual(before);
+    await db!.query('UPDATE auth_readiness SET snapshot=$1 WHERE singleton', [expected.digest]);
+    await expect(
+      importAuthentication(db!, input, { offline: true, restart: true }),
+    ).rejects.toMatchObject({ code: 'NOT_OWNED' });
+    expect(await fingerprintAuthentication(readPostgresAuthentication(db!))).toEqual(expected);
+  });
+  it('does not reset data or readiness if PostgreSQL refuses a restricted truncate', async () => {
+    await importAuthentication(db!, source([row(1)]), { offline: true });
+    await db!.query('CREATE TABLE unrelated(session_id text REFERENCES auth_sessions(id))');
+    const before = (await db!.query('SELECT * FROM auth_readiness')).rows;
+    await expect(
+      importAuthentication(db!, source([row(2)]), { offline: true, restart: true }),
+    ).rejects.toMatchObject({ code: 'RESTART_BLOCKED' });
+    expect((await db!.query('SELECT * FROM auth_readiness')).rows).toEqual(before);
+    expect(await fingerprintAuthentication(readPostgresAuthentication(db!))).toEqual(
+      await fingerprintAuthentication(source([row(1)])),
     );
+  });
+  it('rejects same-count destination drift without marking the import verified', async () => {
+    const input = source([row(1)]);
+    await importAuthentication(db!, input, { offline: true });
+    await db!.query("UPDATE auth_sessions SET refresh_token_hash='unrelated'");
+    await expect(importAuthentication(db!, input, { offline: true })).rejects.toMatchObject({
+      code: 'DESTINATION_MISMATCH',
+    });
     expect((await db!.query('SELECT verified FROM auth_readiness')).rows).toEqual([
       { verified: false },
     ]);
@@ -143,6 +235,9 @@ postgres('authentication schema and offline import', () => {
     await importAuthentication(db!, source([]), { offline: true, verifiedEmpty: true });
     await db!.query('ALTER TABLE auth_passkeys ENABLE ROW LEVEL SECURITY');
     await expect(assertPostgresAuthenticationReady(db!)).rejects.toThrow('schema mismatch');
+    await expect(
+      importAuthentication(db!, source([row(1)]), { offline: true, restart: true }),
+    ).rejects.toMatchObject({ code: 'SCHEMA_MISMATCH' });
     expect((await db!.query('SELECT activated FROM auth_readiness')).rows).toEqual([
       { activated: false },
     ]);

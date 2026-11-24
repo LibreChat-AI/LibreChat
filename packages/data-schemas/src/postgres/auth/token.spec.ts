@@ -61,6 +61,23 @@ postgres('native PostgreSQL tokens', () => {
     ).toEqual({ deletedCount: 1 });
   });
 
+  it('filters redemption reads before sorting without hiding expired rows from ordinary reads', async () => {
+    const type = 'password_reset';
+    const live = await methods.createToken({ userId, token: 'live', type, expiresIn: 60 });
+    const expired = await methods.createToken({ userId, token: 'expired', type, expiresIn: -60 });
+    await db.query('UPDATE auth_tokens SET created_at=$1 WHERE id=$2', [
+      new Date(live.createdAt.getTime() - 1000),
+      live._id,
+    ]);
+    const query = { userId, type };
+    const sort = { createdAt: -1 } as const;
+    expect(await methods.findToken(query, { sort })).toEqual(expired);
+    expect(await methods.findToken(query, { sort, unexpired: true })).toMatchObject({
+      _id: live._id,
+    });
+    expect(await methods.findToken({ token: 'expired' }, { unexpired: true })).toBeNull();
+  });
+
   it('serializes scoped replacement across independent pools and fences stale generations', async () => {
     const other = createPostgresTokenMethods(peer);
     const data = { userId, token: 'initial', expiresIn: 60 };

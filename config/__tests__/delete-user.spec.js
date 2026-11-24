@@ -65,7 +65,7 @@ jest.mock('@librechat/data-schemas', () => ({
   createMethods: (_mongoose, deps) => ({
     ...mockMethods,
     ...deps.toolFavorites,
-    ...deps.authentication,
+    ...deps.authentication.methods,
   }),
   createMongoAuthenticationMethods: () => mockMongoAuthentication,
   createToolFavoriteMethods: () => mockMongoFavorites,

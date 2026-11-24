@@ -1220,12 +1220,12 @@ describe('resetPassword', () => {
     expect(findToken).toHaveBeenNthCalledWith(
       1,
       { userId: 'user-reset', type: 'password_reset' },
-      { sort: { createdAt: -1 } },
+      { unexpired: true, sort: { createdAt: -1 } },
     );
     expect(findToken).toHaveBeenNthCalledWith(
       2,
       { userId: 'user-reset', email: null, identifier: null, type: null },
-      { sort: { createdAt: -1 } },
+      { unexpired: true, sort: { createdAt: -1 } },
     );
     expect(deleteTokens).not.toHaveBeenCalled();
   });
@@ -1358,7 +1358,7 @@ describe('verifyEmail', () => {
         email: user.email,
         type: 'email_verification',
       },
-      { sort: { createdAt: -1 } },
+      { unexpired: true, sort: { createdAt: -1 } },
     );
     expect(deleteTokens).toHaveBeenCalledWith({
       token: verificationHash,
@@ -1407,7 +1407,7 @@ describe('verifyEmail', () => {
         identifier: null,
         type: null,
       },
-      { sort: { createdAt: -1 } },
+      { unexpired: true, sort: { createdAt: -1 } },
     );
     expect(deleteTokens).toHaveBeenCalledWith({
       token: verificationHash,

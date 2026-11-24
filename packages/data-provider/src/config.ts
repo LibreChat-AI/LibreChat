@@ -4942,7 +4942,13 @@ export const persistenceConfigSchema = z
     postgres: z
       .object({
         connectionStringEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
-        max: z.number().int().min(1).max(100).default(10),
+        max: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .default(10)
+          .describe('Maximum connections per enabled PostgreSQL storage boundary, per process.'),
         maxWaiting: z.number().int().min(1).max(1000).default(100),
         acquireTimeoutMs: z.number().int().min(1).max(60000).default(5000),
         queryTimeoutMs: z.number().int().min(1).max(300000).default(15000),

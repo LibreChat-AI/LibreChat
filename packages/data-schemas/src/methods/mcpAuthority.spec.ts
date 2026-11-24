@@ -219,7 +219,10 @@ function expectReason(reason: MCPAuthorityProofError['reason']) {
 }
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+  mongoServer = await MongoMemoryReplSet.create({
+    replSet: { count: 1 },
+    instanceOpts: [{ args: ['--nounixsocket'] }],
+  });
   const uri = new URL(mongoServer.getUri());
   uri.searchParams.set('readPreference', 'secondaryPreferred');
   await mongoose.connect(uri.href);
@@ -571,6 +574,35 @@ describe('MCP authority proofs', () => {
         }),
       ),
     ).rejects.toEqual(expectReason('access_revoked'));
+  });
+
+  test('reads the selected Mongo tokens from the snapshot pinned before a concurrent update', async () => {
+    const select = jest.fn(() => null);
+    const generation = 'oauth-generation-2';
+    const snapshot = createMCPAuthorityMethods(
+      mongoose,
+      {
+        afterPrincipalSnapshot: async () => {
+          await models.Token.updateMany(
+            { userId },
+            { $set: { 'metadata.credential_set_id': generation } },
+          );
+        },
+      },
+      select,
+    );
+
+    const proof = await inTenant(() =>
+      snapshot.resolveMCPAuthorityProof({
+        userId: userId.toHexString(),
+        tenantId: TENANT_ID,
+        boot,
+        targets: [target()],
+      }),
+    );
+    expect(proof.servers[0].oauthGrantGeneration).toBe('oauth-generation-1');
+    expect(select).toHaveBeenCalledTimes(1);
+    await expect(assertCurrent(proof)).rejects.toEqual(expectReason('oauth_grant_changed'));
   });
 
   test('keeps query count bounded by collection for many selected servers', async () => {
@@ -1310,6 +1342,7 @@ test('reads injected token authority even when the Mongo Token collection is emp
       boot,
       targets: [target()],
     });
+    expect(getMCPAuthorityTokens).toHaveBeenCalledTimes(2);
     expect(getMCPAuthorityTokens).toHaveBeenCalledWith(input);
   });
 });

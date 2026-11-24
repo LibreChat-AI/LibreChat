@@ -83,7 +83,7 @@ realPostgres('delete-user CLI durable erasure recovery', () => {
     );
     const methods = schemas.createMethods(mongoose, {
       toolFavorites: runtime.methods,
-      authentication: auth.methods,
+      authentication: auth,
     });
     const suspend = jest.spyOn(methods, 'suspendUserSchedulesForDeletion');
     if (failAdopt)

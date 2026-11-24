@@ -239,7 +239,9 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
         conditions.push({ 'metadata.credential_set_id': query.metadataCredentialSetId });
       }
 
-      const token = await Token.findOne({ $and: conditions }, null, options).lean<IToken>();
+      const { unexpired, ...queryOptions } = options ?? {};
+      if (unexpired) conditions.push({ expiresAt: { $gt: new Date() } });
+      const token = await Token.findOne({ $and: conditions }, null, queryOptions).lean<IToken>();
 
       return token ? toTokenRecord(token) : null;
     } catch (error) {

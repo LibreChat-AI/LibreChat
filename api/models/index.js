@@ -35,7 +35,7 @@ const authentication = createAuthenticationRuntime(
 );
 
 const methods = createMethods(mongoose, {
-  authentication: authentication.methods,
+  authentication,
   toolFavorites: favorites.methods,
   matchModelName,
   findMatchingPattern,

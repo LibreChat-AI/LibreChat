@@ -1,12 +1,12 @@
 import { persistenceConfigSchema } from 'librechat-data-provider';
 import type {
   AuthenticationMethods,
+  AuthenticationSelection,
   AuthenticationBackend,
   PostgresOptions,
 } from '@librechat/data-schemas';
 
-export interface AuthenticationRuntime {
-  methods: AuthenticationMethods;
+export interface AuthenticationRuntime extends AuthenticationSelection {
   initialize(config: unknown): Promise<void>;
   close(): Promise<void>;
 }
@@ -17,22 +17,29 @@ export function createAuthenticationRuntime(
   env: NodeJS.ProcessEnv,
   createPostgres: (options: PostgresOptions) => AuthenticationBackend,
 ): AuthenticationRuntime {
-  let selected: AuthenticationMethods | undefined;
+  let selected: { kind: 'mongo' | 'postgres'; methods: AuthenticationMethods } | undefined;
   let backend: AuthenticationBackend | undefined;
   let initialization: Promise<void> | undefined;
   let shutdown: Promise<void> | undefined;
   let backendShutdown: Promise<void> | undefined;
   let closed = false;
   const closeBackend = () => (backendShutdown ??= backend?.close() ?? Promise.resolve());
-  const methods = () => {
+  const authority = () => {
     if (closed || !selected) throw new Error('Authentication persistence is not initialized');
     return selected;
   };
+  const methods = () => authority().methods;
+  const getMCPAuthorityTokens: AuthenticationMethods['getMCPAuthorityTokens'] = async (input) =>
+    methods().getMCPAuthorityTokens(input);
+  const reader = { getMCPAuthorityTokens };
   return {
+    selectMCPAuthorityTokenReader() {
+      return authority().kind === 'mongo' ? null : reader;
+    },
     methods: {
       SessionError: mongo.SessionError,
       findMCPTokenUserIds: async (...args) => methods().findMCPTokenUserIds(...args),
-      getMCPAuthorityTokens: async (...args) => methods().getMCPAuthorityTokens(...args),
+      getMCPAuthorityTokens,
       getMCPTokenGenerations: async (...args) => methods().getMCPTokenGenerations(...args),
       findSession: async (...args) => methods().findSession(...args),
       createSession: async (...args) => methods().createSession(...args),
@@ -76,7 +83,7 @@ export function createAuthenticationRuntime(
         const parsed = persistenceConfigSchema.safeParse(config);
         if (!parsed.success) throw new Error('Invalid persistence configuration');
         if (parsed.data.authentication === 'mongo') {
-          selected = mongo;
+          selected = { kind: 'mongo', methods: mongo };
           return;
         }
         const options = parsed.data.postgres;
@@ -87,7 +94,7 @@ export function createAuthenticationRuntime(
           backend = createPostgres({ ...options, connectionString });
           await backend.initialize();
           if (closed) throw new Error('Authentication persistence is closed');
-          selected = backend.methods;
+          selected = { kind: 'postgres', methods: backend.methods };
         } catch {
           await closeBackend().catch(() => undefined);
           throw new Error('PostgreSQL authentication initialization failed');

@@ -67,6 +67,8 @@ export interface TokenRecord {
 }
 
 export interface TokenFindOptions {
+  /** Redemption reads must not depend on physical expiry cleanup. */
+  unexpired?: boolean;
   sort?: Partial<
     Record<
       | '_id'

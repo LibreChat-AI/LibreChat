@@ -55,8 +55,12 @@ function where(query: TokenQuery): { text: string; values: unknown[] } {
   const terms: string[] = [];
   const values: unknown[] = [];
   const add = (column: string, value: unknown) => {
+    if (value === null) {
+      terms.push(`${column} IS NULL`);
+      return;
+    }
     values.push(value);
-    terms.push(`${column} IS NOT DISTINCT FROM $${values.length}`);
+    terms.push(`${column}=$${values.length}`);
   };
   if (query.userId !== undefined) add('user_id', String(query.userId));
   if (query.token !== undefined) add('token', query.token);
@@ -146,6 +150,7 @@ export function createPostgresTokenMethods(db: PostgresDatabase): TokenMethods &
     },
     async findToken(query, options) {
       const filter = where(query);
+      if (options?.unexpired) filter.text += ' AND expires_at>statement_timestamp()';
       const order: string[] = [];
       const sortable = {
         _id: 'id',

@@ -1,5 +1,59 @@
 import { createHash } from 'node:crypto';
-import type { PostgresDatabase, SqlExecutor } from '../pool';
+import type { PostgresDatabase, PostgresSession, SqlExecutor } from '../pool';
+
+const diagnostics = {
+  OFFLINE_REQUIRED: 'Stop every authentication writer and pass --offline.',
+  MIGRATION_BUSY: 'Another authentication migration is running.',
+  POSTGRES_VERSION: 'PostgreSQL 16 is required.',
+  SCHEMA_MISMATCH:
+    'PostgreSQL authentication schema mismatch. Run postgres-auth migrate on the intended schema.',
+  PERMISSIONS: 'PostgreSQL authentication permissions not ready.',
+  NOT_VERIFIED: 'PostgreSQL authentication data not verified. Complete the offline import first.',
+  INVALID_SNAPSHOT:
+    'Invalid authentication snapshot. Check required fields, owner IDs, and unique row ordering.',
+  EMPTY_ASSERTION: 'Pass --verified-empty only when the MongoDB authentication snapshot is empty.',
+  ACTIVATED: 'PostgreSQL authentication has already been activated and cannot be imported again.',
+  UNSAFE_DESTINATION:
+    'Authentication destination is not an empty, newly migrated schema or an owned import. No data was replaced.',
+  NOT_OWNED:
+    'No owned authentication import to restart. Use an empty, newly migrated schema for a first import.',
+  RESTART_PERMISSIONS:
+    'Restart requires PostgreSQL TRUNCATE permission on the authentication data tables.',
+  RESTART_BLOCKED:
+    'PostgreSQL blocked the reset. Check for foreign-key references to the authentication tables.',
+  SNAPSHOT_CHANGED:
+    'Authentication source differs from the saved snapshot. If expected, rerun import --offline --restart.',
+  SOURCE_CHANGED:
+    'Authentication source changed during import. Once stable, rerun import --offline --restart.',
+  DESTINATION_CONFLICT:
+    'Authentication destination mapping conflicts. Check for duplicate source mappings and stop all writers.',
+  DESTINATION_MISMATCH:
+    'Authentication snapshot verification failed: the destination differs from the source.',
+  AUTHORITY_CHANGED:
+    'Authentication import authority changed. Check the intended PostgreSQL schema and stop all writers.',
+} as const;
+
+export class AuthenticationMigrationError extends Error {
+  constructor(readonly code: keyof typeof diagnostics) {
+    super(diagnostics[code]);
+  }
+}
+
+export function authenticationMigrationDiagnostic(error: unknown): string | undefined {
+  if (
+    error instanceof AuthenticationMigrationError &&
+    Object.prototype.hasOwnProperty.call(diagnostics, error.code)
+  )
+    return diagnostics[error.code];
+  return undefined;
+}
+
+export const AUTHENTICATION_IMPORT_PREFIX = 'import-v2:';
+const ownedSnapshot = new RegExp(`^${AUTHENTICATION_IMPORT_PREFIX}[a-f0-9]{64}$`);
+
+export function isOwnedAuthenticationImport(snapshot: string | null): boolean {
+  return ownedSnapshot.test(snapshot ?? '');
+}
 
 export const AUTHENTICATION_TABLES: readonly string[] = [
   'auth_sessions',
@@ -67,6 +121,23 @@ export async function lockAuthentication(sql: SqlExecutor): Promise<void> {
   await sql.query('SELECT pg_advisory_xact_lock(17490262,hashtext(current_schema()))');
 }
 
+export async function withAuthenticationMigration<T>(
+  db: PostgresDatabase,
+  operation: (session: PostgresSession) => Promise<T>,
+): Promise<T> {
+  return db.session(async (session) => {
+    const acquired = await session.query<{ acquired: boolean }>(
+      'SELECT pg_try_advisory_lock(17490262,hashtext(current_schema())) AS acquired',
+    );
+    if (!acquired.rows[0]?.acquired) throw new AuthenticationMigrationError('MIGRATION_BUSY');
+    try {
+      return await operation(session);
+    } finally {
+      await session.query('SELECT pg_advisory_unlock(17490262,hashtext(current_schema()))');
+    }
+  });
+}
+
 async function catalog(executor: SqlExecutor): Promise<string> {
   const result = await executor.query<{ definition: unknown }>(
     `SELECT jsonb_build_object(
@@ -83,19 +154,28 @@ async function catalog(executor: SqlExecutor): Promise<string> {
     'policies',(SELECT jsonb_agg(jsonb_build_array(polname,polcmd,polpermissive,polroles,pg_get_expr(polqual,polrelid),pg_get_expr(polwithcheck,polrelid)) ORDER BY polname)
       FROM pg_policy WHERE polrelid=c.oid)
     ) AS definition FROM unnest($1::text[]) expected(name)
-    LEFT JOIN pg_class c ON c.oid=to_regclass(name) ORDER BY name`,
+    LEFT JOIN pg_class c ON c.oid=to_regclass(name)
+    AND c.relnamespace=to_regnamespace(quote_ident(current_schema()))
+    AND NOT EXISTS (SELECT 1 FROM pg_inherits WHERE inhparent=c.oid OR inhrelid=c.oid)
+    ORDER BY name`,
     [tables],
   );
   return createHash('sha256').update(JSON.stringify(result.rows)).digest('hex');
 }
 
 export async function assertAuthenticationSchema(executor: SqlExecutor): Promise<void> {
-  const version = await executor.query<{ version: string }>(
-    "SELECT current_setting('server_version_num') AS version",
+  const {
+    rows: [server],
+  } = await executor.query<{ version: string; migrated: boolean }>(
+    `SELECT current_setting('server_version_num') AS version, EXISTS (
+       SELECT 1 FROM pg_class WHERE oid=to_regclass('librechat_auth_migrations')
+       AND relnamespace=to_regnamespace(quote_ident(current_schema())) AND relkind='r'
+     ) AS migrated`,
   );
-  if (Number(version.rows[0]?.version) < 160000 || Number(version.rows[0]?.version) >= 170000) {
-    throw new Error('PostgreSQL 16 is required');
-  }
+  const version = Number(server?.version);
+  if (!(version >= 160000 && version < 170000))
+    throw new AuthenticationMigrationError('POSTGRES_VERSION');
+  if (!server.migrated) throw new AuthenticationMigrationError('SCHEMA_MISMATCH');
   const applied = await executor.query<{ version: number; checksum: string; catalog: string }>(
     'SELECT version,checksum,catalog FROM librechat_auth_migrations ORDER BY version',
   );
@@ -105,7 +185,7 @@ export async function assertAuthenticationSchema(executor: SqlExecutor): Promise
     applied.rows[0].checksum !== checksum ||
     applied.rows[0].catalog !== (await catalog(executor))
   ) {
-    throw new Error('PostgreSQL authentication schema mismatch');
+    throw new AuthenticationMigrationError('SCHEMA_MISMATCH');
   }
   const privileges = await executor.query<{ allowed: boolean }>(
     `SELECT bool_and(
@@ -114,8 +194,7 @@ export async function assertAuthenticationSchema(executor: SqlExecutor): Promise
     ) AS allowed FROM unnest($1::text[]) expected(name)`,
     [tables],
   );
-  if (privileges.rows[0]?.allowed !== true)
-    throw new Error('PostgreSQL authentication permissions not ready');
+  if (privileges.rows[0]?.allowed !== true) throw new AuthenticationMigrationError('PERMISSIONS');
 }
 
 export async function migratePostgresAuthentication(db: PostgresDatabase): Promise<void> {
@@ -124,7 +203,7 @@ export async function migratePostgresAuthentication(db: PostgresDatabase): Promi
       "SELECT current_setting('server_version_num') AS version",
     );
     if (Number(version.rows[0]?.version) < 160000 || Number(version.rows[0]?.version) >= 170000)
-      throw new Error('PostgreSQL 16 is required');
+      throw new AuthenticationMigrationError('POSTGRES_VERSION');
     await lockAuthentication(executor);
     await executor.query(
       'CREATE TABLE IF NOT EXISTS librechat_auth_migrations(version integer PRIMARY KEY, checksum text NOT NULL,catalog text NOT NULL)',
@@ -147,8 +226,13 @@ export async function assertPostgresAuthenticationDataReady(executor: SqlExecuto
   const result = await executor.query<{ verified: boolean; snapshot: string | null }>(
     'SELECT verified,snapshot FROM auth_readiness WHERE singleton',
   );
-  if (result.rows[0]?.verified !== true || !/^[a-f0-9]{64}$/.test(result.rows[0].snapshot ?? ''))
-    throw new Error('PostgreSQL authentication data not verified');
+  const state = result.rows[0];
+  // Legacy verified snapshots are usable but do not establish ownership for restart.
+  if (
+    state?.verified !== true ||
+    (!isOwnedAuthenticationImport(state.snapshot) && !/^[a-f0-9]{64}$/.test(state.snapshot ?? ''))
+  )
+    throw new AuthenticationMigrationError('NOT_VERIFIED');
 }
 
 export async function assertPostgresAuthenticationReady(db: PostgresDatabase): Promise<void> {
