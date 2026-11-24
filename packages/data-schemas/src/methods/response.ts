@@ -1096,7 +1096,7 @@ export function createResponseStorage(
     async cancelOrphan(expected, responseJSON) {
       const conflict = { ok: false, code: 'response_conflict' } as const;
       if (
-        expected.status !== 'in_progress' ||
+        (expected.status !== 'in_progress' && expected.status !== 'queued') ||
         expected.generationCreatedAt == null ||
         expected.cancellationRequestedAt == null ||
         expected.review ||
@@ -1118,7 +1118,7 @@ export function createResponseStorage(
                 requestKey: expected.requestKey,
                 parentMessageId: expected.parentMessageId,
                 revision: expected.revision,
-                status: 'in_progress',
+                status: expected.status,
                 cancellationRequestedAt: expected.cancellationRequestedAt,
                 pendingTerminal: { $exists: false },
                 preparedTerminal: { $exists: false },

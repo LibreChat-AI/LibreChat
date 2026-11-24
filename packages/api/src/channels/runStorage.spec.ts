@@ -557,7 +557,7 @@ describe('Responses execution binding', () => {
 describe('Slack Stop after API restart', () => {
   const userId = '000000000000000000000001';
   const owner = { tenantId, userId };
-  async function fixture(orphan = true) {
+  async function fixture(orphan = true, status: 'queued' | 'in_progress' = 'in_progress') {
     const created = Math.max(Date.now(), Math.ceil(performance.timeOrigin));
     await storage.admit(enrollment('orphan', userId), created);
     const claimed = (await storage.claim(tenantId, 'channel', 'worker', created, 1000))!;
@@ -575,13 +575,13 @@ describe('Slack Stop after API restart', () => {
     const responses = createResponseStorage(mongoose);
     const response = (await responses.read(owner, 'resp_orphan'))!;
     const generationCreatedAt = orphan ? Math.floor(performance.timeOrigin) - 1000 : created;
+    if (status === 'queued') {
+      await responses.requestCancellation(owner, response.responseId, created + 5);
+    }
     const publication = await responses.publish(owner, response.responseId, response.revision, {
-      status: 'in_progress',
+      status,
       generationCreatedAt,
-      responseJSON: JSON.stringify({
-        ...buildPendingBackgroundResponse(response),
-        status: 'in_progress',
-      }),
+      responseJSON: JSON.stringify({ ...buildPendingBackgroundResponse(response), status }),
     });
     if (!publication.ok) throw new Error('Response enrollment failed');
     const jobs = new GenerationJobManagerClass();
@@ -638,10 +638,10 @@ describe('Slack Stop after API restart', () => {
       cancelResponse: host.cancelResponse,
     });
     const before = await project(run);
-    expect(before.snapshot).toMatchObject({
-      status: 'running',
-      recovery: 'execution_state_unavailable',
-    });
+    expect(before.snapshot.status).toBe('running');
+    expect(before.snapshot.recovery).toBe(
+      status === 'in_progress' ? 'execution_state_unavailable' : undefined,
+    );
     const running = await storage.saveSnapshot(
       tenantId,
       fence(run),
@@ -679,9 +679,9 @@ describe('Slack Stop after API restart', () => {
     };
   }
 
-  it('settles an explicitly stopped orphan and claims the next message in the same lane', () =>
+  it.each(['in_progress', 'queued'] as const)('releases a stopped %s orphan', (status) =>
     scope(async () => {
-      const f = await fixture();
+      const f = await fixture(true, status);
       const { run, next, created, response, responses } = f;
       const stopped = await f.stop();
       const result = await f.project(stopped);
@@ -739,7 +739,8 @@ describe('Slack Stop after API restart', () => {
           execution: { requestId: next.runId },
         },
       );
-    }));
+    }),
+  );
 
   it.each(['prepared', 'pending'] as const)(
     'preserves %s completion evidence even when restart settlement is enabled',

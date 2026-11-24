@@ -204,7 +204,7 @@ export function createResponseRetirement(
       // or completion receipt owns its checkpoint. Unpublished fragments retain their TTL.
       if (
         !confirmRestartOrphan ||
-        record.status !== 'in_progress' ||
+        (record.status !== 'in_progress' && record.status !== 'queued') ||
         !record.requestKey.startsWith('channel:') ||
         record.cancellationRequestedAt == null ||
         record.review ||
