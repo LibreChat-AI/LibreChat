@@ -225,7 +225,12 @@ describe('credentials', () => {
 
   onWindows('removes inherited and explicit unrelated grants before adopting a file', () => {
     grantWindowsEveryone(tempDirectory, 'ReadAndExecute', 'ContainerInherit, ObjectInherit');
-    writeLegacyFile(tempFile, `CREDS_KEY=${'a'.repeat(64)}\n`);
+    writeLegacyFile(
+      tempFile,
+      credentialNames
+        .map((name) => `${name}=${'a'.repeat(name === 'CREDS_IV' ? 32 : 64)}`)
+        .join('\n'),
+    );
     expect(inspectWindowsAcl(tempFile).entries).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ sid: 'S-1-1-0', flags: 16 }),
@@ -235,10 +240,24 @@ describe('credentials', () => {
 
     const state = bootstrapCredentials();
 
-    expect(state.loadedFromFile).toEqual(['CREDS_KEY']);
+    expect(state.loadedFromFile).toEqual(credentialNames);
+    expect(state.generated).toEqual([]);
     expect(state.persistenceFailed).toBe(false);
     expectPrivateWindowsAcl(tempFile, 'file');
-    expect(fs.readdirSync(tempDirectory)).toEqual(['.env.temp']);
+  });
+
+  onWindows('replaces an incomplete file with a private file and removes the repair name', () => {
+    tempFile = path.join(tempDirectory, "settings [test] & 'private'");
+    process.env.LIBRECHAT_TEMP_CREDENTIALS_PATH = tempFile;
+    writeLegacyFile(tempFile, `CREDS_KEY=${'a'.repeat(64)}\n`);
+
+    const state = bootstrapCredentials();
+
+    expect(state.loadedFromFile).toEqual(['CREDS_KEY']);
+    expect(state.generated).toEqual(['CREDS_IV', 'JWT_SECRET', 'JWT_REFRESH_SECRET']);
+    expect(state.persistenceFailed).toBe(false);
+    expectPrivateWindowsAcl(tempFile, 'file');
+    expect(fs.readdirSync(tempDirectory)).toEqual([path.basename(tempFile)]);
   });
 
   onWindows('rejects a multi-link credential without hardening or replacing either name', () => {

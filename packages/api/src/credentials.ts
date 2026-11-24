@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { publishWindowsPrivateFile, readWindowsPrivateFile } from './utils/windowsPrivate';
+import {
+  finishWindowsPrivateRepair,
+  publishWindowsPrivateFile,
+  readWindowsPrivateFile,
+} from './utils/windowsPrivate';
 
 export const credentialNames = [
   'CREDS_KEY',
@@ -34,6 +38,7 @@ interface CredentialFileResult {
   values: Partial<Record<CredentialName, string>>;
   exists: boolean;
   readable: boolean;
+  digest?: string;
 }
 
 type CredentialFileWriteResult = 'written' | 'exists' | 'failed';
@@ -104,14 +109,17 @@ function parseCredentialFile(contents: string): Partial<Record<CredentialName, s
 
 function readCredentialFile(filePath: string): CredentialFileResult {
   try {
-    let contents: string | undefined;
+    let contents: string;
+    let digest: string | undefined;
     if (process.platform === 'win32') {
       if (isProtectedEnvironmentPath(filePath))
         return { values: {}, exists: true, readable: false };
       const stat = fs.lstatSync(filePath);
       if (!stat.isFile() || stat.nlink !== 1) throw new Error('Not a single-link credential file.');
-      contents = readWindowsPrivateFile(filePath);
-      if (contents === undefined) return { values: {}, exists: false, readable: true };
+      const bytes = readWindowsPrivateFile(filePath);
+      if (!bytes) return { values: {}, exists: false, readable: true };
+      contents = bytes.toString('utf8');
+      if (filePath.endsWith('.lock')) digest = sha256(bytes);
     } else {
       contents = fs.readFileSync(filePath, 'utf8');
     }
@@ -119,6 +127,7 @@ function readCredentialFile(filePath: string): CredentialFileResult {
       values: parseCredentialFile(contents),
       exists: true,
       readable: true,
+      digest,
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -177,6 +186,10 @@ function hasUsableValues(file: CredentialFileResult, names: CredentialName[]): b
   );
 }
 
+function sha256(contents: string | Buffer): string {
+  return crypto.createHash('sha256').update(contents).digest('hex');
+}
+
 function writeWindowsCredentialFile(
   filePath: string,
   temporaryPath: string,
@@ -189,26 +202,33 @@ function writeWindowsCredentialFile(
   // Use a no-replace move instead of creating a second link to a credential inode.
   const lockPath = `${filePath}.lock`;
   const ownsLock = publishWindowsPrivateFile(temporaryPath, lockPath, contents) === 'written';
+  let ownDigest = ownsLock ? sha256(contents) : undefined;
   try {
+    const candidate = ownsLock ? undefined : readCredentialFile(lockPath);
     const final = readCredentialFile(filePath);
     if (!final.readable) return 'failed';
     if (hasUsableValues(final, generatedNames)) return 'exists';
 
-    if (ownsLock || hasUsableValues(readCredentialFile(lockPath), generatedNames)) {
+    const digest =
+      ownDigest ??
+      (candidate && hasUsableValues(candidate, generatedNames) ? candidate.digest : undefined);
+    if (digest) {
       try {
-        fs.renameSync(lockPath, filePath);
-        if (ownsLock) return 'written';
+        if (finishWindowsPrivateRepair(lockPath, digest, filePath) && ownsLock) {
+          ownDigest = undefined;
+          return 'written';
+        }
       } catch {
-        // A contender may have promoted the same candidate first.
+        // Another process may have read or promoted the same candidate first.
       }
     }
     return hasUsableValues(readCredentialFile(filePath), generatedNames) ? 'exists' : 'failed';
   } finally {
-    if (ownsLock) {
+    if (ownDigest) {
       try {
-        fs.unlinkSync(lockPath);
+        finishWindowsPrivateRepair(lockPath, ownDigest);
       } catch {
-        // The lock is absent after a successful promotion.
+        // A protected repair candidate can be adopted on a later startup.
       }
     }
   }
@@ -228,8 +248,8 @@ function writeCredentialFile(
   const lockPath = `${filePath}.lock`;
   let ownsLock = false;
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const contents = serializeCredentialFile(values);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     if (process.platform === 'win32') {
       return writeWindowsCredentialFile(
         filePath,
@@ -454,10 +474,7 @@ export function getCredentialRuntimeState(): CredentialRuntimeState | undefined 
 }
 
 function fingerprintCredential(value: string | undefined): string {
-  return crypto
-    .createHash('sha256')
-    .update(value ?? '')
-    .digest('hex');
+  return sha256(value ?? '');
 }
 
 export function getCredentialFingerprints(

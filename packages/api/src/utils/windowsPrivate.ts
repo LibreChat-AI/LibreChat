@@ -1,6 +1,7 @@
 import { tmpdir } from 'node:os';
 import { win32 } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { realpathSync, promises as fs } from 'node:fs';
 import { execFile, spawnSync } from 'node:child_process';
 
 // Windows PowerShell is part of Windows. Paths are data; only this fixed script is executed.
@@ -86,13 +87,15 @@ function PrivateDirectory([string] $path) {
 }
 
 # Open an existing object without following a leaf reparse point. The same handle supplies
-# link count, security descriptor and bytes, and denies concurrent opens for write or delete.
-function NativeRead {
+# link count, security descriptor and bytes, and excludes outstanding reads, writes and deletes.
+function LoadNativeFile {
   Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
 public static class LibreChatPrivateFile {
@@ -102,7 +105,7 @@ public static class LibreChatPrivateFile {
             WriteLow, WriteHigh, Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
     }
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
     private static extern SafeFileHandle CreateFileW(string path, uint access, uint share,
         IntPtr security, uint disposition, uint flags, IntPtr template);
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -110,14 +113,30 @@ public static class LibreChatPrivateFile {
     [DllImport("kernel32.dll")]
     private static extern uint GetFileType(SafeFileHandle file);
 
-    public static FileStream Open(string path) {
-        // GENERIC_READ | WRITE_DAC; FILE_SHARE_READ; OPEN_EXISTING; FILE_FLAG_OPEN_REPARSE_POINT.
-        var handle = CreateFileW(path, 0x80040000, 1, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero);
-        if (handle.IsInvalid) {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetFileInformationByHandle(SafeFileHandle file, int kind,
+        IntPtr info, uint size);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RenameInfo {
+        public uint ReplaceIfExists;
+        public IntPtr RootDirectory;
+        public uint FileNameLength;
+        public ushort FileName;
+    }
+
+    public static FileStream Open(string path, bool mutate) {
+        // GENERIC_READ | WRITE_DAC (| DELETE), no sharing, OPEN_EXISTING, OPEN_REPARSE_POINT.
+        uint access = mutate ? 0x80050000 : 0x80040000;
+        SafeFileHandle handle;
+        for (int retry = 0; ; retry++) {
+            handle = CreateFileW(path, access, 0, IntPtr.Zero, 3, 0x00200000, IntPtr.Zero);
+            if (!handle.IsInvalid) break;
             int error = Marshal.GetLastWin32Error();
             handle.Dispose();
             if (error == 2) return null;
-            throw new Win32Exception(error);
+            if (error != 32 || retry >= 10) throw new Win32Exception(error);
+            Thread.Sleep(50);
         }
         try {
             FileInfo info;
@@ -129,42 +148,86 @@ public static class LibreChatPrivateFile {
             throw;
         }
     }
+
+    public static void Promote(SafeFileHandle handle, string destination) {
+        // FILE_RENAME_INFO, with an absolute name and a null root handle.
+        var name = Encoding.Unicode.GetBytes(destination + "\0");
+        int offset = Marshal.OffsetOf(typeof(RenameInfo), "FileName").ToInt32();
+        var payload = new byte[offset + name.Length];
+        payload[0] = 1; // ReplaceIfExists
+        Array.Copy(BitConverter.GetBytes(name.Length - 2), 0, payload,
+            Marshal.OffsetOf(typeof(RenameInfo), "FileNameLength").ToInt32(), sizeof(uint));
+        Array.Copy(name, 0, payload, offset, name.Length);
+        Apply(handle, 3, payload);
+    }
+
+    public static void Remove(SafeFileHandle handle) {
+        Apply(handle, 4, new byte[] { 1 }); // FILE_DISPOSITION_INFO.DeleteFile
+    }
+
+    private static void Apply(SafeFileHandle handle, int kind, byte[] payload) {
+        var pinned = GCHandle.Alloc(payload, GCHandleType.Pinned);
+        try {
+            if (!SetFileInformationByHandle(handle, kind, pinned.AddrOfPinnedObject(), (uint)payload.Length))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+        } finally { pinned.Free(); }
+    }
 }
 '@
 }
 
+function ExistingFile([string] $path, [string] $operation) {
+  CheckParent $path
+  # Windows PowerShell's compiler writes scratch files. Keep those in a verified private directory.
+  $scratch = [IO.Path]::Combine($env:TEMP, 'librechat-acl-' + [Guid]::NewGuid().ToString('N'))
+  PrivateDirectory $scratch
+  $env:TEMP = $env:TMP = $scratch
+  try {
+    LoadNativeFile
+    $stream = [LibreChatPrivateFile]::Open($path, $operation -ne 'read')
+    if ($null -eq $stream) { exit 2 }
+    try {
+      $acl = $stream.GetAccessControl()
+      if (!($acl.GetOwner([Security.Principal.SecurityIdentifier]).Equals($identity))) { exit 1 }
+      if (!(IsPrivate $acl $false)) {
+        # Apply only the DACL. Do not take ownership or change auditing.
+        $acl = PrivateAcl $false
+        $dacl = [Security.AccessControl.FileSecurity]::new()
+        $dacl.SetSecurityDescriptorBinaryForm($acl.GetSecurityDescriptorBinaryForm(), 'Access')
+        $stream.SetAccessControl($dacl)
+        if (!(IsPrivate ($stream.GetAccessControl()) $false)) { exit 1 }
+      }
+      if ($operation -eq 'read') {
+        $stream.CopyTo([Console]::OpenStandardOutput())
+      } else {
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try { $digest = [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '') }
+        finally { $sha256.Dispose() }
+        if ($digest -ne [Console]::ReadLine()) { exit 2 }
+        if ($operation -eq 'remove') {
+          [LibreChatPrivateFile]::Remove($stream.SafeFileHandle)
+        } else {
+          $destination = $env:LIBRECHAT_PRIVATE_STAGE
+          CheckPath $destination
+          if ($path -ne ($destination + '.lock')) { exit 1 }
+          [LibreChatPrivateFile]::Promote($stream.SafeFileHandle, $destination)
+        }
+      }
+    } finally { $stream.Dispose() }
+  } finally { [IO.Directory]::Delete($scratch, $true) }
+}
+
 try {
   $target = $env:LIBRECHAT_PRIVATE_TARGET
-  switch ($env:LIBRECHAT_PRIVATE_OPERATION) {
+  $operation = $env:LIBRECHAT_PRIVATE_OPERATION
+  switch ($operation) {
     'directory' { PrivateDirectory $target }
-    'read' {
-      CheckParent $target
-      # Windows PowerShell's compiler writes scratch files. Keep those in a verified private directory.
-      $scratch = [IO.Path]::Combine($env:TEMP, 'librechat-acl-' + [Guid]::NewGuid().ToString('N'))
-      PrivateDirectory $scratch
-      $env:TEMP = $env:TMP = $scratch
-      try {
-        NativeRead
-        $stream = [LibreChatPrivateFile]::Open($target)
-        if ($null -eq $stream) { exit 2 }
-        try {
-          $acl = $stream.GetAccessControl()
-          if (!($acl.GetOwner([Security.Principal.SecurityIdentifier]).Equals($identity))) { exit 1 }
-          if (!(IsPrivate $acl $false)) {
-            # Apply only the DACL. Do not take ownership or change auditing.
-            $acl = PrivateAcl $false
-            $dacl = [Security.AccessControl.FileSecurity]::new()
-            $dacl.SetSecurityDescriptorBinaryForm($acl.GetSecurityDescriptorBinaryForm(), 'Access')
-            $stream.SetAccessControl($dacl)
-            if (!(IsPrivate ($stream.GetAccessControl()) $false)) { exit 1 }
-          }
-          $stream.CopyTo([Console]::OpenStandardOutput())
-        } finally { $stream.Dispose() }
-      } finally { [IO.Directory]::Delete($scratch, $true) }
-    }
+    { $_ -in 'read', 'promote', 'remove' } { ExistingFile $target $operation }
     'publish' {
       CheckParent $target
       $stage = $env:LIBRECHAT_PRIVATE_STAGE
+      CheckPath $stage
+      if ([IO.Path]::GetDirectoryName($stage) -ne [IO.Path]::GetDirectoryName($target)) { exit 1 }
       $stream = [IO.FileStream]::new($stage, 'CreateNew', 'FullControl', 'None', 4096, 'None', (PrivateAcl $false))
       try {
         try {
@@ -185,7 +248,18 @@ exit 0
 
 const failure = (): Error => new Error('Unable to guarantee private access on Windows.');
 
-function command(operation: 'directory' | 'read' | 'publish', target: string, stage?: string) {
+function checkCanonical(requested: string, resolved: string): void {
+  // Reject alternate drive mappings, short names and reparse paths rather than blessing their targets.
+  if (requested.toLowerCase() !== resolved.toLowerCase()) throw failure();
+}
+
+let encodedScript: string | undefined;
+
+function command(
+  operation: 'directory' | 'read' | 'publish' | 'promote' | 'remove',
+  target: string,
+  stage?: string,
+) {
   const root = process.env.SystemRoot ?? '';
   const temp = tmpdir();
   if (!/^[a-z]:\\[^/]+$/i.test(root) || win32.normalize(root) !== root) {
@@ -197,7 +271,7 @@ function command(operation: 'directory' | 'read' | 'publish', target: string, st
       '-NoProfile',
       '-NonInteractive',
       '-EncodedCommand',
-      Buffer.from(script, 'utf16le').toString('base64'),
+      (encodedScript ??= Buffer.from(script, 'utf16le').toString('base64')),
     ],
     options: {
       cwd: root,
@@ -215,9 +289,10 @@ function command(operation: 'directory' | 'read' | 'publish', target: string, st
   };
 }
 
-export function readWindowsPrivateFile(file: string): string | undefined {
+export function readWindowsPrivateFile(file: string): Buffer | undefined {
+  checkCanonical(file, realpathSync.native(file));
   const { executable, args, options } = command('read', file);
-  const result = spawnSync(executable, args, { ...options, encoding: 'utf8' });
+  const result = spawnSync(executable, args, options);
   if (result.error) throw failure();
   if (result.status === 2) return undefined;
   if (result.status !== 0) throw failure();
@@ -230,6 +305,8 @@ export function publishWindowsPrivateFile(
   destination: string,
   contents: string,
 ): 'written' | 'exists' {
+  const parent = win32.dirname(destination);
+  checkCanonical(parent, realpathSync.native(parent));
   const { executable, args, options } = command('publish', destination, stage);
   const result = spawnSync(executable, args, { ...options, input: contents });
   if (result.error) throw failure();
@@ -238,9 +315,29 @@ export function publishWindowsPrivateFile(
   return 'written';
 }
 
+/** Mutate a repair candidate only if it still contains the bytes the caller checked. */
+export function finishWindowsPrivateRepair(
+  path: string,
+  digest: string,
+  destination?: string,
+): boolean {
+  const { executable, args, options } = command(
+    destination ? 'promote' : 'remove',
+    path,
+    destination,
+  );
+  const result = spawnSync(executable, args, { ...options, input: digest });
+  if (result.error) throw failure();
+  if (result.status === 2) return false;
+  if (result.status !== 0) throw failure();
+  return true;
+}
+
 /** Every new child inherits the only grant, to the account running LibreChat. */
 export async function makeWindowsPrivateDirectory(prefix: string): Promise<string> {
   const directory = `${prefix}${randomUUID()}`;
+  const parent = win32.dirname(directory);
+  checkCanonical(parent, await fs.realpath(parent));
   const { executable, args, options } = command('directory', directory);
   return new Promise((resolve, reject) => {
     execFile(executable, args, options, (error) => {
