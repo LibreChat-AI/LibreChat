@@ -35,10 +35,10 @@ function PrivateAcl([bool] $directory) {
 function IsPrivate($security, [bool] $directory) {
   $sd = Descriptor $security
   $flags = if ($directory) { 3 } else { 0 } # ObjectInherit | ContainerInherit
-  if (!$sd.Owner.Equals($identity) -or !($sd.ControlFlags -band 0x1000) -or
+  if (!$sd.Owner.Equals($identity) -or !([int]$sd.ControlFlags -band 0x1000) -or
       $null -eq $sd.DiscretionaryAcl -or $sd.DiscretionaryAcl.Count -ne 1) { return $false }
   $ace = $sd.DiscretionaryAcl[0]
-  return $ace.AceType -eq 'AccessAllowed' -and $ace.AceFlags -eq $flags -and
+  return $ace.AceType -eq 'AccessAllowed' -and [int]$ace.AceFlags -eq $flags -and
     $ace.SecurityIdentifier.Equals($identity) -and $ace.AccessMask -eq 0x1f01ff
 }
 
@@ -62,7 +62,7 @@ function CheckParent([string] $path) {
   $dir = [IO.DirectoryInfo]::new($path).Parent
   while ($null -ne $dir) { $dirs.Push($dir); $dir = $dir.Parent }
   foreach ($dir in $dirs) {
-    if (!$dir.Exists -or ($dir.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    if (!$dir.Exists -or ([int]$dir.Attributes -band [int][IO.FileAttributes]::ReparsePoint)) {
       throw 'Invalid parent directory'
     }
     $sd = Descriptor ($dir.GetAccessControl('Access, Owner'))
@@ -70,7 +70,7 @@ function CheckParent([string] $path) {
       throw 'Untrusted parent directory'
     }
     foreach ($ace in $sd.DiscretionaryAcl) {
-      if ($ace.AceFlags -band 8) { continue } # InheritOnly
+      if ([int]$ace.AceFlags -band 8) { continue } # InheritOnly
       if ($ace -isnot [Security.AccessControl.QualifiedAce]) { throw 'Unknown ACE' }
       # Granting creation alone is safe. Reject grants that can remove, replace or retarget entries.
       if ($ace.AceQualifier -eq 'AccessAllowed' -and ($ace.AccessMask -band 0x500d0140) -and
@@ -86,7 +86,7 @@ function PrivateDirectory([string] $path) {
   $dir.Create((PrivateAcl $true))
   $script:failureStage = 9
   $dir.Refresh()
-  if (($dir.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+  if (([int]$dir.Attributes -band [int][IO.FileAttributes]::ReparsePoint) -or
       !(IsPrivate ($dir.GetAccessControl('Access, Owner')) $true)) { throw 'Directory is not private' }
 }
 

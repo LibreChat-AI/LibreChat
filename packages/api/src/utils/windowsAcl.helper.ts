@@ -6,13 +6,15 @@ const control = String.raw`
 $ErrorActionPreference = 'Stop'
 $path = $env:LIBRECHAT_ACL_TEST_PATH
 $me = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$acl = Get-Acl -LiteralPath $path
+$directory = [IO.Directory]::Exists($path)
+$acl = if ($directory) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) }
 if ($env:LIBRECHAT_ACL_TEST_GRANT) {
   $everyone = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
   $acl.SetOwner($me)
   $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($everyone,
     $env:LIBRECHAT_ACL_TEST_GRANT, $env:LIBRECHAT_ACL_TEST_INHERIT, 'None', 'Allow'))
-  Set-Acl -LiteralPath $path -AclObject $acl
+  if ($directory) { [IO.Directory]::SetAccessControl($path, $acl) }
+  else { [IO.File]::SetAccessControl($path, $acl) }
 } else {
   $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
   $entries = @($raw.DiscretionaryAcl | ForEach-Object {
@@ -37,8 +39,6 @@ function aclCommand(file: string, rights?: string, inherit = 'None'): string {
     [
       '-NoProfile',
       '-NonInteractive',
-      '-InputFormat',
-      'Text',
       '-EncodedCommand',
       Buffer.from(control, 'utf16le').toString('base64'),
     ],
