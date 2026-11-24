@@ -3,6 +3,7 @@ export * from './Alert';
 export * from './AlertDialog';
 export * from './Button';
 export * from './Chip';
+export * from './FlowGraph';
 export * from './SeriesLabel';
 export * from './Checkbox';
 export * from './DisclosureChevron';

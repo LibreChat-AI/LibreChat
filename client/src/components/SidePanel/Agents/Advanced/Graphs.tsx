@@ -8,6 +8,7 @@ import {
   Textarea,
   Checkbox,
   Switch,
+  FlowGraph,
   ControlCombobox,
 } from '@librechat/client';
 import {
@@ -249,9 +250,15 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
               <li key={team.type} className="flex items-center gap-2">
                 <div className="min-w-0 flex-1">
                   <p className="text-text-primary truncate text-sm font-medium">{team.name}</p>
-                  <p className="text-text-secondary text-xs">
-                    {team.agent_ids.map(nameOf).join(' → ')}
-                  </p>
+                  <div className="mt-1.5 overflow-x-auto pb-1">
+                    <FlowGraph
+                      nodes={team.agent_ids.map((id) => ({ id, label: nameOf(id) }))}
+                      edges={team.edges}
+                      entry={team.entry_agent_id}
+                      result={team.result_agent_id}
+                      label={localize('com_ui_agent_graphs_drawing', { 0: team.name })}
+                    />
+                  </div>
                 </div>
                 <Button
                   type="button"
@@ -373,6 +380,19 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
               />
             )}
           </section>
+          {graph.agent_ids.length > 0 && (
+            <div className="border-border-light overflow-x-auto rounded-lg border p-3">
+              <FlowGraph
+                nodes={graph.agent_ids.map((id) => ({ id, label: nameOf(id) }))}
+                edges={graph.edges}
+                entry={graph.entry_agent_id}
+                result={graph.result_agent_id}
+                label={localize('com_ui_agent_graphs_drawing', {
+                  0: graph.name || localize('com_ui_agent_graphs_name'),
+                })}
+              />
+            </div>
+          )}
           {(['entry_agent_id', 'result_agent_id'] as const).map((key) => (
             <div key={key}>
               <Label>

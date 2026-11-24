@@ -1417,6 +1417,7 @@
   "com_ui_agent_graphs_name": "Team name",
   "com_ui_agent_graphs_type": "Tool identifier",
   "com_ui_agent_graphs_description": "When to use this team",
+  "com_ui_agent_graphs_drawing": "How the agents of {{0}} connect",
   "com_ui_agent_graphs_members": "Team members",
   "com_ui_agent_graphs_add_member": "Add team member",
   "com_ui_agent_graphs_entry": "Entry agent",

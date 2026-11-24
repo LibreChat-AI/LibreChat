@@ -73,6 +73,40 @@ function Harness({
   );
 }
 
+test('a saved team is drawn by its connections, and the draft is redrawn as it is edited', () => {
+  mockAgentsMap = {
+    plan: { id: 'plan', name: 'Planner' },
+    research: { id: 'research', name: 'Researcher' },
+    write: { id: 'write', name: 'Writer' },
+  } as unknown as TAgentsMap;
+  const branched = {
+    ...team,
+    agent_ids: ['plan', 'research', 'parent', 'write'],
+    edges: [
+      { from: 'plan', to: ['research', 'parent'], edgeType: 'direct' as const },
+      { from: ['research', 'parent'], to: 'write', edgeType: 'direct' as const },
+    ],
+    entry_agent_id: 'plan',
+    result_agent_id: 'write',
+  };
+  render(<Harness subagents={{ ...initialSubagents, graphs: [branched] }} />);
+  const lines = () =>
+    screen.getByRole('img', { name: 'com_ui_agent_graphs_drawing' }).querySelectorAll('path');
+
+  const drawing = screen.getByRole('img', { name: 'com_ui_agent_graphs_drawing' });
+  for (const name of ['Planner', 'Researcher', 'com_ui_agent_graphs_self', 'Writer']) {
+    expect(drawing).toHaveTextContent(name);
+  }
+  /** Two branches out of the planner and two into the writer: four lines, not a chain of three. */
+  expect(lines()).toHaveLength(4);
+
+  fireEvent.click(screen.getByRole('button', { name: 'com_ui_agent_graphs_edit' }));
+  expect(lines()).toHaveLength(4);
+  fireEvent.click(screen.getAllByRole('button', { name: 'com_ui_agent_graphs_remove_edge' })[1]);
+  expect(lines()).toHaveLength(2);
+  mockAgentsMap = {};
+});
+
 test('disabling graph teams retains definitions and leaves ordinary subagents and handoffs alone', () => {
   render(<Harness />);
   fireEvent.click(screen.getByRole('switch', { name: 'com_ui_agent_graphs_enable' }));
