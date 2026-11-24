@@ -30,22 +30,29 @@ interface WindowsAcl {
 }
 
 function aclCommand(file: string, rights?: string, inherit = 'None'): string {
+  const root = process.env.SystemRoot!;
+  const home = win32.join(root, 'System32', 'WindowsPowerShell', 'v1.0');
   return execFileSync(
-    win32.join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    win32.join(home, 'powershell.exe'),
     [
       '-NoProfile',
       '-NonInteractive',
+      '-InputFormat',
+      'Text',
       '-EncodedCommand',
       Buffer.from(control, 'utf16le').toString('base64'),
     ],
     {
       env: {
-        SystemRoot: process.env.SystemRoot,
+        SystemRoot: root,
+        windir: root,
+        PSModulePath: win32.join(home, 'Modules'),
         LIBRECHAT_ACL_TEST_PATH: file,
         LIBRECHAT_ACL_TEST_GRANT: rights,
         LIBRECHAT_ACL_TEST_INHERIT: inherit,
       },
       encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 10_000,
       windowsHide: true,
     },
@@ -61,6 +68,7 @@ export function grantWindowsEveryone(file: string, rights: string, inherit?: str
 }
 
 export function expectPrivateWindowsAcl(file: string, kind: 'file' | 'directory' | 'child'): void {
+  const flags = { file: 0, directory: 3, child: 16 };
   const actual = inspectWindowsAcl(file);
   if (kind !== 'child') expect(actual.owner).toBe(actual.current);
   expect(actual.protected).toBe(kind !== 'child');
@@ -68,7 +76,7 @@ export function expectPrivateWindowsAcl(file: string, kind: 'file' | 'directory'
     {
       sid: actual.current,
       type: 0,
-      flags: kind === 'directory' ? 3 : kind === 'child' ? 16 : 0,
+      flags: flags[kind],
       mask: 0x1f01ff,
     },
   ]);

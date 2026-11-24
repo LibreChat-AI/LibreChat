@@ -88,7 +88,14 @@ function setRuntimeState(state: CredentialRuntimeState): void {
 
 function getCredentialPath(): string {
   const configuredPath = process.env[tempCredentialPathEnvironment]?.trim();
-  return path.resolve(configuredPath || path.join(process.cwd(), '.env.temp'));
+  const file = path.resolve(configuredPath || path.join(process.cwd(), '.env.temp'));
+  if (process.platform !== 'win32') return file;
+  try {
+    return path.join(fs.realpathSync.native(path.dirname(file)), path.basename(file));
+  } catch {
+    // A new path may not have a parent yet. Canonicalize it after mkdir before publishing.
+    return file;
+  }
 }
 
 function parseCredentialFile(contents: string): Partial<Record<CredentialName, string>> {
@@ -249,11 +256,13 @@ function writeCredentialFile(
   let ownsLock = false;
   try {
     const contents = serializeCredentialFile(values);
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const parent = path.dirname(filePath);
+    fs.mkdirSync(parent, { recursive: true });
     if (process.platform === 'win32') {
+      const canonicalParent = fs.realpathSync.native(parent);
       return writeWindowsCredentialFile(
-        filePath,
-        temporaryPath,
+        path.join(canonicalParent, path.basename(filePath)),
+        path.join(canonicalParent, path.basename(temporaryPath)),
         contents,
         overwrite,
         generatedNames,

@@ -16,7 +16,7 @@ import {
 } from './utils/windowsAcl.helper';
 
 const credentialRuntimeKey = Symbol.for('librechat.credentials.runtime');
-const onWindows = process.platform === 'win32' ? it : it.skip;
+const windows = process.platform === 'win32';
 
 function writeLegacyFile(file: string, contents: string): void {
   fs.writeFileSync(file, contents, { mode: 0o600 });
@@ -223,79 +223,81 @@ describe('credentials', () => {
     );
   });
 
-  onWindows('removes inherited and explicit unrelated grants before adopting a file', () => {
-    grantWindowsEveryone(tempDirectory, 'ReadAndExecute', 'ContainerInherit, ObjectInherit');
-    writeLegacyFile(
-      tempFile,
-      credentialNames
-        .map((name) => `${name}=${'a'.repeat(name === 'CREDS_IV' ? 32 : 64)}`)
-        .join('\n'),
-    );
-    expect(inspectWindowsAcl(tempFile).entries).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ sid: 'S-1-1-0', flags: 16 }),
-        expect.objectContaining({ sid: 'S-1-1-0', flags: 0 }),
-      ]),
-    );
+  if (windows) {
+    it('removes inherited and explicit unrelated grants before adopting a file', () => {
+      grantWindowsEveryone(tempDirectory, 'ReadAndExecute', 'ContainerInherit, ObjectInherit');
+      writeLegacyFile(
+        tempFile,
+        credentialNames
+          .map((name) => `${name}=${'a'.repeat(name === 'CREDS_IV' ? 32 : 64)}`)
+          .join('\n'),
+      );
+      expect(inspectWindowsAcl(tempFile).entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ sid: 'S-1-1-0', flags: 16 }),
+          expect.objectContaining({ sid: 'S-1-1-0', flags: 0 }),
+        ]),
+      );
 
-    const state = bootstrapCredentials();
+      const state = bootstrapCredentials();
 
-    expect(state.loadedFromFile).toEqual(credentialNames);
-    expect(state.generated).toEqual([]);
-    expect(state.persistenceFailed).toBe(false);
-    expectPrivateWindowsAcl(tempFile, 'file');
-  });
+      expect(state.loadedFromFile).toEqual(credentialNames);
+      expect(state.generated).toEqual([]);
+      expect(state.persistenceFailed).toBe(false);
+      expectPrivateWindowsAcl(tempFile, 'file');
+    });
 
-  onWindows('replaces an incomplete file with a private file and removes the repair name', () => {
-    tempFile = path.join(tempDirectory, "settings [test] & 'private'");
-    process.env.LIBRECHAT_TEMP_CREDENTIALS_PATH = tempFile;
-    writeLegacyFile(tempFile, `CREDS_KEY=${'a'.repeat(64)}\n`);
+    it('replaces an incomplete file with a private file and removes the repair name', () => {
+      tempFile = path.join(tempDirectory, "settings [test] & 'private'");
+      process.env.LIBRECHAT_TEMP_CREDENTIALS_PATH = tempFile;
+      writeLegacyFile(tempFile, `CREDS_KEY=${'a'.repeat(64)}\n`);
 
-    const state = bootstrapCredentials();
+      const state = bootstrapCredentials();
 
-    expect(state.loadedFromFile).toEqual(['CREDS_KEY']);
-    expect(state.generated).toEqual(['CREDS_IV', 'JWT_SECRET', 'JWT_REFRESH_SECRET']);
-    expect(state.persistenceFailed).toBe(false);
-    expectPrivateWindowsAcl(tempFile, 'file');
-    expect(fs.readdirSync(tempDirectory)).toEqual([path.basename(tempFile)]);
-  });
+      expect(state.loadedFromFile).toEqual(['CREDS_KEY']);
+      expect(state.generated).toEqual(['CREDS_IV', 'JWT_SECRET', 'JWT_REFRESH_SECRET']);
+      expect(state.persistenceFailed).toBe(false);
+      expectPrivateWindowsAcl(tempFile, 'file');
+      expect(fs.readdirSync(tempDirectory)).toEqual([path.basename(tempFile)]);
+    });
 
-  onWindows('rejects a multi-link credential without hardening or replacing either name', () => {
-    const alias = path.join(tempDirectory, 'alias');
-    writeLegacyFile(tempFile, `CREDS_KEY=${'a'.repeat(64)}\n`);
-    fs.linkSync(tempFile, alias);
-    const acl = inspectWindowsAcl(alias);
+    it('rejects a multi-link credential without hardening or replacing either name', () => {
+      const alias = path.join(tempDirectory, 'alias');
+      writeLegacyFile(tempFile, `CREDS_KEY=${'a'.repeat(64)}\n`);
+      fs.linkSync(tempFile, alias);
+      const acl = inspectWindowsAcl(alias);
 
-    const state = bootstrapCredentials();
+      const state = bootstrapCredentials();
 
-    expect(state.loadedFromFile).toEqual([]);
-    expect(state.persistenceFailed).toBe(true);
-    expect(fs.statSync(tempFile).nlink).toBe(2);
-    expect(inspectWindowsAcl(alias)).toEqual(acl);
-  });
+      expect(state.loadedFromFile).toEqual([]);
+      expect(state.persistenceFailed).toBe(true);
+      expect(fs.statSync(tempFile).nlink).toBe(2);
+      expect(inspectWindowsAcl(alias)).toEqual(acl);
+    });
 
-  onWindows('does not promote a multiply linked repair candidate', () => {
-    writeLegacyFile(tempFile, `CREDS_KEY=${'a'.repeat(64)}\n`);
-    const lock = `${tempFile}.lock`;
-    writeLegacyFile(lock, `JWT_SECRET=${'b'.repeat(64)}\n`);
-    fs.linkSync(lock, `${lock}.alias`);
+    it('does not promote a multiply linked repair candidate', () => {
+      writeLegacyFile(tempFile, `CREDS_KEY=${'a'.repeat(64)}\n`);
+      const lock = `${tempFile}.lock`;
+      writeLegacyFile(lock, `JWT_SECRET=${'b'.repeat(64)}\n`);
+      fs.linkSync(lock, `${lock}.alias`);
 
-    const state = bootstrapCredentials();
+      const state = bootstrapCredentials();
 
-    expect(state.loadedFromFile).toEqual(['CREDS_KEY']);
-    expect(state.persistenceFailed).toBe(true);
-    expect(fs.statSync(lock).nlink).toBe(2);
-  });
+      expect(state.loadedFromFile).toEqual(['CREDS_KEY']);
+      expect(state.persistenceFailed).toBe(true);
+      expect(fs.statSync(lock).nlink).toBe(2);
+    });
 
-  onWindows('does not stage credentials below a parent with unrelated delete-child rights', () => {
-    grantWindowsEveryone(tempDirectory, 'DeleteSubdirectoriesAndFiles');
+    it('does not stage credentials below a parent with unrelated delete-child rights', () => {
+      grantWindowsEveryone(tempDirectory, 'DeleteSubdirectoriesAndFiles');
 
-    const state = bootstrapCredentials();
+      const state = bootstrapCredentials();
 
-    expect(state.loadedFromFile).toEqual([]);
-    expect(state.persistenceFailed).toBe(true);
-    expect(fs.readdirSync(tempDirectory)).toEqual([]);
-  });
+      expect(state.loadedFromFile).toEqual([]);
+      expect(state.persistenceFailed).toBe(true);
+      expect(fs.readdirSync(tempDirectory)).toEqual([]);
+    });
+  }
 
   it('does not overwrite an explicitly selected environment file', () => {
     const environmentFile = path.join(tempDirectory, '.env');

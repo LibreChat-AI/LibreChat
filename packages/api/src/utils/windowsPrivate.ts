@@ -176,7 +176,7 @@ public static class LibreChatPrivateFile {
 '@
 }
 
-function ExistingFile([string] $path, [string] $operation) {
+function ExistingFile([string] $path, [string] $operation, [string] $payload) {
   CheckParent $path
   # Windows PowerShell's compiler writes scratch files. Keep those in a verified private directory.
   $scratch = [IO.Path]::Combine($env:TEMP, 'librechat-acl-' + [Guid]::NewGuid().ToString('N'))
@@ -203,7 +203,7 @@ function ExistingFile([string] $path, [string] $operation) {
         $sha256 = [Security.Cryptography.SHA256]::Create()
         try { $digest = [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '') }
         finally { $sha256.Dispose() }
-        if ($digest -ne [Console]::ReadLine()) { exit 2 }
+        if ($digest -ne $payload) { exit 2 }
         if ($operation -eq 'remove') {
           [LibreChatPrivateFile]::Remove($stream.SafeFileHandle)
         } else {
@@ -220,25 +220,32 @@ function ExistingFile([string] $path, [string] $operation) {
 try {
   $target = $env:LIBRECHAT_PRIVATE_TARGET
   $operation = $env:LIBRECHAT_PRIVATE_OPERATION
+  $payload = if ($operation -in 'publish', 'promote', 'remove') { @($input)[0] }
   switch ($operation) {
     'directory' { PrivateDirectory $target }
-    { $_ -in 'read', 'promote', 'remove' } { ExistingFile $target $operation }
+    { $_ -in 'read', 'promote', 'remove' } { ExistingFile $target $operation $payload }
     'publish' {
       CheckParent $target
       $stage = $env:LIBRECHAT_PRIVATE_STAGE
       CheckPath $stage
       if ([IO.Path]::GetDirectoryName($stage) -ne [IO.Path]::GetDirectoryName($target)) { exit 1 }
       $stream = [IO.FileStream]::new($stage, 'CreateNew', 'FullControl', 'None', 4096, 'None', (PrivateAcl $false))
+      $staged = $true
       try {
         try {
           if (!(IsPrivate ($stream.GetAccessControl()) $false)) { exit 1 }
-          [Console]::OpenStandardInput().CopyTo($stream)
+          if (!$payload) { exit 1 }
+          $bytes = [Convert]::FromBase64String($payload)
+          $stream.Write($bytes, 0, $bytes.Length)
         } finally { $stream.Dispose() }
-        try { [IO.File]::Move($stage, $target) } catch {
+        try {
+          [IO.File]::Move($stage, $target)
+          $staged = $false
+        } catch {
           if (($_.Exception.InnerException.HResult -band 0xffff) -in @(80, 183)) { exit 3 }
           throw
         }
-      } finally { [IO.File]::Delete($stage) }
+      } finally { if ($staged) { [IO.File]::Delete($stage) } }
     }
     default { exit 1 }
   }
@@ -261,15 +268,20 @@ function command(
   stage?: string,
 ) {
   const root = process.env.SystemRoot ?? '';
-  const temp = tmpdir();
   if (!/^[a-z]:\\[^/]+$/i.test(root) || win32.normalize(root) !== root) {
     throw failure();
   }
+  const system = win32.join(root, 'System32');
+  const home = win32.join(system, 'WindowsPowerShell', 'v1.0');
+  const temp =
+    operation === 'directory' || operation === 'publish' ? tmpdir() : realpathSync.native(tmpdir());
   return {
-    executable: win32.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    executable: win32.join(home, 'powershell.exe'),
     args: [
       '-NoProfile',
       '-NonInteractive',
+      '-InputFormat',
+      'Text',
       '-EncodedCommand',
       (encodedScript ??= Buffer.from(script, 'utf16le').toString('base64')),
     ],
@@ -277,6 +289,8 @@ function command(
       cwd: root,
       env: {
         SystemRoot: root,
+        windir: root,
+        PSModulePath: win32.join(home, 'Modules'),
         TEMP: temp,
         TMP: temp,
         LIBRECHAT_PRIVATE_OPERATION: operation,
@@ -292,7 +306,7 @@ function command(
 export function readWindowsPrivateFile(file: string): Buffer | undefined {
   checkCanonical(file, realpathSync.native(file));
   const { executable, args, options } = command('read', file);
-  const result = spawnSync(executable, args, options);
+  const result = spawnSync(executable, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] });
   if (result.error) throw failure();
   if (result.status === 2) return undefined;
   if (result.status !== 0) throw failure();
@@ -308,7 +322,8 @@ export function publishWindowsPrivateFile(
   const parent = win32.dirname(destination);
   checkCanonical(parent, realpathSync.native(parent));
   const { executable, args, options } = command('publish', destination, stage);
-  const result = spawnSync(executable, args, { ...options, input: contents });
+  const payload = Buffer.from(contents, 'utf8').toString('base64');
+  const result = spawnSync(executable, args, { ...options, input: `${payload}\n` });
   if (result.error) throw failure();
   if (result.status === 3) return 'exists';
   if (result.status !== 0) throw failure();
@@ -326,7 +341,7 @@ export function finishWindowsPrivateRepair(
     path,
     destination,
   );
-  const result = spawnSync(executable, args, { ...options, input: digest });
+  const result = spawnSync(executable, args, { ...options, input: `${digest}\n` });
   if (result.error) throw failure();
   if (result.status === 2) return false;
   if (result.status !== 0) throw failure();
@@ -335,14 +350,15 @@ export function finishWindowsPrivateRepair(
 
 /** Every new child inherits the only grant, to the account running LibreChat. */
 export async function makeWindowsPrivateDirectory(prefix: string): Promise<string> {
-  const directory = `${prefix}${randomUUID()}`;
-  const parent = win32.dirname(directory);
-  checkCanonical(parent, await fs.realpath(parent));
+  // Windows temp paths can use 8.3 names. Use the resolved path and verify its actual parents.
+  const parent = await fs.realpath(win32.dirname(prefix));
+  const directory = win32.join(parent, `${win32.basename(prefix)}${randomUUID()}`);
   const { executable, args, options } = command('directory', directory);
   return new Promise((resolve, reject) => {
-    execFile(executable, args, options, (error) => {
+    const child = execFile(executable, args, options, (error) => {
       if (error) reject(failure());
       else resolve(directory);
     });
+    child.stdin?.end();
   });
 }

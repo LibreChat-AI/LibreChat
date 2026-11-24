@@ -91,9 +91,8 @@ describe('createRunFileSnapshotStore', () => {
     await expect(fs.stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  (process.platform === 'win32' ? it : it.skip)(
-    'never opens a snapshot source when its Windows parent is unsafe',
-    async () => {
+  if (process.platform === 'win32') {
+    it('never opens a snapshot source when its Windows parent is unsafe', async () => {
       grantWindowsEveryone(tempDirectory, 'DeleteSubdirectoriesAndFiles');
       const open = jest.fn(async () => Readable.from(['private']));
       const store = create({ open, maxBytes: 32, maxFiles: 1 });
@@ -101,8 +100,8 @@ describe('createRunFileSnapshotStore', () => {
       await expect(store.capture(source)).rejects.toThrow('Unable to guarantee private access');
       expect(open).not.toHaveBeenCalled();
       expect(await fs.readdir(tempDirectory)).toEqual([]);
-    },
-  );
+    });
+  }
 
   it('reserves file slots before opening parallel sources', async () => {
     const opening = deferred<Readable>();
@@ -116,7 +115,7 @@ describe('createRunFileSnapshotStore', () => {
     });
     const store = create({ open, maxBytes: 32, maxFiles: 1 });
     const first = store.capture(source);
-    await started.promise;
+    await Promise.race([started.promise, first]);
     await expect(store.capture(source)).rejects.toThrow('file limit');
     expect(open).toHaveBeenCalledTimes(1);
     opening.resolve(Readable.from(['bytes']));
