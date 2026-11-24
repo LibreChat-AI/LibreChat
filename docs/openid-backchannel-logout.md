@@ -32,8 +32,15 @@ number of times with its own backoff; it does not retry indefinitely.
    on.
 2. Once every server in the fleet runs this code, switch to `mode: 'enforce'`. From this point, a
    session with no recorded association is treated as legacy and must sign in again on its next
-   restoration or renewal; this happens once per session, not repeatedly.
+   restoration or renewal; this happens once per session, not repeatedly. Each denial logs
+   `[providerSession] renewal denied` with a `reason`: `no_ref` or `missing` for a legacy session,
+   `ended` for a back-channel logout, `conflict` for a session bound to another provider session.
+   A `503` logs `[providerSession] ... check unavailable` with the database error's `errorName`
+   and `errorCode`.
 3. Rollback behavior depends on the target mode.
+   - Before you roll back the code to a release that does not accept `mode: 'enforce'`, set the
+     mode to `record` and apply the configuration. That release rejects `enforce` when it
+     validates `librechat.yaml`, so its servers exit at startup.
    - `enforce` back to `record` stops denials for a missing or unassociated session. It still
      denies a session already recorded as revoked.
    - Switching to `off` turns off all checks and database operations once the configuration has
@@ -49,7 +56,13 @@ number of times with its own backoff; it does not retry indefinitely.
    record expires, which is about the refresh-token lifetime (`REFRESH_TOKEN_EXPIRY`). If `off`
    stays active longer than that, the record is gone: `record` can no longer deny that session,
    and `enforce` makes it sign in once.
-4. A logout notification the provider never delivers (network failure, provider outage, a logout
+4. In `enforce` mode, a database failure during the final check after the provider issued new
+   tokens answers `503`. For a browser renewal (`/api/auth/refresh`) the new tokens are stored
+   first, so a retry recovers. For a server-side renewal during a chat (OBO or MCP), the session
+   keeps its previous refresh token. With a provider that rotates refresh tokens, the next
+   server-side renewal can fail until the browser renews through `/api/auth/refresh`; a renewal
+   without a refresh flight can require a new sign-in.
+5. A logout notification the provider never delivers (network failure, provider outage, a logout
    path that does not call the configured URL) cannot be enforced; this design does not poll the
    provider to compensate, so coverage is limited to notifications that are actually delivered.
 
