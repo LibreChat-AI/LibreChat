@@ -1,6 +1,7 @@
-import { useRef, createContext, useContext } from 'react';
+import { memo, useRef, createContext, useContext } from 'react';
 import type {
   Agent,
+  AgentDisplay,
   TFile,
   TMessage,
   Assistant,
@@ -11,7 +12,14 @@ import type {
   TUpdateFeedbackRequest,
   TUpdateFeedbackResponse,
 } from 'librechat-data-provider';
-import type { Dispatch, ReactNode, MouseEvent, RefObject, SetStateAction } from 'react';
+import type {
+  Dispatch,
+  ReactNode,
+  MouseEvent,
+  RefObject,
+  SetStateAction,
+  NamedExoticComponent,
+} from 'react';
 import type { WakeupDisplay } from '../../core/parts/wakeup';
 import type { TAskFunction } from '../../core';
 
@@ -152,7 +160,7 @@ export type MessageIconData = { endpoint?: string | null; isCreatedByUser?: bool
 export type MessageIconProps = {
   iconData?: MessageIconData;
   assistant?: Assistant;
-  agent?: Agent;
+  agent?: AgentDisplay;
 };
 
 /** The button a read-aloud control draws, through the row's toolbar styling. */
@@ -174,6 +182,19 @@ export type MessageAudioProps = {
   content: string;
   className?: string;
   renderButton?: (props: MessageAudioButtonProps) => ReactNode;
+};
+
+/**
+ * A model response's usage control, rendered with the host's config and accounting data.
+ *
+ * `message` names the response and carries the usage recorded for it. The control is rendered
+ * again when either changes, not for each frame of the response's text, so the rest of the
+ * object may be a frame behind.
+ */
+export type MessageUsageProps = {
+  message: TMessage;
+  conversationId?: string;
+  isLast?: boolean;
 };
 
 /**
@@ -201,6 +222,7 @@ export interface MessagesHost {
   useHasPendingTurn: (conversationId: string) => boolean;
   /** Renders the app's read-aloud control, or `null` while read-aloud is off. */
   renderMessageAudio: (props: MessageAudioProps) => ReactNode;
+  renderMessageUsage?: (props: MessageUsageProps) => ReactNode;
   /** The element the app's conversation screenshot captures; none outside a screenshot provider. */
   useScreenshotTarget: () => RefObject<HTMLDivElement> | undefined;
   /** Whether the viewer asked the thread to follow new content to the bottom. */
@@ -238,6 +260,10 @@ export interface MessagesHost {
   /** Whether a response by the agent the header's model selector shows drops its avatar and name
    *  (`interface.messageAuthor: whenDifferent`). */
   useHideSelectedAuthor: () => boolean;
+  /** The sender a response sent now would be written with under the conversation's selection (its
+   *  model spec's label, a configured name or the model's own), so a response from an earlier
+   *  selection of the same model keeps its author. `undefined` when the app cannot name one. */
+  useSelectedSender: (conversation: TConversation | null) => string | undefined;
   /** The agents the viewer can see by id, or `undefined` until they load. */
   useAgentsMap: () => Record<string, Agent | undefined> | undefined;
   /** Renders a row's text body when it has no content parts. */
@@ -266,7 +292,8 @@ const fallbackForkPreferences: ForkPreferences = {
 };
 
 /** Read state with nothing behind it: no conversation is ever unseen, so nothing is written. */
-const inertSeenSource: ConversationSeenSource = {
+/** A seen source that records nothing, for a list whose conversation has no read state. */
+export const inertSeenSource: ConversationSeenSource = {
   readReply: () => undefined,
   hasReplyProof: () => false,
   markSeen: noop,
@@ -302,6 +329,7 @@ const fallbackHost: MessagesHost = {
   useMaximizeChatSpace: () => false,
   useFlatThread: () => true,
   useHideSelectedAuthor: () => false,
+  useSelectedSender: () => undefined,
   useAgentsMap: () => undefined,
   renderMessageBody: () => null,
   renderWakeup: () => null,
@@ -347,3 +375,28 @@ export function MessageIconSlot(props: MessageIconProps): ReactNode {
 export function MessageAudioSlot(props: MessageAudioProps): ReactNode {
   return useMessagesHost().renderMessageAudio(props);
 }
+
+/** Whether two renders of the usage control are for the same response with the same usage. */
+function isSameUsage(prev: MessageUsageProps, next: MessageUsageProps): boolean {
+  return (
+    prev.isLast === next.isLast &&
+    prev.conversationId === next.conversationId &&
+    prev.message.messageId === next.message.messageId &&
+    prev.message.conversationId === next.message.conversationId &&
+    prev.message.metadata?.usage === next.message.metadata?.usage
+  );
+}
+
+/**
+ * A response's token details, when the host enables usage reporting.
+ *
+ * The toolbar this sits in renders on every streamed frame of its response, each time with a new
+ * message object. The control shows nothing of the text, so it waits for the response or its
+ * usage to change: left to follow the toolbar, it rendered its popover again on every frame.
+ */
+export const MessageUsageSlot: NamedExoticComponent<MessageUsageProps> = memo(
+  function MessageUsageSlot(props: MessageUsageProps): ReactNode {
+    return useMessagesHost().renderMessageUsage?.(props) ?? null;
+  },
+  isSameUsage,
+);

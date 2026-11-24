@@ -221,6 +221,24 @@ async function isSecondaryLimit(response: Response): Promise<boolean> {
 }
 
 /**
+ * Whether GitHub limited this response, by its headers or by a secondary limit's message, and
+ * how long it asked callers to wait when it said. `null` for a response that was not limited.
+ */
+export async function gitHubRateLimit(response: Response): Promise<{ waitMs?: number } | null> {
+  if (isRateLimited(response)) {
+    const hinted = retryAfterMs(response, 'x-ratelimit-reset');
+    /** A 429 that names no wait may still be a secondary limit, told apart by its message. */
+    const waitMs =
+      hinted == null && (await isSecondaryLimit(response)) ? SECONDARY_LIMIT_WAIT_MS : hinted;
+    return { waitMs };
+  }
+  if (await isSecondaryLimit(response)) {
+    return { waitMs: SECONDARY_LIMIT_WAIT_MS };
+  }
+  return null;
+}
+
+/**
  * Reads pull requests through GitHub's REST API with a token the caller supplies. Only the
  * decision (absent, rate limited, failed) leaves this module; response bodies and error text
  * never do.
@@ -274,15 +292,9 @@ export function createGitHubPullRequestSource({
         throw new PullRequestSourceError('UPSTREAM_ERROR');
       }
     }
-    if (isRateLimited(response)) {
-      const hinted = retryAfterMs(response, 'x-ratelimit-reset');
-      /** A 429 that names no wait may still be a secondary limit, told apart by its message. */
-      const wait =
-        hinted == null && (await isSecondaryLimit(response)) ? SECONDARY_LIMIT_WAIT_MS : hinted;
-      throw new PullRequestSourceError('RATE_LIMITED', wait);
-    }
-    if (await isSecondaryLimit(response)) {
-      throw new PullRequestSourceError('RATE_LIMITED', SECONDARY_LIMIT_WAIT_MS);
+    const limited = await gitHubRateLimit(response);
+    if (limited != null) {
+      throw new PullRequestSourceError('RATE_LIMITED', limited.waitMs);
     }
     /** A repository the token cannot see is indistinguishable from one without pull requests. */
     if ((notFoundIsAbsent && response.status === 404) || absent.includes(response.status)) {

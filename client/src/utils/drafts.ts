@@ -1513,6 +1513,31 @@ export const migrateFilesDraft = (fromId: string, toId: string): string => {
   }
 };
 
+/**
+ * Moves what a composer wrote under its pane's pending key to the conversation it was written
+ * for, when the composer goes away before its run ends. Its own migration only happens when the
+ * run ends in front of it, and a pane that then shows another conversation would find the
+ * leftover there. The same guards as that migration apply: the pending record has to be this
+ * tab's, and the conversation's key writable by it. Anything else is left exactly as it is.
+ */
+export const settlePendingDraft = (index: number, conversationId: string): void => {
+  const pendingId = getPendingDraftId(index);
+  const pending = getFilesDraft(pendingId);
+  if (!isFilesDraftOwnedByThisTab(pending)) {
+    return;
+  }
+  if (
+    !isFilesDraftOwnedByThisTab(getFilesDraft(conversationId)) ||
+    !mayWriteComposerText(conversationId)
+  ) {
+    return;
+  }
+  migrateTextDraft(pendingId, conversationId);
+  if (pending.fileIds.length > 0 || Object.keys(pending.pendingPastes).length > 0) {
+    migrateFilesDraft(pendingId, conversationId);
+  }
+};
+
 export const setPendingTextAttachmentDraft = ({
   id,
   fileId,

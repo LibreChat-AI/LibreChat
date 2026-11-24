@@ -1,6 +1,6 @@
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { EndpointTokenConfig } from '~/types';
-import { getModelMaxTokens, findMatchingPattern } from './tokens';
+import { getModelMaxTokens, findMatchingPattern, matchModelName } from './tokens';
 
 describe('Bedrock OpenAI context windows', () => {
   const models = [
@@ -415,13 +415,16 @@ describe('Sonnet 5.5 token limits', () => {
   });
 });
 
-describe.each(['gpt-6-sol', 'gpt-6.1-terra', 'gpt-6-luna'])('%s token limits', (model) => {
-  it('resolves exact, snapshot, and provider-prefixed IDs', () => {
-    for (const name of [model, `${model}-2026-09-22`, `openai/${model}`]) {
-      expect(getModelMaxTokens(name, EModelEndpoint.openAI)).toBe(1050000);
-    }
-  });
-});
+describe.each(['gpt-6-sol', 'gpt-6.2-sol', 'gpt-6.1-terra', 'gpt-6-luna'])(
+  '%s token limits',
+  (model) => {
+    it('resolves exact, snapshot, and provider-prefixed IDs', () => {
+      for (const name of [model, `${model}-2026-09-22`, `openai/${model}`]) {
+        expect(getModelMaxTokens(name, EModelEndpoint.openAI)).toBe(1050000);
+      }
+    });
+  },
+);
 
 describe('Terra context overrides', () => {
   const model = 'gpt-6.1-terra';
@@ -502,5 +505,46 @@ describe('Claude Mythos version boundaries', () => {
 describe('GPT-6 Cyber', () => {
   it('resolves the published context window for configured models', () => {
     expect(getModelMaxTokens('gpt-6-cyber', EModelEndpoint.openAI)).toBe(1050000);
+  });
+});
+
+describe('GPT-6 and Gemini 4 context defaults', () => {
+  it.each([
+    ['gemini-4-carbon', EModelEndpoint.google, 1048576],
+    ['gemini-4-neon', EModelEndpoint.google, 1048576],
+    ['models/gemini-4-carbon', EModelEndpoint.google, 1048576],
+    ['gemini-4-neon-2026-11-01', EModelEndpoint.google, 1048576],
+    ['google/gemini-4-neon', EModelEndpoint.custom, 1048576],
+    ['gemini-4', EModelEndpoint.agents, 1048576],
+    ['gemini-4-new-variant', EModelEndpoint.google, 1048576],
+    ['gpt-6', EModelEndpoint.openAI, 1050000],
+    ['openai/gpt-6-new-variant', EModelEndpoint.custom, 1050000],
+    ['gpt-6.2-new-variant', EModelEndpoint.azureOpenAI, 1050000],
+  ])('resolves %s on %s to %i tokens', (model, endpoint, expected) => {
+    expect(getModelMaxTokens(model, endpoint)).toBe(expected);
+  });
+
+  it('preserves configured context limits and falls back for unlisted models', () => {
+    const overrides: EndpointTokenConfig = {
+      'gemini-4-carbon': { context: 64000, prompt: 1, completion: 1 },
+      'gpt-6': { context: 128000, prompt: 1, completion: 1 },
+    };
+    expect(getModelMaxTokens('models/gemini-4-carbon', EModelEndpoint.google, overrides)).toBe(
+      64000,
+    );
+    expect(getModelMaxTokens('gpt-6-sol', EModelEndpoint.openAI, overrides)).toBe(128000);
+    expect(getModelMaxTokens('gemini-4-neon', EModelEndpoint.google, overrides)).toBe(1048576);
+  });
+
+  it('keeps specific keys and unrelated generations distinct', () => {
+    expect(getModelMaxTokens('gpt-60-sol', EModelEndpoint.openAI)).toBeUndefined();
+    expect(getModelMaxTokens('gpt-6', EModelEndpoint.bedrock)).toBeUndefined();
+    expect(getModelMaxTokens('gpt-6', EModelEndpoint.google)).toBeUndefined();
+    expect(matchModelName('gpt-6.1-sol', EModelEndpoint.openAI)).toBe('gpt-6-sol');
+    expect(getModelMaxTokens('gemini-40-neon', EModelEndpoint.google)).toBe(30720);
+    expect(getModelMaxTokens('gemini-3', EModelEndpoint.google)).toBe(1000000);
+    expect(
+      findMatchingPattern('gemini-4-neon', { 'gemini-4': 1048576, 'gemini-4-neon': 64000 }),
+    ).toBe('gemini-4-neon');
   });
 });

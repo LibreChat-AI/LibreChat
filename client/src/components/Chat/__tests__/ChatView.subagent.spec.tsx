@@ -10,6 +10,10 @@ import '~/Providers/MessagePartsHostContext';
 
 let mockConversation: Record<string, unknown> | null;
 
+jest.mock('~/hooks/AuthContext', () => ({
+  useAuthContext: () => ({ user: { id: 'user' } }),
+}));
+
 jest.mock('react-router-dom', () => ({
   useParams: () => ({ conversationId: 'child-thread' }),
 }));
@@ -38,19 +42,19 @@ jest.mock('librechat-data-provider', () => ({
   buildTree: ({ messages }: { messages: unknown[] }) => messages,
 }));
 
+/** Kept as one array: the screen reads it on every render. */
+const mockMessages = [{ messageId: 'message-1' }];
+
 jest.mock('@librechat/chat/react', () => {
   const actual = jest.requireActual('@librechat/chat/react');
   return {
     ...actual,
-    ChatSessionProvider: ({
-      children,
-    }: {
-      children: (session: { messages: unknown[]; isLoading: boolean }) => React.ReactNode;
-    }) => (
+    ChatSessionProvider: ({ children }: { children: React.ReactNode }) => (
       <actual.ChatContext.Provider value={{ conversation: mockConversation }}>
-        {children({ messages: [{ messageId: 'message-1' }], isLoading: false })}
+        {children}
       </actual.ChatContext.Provider>
     ),
+    useChatSessionMessages: () => ({ messages: mockMessages, isLoading: false }),
   };
 });
 

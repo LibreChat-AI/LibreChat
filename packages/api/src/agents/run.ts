@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
+import { resolveSubagents } from 'librechat-data-provider';
 import { ensureHandler } from '@langchain/core/callbacks/manager';
 import { Run, Providers, Constants, GraphEvents, HookRegistry } from '@librechat/agents';
 import {
@@ -14,6 +15,7 @@ import {
   normalizeEndpointName,
   mapModelToAzureConfig,
   resolveUseResponsesApi,
+  gpt6Release,
 } from 'librechat-data-provider';
 import type {
   SummarizationConfig as AgentSummarizationConfig,
@@ -49,26 +51,29 @@ import type {
   SummarizationConfig,
   TurnFileConsumers,
 } from 'librechat-data-provider';
+import type { ToolApprovalGrantStorage, RunGrantIdentity } from 'librechat-data-provider';
 import type { AppConfig, IAgentFadingTier, IUser } from '@librechat/data-schemas';
 import type { CallbackHandlerMethods } from '@langchain/core/callbacks/base';
-import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Callbacks } from '@langchain/core/callbacks/manager';
 import type { TerminalSteerHook, SteerPreemption } from '~/agents/steering/runtime';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
-import type { ScheduledMCPPolicyError } from '~/schedules/authorization/policy';
-import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { ModelErrorTrackerCallback } from '~/agents/failures/tracker';
 import type { ToolInputValidationError } from '~/agents/toolValidation';
+import type { RunGrantExecution } from '~/agents/authority/execution';
+import type { RunGrantPolicyError } from '~/agents/authority/policy';
 import type { ResolvedToolApprovalHook } from '~/agents/hitl/hooks';
+import type { ScheduledPauseGap } from '~/agents/hitl/admission';
 import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { ResolvedAlwaysApplySkill } from '~/agents/skills';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { SubagentCodeHostArgSpecs } from '~/code/targets';
+import type { SdkFileSession } from './remoteSdk/attachments';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { ReviewedToolApprovals } from './hitl/modes';
 import type { SubagentUsageEvent } from '~/agents/usage';
 import type { ProvisionState } from '~/agents/resources';
+import type { SdkModelHost } from './remoteSdk/builder';
 import type { RunFileSession } from './files/session';
 import type { SdkAgentRuntimeLoader } from './sdk';
 import type { RunFadingTiers } from './fading';
@@ -89,6 +94,13 @@ import {
   stripBackgroundFromToolDefinitions,
 } from '~/agents/background';
 import {
+  extractDefaultParams,
+  getOpenAILLMConfig,
+  isNativeCyberRequest,
+  resolveReasoningParams,
+  applySol62Constraints,
+} from '~/endpoints/openai/llm';
+import {
   createSubagentWakeupHandleHook,
   agentUsesSubagentCompletionWakeups,
   usesSubagentCompletionWakeups,
@@ -99,12 +111,6 @@ import {
   resolveSubagentMaxTurns,
   resolveRecursionLimit,
 } from '~/agents/config';
-import {
-  extractDefaultParams,
-  getOpenAILLMConfig,
-  isNativeCyberRequest,
-  resolveReasoningParams,
-} from '~/endpoints/openai/llm';
 import {
   isSteeringSupported,
   isSteerPreemptSupported,
@@ -129,7 +135,6 @@ import { interruptToolHandler, supportsRunInterruption } from '~/agents/steering
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
 import { hasModelBoundContentProtection } from '../middleware/modelBoundContent';
 import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
-import { createScheduledMCPRunPolicy } from '~/schedules/authorization/run';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
@@ -146,6 +151,7 @@ import { getPluginHookSource } from '~/agents/hooks/source';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { createStepBudgetHook } from '~/agents/stepBudget';
 import { buildHITLRunWiring } from '~/agents/hitl/runtime';
+import { createRunPolicy } from '~/agents/authority/run';
 import { buildLangfuseConfig } from '~/langfuse/config';
 import { getCustomEndpointConfig } from '~/app/config';
 import { applyTestRunHook } from '~/agents/testHook';
@@ -450,8 +456,8 @@ export function isDeepSeekReasoningProvider(
 /**
  * Whether prior assistant tool-call messages should have `reasoning_content`
  * reconstructed when reformatting persisted history (cross-turn replay): either
- * DeepSeek thinking-mode (#13366) or a custom OpenAI-compatible endpoint that
- * opted in via `customParams.includeReasoningHistory` (e.g. Xiaomi MiMo, Kimi).
+ * Google signed history, DeepSeek thinking-mode (#13366), or a custom
+ * OpenAI-compatible endpoint that opted in via `customParams.includeReasoningHistory` (e.g. Xiaomi MiMo, Kimi).
  */
 export function shouldReplayReasoningContent(
   agent?: {
@@ -463,6 +469,9 @@ export function shouldReplayReasoningContent(
 ): boolean {
   if (agent == null) {
     return false;
+  }
+  if (agent.provider === Providers.GOOGLE || agent.provider === Providers.VERTEXAI) {
+    return true;
   }
   if (agent.includeReasoningHistory === true) {
     return true;
@@ -1544,6 +1553,30 @@ function shapeSummarizationConfig(
     parameters: modelKwargs != null ? { modelKwargs, ...mergedParameters } : mergedParameters,
   });
 
+  const inheritedParameters: Record<string, unknown> | undefined =
+    provider === fallbackProvider ? agent?.model_parameters : undefined;
+  if (
+    gpt6Release(model)?.toLowerCase() === 'gpt-6.2-sol' &&
+    (provider === Providers.OPENAI || provider === Providers.AZURE)
+  ) {
+    const baseURL = transportOverrides.baseURL;
+    const nativeTransport =
+      baseURL == null
+        ? (parameters?.firstPartyEndpoint ?? inheritedParameters?.firstPartyEndpoint) === true
+        : getOpenAILLMConfig({
+            apiKey: '',
+            streaming: false,
+            baseURL,
+            endpoint: targetsAzure ? EModelEndpoint.azureOpenAI : EModelEndpoint.openAI,
+            azure: targetsAzure ? (agent?.azureOptions ?? {}) : undefined,
+            modelOptions: { model },
+          }).llmConfig.firstPartyEndpoint === true;
+    if (nativeTransport) {
+      parameters = { ...parameters, firstPartyEndpoint: true };
+      applySol62Constraints(parameters, inheritedParameters);
+    }
+  }
+
   if (
     model === 'gpt-6-cyber' &&
     config?.enabled !== false &&
@@ -2066,6 +2099,7 @@ function buildSubagentConfigs(
   detachedTasksEnabled = false,
   onResolvedAgent?: (agent: RunAgent) => void,
 ): SubagentConfigEntry[] {
+  agent = { ...agent, subagents: resolveSubagents(agent.subagents, agentsEConfig?.capabilities) };
   if (!agent.subagents?.enabled) {
     return [];
   }
@@ -2201,7 +2235,9 @@ function buildSubagentConfigs(
     );
   }
 
-  for (const { definition, memberConfigs } of agent.subagentGraphConfigs ?? []) {
+  for (const { definition, memberConfigs } of agent.subagents.graphsEnabled !== false
+    ? (agent.subagentGraphConfigs ?? [])
+    : []) {
     if (memberConfigs.length === 0) {
       continue;
     }
@@ -2312,18 +2348,22 @@ export async function createRun({
   activityPhase,
   eventActorCheckpointing = false,
   hitlCapable = false,
+  pauseGap,
   resolvedToolApprovalHooks,
   toolApprovalStorage,
   reviewedToolApprovals,
-  scheduledMCPExecution,
-  recordScheduledMCPDenial,
+  grantExecution,
+  recordGrantDenial,
   toolApprovalAllows,
   toolInputValidationErrors,
   sessionStartSource,
   loadSdkRuntime,
+  sdkModelHost,
+  sdkFiles,
   sdkResumeState,
   streaming = true,
   streamUsage = true,
+  eagerToolExecution = true,
 }: {
   agents: RunAgent[];
   signal: AbortSignal;
@@ -2333,6 +2373,8 @@ export async function createRun({
   conversationId?: string;
   streaming?: boolean;
   streamUsage?: boolean;
+  /** Host-owned execution policy; observed Chat results require post-acceptance execution. */
+  eagerToolExecution?: boolean;
   requestBody?: t.RequestBody;
   codeApprovalMode?: CodeApprovalMode;
   user?: IUser;
@@ -2464,24 +2506,38 @@ export async function createRun({
    */
   hitlCapable?: boolean;
   /**
+   * What a scheduled run that could pause is missing on this deployment, from
+   * `resolveScheduledPause`. Such a run arrives with `hitlCapable` off and starts anyway:
+   * its ask-user tool is left out and a call that needs approval is refused. Only that
+   * caller sets it; every other caller without a resume path is still refused an agent
+   * whose code runs on an attached machine.
+   */
+  pauseGap?: ScheduledPauseGap;
+  /**
    * Request-scoped approval hooks already resolved by the scheduled-run admission guard.
    * Reuse them here so a context-aware factory is evaluated exactly once for the run.
    */
   resolvedToolApprovalHooks?: readonly ResolvedToolApprovalHook[];
   toolApprovalStorage?: ToolApprovalGrantStorage;
   reviewedToolApprovals?: ReviewedToolApprovals;
-  scheduledMCPExecution?: ScheduleMCPExecution;
-  recordScheduledMCPDenial?: (error: ScheduledMCPPolicyError) => Promise<boolean>;
+  grantExecution?: RunGrantExecution<RunGrantIdentity>;
+  recordGrantDenial?: (error: RunGrantPolicyError) => Promise<boolean>;
   /** Plugin-hook SessionStart lifecycle source: 'startup' (default) or 'resume' on HITL-rebuild paths. */
   sessionStartSource?: string;
   /** Request-scoped tool input failures consumed by the completion handler. */
   toolInputValidationErrors?: Map<string, ToolInputValidationError>;
   loadSdkRuntime?: SdkAgentRuntimeLoader;
+  sdkModelHost?: SdkModelHost;
+  sdkFiles?: SdkFileSession;
   sdkResumeState?: import('./remoteSdk/types').RemoteSdkResumeState;
 } & Pick<
   RunConfig,
   'tokenCounter' | 'customHandlers' | 'indexTokenCountMap' | 'initialSessions'
 >): Promise<Run<IState>> {
+  agents = agents.map((agent) => ({
+    ...agent,
+    subagents: resolveSubagents(agent.subagents, appConfig?.endpoints?.agents?.capabilities),
+  }));
   const resolvedRunId = runId ?? randomUUID();
   const registration = resolveSdkAgentBinding(
     agents,
@@ -2489,6 +2545,10 @@ export async function createRun({
     user?.role,
     hasModelBoundContentProtection(appConfig?.filters) ||
       hasActivePiiPatterns(appConfig?.messageFilter?.pii),
+    sdkModelHost != null &&
+      modelCallbacks?.some(
+        (callback) => callback.name === 'librechat-model-bound-content-filter',
+      ) === true,
   );
   const runFilesActive =
     runFiles?.activate(
@@ -2510,9 +2570,11 @@ export async function createRun({
   }
   // Detached child threads resume in a new host request without this run's
   // input snapshot or publication routing. Shared children stay foreground.
-  // Detached completion turns cannot yet restore enrolled schedule authority.
-  const activeSubagentTasks =
-    runFilesActive || scheduledMCPExecution?.enrolled === true ? undefined : subagentTasks;
+  // A schedule's grant does not keep them foreground: a detached child runs with this run's
+  // hooks and narrowed tools, and its completion turn resolves the schedule's grant afresh.
+  // A grant whose completion turn could not find it again (`detaches` false) still does.
+  const foregroundOnly = grantExecution?.enrolled === true && grantExecution.detaches !== true;
+  const activeSubagentTasks = runFilesActive || foregroundOnly ? undefined : subagentTasks;
   /**
    * Only extract discovered tools if:
    * 1. We have message history to parse
@@ -2846,11 +2908,23 @@ export async function createRun({
     collectAttachedCodeApprovalPolicies(agents),
     agentsEndpointConfig?.toolApproval?.enabled !== false,
   );
+  const approvalExplicitlyDisabled = agentsEndpointConfig?.toolApproval?.enabled === false;
   assertAttachedCodeEnvironmentApprovalSupported({
     hasAttachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
     hitlCapable,
-    approvalExplicitlyDisabled: agentsEndpointConfig?.toolApproval?.enabled === false,
+    approvalExplicitlyDisabled,
+    refuses: pauseGap != null,
   });
+  /** Built only for a run that knows of a machine now; see `registerResolvedMCPToolAliases`. */
+  const attachedHook =
+    attachedCodeEnvironmentAgentIds.size > 0
+      ? createAttachedCodeEnvironmentPolicyHook(
+          attachedCodeEnvironmentAgentIds,
+          attachedCodeEnvironmentSettings,
+          codeApprovalMode,
+          hitlCapable,
+        )
+      : undefined;
 
   // Assigned after the run-wide HITL registry is built. Lazy descriptors
   // capture this indirection now and report their aliases when they resolve.
@@ -2958,6 +3032,7 @@ export async function createRun({
   const toolApprovalPolicy = resolveToolApprovalPolicy({
     endpoint: agentsEndpointConfig?.toolApproval,
     attachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
+    ownerApproval: grantExecution?.mayAsk === true,
   });
   // Every caller needs the policy hooks, including API-key ingresses. Only
   // AgentClient supports pause/resume; the SDK blocks `ask` without HITL enabled.
@@ -3016,17 +3091,7 @@ export async function createRun({
           tenantId: tenantId ?? user?.tenantId,
           appConfig,
         })),
-      ...(attachedCodeEnvironmentAgentIds.size > 0
-        ? [
-            {
-              hook: createAttachedCodeEnvironmentPolicyHook(
-                attachedCodeEnvironmentAgentIds,
-                attachedCodeEnvironmentSettings,
-                codeApprovalMode,
-              ),
-            },
-          ]
-        : []),
+      ...(attachedHook ? [{ hook: attachedHook }] : []),
     ],
     nativeEditFileAgentIds,
   );
@@ -3035,17 +3100,25 @@ export async function createRun({
     hooks: [agentApprovalSession.settleBatchHook],
   });
   const hitl = hitlCapable ? approvalWiring : undefined;
-  const scheduledPolicy = scheduledMCPExecution
-    ? createScheduledMCPRunPolicy(
-        scheduledMCPExecution,
-        agents,
-        agents[0].edges ?? [],
-        recordScheduledMCPDenial,
-      )
+  const grantPolicy = grantExecution
+    ? createRunPolicy(grantExecution, agents, agents[0].edges ?? [], recordGrantDenial)
     : undefined;
   registerResolvedMCPToolAliases = (resolvedAgent) => {
+    /**
+     * The machine policy hook exists only if a machine was known when the run was built,
+     * and adding to its collections below does nothing without it. An agent that reaches a
+     * machine only now is refused there instead of running with no policy on its calls.
+     */
+    assertAttachedCodeEnvironmentApprovalSupported({
+      hasAttachedCodeEnvironment:
+        resolvedAgent.codeExecutionContext?.environmentType === 'attached',
+      hitlCapable,
+      approvalExplicitlyDisabled,
+      refuses: pauseGap != null,
+      guarded: attachedHook != null && approvalWiring != null,
+    });
     agentApprovalSession.addAgent(resolvedAgent);
-    scheduledPolicy?.registerAgent(resolvedAgent);
+    grantPolicy?.registerAgent(resolvedAgent);
     for (const agentId of collectNativeEditFileAgentIds([resolvedAgent])) {
       nativeEditFileAgentIds.add(agentId);
     }
@@ -3110,9 +3183,9 @@ export async function createRun({
    * this guard is defense in depth).
    */
   let hooks = approvalWiring?.hooks;
-  if (scheduledPolicy) {
+  if (grantPolicy) {
     hooks ??= new HookRegistry();
-    hooks.register('PreToolUse', { hooks: [scheduledPolicy.hook, scheduledPolicy.receipt] });
+    hooks.register('PreToolUse', { hooks: [grantPolicy.hook, grantPolicy.receipt] });
   }
   if (usesSubagentCompletionWakeups(activeSubagentTasks)) {
     hooks = hooks ?? new HookRegistry();
@@ -3252,7 +3325,7 @@ export async function createRun({
     // `interrupt()` from its tool body, which must run inside the Pregel task
     // frame — a speculative eager execution could never pause the run.
     eagerEventToolExecution: {
-      enabled: true,
+      enabled: eagerToolExecution,
       excludeToolNames: [
         CREATE_FILE_TOOL_NAME,
         EDIT_FILE_TOOL_NAME,
@@ -3332,6 +3405,8 @@ export async function createRun({
         registration,
         config: runConfig,
         loadModule: loadSdkRuntime,
+        modelHost: sdkModelHost,
+        files: sdkFiles,
         resumeState: sdkResumeState,
         signal,
         identity: {

@@ -2,6 +2,7 @@ const { nanoid } = require('nanoid');
 const { logger } = require('@librechat/data-schemas');
 const { Callback, formatAgentMessages } = require('@librechat/agents');
 const {
+  hasSubagentCapability,
   EModelEndpoint,
   ResourceType,
   PermissionBits,
@@ -11,6 +12,8 @@ const {
 const {
   createRun,
   applyContextToAgent,
+  createRemoteExecutionContext,
+  getRemoteRunKeyId,
   buildInitialToolSessions,
   buildRunToolSet,
   AgentRunEnvelopeError,
@@ -49,6 +52,7 @@ const {
   assertModelBoundContent,
   reportLocatorTraversalFailure,
   hasModelBoundContentProtection,
+  createApiModelCallbacks,
   isContentFilterError,
   getSafeErrorMetadata,
   getUserFacingProviderError,
@@ -456,6 +460,13 @@ const executeResponse = async (envelope, { req, res }) => {
     addConvoToolApprovalAllows: db.addConvoToolApprovalAllows,
   });
   const responseId = responseRuntime.responseId;
+  const executionContext = createRemoteExecutionContext({
+    principal,
+    agentId: request.model,
+    protocol: 'responses',
+    background: responseRuntime.background,
+    keyId: getRemoteRunKeyId(req),
+  });
   const terminalRunError = createTerminalRunErrorObserver({
     maxProviderErrorChars: appConfig?.endpoints?.agents?.maxProviderErrorChars,
     logger,
@@ -615,12 +626,22 @@ const executeResponse = async (envelope, { req, res }) => {
       // Build allowed providers set
       const allowedProviders = new Set(agentsEConfig?.allowedProviders);
 
+      // Under `remoteApi.integrations.mode: delegated`, a personal key's run may use only
+      // the MCP servers and tools its owner granted that key for this agent.
+      await require('~/server/services/ApiKeys/grants').prepare({
+        req,
+        res,
+        executionContext,
+        signal: execution.signal,
+      });
+
       // Create tool loader
       const loadTools = createToolLoader({
         req,
         res,
         signal: execution.signal,
         ...responseRuntime.toolContext(execution),
+        unattended: executionContext.unattended,
       });
       const skillDbMethods = getSkillDbMethods();
 
@@ -633,6 +654,7 @@ const executeResponse = async (envelope, { req, res }) => {
       const dbMethods = {
         getProjectFiles: db.getProjectFiles,
         getConvoFiles: db.getConvoFiles,
+        getConvoExcludedFiles: db.getConvoExcludedFiles,
         getFiles: db.getFiles,
         filterFilesByAgentAccess: filterFilesByRemoteAgentAccess,
         getUserKey: db.getUserKey,
@@ -783,7 +805,7 @@ const executeResponse = async (envelope, { req, res }) => {
       let handoffAgentConfigs = new Map();
       let discoveredEdges = [];
       let discoveredMCPAuthMap;
-      const subagentsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.subagents);
+      const subagentsCapabilityEnabled = hasSubagentCapability([...enabledCapabilities]);
       const primaryHasGraphSubagents =
         subagentsCapabilityEnabled &&
         primaryConfig.subagents?.enabled === true &&
@@ -1026,6 +1048,7 @@ const executeResponse = async (envelope, { req, res }) => {
         }
       }
 
+      const modelBoundFiles = collectModelBoundAgentFiles(modelBoundAgents);
       assertModelBoundContent({
         onTraversalFailure: reportLocatorTraversalFailure,
         filters: appConfig?.filters,
@@ -1033,7 +1056,7 @@ const executeResponse = async (envelope, { req, res }) => {
         submittedMessages: inputMessages,
         agents: modelBoundAgents,
         skills: [...(manualSkillPrimes ?? []), ...(alwaysApplySkillPrimes ?? [])],
-        files: collectModelBoundAgentFiles(modelBoundAgents),
+        files: modelBoundFiles,
       });
 
       /* Stable for the turn: the primary prime list is fixed once
@@ -1122,6 +1145,7 @@ const executeResponse = async (envelope, { req, res }) => {
               ...responseRuntime.toolContext(execution),
               req,
               res,
+              unattended: executionContext.unattended,
               agentResourceType: ResourceType.REMOTE_AGENT,
               conversationId,
               requestBody: mcpRequestBody,
@@ -1189,6 +1213,7 @@ const executeResponse = async (envelope, { req, res }) => {
         const userMCPAuthMap = mergedMCPAuthMap;
 
         const run = await createRun({
+          sdkModelHost: req?.app?.locals?.sdkModelHost,
           ...(await responseRuntime.graphOptions(runAgents)),
           agents: runAgents,
           messages: responseRuntime.graphMessages(formattedMessages),
@@ -1205,7 +1230,13 @@ const executeResponse = async (envelope, { req, res }) => {
           traceContext: { endpoint: EModelEndpoint.agents },
           tenantId: principal.tenantId,
           isTemporary: isTemporaryTurn(req),
-          modelCallbacks: [terminalRunError.modelCallback],
+          modelCallbacks: createApiModelCallbacks({
+            appConfig,
+            terminalRunError,
+            onTraversalFailure: reportLocatorTraversalFailure,
+            storedMessages: previousMessages,
+            resolvedFiles: modelBoundFiles,
+          }),
           clientToolNames: clientTools.clientToolNames,
           /** Bills subagent child-run model calls (reported outside the
            *  streamEvents loop) into the same collectedUsage array. */
@@ -1355,6 +1386,7 @@ const executeResponse = async (envelope, { req, res }) => {
               ...responseRuntime.toolContext(execution),
               req,
               res,
+              unattended: executionContext.unattended,
               agentResourceType: ResourceType.REMOTE_AGENT,
               conversationId,
               requestBody: mcpRequestBody,
@@ -1418,6 +1450,7 @@ const executeResponse = async (envelope, { req, res }) => {
         const userMCPAuthMap = mergedMCPAuthMap;
 
         const run = await createRun({
+          sdkModelHost: req?.app?.locals?.sdkModelHost,
           ...(await responseRuntime.graphOptions(runAgents)),
           agents: runAgents,
           messages: responseRuntime.graphMessages(formattedMessages),
@@ -1434,7 +1467,13 @@ const executeResponse = async (envelope, { req, res }) => {
           traceContext: { endpoint: EModelEndpoint.agents },
           tenantId: principal.tenantId,
           isTemporary: isTemporaryTurn(req),
-          modelCallbacks: [terminalRunError.modelCallback],
+          modelCallbacks: createApiModelCallbacks({
+            appConfig,
+            terminalRunError,
+            onTraversalFailure: reportLocatorTraversalFailure,
+            storedMessages: previousMessages,
+            resolvedFiles: modelBoundFiles,
+          }),
           clientToolNames: clientTools.clientToolNames,
           /** Bills subagent child-run model calls (reported outside the
            *  streamEvents loop) into the same collectedUsage array. */

@@ -29,7 +29,7 @@ import {
   getRegenerateSubmissionMessages,
   getPreliminaryRegenerateResponseMessageId,
 } from '../regenerate';
-import { createDualMessageContent, stripStreamedIndexStamps } from '../content';
+import { createDualMessageContent, withEditedPart } from '../content';
 import { partitionComposerFiles } from '../files';
 
 /** What `ask` hands the turn builder once it has decided the send may go ahead. */
@@ -380,31 +380,11 @@ export function buildTurn({
       /** Stamps off: the rerun appends provider parts at the prefix LENGTH,
        *  and a retained `streamedIndex` at or above it would collide with an
        *  appended part's render key (see `stripStreamedIndexStamps`). */
-      initialResponse.content = [...stripStreamedIndexStamps(latestMessage.content)];
+      initialResponse.content = withEditedPart(latestMessage.content, editedContent);
       /** Captured now, while it is still the retained prefix: a later resume
        *  sync replaces this array with the server's completion-local
        *  snapshot, after which its length no longer describes the offset. */
       editPrefixLength = initialResponse.content.length;
-      const { index } = editedContent;
-      if (initialResponse.content && index >= 0 && index < initialResponse.content.length) {
-        /** Copied before the edit lands, so the cached message keeps its own part. */
-        const contentPart = { ...initialResponse.content[index] };
-        initialResponse.content[index] = contentPart;
-        if (editedContent.type === ContentTypes.THINK && contentPart.type === ContentTypes.THINK) {
-          contentPart[ContentTypes.THINK] = editedContent[ContentTypes.THINK];
-          delete contentPart.reasoning_label;
-          delete contentPart.reasoning_label_step_id;
-          delete contentPart.reasoning_label_attempts;
-          delete contentPart.reasoning_label_submitted_chars;
-          delete contentPart.reasoning_label_revision;
-          delete contentPart.reasoning_label_status;
-        } else if (
-          editedContent.type === ContentTypes.TEXT &&
-          contentPart.type === ContentTypes.TEXT
-        ) {
-          contentPart[ContentTypes.TEXT] = editedContent[ContentTypes.TEXT];
-        }
-      }
     } else if (addedConvo && conversation) {
       // Pre-populate placeholders for smooth UI - these will be overridden/extended
       // as SSE events arrive with actual content, preserving the agent-based agentId

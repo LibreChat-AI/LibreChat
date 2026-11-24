@@ -104,6 +104,12 @@ const ProjectChatsInline = memo(function ProjectChatsInline({
     (data?.pages[data.pages.length - 1]?.nextCursor ?? null) != null;
   const visible = conversations.slice(0, INLINE_CHAT_LIMIT);
 
+  /** A disabled query still reports `isLoading`: a project never opened would
+   *  pulse skeletons out of sight, and has no answer to call empty either. */
+  if (!expanded && data == null) {
+    return null;
+  }
+
   if (isLoading && conversations.length === 0) {
     return (
       <div data-testid={`project-chats-loading-${projectId}`} aria-busy="true">

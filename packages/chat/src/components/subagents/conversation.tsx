@@ -5,6 +5,7 @@ import {
   cn,
   Alert,
   Button,
+  Shimmer,
   Collapsible,
   useLocalize,
   CollapsibleContent,
@@ -23,6 +24,7 @@ import { MessagePartsHostProvider, useMessagePartsHost } from '../../react/host'
 import SystemEventHeader, { SystemEventIcon } from '../messages/SystemEvent';
 import { useSearchResultsByTurn } from '../messages/useSearchResultsByTurn';
 import { TaskContentScopeContext } from '../../react/subagents/scope';
+import { SubagentCallerContext } from '../../react/subagents/author';
 import { hasTerminalOutcome } from '../../react/subagents/outcome';
 import MinimalHoverButtons from '../messages/MinimalHoverButtons';
 import { standardContent } from '../../react/subagents/adapters';
@@ -33,6 +35,7 @@ import ResumeAuthorHeader from '../parts/ResumeAuthorHeader';
 import { AuthorContext } from '../../react/messages/author';
 import { messageFooterClasses } from '../messages/styles';
 import { isEmptyContentPart } from '../../core/content';
+import { renderContentParts } from '../contentRenderer';
 import { ChatContext } from '../../react/chat/context';
 import { ElapsedTimer } from '../messages/Elapsed';
 import MessageRow from '../messages/MessageRow';
@@ -171,12 +174,43 @@ function TriggerMessage({
   if (turn.trigger.kind === 'external_event') {
     return <ExternalEventTrigger turn={turn} fullWidth={fullWidth} />;
   }
+  const briefing = turn.briefing === true;
+  const writing = localize('com_ui_subagent_briefing');
+  let footer: ReactNode = <MinimalHoverButtons message={message} />;
+  if (briefing) {
+    /** The brief is still being written: nothing to copy yet, and the sweep says so. */
+    footer =
+      content.length > 0 ? (
+        <div className={cn('text-text-secondary mt-1 flex justify-end', messageFooterClasses)}>
+          <Shimmer>{writing}</Shimmer>
+        </div>
+      ) : null;
+  }
+  let body: ReactNode = <div className="text-text-secondary text-sm italic">{label}</div>;
+  if (content.length > 0) {
+    body = (host.renderContentParts ?? renderContentParts)({
+      content,
+      messageId: `${turn.taskId}:trigger`,
+      conversationId: null,
+      isCreatedByUser: true,
+      showThinking,
+      isLast: false,
+      isSubmitting: false,
+      isLatestMessage: false,
+    });
+  } else if (briefing) {
+    body = (
+      <div className="text-text-secondary text-sm italic">
+        <Shimmer>{writing}</Shimmer>
+      </div>
+    );
+  }
   return (
     <MessageRow
       id={`${turn.taskId}:trigger`}
       icon={parentAuthor.icon}
       label={parentAuthor.name}
-      footer={<MinimalHoverButtons message={message} />}
+      footer={footer}
       timestamp={turn.trigger.createdAt}
       ariaLabel={label}
       headerPrefix=""
@@ -184,25 +218,44 @@ function TriggerMessage({
       showAuthor
       fullWidth={fullWidth}
     >
-      {content.length > 0 ? (
-        host.renderContentParts({
-          content,
-          messageId: `${turn.taskId}:trigger`,
-          conversationId: null,
-          isCreatedByUser: true,
-          showThinking,
-          isLast: false,
-          isSubmitting: false,
-          isLatestMessage: false,
-        })
-      ) : (
-        <div className="text-text-secondary text-sm italic">{label}</div>
-      )}
+      {body}
       {turn.trigger.summaryTruncated === true && (
         <div className="text-text-secondary mt-1 text-xs italic">
           {localize('com_ui_subagent_trigger_truncated')}
         </div>
       )}
+    </MessageRow>
+  );
+}
+
+/**
+ * The child's side of a turn whose brief is still being written. Nothing has been started, so
+ * there is no activity, status or elapsed time to show: only who will take the brief, and when.
+ */
+function PendingChildMessage({
+  turn,
+  author,
+  fullWidth,
+}: {
+  turn: ChildConversationTurn;
+  author: TurnAuthor;
+  fullWidth: boolean;
+}) {
+  const localize = useLocalize();
+  return (
+    <MessageRow
+      id={`${turn.taskId}:assistant`}
+      icon={author.icon}
+      label={author.name}
+      footer={<div className={cn('mt-1', messageFooterClasses)} />}
+      ariaLabel={author.name}
+      headerPrefix=""
+      isCreatedByUser={false}
+      fullWidth={fullWidth}
+    >
+      <p className="text-text-secondary text-sm" data-subagent-pending>
+        {localize('com_ui_subagent_starts_after_brief')}
+      </p>
     </MessageRow>
   );
 }
@@ -257,6 +310,11 @@ function ChildMessage({
   );
   const searchResults = useSearchResultsByTurn(activity.attachments);
   const messageAuthor = useMemo(() => ({ icon: author.icon, label: author.name }), [author]);
+  /** Any call in this turn's content is the child's own. */
+  const caller = useMemo(
+    () => ({ agentId: author.agentId, name: author.name }),
+    [author.agentId, author.name],
+  );
   const detailsLimited = activity.activityTruncated === true;
   let limitedNotice: ReactNode;
   if (detailsLimited && onLoadDetails != null && detailState !== 'unavailable') {
@@ -301,32 +359,34 @@ function ChildMessage({
     >
       {notice}
       <AuthorContext.Provider value={messageAuthor}>
-        <ErrorSourceProvider message={message}>
-          <SubagentActivityContent
-            activity={activity}
-            activityId={message.messageId}
-            content={content}
-            authorHeader={RESUME_AUTHOR_HEADER}
-            searchResults={searchResults}
-            toolContentQuery={toolContentQuery}
-            state={state}
-            showPrompt={false}
-            conversationId={conversationId}
-            underHeaderIcon
-            onCancelControl={onCancelControl}
-          />
-          {outcomeContent != null &&
-            host.renderContentParts({
-              content: outcomeContent,
-              messageId: message.messageId,
-              conversationId: conversationId ?? null,
-              isCreatedByUser: false,
-              isSubmitting: false,
-              isLast: true,
-              isLatestMessage: false,
-              showThinking: false,
-            })}
-        </ErrorSourceProvider>
+        <SubagentCallerContext.Provider value={caller}>
+          <ErrorSourceProvider message={message}>
+            <SubagentActivityContent
+              activity={activity}
+              activityId={message.messageId}
+              content={content}
+              authorHeader={RESUME_AUTHOR_HEADER}
+              searchResults={searchResults}
+              toolContentQuery={toolContentQuery}
+              state={state}
+              showPrompt={false}
+              conversationId={conversationId}
+              underHeaderIcon
+              onCancelControl={onCancelControl}
+            />
+            {outcomeContent != null &&
+              (host.renderContentParts ?? renderContentParts)({
+                content: outcomeContent,
+                messageId: message.messageId,
+                conversationId: conversationId ?? null,
+                isCreatedByUser: false,
+                isSubmitting: false,
+                isLast: true,
+                isLatestMessage: false,
+                showThinking: false,
+              })}
+          </ErrorSourceProvider>
+        </SubagentCallerContext.Provider>
       </AuthorContext.Provider>
       {detailsLimited && detailState !== 'loading' && (
         <div className="text-text-secondary mt-2 text-xs">{limitedNotice}</div>
@@ -479,26 +539,30 @@ export default function SubagentConversation({
                   <TriggerMessage turn={turn} fullWidth={fullWidth} parentAuthor={parentAuthor} />
                 </div>
                 <div className="px-4">
-                  <Message
-                    turn={turn}
-                    recovery={recovery}
-                    author={author}
-                    conversationId={conversationId}
-                    fullWidth={fullWidth}
-                    state={stateByTask?.get(turn.taskId) ?? 'ready'}
-                    onCancelControl={
-                      onCancelControl == null || turn.taskId !== controllableTaskId
-                        ? undefined
-                        : (controlId) => onCancelControl(turn.taskId, controlId)
-                    }
-                    toolContentQuery={toolContentQueries?.get(turn.taskId)}
-                    detailState={detailStateByTask?.get(turn.taskId)}
-                    onLoadDetails={
-                      turn.activity.activityTruncated !== true || onLoadTurnDetails == null
-                        ? undefined
-                        : () => onLoadTurnDetails(turn.taskId)
-                    }
-                  />
+                  {turn.briefing === true ? (
+                    <PendingChildMessage turn={turn} author={author} fullWidth={fullWidth} />
+                  ) : (
+                    <Message
+                      turn={turn}
+                      recovery={recovery}
+                      author={author}
+                      conversationId={conversationId}
+                      fullWidth={fullWidth}
+                      state={stateByTask?.get(turn.taskId) ?? 'ready'}
+                      onCancelControl={
+                        onCancelControl == null || turn.taskId !== controllableTaskId
+                          ? undefined
+                          : (controlId) => onCancelControl(turn.taskId, controlId)
+                      }
+                      toolContentQuery={toolContentQueries?.get(turn.taskId)}
+                      detailState={detailStateByTask?.get(turn.taskId)}
+                      onLoadDetails={
+                        turn.activity.activityTruncated !== true || onLoadTurnDetails == null
+                          ? undefined
+                          : () => onLoadTurnDetails(turn.taskId)
+                      }
+                    />
+                  )}
                 </div>
               </section>
             ))}

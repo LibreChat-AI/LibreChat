@@ -17,6 +17,8 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('@librechat/api', () => ({
   formatToolError: jest.requireActual('@librechat/api').formatToolError,
+  getImageData: jest.requireActual('@librechat/api').getImageData,
+  EMPTY_IMAGE_MESSAGE: jest.requireActual('@librechat/api').EMPTY_IMAGE_MESSAGE,
   logAxiosError: jest.fn(),
   oaiToolkit: {
     image_gen_oai: {
@@ -427,5 +429,74 @@ describe('OpenAIImageTools - approved error text', () => {
 
     expect(text).toBe(FALLBACK);
     expect(logged(SECRET)).toBe(false);
+  });
+});
+
+describe('OpenAIImageTools - empty image responses', () => {
+  const EMPTY =
+    'No image was returned by the image API. The provider may have declined this prompt, so ask the user to rephrase it; if this keeps happening, check the image API configuration.';
+  let originalEnv;
+
+  const createTools = () =>
+    createOpenAIImageTools({
+      isAgent: true,
+      override: false,
+      req: { user: { id: 'test-user' } },
+      imageFiles: [
+        {
+          file_id: 'source-image',
+          source: 'local',
+          filepath: 'source-image.png',
+          filename: 'source-image.png',
+          type: 'image/png',
+        },
+      ],
+    });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    originalEnv = { ...process.env };
+    process.env.IMAGE_GEN_OAI_API_KEY = 'test-api-key';
+    delete process.env.IMAGE_GEN_OAI_BASEURL;
+    delete process.env.IMAGE_GEN_OAI_AZURE_API_VERSION;
+    getStrategyFunctions.mockReturnValue({
+      getDownloadStream: jest.fn(async () => Readable.from([Buffer.from('image-data')])),
+    });
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it.each([
+    ['an empty data array', { created: 1791504080, data: [], usage: { total_tokens: 1128 } }],
+    ['no data field', { created: 1791504080 }],
+    ['an entry without b64_json', { data: [{ url: 'https://example.com/image.png' }] }],
+  ])('returns guidance instead of throwing when generation gets %s', async (_label, body) => {
+    OpenAI.mockImplementation(() => ({
+      images: { generate: jest.fn().mockResolvedValue(body) },
+    }));
+    const [imageGenTool] = createTools();
+
+    const [text, artifact] = await imageGenTool.func({ prompt: 'A plain red circle' });
+
+    expect(text).toBe(EMPTY);
+    expect(artifact).toEqual({});
+  });
+
+  it.each([
+    ['an empty data array', { data: [] }],
+    ['an entry without b64_json', { data: [{ url: 'https://example.com/image.png' }] }],
+  ])('returns the same guidance when editing gets %s', async (_label, body) => {
+    axios.post.mockResolvedValue({ data: body });
+    const [, imageEditTool] = createTools();
+
+    const [text, artifact] = await imageEditTool.func({
+      prompt: 'Make it blue',
+      image_ids: ['source-image'],
+    });
+
+    expect(text).toBe(EMPTY);
+    expect(artifact).toEqual({});
   });
 });

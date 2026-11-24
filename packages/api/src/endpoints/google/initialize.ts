@@ -136,7 +136,15 @@ export async function initializeGoogle(
 
   const model = result.llmConfig.model;
   const rates =
-    typeof model === 'string' ? getGoogleTokenConfig(model, googleConfig?.tokenConfig) : undefined;
+    typeof model === 'string'
+      ? getGoogleTokenConfig(
+          model,
+          googleConfig?.tokenConfig,
+          result.provider === Providers.VERTEXAI
+            ? (result.llmConfig as { location?: string }).location
+            : undefined,
+        )
+      : undefined;
   if (typeof model !== 'string' || !rates) {
     return result;
   }

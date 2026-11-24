@@ -77,7 +77,15 @@ describe('renderDigest', () => {
       errors: 1,
       folded: true,
     });
-    expect(digest.nodes[3]).toMatchObject({ kind: 'turn', summary: 'read_file', folded: true });
+    expect(digest.nodes[3]).toMatchObject({
+      kind: 'turn',
+      label: 'Step 16 intent',
+      summary: 'read_file',
+      folded: true,
+    });
+    expect(digest.nodes[0].label).toBeUndefined();
+    expect(digest.nodes[8]).toMatchObject({ path: '21', kind: 'turn' });
+    expect(digest.nodes[8].label).toBeUndefined();
     expect(digest.truncated).toBeUndefined();
     expect(digest.nodes[digest.nodes.length - 1]).toMatchObject({
       kind: 'tool',
@@ -246,6 +254,73 @@ describe('renderDigest', () => {
       request: request({ since: '1.1' }),
     });
     expect(sinceView.nodes[0]).toMatchObject({ kind: 'range', folded: true });
+  });
+
+  it("labels a folded turn with its first call's intent and nothing else", () => {
+    const secret = 'ARGUMENT, OUTPUT AND REPLY TEXT';
+    const settled = turn(
+      { kind: 'text', status: 'ok', startedAt: 1_000, endedAt: 1_100, chars: 90 },
+      tool('read_file', 'ok', { chars: secret.length }),
+      tool('bash_tool', 'ok', { label: 'Running the focused digest tests' }),
+      tool('web_search', 'ok', { label: 'Searching for the release notes' }),
+    );
+    const source = tree([settled, turn(tool('bash_tool', 'running', { label: 'Open turn' }))]);
+    const digest = renderDigest(source, { now: 2_000, running: true });
+    expect(digest.nodes[0]).toEqual({
+      path: '1',
+      kind: 'turn',
+      status: 'ok',
+      label: 'Running the focused digest tests',
+      ms: 400,
+      summary: 'text, read_file, bash_tool, web_search',
+      folded: true,
+    });
+    expect(JSON.stringify(digest)).not.toContain(secret);
+
+    const unlabelled = renderDigest(tree([turn(tool('read_file')), turn(tool('bash_tool'))]), {
+      now: 2_000,
+      running: false,
+    });
+    expect(unlabelled.nodes[0]).toMatchObject({ path: '1', folded: true });
+    expect(unlabelled.nodes[0].label).toBeUndefined();
+
+    const turnRange = renderDigest(longRun(), {
+      now: 2_000,
+      running: true,
+      request: request({ expand: '3-5' }),
+    });
+    expect(turnRange.nodes.map((node) => node.label)).toEqual([
+      'Step 3 intent',
+      'Step 4 intent',
+      'Step 5 intent',
+    ]);
+  });
+
+  it('clips folded turn labels to the shape and drops them when the shape has none', () => {
+    const long = `Inspecting ${'the routing transport '.repeat(6)}`;
+    const labelled = turn(tool('bash_tool', 'ok', { label: long }));
+    const clipped = renderDigest(tree([labelled, turn(tool('read_file'))]), {
+      now: 2_000,
+      running: false,
+    });
+    expect(clipped.nodes[0].label).toHaveLength(72);
+    expect(clipped.nodes[0].label?.endsWith('…')).toBe(true);
+
+    /** Long tool names in the open turn push the digest to a smaller shape. */
+    const crowded = (nameChars: number): ActivityTree =>
+      tree([
+        labelled,
+        turn(...Array.from({ length: 30 }, () => tool(`mcp_${'x'.repeat(nameChars)}`))),
+      ]);
+    const smaller = renderDigest(crowded(250), { now: 2_000, running: false });
+    expect(smaller.truncated).toBe(true);
+    expect(smaller.nodes[0]).toMatchObject({ path: '1', folded: true });
+    expect(smaller.nodes[0].label).toHaveLength(48);
+
+    const smallest = renderDigest(crowded(700), { now: 2_000, running: false });
+    expect(smallest.truncated).toBe(true);
+    expect(smallest.nodes.some((node) => node.path === '1')).toBe(true);
+    expect(smallest.nodes.every((node) => node.label == null)).toBe(true);
   });
 
   it('reports a thinking child with nothing in flight', () => {

@@ -1,6 +1,6 @@
 {
   "name": "LibreChat",
-  "version": "v0.8.9-rc1",
+  "version": "v0.8.9",
   "description": "",
   "packageManager": "npm@11.13.0",
   "scarfSettings": {
@@ -108,7 +108,7 @@
     "test:packages:api": "cd packages/api && npm run test:ci",
     "test:packages:data-provider": "cd packages/data-provider && npm run test:ci",
     "test:packages:data-schemas": "cd packages/data-schemas && npm run test:ci",
-    "test:packages:chat": "npm run build:data-provider && cd packages/chat && npm run test:ci",
+    "test:packages:chat": "npm run build:data-provider && npm run build:client-package && cd packages/chat && npm run test:ci",
     "test:config": "jest --config config/jest.config.js",
     "test:dependencies": "node --test scripts/dependencies.test.mjs",
     "test:images": "node --test scripts/images.test.mjs",
@@ -144,6 +144,8 @@
     "b:balance": "bun config/add-balance.js",
     "b:list-balances": "bun config/list-balances.js",
     "reset-terms": "node config/reset-terms.js",
+    "migrate:mcp-reservations": "node config/migrate-mcp-reservations.js",
+    "migrate:mcp-reservations:dry-run": "node config/migrate-mcp-reservations.js --dry-run",
     "migrate:tenant-indexes": "node config/migrate-tenant-indexes.js",
     "migrate:tenant-indexes:dry-run": "node config/migrate-tenant-indexes.js --dry-run",
     "migrate:terms-timestamp": "node config/migrate-terms-timestamp.js",

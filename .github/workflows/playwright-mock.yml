@@ -457,7 +457,12 @@ jobs:
             --reserve "$E2E_SHARD_RESERVE" \
             --skip "$E2E_SKIP" \
             --out e2e/.generated/shard-tests.txt
-          npx playwright test --config=e2e/playwright.config.mock.ts --test-list=e2e/.generated/shard-tests.txt
+          # Skips or the reservation can leave a shard no files: the plan warns and writes an
+          # empty list, which Playwright would fail with "No tests found". An empty suite
+          # listing still fails, in the plan itself.
+          if [ -s e2e/.generated/shard-tests.txt ]; then
+            npx playwright test --config=e2e/playwright.config.mock.ts --test-list=e2e/.generated/shard-tests.txt
+          fi
 
       - name: Run Redis stream transport e2e
         if: matrix.suite == 'transport'
@@ -518,6 +523,16 @@ jobs:
           conversation-management.spec.ts --grep 'first-turn|final-title polling'
           --reporter=line,e2e/reporters/retried.mjs
           --output=e2e/specs/.test-results/title-ownership
+
+      - name: Run graph subagent execution regression
+        if: ${{ !cancelled() && matrix.stream_store == 'memory' && startsWith(matrix.shard, '1/') }}
+        env:
+          CI: 'true'
+          E2E_GRAPH_SUBAGENTS: 'true'
+        run: >-
+          npx playwright test --config=e2e/playwright.config.mock.ts
+          agent-graphs.spec.ts --reporter=line
+          --output=e2e/specs/.test-results/graph-subagents
 
       - name: Upload title ownership diagnostics
         if: ${{ always() && matrix.stream_store == 'memory' && startsWith(matrix.shard, '1/') }}
@@ -667,6 +682,15 @@ jobs:
           npx playwright test --config=e2e/playwright.config.mock.ts
           mcp-tool-list-changed.spec.ts --retries=0
 
+      - name: Test explicit MCP Connect across two replicas
+        if: matrix.replicas == 2
+        env:
+          E2E_STREAM_STORE: redis
+          REDIS_URI: redis://127.0.0.1:6379
+          E2E_MCP_CONNECTION_STATUS: 'true'
+          E2E_REPLICA_DIAGNOSTIC: 'true'
+        run: npx playwright test --config=e2e/playwright.config.mcp-connect.ts
+
       # Debugging aids that no job downloads: non-fatal and bounded, as the note on the
       # e2e_shards uploads explains.
       - name: Upload Playwright HTML report
@@ -753,6 +777,9 @@ jobs:
       # every shard for about 8 seconds each; this lane finishes minutes before the shards do.
       - name: Test Playwright matrix selection, the vote gate, the merge gate and the retried-pass reporter
         run: node --test .github/scripts/playwright-matrix.test.mjs .github/scripts/playwright-shards.test.mjs .github/scripts/vote-gate.test.mjs .github/scripts/merge-gate.test.mjs e2e/reporters/retried.test.mjs
+
+      - name: Check mock server readiness configuration
+        run: node --test e2e/readiness.test.mjs
 
       - name: Check MCP Apps result gating and same-repository PR eligibility
         run: node --test e2e/mcp-apps/results.test.mjs e2e/mcp-apps/workflow.test.mjs

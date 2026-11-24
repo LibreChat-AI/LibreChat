@@ -74,12 +74,18 @@ const injectAgentIntoAgentsMap = (
 /** Stages URL prompts, then auto-submits once normalized conversation settings match. */
 export default function useQueryParams({
   textAreaRef,
+  routed = true,
   routePending = false,
   targetReady = true,
   onBeforePrompt,
   onPromptSettled,
 }: {
   textAreaRef: React.RefObject<HTMLTextAreaElement>;
+  /**
+   * Whether this composer is the one the route's query addresses. One beside it holds another
+   * conversation, which the route never names, so it does not watch the query at all.
+   */
+  routed?: boolean;
   routePending?: boolean;
   targetReady?: boolean;
   onBeforePrompt?: () => void;
@@ -645,6 +651,9 @@ export default function useQueryParams({
   ]);
 
   useEffect(() => {
+    if (!routed) {
+      return;
+    }
     const processQueryParams = () => {
       const queryParams: Record<string, string> = {};
       searchParams.forEach((value, key) => {
@@ -758,6 +767,7 @@ export default function useQueryParams({
     };
   }, [
     searchParams,
+    routed,
     requestIdentity,
     methods,
     textAreaRef,

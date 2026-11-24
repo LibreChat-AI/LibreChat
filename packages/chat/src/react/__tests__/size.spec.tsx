@@ -2,7 +2,7 @@
  * @jest-environment jsdom
  */
 import { renderHook, act } from '@testing-library/react';
-import useElementSize from '../size';
+import useElementSize, { useElementSizeSelect } from '../size';
 
 class MockResizeObserver {
   static instances: MockResizeObserver[] = [];
@@ -114,5 +114,75 @@ describe('useElementSize', () => {
       window.dispatchEvent(new Event('resize'));
     });
     expect(result.current.width).toBe(320);
+  });
+});
+
+describe('useElementSizeSelect', () => {
+  const originalResizeObserver = window.ResizeObserver;
+
+  beforeEach(() => {
+    MockResizeObserver.instances = [];
+    window.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+  });
+
+  afterAll(() => {
+    window.ResizeObserver = originalResizeObserver;
+  });
+
+  const attach = (node: HTMLElement, initialProps = { needed: 300 }) => {
+    let renders = 0;
+    const hook = renderHook(
+      ({ needed }: { needed: number }) => {
+        renders += 1;
+        return useElementSizeSelect<HTMLDivElement, boolean>(({ width }) => width >= needed);
+      },
+      { initialProps },
+    );
+    act(() => hook.result.current.ref(node as HTMLDivElement));
+    const observer = MockResizeObserver.instances[MockResizeObserver.instances.length - 1];
+    return { ...hook, observer, renders: () => renders };
+  };
+
+  it('answers from an unmeasured element as from one with no size', () => {
+    const { result } = renderHook(() =>
+      useElementSizeSelect<HTMLDivElement, boolean>(({ width }) => width >= 300),
+    );
+    expect(result.current.value).toBe(false);
+  });
+
+  it('does not render for a size that leaves the answer as it was', () => {
+    const { result, observer, renders } = attach(document.createElement('div'));
+    act(() => observer.trigger({ width: 640, height: 40 }));
+    expect(result.current.value).toBe(true);
+    const settled = renders();
+
+    /** A panel sliding in beside the element: a new width on every frame, the same answer. */
+    for (let width = 630; width >= 320; width -= 10) {
+      act(() => observer.trigger({ width, height: 40 }));
+    }
+    expect(renders()).toBe(settled);
+    expect(result.current.value).toBe(true);
+
+    act(() => observer.trigger({ width: 299, height: 40 }));
+    expect(renders()).toBe(settled + 1);
+    expect(result.current.value).toBe(false);
+  });
+
+  it('asks a new question against the size last measured, including one that never rendered', () => {
+    const { result, observer, rerender } = attach(document.createElement('div'));
+    act(() => observer.trigger({ width: 640, height: 40 }));
+    act(() => observer.trigger({ width: 420, height: 40 }));
+    expect(result.current.value).toBe(true);
+
+    rerender({ needed: 500 });
+    expect(result.current.value).toBe(false);
+    rerender({ needed: 400 });
+    expect(result.current.value).toBe(true);
+  });
+
+  it('stops observing an element that is gone', () => {
+    const { result, observer } = attach(document.createElement('div'));
+    act(() => result.current.ref(null));
+    expect(observer.disconnected).toBe(true);
   });
 });

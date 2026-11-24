@@ -95,9 +95,6 @@ jest.mock('~/Providers/ChatSettingsContext', () => ({
 jest.mock('recoil', () => ({
   useRecoilValue: (key: string) => {
     if (key === 'defaultPreset') return mockDefaultPreset;
-    if (key === 'saveBadgesState') {
-      return true;
-    }
     return null;
   },
   useSetRecoilState: (key: string) => (update: unknown) => mockSetEphemeralAgent(key, update),
@@ -181,7 +178,7 @@ jest.mock('@librechat/client', () => ({
 }));
 jest.mock('~/Providers/AgentsMapContext', () => ({ useAgentsMapContext: () => ({}) }));
 jest.mock('../Files/useDelayedUploadToast', () => ({
-  useDelayedUploadToast: () => ({ startUploadTimer: jest.fn(), clearUploadTimer: jest.fn() }),
+  useDelayedUploadToast: () => jest.fn(),
 }));
 jest.mock('../Files/useClientResize', () => ({
   __esModule: true,
@@ -235,7 +232,6 @@ jest.mock('~/store', () => ({
   ephemeralAgentByConvoId: (id: string) => id,
   default: {
     defaultPreset: 'defaultPreset',
-    saveBadgesState: 'saveBadgesState',
     useClearConvoState: () => jest.fn(),
     useSetConversationAtom: () => ({ setConversation: mockSetConversation }),
   },
@@ -1877,6 +1873,85 @@ describe('passive route navigation', () => {
   );
 });
 
+describe('a pane the route does not address', () => {
+  const held = 'c1b2c3d4-0000-4000-8000-000000000001';
+  const change = {
+    template: { conversationId: held, endpoint: EModelEndpoint.anthropic, model: 'chosen' },
+    preset: { endpoint: EModelEndpoint.anthropic, model: 'chosen' },
+    keepAddedConvos: true,
+    buildDefault: false,
+    disableFocus: true,
+  };
+  beforeEach(() => {
+    mockRunSwitch = true;
+    mockNavigate.mockClear();
+    mockSetConversation.mockClear();
+    mockPreviousConversation = { conversationId: held, endpoint: EModelEndpoint.openAI };
+  });
+  afterEach(() => {
+    mockRunSwitch = false;
+    mockPreviousConversation = null;
+  });
+
+  it('changes the conversation it holds, and leaves the route where it is', async () => {
+    const { result } = renderHook(() => useNewConvo(3, { routed: false }), {
+      wrapper: QueryWrapper,
+    });
+    await act(async () => result.current.newConversation(change));
+
+    expect(mockSetConversation).toHaveBeenCalledTimes(1);
+    expect(mockSetConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: held,
+        endpoint: EModelEndpoint.anthropic,
+        model: 'chosen',
+      }),
+    );
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('takes nothing that would put another conversation in its place', async () => {
+    const { result } = renderHook(() => useNewConvo(3, { routed: false }), {
+      wrapper: QueryWrapper,
+    });
+    await act(async () => {
+      result.current.newConversation();
+      result.current.newConversation({ template: { endpoint: EModelEndpoint.anthropic } });
+      result.current.newConversation({
+        template: { ...change.template, conversationId: String(Constants.NEW_CONVO) },
+      });
+      result.current.newConversation({
+        template: { ...change.template, conversationId: 'another-conversation' },
+      });
+    });
+
+    expect(mockSetConversation).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('holds nothing to change before it has a saved conversation', async () => {
+    mockPreviousConversation = { conversationId: 'new', endpoint: EModelEndpoint.openAI };
+    const { result } = renderHook(() => useNewConvo(3, { routed: false }), {
+      wrapper: QueryWrapper,
+    });
+    await act(async () =>
+      result.current.newConversation({
+        template: { ...change.template, conversationId: String(Constants.NEW_CONVO) },
+      }),
+    );
+
+    expect(mockSetConversation).not.toHaveBeenCalled();
+  });
+
+  it('is the route’s to move for the pane the route does address', async () => {
+    const { result } = renderHook(() => useNewConvo(0), { wrapper: QueryWrapper });
+    await act(async () => result.current.newConversation(change));
+
+    expect(mockSetConversation).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith(`/c/${held}`, { replace: true });
+  });
+});
+
 describe('remembered New Chat identity', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -2034,5 +2109,39 @@ describe('remembered New Chat identity', () => {
       },
     } as Partial<TStartupConfig>;
     expect((await open()).agent_id).toBe('agent_spec');
+  });
+
+  describe('hard default spec without prioritize', () => {
+    beforeEach(() => {
+      mockStartup = {
+        interface: { modelSelect: true },
+        modelSpecs: {
+          prioritize: false,
+          list: [
+            {
+              name: 'general',
+              label: 'General',
+              default: true,
+              executeCode: true,
+              preset: { endpoint: EModelEndpoint.openAI, model: 'spec-model' },
+            },
+          ],
+        },
+      } as Partial<TStartupConfig>;
+    });
+
+    it('applies the default spec to a bare New Chat', async () => {
+      const selected = await open();
+      expect(selected.spec).toBe('general');
+      expect(selected.model).toBe('spec-model');
+    });
+
+    it('keeps an explicit template selection over the default spec', async () => {
+      const selected = await open(0, {
+        template: { endpoint: EModelEndpoint.openAI, model: 'explicit-model' },
+      });
+      expect(selected.spec).toBeFalsy();
+      expect(selected.model).toBe('explicit-model');
+    });
   });
 });

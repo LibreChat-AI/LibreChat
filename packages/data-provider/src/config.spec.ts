@@ -1208,7 +1208,10 @@ describe('attached code environment user config schema', () => {
     [{ allowCheckoutSelection: 'yes' }, false],
     [{ linkedWorktrees: 'yes' }, false],
     [{ linkedWorktrees: true, subdirectories: true }, false],
-  ])('validates the linked worktree lane toggle %p', (workspaces, valid) => {
+    [{ detachedCommands: true }, true],
+    [{ detachedCommands: false }, true],
+    [{ detachedCommands: 'yes' }, false],
+  ])('validates the workspace toggles %p', (workspaces, valid) => {
     const result = configSchema.safeParse({
       version: '1.0',
       endpoints: {
@@ -1476,6 +1479,73 @@ describe('agent pull request config', () => {
 
   it.each([4, 3601, 1.5])('rejects a cache lifetime of %s seconds', (cacheTtlSeconds) => {
     expect(parse({ cacheTtlSeconds }).success).toBe(false);
+  });
+});
+
+describe('agent events config', () => {
+  const github = {
+    appId: '${GITHUB_APP_ID}',
+    privateKey: '${GITHUB_APP_PRIVATE_KEY}',
+    webhookSecret: '${GITHUB_APP_WEBHOOK_SECRET}',
+  };
+  const parse = (events?: unknown) =>
+    configSchema.safeParse({ version: '1.0', endpoints: { agents: { events } } });
+
+  it('is absent unless configured and off unless enabled', () => {
+    const absent = configSchema.parse({ version: '1.0', endpoints: { agents: {} } });
+    expect(absent.endpoints?.agents?.events).toBeUndefined();
+    const empty = configSchema.parse({ version: '1.0', endpoints: { agents: { events: {} } } });
+    expect(empty.endpoints?.agents?.events).toEqual({ enabled: false });
+  });
+
+  it('keeps what an operator sets and leaves unset bounds to the reader', () => {
+    const parsed = parse({
+      enabled: true,
+      limits: { excerpt: 500 },
+      github: { ...github, host: 'github.example.com', requestTimeoutSeconds: 5 },
+    });
+    expect(parsed.success && parsed.data.endpoints?.agents?.events).toEqual({
+      enabled: true,
+      limits: { excerpt: 500 },
+      github: { ...github, host: 'github.example.com', requestTimeoutSeconds: 5 },
+    });
+  });
+
+  it.each(['appId', 'privateKey', 'webhookSecret'] as const)(
+    'takes %s as an environment variable reference, never a value',
+    (field) => {
+      expect(parse({ github: { ...github, [field]: 'a-literal-value' } }).success).toBe(false);
+      expect(parse({ github: { ...github, [field]: '${lower_Case_1}' } }).success).toBe(true);
+      const { [field]: _omitted, ...rest } = github;
+      expect(parse({ github: rest }).success).toBe(false);
+    },
+  );
+
+  it.each([
+    ['a URL as the host', { github: { ...github, host: 'https://github.example.com' } }],
+    ['a host with a path', { github: { ...github, host: 'github.example.com/api' } }],
+    ['a request timeout of zero', { github: { ...github, requestTimeoutSeconds: 0 } }],
+    ['a request timeout over a minute', { github: { ...github, requestTimeoutSeconds: 61 } }],
+    ['an excerpt under 16 characters', { limits: { excerpt: 15 } }],
+    ['an excerpt over 65,536 characters', { limits: { excerpt: 65_537 } }],
+    ['a fractional excerpt', { limits: { excerpt: 100.5 } }],
+    ['a fan-out of zero', { limits: { fanout: 0 } }],
+    ['a fan-out over 100', { limits: { fanout: 101 } }],
+    ['a switch that is not a boolean', { enabled: 'yes' }],
+  ])('rejects %s', (_name, events) => {
+    expect(parse(events).success).toBe(false);
+  });
+
+  it.each([
+    ['the smallest bounds', { limits: { excerpt: 16, fanout: 1 } }],
+    ['the largest bounds', { limits: { excerpt: 65_536, fanout: 100 } }],
+    ['the longest request timeout', { github: { ...github, requestTimeoutSeconds: 60 } }],
+  ])('accepts %s', (_name, events) => {
+    expect(parse(events).success).toBe(true);
+  });
+
+  it('is set in librechat.yaml only', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS['endpoints.agents.events']).toBe('operator');
   });
 });
 
@@ -3248,9 +3318,18 @@ describe('workspace admission configuration', () => {
     { jitterRatio: 1.1 },
     { maxDelayMs: Infinity },
     { queueWaitMs: 1.5 },
+    { resubmissionWindowMs: -1 },
+    { resubmissionWindowMs: 60_001 },
+    { resubmissionWindowMs: 1.5 },
     { unexpected: true },
   ])('rejects an invalid policy %j', (admission) => {
     expect(codeEnvironmentUserConfigSchema.safeParse({ admission }).success).toBe(false);
+  });
+
+  it.each([0, 20_500, 60_000])('accepts a resubmission window of %i ms', (resubmissionWindowMs) => {
+    expect(
+      codeEnvironmentUserConfigSchema.parse({ admission: { resubmissionWindowMs } }).admission,
+    ).toMatchObject({ resubmissionWindowMs });
   });
 
   it.each([0, 1, -1, 1.5, 20_000, 610_001, Infinity])(
@@ -3519,6 +3598,56 @@ describe('complete channel operator configuration', () => {
 });
 
 describe('remote SDK runtime configuration', () => {
+  it('keeps native file reads opt-in and bounds process budgets', () => {
+    expect(agentsEndpointSchema.parse({}).sdkHostFiles).toBeUndefined();
+    const parsed = agentsEndpointSchema.parse({
+      sdkHostFiles: {},
+      sdkRuntimes: {
+        runtime: {
+          remote: { url: 'wss://runtime.example/sdk', secret: 'secret', hostFiles: true },
+        },
+      },
+    });
+    expect(parsed.sdkHostFiles?.maxChunkBytes).toBe(262144);
+    expect(parsed.sdkRuntimes?.runtime).toMatchObject({ remote: { hostFiles: true } });
+    for (const field of Object.keys(parsed.sdkHostFiles!)) {
+      for (const value of [0, -1, Number.MAX_SAFE_INTEGER])
+        expect(agentsEndpointSchema.safeParse({ sdkHostFiles: { [field]: value } }).success).toBe(
+          false,
+        );
+    }
+    expect(agentsEndpointSchema.safeParse({ sdkHostFiles: { unknown: true } }).success).toBe(false);
+  });
+  it('opts into builder models with bounded process-wide admission', () => {
+    expect(agentsEndpointSchema.parse({}).sdkHostModels).toBeUndefined();
+    const result = agentsEndpointSchema.parse({
+      sdkHostModels: {},
+      sdkRuntimes: {
+        runtime: {
+          remote: { url: 'wss://runtime.example/sdk', secret: 'secret', hostModel: true },
+        },
+      },
+    });
+    expect(result.sdkHostModels).toEqual({
+      maxConcurrentCalls: 32,
+      maxAdmissionEntries: 4096,
+      maxBufferedRequestBytes: 67108864,
+      timeoutMs: 60000,
+      maxRequestBytes: 4194304,
+      maxResponseBytes: 4194304,
+    });
+    expect(result.sdkRuntimes?.runtime).toMatchObject({ remote: { hostModel: true } });
+    for (const field of Object.keys(result.sdkHostModels!)) {
+      expect(agentsEndpointSchema.safeParse({ sdkHostModels: { [field]: 0 } }).success).toBe(false);
+      expect(
+        agentsEndpointSchema.safeParse({ sdkHostModels: { [field]: Number.MAX_SAFE_INTEGER } })
+          .success,
+      ).toBe(false);
+    }
+    expect(agentsEndpointSchema.safeParse({ sdkHostModels: { unknown: true } }).success).toBe(
+      false,
+    );
+  });
   it('keeps module registrations and supplies remote transport defaults', () => {
     const result = agentsEndpointSchema.parse({
       sdkRuntimes: {

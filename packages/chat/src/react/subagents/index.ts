@@ -17,3 +17,4 @@ export * from './task';
 export * from './scope';
 export * from './host';
 export * from './thread';
+export { useThreadTailPart } from './tail';

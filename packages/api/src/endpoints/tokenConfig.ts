@@ -1,5 +1,5 @@
 import { logger } from '@librechat/data-schemas';
-import { EModelEndpoint, normalizeEndpointName } from 'librechat-data-provider';
+import { Providers, EModelEndpoint, normalizeEndpointName } from 'librechat-data-provider';
 import type { TModelsConfig, TTokenConfigMap, TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { Response } from 'express';
@@ -18,6 +18,8 @@ export interface ResolveTokenConfigParams {
   modelsConfig: TModelsConfig;
   userId: string;
   tenantId?: string | null;
+  googleUsesVertex?: boolean;
+  googleLocation?: string;
 }
 
 /**
@@ -28,7 +30,14 @@ export interface ResolveTokenConfigParams {
  * Lives in TypeScript so the `/api` controller stays a thin wrapper.
  */
 export async function resolveTokenConfigMap(
-  { appConfig, modelsConfig, userId, tenantId }: ResolveTokenConfigParams,
+  {
+    appConfig,
+    modelsConfig,
+    userId,
+    tenantId,
+    googleUsesVertex,
+    googleLocation,
+  }: ResolveTokenConfigParams,
   deps: TokenomicsDeps,
 ): Promise<TTokenConfigMap> {
   const includePricing = appConfig?.interfaceConfig?.contextCost === true;
@@ -36,14 +45,35 @@ export async function resolveTokenConfigMap(
   const cache = tokenConfigCache();
   const endpointTokenConfigs: Record<string, EndpointTokenConfig | undefined> = {};
 
-  const googleRates: EndpointTokenConfig = {};
-  for (const model of modelsConfig[EModelEndpoint.google] ?? []) {
-    const rates = getGoogleTokenConfig(model, appConfig?.endpoints?.google?.tokenConfig);
-    if (rates) {
-      googleRates[model] = rates;
-    }
+  const resolvedModelsConfig = { ...modelsConfig };
+  const googleModels = modelsConfig[EModelEndpoint.google];
+  const hasCustomVertex = customEndpoints.some(
+    (endpoint) => normalizeEndpointName(endpoint.name) === Providers.VERTEXAI,
+  );
+  if (
+    !hasCustomVertex &&
+    googleModels != null &&
+    resolvedModelsConfig[Providers.VERTEXAI] == null
+  ) {
+    resolvedModelsConfig[Providers.VERTEXAI] = googleModels;
   }
-  endpointTokenConfigs[EModelEndpoint.google] = googleRates;
+  for (const endpoint of [
+    EModelEndpoint.google,
+    ...(hasCustomVertex ? [] : [Providers.VERTEXAI]),
+  ]) {
+    const ratesByModel: EndpointTokenConfig = {};
+    const location =
+      endpoint === Providers.VERTEXAI || googleUsesVertex ? googleLocation : undefined;
+    for (const model of resolvedModelsConfig[endpoint] ?? []) {
+      const rates = getGoogleTokenConfig(
+        model,
+        appConfig?.endpoints?.google?.tokenConfig,
+        location,
+      );
+      if (rates) ratesByModel[model] = rates;
+    }
+    endpointTokenConfigs[endpoint] = ratesByModel;
+  }
 
   for (const endpointConfig of customEndpoints) {
     /** Models config and the token-config cache key by the normalized name */
@@ -64,11 +94,34 @@ export async function resolveTokenConfigMap(
     }
   }
 
-  return buildTokenConfigMap({ modelsConfig, endpointTokenConfigs, includePricing }, deps);
+  return buildTokenConfigMap(
+    { modelsConfig: resolvedModelsConfig, endpointTokenConfigs, includePricing },
+    deps,
+  );
+}
+
+export type GoogleBillingConfig = Pick<
+  ResolveTokenConfigParams,
+  'googleUsesVertex' | 'googleLocation'
+>;
+
+/** Resolve existing deployment settings at the application wiring boundary. */
+export function getGoogleBillingConfig(environment: {
+  GOOGLE_KEY?: string;
+  GOOGLE_LOC?: string;
+}): GoogleBillingConfig {
+  return {
+    googleUsesVertex: !environment.GOOGLE_KEY?.trim(),
+    googleLocation: environment.GOOGLE_LOC,
+  };
 }
 
 export interface TokenConfigControllerDeps extends TokenomicsDeps {
-  getRequestModelsConfig: (req: ServerRequest) => Promise<RequestModelsConfigResult>;
+  googleBillingConfig?: GoogleBillingConfig;
+  getRequestModelsConfig: (
+    req: ServerRequest,
+    endpointOverride?: string,
+  ) => Promise<RequestModelsConfigResult>;
 }
 
 export function createTokenConfigController(
@@ -79,7 +132,16 @@ export function createTokenConfigController(
       return res.status(401).json({ error: 'Unauthorized' });
     }
     try {
-      const result = await deps.getRequestModelsConfig(req);
+      const endpoint = req.query.endpoint;
+      const isNativeVertex =
+        endpoint === Providers.VERTEXAI &&
+        !req.config?.endpoints?.custom?.some(
+          (custom) => normalizeEndpointName(custom.name) === endpoint,
+        );
+      const result = await deps.getRequestModelsConfig(
+        req,
+        isNativeVertex ? EModelEndpoint.google : undefined,
+      );
       if (!result.ok) {
         return res.status(result.status).json({ error: result.error });
       }
@@ -89,10 +151,10 @@ export function createTokenConfigController(
           modelsConfig: result.modelsConfig,
           userId: req.user.id,
           tenantId: req.user.tenantId,
+          ...deps.googleBillingConfig,
         },
         deps,
       );
-      const endpoint = req.query.endpoint;
       return res.json(typeof endpoint === 'string' ? { [endpoint]: map[endpoint] ?? {} } : map);
     } catch (error) {
       logger.error('[tokenConfigController]', getSafeErrorMetadata(error));

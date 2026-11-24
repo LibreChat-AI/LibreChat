@@ -228,10 +228,18 @@ function turnNode(
     turn.startedAt,
   );
   const errors = errorCount(turn.children);
+  /** A folded turn reads as its first labelled call; its children carry their own when open. */
+  const label = folded
+    ? clipLabel(
+        turn.children.find((leaf) => leaf.kind === 'tool' && leaf.label != null)?.label,
+        context.labelChars,
+      )
+    : undefined;
   return {
     path,
     kind: 'turn',
     status: aggregateStatus(turn.children),
+    ...(label == null ? {} : { label }),
     ms: span(turn.startedAt, end),
     ...(folded
       ? { summary: formatCounts(leafCounts(turn.children), turn.overflow ?? 0), folded: true }

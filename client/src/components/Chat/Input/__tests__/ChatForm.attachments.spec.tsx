@@ -11,9 +11,14 @@ import { HTML5Backend } from 'react-dnd-html5-backend';
 import { BrowserRouter as Router } from 'react-router-dom';
 import { FileContainer } from '@librechat/chat/components';
 import { pendingQuotesByConvoId } from '@librechat/chat/react';
-import { QueryKeys, FileSources, EModelEndpoint } from 'librechat-data-provider';
-import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
-import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
+import { act, render, screen, within, waitFor, fireEvent } from '@testing-library/react';
+import { QueryKeys, FileSources, MutationKeys, EModelEndpoint } from 'librechat-data-provider';
+import {
+  QueryClient,
+  MutationObserver,
+  QueryClientProvider,
+  useQueryClient,
+} from '@tanstack/react-query';
 import type { TMessage, TFile, TFileUpload, TConversation } from 'librechat-data-provider';
 import type { ChatFormValues, TAskFunction } from '~/common';
 import type { TranslationKeys } from '~/hooks/useLocalize';
@@ -216,7 +221,7 @@ function renderComposer({
   queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.openAI]: { order: 0 } });
 
   getDefaultStore().set(pendingQuotesByConvoId(conversation.conversationId ?? ''), quotes);
-  return render(
+  const rendered = render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot
         initializeState={({ set }) => {
@@ -238,6 +243,7 @@ function renderComposer({
       </RecoilRoot>
     </QueryClientProvider>,
   );
+  return { ...rendered, queryClient };
 }
 
 const sendButton = () => screen.getByTestId('send-button');
@@ -470,6 +476,47 @@ describe('ChatForm attachments', () => {
 
     expect(focus).toHaveBeenCalledTimes(1);
     expect(textarea).toHaveFocus();
+  }, 20000);
+
+  test('holds a send while a file switched off in the session rail is still being saved', async () => {
+    const { queryClient } = renderComposer();
+    const textarea = await screen.findByTestId('text-input');
+    await userEvent.type(textarea, 'next question');
+    await waitFor(() => expect(sendButton()).toBeEnabled());
+
+    type Saved = { excludedFiles: string[] };
+    type Change = { conversationId: string; fileIds: string[]; excluded: boolean };
+    const deferred = () => {
+      let resolve!: (value: Saved) => void;
+      const promise = new Promise<Saved>((settle) => {
+        resolve = settle;
+      });
+      return { promise, resolve };
+    };
+    const saves = [deferred(), deferred()];
+    let started = 0;
+    const write = new MutationObserver<Saved, unknown, Change>(queryClient, {
+      mutationKey: [MutationKeys.setFileExclusion],
+      mutationFn: () => saves[started++].promise,
+    });
+    const change = (conversationId: string): Change => ({
+      conversationId,
+      fileIds: ['f'],
+      excluded: true,
+    });
+
+    /** Another conversation's save is not this one's to wait for. */
+    act(() => void write.mutate(change('some-other-conversation')));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(1));
+    expect(sendButton()).toBeEnabled();
+    await act(async () => saves[0].resolve({ excludedFiles: ['f'] }));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    act(() => void write.mutate(change(conversation.conversationId ?? '')));
+    await waitFor(() => expect(sendButton()).toBeDisabled());
+
+    await act(async () => saves[1].resolve({ excludedFiles: ['f'] }));
+    await waitFor(() => expect(sendButton()).toBeEnabled());
   }, 20000);
 
   test('enables send for an attachment with no composer text', async () => {

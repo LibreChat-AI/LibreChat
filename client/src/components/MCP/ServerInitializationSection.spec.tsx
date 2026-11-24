@@ -38,11 +38,7 @@ jest.mock('@librechat/client', () => ({
     size: _size,
     ...props
   }: React.ComponentProps<'button'> & { variant?: string; size?: string; asChild?: boolean }) =>
-    asChild ? (
-      <span {...props}>{children}</span>
-    ) : (
-      <button {...props}>{children}</button>
-    ),
+    asChild ? <span {...props}>{children}</span> : <button {...props}>{children}</button>,
 }));
 
 describe('ServerInitializationSection', () => {
@@ -84,13 +80,12 @@ describe('ServerInitializationSection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_mcp_initialize' }));
     expect(mockInitializeServer).toHaveBeenCalledWith('server', false);
   });
-});
 
   it('renders the OAuth continue action as a real link, not a scripted click', () => {
     mockConnectionStatus.mockReturnValue({
       connectionState: 'connecting',
       requiresOAuth: true,
-    } as unknown as MCPServerStatus);
+    });
     mockGetOAuthUrl.mockReturnValue('https://auth.example/authorize?x=1');
     render(<ServerInitializationSection serverName="server" requiresOAuth={true} />);
     const anchor = screen.getByText('com_ui_continue_oauth').closest('a');
@@ -99,3 +94,4 @@ describe('ServerInitializationSection', () => {
     expect(anchor).toHaveAttribute('target', '_blank');
     expect(anchor).toHaveAttribute('rel', 'noopener noreferrer');
   });
+});

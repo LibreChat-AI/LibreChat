@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { assertMCPAppsPhaseResults } from './results.mjs';
 
-const baseUrl = new URL(process.env.E2E_BASE_URL || 'http://127.0.0.1:3080');
+const baseUrl = new URL(process.env.E2E_BASE_URL || 'http://127.0.0.1:3180');
 const sandboxHost = baseUrl.hostname === 'localhost' ? '127.0.0.1' : 'localhost';
 const sandboxUrl = new URL('/api/mcp/sandbox', baseUrl);
 sandboxUrl.hostname = sandboxHost;

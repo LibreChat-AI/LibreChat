@@ -11,5 +11,5 @@
       "@librechat/chat/*": ["../src/*.ts"]
     }
   },
-  "include": ["**/*"]
+  "include": ["**/*", "../src/modules.d.ts"]
 }

@@ -79,6 +79,8 @@ export type ChildActivity = {
 
 export type ChildConversationTurn = {
   taskId: string;
+  /** The parent is still writing this turn's brief; the child has not been started. */
+  briefing?: boolean;
   outcome?: SubagentThreadMessage;
   contentRecoveryAvailable?: boolean;
   trigger: SubagentThreadTurn['trigger'];

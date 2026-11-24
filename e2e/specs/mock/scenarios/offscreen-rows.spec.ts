@@ -165,4 +165,67 @@ test.describe('rows far from the viewport', () => {
       }
     }
   });
+
+  /**
+   * A row's toolbar is the costliest part of it to mount, and nobody can press one from across
+   * the thread. The rows a long thread adds after its first commit leave it out until they come
+   * within a screen of the viewport.
+   */
+  const toolbars = (page: Page, id: string) =>
+    page.evaluate((conversation) => {
+      const rows = document.querySelectorAll<HTMLElement>(
+        `[data-conversation-id="${conversation}"] .message-render`,
+      );
+      return Array.from(rows, (row) => ({
+        skipped: row.hasAttribute('data-offscreen'),
+        buttons: row.querySelectorAll('.hover-button').length,
+      }));
+    }, id);
+
+  test('have no toolbar yet, and every row near the reader has one @scenario:far-rows-have-no-toolbar-yet', async ({
+    page,
+  }) => {
+    await page.goto(`/c/${conversationId}`);
+    const thread = page.locator(`[data-conversation-id="${conversationId}"]`);
+    await expect(thread.locator('.message-render')).toHaveCount(TURNS);
+    await expect(thread.locator('.message-render[data-offscreen]').first()).toBeAttached();
+
+    /** A row that came near after it mounted gets its toolbar between frames. */
+    await expect
+      .poll(async () =>
+        (await toolbars(page, conversationId)).every((row) => row.skipped || row.buttons > 0),
+      )
+      .toBe(true);
+    const rows = await toolbars(page, conversationId);
+    expect(rows.filter((row) => row.buttons === 0).length).toBeGreaterThan(TURNS / 2);
+    expect(rows[rows.length - 1].buttons).toBeGreaterThan(0);
+  });
+
+  test('gain their toolbar as a scroll brings them near, at the same height, and keep it @scenario:far-rows-gain-their-toolbar-on-scroll', async ({
+    page,
+  }) => {
+    await page.goto(`/c/${conversationId}`);
+    const thread = page.locator(`[data-conversation-id="${conversationId}"]`);
+    await expect(thread.locator('.message-render')).toHaveCount(TURNS);
+    /** The second turn is a reply, whose toolbar always has its copy button. */
+    const reply = thread.locator('.message-render').nth(1);
+    const copy = reply.getByRole('button', { name: 'Copy to clipboard' });
+    await expect(reply).toHaveAttribute('data-offscreen', '');
+    await expect(copy).toHaveCount(0);
+    const height = await reply.evaluate((row: HTMLElement) => row.offsetHeight);
+
+    await thread
+      .getByText('Turn 1 of the skipped thread', { exact: true })
+      .scrollIntoViewIfNeeded();
+    await expect(copy).toBeAttached();
+    expect(await reply.evaluate((row: HTMLElement) => row.offsetHeight)).toBe(height);
+    await reply.hover();
+    await expect(copy).toHaveCSS('opacity', '1');
+
+    await thread
+      .getByText(`Turn ${TURNS} of the skipped thread`, { exact: true })
+      .scrollIntoViewIfNeeded();
+    await expect(reply).toHaveAttribute('data-offscreen', '');
+    await expect(copy).toBeAttached();
+  });
 });

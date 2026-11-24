@@ -12,7 +12,9 @@ const passport = require('passport');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
 const mongoSanitize = require('express-mongo-sanitize');
-const { logger, runAsSystem } = require('@librechat/data-schemas');
+const { logger, runAsSystem, createRoleChangeSource } = require('@librechat/data-schemas');
+const { CacheKeys } = require('librechat-data-provider');
+const getLogStores = require('~/cache/getLogStores');
 const {
   isEnabled,
   issueCsp,
@@ -51,6 +53,9 @@ const {
   preAuthTenantMiddleware,
   requestContextMiddleware,
   registerShutdownTask,
+  startRoleCacheInvalidation,
+  reportRoleCacheError,
+  reportRoleCacheInvalidation,
   getRemainingShutdownMs,
   registerBackgroundTaskShutdown,
   configureServerTimeouts,
@@ -69,6 +74,8 @@ const {
   waitForKeyvRedisClient,
   warnOnUnreachableDeliveryPaths,
   createCodeApiUploadRegistry,
+  createSdkModelHost,
+  createSdkFileHost,
   createRequestSanitizer,
   reportEndpointOverrides,
 } = require('@librechat/api');
@@ -76,6 +83,7 @@ const { connectDb, indexSync } = require('~/db');
 const {
   updateAccessPermissions,
   sweepOrphanedPreviews,
+  getPartitionRole,
   getRoleByName,
   seedDatabase,
   initializeFavorites,
@@ -262,6 +270,19 @@ const startServer = async () => {
   await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
   registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
   const appConfig = await getAppConfig({ baseOnly: true });
+  registerShutdownTask(
+    'role cache invalidation',
+    await startRoleCacheInvalidation({
+      config: appConfig?.config?.roleCache,
+      cache: getLogStores(CacheKeys.ROLES),
+      open: createRoleChangeSource(mongoose),
+      onError: reportRoleCacheError,
+      onInvalidate: reportRoleCacheInvalidation,
+    }),
+    { priority: 50 },
+  );
+  app.locals.sdkFileHost = createSdkFileHost(appConfig?.endpoints?.agents?.sdkHostFiles);
+  app.locals.sdkModelHost = createSdkModelHost(appConfig?.endpoints?.agents?.sdkHostModels);
   await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);
   registerBackgroundTaskShutdown({
     interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
@@ -307,6 +328,7 @@ const startServer = async () => {
       getRoleByName,
       updateAccessPermissions,
       recordAuditEntry,
+      getPartitionRole,
     });
   });
 
@@ -494,6 +516,8 @@ const startServer = async () => {
   app.use('/api/share', preAuthTenantMiddleware, routes.share);
   app.use('/api/roles', routes.roles);
   app.use('/api/agents/chat', rejectChatStartsUntilReady);
+  /** Before `/api/agents`, whose `/:id` routes would otherwise read `events` as an agent id. */
+  app.use('/api/agents/events', routes.events);
   app.use('/api/agents', routes.agents);
   app.use('/api/channels', routes.channels);
   app.use('/api/banner', routes.banner);

@@ -160,6 +160,11 @@ export interface MarkToolApprovalAllowAlwaysOptions {
   hookContext?: ToolApprovalHookContext;
   /** Deployment plugin hooks the run registers after the policy hooks. */
   pluginHookSource?: PluginHookSource;
+  /**
+   * Whether something beyond the policy and its hooks asks about any of these spellings on
+   * every use, such as a schedule whose owner approves the tool call by call.
+   */
+  asksEveryUse?: (toolNames: readonly string[]) => boolean;
 }
 
 /**
@@ -178,6 +183,7 @@ export function markToolApprovalAllowAlways(
     storedTools = [],
     hookContext = {},
     pluginHookSource,
+    asksEveryUse,
   }: MarkToolApprovalAllowAlwaysOptions,
 ): Agents.ToolApprovalInterruptPayload {
   if (!isToolAllowAlwaysEnabled(policy)) {
@@ -198,8 +204,14 @@ export function markToolApprovalAllowAlways(
     const name = nameByToolCallId.get(config.tool_call_id);
     if (
       !config.allowed_decisions.includes('approve') ||
-      !isToolAllowAlwaysGroupEligible(effective, name, aliases) ||
-      toolApprovalHookCanApply(getEquivalentToolNames(name, aliases), hookContext, pluginHookSource)
+      !isToolAllowAlwaysGroupEligible(effective, name, aliases)
+    ) {
+      return config;
+    }
+    const spellings = getEquivalentToolNames(name, aliases);
+    if (
+      toolApprovalHookCanApply(spellings, hookContext, pluginHookSource) ||
+      asksEveryUse?.(spellings) === true
     ) {
       return config;
     }
@@ -369,6 +381,8 @@ export interface RecordToolApprovalAllowsInput {
   hookContext?: ToolApprovalHookContext;
   /** Deployment plugin hooks the rebuilt run registers after the policy hooks. */
   pluginHookSource?: PluginHookSource;
+  /** As on the offer: something beyond the policy asks about the tool on every use. */
+  asksEveryUse?: (toolNames: readonly string[]) => boolean;
   /** Request-scoped conversation reused by the resumed run's initialization. */
   request: {
     resolvedConversation?: { conversationId?: string; toolApprovalAllows?: unknown } | null;
@@ -398,6 +412,7 @@ export async function recordToolApprovalAllows({
   agents,
   hookContext = {},
   pluginHookSource,
+  asksEveryUse,
   request,
   addConvoToolApprovalAllows,
 }: RecordToolApprovalAllowsInput): Promise<string[]> {
@@ -416,17 +431,16 @@ export async function recordToolApprovalAllows({
     buildEffectiveToolApprovalPolicy(policy, aliases),
     aliases,
   );
-  const toolNames = eligible.filter(
-    (name) =>
-      !toolApprovalHookCanApply(
-        getEquivalentToolNames(name, aliases),
-        hookContext,
-        pluginHookSource,
-      ),
-  );
+  const toolNames = eligible.filter((name) => {
+    const spellings = getEquivalentToolNames(name, aliases);
+    return (
+      !toolApprovalHookCanApply(spellings, hookContext, pluginHookSource) &&
+      asksEveryUse?.(spellings) !== true
+    );
+  });
   if (toolNames.length < eligible.length) {
     logger.info(
-      '[recordToolApprovalAllows] An approval hook now applies to a remembered tool; approved once',
+      '[recordToolApprovalAllows] A remembered tool is still asked about on each use; approved once',
     );
   }
   if (toolNames.length === 0) {

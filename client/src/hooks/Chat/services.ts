@@ -1,9 +1,9 @@
 import { useRef, useEffect } from 'react';
 import { useStore } from 'jotai';
 import { useNavigate } from 'react-router-dom';
-import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
 import { launchedConversationFamily } from '@librechat/chat/react';
+import { QueryKeys, isForcedTemporaryRetention } from 'librechat-data-provider';
 import type { ChatTurnsParams, TurnServices } from '@librechat/chat/react';
 import type { TEndpointsConfig } from 'librechat-data-provider';
 import {
@@ -12,6 +12,7 @@ import {
   markPasteSubmitted,
   bindComposerLaunch,
   getRouteChatProjectId,
+  isTemporaryConversation,
 } from '~/utils';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useDiscardPastedFiles from '~/hooks/Files/useDiscardPastedFiles';
@@ -35,7 +36,23 @@ export default function useTurnServices({
   const discardFiles = useDiscardPastedFiles(index, conversation?.conversationId);
   const setFilesToDelete = useSetFilesToDelete();
   const agentsMap = useAgentsMapContext();
-  const { isTemporary, config, auth, getEphemeralAgent, addedConversation } = useChatSettings();
+  const settings = useChatSettings();
+  const { config, auth, getEphemeralAgent } = settings;
+  /**
+   * The conversation main chat is being compared with rides along with main chat's turns, from
+   * either of its panes. A conversation in any other pane is on its own: that comparison's
+   * readiness, workspace and approvals have no say in what it can send.
+   */
+  const ridesMainChat = index === 0 || index === 1;
+  const addedConversation = ridesMainChat ? settings.addedConversation : null;
+  /**
+   * Whether main chat's turns are temporary is the page's setting, which the route keeps in step
+   * with the conversation on screen. A conversation in any other pane is not that conversation,
+   * so its turns are temporary when it is, or when the deployment makes every chat so.
+   */
+  const isTemporary = ridesMainChat
+    ? settings.isTemporary
+    : isTemporaryConversation(conversation) || isForcedTemporaryRetention(config.retentionMode);
   const { getExpiry } = useUserKey(conversation?.endpoint ?? '');
   const getConversation = useGetConversation(index);
   const codeWorkspaceState = useCodeWorkspace(conversation, addedConversation);

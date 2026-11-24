@@ -440,7 +440,10 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - `border-border-field-focus` - A form field's edge while it holds focus, under
   `fieldFocusStyle: border`. Follows `focus-control` when a theme names only that.
 - Form fields and labels - `h-theme-field` (`fieldHeight`) sizes `Input`, `Dropdown`
-  and `ControlCombobox`. `fieldFocusStyle` picks the focus treatment: `ring` (the
+  and `ControlCombobox`. On touch devices, where field text never drops under 16px,
+  `h-theme-field`, `h-theme-field-lg` and `h-theme-auth-field` never draw under 24px,
+  so a small UI scale or a compact theme keeps a line of room for that text; a field a
+  caller sizes itself keeps its own height. `fieldFocusStyle` picks the focus treatment: `ring` (the
   default) draws the keyboard-only focus ring, and `border` swaps the field's edge
   to `border-field-focus` on any focus, adding a 1px ring in that color on keyboard
   focus so the indicator keeps the 2px focus floor, through the

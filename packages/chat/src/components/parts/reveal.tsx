@@ -1,5 +1,6 @@
 import {
   createContext,
+  memo,
   useCallback,
   useContext,
   useEffect,
@@ -10,6 +11,7 @@ import {
 import { CircleX } from 'lucide-react';
 import { Button, cn, useLocalize } from '@librechat/client';
 import type { TranslationKeys } from '@librechat/client';
+import type { MemoExoticComponent } from 'react';
 
 /**
  * A request to show the failed calls under a header, travelling DOWN the fold
@@ -104,7 +106,7 @@ export function useFailedReveal(
  * button, and its name says what it does rather than repeating the count the
  * header already carries.
  */
-export function FailedRevealPill({
+function FailedRevealPillBody({
   count,
   total,
   onReveal,
@@ -144,3 +146,6 @@ export function FailedRevealPill({
     </Button>
   );
 }
+
+export const FailedRevealPill: MemoExoticComponent<typeof FailedRevealPillBody> =
+  memo(FailedRevealPillBody);

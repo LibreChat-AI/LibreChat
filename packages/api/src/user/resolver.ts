@@ -63,6 +63,7 @@ export interface ErasureResolverDeps {
     | undefined;
   openCheckpointDeletion: UserErasureDeps['openCheckpointDeletion'];
   deleteSharedLinks: UserErasureDeps['deleteSharedLinks'];
+  deleteSubscriptions: UserErasureDeps['deleteSubscriptions'];
 }
 
 /**
@@ -106,6 +107,8 @@ export function createErasureResolver(deps: ErasureResolverDeps) {
         ...deps.db,
         openCheckpointDeletion: deps.openCheckpointDeletion,
         deleteSharedLinks: deps.deleteSharedLinks,
+        deleteSubscriptions: (userId) =>
+          inTargetTenant(async () => deps.deleteSubscriptions(userId)),
         deleteUserToolFavorites: (userId, deletionAttemptId) =>
           inTargetTenant(async () =>
             deletionAttemptId === undefined

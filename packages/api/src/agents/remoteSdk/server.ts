@@ -9,17 +9,26 @@ import {
   HOOK_EVENTS,
   GraphEvents,
 } from '@librechat/agents';
-import type { EventHandler, AggregatedHookResult, HookOutput } from '@librechat/agents';
+import type {
+  HostModelDescriptor,
+  EventHandler,
+  AggregatedHookResult,
+  HookOutput,
+} from '@librechat/agents';
 import type { Duplex } from 'node:stream';
 import type { Server } from 'node:http';
 import type { RemoteSdkFactoryInput, RemoteSdkLimits, RemoteSdkStart, SdkRun } from './types';
 import type { RuntimeRecoveryOptions } from './recovery/server';
 import type { SdkAgentIdentity } from './identity';
+import { createWorkerModelLifecycle, supportsModelInvocationContext } from './admission';
+import { policyDescriptorSchema, createWorkerProviderTextPolicy } from './policy';
 import { createRuntimeRecovery, recoveryClaimSchema } from './recovery/server';
+import { createWorkerFileChannel, fileChannelSchema } from './files';
 import { remoteSdkLimits, isRemoteSdkSecret } from './types';
 import { RECOVERY_HEADER_BYTES } from './recovery/socket';
 import { createWorkerToolService } from './hostTools';
 import { RemoteSdkCheckpointer } from './checkpoint';
+import { createWorkerModelChannel } from './model';
 import { sendSnapshot } from './snapshot';
 import { createSdkPeer } from './peer';
 
@@ -44,6 +53,21 @@ const claimSchema = z.object({
 });
 const startSchema = z.object({
   transportVersion: z.literal(2),
+  files: fileChannelSchema.optional(),
+  modelAdmission: z
+    .object({ version: z.literal(1), maxEntries: z.number().int().min(16).max(65536) })
+    .strict()
+    .optional(),
+  // The SDK HostChatModel constructor owns descriptor validation.
+  model: z
+    .object({
+      version: z.literal(1),
+      publicKey: z.string().length(60),
+      descriptor: z.custom<HostModelDescriptor>(),
+    })
+    .strict()
+    .optional(),
+  providerText: policyDescriptorSchema.optional(),
   hostTools: z
     .array(
       z.object({
@@ -78,6 +102,14 @@ const startSchema = z.object({
     id: z.string(),
     name: z.string().optional(),
     instructions: z.string().optional(),
+    model: z
+      .object({
+        provider: z.string().min(1),
+        name: z.string().min(1),
+        streaming: z.boolean(),
+      })
+      .strict()
+      .optional(),
   }),
 });
 
@@ -219,21 +251,13 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
         deny();
         return;
       }
-      const controller = recovered?.controller ?? new AbortController();
-      if (needsEngine) active.add(controller);
-      let upgraded = false;
-      socket.once('close', () => {
-        if (!upgraded) {
-          controller.abort();
-          active.delete(controller);
-        }
-      });
       sockets.handleUpgrade(req, socket, head, (ws) => {
-        upgraded = true;
         if (recovered && !needsEngine) {
           recovered.attach(ws, claim.recovery!.after);
           return;
         }
+        const controller = recovered?.controller ?? new AbortController();
+        active.add(controller);
         if (recovered) recovered.needsEngine = false;
         const transport = recovered?.socket ?? ws;
         let outcome: 'completed' | 'paused' | 'failed' | 'cancelled' = 'failed';
@@ -246,6 +270,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
         timer.unref();
         const cleanup = () => {
           controller.abort();
+          workerFiles.dispose();
           clearTimeout(timer);
           if (!running) active.delete(controller);
         };
@@ -253,6 +278,16 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
         const workerTools = createWorkerToolService({
           call: (method, data, _timeoutMs, signal) =>
             peer.call(method, data, method === 'tools' ? limits.maxRunMs : undefined, signal),
+        });
+        const workerFiles = createWorkerFileChannel({
+          peer: { call: (...args) => peer.call(...args) },
+          limits,
+          signal: controller.signal,
+        });
+        const workerModel = createWorkerModelChannel({
+          peer: { call: (...args) => peer.call(...args) },
+          limits,
+          signal: controller.signal,
         });
         const peer = createSdkPeer(transport, {
           ...limits,
@@ -262,13 +297,29 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
           onFrame: async () => {
             throw new Error('Unexpected runtime frame');
           },
-          onCall: async (method, data) => {
-            if (method === 'capabilities') return { transportVersion: 2, hostTools: 2 };
+          onCall: async (method, data, _timeoutMs, signal) => {
+            if (method === 'capabilities')
+              return {
+                transportVersion: 2,
+                hostTools: 2,
+                hostFiles: 1,
+                providerText: 1,
+                hostModel: 1,
+                builderModel: 1,
+                modelAdmission: 1,
+                ...(supportsModelInvocationContext && { modelAdmissionWithProviderText: 1 }),
+              };
+            if (method === 'files.chunk') return workerFiles.accept(data, signal);
+            if (method === 'model.chunk') return workerModel.accept(data, signal);
             if (method === 'tool.result') return workerTools.accept(data);
             if (method === 'tool.session') return workerTools.accept(data, 'session');
             if (method !== 'run' || started) throw new Error('SDK execution already admitted');
             started = true;
             const request = startSchema.parse(data) as RemoteSdkStart;
+            if (request.modelAdmission && request.providerText && !supportsModelInvocationContext)
+              throw new Error(
+                'Combined model admission and provider-text protection is unsupported',
+              );
             const identity = Object.freeze(claim.identity);
             if (
               request.agent.id !== identity.agentId ||
@@ -329,6 +380,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                   ],
                 });
             }
+            const hostFiles = request.files ? workerFiles.bind(identity, request.files) : undefined;
             const hostTools = request.hostTools?.length
               ? createHostToolBindings({
                   identity,
@@ -336,17 +388,50 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                   service: workerTools.service,
                 })
               : undefined;
+            const providerTextProtection = request.providerText
+              ? createWorkerProviderTextPolicy({
+                  descriptor: request.providerText,
+                  identity,
+                  peer,
+                  limits,
+                })
+              : undefined;
+            if (request.modelAdmission && !request.model)
+              throw new Error('Model admission requires a host model');
+            const modelLifecycle = request.modelAdmission
+              ? createWorkerModelLifecycle(
+                  identity.agentId,
+                  request.modelAdmission.maxEntries,
+                  peer,
+                )
+              : undefined;
+            const hostModel = request.model
+              ? workerModel.bind(identity, request.model, modelLifecycle)
+              : undefined;
+            const profile = request.agent.model;
+            if (
+              profile &&
+              (!hostModel ||
+                request.model?.descriptor.provider !== profile.provider ||
+                request.model.descriptor.model !== profile.name ||
+                request.model.descriptor.streaming !== profile.streaming)
+            ) {
+              throw new Error('SDK runtime builder model mismatch');
+            }
             const execute = async () => {
               await recovered?.begin();
               const run = await options.createRun({
                 identity,
                 hostTools,
+                hostFiles,
+                hostModel,
                 config: {
                   runId: identity.runId,
                   customHandlers: { ...handlers, ...hostTools?.customHandlers },
                   hooks,
                   humanInTheLoop: request.humanInTheLoop,
                   streamLimits: request.streamLimits,
+                  providerTextProtection,
                 },
                 compileOptions: request.checkpoint
                   ? { checkpointer: new RemoteSdkCheckpointer(peer.call) }
@@ -360,6 +445,23 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
                 run.Graph?.defaultAgentId !== identity.agentId
               )
                 throw new Error('SDK runtime run identity mismatch');
+              if (
+                providerTextProtection &&
+                run.Graph.providerTextProtection !== providerTextProtection
+              )
+                throw new Error('SDK runtime omitted required provider protection');
+              if (hostModel && run.Graph.overrideModel !== hostModel)
+                throw new Error('SDK runtime omitted required host model');
+              if (profile) {
+                const context = run.Graph.agentContexts.get(identity.agentId);
+                if (
+                  context?.provider !== profile.provider ||
+                  context.clientOptions?.model !== profile.name ||
+                  (context.clientOptions?.streaming !== false) !== profile.streaming
+                ) {
+                  throw new Error('SDK runtime omitted required builder model configuration');
+                }
+              }
               if (hostTools) {
                 const names = new Set(
                   run.Graph.agentContexts
@@ -371,6 +473,7 @@ export function createRemoteSdkServer(options: RemoteSdkServerOptions): {
               }
               const callerOptions = {
                 ...request.options,
+                ...(modelLifecycle && { callbacks: [modelLifecycle.callback] }),
                 version: 'v2' as const,
                 signal: controller.signal,
               };

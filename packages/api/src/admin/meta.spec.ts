@@ -134,7 +134,7 @@ function createHandlers(overrides: Partial<AdminConfigDeps> = {}) {
       async (_type: string, _id: string, draft: ConfigDraft): Promise<ConfigRecord> =>
         storedConfig(draft.overrides ?? {}),
     ),
-    unsetConfigField: jest.fn().mockResolvedValue(null),
+    unsetConfigFieldTracked: jest.fn().mockResolvedValue(null),
     deleteConfig: jest.fn().mockResolvedValue(null),
     toggleConfigActiveTracked: jest.fn().mockResolvedValue(null),
     hasConfigCapability: jest.fn().mockResolvedValue(true),
@@ -487,6 +487,7 @@ describe('meta rules equal the rules the server applies', () => {
 
   it('lists the settings LibreChat reads from librechat.yaml itself or only at startup', () => {
     expect(meta.rules.deploymentOnlyPaths).toMatchObject({
+      roleCache: 'startup',
       'telemetry.rum': 'operator',
       clientLimits: 'operator',
       conversationList: 'operator',
@@ -714,7 +715,7 @@ const FEATURE_PROBES: Record<AdminConfigFeatureFlag, () => Promise<boolean>> = {
           return { broad: false, sections: new Set<string>() };
         }),
         writeConfigDocument: commit,
-        unsetConfigField: commit,
+        unsetConfigFieldTracked: jest.fn(async () => ({ config: await commit(), changed: true })),
       };
     };
     const responses = await Promise.all([
@@ -1488,7 +1489,9 @@ const FEATURE_PROBES: Record<AdminConfigFeatureFlag, () => Promise<boolean>> = {
       async (_type: string, _id: string, draft: ConfigDraft): Promise<ConfigRecord> =>
         storedConfig(draft.overrides ?? {}),
     );
-    const res = await patch([{ fieldPath: 'endpoints.azureOpenAI.groups', value: [group()] }], {
+    /** Another model, so the group is written again without its key; where it goes stays. */
+    const reworded = [{ ...group(), models: { 'gpt-4o': true, 'gpt-4o-mini': true } }];
+    const res = await patch([{ fieldPath: 'endpoints.azureOpenAI.groups', value: reworded }], {
       findConfigByPrincipal: jest
         .fn()
         .mockResolvedValue(storedConfig({ endpoints: { azureOpenAI: { groups: [stored] } } })),

@@ -3,8 +3,11 @@ import { useRef } from 'react';
 import { render, act } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import {
+  reachRow,
+  useRowReached,
   useOffscreenRow,
   useOffscreenRows,
+  RowReachProvider,
   revealOffscreenRows,
   OffscreenRowsProvider,
   OFFSCREEN_ROW_ATTRIBUTE,
@@ -39,9 +42,19 @@ class MockIntersectionObserver {
 
 const live = () => MockIntersectionObserver.instances.filter((observer) => !observer.disconnected);
 
-function Row({ id }: { id: string }) {
-  const rowRef = useOffscreenRow();
-  return <div ref={rowRef} data-testid={id} />;
+function Toolbar({ id }: { id: string }) {
+  return useRowReached() ? <button type="button" data-testid={`${id}-toolbar`} /> : null;
+}
+
+function Row({ id, far = false }: { id: string; far?: boolean }) {
+  const { rowRef, reach } = useOffscreenRow(far);
+  return (
+    <div ref={rowRef} data-testid={id}>
+      <RowReachProvider reach={reach}>
+        <Toolbar id={id} />
+      </RowReachProvider>
+    </div>
+  );
 }
 
 function Thread({ children }: { children: ReactNode }) {
@@ -202,6 +215,90 @@ describe('rows far from the viewport', () => {
     const { getByTestId } = render(<Row id="lone" />);
     expect(MockIntersectionObserver.instances).toHaveLength(0);
     expect(getByTestId('lone').hasAttribute(OFFSCREEN_ROW_ATTRIBUTE)).toBe(false);
+  });
+
+  it('holds back what a far row keeps for a reader until the row comes near, then keeps it', () => {
+    const { getByTestId, queryByTestId } = render(
+      <Thread>
+        <Row id="near" />
+        <Row id="far" far />
+      </Thread>,
+    );
+    const [observer] = live();
+    const far = getByTestId('far');
+    expect(queryByTestId('near-toolbar')).not.toBeNull();
+    expect(queryByTestId('far-toolbar')).toBeNull();
+
+    /** The observer's first report on a row away from the viewport changes nothing. */
+    act(() => observer.report([{ target: far, isIntersecting: false }]));
+    expect(queryByTestId('far-toolbar')).toBeNull();
+
+    act(() => observer.report([{ target: far, isIntersecting: true }]));
+    expect(queryByTestId('far-toolbar')).not.toBeNull();
+
+    act(() => observer.report([{ target: far, isIntersecting: false }]));
+    expect(queryByTestId('far-toolbar')).not.toBeNull();
+  });
+
+  it('mounts it at once for a caller about to use the row', () => {
+    const { getByTestId, queryByTestId } = render(
+      <Thread>
+        <Row id="far" far />
+      </Thread>,
+    );
+    expect(queryByTestId('far-toolbar')).toBeNull();
+
+    /** No `act`: the button has to be in the document when the call returns. */
+    const environment = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+    environment.IS_REACT_ACT_ENVIRONMENT = false;
+    try {
+      reachRow(getByTestId('far'));
+      expect(queryByTestId('far-toolbar')).not.toBeNull();
+
+      reachRow(getByTestId('far'));
+      reachRow(null);
+      expect(queryByTestId('far-toolbar')).not.toBeNull();
+    } finally {
+      environment.IS_REACT_ACT_ENVIRONMENT = true;
+    }
+  });
+
+  it('mounts it in every row for a consumer that clones the thread', () => {
+    const { queryByTestId } = render(
+      <Thread>
+        <Row id="far" far />
+        <Row id="farther" far />
+      </Thread>,
+    );
+    expect(queryByTestId('far-toolbar')).toBeNull();
+
+    const environment = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+    environment.IS_REACT_ACT_ENVIRONMENT = false;
+    try {
+      /** In the document when the call returns: the clone is taken next. */
+      const resume = revealOffscreenRows();
+      expect(queryByTestId('far-toolbar')).not.toBeNull();
+      expect(queryByTestId('farther-toolbar')).not.toBeNull();
+      resume();
+    } finally {
+      environment.IS_REACT_ACT_ENVIRONMENT = true;
+    }
+    expect(queryByTestId('far-toolbar')).not.toBeNull();
+  });
+
+  it('holds nothing back where no thread watches the row or nothing can say it came near', () => {
+    const lone = render(<Row id="lone" far />);
+    expect(lone.queryByTestId('lone-toolbar')).not.toBeNull();
+    lone.unmount();
+
+    // @ts-expect-error a browser without the observer
+    delete global.IntersectionObserver;
+    const { queryByTestId } = render(
+      <Thread>
+        <Row id="far" far />
+      </Thread>,
+    );
+    expect(queryByTestId('far-toolbar')).not.toBeNull();
   });
 
   it('drops its observer and every mark when the thread unmounts', () => {

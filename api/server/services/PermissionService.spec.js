@@ -64,6 +64,9 @@ beforeAll(async () => {
   const dbModels = require('~/db/models');
   Object.assign(mongoose.models, dbModels);
 
+  /** Lock acquisition gives a cold index build only 2s, so finish it before the first write. */
+  await mongoose.models.ResourceLock.createIndexes();
+
   AclEntry = dbModels.AclEntry;
   User = dbModels.User;
   Group = dbModels.Group;

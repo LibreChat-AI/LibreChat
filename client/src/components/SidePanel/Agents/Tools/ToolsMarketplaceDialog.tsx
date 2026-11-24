@@ -29,6 +29,7 @@ import AddMcpServerDialog from './ItemDialog/AddMcpServerDialog';
 import { computeToggleAction } from './items/mutations';
 import { useLocalize, useToolFavorites } from '~/hooks';
 import MarketplaceCatalog from './MarketplaceCatalog';
+import { useAgentPanelContext } from '~/Providers';
 import ItemDialog from './ItemDialog/ItemDialog';
 import { applyFilter } from './items/filtering';
 import { NEW_ACTION_ID } from './items/types';
@@ -51,6 +52,7 @@ export default function ToolsMarketplaceDialog({
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const { getValues, setValue } = useFormContext<AgentForm>();
+  const { agentsConfig } = useAgentPanelContext();
   const uninstallToolCredentials = useUninstallToolCredentials();
 
   /** Skills are excluded here — they have their own picker (`SkillsDialog`). */
@@ -132,9 +134,18 @@ export default function ToolsMarketplaceDialog({
           setDetailItem(item);
           break;
         case 'subagents':
-          setValue('subagents', setSubagentsEnabled(getValues('subagents'), patch.enabled), {
-            shouldDirty: true,
-          });
+          setValue(
+            'subagents',
+            setSubagentsEnabled(getValues('subagents'), patch.enabled, agentsConfig?.capabilities),
+            { shouldDirty: true },
+          );
+          break;
+        case 'graphs-remove':
+          setValue(
+            'subagents',
+            { ...getValues('subagents'), graphsEnabled: false },
+            { shouldDirty: true },
+          );
           break;
         case 'handoffs-remove':
           setValue('edges', removeHandoffs(getValues('edges')), { shouldDirty: true });
@@ -192,7 +203,15 @@ export default function ToolsMarketplaceDialog({
           break;
       }
     },
-    [getValues, setValue, selectedIds, uninstallToolCredentials, catalog, fileCounts],
+    [
+      getValues,
+      setValue,
+      selectedIds,
+      uninstallToolCredentials,
+      catalog,
+      fileCounts,
+      agentsConfig?.capabilities,
+    ],
   );
 
   const handleCardClick = useCallback(

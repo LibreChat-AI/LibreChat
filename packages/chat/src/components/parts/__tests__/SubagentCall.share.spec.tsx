@@ -36,7 +36,6 @@ function SubagentCall(props: SubagentCallProps) {
       isSharedConvo
       shareId="share-1"
       localize={localize}
-      mcpServerNames={[]}
       renderAgentIcon={() => null}
       renderAttachments={() => null}
     />

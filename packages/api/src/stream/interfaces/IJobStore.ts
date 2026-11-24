@@ -1,13 +1,14 @@
 import type {
-  IAgentEventActorContextMeta,
-  ICompactionSemanticIndexProjection,
-} from '@librechat/data-schemas';
-import type {
   Agents,
   TFile,
   TPendingSteer,
+  TMessageTrigger,
   UserSubmittedMessageFieldPath,
 } from 'librechat-data-provider';
+import type {
+  IAgentEventActorContextMeta,
+  ICompactionSemanticIndexProjection,
+} from '@librechat/data-schemas';
 import type {
   CodeApprovalMode,
   ScheduleMCPOutcome,
@@ -21,6 +22,7 @@ import type { ReplayLimits, ReplayPublication } from '../internal/replay';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
 import type { RecoveredSteerPayload } from '../SteerRecovery';
 import type { AuthoredSkillBinding } from '~/agents/authored';
+import type { RunTrigger } from '~/agents/authority/trigger';
 import type { MCPRuntimeRequestBody } from '~/mcp/types';
 
 /**
@@ -94,7 +96,11 @@ export const PAUSE_PERSISTENCE_TIMEOUT_ERROR = 'Paused response persistence time
 /** Maximum time a terminal provider owner may remain undrained before its
  * process is treated as lost. Terminal host settlement retains the last
  * durable evidence through this grace period, then releases the lane from a
- * crashed owner instead of refreshing its fence forever. */
+ * crashed owner instead of refreshing its fence forever. A replacement
+ * generation gives a terminal predecessor's drain the same period, counted
+ * from the predecessor's `completedAt` when its receipt carries one and from
+ * the start of the handoff otherwise, then starts. Neither applies to a
+ * schedule-owned generation, which waits for a confirmed owner termination. */
 export const PROVIDER_DRAIN_TIMEOUT_MS = 30_000;
 
 /**
@@ -171,6 +177,9 @@ export interface SerializableJobData {
     /** Uploaded files for the turn, carried so a HITL resume sources them from the job
      *  rather than a user DB row whose save can still be racing the approval prompt. */
     files?: unknown[];
+    /** What started the turn, when no person sent it: the row a resumed stream rebuilds
+     *  is recognized by it, as the stored row is. */
+    trigger?: TMessageTrigger;
   };
 
   /** Response message ID for reconnection */
@@ -273,6 +282,8 @@ export interface SerializableJobData {
   /** Whether sync has been sent to a client */
   syncSent: boolean;
 
+  /** The trigger that started the run. See `GenerationJobMetadata.trigger`. */
+  trigger?: RunTrigger;
   /** Trusted schedule identity copied atomically into the generation job. */
   scheduleId?: string;
   scheduledFor?: string;
@@ -421,11 +432,14 @@ export type ActiveJobFilter = (job: SerializableJobData) => boolean;
 /** Exact active hash replaced by one atomic job creation. Built-in stores keep
  * this as non-enumerable transaction metadata; Redis also retains a private
  * receipt in the replacement hash so a committed create with a lost reply can
- * reconstruct it without exposing it through normal job serialization. */
+ * reconstruct it without exposing it through normal job serialization.
+ * `completedAt` is absent for a predecessor that was not terminal and on
+ * receipts written before the field existed. */
 export type ReplacedGeneration = Pick<
   SerializableJobData,
   | 'createdAt'
   | 'status'
+  | 'completedAt'
   | 'conversationId'
   | 'providerAbortReady'
   | 'providerExecutionId'
@@ -535,6 +549,7 @@ export type JobMetadataPatch = Partial<
     | 'agentEventExpectedAction'
     | 'agentEventSuspension'
     | 'agentEventLegacyTurnToken'
+    | 'trigger'
     | 'scheduleId'
     | 'scheduledFor'
     | 'scheduleConfigRevision'
@@ -1110,6 +1125,15 @@ export interface IJobStore {
     contentParts: Agents.MessageContentComplex[],
     expectedCreatedAt?: number,
   ): void;
+  /**
+   * A synchronous copy of the content array `setContentParts` registered on this replica, or
+   * null when this replica does not host the run. A store that only ever returns copies from
+   * `getContentParts` has no need for it.
+   */
+  copyHostContent?(
+    streamId: string,
+    expectedCreatedAt?: number,
+  ): Agents.MessageContentComplex[] | null;
   getContentParts(
     streamId: string,
     expectedCreatedAt?: number,

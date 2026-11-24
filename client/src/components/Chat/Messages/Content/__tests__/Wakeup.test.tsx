@@ -21,14 +21,6 @@ jest.mock('~/hooks/MCP', () => ({
 
 jest.mock('../ToolOutput', () => ({
   StackedToolIcons: () => <div data-testid="stacked-tool-icons" />,
-  ToolIcon: ({ type }: { type: string }) => <span data-testid="tool-icon">{type}</span>,
-  getToolIconType: (name: string) => name,
-  getMCPServerName: () => '',
-  OutputRenderer: ({ text, copyText }: { text: string; copyText?: string }) => (
-    <pre data-testid="task-output" data-copy-text={copyText}>
-      {text}
-    </pre>
-  ),
 }));
 
 jest.mock('../MarkdownLite', () => ({
@@ -37,6 +29,7 @@ jest.mock('../MarkdownLite', () => ({
 }));
 
 jest.mock('lucide-react', () => ({
+  ...jest.requireActual('lucide-react'),
   AlertCircle: () => null,
   CheckCircle2: () => null,
   ChevronDown: () => null,
@@ -45,8 +38,10 @@ jest.mock('lucide-react', () => ({
   XCircle: () => null,
 }));
 
+/** The task card is the chat package's and reads the localizer from here, so it delegates to the `~/hooks` mock. */
 jest.mock('@librechat/client', () => ({
-  cn: jest.requireActual('@librechat/client').cn,
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => jest.requireMock('~/hooks').useLocalize(),
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
     <button {...props}>{children}</button>
   ),
@@ -288,7 +283,7 @@ describe('Wakeup', () => {
     expect(header.querySelector('[role="status"]')).toHaveClass('text-text-warning');
     fireEvent.click(header);
     expect(screen.getByTestId('background-task-card')).toHaveTextContent('com_ui_cancelled');
-    expect(screen.getByTestId('task-output')).toHaveTextContent('The task was stopped.');
+    expect(screen.getByTestId('background-task-card')).toHaveTextContent('The task was stopped.');
   });
 
   it('shows the originating MCP tool and its server separately', () => {
@@ -316,7 +311,7 @@ describe('Wakeup', () => {
     const card = screen.getByTestId('background-task-card');
     expect(within(card).getByText('search_repository')).toBeInTheDocument();
     expect(within(card).getByText('Docs')).toBeInTheDocument();
-    expect(within(card).getByTestId('task-output')).toHaveTextContent('Found 3 documents.');
+    expect(card).toHaveTextContent('Found 3 documents.');
   });
 
   it('renders the code completion as tool output rather than prose or host-internal JSON', () => {
@@ -350,11 +345,8 @@ describe('Wakeup', () => {
     const card = screen.getByTestId('background-task-card');
     expect(card).toHaveTextContent('com_ui_tool_name_code');
     expect(card).toHaveTextContent('com_ui_background_tasks_completed');
-    expect(screen.getByTestId('tool-icon')).toHaveTextContent('bash_tool');
     expect(screen.getByText('com_ui_output')).toBeInTheDocument();
-    expect(screen.getByTestId('task-output')).toHaveTextContent('"checks": []');
-    expect(screen.getByTestId('task-output').textContent).toContain('{\n  "checks": []\n}');
-    expect(screen.getByTestId('task-output')).toHaveAttribute('data-copy-text', output);
+    expect(card.textContent).toContain('{\n  "checks": []\n}');
     expect(screen.queryByText('com_ui_wakeup_explainer')).not.toBeInTheDocument();
     expect(screen.queryByTestId('markdown')).not.toBeInTheDocument();
   });

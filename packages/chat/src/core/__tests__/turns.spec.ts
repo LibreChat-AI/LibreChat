@@ -1,8 +1,8 @@
-import { Constants, ContentTypes, EModelEndpoint } from 'librechat-data-provider';
+import { Constants, ContentTypes, createPayload, EModelEndpoint } from 'librechat-data-provider';
 import type { TMessage, TConversation } from 'librechat-data-provider';
-import type { BuildTurnInput } from '../turns';
+import type { SubmittedTurn, BuildTurnInput } from '../turns';
 import type { ExtendedFile } from '../files';
-import { buildTurn, createRegenerate } from '../turns';
+import { buildTurn, createRegenerate, describeSubmittedTurn, prepareSubmittedTurn } from '../turns';
 import { formatPastedText } from '../files';
 
 const conversationId = 'conversation-1';
@@ -408,5 +408,73 @@ describe('createRegenerate', () => {
 
     expect(ask).not.toHaveBeenCalled();
     expect(error).toHaveBeenCalled();
+  });
+});
+
+describe('a turn ask built, as a Chat takes it', () => {
+  /** The rows `ask` writes before its stream starts, as `useTurns` assembles them. */
+  const submitted = (turn: ReturnType<typeof buildTurn>): SubmittedTurn => ({
+    submission: turn.submission,
+    messages: turn.regenerateShaped
+      ? [...turn.submissionMessages, turn.initialResponse]
+      : [...turn.submissionMessages, turn.currentMsg, turn.initialResponse],
+  });
+
+  it('posts the body main chat posts for the submission, and shows the rows ask would have', () => {
+    const turn = submitted(buildTurn(input()));
+
+    const prepared = prepareSubmittedTurn(turn);
+
+    expect(prepared.payload).toEqual(createPayload(turn.submission).payload);
+    expect(prepared.payload).toMatchObject({
+      endpoint: EModelEndpoint.agents,
+      text: 'Next question',
+    });
+    expect(prepared.messages).toBe(turn.messages);
+    /** The reply the chat reports if the turn ends before the server names one. */
+    expect(prepared.responseMessageId).toBe(turn.submission.initialResponse?.messageId);
+    expect(turn.messages[turn.messages.length - 1].messageId).toBe(prepared.responseMessageId);
+  });
+
+  it('is a submitted message with its text and the parent it answers', () => {
+    const turn = submitted(buildTurn(input()));
+
+    expect(describeSubmittedTurn(turn)).toEqual({
+      trigger: 'submit-message',
+      input: {
+        parts: [{ type: 'text', text: 'Next question' }],
+        metadata: { parentMessageId: 'response-1' },
+      },
+    });
+  });
+
+  it('is a regeneration, or a continuation, of the reply the turn produces', () => {
+    const regenerated = submitted(
+      buildTurn(
+        input({
+          params: { ...user },
+          options: { isRegenerate: true, targetResponseMessageId: 'response-1' },
+        }),
+      ),
+    );
+    expect(describeSubmittedTurn(regenerated)).toEqual({
+      trigger: 'regenerate-message',
+      messageId: regenerated.submission.initialResponse?.messageId,
+    });
+
+    /** A continuation is regenerate-shaped too; what it is called is decided first. */
+    const continued = submitted(
+      buildTurn(
+        input({
+          params: { ...user },
+          options: { isContinued: true, isRegenerate: true, isEdited: true },
+          latestMessage: response,
+        }),
+      ),
+    );
+    expect(describeSubmittedTurn(continued)).toEqual({
+      trigger: 'continue-message',
+      messageId: continued.submission.initialResponse?.messageId,
+    });
   });
 });

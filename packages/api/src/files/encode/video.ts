@@ -1,4 +1,5 @@
 import { Providers } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import { isDocumentSupportedProvider, isOpenAILikeProvider } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { ServerRequest, StrategyFunctions, VideoResult } from '~/types';
@@ -9,6 +10,8 @@ import {
   skipMissingAttachment,
   isConfiguredProviderMediaType,
 } from './utils';
+import { configuredRequestBudget } from '~/utils/timeouts';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { validateVideo } from '~/files/validation';
 import { runGuardedEncode } from './memoryGuard';
 
@@ -39,7 +42,13 @@ export async function encodeAndFormatVideos(
   const results = await Promise.allSettled(
     files.map((file) =>
       runGuardedEncode(file.bytes ?? 0, () =>
-        getFileStream(req, file, encodingMethods, getStrategyFunctions),
+        getFileStream(
+          req,
+          file,
+          encodingMethods,
+          getStrategyFunctions,
+          configuredRequestBudget(req.config, 'fileFetchMs'),
+        ),
       ),
     ),
   );
@@ -49,7 +58,7 @@ export async function encodeAndFormatVideos(
       if (skipMissingAttachment(settledResult.reason, files[index], onMissingFile)) {
         continue;
       }
-      console.error('Video processing failed:', settledResult.reason);
+      logger.error('Video processing failed:', getSafeErrorMetadata(settledResult.reason));
       continue;
     }
 

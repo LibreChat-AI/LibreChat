@@ -2685,10 +2685,15 @@ describe('createRolePermissionsUpdateHandler', () => {
   function setup(role: IRole | null, recordAuditEntry = jest.fn().mockResolvedValue(undefined)) {
     const deps = {
       getRoleByName: jest.fn().mockResolvedValue(role),
-      updateRoleByName: jest.fn().mockImplementation(async (_name, updates) => ({
-        ...role,
-        ...updates,
-      })),
+      setRolePermissions: jest
+        .fn()
+        .mockImplementation(async (_name, type: string, flags: Record<string, boolean>) => {
+          const permissions = (role?.permissions ?? {}) as Record<string, object | undefined>;
+          return {
+            ...role,
+            permissions: { ...permissions, [type]: { ...permissions[type], ...flags } },
+          };
+        }),
       recordAuditEntry,
     };
     return { deps, handler: createRolePermissionsUpdateHandler(deps, config) };
@@ -2706,21 +2711,29 @@ describe('createRolePermissionsUpdateHandler', () => {
     return { req, res: { status, send } as unknown as Response, status, send };
   }
 
-  it('merges the update and records role.permissions_updated', async () => {
+  it('writes only the submitted flags of the role read and records role.permissions_updated', async () => {
+    const id = new Types.ObjectId();
     const { deps, handler } = setup(
       mockRole({
+        _id: id,
         name: 'USER',
-        permissions: { PROMPTS: { USE: true, CREATE: true } },
+        permissions: { PROMPTS: { USE: true, CREATE: true }, AGENTS: { USE: true } },
       } as Partial<IRole>),
     );
-    const { req, res, status } = createSendReqRes({ CREATE: false });
+    const { req, res, status, send } = createSendReqRes({ CREATE: false });
 
     await handler(req, res);
 
     expect(status).toHaveBeenCalledWith(200);
-    expect(deps.updateRoleByName).toHaveBeenCalledWith('USER', {
-      permissions: { PROMPTS: { USE: true, CREATE: false } },
-    });
+    expect(deps.setRolePermissions).toHaveBeenCalledWith(
+      'USER',
+      'PROMPTS',
+      { CREATE: false },
+      { id: id.toString() },
+    );
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ permissions: expect.objectContaining({ AGENTS: { USE: true } }) }),
+    );
     expect(deps.recordAuditEntry).toHaveBeenCalledWith(
       expect.objectContaining({
         action: 'role.permissions_updated',
@@ -2753,15 +2766,65 @@ describe('createRolePermissionsUpdateHandler', () => {
       message: 'Invalid prompt permissions.',
       error: [expect.objectContaining({ code: 'invalid_type', path: ['USE'] })],
     });
-    expect(deps.updateRoleByName).not.toHaveBeenCalled();
+    expect(deps.setRolePermissions).not.toHaveBeenCalled();
   });
 
   it('returns 404 when the role does not exist', async () => {
-    const { handler } = setup(null);
+    const { deps, handler } = setup(null);
     const { req, res, status } = createSendReqRes({ USE: true });
 
     await handler(req, res);
 
     expect(status).toHaveBeenCalledWith(404);
+    expect(deps.setRolePermissions).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 without an audit entry when the role is gone before the write', async () => {
+    const { deps, handler } = setup(
+      mockRole({ name: 'USER', permissions: { PROMPTS: { USE: true } } } as Partial<IRole>),
+    );
+    deps.setRolePermissions.mockResolvedValue(null);
+    const { req, res, status, send } = createSendReqRes({ USE: false });
+
+    await handler(req, res);
+
+    expect(status).toHaveBeenCalledWith(404);
+    expect(send).toHaveBeenCalledWith({ message: 'Role not found' });
+    expect(deps.recordAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('seeds permissions with legacy top-level flags when the type has none there', async () => {
+    const { deps, handler } = setup(
+      mockRole({
+        name: 'USER',
+        permissions: {},
+        PROMPTS: { USE: true, CREATE: true },
+      } as unknown as Partial<IRole>),
+    );
+    const { req, res, status } = createSendReqRes({ CREATE: false });
+
+    await handler(req, res);
+
+    expect(status).toHaveBeenCalledWith(200);
+    expect(deps.setRolePermissions).toHaveBeenCalledWith(
+      'USER',
+      'PROMPTS',
+      { CREATE: false },
+      { seed: { USE: true, CREATE: true } },
+    );
+  });
+
+  it('returns 500 without leaking the error when the write fails', async () => {
+    const { deps, handler } = setup(
+      mockRole({ name: 'USER', permissions: { PROMPTS: { USE: true } } } as Partial<IRole>),
+    );
+    deps.setRolePermissions.mockRejectedValue(new Error('connection reset at 10.0.0.1'));
+    const { req, res, status, send } = createSendReqRes({ USE: false });
+
+    await handler(req, res);
+
+    expect(status).toHaveBeenCalledWith(500);
+    expect(send).toHaveBeenCalledWith({ message: 'Failed to update role permissions' });
+    expect(deps.recordAuditEntry).not.toHaveBeenCalled();
   });
 });

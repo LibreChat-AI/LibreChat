@@ -16,6 +16,7 @@ jest.mock('@librechat/api', () => ({
   matchModelName: jest.fn(),
   findMatchingPattern: jest.fn(),
   isDeploymentSkillId: jest.fn(),
+  isSharedLinksEnabled: jest.fn(() => false),
   createChannelStorageConfigReader: jest.fn(() => ({
     getConfig: jest.fn(),
     initialize: jest.fn(),
@@ -30,6 +31,7 @@ const {
   createPostgresFavoriteBackend,
 } = require('@librechat/data-schemas');
 const {
+  isSharedLinksEnabled,
   createMessageBudgetReader,
   createFavoriteRuntime,
   createChannelStorageConfigReader,
@@ -43,6 +45,7 @@ const runtimeDependencies = createFavoriteRuntime.mock.calls[0];
 const { getMCPAppMessageBudget, getChannelStorageConfig: channelStorageConfigDependency } =
   dependencies;
 const mongoFavorites = createToolFavoriteMethods.mock.results[0].value;
+const sharedLinksReads = isSharedLinksEnabled.mock.calls.length;
 
 describe('message App budget dependency wiring', () => {
   it('passes the same reader to storage and initializer to the composition root', () => {
@@ -77,5 +80,12 @@ describe('channel storage configuration dependency wiring', () => {
     expect(channelStorageConfigDependency).toBe(channelStorageConfigReader.getConfig);
     expect(initializeChannelStorageConfig).toBe(channelStorageConfigReader.initialize);
     expect(channelStorageConfigReader.getConfig).not.toHaveBeenCalled();
+  });
+});
+
+describe('shared links dependency wiring', () => {
+  it('passes the deployment sharing setting instead of letting storage read the env', () => {
+    expect(sharedLinksReads).toBe(1);
+    expect(dependencies.allowSharedLinks).toBe(false);
   });
 });

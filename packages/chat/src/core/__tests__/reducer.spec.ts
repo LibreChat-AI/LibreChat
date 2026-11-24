@@ -149,36 +149,39 @@ describe('reduceStep', () => {
     expect(writes).toHaveLength(0);
   });
 
-  it('settles the sandbox signal and reports a skill authored by a completed call', () => {
-    const state = createStreamState();
-    const { ctx } = createContext();
-    reduceStep(state, toolStep('t1', 0, 'call-1', 'create_file'), ctx);
+  it.each(['path', 'file_path'])(
+    'settles the sandbox signal and reports a skill authored with %s',
+    (field) => {
+      const state = createStreamState();
+      const { ctx } = createContext();
+      reduceStep(state, toolStep('t1', 0, 'call-1', 'create_file'), ctx);
 
-    const effects = reduceStep(
-      state,
-      {
-        event: StepEvents.ON_RUN_STEP_COMPLETED,
-        data: {
-          result: {
-            id: 't1',
-            index: 0,
-            tool_call: {
-              id: 'call-1',
-              name: 'create_file',
-              args: '{"file_path":"skills/demo/SKILL.md"}',
-              output: 'ok',
-            },
-          } as never,
+      const effects = reduceStep(
+        state,
+        {
+          event: StepEvents.ON_RUN_STEP_COMPLETED,
+          data: {
+            result: {
+              id: 't1',
+              index: 0,
+              tool_call: {
+                id: 'call-1',
+                name: 'create_file',
+                args: JSON.stringify({ [field]: 'skills/demo/SKILL.md' }),
+                output: 'ok',
+              },
+            } as never,
+          },
         },
-      },
-      ctx,
-    );
+        ctx,
+      );
 
-    expect(effects).toEqual([
-      { type: 'sandbox-settled', toolCallId: 'call-1' },
-      { type: 'skill-authored' },
-    ]);
-  });
+      expect(effects).toEqual([
+        { type: 'sandbox-settled', toolCallId: 'call-1' },
+        { type: 'skill-authored' },
+      ]);
+    },
+  );
 
   it('buffers a subagent envelope until a sync shows its parent call', () => {
     const state = createStreamState();

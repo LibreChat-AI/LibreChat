@@ -5,6 +5,7 @@ import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
   mockReply,
+  modelSelectorTrigger,
   selectMockEndpoint,
   sendMessage,
 } from '../helpers';
@@ -408,6 +409,67 @@ test.describe('chat list properties menu', () => {
     await closeMenus(page);
     await expect(trigger(page)).toHaveAttribute('aria-label', 'Filters active: 1');
     await expect(page.getByTestId('convo-list-error')).toHaveCount(0);
+  });
+
+  test('an Endpoint facet whose endpoints fail to load says so and recovers on retry @scenario:endpoint-filter-failure-offers-retry', async ({
+    page,
+  }) => {
+    /* The endpoints query never refetches on its own, so after a failed load the facet's
+     * Retry is the only way back short of a reload. The retried request is held so its
+     * loading state is seen before the list arrives. */
+    let failEndpoints = true;
+    let releaseEndpoints = () => {};
+    const endpointsHeld = new Promise<void>((resolve) => {
+      releaseEndpoints = resolve;
+    });
+    await page.route(
+      (url) => url.pathname === '/api/endpoints',
+      async (route) => {
+        if (failEndpoints) {
+          await route.fulfill({ status: 500, body: '{}' });
+          return;
+        }
+        await endpointsHeld;
+        await route.continue();
+      },
+    );
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await showSidebar(page);
+
+    const submenu = page.getByRole('menu').last();
+    const status = submenu.getByTestId('chat-filter-endpoints-status');
+    const retry = submenu.getByRole('menuitem', { name: 'Retry' });
+    await openFilterSubmenu(page);
+    await page.getByRole('menuitem', { name: /^Endpoint\b/ }).click();
+    await expect(status).toHaveText("Couldn't load endpoints", { timeout: 30000 });
+    await expect(submenu.getByRole('menuitemcheckbox')).toHaveCount(0);
+
+    failEndpoints = false;
+    await retry.focus();
+    await page.keyboard.press('Enter');
+    await expect(status).toHaveText('Loading endpoints…');
+    await expect(retry).toHaveAttribute('aria-disabled', 'true');
+    await expect(retry).toBeFocused();
+
+    releaseEndpoints();
+    const endpoints = submenu.getByRole('menuitemcheckbox');
+    await expect(endpoints.first()).toBeVisible();
+    await expect(status).toHaveCount(0);
+    await expect(retry).toHaveCount(0);
+
+    /* The new chat was waiting on the same endpoints and starts once they land, which
+     * rebuilds the shell, so the menu is opened afresh before an endpoint is chosen. A
+     * phone's drawer covers the header that names the chat's model. */
+    if (!isPhone(page)) {
+      await expect(modelSelectorTrigger(page)).not.toContainText('Select a model');
+    }
+    await closeMenus(page);
+    await openFilterSubmenu(page);
+    await page.getByRole('menuitem', { name: /^Endpoint\b/ }).click();
+    await endpoints.first().click();
+    await expect(endpoints.first()).toHaveAttribute('aria-checked', 'true');
+    await closeMenus(page);
+    await expect(trigger(page)).toHaveAttribute('aria-label', 'Filters active: 1');
   });
 
   test('a chat sent while a server-only facet is active is not added to the filtered list @scenario:live-chat-respects-active-facet', async ({

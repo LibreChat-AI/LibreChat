@@ -1,7 +1,8 @@
 import {
   CREDITS_PER_USD,
+  parseRefillAnchor,
+  getNextRefillDate,
   getGrantedAllotment,
-  getRefillEligibilityDate,
 } from 'librechat-data-provider';
 import type { BalanceDisplay, BalanceRefillMode, TBalanceResponse } from 'librechat-data-provider';
 import type { CurrencyConfig } from './tokens';
@@ -31,6 +32,8 @@ export interface BalanceSummary {
   refillMode: BalanceRefillMode;
   /** When the next auto-refill becomes eligible; null without auto-refill. */
   nextRefill: Date | null;
+  /** Periods fall on fixed calendar boundaries, so the reset reads as a date, not a countdown. */
+  anchored: boolean;
 }
 
 interface SummaryOptions {
@@ -40,18 +43,6 @@ interface SummaryOptions {
 
 const positive = (value: unknown): number | null =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
-
-function getNextRefill(balance: TBalanceResponse): Date | null {
-  const { lastRefill, refillIntervalValue, refillIntervalUnit } = balance;
-  if (lastRefill == null || refillIntervalValue == null || refillIntervalUnit == null) {
-    return null;
-  }
-  const last = new Date(lastRefill);
-  if (Number.isNaN(last.getTime())) {
-    return null;
-  }
-  return getRefillEligibilityDate(last, refillIntervalValue, refillIntervalUnit);
-}
 
 /**
  * Percent spent is floored while credits remain, so a nearly drained balance never
@@ -93,7 +84,8 @@ export function summarizeBalance(
     tone,
     refillAmount,
     refillMode: balance.refillMode ?? 'add',
-    nextRefill: balance.autoRefillEnabled ? getNextRefill(balance) : null,
+    nextRefill: balance.autoRefillEnabled ? getNextRefillDate(balance) : null,
+    anchored: balance.autoRefillEnabled === true && parseRefillAnchor(balance.refillAnchor) != null,
   };
 }
 
@@ -114,6 +106,20 @@ export function formatBalanceAmount(
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
+
+/** "Mon, Nov 17, 12:00 AM" in the viewer's locale and time zone; null once the moment has passed. */
+export function formatResetDate(target: Date, now: number, locale?: string): string | null {
+  if (!(target.getTime() > now)) {
+    return null;
+  }
+  return new Intl.DateTimeFormat(locale, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(target);
+}
 
 /** "in 5 minutes" / "in 3 hours" / "in 4 days"; null once the moment has passed. */
 export function formatTimeUntil(target: Date, now: number, locale?: string): string | null {

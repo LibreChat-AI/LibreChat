@@ -65,6 +65,8 @@ describe('assistant avatar multipart authorization', () => {
     mongoose.set('strictQuery', true);
     ({ Assistant, User, File } = createModels(mongoose));
     await User.init();
+    /** Lock acquisition gives a cold index build only 2s, so finish it before the first write. */
+    await mongoose.models.ResourceLock.createIndexes();
     const upload = multer({ dest: directory });
     app = express();
     // Authenticated user/config fixture; exercise real multipart parsing, route, guard and DB.

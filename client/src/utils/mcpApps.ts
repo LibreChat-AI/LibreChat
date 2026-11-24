@@ -1,5 +1,4 @@
 import {
-  Tools,
   request,
   apiBaseUrl,
   isMcpAppMimeType,
@@ -13,7 +12,10 @@ import type {
   ReadResourceResult,
   ListResourceTemplatesResult,
 } from '@modelcontextprotocol/sdk/types.js';
-import type { MCPAppCspLimits, TAttachment, UIResource } from 'librechat-data-provider';
+import type { MCPAppCspLimits, UIResource } from 'librechat-data-provider';
+
+export { getResourceKey, isMcpAppResource, selectToolCallUIResources } from '@librechat/chat';
+export type { MCPAppResourceOccurrence } from '@librechat/chat';
 
 export type AppToolResult = {
   content: unknown[];
@@ -37,17 +39,6 @@ export function getSupportedMCPAppPermissions(
     supported.clipboardWrite = {};
   }
   return Object.keys(supported).length > 0 ? supported : undefined;
-}
-
-/**
- * An MCP App resource is server-bound and declares the MCP Apps HTML profile
- * (`text/html;profile=mcp-app`). Only these run the App Bridge handshake; plain `text/html`
- * resources are static and must render through a srcDoc iframe instead.
- */
-export function isMcpAppResource(resource: UIResource): boolean {
-  // Shared with the server's app-backed classification so the two sides cannot drift: a substring
-  // test here accepted mime types the parser refuses to attach bridge fields to.
-  return !!resource.toolName && !!resource.serverName && isMcpAppMimeType(resource.mimeType);
 }
 
 /**
@@ -132,52 +123,6 @@ export function withSandboxCsp(
   } catch {
     return { url: sandboxUrl, applied: undefined };
   }
-}
-
-/**
- * Stable identity for a UI resource across re-renders. Keying render state by array index lets a
- * removed resource hand its loaded/torn-down state and measured height to whichever resource
- * reconciles onto its index.
- */
-export function getResourceKey(resource: UIResource): string {
-  return resource.resourceId || resource.uri;
-}
-
-export type MCPAppResourceOccurrence = {
-  attachment: TAttachment;
-  key: string;
-  resource: UIResource;
-};
-
-/** MCP Apps owned by correlated attachment wrappers. Legacy HTML remains marker-owned. */
-export function selectToolCallUIResources(attachments?: TAttachment[]): MCPAppResourceOccurrence[] {
-  const occurrences = new Map<string, number>();
-  return (attachments ?? []).flatMap((attachment) => {
-    if (attachment.type !== Tools.ui_resources) {
-      return [];
-    }
-    const value = attachment[Tools.ui_resources];
-    const resources = Array.isArray(value) ? (value as UIResource[]) : [];
-    const owner = attachment as TAttachment & {
-      toolCallId?: string;
-      agentId?: string;
-      stepId?: string;
-    };
-    return resources.flatMap((resource) => {
-      if (!isMcpAppResource(resource)) {
-        return [];
-      }
-      const semanticKey = JSON.stringify([
-        owner.toolCallId,
-        owner.agentId,
-        owner.stepId,
-        getResourceKey(resource),
-      ]);
-      const occurrence = occurrences.get(semanticKey) ?? 0;
-      occurrences.set(semanticKey, occurrence + 1);
-      return [{ attachment, key: JSON.stringify([semanticKey, occurrence]), resource }];
-    });
-  });
 }
 
 async function postMCPAppRequest<T>(

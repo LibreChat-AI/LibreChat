@@ -253,6 +253,11 @@ function attachResponseCleanup(context: MCPRequestContext, res?: MCPResponseLike
   }
 }
 
+/** The request's context if one was opened for it. Never opens one. */
+export function findMCPRequestContext(req?: object): MCPRequestContext | undefined {
+  return req ? contexts.get(req) : undefined;
+}
+
 export function getMCPRequestContext(
   req?: object,
   res?: MCPResponseLike,

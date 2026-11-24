@@ -24,8 +24,12 @@ export interface ISchedule {
   file_ids?: string[];
   tools?: string[];
   mcpConsent?: ScheduledMCPEnrollment;
+  /** Set when the owner edits a schedule they never authorized: its MCP tools then need a grant. */
+  mcpConsentRequired?: boolean;
   cron?: string;
   enabled: boolean;
+  /** Run only while every MCP server the agent uses is ready. Unset, one that is not is left out. */
+  mcpStrict?: boolean;
   disabledReason?: ScheduleDisabledReason;
   nextRunAt?: Date;
   leaseUntil?: Date;
@@ -83,7 +87,12 @@ export interface IScheduleDocument extends Omit<ISchedule, 'id' | '_id'>, Docume
 export interface IScheduleRun {
   mcp?: ScheduleMCPOutcome[];
   _id?: Types.ObjectId;
+  /** A schedule's id on its own row. On a row of another kind, the delivery's key. */
   scheduleId: string;
+  /** Whose run the row records, where that is not a schedule. */
+  kind?: 'subscription';
+  /** That subject's id, on a row that holds a `kind`. */
+  subject?: string;
   user: Types.ObjectId;
   tenantId?: string;
   scheduledFor: Date;

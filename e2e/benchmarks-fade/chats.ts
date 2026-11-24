@@ -99,7 +99,11 @@ export async function openChat(
   chat: BenchChat,
 ): Promise<{ nodes: number; rows: number }> {
   await page.addInitScript(
-    ({ theme, speech }) => {
+    ({ theme, speech, storage }) => {
+      for (const pair of storage) {
+        const at = pair.indexOf('=');
+        localStorage.setItem(pair.slice(0, at), pair.slice(at + 1));
+      }
       if (!speech) {
         localStorage.setItem('textToSpeech', 'false');
       }
@@ -108,7 +112,13 @@ export async function openChat(
       }
     },
     /** Read-aloud stays on, as it is by default: it puts an `<audio>` element in every row. */
-    { theme: process.env.FADE_PERF_THEME, speech: process.env.FADE_PERF_TTS !== '0' },
+    {
+      theme: process.env.FADE_PERF_THEME,
+      speech: process.env.FADE_PERF_TTS !== '0',
+      storage: (process.env.FADE_PERF_STORAGE ?? '')
+        .split(',')
+        .filter((pair) => pair.includes('=')),
+    },
   );
   await page.goto(`/c/${chat.id}`, { timeout: 180_000 });
   await expect(messagesView(page).locator('.message-render').first()).toBeAttached({

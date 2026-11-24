@@ -13,6 +13,7 @@ import {
   useToastContext,
 } from '@librechat/client';
 import type {
+  TMessage,
   ParentSubagentTaskSummary,
   SubagentControlAction,
   SubagentControlReceipt,
@@ -36,6 +37,7 @@ import {
 } from '../../react/subagents/adapters';
 import {
   agentAuthor,
+  callerAuthor,
   useParentAuthor,
   resolveChildAgent,
   readableSubagentType,
@@ -52,10 +54,14 @@ import {
   useSubagentPanelState,
   useSubagentPanelActions,
 } from '../../react/subagents/surface';
+import {
+  resolveSubagentAgentId,
+  resolvePendingSubagentAgentId,
+} from '../../react/subagents/identity';
+import { useFollowedThread, useThreadFollows } from '../../react/subagents/follows';
 import { SubagentActivity, SubagentActivityScrollSurface } from './transcript';
 import { eventSubagentSelection } from '../../react/subagents/eventSelection';
 import { isMacPlatform, resolveComposerKeyDown } from '../../core/shortcuts';
-import { resolveSubagentAgentId } from '../../react/subagents/identity';
 import { TaskContentScopeContext } from '../../react/subagents/scope';
 import { isLiveSubagentStatus } from '../../react/subagents/status';
 import { useParentSubagents } from '../../react/subagents/parents';
@@ -64,6 +70,8 @@ import { useSubagentsHost } from '../../react/subagents/host';
 import { subagentProgressKey } from '../../core/stream/state';
 import { useMessagePartsHost } from '../../react/host';
 import SubagentConversation from './conversation';
+import PendingFace from '../parts/PendingFace';
+import FollowedChildThread from './followed';
 
 const EVENT_TASK_PAGE_SIZE = 3;
 const TERMINAL_CONTROL_REASONS = new Set([
@@ -72,6 +80,17 @@ const TERMINAL_CONTROL_REASONS = new Set([
   'task_cancelled',
   'task_failed',
 ]);
+
+/**
+ * Whether a stored reply came without the parts it was built from. A child's result row keeps
+ * its content only when it was streamed and fits the row's budget; otherwise its tool calls and
+ * intermediate output live in the durable projection alone, which a conversation cannot draw.
+ */
+const repliesLackParts = (messages: readonly TMessage[]): boolean =>
+  messages.some(
+    (message) =>
+      !message.isCreatedByUser && !(Array.isArray(message.content) && message.content.length > 0),
+  );
 
 const isTerminalControlReason = (reason?: string): boolean =>
   reason != null && TERMINAL_CONTROL_REASONS.has(reason);
@@ -169,13 +188,17 @@ export default function SubagentThreadPanel({
       selection.partIndex,
     ),
   );
-  const parentAuthor = useParentAuthor(
+  const dispatchAuthor = useParentAuthor(
     selection.parentConversationId,
     selection.parentMessageId,
     localize('com_ui_subagent_parent_agent'),
     selection.toolCallId,
     selection.partIndex,
     selection.durable?.threadId,
+  );
+  const parentAuthor = useMemo(
+    () => callerAuthor(selection.caller, dispatchAuthor, agentsMap),
+    [agentsMap, dispatchAuthor, selection.caller],
   );
   const threadId = selection.durable?.threadId ?? '';
   const taskId = selection.durable?.taskId ?? '';
@@ -258,11 +281,28 @@ export default function SubagentThreadPanel({
     selection.subagentIdentity?.subagentKind ??
     byThreadId.get(threadId)?.subagentKind;
   const isSelfSpawn = isSelfSpawnType(selection.subagentType, childKind);
+  /** A live foreground call whose child has not reported yet: nothing but its arguments says
+   *  who it will be. */
+  const childPending =
+    progress == null &&
+    selection.event == null &&
+    selection.durable == null &&
+    selection.subagentIdentity == null &&
+    selection.isSubmitting &&
+    selection.runStepStatus == null &&
+    selection.initialProgress < 1;
   const foregroundAgentId =
     childKind === 'graph'
       ? undefined
       : (resolveSubagentAgentId(progress, selection.subagentIdentity) ??
-        byThreadId.get(threadId)?.agentId);
+        byThreadId.get(threadId)?.agentId ??
+        (childPending
+          ? resolvePendingSubagentAgentId(selection.subagentType, agentsMap)
+          : undefined));
+  /** Before the parent has named a type there is no alias to show either. */
+  const unnamedChild = localize(
+    selection.subagentType === '' ? 'com_ui_subagent_unnamed' : 'com_ui_subagent_actor',
+  );
   const foregroundAgent = foregroundAgentId == null ? undefined : agentsMap?.[foregroundAgentId];
   /** Named the way main chat names an agent turn — never by its id. A
    *  self-spawn is the parent agent working on its own behalf. */
@@ -271,7 +311,7 @@ export default function SubagentThreadPanel({
     (isSelfSpawn
       ? parentAuthor.name
       : readableSubagentType(selection.subagentType, foregroundAgentId, childKind)) ||
-    localize('com_ui_subagent_actor');
+    unnamedChild;
   const selectedEventActorName =
     (selectedEventActor?.agentId == null
       ? undefined
@@ -294,9 +334,56 @@ export default function SubagentThreadPanel({
       taskView?.status === 'interrupted' ||
       taskView?.status === 'cancelled');
   const priorTerminalRef = useRef(false);
+  /** A background child's thread is a conversation of its own, so it is followed like one: its
+   *  stored messages and the generation running under it, drawn by main chat's list. Event
+   *  threads and foreground children keep the durable view. */
+  const followable =
+    host.useThreadChat != null &&
+    selection.host === 'conversation' &&
+    selection.durable != null &&
+    selection.event == null &&
+    threadId !== '';
+  const followLive = followable && taskView?.status === 'running';
+  /** One follower per thread on the page: where the page shares them, the card previewing this
+   *  child and this panel read the same stream; elsewhere the panel follows the thread itself. */
+  const sharedFollows = useThreadFollows();
+  const ownFollowed = host.useThreadChat?.(selection.parentConversationId, threadId, {
+    live: followLive,
+    enabled: followable && sharedFollows == null,
+  });
+  const sharedFollowed = useFollowedThread(threadId, {
+    live: followLive,
+    enabled: followable && sharedFollows != null,
+  });
+  const followed = sharedFollows == null ? ownFollowed : sharedFollowed;
+  /** Rows that are not being streamed into: the stored ones, as first read or as read again at
+   *  a run's end. */
+  const followedSettled = followed != null && !followed.isLoading && !followed.isFollowing;
+  const followedMessages = followed?.messages;
+  const historyUnstored = useMemo(
+    () => followedSettled && followedMessages != null && repliesLackParts(followedMessages),
+    [followedSettled, followedMessages],
+  );
+  /** The durable view is the reader when the thread cannot be shown as a conversation: its
+   *  messages could not be read (a server without the route), a running task has no stream left
+   *  to follow (a server that gives children no generation job, or a stream lost for good), or
+   *  its stored replies do not hold their own history. An attachment not yet tried is none of
+   *  these. */
+  const unfollowable =
+    followed != null &&
+    (followed.isLoadError || (followLive && followed.isUnattached) || historyUnstored);
+  /** Kept once chosen for a thread, so the body does not swap back when the run the durable view
+   *  was drawing ends. */
+  const [durableThreadId, setDurableThreadId] = useState<string>();
+  useEffect(() => {
+    if (followable && unfollowable) {
+      setDurableThreadId(threadId);
+    }
+  }, [followable, threadId, unfollowable]);
+  const follows = followable && followed != null && durableThreadId !== threadId && !unfollowable;
   const contentStream = panelStore.useActivityStream(
     selection,
-    !durableTerminal || eventTaskRunning,
+    !follows && (!durableTerminal || eventTaskRunning),
   );
 
   useEffect(() => {
@@ -374,6 +461,14 @@ export default function SubagentThreadPanel({
       const draft = stillItsOwnComposer
         ? controlMessageRef.current.trim()
         : (continuation?.text ?? '');
+      if (result.conversation != null && navigation.openBeside != null) {
+        /** The continuation takes this panel's place beside the conversation, and the words
+         *  the reader sent to get here are its next turn. */
+        if (stillItsOwnComposer) setControlMessage('');
+        resetSelection();
+        navigation.openBeside(result.conversation, draft === '' ? undefined : draft);
+        return;
+      }
       if (continuedConversationId != null && draft !== '') {
         handOffComposerText(continuedConversationId, draft);
       }
@@ -954,35 +1049,50 @@ export default function SubagentThreadPanel({
   );
   /** One author for the header, the composer and every child turn, so the three
    *  can never name the child differently. */
-  const childAuthor = useMemo(
-    () =>
-      selection.event != null
-        ? agentAuthor(selectedActorAgent, selectedEventActorName)
-        : resolveSubagentAuthor(
-            {
-              agentId: selectedActorAgentId,
-              subagentType: selection.subagentType,
-              subagentKind: childKind,
-              title: threadView?.title ?? byThreadId.get(threadId)?.title,
-            },
-            parentAuthor,
-            agentsMap,
-            localize('com_ui_subagent_actor'),
-          ),
-    [
-      agentsMap,
-      byThreadId,
-      childKind,
-      localize,
+  const childAuthor = useMemo(() => {
+    if (selection.event != null) {
+      return agentAuthor(selectedActorAgent, selectedEventActorName);
+    }
+    const author = resolveSubagentAuthor(
+      {
+        agentId: selectedActorAgentId,
+        subagentType: selection.subagentType,
+        subagentKind: childKind,
+        title: threadView?.title ?? byThreadId.get(threadId)?.title,
+      },
       parentAuthor,
-      selectedActorAgent,
-      selectedActorAgentId,
-      selectedEventActorName,
-      selection.event,
-      selection.subagentType,
-      threadId,
-      threadView?.title,
-    ],
+      agentsMap,
+      unnamedChild,
+    );
+    /** Until it is known whom the call goes to, the child wears no one's face. */
+    return childPending && author.agent == null && !isSelfSpawn
+      ? { ...author, icon: <PendingFace /> }
+      : author;
+  }, [
+    agentsMap,
+    byThreadId,
+    childKind,
+    childPending,
+    isSelfSpawn,
+    parentAuthor,
+    selectedActorAgent,
+    selectedActorAgentId,
+    selectedEventActorName,
+    selection.event,
+    selection.subagentType,
+    threadId,
+    threadView?.title,
+    unnamedChild,
+  ]);
+  /**
+   * Who a child's brief came from. A self-spawn is briefed by the agent it runs as, and its
+   * enclosing message can belong to another agent on a parallel lane, so the child's author is
+   * the one to show; any other child is briefed by the agent that dispatched it.
+   */
+  const dispatcher = isSelfSpawn && selection.event == null ? childAuthor : parentAuthor;
+  const briefAuthor = useMemo(
+    () => ({ icon: dispatcher.icon, label: dispatcher.name }),
+    [dispatcher.icon, dispatcher.name],
   );
   const panelTitle = childAuthor.name;
   const actorOptions = useMemo<OptionWithIcon[]>(() => {
@@ -1052,6 +1162,9 @@ export default function SubagentThreadPanel({
       ),
     [taskView, taskId],
   );
+  /** The card's snapshot says the brief is still being written; once the child reports, it has
+   *  started, even if the card that would refresh the snapshot has since unmounted. */
+  const briefing = selection.briefing === true && progress == null;
   const conversationTurns = useMemo(() => {
     const durableTurns = retainedTurnsValid
       ? mergeChildConversationTurns(
@@ -1116,6 +1229,7 @@ export default function SubagentThreadPanel({
       {
         taskId: taskId || `${selection.parentMessageId}:${selection.toolCallId}`,
         ...(selectedOutcome == null ? {} : { outcome: selectedOutcome }),
+        ...(briefing ? { briefing: true } : {}),
         trigger: {
           kind:
             selection.event == null ? ('parent_dispatch' as const) : ('external_event' as const),
@@ -1139,6 +1253,7 @@ export default function SubagentThreadPanel({
     selectedOutcome,
     taskId,
     turnDetailOverrides,
+    briefing,
   ]);
   const effectiveTurnDetailStates = useMemo(() => {
     const states = new Map(turnDetailStates);
@@ -1545,7 +1660,7 @@ export default function SubagentThreadPanel({
         <SubagentConversation
           turns={conversationTurns}
           author={childAuthor}
-          parentAuthor={isSelfSpawn && selection.event == null ? childAuthor : parentAuthor}
+          parentAuthor={dispatcher}
           conversationId={threadId || selection.parentConversationId}
           interactive={selection.host === 'conversation' && selection.durable == null}
           recovery={
@@ -1695,7 +1810,23 @@ export default function SubagentThreadPanel({
         scopeKey: `${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${selection.partIndex}`,
         children: (
           <TaskContentScopeContext.Provider value={receiptScope}>
-            {activityPanel}
+            {follows && followed != null ? (
+              <FollowedChildThread
+                threadId={threadId}
+                followed={followed}
+                agentId={taskView?.agentId ?? foregroundAgentId}
+                briefAuthor={briefAuthor}
+                controls={activity.controls}
+                controlsTruncated={activity.controlsTruncated}
+                onCancelControl={
+                  controlAvailable && !controlPending
+                    ? (controlId) => submitControl('cancel_message', controlId)
+                    : undefined
+                }
+              />
+            ) : (
+              activityPanel
+            )}
           </TaskContentScopeContext.Provider>
         ),
       })}
