@@ -25,6 +25,7 @@ const {
   buildAgentContextAttachmentsByAgentId,
   createSafeUser,
   initializeAgent,
+  assertAgentModelAllowed,
   loadSkillStates,
   loadSkillAccess,
   getBalanceConfig,
@@ -140,7 +141,6 @@ const { filterFilesByAgentAccess } = require('~/server/services/Files/permission
 const { resolveConfigServers, getAccessibleMcpServerNames } = require('~/server/services/MCP');
 const { resolveConversationTitle } = require('~/server/services/Endpoints/titlePolicy');
 const { getMCPManager } = require('~/config');
-const { logViolation } = require('~/cache');
 const db = require('~/models');
 
 const filterFilesByRemoteAgentAccess = (params) =>
@@ -167,10 +167,10 @@ function handleExecutionError({ error, res, appConfig }) {
       error.body.error,
     );
   }
-  const errorMetadata = getAgentErrorMetadata(error);
+  const errorMetadata = getAgentErrorMetadata(error, protectionEnabled);
   const statusCode = errorMetadata?.status ?? 500;
   const errorType = statusCode >= 400 && statusCode < 500 ? 'invalid_request' : 'server_error';
-  const errorCode = !protectionEnabled ? errorMetadata?.code : undefined;
+  const errorCode = errorMetadata?.code;
   if (errorCode === undefined) {
     sendResponsesErrorResponse(res, statusCode, errorMessage, errorType);
   } else {
@@ -574,6 +574,8 @@ const executeResponse = async (envelope, { req, res }) => {
         );
       }
 
+      const getEndpointModels = (endpoint) => getEndpointModelsConfig(req, endpoint);
+      await assertAgentModelAllowed({ agent, getEndpointModels });
       req.turnStartedAt = envelope.receivedAt;
       const { decision: codeEnvironmentDecision, conversation: admittedConversation } =
         await resolveAdmittedCodeEnvironmentDecision({
@@ -818,7 +820,7 @@ const executeResponse = async (envelope, { req, res }) => {
           primaryConfig,
           endpointOption,
           allowedProviders,
-          getEndpointModels: (endpoint) => getEndpointModelsConfig(req, endpoint),
+          getEndpointModels,
           loadTools,
           requestFiles: [],
           conversationId,
@@ -871,7 +873,6 @@ const executeResponse = async (envelope, { req, res }) => {
             );
             return hasPermissions(permissions, requiredPermission);
           },
-          logViolation,
           db: dbMethods,
           onAgentInitialized: (loadedAgentId, loadedAgent, config) => {
             agentToolContexts.set(
