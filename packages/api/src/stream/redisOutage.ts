@@ -1,4 +1,7 @@
-const REDIS_RECOVERY_MS = 30_000;
+export interface RedisFinalizationRecovery {
+  readonly timeoutMs: number;
+  deadline?: number;
+}
 
 export function isRedisOutage(error: unknown): boolean {
   return (
@@ -15,20 +18,25 @@ export function isRedisOutage(error: unknown): boolean {
   );
 }
 
-/** Retry only operations whose result can be safely recovered after a lost reply. */
-export async function retryRedisFinalization<T>(run: () => Promise<T>): Promise<T> {
-  const deadline = performance.now() + REDIS_RECOVERY_MS;
+/** Share one retry window across phases without timing out in-flight Redis commands.
+ * Each phase gets its first attempt even after expiry, so a writable Redis can still accept a drain. */
+export async function retryRedisFinalization<T>(
+  recovery: RedisFinalizationRecovery | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  if (recovery == null || recovery.timeoutMs === 0) return run();
   let delay = 100;
   for (;;) {
     try {
       return await run();
     } catch (error) {
-      if (!isRedisOutage(error) || performance.now() + delay >= deadline) {
-        throw error;
-      }
-      await new Promise<void>((resolve) =>
-        setTimeout(resolve, delay - Math.random() * delay * 0.25),
-      );
+      if (!isRedisOutage(error)) throw error;
+      const now = performance.now();
+      const deadline = (recovery.deadline ??= now + recovery.timeoutMs);
+      const wait = delay - Math.random() * delay * 0.25;
+      if (now + wait >= deadline) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, wait));
+      if (performance.now() >= deadline) throw error;
       delay = Math.min(delay * 2, 1_000);
     }
   }

@@ -789,8 +789,12 @@ const PROVIDER_BEGIN_LUA =
  * CAS, so a timeout cannot overwrite a normal FINAL (or vice versa). */
 const TERMINAL_PERSISTENCE_FINALIZE_LUA =
   'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
-  'if redis.call("HGET", KEYS[1], "terminalPersistencePending") ~= "1" then return 0 end ' +
+  'if redis.call("HGET", KEYS[1], "terminalPersistencePending") ~= "1" then ' +
+  'if ARGV[3] ~= "" and redis.call("HGET", KEYS[1], "__terminalPersistenceAttempt") == ARGV[3] then return 1 end ' +
+  'return 0 end ' +
   'redis.call("HSET", KEYS[1], "terminalPersistencePending", "0", "finalEvent", ARGV[2]) ' +
+  'if ARGV[3] ~= "" then redis.call("HSET", KEYS[1], "__terminalPersistenceAttempt", ARGV[3]) ' +
+  'else redis.call("HDEL", KEYS[1], "__terminalPersistenceAttempt") end ' +
   'redis.call("HDEL", KEYS[1], "__terminalAttemptId", "__terminalAttemptSteers") ' +
   'return 1';
 
@@ -2793,6 +2797,7 @@ export class RedisJobStore implements IJobStoreV2 {
     streamId: string,
     expectedCreatedAt: number,
     finalEvent: string,
+    attemptId?: string,
   ): Promise<boolean> {
     return (
       Number(
@@ -2802,6 +2807,7 @@ export class RedisJobStore implements IJobStoreV2 {
           KEYS.job(streamId),
           String(expectedCreatedAt),
           finalEvent,
+          attemptId ?? '',
         ),
       ) === 1
     );
@@ -3120,14 +3126,15 @@ export class RedisJobStore implements IJobStoreV2 {
       throw new Error('Steer-draining status transitions must be terminal');
     }
     const attempt =
-      args.recoverRedis === true &&
+      args.redisRecovery != null &&
       args.expectCreatedAt != null &&
       args.expectProviderExecutionId != null &&
       args.patch?.terminalPersistencePending === true
         ? randomUUID()
         : undefined;
     const run = () => this.transitionStatusInternal(streamId, args, true, attempt);
-    const result = attempt == null ? await run() : await retryRedisFinalization(run);
+    const result =
+      attempt == null ? await run() : await retryRedisFinalization(args.redisRecovery, run);
     return Array.isArray(result) ? result : null;
   }
 

@@ -1847,6 +1847,7 @@ export const DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS = 300_000;
 /** Below the idle cutoff of common proxies (nginx 60 s, Cloudflare 100 s), so a
  * stream that is silent while a tool runs is not closed underneath the client. */
 export const DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS = 25_000;
+export const DEFAULT_REDIS_FINALIZATION_RECOVERY_TIMEOUT_MS: number = 30_000;
 export const DEFAULT_CACHE_CLEAR_TIMEOUT_MS = 1000;
 
 /** Deployment tuning cannot remove the parser's deadline or process admission ceiling. */
@@ -2039,6 +2040,13 @@ export const agentsEndpointSchema = baseEndpointSchema
           message: 'Use 0 to disable, or at least 1000 ms',
         })
         .default(DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS),
+      /** Shared Redis retry window after the first terminalization or drain failure; 0 disables retries. */
+      redisFinalizationRecoveryTimeoutMs: z
+        .number()
+        .int()
+        .min(0)
+        .max(300_000)
+        .default(DEFAULT_REDIS_FINALIZATION_RECOVERY_TIMEOUT_MS),
       /** Graph steps an agent run may take; a run with fewer than 1 cannot take a step. */
       recursionLimit: z.number().int().min(1).optional(),
       disableBuilder: z.boolean().optional().default(false),

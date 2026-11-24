@@ -4,6 +4,7 @@ import type { Redis, Cluster } from 'ioredis';
 import type { IEventTransport, PreemptMessage } from '~/stream/interfaces/IJobStore';
 import type { ChunkPublicationOptions } from '~/stream/internal/chunkPublication';
 import type { ReplayLimits, ReplayPublication } from '../internal/replay';
+import type { RedisFinalizationRecovery } from '../redisOutage';
 import {
   readChunkEmission,
   parseChunkEmission,
@@ -1751,7 +1752,7 @@ export class RedisEventTransport implements IEventTransport {
     streamId: string,
     generationId: number,
     providerExecutionId: string,
-    recoverRedis?: true,
+    redisRecovery?: RedisFinalizationRecovery,
   ): Promise<boolean> {
     try {
       const record = () =>
@@ -1761,7 +1762,7 @@ export class RedisEventTransport implements IEventTransport {
           'EX',
           PROVIDER_DRAIN_TTL_SECONDS,
         );
-      await (recoverRedis ? retryRedisFinalization(record) : record());
+      await retryRedisFinalization(redisRecovery, record);
       return true;
     } catch (error) {
       logger.error(`[RedisEventTransport] Failed to persist provider drain proof:`, error);

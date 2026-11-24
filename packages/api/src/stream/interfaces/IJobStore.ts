@@ -20,6 +20,7 @@ import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { ReplayLimits, ReplayPublication } from '../internal/replay';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
+import type { RedisFinalizationRecovery } from '../redisOutage';
 import type { RecoveredSteerPayload } from '../SteerRecovery';
 import type { AuthoredSkillBinding } from '~/agents/authored';
 import type { RunTrigger } from '~/agents/authority/trigger';
@@ -780,7 +781,7 @@ export interface JobStatusTransition {
   /** Fence an old provider segment after the same generation has resumed. */
   expectProviderExecutionId?: string;
   /** Allow the Redis store to resume this exact persistence-owning terminal CAS. */
-  recoverRedis?: boolean;
+  redisRecovery?: RedisFinalizationRecovery;
   /**
    * Additional guard: reject the transition when the store's clock has reached
    * this absolute deadline. The comparison is part of the same atomic operation
@@ -1261,6 +1262,8 @@ export interface IJobStoreV2 extends IJobStore {
     streamId: string,
     expectedCreatedAt: number,
     finalEvent: string,
+    /** Redis may replay the result only for this exact persistence attempt. */
+    attemptId?: string,
   ): Promise<boolean>;
 
   /**
@@ -1925,7 +1928,7 @@ export interface IEventTransport {
     streamId: string,
     generationId: number,
     providerExecutionId: string,
-    recoverRedis?: true,
+    redisRecovery?: RedisFinalizationRecovery,
   ): Promise<boolean>;
   hasProviderDrain?(
     streamId: string,

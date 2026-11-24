@@ -40,6 +40,7 @@ import type {
   EarlyBufferRecoveryFailureReason,
   EarlyBufferRecoveryOutcome,
 } from '../types/earlyBufferRecovery';
+import type { RedisFinalizationRecovery } from './redisOutage';
 import type { AgentStartupTelemetry } from '~/agents/startup';
 import type { RecoveredSteerPayload } from './SteerRecovery';
 import type { SteerContentView } from './SteeringLifecycle';
@@ -725,7 +726,6 @@ export interface GenerationSettledEvent {
 export type GenerationSettledListener = (event: GenerationSettledEvent) => void;
 
 export interface TerminalJobClaim {
-  readonly recoverRedis?: true;
   readonly streamId: string;
   readonly createdAt: number;
   readonly conversationId?: string;
@@ -963,6 +963,7 @@ class GenerationJobManagerClass {
 
   /** Exact local runtime observed when a claim won; never clean a later runtime. */
   private terminalClaimRuntimes = new WeakMap<TerminalJobClaim, RuntimeJobState | null>();
+  private terminalClaimRecoveries = new WeakMap<TerminalJobClaim, RedisFinalizationRecovery>();
 
   /** Claims whose durable final exists but whose DONE transport publication
    * failed. Retain their job record through normal finish so the forced
@@ -996,7 +997,7 @@ class GenerationJobManagerClass {
    */
   private readonly openProviderExecutions = new Map<
     string,
-    { promise: Promise<void>; settle: () => void; recoverRedis: boolean }
+    { promise: Promise<void>; settle: () => void; redisRecovery?: RedisFinalizationRecovery }
   >();
 
   /** Whether we're using Redis stores */
@@ -4164,7 +4165,6 @@ class GenerationJobManagerClass {
       persistencePending?: boolean;
       failedPauseActionId?: string;
       expectedProviderExecutionId?: string;
-      recoverRedis?: boolean;
     } = {},
   ): Promise<TerminalJobClaim | null> {
     if (
@@ -4180,17 +4180,22 @@ class GenerationJobManagerClass {
     }
     const observedRuntime = this.runtimeState.get(streamId);
     const targetCreatedAt = expectedCreatedAt ?? observedRuntime?.createdAt;
-    const recoverRedis =
-      this._isRedis &&
-      options.recoverRedis === true &&
+    const recovery =
+      options.persistencePending === true &&
       targetCreatedAt != null &&
-      options.expectedProviderExecutionId != null &&
-      options.persistencePending === true;
-    const read = () => this.jobStore.getJob(streamId);
-    let jobData = recoverRedis ? await retryRedisFinalization(read) : await read();
+      options.expectedProviderExecutionId != null
+        ? this.openProviderExecutions.get(
+            this.providerExecutionKey(
+              streamId,
+              targetCreatedAt,
+              options.expectedProviderExecutionId,
+            ),
+          )?.redisRecovery
+        : undefined;
+    let jobData = await retryRedisFinalization(recovery, () => this.jobStore.getJob(streamId));
     if (!jobData || (targetCreatedAt != null && jobData.createdAt !== targetCreatedAt)) {
       if (
-        recoverRedis &&
+        recovery != null &&
         jobData != null &&
         observedRuntime?.createdAt === targetCreatedAt &&
         observedRuntime?.abortController.signal.reason === REDIS_STREAM_INTERRUPTED
@@ -4254,18 +4259,15 @@ class GenerationJobManagerClass {
     const terminalError = status === 'error' ? (error ?? 'Generation failed') : undefined;
     await this.flushCoalescedStreamBuffers(streamId);
     const terminalJob = jobData;
-    const evidence = () => this.persistAgentEventRunStepEvidence(streamId, terminalJob);
-    if (recoverRedis) {
-      await retryRedisFinalization(evidence);
-    } else {
-      await evidence();
-    }
+    await retryRedisFinalization(recovery, () =>
+      this.persistAgentEventRunStepEvidence(streamId, terminalJob),
+    );
     const completedAt = Date.now();
     const drainedSteers = await this.jobStore.transitionStatusAndDrainSteers(streamId, {
       from: sourceStatus,
       to: status,
       expectCreatedAt: createdAt,
-      ...(recoverRedis && { recoverRedis: true }),
+      ...(recovery && { redisRecovery: recovery }),
       ...(options.expectedProviderExecutionId != null && {
         expectProviderExecutionId: options.expectedProviderExecutionId,
       }),
@@ -4311,7 +4313,6 @@ class GenerationJobManagerClass {
       }),
       ...(jobData.userId != null && { userId: jobData.userId }),
       status,
-      ...(recoverRedis && { recoverRedis: true as const }),
       ...(terminalError != null && { error: terminalError }),
       ...(persistencePending && {
         persistencePending: true as const,
@@ -4320,6 +4321,7 @@ class GenerationJobManagerClass {
       drainedSteers: Object.freeze([...drainedSteers]),
     });
     this.terminalClaimRuntimes.set(claim, runtime ?? null);
+    if (recovery) this.terminalClaimRecoveries.set(claim, recovery);
 
     // An aborted claim must stop its exact generation immediately. Cleanup is
     // still deferred to finishTerminalJob so terminal publication can happen
@@ -4342,6 +4344,19 @@ class GenerationJobManagerClass {
     return claim;
   }
 
+  private finalizeTerminalPayload(claim: TerminalJobClaim, payload: string): Promise<boolean> {
+    const { streamId, createdAt } = claim;
+    const recovery = this.terminalClaimRecoveries.get(claim);
+    if (!recovery || recovery.timeoutMs === 0) {
+      return this.jobStore.finalizeTerminalPersistence(streamId, createdAt, payload);
+    }
+    // The CAS receipt proves which writer committed, even if stale recovery chose identical bytes.
+    const attemptId = randomUUID();
+    return retryRedisFinalization(recovery, () =>
+      this.jobStore.finalizeTerminalPersistence(streamId, createdAt, payload, attemptId),
+    );
+  }
+
   /**
    * Durably settle and publish a persistence-owning terminal claim. Passing a
    * normal event means the controller's required writes succeeded; `null`
@@ -4349,9 +4364,21 @@ class GenerationJobManagerClass {
    * stale-owner recovery, and whichever side wins supplies the only payload
    * this method will publish.
    */
-  async publishTerminalClaim(
+  publishTerminalClaim(
     claim: TerminalJobClaim,
     finalEvent: t.ServerSentEvent | null,
+  ): Promise<{
+    finalEvent: t.ServerSentEvent;
+    persistenceFailed: boolean;
+    publicationFenced?: true;
+  }> {
+    return this.publishTerminalPayload(claim, finalEvent);
+  }
+
+  private async publishTerminalPayload(
+    claim: TerminalJobClaim,
+    finalEvent: t.ServerSentEvent | null,
+    onlyIfWon = false,
   ): Promise<{
     finalEvent: t.ServerSentEvent;
     persistenceFailed: boolean;
@@ -4364,6 +4391,7 @@ class GenerationJobManagerClass {
       throw new Error('External terminal journal owns publication');
 
     const { streamId, createdAt } = claim;
+    const recovery = this.terminalClaimRecoveries.get(claim);
     const claimedRuntime = this.terminalClaimRuntimes.get(claim) ?? undefined;
     const runtime =
       claimedRuntime &&
@@ -4397,17 +4425,14 @@ class GenerationJobManagerClass {
 
     try {
       const serialized = JSON.stringify(desiredEvent);
-      const finalize = () =>
-        this.jobStore.finalizeTerminalPersistence(streamId, createdAt, serialized);
-      const finalized = claim.recoverRedis
-        ? await retryRedisFinalization(finalize)
-        : await finalize();
+      const finalized = await this.finalizeTerminalPayload(claim, serialized);
       if (finalized) {
         publicationEvent = desiredEvent;
         durable = true;
-      } else {
-        const read = () => this.jobStore.getJob(streamId);
-        const settledJob = claim.recoverRedis ? await retryRedisFinalization(read) : await read();
+      } else if (!onlyIfWon) {
+        const settledJob = await retryRedisFinalization(recovery, () =>
+          this.jobStore.getJob(streamId),
+        );
         if (
           settledJob?.createdAt === createdAt &&
           settledJob.terminalPersistencePending !== true &&
@@ -4416,10 +4441,9 @@ class GenerationJobManagerClass {
           /** Written by whichever side won the CAS, possibly a replica that
            * predates projection. Project on read so a legacy oversized record
            * is not republished unchanged. */
-          publicationEvent =
-            settledJob.finalEvent === serialized
-              ? desiredEvent
-              : projectTerminalEvent(JSON.parse(settledJob.finalEvent) as t.ServerSentEvent);
+          publicationEvent = projectTerminalEvent(
+            JSON.parse(settledJob.finalEvent) as t.ServerSentEvent,
+          );
           durable = true;
         }
       }
@@ -4428,6 +4452,10 @@ class GenerationJobManagerClass {
         `[GenerationJobManager] Failed to finalize terminal persistence for ${streamId}:`,
         settleError,
       );
+    }
+
+    if (onlyIfWon && !durable) {
+      return { finalEvent: reconcileEvent, persistenceFailed: true, publicationFenced: true };
     }
 
     /** If durable finalization itself failed, leave the marker for bounded
@@ -4546,6 +4574,8 @@ class GenerationJobManagerClass {
 
   private async finishTerminalJobInternal(claim: TerminalJobClaim): Promise<void> {
     const { streamId, createdAt, status, error } = claim;
+    const recovery = this.terminalClaimRecoveries.get(claim);
+    const read = () => this.jobStore.getJob(streamId);
     const retainForTerminalReplay = this.terminalPublicationFailures.has(claim);
     const claimedRuntime = this.terminalClaimRuntimes.get(claim) ?? undefined;
     const runtime =
@@ -4559,7 +4589,7 @@ class GenerationJobManagerClass {
     let retainTerminalHostEvidence = false;
     let persistedLifecycle: SerializableJobData | null | undefined = null;
     if (runtime != null) {
-      persistedLifecycle = await this.jobStore.getJob(streamId).catch((lifecycleError) => {
+      persistedLifecycle = await retryRedisFinalization(recovery, read).catch((lifecycleError) => {
         logger.error('[GenerationJobManager] Failed to read terminal subscriber lifecycle', {
           streamId,
           error: lifecycleError instanceof Error ? lifecycleError.message : String(lifecycleError),
@@ -4620,7 +4650,7 @@ class GenerationJobManagerClass {
     // Error jobs stay durable long enough for late subscribers to receive the
     // stored error. A publication failure must never bypass the finally cleanup.
     try {
-      const claimedTerminalJob = await this.jobStore.getJob(streamId);
+      const claimedTerminalJob = await retryRedisFinalization(recovery, read);
       if (
         claimedTerminalJob?.createdAt === createdAt &&
         claimedTerminalJob.terminalHostActionPending === true
@@ -4659,13 +4689,13 @@ class GenerationJobManagerClass {
             }
           }
         }
-      } else if (this._cleanupOnComplete) {
+      } else if (status !== 'error' && this._cleanupOnComplete) {
         // A failed finalization write deliberately leaves any terminal pending
         // marker for bounded stale-owner recovery. Every normally finalized
         // persistence-owning claim clears it before reaching this cleanup. A
         // durable final whose DONE publish failed is retained for reconnect
         // replay even though its pending marker is already clear.
-        const terminalJob = await this.jobStore.getJob(streamId);
+        const terminalJob = await retryRedisFinalization(recovery, read);
         if (
           !retainForTerminalReplay &&
           terminalJob?.providerDrained !== false &&
@@ -4675,7 +4705,9 @@ class GenerationJobManagerClass {
         ) {
           // A same-stream replacement created after the claim makes this a safe
           // no-op rather than deleting the replacement generation.
-          await this.jobStore.deleteJob(streamId, createdAt);
+          await retryRedisFinalization(recovery, () =>
+            this.jobStore.deleteJob(streamId, createdAt),
+          );
         }
       }
     } catch (err) {
@@ -4754,7 +4786,6 @@ class GenerationJobManagerClass {
       beforeTerminalCleanup?: () => Promise<void>;
       expectedProviderExecutionId?: string;
       persistencePending?: true;
-      recoverRedis?: boolean;
     } = {},
   ): Promise<boolean> {
     const beforeErrorPublication = error ? options.beforeErrorPublication : undefined;
@@ -4767,7 +4798,6 @@ class GenerationJobManagerClass {
         options.expectedProviderExecutionId != null ||
         options.persistencePending
         ? {
-            ...(options.recoverRedis && { recoverRedis: true }),
             ...(beforeErrorPublication || options.persistencePending
               ? { persistencePending: true }
               : {}),
@@ -4782,21 +4812,16 @@ class GenerationJobManagerClass {
     }
 
     if (beforeErrorPublication) {
+      const recovery = this.terminalClaimRecoveries.get(claim);
       let persistenceFinalized = false;
       try {
         await beforeErrorPublication();
-        const reconcile = JSON.stringify(
-          buildTerminalPersistenceReconcile({
-            createdAt: claim.createdAt,
-            conversationId: claim.conversationId,
-            status: claim.status,
-          }),
-        );
-        const finalize = () =>
-          this.jobStore.finalizeTerminalPersistence(streamId, claim.createdAt, reconcile);
         persistenceFinalized =
           claim.terminalPersistenceOwner === 'external' ||
-          (claim.recoverRedis ? await retryRedisFinalization(finalize) : await finalize());
+          (await this.finalizeTerminalPayload(
+            claim,
+            JSON.stringify(buildTerminalPersistenceReconcile(claim)),
+          ));
       } catch (persistenceError) {
         logger.error(
           `[GenerationJobManager] Failed required error persistence for ${streamId}:`,
@@ -4804,7 +4829,7 @@ class GenerationJobManagerClass {
         );
         try {
           if (claim.terminalPersistenceOwner !== 'external')
-            await this.publishTerminalClaim(claim, null);
+            await this.publishTerminalPayload(claim, null, recovery != null);
         } catch (publishError) {
           logger.error(
             `[GenerationJobManager] Failed to publish error persistence reconciliation for ${streamId}:`,
@@ -8693,17 +8718,19 @@ class GenerationJobManagerClass {
         terminalPersistencePending,
       ) ?? Promise.resolve(false);
     const key = this.providerExecutionKey(streamId, expectedCreatedAt, providerExecutionId);
-    const retry =
-      terminalPersistencePending !== true && this.openProviderExecutions.get(key)?.recoverRedis;
-    await (retry ? retryRedisFinalization(recover) : recover());
+    const recovery =
+      terminalPersistencePending !== true
+        ? this.openProviderExecutions.get(key)?.redisRecovery
+        : undefined;
+    await retryRedisFinalization(recovery, recover);
     const [marked, recorded] = await Promise.all([
-      retry ? retryRedisFinalization(mark) : mark(),
-      (retry
+      retryRedisFinalization(recovery, mark),
+      (recovery
         ? this.eventTransport.recordProviderDrain?.(
             streamId,
             expectedCreatedAt,
             providerExecutionId,
-            true,
+            recovery,
           )
         : this.eventTransport.recordProviderDrain?.(
             streamId,
@@ -8711,8 +8738,7 @@ class GenerationJobManagerClass {
             providerExecutionId,
           )) ?? Promise.resolve(false),
     ]);
-    const read = () => this.jobStore.getJob(streamId);
-    const job = retry ? await retryRedisFinalization(read) : await read();
+    const job = await retryRedisFinalization(recovery, () => this.jobStore.getJob(streamId));
     if (
       marked &&
       job?.createdAt === expectedCreatedAt &&
@@ -8739,7 +8765,7 @@ class GenerationJobManagerClass {
       (job.status === 'complete' || job.status === 'aborted')
     ) {
       const remove = () => this.jobStore.deleteJob(streamId, expectedCreatedAt);
-      await (retry ? retryRedisFinalization(remove) : remove());
+      await retryRedisFinalization(recovery, remove);
     }
     return marked;
   }
@@ -8784,7 +8810,7 @@ class GenerationJobManagerClass {
     expectedCreatedAt: number,
     providerExecutionId: string,
     ownerId?: string,
-    recoverRedisFinalization?: boolean,
+    redisRecoveryTimeoutMs?: number,
   ): Promise<boolean> {
     if (providerExecutionId.length === 0 || providerExecutionId.length > 128) {
       return false;
@@ -8808,8 +8834,11 @@ class GenerationJobManagerClass {
      * attempt instead owns provider work only after its exact durable start receipt is
      * confirmed; otherwise it releases its local tracker without recording a drain. */
     // A duplicate local attempt must not close the winner's shared shutdown tracker.
-    const recoverRedis = this._isRedis && recoverRedisFinalization === true;
-    if (!this.openProviderExecution(streamId, expectedCreatedAt, providerExecutionId, recoverRedis))
+    const recovery =
+      this._isRedis && redisRecoveryTimeoutMs != null
+        ? { timeoutMs: redisRecoveryTimeoutMs }
+        : undefined;
+    if (!this.openProviderExecution(streamId, expectedCreatedAt, providerExecutionId, recovery))
       return false;
     let started: boolean;
     try {
@@ -8845,7 +8874,7 @@ class GenerationJobManagerClass {
     }
     if (!started) {
       this.closeProviderExecution(streamId, expectedCreatedAt, providerExecutionId);
-    } else if (recoverRedis) {
+    } else if (recovery) {
       const runtime = this.runtimeState.get(streamId);
       if (runtime?.createdAt === expectedCreatedAt) {
         runtime.recoverRedisFinalization = true;
@@ -8866,7 +8895,7 @@ class GenerationJobManagerClass {
     streamId: string,
     createdAt: number,
     providerExecutionId: string,
-    recoverRedis: boolean,
+    redisRecovery?: RedisFinalizationRecovery,
   ): boolean {
     const key = this.providerExecutionKey(streamId, createdAt, providerExecutionId);
     if (this.openProviderExecutions.has(key)) {
@@ -8876,7 +8905,7 @@ class GenerationJobManagerClass {
     const promise = new Promise<void>((resolve) => {
       settle = resolve;
     });
-    this.openProviderExecutions.set(key, { promise, settle, recoverRedis });
+    this.openProviderExecutions.set(key, { promise, settle, redisRecovery });
     return true;
   }
 

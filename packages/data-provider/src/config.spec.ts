@@ -189,6 +189,29 @@ describe('stream keepalive interval', () => {
   });
 });
 
+describe('Redis finalization recovery', () => {
+  it.each([
+    [undefined, 30_000],
+    [1200, 1200],
+    [0, 0],
+  ])('parses %s with a %s ms budget', (timeout, expected) => {
+    const config = configSchema.parse({
+      version: '1.0',
+      endpoints: { agents: { redisFinalizationRecoveryTimeoutMs: timeout } },
+    });
+    expect(config.endpoints?.agents?.redisFinalizationRecoveryTimeoutMs).toBe(expected);
+  });
+
+  it.each([-1, 1.5, 300_001])('rejects a retry budget of %p', (timeout) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: { agents: { redisFinalizationRecoveryTimeoutMs: timeout } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe('authenticated 2FA management rate limits', () => {
   it('accepts an account budget and defaults an empty configuration to seven requests', () => {
     for (const [input, expected] of [

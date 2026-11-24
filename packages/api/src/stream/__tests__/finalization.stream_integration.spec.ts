@@ -1,4 +1,5 @@
 import Redis from 'ioredis';
+import { DEFAULT_REDIS_FINALIZATION_RECOVERY_TIMEOUT_MS } from 'librechat-data-provider';
 import { startRedis, sleep, waitUntil } from '~/cache/__tests__/outage.helper';
 import { RedisEventTransport } from '../implementations/RedisEventTransport';
 import { GenerationJobManagerClass } from '../GenerationJobManager';
@@ -52,16 +53,15 @@ afterAll(async () => {
   }
 });
 
-async function start(streamId: string) {
+async function start(streamId: string, timeout = DEFAULT_REDIS_FINALIZATION_RECOVERY_TIMEOUT_MS) {
   const job = await manager.createJob(streamId, 'user', streamId);
   const provider = job.metadata.providerExecutionId!;
   expect(
-    await manager.beginProviderExecution(streamId, job.createdAt, provider, undefined, true),
+    await manager.beginProviderExecution(streamId, job.createdAt, provider, undefined, timeout),
   ).toBe(true);
   const options = {
     expectedProviderExecutionId: provider,
-    persistencePending: true,
-    recoverRedis: true,
+    persistencePending: true as const,
   };
   return { job, provider, options };
 }
@@ -179,4 +179,104 @@ test('a terminal generation still blocks cleanup until its exact provider drains
     true,
   );
   await expect(aborting).resolves.toMatchObject({ failureReason: 'already_settled' });
+});
+
+test.each([false, true])(
+  'resolves a lost error finalize reply without issuing a second terminal frame (stale recovery wins: %s)',
+  async (staleWins) => {
+    const id = `lost-error-reply-${staleWins}`;
+    const message = 'Generation interrupted';
+    const { job, provider, options } = await start(id);
+    const onDone = jest.fn();
+    const onError = jest.fn();
+    const sub = await manager.subscribe(id, () => undefined, onDone, onError);
+    const emitError = jest.spyOn(transport, 'emitError');
+    const emitDone = jest.spyOn(transport, 'emitDone');
+    const key = `stream:{${id}}:job`;
+    const finalize = store.finalizeTerminalPersistence.bind(store);
+    let dropped = false;
+    let payload: string | undefined;
+    const writes = jest
+      .spyOn(store, 'finalizeTerminalPersistence')
+      .mockImplementation(async (...args) => {
+        if (args[3] == null || dropped) return finalize(...args);
+        payload = args[2];
+        dropped = true;
+        if (staleWins) {
+          // The real stale-owner path writes the exact same bytes, without the writer's attempt token.
+          await redis.hset(key, 'terminalPersistenceStartedAt', String(Date.now() - 31_000));
+          await manager.getCleanupJob(id);
+          expect(await redis.hget(key, 'finalEvent')).toBe(payload);
+        } else {
+          expect(await finalize(...args)).toBe(true);
+        }
+        throw lostReply;
+      });
+    const beforeErrorPublication = jest.fn().mockResolvedValue(undefined);
+    try {
+      await expect(
+        manager.completeJob(id, message, job.createdAt, {
+          ...options,
+          beforeErrorPublication,
+        }),
+      ).resolves.toBe(true);
+      await waitUntil(() => onDone.mock.calls.length + onError.mock.calls.length > 0);
+      expect(beforeErrorPublication).toHaveBeenCalledTimes(1);
+      expect(writes.mock.calls.filter((args) => args[3] != null).map((args) => args[3])).toEqual([
+        expect.any(String),
+        writes.mock.calls[0][3],
+      ]);
+      await expect(store.getJob(id)).resolves.toMatchObject({
+        status: 'error',
+        error: message,
+        terminalPersistencePending: false,
+        finalEvent: payload,
+      });
+      expect(JSON.parse(payload!)).toMatchObject({
+        final: true,
+        reconcile: true,
+        terminalStatus: 'error',
+        generationCreatedAt: job.createdAt,
+      });
+      await expect(finalize(id, job.createdAt, payload!, 'wrong-writer')).resolves.toBe(false);
+      await expect(finalize(id, job.createdAt + 1, payload!, 'wrong-writer')).resolves.toBe(false);
+      await expect(
+        manager.completeJob(id, message, job.createdAt, { ...options, beforeErrorPublication }),
+      ).resolves.toBe(false);
+      expect(beforeErrorPublication).toHaveBeenCalledTimes(1);
+      if (staleWins) {
+        expect(emitDone).toHaveBeenCalledTimes(1);
+        expect(emitError).not.toHaveBeenCalled();
+        expect(onDone).toHaveBeenCalledTimes(1);
+        expect(onDone).toHaveBeenCalledWith(expect.objectContaining({ reconcile: true }));
+        expect(onError).not.toHaveBeenCalled();
+      } else {
+        expect(emitError).toHaveBeenCalledTimes(1);
+        expect(emitDone).not.toHaveBeenCalled();
+        expect(onError).toHaveBeenCalledTimes(1);
+        expect(onError).toHaveBeenCalledWith(message);
+        expect(onDone).not.toHaveBeenCalled();
+      }
+    } finally {
+      sub?.unsubscribe();
+      await manager.markProviderExecutionDrained(id, job.createdAt, provider);
+    }
+  },
+);
+
+test('a later provider drain does not get a fresh retry window', async () => {
+  const id = 'shared-retry-window';
+  const { job, provider, options } = await start(id, 350);
+  const read = store.getJob.bind(store);
+  const reads = jest.spyOn(store, 'getJob').mockRejectedValueOnce(lostReply);
+  const claim = await manager.claimTerminalJob(id, 'complete', undefined, job.createdAt, options);
+  await manager.publishTerminalClaim(claim!, { final: true });
+  await manager.finishTerminalJob(claim!);
+  await sleep(350);
+  reads.mockClear().mockRejectedValueOnce(lostReply).mockImplementation(read);
+  await expect(manager.markProviderExecutionDrained(id, job.createdAt, provider)).rejects.toBe(
+    lostReply,
+  );
+  expect(reads).toHaveBeenCalledTimes(1);
+  expect(await transport.hasProviderDrain(id, job.createdAt, provider)).toBe(false);
 });

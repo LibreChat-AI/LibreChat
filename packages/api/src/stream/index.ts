@@ -111,4 +111,4 @@ export type { GenerationSettlementState } from './interfaces/IJobStore';
 
 export { buildGenerationStartedResponse } from './metadata';
 
-export { isRedisStreamInterrupted } from './redisOutage';
+export { createChatFinalization } from './chatFinalization';

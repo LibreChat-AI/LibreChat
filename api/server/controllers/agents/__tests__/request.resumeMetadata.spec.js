@@ -63,7 +63,6 @@ const mockGetViolationInfo = jest.fn(() => ({
   pendingRequests: 3,
   score: 1,
 }));
-const mockIsRedisStreamInterrupted = jest.fn(() => false);
 const mockFilterPersistableAbortContent = jest.fn((content) =>
   content.filter((part) => part?.type !== 'tool_call'),
 );
@@ -361,7 +360,8 @@ jest.mock('@librechat/api', () => ({
   cleanupMCPRequestContext: (...args) => mockCleanupMCPRequestContext(...args),
   createMCPRequestContext: (...args) => mockCreateMCPRequestContext(...args),
   getMCPRequestContext: (...args) => mockGetMCPRequestContext(...args),
-  isRedisStreamInterrupted: (...args) => mockIsRedisStreamInterrupted(...args),
+  createChatFinalization: (...args) =>
+    jest.requireActual('@librechat/api').createChatFinalization(...args),
   filterPersistableAbortContent: (...args) => mockFilterPersistableAbortContent(...args),
   cleanupMCPRequestContextForReq: (...args) => mockCleanupMCPRequestContextForReq(...args),
   decrementPendingRequest: (...args) => mockDecrementPendingRequest(...args),
@@ -5520,97 +5520,6 @@ describe('ResumableAgentController resume metadata', () => {
     // An ordinary turn has no schedule to settle, whatever its response holds.
     expect(mockRecordScheduleOutcome).not.toHaveBeenCalled();
   });
-
-  it.each([true, false])(
-    'persists a Redis-interrupted turn before draining (received output: %s)',
-    async (received) => {
-      mockGenerationJobManager.isRedis = true;
-      mockIsRedisStreamInterrupted.mockImplementation(
-        (signal) => signal.reason?.code === 'TEST_OUTAGE',
-      );
-      const user = {
-        messageId: 'user-msg',
-        parentMessageId: 'parent-msg',
-        text: 'Stream a reply.',
-      };
-      const content = received ? [{ type: 'text', text: 'Received prefix' }] : [];
-      const write = jest.fn();
-      const client = {
-        options: {},
-        sendMessage: async (_text, options) => {
-          options.onStart(user, 'response-msg');
-          options.getReqData({ userMessage: user, responseMessageId: 'response-msg' });
-          options.abortController.abort(
-            Object.assign(new Error('Generation interrupted'), { code: 'TEST_OUTAGE' }),
-          );
-          const response = {
-            messageId: 'response-msg',
-            parentMessageId: user.messageId,
-            conversationId: 'conversation-123',
-            content,
-          };
-          if (await options.beforeResponsePersistence(response)) write(response.unfinished);
-          return {
-            ...response,
-            databasePromise: Promise.resolve({
-              conversation: { conversationId: 'conversation-123' },
-            }),
-          };
-        },
-      };
-      const drained = new Promise((resolve) =>
-        mockGenerationJobManager.markProviderExecutionDrained.mockImplementationOnce(resolve),
-      );
-      await AgentController(
-        {
-          user: { id: 'user-123' },
-          body: {
-            ...user,
-            conversationId: 'conversation-123',
-            endpointOption: { endpoint: 'agents' },
-          },
-          config: {},
-        },
-        createResumableResponse(),
-        jest.fn(),
-        jest.fn().mockResolvedValue({ client }),
-        null,
-      );
-      await drained;
-      const fence = { expectedProviderExecutionId: 'provider-segment-1', recoverRedis: true };
-      if (received) {
-        expect(mockGenerationJobManager.claimTerminalJob).toHaveBeenCalledWith(
-          'conversation-123',
-          'aborted',
-          undefined,
-          1000,
-          { ...fence, persistencePending: true },
-        );
-        expect(write).toHaveBeenCalledWith(true);
-        expect(mockSaveMessage).toHaveBeenCalledWith(
-          expect.anything(),
-          expect.objectContaining({ content, unfinished: true, messageId: 'response-msg' }),
-          expect.anything(),
-        );
-      } else {
-        expect(write).not.toHaveBeenCalled();
-        expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(
-          'conversation-123',
-          expect.any(String),
-          1000,
-          expect.objectContaining(fence),
-        );
-        expect(mockSaveMessage).toHaveBeenCalledWith(
-          expect.anything(),
-          expect.objectContaining({ isCreatedByUser: false, error: true }),
-          expect.anything(),
-        );
-      }
-      expect(mockSaveMessage.mock.invocationCallOrder.at(-1)).toBeLessThan(
-        mockGenerationJobManager.markProviderExecutionDrained.mock.invocationCallOrder[0],
-      );
-    },
-  );
 
   it.each([
     [
