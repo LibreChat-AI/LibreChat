@@ -22,6 +22,7 @@ import { ToolPreparation } from './parts/preparation';
 import AskUserQuestionCall from './parts/ask/Call';
 import { getPartKeyIndex } from '../core/content';
 import { WebSearchCall } from './parts/WebSearch';
+import ErrorMessage from './errors/ErrorMessage';
 import ReadFileCall from './parts/ReadFileCall';
 import SubagentCall from './parts/SubagentCall';
 import AgentHandoff from './parts/AgentHandoff';
@@ -533,6 +534,18 @@ const build = (): PartRenderers => ({
         steerId={part.steerId}
         createdAt={part.createdAt}
         isSubmitting={isSubmitting}
+      />
+    ),
+    [ContentTypes.ERROR]: ({ part }) => (
+      <ErrorMessage
+        text={
+          part[ContentTypes.ERROR] ??
+          (typeof part[ContentTypes.TEXT] === 'string'
+            ? part[ContentTypes.TEXT]
+            : part.text?.value) ??
+          ''
+        }
+        className="my-2"
       />
     ),
     [ContentTypes.AGENT_UPDATE]: ({ part, isLast, showCursor }) => (

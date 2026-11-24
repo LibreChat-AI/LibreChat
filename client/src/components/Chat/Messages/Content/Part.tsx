@@ -1,18 +1,18 @@
 import { memo } from 'react';
-import { ContentTypes } from 'librechat-data-provider';
 import { getAskUserQuestionPart } from '@librechat/chat';
 import { Part as ChatPart, partRenderers, extendPartRenderers } from '@librechat/chat/components';
 import type { TMessageContentParts, TAttachment } from 'librechat-data-provider';
 import type { PartRenderers } from '@librechat/chat/components';
-import { ErrorMessage } from './MessageContent';
+/** Registers the key dialog and recovery actions an error part draws through the host. */
+import '~/components/Messages/Content/Error/register';
 import AskUserQuestion from './AskUserQuestion';
 import ToolApproval from './ToolApproval';
 import './toolCallSlots';
 
 /**
  * What this app draws that the chat package's own renderers do not: the cards that read this
- * app's state (a paused question, approval controls) and
- * its error message. Every other part is the package's to draw.
+ * app's state (a paused question, approval controls). Every other part is the package's to
+ * draw.
  */
 export const renderers: PartRenderers = extendPartRenderers({
   claim: ({ part }) => {
@@ -28,20 +28,6 @@ export const renderers: PartRenderers = extendPartRenderers({
         questions={askUserQuestion.ask_user_question.questions}
       />
     );
-  },
-  parts: {
-    [ContentTypes.ERROR]: ({ part }) => (
-      <ErrorMessage
-        text={
-          part[ContentTypes.ERROR] ??
-          (typeof part[ContentTypes.TEXT] === 'string'
-            ? part[ContentTypes.TEXT]
-            : part.text?.value) ??
-          ''
-        }
-        className="my-2"
-      />
-    ),
   },
   /**
    * Approval controls for ANY paused agent tool, not just the generic card, so a HITL policy

@@ -265,12 +265,12 @@ const renderers = extendPartRenderers({
 />;
 ```
 
-Two things have no card in the package yet, because LibreChat's read its own state: an error part
-and a paused question (`claim`). A web search draws the package's card, with the message's
-streaming results from `SearchContext` and the image, shopping and place strips under it. A
-subagent call draws the package's card: it finds the agent it runs as through the messages host's
-`useAgentsMap`, and the share, strings and run's files through the parts host's `useShare` and
-`useToolCallChrome`.
+One thing has no card in the package yet, because LibreChat's reads its own state: a paused
+question (`claim`). An error part draws the package's `ErrorMessage`; see [Errors](#errors). A web
+search draws the package's card, with the message's streaming results from `SearchContext` and the
+image, shopping and place strips under it. A subagent call draws the package's card: it finds the
+agent it runs as through the messages host's `useAgentsMap`, and the share, strings and run's
+files through the parts host's `useShare` and `useToolCallChrome`.
 
 ### A whole message
 
@@ -328,6 +328,21 @@ what an app that has no server knows. The mock browser lane draws each of its co
 LibreChat's chat view and on that page and compares the two element by element
 (`outside-host.spec.ts`). What the package cannot draw the same way yet is listed there, each
 with the change that closes it.
+
+## Errors
+
+A failed reply draws as `ErrorMessage`: the box, the card for the failure's persisted text
+(`ErrorText`), and under it whatever the host offers a reader to do about it. Every error the
+server persists has a sentence of its own, so a host that supplies nothing still shows the right
+copy; what only the host knows comes from five optional members of `MessagePartsHost`:
+
+| Member                  | What it adds                                                                             | Without it                                                                     |
+| ----------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `useErrorEnvironment`   | The chat's conversation, the transcript's agents, the endpoint configuration, compaction | The error names its row only; key ownership is unknown, so the copy is generic |
+| `useAgentBuilderAccess` | Whether the reader may open the agent builder                                            | An agent error never claims the reader can edit the agent                      |
+| `useBalanceDisplay`     | How balances are shown: credits, a currency, or a share                                  | Balances read in credits                                                       |
+| `renderSetKeyDialog`    | The dialog for the reader's own key, opened from a key error                             | A key error offers no button                                                   |
+| `renderErrorActions`    | What a reader can do about the failure, drawn in the box under its text                  | The error stands alone                                                         |
 
 ## What the app supplies
 

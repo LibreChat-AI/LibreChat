@@ -4,9 +4,13 @@ import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import Part from '../Part';
 
-jest.mock('../MessageContent', () => ({
-  ErrorMessage: ({ text }: { text: string }) => <div data-testid="error-message">{text}</div>,
+/** An error part is the chat package's card now; this stands in for its module. */
+jest.mock('@librechat/chat/dist/components/errors/ErrorMessage.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/errors/ErrorMessage.cjs'),
+  __esModule: true,
+  default: ({ text }: { text: string }) => <div data-testid="error-message">{text}</div>,
 }));
+jest.mock('~/components/Messages/Content/Error/register', () => ({}));
 jest.mock('../AskUserQuestion', () => ({
   __esModule: true,
   default: ({ actionId, question }: { actionId: string; question?: string }) => (
@@ -58,7 +62,7 @@ const draw = (part: TMessageContentParts) =>
   render(<Part part={part} isSubmitting={false} showCursor={false} isCreatedByUser={false} />);
 
 describe('the app’s part renderers, over the chat package’s', () => {
-  it('draws an error part with the app’s error message, from whichever field holds the text', () => {
+  it('draws an error part with the package’s error message, from whichever field holds the text', () => {
     const { unmount } = draw(asPart({ type: ContentTypes.ERROR, [ContentTypes.ERROR]: 'bad' }));
     expect(screen.getByTestId('error-message')).toHaveTextContent('bad');
     unmount();
