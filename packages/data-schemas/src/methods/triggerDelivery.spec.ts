@@ -3236,6 +3236,122 @@ describe('agent trigger delivery methods', () => {
     });
   });
 
+  it('refuses to requeue a dead batch whose receipts its deadline already removed', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const orderingKey = 'batch-requeue-expired-receipt-lane';
+    const coalesceUntil = new Date(Date.now() + 60_000);
+    const shared = {
+      user,
+      orderingKey,
+      coalesceKey: 'trigger_batch_requeue_expired_receipt',
+      coalesceFrom: new Date(coalesceUntil.getTime() - 750),
+      coalesceUntil,
+      availableAt: coalesceUntil,
+      envelopeBytes: 128,
+    };
+    for (let index = 0; index < 3; index += 1) {
+      await methods.enqueueAgentTriggerDelivery(enqueueInput(shared));
+    }
+    const claim = await methods.claimNextAgentTriggerDelivery({
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+      leaseUntil: new Date(coalesceUntil.getTime() + 60_000),
+    });
+    const attempt = await methods.beginAgentTriggerDeliveryAttempt({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+    });
+    await methods.deadLetterAgentTriggerDelivery({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      attempt: attempt!,
+      error: transientFailure({ retryable: false }),
+      settledAt: coalesceUntil,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    /** The TTL monitor removes a batch row by row, so a requeue can land between two of them. */
+    const expired = await Delivery.findOneAndDelete({ batchRootId: claim!.id, status: 'dead' });
+    expect(expired).not.toBeNull();
+
+    await expect(methods.requeueAgentTriggerDelivery(claim!.id, coalesceUntil)).resolves.toBeNull();
+
+    /** What is left is dead and due: the monitor may already have removed it. */
+    const due = new Date();
+    const left = await Delivery.find({ orderingKey }).lean();
+    expect(left.filter((row) => row.status !== 'dead')).toEqual([]);
+    expect(left.filter((row) => row.expiresAt == null || row.expiresAt > due)).toEqual([]);
+    expect(
+      left.filter((row) => String(row._id) === claim!.id && row.batchMembersSettledAt == null),
+    ).toEqual([]);
+    for (const row of left.filter((row) => String(row._id) === claim!.id)) {
+      expect(row.lastError).toMatchObject({ code: 'BATCH_RECEIPTS_EXPIRED', retryable: false });
+    }
+    await expect(methods.recoverAgentTriggerLanePublications()).resolves.toBe(0);
+    await expect(methods.recoverAgentTriggerBatchReceipts()).resolves.toBe(0);
+
+    const later = await methods.enqueueAgentTriggerDelivery(
+      enqueueInput({ user, orderingKey, availableAt: coalesceUntil }),
+    );
+    await expect(
+      methods.claimNextAgentTriggerDelivery({
+        workerId: 'worker-2',
+        claimToken: 'claim-2',
+        now: coalesceUntil,
+        leaseUntil: new Date(coalesceUntil.getTime() + 60_000),
+      }),
+    ).resolves.toMatchObject({ id: later.delivery.id });
+  });
+
+  it('still fails a batch requeue when a receipt that exists cannot be prepared', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const coalesceUntil = new Date(Date.now() + 60_000);
+    const shared = {
+      user,
+      orderingKey: 'batch-requeue-stale-receipt-lane',
+      coalesceKey: 'trigger_batch_requeue_stale_receipt',
+      coalesceFrom: new Date(coalesceUntil.getTime() - 750),
+      coalesceUntil,
+      availableAt: coalesceUntil,
+      envelopeBytes: 128,
+    };
+    await Promise.all(
+      Array.from({ length: 2 }, () => methods.enqueueAgentTriggerDelivery(enqueueInput(shared))),
+    );
+    const claim = await methods.claimNextAgentTriggerDelivery({
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+      leaseUntil: new Date(coalesceUntil.getTime() + 60_000),
+    });
+    const attempt = await methods.beginAgentTriggerDeliveryAttempt({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      now: coalesceUntil,
+    });
+    await methods.deadLetterAgentTriggerDelivery({
+      id: claim!.id,
+      workerId: 'worker-1',
+      claimToken: 'claim-1',
+      attempt: attempt!,
+      error: transientFailure({ retryable: false }),
+      settledAt: coalesceUntil,
+    });
+    await Delivery.updateOne({ batchRootId: claim!.id }, { $set: { batchRootRequeueCount: 7 } });
+
+    await expect(methods.requeueAgentTriggerDelivery(claim!.id, coalesceUntil)).rejects.toThrow(
+      'Not every agent trigger batch receipt could be prepared for requeue',
+    );
+    await expect(Delivery.findById(claim!.id).lean()).resolves.toMatchObject({
+      status: 'staging',
+      requeueCount: 1,
+    });
+  });
+
   it('publishes an abandoned lane owner before allocating the next sequence', async () => {
     const user = new mongoose.Types.ObjectId();
     const orderingKey = 'publication-race';
