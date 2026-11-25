@@ -5,19 +5,27 @@ import {
   DEFAULT_RUN_GRANT_LIFETIME_HOURS,
 } from 'librechat-data-provider';
 import type {
+  RunGrantStorage,
+  RecordedRunRef,
+  Subscriptions,
+  TriggerRuns,
+  IUser,
+} from '@librechat/data-schemas';
+import type {
   ScheduleMCPOutcome,
   SubscriptionIdentity,
   Subscription,
   Connection,
 } from 'librechat-data-provider';
-import type { RunGrantStorage, IUser } from '@librechat/data-schemas';
 import type { RunGrantExecutionFactory, PolicyWording } from '~/agents/authority/execution';
+import type { SubjectAdapter, SubjectInput, Settle } from '~/agents/authority/subject';
 import type { PreflightDeps, PreflightOptions } from '~/agents/authority/preflight';
-import type { SubjectAdapter, SubjectInput } from '~/agents/authority/subject';
+import type { ExecutionContext } from '~/agents/authority/context';
 import type { RunGrantService } from '~/agents/authority/service';
 import type { RunGrantOfferDeps } from '~/agents/authority/offer';
 import type { CheckAccessParams } from '~/middleware/access';
 import type { AgentAccess } from '~/schedules/access';
+import type { RunSettings } from './settings';
 import { createRunGrantExecution } from '~/agents/authority/execution';
 import { createRunGrantService } from '~/agents/authority/service';
 import { RunGrantPolicyError } from '~/agents/authority/policy';
@@ -26,6 +34,7 @@ import { createRunGrantOffer } from '~/agents/authority/offer';
 import { createReadyCache } from '~/agents/authority/ready';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { checkAccess } from '~/middleware/access';
+import { runSettings } from './settings';
 
 /** A subscription's wording. Both strings are read outside this code: by the model and the client. */
 export const SUBSCRIPTION_WORDING: PolicyWording = {
@@ -54,12 +63,13 @@ function named({ executionContext }: SubscriptionInput): string | undefined {
  * for a request it claims.
  */
 export function subscriptionSubject(
-  getHost: () => Pick<Adapter, 'resolve' | 'execution'>,
+  getHost: () => Pick<SubscriptionHost, 'resolve' | 'execution' | 'settle'>,
 ): Adapter {
   return {
     kind: 'subscription',
     claims: (input) => named(input) != null,
     resolve: (input) => getHost().resolve(input),
+    settle: (run) => getHost().settle(run),
     get execution() {
       return getHost().execution;
     },
@@ -79,7 +89,91 @@ export type SubscriptionPreflight = (
   options: Omit<PreflightOptions<SubscriptionIdentity>, 'identity'> & { subscriptionId: string },
 ) => Promise<ScheduleMCPOutcome[]>;
 
+/** Why a subscription's delivery was not run, beside the refusal its grant check reads as. */
+export type RunRefusalCode = 'blocked' | 'duplicate' | 'capped';
+
+/**
+ * A subscription's delivery its run record refused. `blocked`: the record cannot hold the
+ * run's row yet. `duplicate`: this delivery already has a run. `capped`: the subscription has
+ * started as many runs this hour as it may. Never retried: a retry would be refused the same.
+ */
+export class RunRefusal extends RunGrantPolicyError {
+  readonly refusal: RunRefusalCode;
+  constructor(refusal: RunRefusalCode, agentId?: string) {
+    super(refusal === 'blocked' ? 'dependency_unavailable' : 'binding_mismatch', '', agentId);
+    this.name = 'RunRefusal';
+    this.refusal = refusal;
+  }
+}
+
+/**
+ * The run's own record: the subscription and the delivery that started it. Nothing for a turn
+ * that reports earlier work, whose run is the one that began it and is recorded there, or for
+ * a context that names no subscription or no delivery key.
+ */
+function recordOf(executionContext?: ExecutionContext): RunRef | undefined {
+  const source = executionContext?.source;
+  if (source?.type !== 'trigger' || source.subject?.kind !== 'subscription' || source.origin)
+    return;
+  const key = source.delivery?.key;
+  if (!key) return;
+  return {
+    subject: { kind: 'subscription', id: source.subject.id },
+    delivery: { key, event: { occurredAt: source.delivery.event.occurredAt } },
+  };
+}
+
+/** A subscription's run, found by its delivery's key. */
+type RunRef = RecordedRunRef & { readonly delivery: { readonly key: string } };
+
+/** How a run that ended counts into its subscription's failure streak; a skip counts not at all. */
+function counted(status: string): { failed: boolean } | undefined {
+  if (status === 'success') return { failed: false };
+  // As for a schedule: an interrupted run, stopped, preempted or cut off by a restart, neither
+  // counts as a failure nor ends the streak.
+  if (status === 'error') return { failed: true };
+  return undefined;
+}
+
+/**
+ * The stable reasons a run's row may keep, by the fixed text the chat route ends a turn with.
+ * Anything else, such as a provider's or a tool's error text, is stored as `run_failed`:
+ * the row is read by the owner, and an error's own words may carry what it was given.
+ */
+const REASONS: Readonly<Record<string, string>> = {
+  'Scheduled run was stopped': 'stopped',
+  'Scheduled run was interrupted before completion': 'preempted',
+  'Scheduled run reached its tool call limit before completion': 'step_limit',
+  'Scheduled run ended with an error response': 'error_response',
+  'Request aborted during initialization': 'initialization_aborted',
+};
+
+/** The code a run's row keeps for how it ended; nothing for a run that names no error. */
+export function runReason(error?: string): string | undefined {
+  if (!error) return undefined;
+  return REASONS[error] ?? 'run_failed';
+}
+
+/** The generation job store, asked for one conversation's current generation. */
+export interface JobSource {
+  getJobStore():
+    | { getJob(id: string): Promise<{ status: string; createdAt: number } | null> }
+    | null
+    | undefined;
+}
+
 export interface SubscriptionHost extends Pick<Adapter, 'resolve'> {
+  /** Records how a turn of a subscription's run ended. */
+  settle: NonNullable<Adapter['settle']>;
+  /** The deployment's bounds on a subscription's runs, as its config now sets them. */
+  bounds: () => Promise<RunSettings>;
+  /**
+   * Finishes the subscription runs nobody else will: an active run whose own generation is no
+   * longer running or paused, ended as interrupted, which does not count into its streak, and
+   * an ended run whose subscription step never landed. Only a settle records a run's real
+   * outcome. Run as the system; answers how many it finished.
+   */
+  reconcile: () => Promise<number>;
   /** What the owner may allow the subscription's runs, and the grant they made. */
   service: RunGrantService<SubscriptionIdentity>;
   execution: RunGrantExecutionFactory<SubscriptionIdentity>;
@@ -107,8 +201,15 @@ export function createSubscriptionHost(deps: {
   getRoleByName: CheckAccessParams['getRoleByName'];
   /** The owner's access to the agent now. Only `ok` lets a run start or a grant be made. */
   access: (agentId: string, user: IUser) => Promise<AgentAccess>;
-  /** Whether a run of this owner can pause for approval. Absent, it cannot. */
-  canPauseRuns?: (user: IUser) => Promise<boolean>;
+  /** The record a subscription's runs are kept in. */
+  runs: Pick<
+    TriggerRuns,
+    'reserve' | 'skip' | 'pause' | 'finish' | 'settled' | 'stranded' | 'count'
+  >;
+  /** The subscription's hourly count and failure streak. */
+  usage: Pick<Subscriptions, 'take' | 'tally'>;
+  /** The generation job store: which generation a run is, and whether it still runs. */
+  jobs: JobSource;
   /**
    * The longest a grant this owner makes may last, in hours, as the deployment sets it.
    * Absent, the default every grant has. It bounds the grant only: no value lifts the need
@@ -193,10 +294,9 @@ export function createSubscriptionHost(deps: {
       resolveEnrollment: offer.targets,
       resolveTools: offer.tools,
       resolveServers: offer.servers,
-      canPause: async (identity) => {
-        const user = await loadOwner(identity, source.findUser);
-        return user != null && (await deps.canPauseRuns?.(user)) === true;
-      },
+      // A subscription's run does not pause for its owner: nothing yet records the run again
+      // when a resume finishes it, so a call that would ask first is refused instead.
+      canPause: async () => false,
     });
   };
   const service = createService({
@@ -262,10 +362,135 @@ export function createSubscriptionHost(deps: {
         },
       }));
 
+  /** The requests that put a run on record, each the only one that may settle it. */
+  const started = new WeakSet<object>();
+
+  const settings = async (): Promise<RunSettings> =>
+    runSettings(
+      (await deps.enrollment.getAppConfig({ baseOnly: true }))?.endpoints?.agents?.events,
+    );
+
+  /**
+   * Puts a delivery's first turn on record, inside its subscription's hourly cap. A delivery
+   * over the cap is recorded as skipped and not run. The hour is counted before the row is
+   * written, so a delivery retried after the count, or delivered twice, counts again: the cap
+   * errs toward fewer runs, never more.
+   */
+  async function start(
+    ref: RunRef,
+    subscription: Subscription,
+    owner: IUser,
+    req: SubscriptionInput['req'],
+  ) {
+    const { agentId } = subscription;
+    // The conversation is the generation's own key, fixed before the run is initialized, so
+    // a sweep can ask whether the run's generation still lives from the moment it is on record.
+    const conversationId = req.body?.conversationId;
+    const named = typeof conversationId === 'string' && conversationId ? conversationId : undefined;
+    // The generation this request created for the run, before the run was initialized: a later
+    // turn in the same conversation is another generation, created at another time.
+    const job = named ? await deps.jobs.getJobStore()?.getJob(named) : undefined;
+    const row = {
+      user: owner.id as never,
+      ...(owner.tenantId != null && { tenantId: owner.tenantId }),
+      ...(named && { conversationId: named }),
+      ...(job != null && { jobCreatedAt: new Date(job.createdAt) }),
+      firedAt: new Date(),
+      configRevision: subscription.revision,
+    };
+    const bounds = await settings();
+    const perHour = Math.min(subscription.cap?.perHour ?? bounds.perHour, bounds.maxPerHour);
+    if (!(await deps.usage.take(subscription.id, owner.id, perHour))) {
+      await deps.runs.skip(ref, { ...row, status: 'skipped_cap' });
+      throw new RunRefusal('capped', agentId);
+    }
+    const reserved = await deps.runs.reserve(ref, row);
+    if ('conflict' in reserved) {
+      throw new RunRefusal(reserved.conflict === 'blocked' ? 'blocked' : 'duplicate', agentId);
+    }
+    started.add(req);
+  }
+
+  /** The subscription's own step for a run that ended: its failure streak, then the mark. */
+  async function account(ref: RunRef, owner: string, status: string, revision?: number) {
+    const count = counted(status);
+    // The row records that its run was counted, by the one writer that marks it, so a replay
+    // counts nothing however many runs were counted since. Marked first: a crash before the
+    // tally leaves the run uncounted, never counted twice.
+    if (count && (await deps.runs.count(ref))) {
+      const { failures } = await settings();
+      // Fenced on the revision the run started under: a run older than the owner's last edit,
+      // or than turning it back on, does not count into the streak that edit started.
+      const run = { key: ref.delivery.key, ...count, ...(revision != null && { revision }) };
+      await deps.usage.tally(ref.subject.id, owner, run, failures);
+    }
+    await deps.runs.settled(ref);
+  }
+
+  async function settle(run: Settle): Promise<boolean> {
+    const ref = recordOf(run.executionContext);
+    const owner = run.executionContext?.principal.userId;
+    // Only the request that put the run on record settles it. A delivery refused as a duplicate
+    // names the same row, which belongs to the request still running it.
+    if (!ref || !owner || !run.request || !started.has(run.request)) return true;
+    if (run.status === 'requires_action') {
+      const held = await deps.runs.pause(ref, {
+        ...(run.conversationId && { conversationId: run.conversationId }),
+        ...(run.checkpointNamespace && { checkpointNamespace: run.checkpointNamespace }),
+      });
+      return held != null;
+    }
+    const reason = runReason(run.error);
+    const ended = await deps.runs.finish(ref, {
+      status: run.status,
+      ...(reason && { error: reason }),
+      ...(run.conversationId && { conversationId: run.conversationId }),
+      ...(run.clearConversationId && { clearConversationId: true }),
+    });
+    if (ended == null) return false;
+    await account(ref, owner, ended.status, ended.revision);
+    return true;
+  }
+
+  /** Whether the generation a run was reserved with is the one still running or paused. */
+  async function live(run: { conversationId?: string; jobCreatedAt?: Date }): Promise<boolean> {
+    if (!run.conversationId || run.jobCreatedAt == null) return false;
+    const job = await deps.jobs.getJobStore()?.getJob(run.conversationId);
+    if (job == null || job.createdAt !== new Date(run.jobCreatedAt).getTime()) return false;
+    return job.status === 'running' || job.status === 'requires_action';
+  }
+
+  async function reconcile(): Promise<number> {
+    const { staleMs } = await settings();
+    const stranded = await deps.runs.stranded('subscription', new Date(Date.now() - staleMs), 50);
+    let finished = 0;
+    for (const { ref, run } of stranded) {
+      try {
+        let status: string = run.status;
+        if (run.status === 'started' || run.status === 'requires_action') {
+          if (await live(run)) continue;
+          // Its own generation is gone or ended without a settle: nothing here knows how the run
+          // went, so it is interrupted, which counts neither for nor against the streak.
+          const written = await deps.runs.finish(ref, { status: 'interrupted' });
+          if (written == null) continue;
+          status = written.status;
+        }
+        await account(ref as RunRef, run.owner, status, run.revision);
+        finished++;
+      } catch {
+        // One row that cannot be finished now is left for the next pass; the rest go on.
+      }
+    }
+    return finished;
+  }
+
   return {
     service,
     execution,
     ...(preflight && { preflight }),
+    settle,
+    reconcile,
+    bounds: settings,
     async resolve(input) {
       const subscriptionId = named(input);
       if (subscriptionId == null) return;
@@ -299,6 +524,10 @@ export function createSubscriptionHost(deps: {
       if (connection?.status !== 'active')
         throw new RunGrantPolicyError('provider_missing', '', agentId);
       if (!allowed) throw new RunGrantPolicyError('rbac_denied', '', agentId);
+      // A delivery's first turn is put on record; a resume and a turn that reports earlier
+      // work belong to a run already there.
+      const ref = source.resumed ? undefined : recordOf(executionContext);
+      if (ref) await start(ref, subscription, owner, req);
       return {
         identity,
         context,

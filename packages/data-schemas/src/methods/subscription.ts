@@ -84,12 +84,14 @@ export type Subscriptions = {
    * it. A run is counted once by its delivery key among the last runs counted, so a replayed
    * count adds nothing, and an older run's replay neither lengthens nor ends a newer streak; the
    * turning off is asked again on a replay, so a crash between the two is recovered. A
-   * `threshold` of 0 never turns it off.
+   * `threshold` of 0 never turns it off. Given the revision the run started under, a run of
+   * an earlier revision counts for nothing: the owner has edited or turned the subscription
+   * back on since, which starts the streak over.
    */
   tally: (
     id: string,
     owner: string,
-    run: { key: string; failed: boolean },
+    run: { key: string; failed: boolean; revision?: number },
     threshold: number,
     at?: Date,
   ) => Promise<{ suspended: boolean }>;
@@ -282,11 +284,11 @@ export function createSubscriptions(mongoose: typeof import('mongoose')): Subscr
   async function tally(
     id: string,
     owner: string,
-    run: { key: string; failed: boolean },
+    run: { key: string; failed: boolean; revision?: number },
     threshold: number,
     at = new Date(),
   ): Promise<{ suspended: boolean }> {
-    const mine = { id, user: owner };
+    const mine = { id, user: owner, ...(run.revision != null && { revision: run.revision }) };
     const fresh = { ...mine, counted: { $ne: run.key } };
     // The keys of the last runs counted, newest last, so a replay of any of them adds nothing.
     const remember = { counted: { $each: [run.key], $slice: -COUNTED } };

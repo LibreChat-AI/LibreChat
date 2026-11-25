@@ -21,6 +21,7 @@ export * from './eventRetention';
 export * from './envelope';
 export * from './authority';
 export * from './events/subject';
+export * from './events/reconcile';
 export * from './events/handlers';
 export * from './execution';
 export * from './files';

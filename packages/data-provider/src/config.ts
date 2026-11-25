@@ -2474,6 +2474,23 @@ export const agentsEndpointSchema = baseEndpointSchema
               fanout: z.number().int().min(1).max(100).optional(),
             })
             .optional(),
+          /** How a subscription's runs are bounded and kept. Each default is used when unset. */
+          runs: z
+            .object({
+              /** Runs one subscription may start in a clock hour when its owner set no cap.
+               *  Default 20. */
+              perHour: z.number().int().min(1).max(1000).optional(),
+              /** The most runs per hour any subscription may start; an owner's higher cap is held
+               *  to it. Default 100. */
+              maxPerHour: z.number().int().min(1).max(1000).optional(),
+              /** Runs in a row that may fail before the subscription is turned off; 0 never turns
+               *  it off. Default 5. */
+              failures: z.number().int().min(0).max(100).optional(),
+              /** Minutes a run may stay active with no live generation before it is ended as
+               *  interrupted. Default 30. */
+              staleMinutes: z.number().int().min(5).max(1440).optional(),
+            })
+            .optional(),
           /** The GitHub App the operator registered for events: one app, one webhook secret and
            *  one webhook URL for the deployment. The same app may also be the OAuth client of
            *  `pullRequests`. */

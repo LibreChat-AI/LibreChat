@@ -85,6 +85,7 @@ const {
 } = require('~/server/services/MCPRequestContext');
 const { logViolation } = require('~/cache');
 const { recordScheduleOutcome, isScheduleLive } = require('~/server/services/Schedules');
+const settleTriggeredRun = require('~/server/services/Events/settle');
 const {
   saveMessage,
   saveConvo,
@@ -1606,7 +1607,13 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
   let scheduleTerminalOutcomeRecorded = false;
   const settleScheduledRun = async ({ status, error, clearConversationId = false }) => {
     if (!scheduleId) {
-      return true;
+      return settleTriggeredRun(req, {
+        status,
+        error,
+        conversationId,
+        clearConversationId,
+        checkpointNamespace: client?.checkpointNamespace,
+      });
     }
     if (status !== 'requires_action' && scheduleTerminalOutcomeRecorded) {
       return true;

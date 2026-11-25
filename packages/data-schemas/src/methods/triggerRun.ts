@@ -10,6 +10,7 @@ import type {
   TriggerRunRef,
   TriggerRunRow,
   TriggerRunSkip,
+  EventRunSkip,
   TriggerRunScope,
   TriggerRunClaim,
   TriggerRunPause,
@@ -142,6 +143,7 @@ const columns: Record<Field, string> = {
   abortRequestedAt: 'abortRequestedAt',
   abortSource: 'abortSource',
   abortPersistedAt: 'abortPersistedAt',
+  jobCreatedAt: 'jobCreatedAt',
 };
 
 /**
@@ -172,6 +174,7 @@ const read: { [K in Field]: (row: Row) => TriggerRun[K] | undefined } = {
   abortRequestedAt: (row) => row.abortRequestedAt,
   abortSource: (row) => row.abortSource,
   abortPersistedAt: (row) => row.abortPersistedAt,
+  jobCreatedAt: (row) => row.jobCreatedAt,
 };
 
 function set<K extends Field>(run: Partial<TriggerRun>, field: K, row: Row): void {
@@ -340,15 +343,24 @@ export type TriggerRuns = {
    */
   skip: {
     (ref: ScheduleRunRef, row: TriggerRunSkip): Promise<TriggerRunOrigin | null>;
-    (ref: TriggerRunRef, row: TriggerRunSkip): Promise<TriggerRunOrigin | null | TriggerRunBlocked>;
+    (ref: TriggerRunRef, row: EventRunSkip): Promise<TriggerRunOrigin | null | TriggerRunBlocked>;
   };
   /** Marks a run as settled with its subject, once the subject's own step has landed. */
   settled: (ref: TriggerRunRef) => Promise<void>;
   /**
-   * A subscription's runs that someone has to finish, oldest first, at most `limit` of each
-   * kind: ones still active that fired before `before`, whose owner may have died, and ones
-   * that ended before `before` but whose subscription's own step never landed. Reads every
-   * tenant's rows the caller's scope lets it read; a sweep reads them as the system.
+   * Claims the right to count a run into its subject's own tally, once: `true` for the one
+   * caller whose write marked the row, `false` for every later one and for a ref no row is
+   * kept under. Mark first, count after: a crash between the two leaves the run uncounted,
+   * never counted twice.
+   */
+  count: (ref: TriggerRunRef) => Promise<boolean>;
+  /**
+   * A subscription's runs that someone has to finish, at most `limit` of each kind: ones still
+   * active that fired before `before`, whose owner may have died, and ones that ended before
+   * `before` but whose subscription's own step never landed. The least recently examined come
+   * first, and each one returned is stamped as examined, so a row a sweep leaves alone goes
+   * to the back. Reads every tenant's rows the caller's scope lets it read; a sweep reads them
+   * as the system.
    */
   stranded: (
     kind: 'subscription',
@@ -358,7 +370,14 @@ export type TriggerRuns = {
 };
 
 /** What a sweep is handed of a stranded run. */
-type StrandedField = 'status' | 'owner' | 'tenantId' | 'firedAt' | 'revision' | 'conversationId';
+type StrandedField =
+  | 'status'
+  | 'owner'
+  | 'tenantId'
+  | 'firedAt'
+  | 'revision'
+  | 'conversationId'
+  | 'jobCreatedAt';
 const STRANDED: readonly StrandedField[] = [
   'status',
   'owner',
@@ -366,6 +385,7 @@ const STRANDED: readonly StrandedField[] = [
   'firedAt',
   'revision',
   'conversationId',
+  'jobCreatedAt',
 ];
 
 export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerRuns {
@@ -776,11 +796,11 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
   function skip(ref: ScheduleRunRef, row: TriggerRunSkip): Promise<TriggerRunOrigin | null>;
   function skip(
     ref: TriggerRunRef,
-    row: TriggerRunSkip,
+    row: EventRunSkip,
   ): Promise<TriggerRunOrigin | null | TriggerRunBlocked>;
   async function skip(
     ref: TriggerRunRef,
-    row: TriggerRunSkip,
+    row: EventRunSkip,
   ): Promise<TriggerRunOrigin | null | TriggerRunBlocked> {
     const at = where(ref);
     if (at == null) return null;
@@ -817,22 +837,32 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     limit: number,
   ): Promise<Array<{ ref: RecordedRunRef; run: Pick<TriggerRun, StrandedField> }>> {
     const select = `kind subject deliveryKey scheduledFor ${project(STRANDED, { kind })}`;
-    // Two reads, each inside an index the collection already has: active rows by status and
-    // the time they fired, ended ones by the time they settled.
+    // Least recently examined first, and every row returned is stamped as examined, so rows
+    // a sweep leaves alone, such as long runs still live, move to the back of the next window
+    // instead of holding it. Active rows are read inside the {status, reconciledAt, firedAt}
+    // index; ended ones that still owe their subscription step are few.
     const [active, ended] = await Promise.all([
       Run()
         .find({ kind, status: { $in: ACTIVE_RUN_STATUSES }, firedAt: { $lt: before } })
-        .sort({ firedAt: 1 })
+        .sort({ reconciledAt: 1, firedAt: 1 })
         .limit(limit)
         .select(select)
         .lean<Row[]>(),
       Run()
         .find({ kind, bookkept: false, settledAt: { $lt: before } })
-        .sort({ settledAt: 1 })
+        .sort({ reconciledAt: 1, settledAt: 1 })
         .limit(limit)
         .select(select)
         .lean<Row[]>(),
     ]);
+    const examined = [...active, ...ended].flatMap((row) => row.deliveryKey ?? []);
+    if (examined.length > 0) {
+      await Run().updateMany(
+        { kind, deliveryKey: { $in: examined } },
+        { $set: { reconciledAt: new Date() } },
+        { timestamps: false },
+      );
+    }
     return [...active, ...ended].flatMap((row) =>
       row.subject != null && row.deliveryKey != null && row.scheduledFor != null
         ? [
@@ -851,8 +881,20 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     );
   }
 
+  async function count(ref: TriggerRunRef): Promise<boolean> {
+    const at = where(ref);
+    if (at == null) return false;
+    const { modifiedCount } = await Run().updateOne(
+      { ...at, counted: { $ne: true } },
+      { $set: { counted: true } },
+      { timestamps: false },
+    );
+    return modifiedCount === 1;
+  }
+
   return {
     stranded,
+    count,
     get,
     byConversation,
     reserve,

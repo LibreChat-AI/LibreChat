@@ -139,6 +139,8 @@ jest.mock('@librechat/api', () => ({
   parseAgentEventActorDetachedCompletion: jest.fn(() => undefined),
 }));
 
+// Settles a triggered run that is not a schedule's; these requests are neither.
+jest.mock('~/server/services/Events/settle', () => jest.fn(async () => true));
 jest.mock('~/server/cleanup', () => ({
   disposeClient: jest.fn(),
 }));

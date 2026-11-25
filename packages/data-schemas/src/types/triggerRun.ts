@@ -40,6 +40,8 @@ export type TriggerRun = {
   abortRequestedAt?: Date;
   abortSource?: 'stop' | 'deletion';
   abortPersistedAt?: Date;
+  /** When the generation job running the run was created, on a subscription's row. */
+  jobCreatedAt?: Date;
 };
 
 /** A ref to a schedule's run, which always names a row: its schedule and the event's time. */
@@ -146,6 +148,11 @@ export type TriggerRunPause = Replay & {
 /** The row of a run that never starts: its columns as given, with the skip it is recorded as. */
 export type TriggerRunSkip = TriggerRunRow & {
   status: Extract<ScheduleRunStatus, 'skipped_overlap' | 'skipped_balance'>;
+};
+
+/** The row of a subscription's run that never starts, which its hourly cap may also leave out. */
+export type EventRunSkip = TriggerRunRow & {
+  status: TriggerRunSkip['status'] | 'skipped_cap';
 };
 
 /**
