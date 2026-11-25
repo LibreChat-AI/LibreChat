@@ -8413,6 +8413,54 @@ describe('AgentClient - titleConvo', () => {
       expect(client.memoryPayload).toBeNull();
     });
 
+    it("gives the model a subscription's event after its prompt, recounted, and keeps it from memory", async () => {
+      const { countFormattedMessageTokens } = require('@librechat/api');
+      countFormattedMessageTokens.mockImplementation(({ content }) => {
+        const text = Array.isArray(content)
+          ? content.map((part) => part.text ?? part[ContentTypes.TEXT] ?? '').join('\n')
+          : String(content ?? '');
+        return text.includes('Event data (JSON)') ? 90 : 11;
+      });
+      const trigger = {
+        event: { type: 'github.issue_comment.created', occurredAt: '2025-11-24T16:00:00.000Z' },
+        subject: { kind: 'subscription', id: 'sub_1' },
+        detail: { repo: 'acme/widgets', number: 17, actor: 'octocat', text: 'OUTSIDE-TEXT' },
+      };
+
+      const result = await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Answer the comment.',
+            isCreatedByUser: true,
+            tokenCount: 5,
+            trigger,
+          },
+          {
+            messageId: 'msg-2',
+            parentMessageId: 'msg-1',
+            sender: 'Assistant',
+            text: 'Done.',
+            isCreatedByUser: false,
+            tokenCount: 3,
+          },
+        ],
+        'msg-2',
+        {},
+      );
+
+      const prompt = String(result.prompt[0].content);
+      expect(
+        prompt.startsWith('Answer the comment.\n\nThis turn was started by an event GitHub'),
+      ).toBe(true);
+      expect(prompt).toContain('"text": "OUTSIDE-TEXT"');
+      expect(result.tokenCountMap['msg-1']).toBe(90);
+      expect(JSON.stringify(client.memoryPayload)).not.toContain('OUTSIDE-TEXT');
+      expect(client.memoryPayload[0].content).toBe('Answer the comment.');
+    });
+
     it('does not duplicate a file that is both request context and scoped context', async () => {
       const sharedFile = makeTextFile('shared-file', 'shared.txt', 'Shared duplicate context');
 

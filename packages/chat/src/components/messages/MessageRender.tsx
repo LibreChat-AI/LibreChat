@@ -16,6 +16,7 @@ import useMessageActions from './useMessageActions';
 import { renderMessageBody } from './MessageBody';
 import MessageFooter from './MessageFooter';
 import HoverButtons from './HoverButtons';
+import EventOrigin from './EventOrigin';
 import MessageRow from './MessageRow';
 import WakeupRow from './WakeupRow';
 
@@ -234,6 +235,11 @@ const MessageRender: NamedExoticComponent<MessageRenderProps> = memo(function Me
       }
     >
       <MessageContext.Provider value={messageContextValue}>
+        {/* Read off the message alone, so a row with no subscription's record adds no hook
+            and no element: only the first message of such a turn mounts the origin. */}
+        {!edit && wakeupDisplay == null && msg.trigger?.detail != null && (
+          <EventOrigin message={msg} />
+        )}
         {showOwnerText && host.renderPrivateText({ message: msg })}
         {!showOwnerText &&
           (wakeupDisplay != null && !edit

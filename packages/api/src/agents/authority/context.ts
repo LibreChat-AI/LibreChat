@@ -4,6 +4,7 @@ import type { Delivery, RunTrigger } from './trigger';
 import type { AgentRunProtocol } from '../envelope';
 import { readScheduleFireContext } from '~/schedules/trigger';
 import { toDelivery, readRunTrigger } from './trigger';
+import { toDetail } from '../events/turn';
 
 /**
  * The source type of a delivery an event subscription matched. Only code inside the server
@@ -208,26 +209,45 @@ function toEvent(delivery?: Delivery): TMessageTrigger['event'] | undefined {
   return { type, occurredAt: at.toISOString() };
 }
 
+/** The request a subscription's turn is served on, as far as `toMessageTrigger` reads it. */
+interface DetailRequest {
+  _isAgentTrigger?: boolean;
+  body?: { agentTrigger?: unknown } | null;
+}
+
 /**
  * What the first message of a triggered turn records of what started it: the event the
  * turn's own delivery carried, who the run acts for and, on a turn that reports work an
  * earlier run sent to the background, the event that began that run. Undefined for a run no
  * trigger started, and for one whose delivery named no event.
  *
- * Read from the context alone, so a request cannot write it. It is what the owner is shown,
- * so it names events and not deliveries, with their types made safe to show: the delivery
- * key, the event id and the type as it was sent stay on the job.
+ * Read from the context, so a request cannot write it. It is what the owner is shown, so it
+ * names events and not deliveries, with their types made safe to show: the delivery key, the
+ * event id and the type as it was sent stay on the job.
+ *
+ * On a turn an event subscription started it also records what the event was about, which
+ * the trigger host put beside the event on the request only it can make (`_isAgentTrigger`).
+ * Each field is read again and bounded (`toDetail`); any other request, and any other subject,
+ * gets none.
  */
-export function toMessageTrigger(context?: ExecutionContext): TMessageTrigger | undefined {
+export function toMessageTrigger(
+  context?: ExecutionContext,
+  req?: DetailRequest,
+): TMessageTrigger | undefined {
   const source = context?.source;
   if (source?.type !== 'trigger') return;
   const event = toEvent(source.delivery);
   if (!event) return;
   const began = toEvent(source.origin?.delivery);
+  const detail =
+    source.subject?.kind === 'subscription' && req?._isAgentTrigger === true
+      ? toDetail(record(req.body?.agentTrigger)?.detail)
+      : undefined;
   return {
     event,
     ...(source.subject && { subject: { kind: source.subject.kind, id: source.subject.id } }),
     ...(began && { origin: { event: began } }),
+    ...(detail && { detail }),
   };
 }
 

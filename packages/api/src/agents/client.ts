@@ -20,6 +20,7 @@ import type { ServerRequest } from '~/types';
 import { getSafeErrorMetadata, mergeQuotedText, formatQuotesAsMarkdown } from '~/utils';
 import Tokenizer, { getExactCountWork } from '~/utils/tokenizer';
 import { ATTACHMENT_ONLY_TEXT } from '~/files/context';
+import { describeEvent } from './events/turn';
 
 export const omitTitleOptions: Set<string> = new Set([
   'stream',
@@ -162,6 +163,73 @@ export function prependContextText(
   formattedMessage.content = formattedMessage.content.map((part, position) =>
     position === index ? { ...textPart, text: `${text}${separator}${textPart.text}` } : part,
   );
+}
+
+/**
+ * Appends context text to a formatted message: joined after its string content or its last
+ * text part, or added as a trailing text part when it has neither. Like `prependContextText`,
+ * array content is replaced, never edited in place.
+ */
+function appendContextText(
+  formattedMessage: FormattedMessageWithContent,
+  text: string,
+  separator = '\n\n',
+): void {
+  const { content } = formattedMessage;
+  if (typeof content === 'string') {
+    formattedMessage.content = content.length > 0 ? `${content}${separator}${text}` : text;
+    return;
+  }
+  if (!Array.isArray(content)) {
+    return;
+  }
+  let index = -1;
+  content.forEach((part, position) => {
+    if (part.type === ContentTypes.TEXT && typeof part.text === 'string') index = position;
+  });
+  if (index < 0) {
+    formattedMessage.content = [...content, { type: ContentTypes.TEXT, text }];
+    return;
+  }
+  formattedMessage.content = content.map((part, position) =>
+    position === index ? { ...part, text: `${part.text}${separator}${text}` } : part,
+  );
+}
+
+/** What a message needs from the caller once its own context was added to the model's copy. */
+export interface AddedContext {
+  /** The model's copy holds more than the stored text: a token count stored from the text
+   *  alone undercounts it, so the message is counted again from the model's copy. */
+  recount: boolean;
+  /** The model's copy holds text the memory agent must not read: the memory payload is built
+   *  from separate copies without it. */
+  memoryCopy: boolean;
+}
+
+const NONE: AddedContext = Object.freeze({ recount: false, memoryCopy: false });
+const EVENT: AddedContext = Object.freeze({ recount: true, memoryCopy: true });
+
+/**
+ * Appends what an outside event was about to the first message of the turn an event
+ * subscription started, after the subscription's prompt, as labelled data (`describeEvent`).
+ * Applied to that message on every turn that reads it, as quotes are, so the model keeps the
+ * event when the run continues or its owner replies later. The stored text stays the prompt,
+ * which is what the conversation shows.
+ *
+ * Returns what the caller must do about it: count the message again, since a count stored
+ * from the text leaves the event out, and give the memory agent copies without it, since
+ * outside text must not become a remembered fact about the user. Nothing for any other message.
+ */
+export function appendEvent(
+  formattedMessage: FormattedMessageWithContent,
+  trigger?: TMessage['trigger'] | null,
+): AddedContext {
+  const block = describeEvent(trigger);
+  if (block == null) {
+    return NONE;
+  }
+  appendContextText(formattedMessage, block);
+  return EVENT;
 }
 
 export function prependFileContext(

@@ -1686,7 +1686,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     const endpointIconURL = getEndpointIconURL(req, endpointOption);
     const responseModel = getAgentResponseModel(req, endpointOption);
     const executionContext = createTriggerExecutionContext(req);
-    req._messageTrigger = toMessageTrigger(executionContext);
+    req._messageTrigger = toMessageTrigger(executionContext, req);
     const preliminaryUserMessage = isCompaction
       ? projectCompactionAnchor({ messageId: parentMessageId, conversationId })
       : stampMessageTrigger(
