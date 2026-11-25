@@ -11,6 +11,8 @@ type TitleCache = {
   delete: (key: string) => Promise<boolean>;
 };
 
+type GetGenerationEpoch = (conversationId: string) => Promise<number | undefined>;
+
 type TitlePublication = {
   ctx: ConversationWriteContext;
   conversationId: string;
@@ -18,7 +20,7 @@ type TitlePublication = {
   convoReady?: Promise<void>;
   signal?: AbortSignal;
   discardSignal?: AbortSignal;
-  isCurrent?: () => Promise<boolean>;
+  epoch?: number;
   canPublishEarly?: () => boolean;
   onTitleGenerated?: (event: { conversationId: string; title: string }) => Promise<void> | void;
 };
@@ -29,8 +31,10 @@ export async function publishConversationTitle(
     saveConvo,
     getConvo,
     titleCache,
+    getGenerationEpoch,
   }: Pick<ConversationMethods, 'saveConvo' | 'getConvo'> & {
     titleCache: TitleCache;
+    getGenerationEpoch?: GetGenerationEpoch;
   },
   {
     ctx,
@@ -39,7 +43,7 @@ export async function publishConversationTitle(
     convoReady,
     signal,
     discardSignal,
-    isCurrent,
+    epoch,
     canPublishEarly,
     onTitleGenerated,
   }: TitlePublication,
@@ -48,6 +52,8 @@ export async function publishConversationTitle(
     return;
   }
   const key = `${ctx.userId}-${conversationId}`;
+  const isCurrent =
+    epoch == null ? undefined : async () => (await getGenerationEpoch?.(conversationId)) === epoch;
   const commit = async () => {
     const saved = await saveConvo(
       ctx,
@@ -207,7 +213,7 @@ type GeneratedTitleRequest = {
 
 type GeneratedTitleDependencies = Pick<ConversationMethods, 'getConvoTitleState'> & {
   getCache: () => TitleCache;
-  getGenerationEpoch?: (conversationId: string) => Promise<number | undefined>;
+  getGenerationEpoch?: GetGenerationEpoch;
   logger: { error: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void };
   delay?: (milliseconds: number) => Promise<void>;
 };

@@ -92,7 +92,12 @@ const addTitle = async (
         const title = resolveConversationTitle(req, generated);
         if (title == null) return;
         await publishConversationTitle(
-          { saveConvo, getConvo, titleCache },
+          {
+            saveConvo,
+            getConvo,
+            titleCache,
+            getGenerationEpoch: (id) => GenerationJobManager.getJobStore().getGenerationEpoch(id),
+          },
           {
             ctx: {
               userId: req.user.id,
@@ -105,12 +110,7 @@ const addTitle = async (
             convoReady,
             discardSignal,
             signal,
-            isCurrent:
-              epoch == null
-                ? undefined
-                : async () =>
-                    (await GenerationJobManager.getJobStore().getGenerationEpoch(convoId)) ===
-                    epoch,
+            epoch,
             canPublishEarly,
             onTitleGenerated,
           },

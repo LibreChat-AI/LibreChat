@@ -1,6 +1,45 @@
 import express from 'express';
 import request from 'supertest';
-import { createGeneratedTitleHandler } from './title';
+import { createGeneratedTitleHandler, publishConversationTitle } from './title';
+
+describe('generated title publication', () => {
+  it.each([undefined, 8])(
+    'discards an epoch 7 title when the current epoch is %s',
+    async (epoch) => {
+      const deps = {
+        saveConvo: jest.fn(),
+        getConvo: jest.fn(),
+        titleCache: { get: jest.fn(), set: jest.fn(), delete: jest.fn() },
+        getGenerationEpoch: jest.fn().mockResolvedValue(epoch),
+      };
+      await publishConversationTitle(deps, {
+        ctx: { userId: 'user-1' },
+        conversationId: 'chat',
+        title: 'Generated',
+        epoch: 7,
+      });
+      expect(deps.getGenerationEpoch).toHaveBeenCalledWith('chat');
+      expect(deps.saveConvo).not.toHaveBeenCalled();
+      expect(deps.titleCache.set).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps unscoped title publication independent of the epoch lookup', async () => {
+    const deps = {
+      saveConvo: jest.fn().mockResolvedValue({ title: 'Generated' }),
+      getConvo: jest.fn(),
+      titleCache: { get: jest.fn(), set: jest.fn(), delete: jest.fn() },
+      getGenerationEpoch: jest.fn(),
+    };
+    await publishConversationTitle(deps, {
+      ctx: { userId: 'user-1' },
+      conversationId: 'chat',
+      title: 'Generated',
+    });
+    expect(deps.getGenerationEpoch).not.toHaveBeenCalled();
+    expect(deps.titleCache.set).toHaveBeenCalledWith('user-1-chat', 'Generated', 120_000);
+  });
+});
 
 function setup(authenticated = true) {
   const cache = {
