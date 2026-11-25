@@ -1,7 +1,13 @@
 import type { AnthropicClientOptions } from '@librechat/agents';
+import type { Agent } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { RequestBody, RunLLMConfig } from '~/types';
-import { resolveHeaders } from './env';
+import { resolveHeaders, processAgentPlaceholders } from './env';
+
+const TENANT_ID_HEADER_PLACEHOLDERS = [
+  '{{LIBRECHAT_USER_TENANTID}}',
+  '{{LIBRECHAT_USER_TENANT_ID}}',
+] as const;
 
 /**
  * The media type of a `Content-Type` header — the lowercased `type/subtype` pair with any
@@ -79,6 +85,54 @@ export function mergeHeaders(
 }
 
 type DefaultHeadersContainer = { defaultHeaders?: Record<string, string> };
+type CustomHeadersContainer = { customHeaders?: Record<string, string> };
+
+function resolveTenantPlaceholders(
+  headers: Record<string, string>,
+  tenantId?: string,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [
+      name,
+      TENANT_ID_HEADER_PLACEHOLDERS.reduce(
+        (current, placeholder) => current.replaceAll(placeholder, tenantId ?? ''),
+        value,
+      ),
+    ]),
+  );
+}
+
+/**
+ * Resolves model-header templates with the request-scoped tenant supplied by
+ * the run host. Tenant substitution is intentionally scoped to model headers;
+ * it does not widen the user fields exposed to other template consumers.
+ */
+export function resolveModelHeaders({
+  headers,
+  user,
+  tenantId,
+  body,
+  agent,
+  customUserVars,
+}: {
+  headers: Record<string, string> | undefined;
+  user?: Partial<IUser> | { id: string };
+  tenantId?: string;
+  body?: RequestBody;
+  agent?: Partial<Agent>;
+  customUserVars?: Record<string, string>;
+}): Record<string, string> {
+  const resolved = resolveHeaders({
+    headers,
+    user,
+    body,
+    agent,
+    customUserVars,
+    stripUnresolved: true,
+  });
+
+  return resolveTenantPlaceholders(resolved, tenantId);
+}
 
 /**
  * Header maps already resolved by `resolveConfigHeaders`. `resolveConfigHeaders`
@@ -91,16 +145,31 @@ type DefaultHeadersContainer = { defaultHeaders?: Record<string, string> };
  * nothing carries across requests.
  */
 const resolvedHeaderMaps = new WeakSet<object>();
+const googleManagedHeaders = new WeakMap<object, ReadonlySet<string>>();
+
+/** Retain header provenance while layering provider credentials over operator templates. */
+export function mergeGoogleHeaders(
+  configured?: Record<string, string>,
+  managed?: Record<string, string>,
+): Record<string, string> | undefined {
+  const merged = mergeHeaders(configured, managed);
+  if (merged) {
+    googleManagedHeaders.set(
+      merged,
+      new Set(Object.keys(managed ?? {}).map((name) => name.toLowerCase())),
+    );
+  }
+  return merged;
+}
 
 /**
  * Resolves placeholder templates in the outbound request headers of a built LLM
  * config, mutating it in place. Handles the OpenAI-compatible
  * `configuration.defaultHeaders` (OpenAI / Azure / custom) and the native
- * Anthropic `clientOptions.defaultHeaders` (including Vertex) carriers. Native
- * Google `customHeaders` are intentionally NOT handled here — they are resolved
- * once at init in `initializeGoogle`, so the provider-managed `Authorization`
- * header (built from a possibly user-provided key) never passes through env
- * expansion.
+ * Anthropic `clientOptions.defaultHeaders` (including Vertex) carriers, plus
+ * tenant and agent substitution in native Google `customHeaders`. Google's
+ * credential and user templates resolve at initialization; provider-managed
+ * authorization stays opaque during this final pass.
  *
  * Resolution runs at request time so request-body placeholders (e.g.
  * `{{LIBRECHAT_BODY_CONVERSATIONID}}`) resolve against the live request. It is a
@@ -114,7 +183,9 @@ const resolvedHeaderMaps = new WeakSet<object>();
 export function resolveConfigHeaders({
   llmConfig,
   user,
+  tenantId,
   body,
+  agent,
   customUserVars,
 }: {
   /** Partial: this only reads the three provider header carriers, so
@@ -123,7 +194,10 @@ export function resolveConfigHeaders({
    *  full run config. */
   llmConfig?: Partial<RunLLMConfig> | null;
   user?: Partial<IUser> | { id: string };
+  /** Authoritative request tenant used only for model-header templates. */
+  tenantId?: string;
   body?: RequestBody;
+  agent?: Partial<Agent>;
   customUserVars?: Record<string, string>;
 }): void {
   if (llmConfig == null) {
@@ -134,7 +208,7 @@ export function resolveConfigHeaders({
     if (resolvedHeaderMaps.has(headers)) {
       return headers;
     }
-    const resolved = resolveHeaders({ headers, user, body, customUserVars, stripUnresolved: true });
+    const resolved = resolveModelHeaders({ headers, user, tenantId, body, agent, customUserVars });
     resolvedHeaderMaps.add(resolved);
     return resolved;
   };
@@ -149,5 +223,22 @@ export function resolveConfigHeaders({
     | undefined;
   if (clientOptions?.defaultHeaders != null) {
     clientOptions.defaultHeaders = resolveOnce(clientOptions.defaultHeaders);
+  }
+
+  const customHeadersContainer = llmConfig as CustomHeadersContainer;
+  if (customHeadersContainer.customHeaders != null) {
+    const headers = customHeadersContainer.customHeaders;
+    if (!resolvedHeaderMaps.has(headers)) {
+      const resolved = resolveTenantPlaceholders(headers, tenantId);
+      const managed = googleManagedHeaders.get(headers);
+      for (const [name, value] of Object.entries(headers)) {
+        resolved[name] =
+          (managed?.has(name.toLowerCase()) ?? name.toLowerCase() === 'authorization')
+            ? value
+            : processAgentPlaceholders(resolved[name], agent ?? {});
+      }
+      customHeadersContainer.customHeaders = resolved;
+      resolvedHeaderMaps.add(customHeadersContainer.customHeaders);
+    }
   }
 }

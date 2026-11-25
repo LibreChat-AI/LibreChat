@@ -1,4 +1,5 @@
 import type * as t from '~/types/session';
+import { createIndexesWithRetry } from '~/utils/retry';
 import { signPayload, hashToken } from '~/crypto';
 import logger from '~/config/winston';
 
@@ -24,18 +25,30 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
   SessionError: typeof SessionError;
   deleteSession: (params: t.DeleteSessionParams) => Promise<{ deletedCount?: number }>;
   createSession: (userId: string, options?: t.CreateSessionOptions) => Promise<t.SessionResult>;
-  updateExpiration: (
-    session: t.ISession | string,
-    newExpiration?: Date,
-    options?: t.UpdateExpirationOptions,
+  upsertSession: (
+    userId: string,
+    refreshToken: string,
+    options: t.UpsertSessionOptions,
   ) => Promise<t.ISession>;
-  countActiveSessions: (userId: string) => Promise<number>;
+  ensureSessionIndexes: () => Promise<void>;
   generateRefreshToken: (session: t.ISession) => Promise<string>;
   deleteAllUserSessions: (
     userId: string | { userId: string },
     options?: t.DeleteAllSessionsOptions,
   ) => Promise<{ deletedCount?: number }>;
 } {
+  let sessionIndexesPromise: Promise<void> | null = null;
+
+  function ensureSessionIndexes(): Promise<void> {
+    if (!sessionIndexesPromise) {
+      sessionIndexesPromise = createIndexesWithRetry(mongoose.models.Session).catch((error) => {
+        sessionIndexesPromise = null;
+        throw error;
+      });
+    }
+    return sessionIndexesPromise;
+  }
+
   /**
    * Creates a new session for a user
    */
@@ -50,6 +63,7 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
     const expiresIn = options.expiresIn ?? DEFAULT_REFRESH_TOKEN_EXPIRY;
 
     try {
+      await ensureSessionIndexes();
       const Session = mongoose.models.Session;
       const currentSession = new Session({
         user: userId,
@@ -61,6 +75,43 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
     } catch (error) {
       logger.error('[createSession] Error creating session:', error);
       throw new SessionError('Failed to create session', 'CREATE_SESSION_FAILED');
+    }
+  }
+
+  /** Stores an externally issued refresh token so logout and administrative revocation apply. */
+  async function upsertSession(
+    userId: string,
+    refreshToken: string,
+    options: t.UpsertSessionOptions,
+  ): Promise<t.ISession> {
+    if (!userId || !refreshToken || !options.expiration) {
+      throw new SessionError('User, refresh token, and expiration are required', 'INVALID_SESSION');
+    }
+
+    try {
+      await ensureSessionIndexes();
+      const Session = mongoose.models.Session;
+      const refreshTokenHash = await hashToken(refreshToken);
+      const update: Record<string, unknown> = {
+        user: userId,
+        refreshTokenHash,
+        expiration: options.expiration,
+      };
+      if (options.tenantId) {
+        update.tenantId = options.tenantId;
+      }
+      const session = await Session.findOneAndUpdate(
+        { user: userId, refreshTokenHash },
+        { $set: update },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      ).exec();
+      if (!session) {
+        throw new SessionError('Stored session was not returned', 'SESSION_NOT_FOUND');
+      }
+      return session as t.ISession;
+    } catch (error) {
+      logger.error('[upsertSession] Error storing session:', error);
+      throw new SessionError('Failed to store session', 'UPSERT_SESSION_FAILED');
     }
   }
 
@@ -117,32 +168,6 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
     } catch (error) {
       logger.error('[findSession] Error finding session:', error);
       throw new SessionError('Failed to find session', 'FIND_SESSION_FAILED');
-    }
-  }
-
-  /**
-   * Updates session expiration
-   */
-  async function updateExpiration(
-    session: t.ISession | string,
-    newExpiration?: Date,
-    options: t.UpdateExpirationOptions = {},
-  ): Promise<t.ISession> {
-    const expiresIn = options.expiresIn ?? DEFAULT_REFRESH_TOKEN_EXPIRY;
-
-    try {
-      const Session = mongoose.models.Session;
-      const sessionDoc = typeof session === 'string' ? await Session.findById(session) : session;
-
-      if (!sessionDoc) {
-        throw new SessionError('Session not found', 'SESSION_NOT_FOUND');
-      }
-
-      sessionDoc.expiration = newExpiration || new Date(Date.now() + expiresIn);
-      return await sessionDoc.save();
-    } catch (error) {
-      logger.error('[updateExpiration] Error updating session:', error);
-      throw new SessionError('Failed to update session expiration', 'UPDATE_EXPIRATION_FAILED');
     }
   }
 
@@ -244,6 +269,9 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
         payload: {
           id: session.user,
           sessionId: session._id,
+          /** `iat` is whole seconds, too coarse to order this token against a password reset that
+           * lands in the same second. `isTokenRetired` reads this claim to settle that exactly. */
+          issuedAtMs: Date.now(),
         },
         secret: process.env.JWT_REFRESH_SECRET!,
         expirationTime: Math.floor((expiresIn - Date.now()) / 1000),
@@ -259,33 +287,13 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
     }
   }
 
-  /**
-   * Counts active sessions for a user
-   */
-  async function countActiveSessions(userId: string): Promise<number> {
-    try {
-      const Session = mongoose.models.Session;
-      if (!userId) {
-        throw new SessionError('User ID is required', 'INVALID_USER_ID');
-      }
-
-      return await Session.countDocuments({
-        user: userId,
-        expiration: { $gt: new Date() },
-      });
-    } catch (error) {
-      logger.error('[countActiveSessions] Error counting active sessions:', error);
-      throw new SessionError('Failed to count active sessions', 'COUNT_SESSIONS_FAILED');
-    }
-  }
-
   return {
     findSession,
     SessionError,
     deleteSession,
     createSession,
-    updateExpiration,
-    countActiveSessions,
+    upsertSession,
+    ensureSessionIndexes,
     generateRefreshToken,
     deleteAllUserSessions,
   };

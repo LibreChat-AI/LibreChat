@@ -1,20 +1,197 @@
+import { ContentTypes } from 'librechat-data-provider';
 import type { TContextUsageEvent, TTokenUsageEvent } from 'librechat-data-provider';
 import type { RecordUsageDeps, RecordUsageParams, SubagentUsageEvent } from './usage';
 import type { UsageMetadata } from '../stream/interfaces/IJobStore';
 import type { BulkWriteDeps, PricingFns } from './transactions';
 import {
+  getModelEndUsage,
   computeUsageCostUSD,
   aggregateEmittedUsage,
   createDetachedSubagentUsageRecorder,
   createSubagentUsageSink,
+  aggregateCollectedUsage,
   recordCollectedUsage,
   resolveAgentTokenConfig,
+  resolveRunUsageContext,
+  hasRecordedProviderUsage,
+  hasRecordedPrimaryUsage,
+  recordFallbackTokenUsage,
+  getAgentPromptTokenEstimate,
   buildPersistedContextUsage,
   buildAbortedResponseMetadata,
   computeSummaryUsedTokens,
   priorRunOutputTokens,
+  resolveRetainedToolTokens,
 } from './usage';
 import { runWithDetachedSubagentUsage } from './subagentTaskContext';
+import Tokenizer from '~/utils/tokenizer';
+
+describe('resolveRetainedToolTokens', () => {
+  const toolPart = (id: string, output: string) => ({
+    type: 'tool_call',
+    tool_call: { id, name: 'read_file', args: '{"path":"a"}', output },
+  });
+
+  beforeAll(async () => {
+    await Tokenizer.initEncoding('o200k_base');
+  });
+
+  it('counts the results retained past the snapshot when the tool limit stopped the turn', () => {
+    /** Left to its default, the counter is the run's own tokenizer — the one the
+     *  snapshot was measured with — so the figure is the real token count of the
+     *  retained result and nothing else. */
+    const retained = resolveRetainedToolTokens({
+      stoppedAtToolLimit: true,
+      contentParts: [
+        toolPart('call_1', 'the result the snapshot counted'),
+        toolPart('call_2', 'the retained result'),
+      ],
+      priorToolCallIds: new Set(['call_1']),
+      encoding: 'o200k_base',
+    });
+    expect(retained).toBe(Tokenizer.countExactTokens('the retained result', 'o200k_base'));
+  });
+
+  it('reports nothing for every other ending, whatever the turn produced', () => {
+    /** Its tools were followed by another model call, hence another snapshot that
+     *  already counts them as kept-message context. */
+    expect(
+      resolveRetainedToolTokens({
+        stoppedAtToolLimit: false,
+        contentParts: [toolPart('call_1', 'a result the next call re-counted')],
+        priorToolCallIds: new Set(),
+        encoding: 'o200k_base',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('passes the deployment ceiling on to the counter', () => {
+    /** `endpoints.agents.maxRetainedToolCountChars`: past it the figure is withdrawn
+     *  rather than estimated, so the gauge under-reports instead of stalling a save. */
+    expect(
+      resolveRetainedToolTokens({
+        stoppedAtToolLimit: true,
+        contentParts: [toolPart('call_1', 'a result longer than the ceiling allows')],
+        priorToolCallIds: new Set(),
+        encoding: 'o200k_base',
+        maxCountChars: 4,
+      }),
+    ).toBeUndefined();
+  });
+
+  it('takes a supplied counter instead of reaching for the shared tokenizer', () => {
+    const countExact = jest.fn((text: string) => text.length);
+    expect(
+      resolveRetainedToolTokens({
+        stoppedAtToolLimit: true,
+        contentParts: [toolPart('call_1', 'result')],
+        priorToolCallIds: new Set(),
+        encoding: 'claude',
+        countExact,
+      }),
+    ).toBe(Math.ceil('result'.length * 1.1));
+    expect(countExact).toHaveBeenCalledWith('result');
+  });
+});
+
+describe('aggregateCollectedUsage', () => {
+  it('preserves the no-child baseline and ignores absent entries', () => {
+    expect(
+      aggregateCollectedUsage([{ input_tokens: 100, output_tokens: 40, provider: 'openai' }, null]),
+    ).toEqual({
+      total: {
+        inputTokens: 100,
+        outputTokens: 40,
+        totalTokens: 140,
+        cacheReadTokens: 0,
+        reasoningTokens: 0,
+      },
+      primary: {
+        inputTokens: 100,
+        outputTokens: 40,
+        totalTokens: 140,
+        cacheReadTokens: 0,
+        reasoningTokens: 0,
+      },
+      subagent: {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        cacheReadTokens: 0,
+        reasoningTokens: 0,
+      },
+    });
+  });
+
+  it('includes multiple child calls once in the combined and subagent totals', () => {
+    const result = aggregateCollectedUsage([
+      { input_tokens: 100, output_tokens: 40, provider: 'openai' },
+      {
+        input_tokens: 25,
+        output_tokens: 10,
+        provider: 'openai',
+        usage_type: 'subagent',
+      },
+      {
+        input_tokens: 35,
+        output_tokens: 15,
+        provider: 'openai',
+        usage_type: 'subagent',
+      },
+    ]);
+
+    expect(result.total).toEqual(
+      expect.objectContaining({ inputTokens: 160, outputTokens: 65, totalTokens: 225 }),
+    );
+    expect(result.subagent).toEqual(
+      expect.objectContaining({ inputTokens: 60, outputTokens: 25, totalTokens: 85 }),
+    );
+  });
+
+  it('uses provider-aware cache normalization for primary and child calls', () => {
+    const result = aggregateCollectedUsage([
+      {
+        input_tokens: 200,
+        output_tokens: 80,
+        provider: 'anthropic',
+        input_token_details: { cache_creation: 60, cache_read: 30 },
+      },
+      {
+        input_tokens: 100,
+        output_tokens: 50,
+        provider: 'bedrock',
+        usage_type: 'subagent',
+        input_token_details: { cache_creation: 20, cache_read: 10 },
+      },
+    ]);
+
+    expect(result.primary.inputTokens).toBe(200);
+    expect(result.subagent.inputTokens).toBe(130);
+    expect(result.total.cacheReadTokens).toBe(40);
+  });
+
+  it('repairs provider output undercounts and aggregates reasoning details', () => {
+    const result = aggregateCollectedUsage([
+      {
+        input_tokens: 64,
+        output_tokens: 2674,
+        total_tokens: 3379,
+        provider: 'vertexai',
+        output_token_details: { reasoning: 641 },
+      },
+      {
+        input_tokens: 20,
+        output_tokens: 10,
+        provider: 'openai',
+        usage_type: 'subagent',
+        output_token_details: { reasoning_tokens: 3 },
+      },
+    ]);
+
+    expect(result.total.outputTokens).toBe(3325);
+    expect(result.total.reasoningTokens).toBe(644);
+  });
+});
 
 describe('recordCollectedUsage', () => {
   let mockSpendTokens: jest.Mock;
@@ -510,6 +687,51 @@ describe('recordCollectedUsage', () => {
         },
       );
       expect(result?.input_tokens).toBe(140);
+    });
+  });
+
+  describe('cache token handling - Anthropic 1-hour writes', () => {
+    it('passes the 1-hour share of the writes to spendStructuredTokens', async () => {
+      const collectedUsage: UsageMetadata[] = [
+        {
+          input_tokens: 3600,
+          output_tokens: 50,
+          model: 'claude-sonnet-5-5',
+          provider: 'anthropic',
+          input_token_details: { cache_creation: 3000, cache_creation_1h: 2000, cache_read: 500 },
+        },
+      ];
+
+      await recordCollectedUsage(deps, { ...baseParams, collectedUsage });
+
+      expect(mockSpendStructuredTokens).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'claude-sonnet-5-5' }),
+        {
+          promptTokens: { input: 100, write: 3000, write1h: 2000, read: 500 },
+          completionTokens: 50,
+        },
+      );
+    });
+
+    it('caps the 1-hour share at the reported writes', async () => {
+      const collectedUsage: UsageMetadata[] = [
+        {
+          input_tokens: 1100,
+          output_tokens: 10,
+          model: 'claude-sonnet-5-5',
+          provider: 'anthropic',
+          input_token_details: { cache_creation: 1000, cache_creation_1h: 4000 },
+        },
+      ];
+
+      await recordCollectedUsage(deps, { ...baseParams, collectedUsage });
+
+      expect(mockSpendStructuredTokens.mock.calls[0][1].promptTokens).toEqual({
+        input: 100,
+        write: 1000,
+        write1h: 1000,
+        read: 0,
+      });
     });
   });
 
@@ -1721,6 +1943,83 @@ describe('computeUsageCostUSD', () => {
     );
     expect(cost).toBeCloseTo((260000 * 8 + 5000 * 3.75 + 15000 * 0.3 + 500 * 40) / 1e6);
   });
+
+  it('prices the 1-hour share of Anthropic cache writes at the 1-hour rate', () => {
+    /** 13000 = 1000 fresh + 2000 write (1500 of them 1-hour) + 10000 read */
+    const cost = computeUsageCostUSD(
+      {
+        input_tokens: 13000,
+        output_tokens: 500,
+        model: 'claude-sonnet-5-5',
+        provider: 'anthropic',
+        input_token_details: { cache_creation: 2000, cache_creation_1h: 1500, cache_read: 10000 },
+      },
+      {
+        ...pricing,
+        getCacheMultiplier: ({ cacheType }) =>
+          ({ write: 3.75, write1h: 6, write12h: null, read: 0.3 })[cacheType],
+      },
+    );
+    expect(cost).toBeCloseTo((1000 * 3 + 500 * 3.75 + 1500 * 6 + 10000 * 0.3 + 500 * 15) / 1e6);
+  });
+});
+
+describe('getModelEndUsage', () => {
+  const usage_metadata: UsageMetadata = {
+    input_tokens: 3510,
+    output_tokens: 40,
+    total_tokens: 3550,
+    input_token_details: { cache_creation: 3000, cache_read: 500 },
+  };
+
+  it('folds the Anthropic 1-hour write count into the usage', () => {
+    const usage = getModelEndUsage({
+      usage_metadata,
+      response_metadata: {
+        usage: {
+          cache_creation: { ephemeral_5m_input_tokens: 1000, ephemeral_1h_input_tokens: 2000 },
+        },
+      },
+    });
+    expect(usage?.input_token_details).toEqual({
+      cache_creation: 3000,
+      cache_creation_1h: 2000,
+      cache_read: 500,
+    });
+    expect(usage_metadata.input_token_details).not.toHaveProperty('cache_creation_1h');
+  });
+
+  it('reads the 1-hour writes from Bedrock cacheDetails, streamed or not', () => {
+    const cacheDetails = [
+      { ttl: '1h', inputTokens: 2000 },
+      { ttl: '5m', inputTokens: 1000 },
+    ];
+    for (const response_metadata of [
+      { usage: { cacheDetails } },
+      { metadata: { usage: { cacheDetails } } },
+    ]) {
+      expect(getModelEndUsage({ usage_metadata, response_metadata })?.input_token_details).toEqual({
+        cache_creation: 3000,
+        cache_creation_1h: 2000,
+        cache_read: 500,
+      });
+    }
+  });
+
+  it('returns the usage unchanged without a 1-hour breakdown', () => {
+    expect(getModelEndUsage({ usage_metadata })).toBe(usage_metadata);
+    expect(
+      getModelEndUsage({
+        usage_metadata,
+        response_metadata: { usage: { cache_creation: { ephemeral_1h_input_tokens: 0 } } },
+      }),
+    ).toBe(usage_metadata);
+  });
+
+  it('returns undefined when the call reported no usage', () => {
+    expect(getModelEndUsage(undefined)).toBeUndefined();
+    expect(getModelEndUsage({ response_metadata: null })).toBeUndefined();
+  });
 });
 
 describe('aggregateEmittedUsage', () => {
@@ -1835,13 +2134,13 @@ describe('buildPersistedContextUsage', () => {
     contextBudget: 7800,
   };
 
-  it('trims zero-valued per-tool counts', () => {
+  it('persists positive per-tool schema counts', () => {
     const result = buildPersistedContextUsage(baseSnapshot);
     expect(result.breakdown.toolTokenCounts).toEqual({ add: 15 });
     expect(result.contextBudget).toBe(7800);
   });
 
-  it('drops the tool counts object entirely when all are zero', () => {
+  it('omits a schema-count record with no positive counts', () => {
     const result = buildPersistedContextUsage({
       ...baseSnapshot,
       breakdown: { ...baseSnapshot.breakdown, toolTokenCounts: { add: 0 } },
@@ -1854,6 +2153,88 @@ describe('buildPersistedContextUsage', () => {
     const result = buildPersistedContextUsage({ ...baseSnapshot, breakdown });
     expect(result.breakdown.toolTokenCounts).toBeUndefined();
     expect(result.breakdown.messageTokens).toBe(500);
+  });
+
+  it('passes a non-zero toolMessageTokens split through to the blob', () => {
+    const result = buildPersistedContextUsage({
+      ...baseSnapshot,
+      breakdown: { ...baseSnapshot.breakdown, toolMessageTokens: 220 },
+    });
+    expect(result.breakdown.toolMessageTokens).toBe(220);
+    expect(result.breakdown.messageTokens).toBe(500);
+  });
+
+  it('keeps invocation-inclusive totals separate from per-tool result shares', () => {
+    const result = buildPersistedContextUsage({
+      ...baseSnapshot,
+      breakdown: {
+        ...baseSnapshot.breakdown,
+        toolMessageTokens: 10,
+        toolMessageTokenCounts: { search: 4 },
+      },
+    });
+    expect(result.breakdown.toolMessageTokens).toBe(10);
+    expect(result.breakdown.toolMessageTokenCounts).toEqual({ search: 4 });
+    expect(
+      Object.values(result.breakdown.toolMessageTokenCounts ?? {}).reduce(
+        (total, count) => total + count,
+        0,
+      ),
+    ).toBeLessThan(result.breakdown.toolMessageTokens ?? 0);
+  });
+
+  it('trims zero-valued result-message entries and clamps their sum', () => {
+    const result = buildPersistedContextUsage({
+      ...baseSnapshot,
+      breakdown: {
+        ...baseSnapshot.breakdown,
+        toolMessageTokens: 2,
+        toolMessageTokenCounts: { grep: 180, read_file: 0 },
+      },
+    });
+    expect(result.breakdown.toolMessageTokenCounts).toEqual({ grep: 2 });
+    expect(
+      Object.values(result.breakdown.toolMessageTokenCounts ?? {}).reduce(
+        (total, count) => total + count,
+        0,
+      ),
+    ).toBeLessThanOrEqual(result.breakdown.toolMessageTokens ?? 0);
+  });
+
+  it('preserves a known-zero tool-message total', () => {
+    const result = buildPersistedContextUsage({
+      ...baseSnapshot,
+      breakdown: { ...baseSnapshot.breakdown, toolMessageTokens: 0 },
+    });
+    expect(result.breakdown.toolMessageTokens).toBe(0);
+    expect(Object.prototype.hasOwnProperty.call(result.breakdown, 'toolMessageTokens')).toBe(true);
+  });
+  it('safely persists prototype-sensitive names and ignores malformed counts', () => {
+    const counts = JSON.parse('{"__proto__":3,"constructor":3,"invalid":"4"}') as Record<
+      string,
+      number
+    >;
+    const sdkExtension = {
+      nested: { source: 'retained-sdk-field', flags: ['opaque'] },
+      invocation: { estimated: 4, providerOnly: true },
+    };
+    const snapshot = {
+      ...baseSnapshot,
+      breakdown: {
+        ...baseSnapshot.breakdown,
+        toolMessageTokens: 5,
+        toolMessageTokenCounts: counts,
+        sdkExtension,
+      },
+    };
+    const result = buildPersistedContextUsage(snapshot);
+    const persistedCounts = result.breakdown.toolMessageTokenCounts;
+    expect(persistedCounts?.['__proto__']).toBe(3);
+    expect(persistedCounts?.constructor).toBe(2);
+    expect(persistedCounts?.invalid).toBeUndefined();
+    expect(Object.keys(persistedCounts ?? {})).toEqual(['__proto__', 'constructor']);
+    expect(result.breakdown).toMatchObject({ sdkExtension });
+    expect(snapshot.breakdown.toolMessageTokenCounts).toBe(counts);
   });
 
   it('records the final primary call output as completedOutputTokens', () => {
@@ -1872,6 +2253,66 @@ describe('buildPersistedContextUsage', () => {
     const result = buildPersistedContextUsage(baseSnapshot, events);
     /** Last PRIMARY call's completion (25), skipping the trailing subagent event */
     expect(result.completedOutputTokens).toBe(25);
+  });
+
+  it('carries a counted retained tool figure as a second post-snapshot delta', () => {
+    /** A turn stopped at the tool-call limit keeps the results of the tools its
+     *  final call ran. They are outside the pre-invoke breakdown AND outside the
+     *  final call's output, so they ride as their own field — never folded into
+     *  the provider-reconciled `messageTokens`. */
+    const events: TTokenUsageEvent[] = [
+      { input_tokens: 200, output_tokens: 25, total_tokens: 225, provider: 'openAI' },
+    ];
+    const result = buildPersistedContextUsage(baseSnapshot, events, { retainedToolTokens: 640 });
+    expect(result.retainedToolTokens).toBe(640);
+    expect(result.completedOutputTokens).toBe(25);
+    /** The provider-reconciled message total is untouched: the retained result is
+     *  an addend the client applies, not part of the exact accounting. */
+    expect(result.breakdown).toEqual(buildPersistedContextUsage(baseSnapshot, events).breakdown);
+  });
+
+  it.each([
+    ['a normal turn passes nothing', undefined],
+    ['no tool result was retained', 0],
+    ['the count is negative', -5],
+    ['the count is not finite', Number.NaN],
+  ])('omits the retained tool figure when %s', (_label, retainedToolTokens) => {
+    const result = buildPersistedContextUsage(baseSnapshot, [], { retainedToolTokens });
+    expect(Object.prototype.hasOwnProperty.call(result, 'retainedToolTokens')).toBe(false);
+  });
+
+  it.each(['openAI', 'bedrock'])('persists the final primary cache split for %s', (provider) => {
+    const events: TTokenUsageEvent[] = [
+      { runId: 'run-1', input_tokens: 100, input_token_details: { cache_read: 10 } },
+      {
+        runId: 'run-1',
+        provider,
+        model: 'primary-model',
+        input_tokens: 200,
+        output_tokens: 25,
+        input_token_details: { cache_read: 80, cache_creation: 40 },
+      },
+      { runId: 'run-2', input_tokens: 900, input_token_details: { cache_read: 900 } },
+      { usage_type: 'summarization', input_tokens: 500, input_token_details: { cache_read: 500 } },
+      { usage_type: 'subagent', input_tokens: 600, input_token_details: { cache_read: 600 } },
+    ];
+    const result = buildPersistedContextUsage(baseSnapshot, events);
+    expect(result).toMatchObject({
+      cacheRead: 80,
+      cacheWrite: 40,
+      model: 'primary-model',
+      provider,
+      completedOutputTokens: 25,
+    });
+  });
+
+  it('replaces an earlier cache split with a final uncached call', () => {
+    const result = buildPersistedContextUsage({ ...baseSnapshot, cacheRead: 80, cacheWrite: 40 }, [
+      { input_tokens: 200, output_tokens: 25 },
+    ]);
+    expect(result).toMatchObject({ cacheRead: 0, cacheWrite: 0 });
+    expect(buildPersistedContextUsage(baseSnapshot).cacheRead).toBeUndefined();
+    expect(buildPersistedContextUsage(baseSnapshot).model).toBeUndefined();
   });
 
   it('omits completedOutputTokens when there are no primary calls', () => {
@@ -2286,5 +2727,226 @@ describe('createDetachedSubagentUsageRecorder', () => {
     expect(spendTokens).not.toHaveBeenCalled();
     expect(updateBalance).not.toHaveBeenCalled();
     expect(insertMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveRunUsageContext', () => {
+  it('labels a stopped run as an abort and a completed run as a message', () => {
+    expect(resolveRunUsageContext(true)).toBe('abort');
+    expect(resolveRunUsageContext(false)).toBe('message');
+  });
+});
+
+describe('hasRecordedProviderUsage', () => {
+  it('is true once the provider reported any consumption, even with no output', () => {
+    expect(hasRecordedProviderUsage({ input_tokens: 10, output_tokens: 0 })).toBe(true);
+    expect(hasRecordedProviderUsage({ input_tokens: 0, output_tokens: 5 })).toBe(true);
+  });
+
+  it('is false when nothing was recorded or the report is all zero', () => {
+    expect(hasRecordedProviderUsage(undefined)).toBe(false);
+    expect(hasRecordedProviderUsage(null)).toBe(false);
+    expect(hasRecordedProviderUsage({ input_tokens: 0, output_tokens: 0 })).toBe(false);
+    expect(hasRecordedProviderUsage({})).toBe(false);
+  });
+});
+
+describe('getAgentPromptTokenEstimate', () => {
+  it.each<[number, number | undefined, number]>([
+    [2277630, 250000, 250000],
+    [133000, 250000, 133000],
+    [0, 250000, 0],
+    [40, undefined, 40],
+    [40, Infinity, 40],
+    [40, NaN, 40],
+    [40, 0, 40],
+    [40, -1, 40],
+  ])('bounds %s by a valid budget %s to %s', (promptTokens, maxContextTokens, expected) => {
+    expect(getAgentPromptTokenEstimate(promptTokens, maxContextTokens)).toBe(expected);
+  });
+});
+
+describe('recordFallbackTokenUsage', () => {
+  const txMetadata = {
+    user: 'user-1',
+    conversationId: 'convo-1',
+    messageId: 'msg-1',
+    model: 'gpt-4',
+    balance: { enabled: true },
+    transactions: { enabled: true },
+  };
+  const estimate = { promptTokens: 40, completionTokens: 7 };
+
+  it('does not estimate failed runs, including partial output and non-primary usage', async () => {
+    const spendTokens = jest.fn().mockResolvedValue(undefined);
+
+    await recordFallbackTokenUsage(
+      { spendTokens },
+      {
+        ...estimate,
+        txMetadata,
+        collectedUsage: [{ input_tokens: 9, output_tokens: 3, usage_type: 'subagent' }],
+        contentParts: [{ type: ContentTypes.TEXT }, { type: ContentTypes.ERROR }],
+      },
+    );
+
+    expect(spendTokens).not.toHaveBeenCalled();
+  });
+
+  it('bounds a successful estimate without treating the budget as exact usage', async () => {
+    const spendTokens = jest.fn().mockResolvedValue(undefined);
+
+    await recordFallbackTokenUsage(
+      { spendTokens },
+      {
+        ...estimate,
+        txMetadata,
+        maxContextTokens: 20,
+        contentParts: [{ type: ContentTypes.TEXT }],
+      },
+    );
+
+    expect(spendTokens).toHaveBeenCalledWith(
+      { ...txMetadata, context: 'message' },
+      { promptTokens: 20, completionTokens: 7 },
+    );
+  });
+
+  it('records nothing once provider usage was recorded, even with no output', async () => {
+    const spendTokens = jest.fn().mockResolvedValue(undefined);
+
+    await recordFallbackTokenUsage(
+      { spendTokens },
+      { ...estimate, usage: { input_tokens: 40, output_tokens: 0 }, txMetadata },
+    );
+
+    expect(spendTokens).not.toHaveBeenCalled();
+  });
+
+  it('bills the estimate under the given context when nothing was recorded', async () => {
+    const spendTokens = jest.fn().mockResolvedValue(undefined);
+
+    await recordFallbackTokenUsage({ spendTokens }, { ...estimate, txMetadata, context: 'abort' });
+
+    expect(spendTokens).toHaveBeenCalledTimes(1);
+    expect(spendTokens).toHaveBeenCalledWith({ ...txMetadata, context: 'abort' }, estimate);
+  });
+
+  it('labels the estimate from the stop state when no context is given', async () => {
+    const spendTokens = jest.fn().mockResolvedValue(undefined);
+
+    await recordFallbackTokenUsage({ spendTokens }, { ...estimate, txMetadata, aborted: true });
+    await recordFallbackTokenUsage({ spendTokens }, { ...estimate, txMetadata, aborted: false });
+    await recordFallbackTokenUsage({ spendTokens }, { ...estimate, txMetadata });
+
+    expect(spendTokens.mock.calls.map(([tx]) => tx.context)).toEqual([
+      'abort',
+      'message',
+      'message',
+    ]);
+  });
+
+  it('lets an explicit context override the stop state', async () => {
+    const spendTokens = jest.fn().mockResolvedValue(undefined);
+
+    await recordFallbackTokenUsage(
+      { spendTokens },
+      { ...estimate, txMetadata, aborted: true, context: 'incomplete' },
+    );
+
+    expect(spendTokens).toHaveBeenCalledWith({ ...txMetadata, context: 'incomplete' }, estimate);
+  });
+
+  it('records nothing when a later primary call was billed but the aggregate hides it', async () => {
+    const spendTokens = jest.fn().mockResolvedValue(undefined);
+
+    await recordFallbackTokenUsage(
+      { spendTokens },
+      {
+        ...estimate,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        collectedUsage: [
+          { input_tokens: 0, output_tokens: 0 },
+          { input_tokens: 5, output_tokens: 0 },
+        ],
+        txMetadata,
+      },
+    );
+
+    expect(spendTokens).not.toHaveBeenCalled();
+  });
+
+  it('still bills the estimate when only non-primary calls were collected', async () => {
+    const spendTokens = jest.fn().mockResolvedValue(undefined);
+
+    await recordFallbackTokenUsage(
+      { spendTokens },
+      {
+        ...estimate,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        collectedUsage: [
+          { input_tokens: 9, output_tokens: 3, usage_type: 'summarization' },
+          { input_tokens: 9, output_tokens: 3, usage_type: 'subagent' },
+        ],
+        txMetadata,
+      },
+    );
+
+    expect(spendTokens).toHaveBeenCalledTimes(1);
+  });
+
+  it('bills a reasoning count the estimate cannot see as its own row', async () => {
+    const spendTokens = jest.fn().mockResolvedValue(undefined);
+
+    await recordFallbackTokenUsage(
+      { spendTokens },
+      {
+        ...estimate,
+        usage: { input_tokens: 0, output_tokens: 0, reasoning_tokens: 12 },
+        txMetadata,
+      },
+    );
+
+    expect(spendTokens).toHaveBeenCalledTimes(2);
+    expect(spendTokens).toHaveBeenLastCalledWith(
+      { ...txMetadata, context: 'reasoning' },
+      { completionTokens: 12 },
+    );
+  });
+
+  it('logs a billing failure instead of throwing', async () => {
+    const spendTokens = jest.fn().mockRejectedValue(new Error('db down'));
+
+    await expect(
+      recordFallbackTokenUsage({ spendTokens }, { ...estimate, txMetadata }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('hasRecordedPrimaryUsage', () => {
+  it('finds a billed primary call anywhere in the collected entries', () => {
+    expect(
+      hasRecordedPrimaryUsage([
+        { input_tokens: 0, output_tokens: 0 },
+        null,
+        { input_tokens: 5, output_tokens: 0 },
+      ]),
+    ).toBe(true);
+    expect(
+      hasRecordedPrimaryUsage([{ input_tokens: 0, output_tokens: 7, usage_type: 'message' }]),
+    ).toBe(true);
+  });
+
+  it('ignores non-primary entries and empty input', () => {
+    expect(
+      hasRecordedPrimaryUsage([
+        { input_tokens: 9, output_tokens: 3, usage_type: 'summarization' },
+        { input_tokens: 9, output_tokens: 3, usage_type: 'subagent' },
+        { input_tokens: 9, output_tokens: 3, usage_type: 'sequential' },
+      ]),
+    ).toBe(false);
+    expect(hasRecordedPrimaryUsage([{ input_tokens: 0, output_tokens: 0 }])).toBe(false);
+    expect(hasRecordedPrimaryUsage([])).toBe(false);
+    expect(hasRecordedPrimaryUsage(undefined)).toBe(false);
   });
 });

@@ -36,5 +36,33 @@ describe('Insights indexes', () => {
         _id: -1,
       }),
     ).toBe(true);
+    expect(
+      hasIndex(conversationSchema.indexes(), {
+        tenantId: 1,
+        isTemporary: 1,
+        initial_agent_id: 1,
+        createdAt: -1,
+        _id: -1,
+      }),
+    ).toBe(true);
+    expect(
+      hasIndex(conversationSchema.indexes(), {
+        tenantId: 1,
+        isTemporary: 1,
+        agent_id: 1,
+        createdAt: -1,
+        _id: -1,
+      }),
+    ).toBe(true);
+    expect(
+      hasIndex(messageSchema.indexes(), {
+        tenantId: 1,
+        isTemporary: 1,
+        isCreatedByUser: 1,
+        model: 1,
+        createdAt: -1,
+        _id: -1,
+      }),
+    ).toBe(true);
   });
 });

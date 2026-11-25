@@ -406,6 +406,65 @@ describe('AbortJob - Text and CollectedUsage', () => {
     await GenerationJobManager.destroy();
   });
 
+  it('keeps what started a triggered turn on the job, for a resumed stream and a stopped turn', async () => {
+    const { GenerationJobManager } = await import('../GenerationJobManager');
+    const { InMemoryJobStore } = await import('../implementations/InMemoryJobStore');
+    const { InMemoryEventTransport } = await import('../implementations/InMemoryEventTransport');
+
+    GenerationJobManager.configure({
+      jobStore: new InMemoryJobStore(),
+      eventTransport: new InMemoryEventTransport(),
+      isRedis: false,
+      cleanupOnComplete: false,
+    });
+    GenerationJobManager.initialize();
+
+    const trigger = {
+      event: { type: 'subagent.completion', occurredAt: '2026-11-20T10:00:00.000Z' },
+      subject: { kind: 'schedule', id: 'schedule-1' },
+    };
+    const start = async (streamId: string, extra: Record<string, unknown>) => {
+      await GenerationJobManager.createJob(streamId, 'user-1');
+      await GenerationJobManager.updateMetadata(streamId, { responseMessageId: `${streamId}-r` });
+      await GenerationJobManager.emitChunk(streamId, {
+        created: true,
+        streamId,
+        message: {
+          messageId: `${streamId}-u`,
+          parentMessageId: 'parent-message-1',
+          conversationId: streamId,
+          text: 'A task has settled.',
+          sender: 'User',
+          isCreatedByUser: true,
+          ...extra,
+        },
+      } as never);
+    };
+    const woken = `woken-${Date.now()}`;
+    const typed = `typed-${Date.now()}`;
+    await start(woken, { trigger });
+    await start(typed, {});
+
+    expect((await GenerationJobManager.getResumeState(woken))?.userMessage?.trigger).toEqual(
+      trigger,
+    );
+    expect((await GenerationJobManager.getResumeState(typed))?.userMessage).not.toHaveProperty(
+      'trigger',
+    );
+
+    const stopped = await GenerationJobManager.abortJob(woken);
+    const plain = await GenerationJobManager.abortJob(typed);
+
+    expect(stopped.finalEvent).toEqual(
+      expect.objectContaining({ requestMessage: expect.objectContaining({ trigger }) }),
+    );
+    expect((plain.finalEvent as { requestMessage?: object }).requestMessage).not.toHaveProperty(
+      'trigger',
+    );
+
+    await GenerationJobManager.destroy();
+  });
+
   it('should strip OAuth prompts but persist real abort content', async () => {
     const { GenerationJobManager } = await import('../GenerationJobManager');
     const { InMemoryJobStore } = await import('../implementations/InMemoryJobStore');

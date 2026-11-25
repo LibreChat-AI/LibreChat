@@ -1,10 +1,13 @@
 import { memo, useState, useCallback, useContext } from 'react';
 import Cookies from 'js-cookie';
+import { useAtom, useStore } from 'jotai';
 import { buildTree } from 'librechat-data-provider';
+import { useRecoilState, useRecoilValue } from 'recoil';
 import { useParams, useNavigate } from 'react-router-dom';
-import { CalendarDays, Settings, MessageSquarePlus } from 'lucide-react';
-import { useRecoilState, useRecoilValue, useRecoilCallback } from 'recoil';
+import { activeSubagentPanel } from '@librechat/chat/react';
+import { SharedSubagentActivityDialog } from '@librechat/chat/components';
 import { useGetSharedMessages } from 'librechat-data-provider/react-query';
+import { CalendarDays, ExternalLink, RefreshCw, Settings, MessageSquarePlus } from 'lucide-react';
 import {
   Spinner,
   Button,
@@ -19,13 +22,23 @@ import {
   TooltipAnchor,
   useToastContext,
 } from '@librechat/client';
+import {
+  CodeHighlightThrottleContext,
+  normalizeCodeHighlightThrottleMs,
+} from '~/components/Chat/Messages/Content/Parts/useLazyHighlight';
 import { cn, DEFAULT_APP_TITLE, getResponseStatus, selectActiveBranchTail } from '~/utils';
+import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
+import AnalyticsConsentToggle from '../Nav/SettingsTabs/Data/AnalyticsConsent';
+import { useDeploymentThemeOverride } from '~/Providers/DeploymentTheme';
+import { useLocalize, useDocumentTitle, useAuthContext } from '~/hooks';
 import { ThemeSelector, LangSelector } from '~/components/Appearance';
 import { ShareMessagesProvider } from './ShareMessagesProvider';
 import { useForkSharedConvoMutation } from '~/data-provider';
 import { useGetSharedStartupConfig } from '~/data-provider';
 import { ShareArtifactsContainer } from './ShareArtifacts';
-import { useLocalize, useDocumentTitle } from '~/hooks';
+import AnalyticsConsent from '../System/AnalyticsConsent';
+import { hasAnalyticsGtmId } from '~/store/analytics';
+import AppChatSurface from '../Chat/Surface';
 import { ShareContext } from '~/Providers';
 import MessagesView from './MessagesView';
 import Footer from '../Chat/Footer';
@@ -38,10 +51,22 @@ function SharedView() {
   const localize = useLocalize();
   const navigate = useNavigate();
   const { showToast } = useToastContext();
+  const { isAuthReady } = useAuthContext();
   const { theme, setTheme } = useContext(ThemeContext);
   const { shareId } = useParams();
-  const { data: config } = useGetSharedStartupConfig(shareId);
-  const { data, isLoading, refetch } = useGetSharedMessages(shareId ?? '');
+  const jotaiStore = useStore();
+  const [subagentSelection, setSubagentSelection] = useAtom(activeSubagentPanel);
+  const {
+    data: config,
+    isError: configFailed,
+    isInitialLoading: configLoading,
+  } = useGetSharedStartupConfig(shareId, {
+    enabled: isAuthReady,
+  });
+  useDeploymentThemeOverride(config != null || configFailed, config?.interface?.theme);
+  const { data, isLoading, isFetching, refetch } = useGetSharedMessages(shareId ?? '', {
+    enabled: isAuthReady,
+  });
   const dataTree = data && buildTree({ messages: data.messages });
   const messagesTree = dataTree?.length === 0 ? null : (dataTree ?? null);
 
@@ -84,26 +109,20 @@ function SharedView() {
    *  the root on SHARED_CONVO_KEY. An index is sent (not id or createdAt) because
    *  shared ids are re-anonymized per request and createdAt can collide, while
    *  the payload order is stable across requests. */
-  const getActiveTargetIndex = useRecoilCallback(
-    ({ snapshot }) =>
-      () => {
-        const messages = data?.messages;
-        if (messages == null || messages.length === 0) {
-          return undefined;
-        }
-        const getSiblingIndex = (parentMessageId: string | null | undefined) =>
-          snapshot
-            .getLoadable(store.messagesSiblingIdxFamily(parentMessageId ?? SHARED_CONVO_KEY))
-            .getValue() ?? 0;
-        const tail = selectActiveBranchTail(messages, SHARED_CONVO_KEY, getSiblingIndex);
-        if (tail == null) {
-          return undefined;
-        }
-        const index = messages.findIndex((message) => message.messageId === tail.messageId);
-        return index >= 0 ? index : undefined;
-      },
-    [data?.messages],
-  );
+  const getActiveTargetIndex = useCallback(() => {
+    const messages = data?.messages;
+    if (messages == null || messages.length === 0) {
+      return undefined;
+    }
+    const getSiblingIndex = (parentMessageId: string | null | undefined) =>
+      jotaiStore.get(siblingIdxFamily(siblingKey(parentMessageId ?? SHARED_CONVO_KEY)));
+    const tail = selectActiveBranchTail(messages, SHARED_CONVO_KEY, getSiblingIndex);
+    if (tail == null) {
+      return undefined;
+    }
+    const index = messages.findIndex((message) => message.messageId === tail.messageId);
+    return index >= 0 ? index : undefined;
+  }, [data?.messages, jotaiStore]);
 
   const { mutate: forkSharedConvo } = forkShare;
   const handleContinue = useCallback(() => {
@@ -169,7 +188,7 @@ function SharedView() {
   );
 
   let content: JSX.Element;
-  if (isLoading) {
+  if (!isAuthReady || isLoading || configLoading) {
     content = (
       <div className="flex h-screen items-center justify-center">
         <Spinner className="" />
@@ -187,8 +206,14 @@ function SharedView() {
           onLangChange={handleLangChange}
           settingsLabel={localize('com_nav_settings')}
           continueLabel={localize('com_ui_continue_chat')}
+          langfuseSessionLabel={localize('com_ui_langfuse_view_session')}
+          langfuseSessionUrl={data.langfuseSessionUrl}
           onContinue={handleContinue}
           isContinuing={forkShare.isLoading}
+          analyticsConfigured={
+            hasAnalyticsGtmId(config?.analyticsGtmId) &&
+            config?.interface?.analyticsConsent !== false
+          }
         />
         <ShareMessagesProvider messages={data.messages}>
           <MessagesView messagesTree={messagesTree} conversationId={SHARED_CONVO_KEY} />
@@ -197,26 +222,33 @@ function SharedView() {
     );
   } else {
     content = (
-      <div className="flex h-screen items-center justify-center">
-        {localize('com_ui_shared_link_not_found')}
-      </div>
+      <SharedLinkUnavailable
+        message={localize('com_ui_shared_link_not_found')}
+        retryLabel={localize('com_ui_retry')}
+        isRetrying={isFetching}
+        onRetry={() => void refetch()}
+      />
     );
   }
 
   const footer = (
-    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-surface-secondary from-40% to-transparent">
+    <div className="from-presentation pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-40% to-transparent">
       <Footer
         startupConfig={config ?? null}
-        className="pointer-events-auto relative mx-auto flex max-w-7xl flex-wrap items-center justify-center gap-2 px-3 pb-4 pt-6 text-center text-xs text-text-secondary"
+        className="text-text-secondary pointer-events-auto relative mx-auto flex max-w-7xl flex-wrap items-center justify-center gap-2 px-3 pt-6 pb-4 text-center text-xs"
       />
     </div>
   );
 
   const mainContent = (
-    <div className="transition-width relative flex h-full w-full flex-1 flex-col items-stretch overflow-hidden bg-surface-secondary pt-0">
-      <div className="relative flex h-full min-h-0 flex-col text-text-primary" role="presentation">
+    <div className="bg-presentation relative flex h-full w-full flex-1 flex-col items-stretch overflow-hidden pt-0">
+      <div className="text-text-primary relative flex h-full min-h-0 flex-col" role="presentation">
         {content}
         {footer}
+        <AnalyticsConsent
+          gtmId={config?.analyticsGtmId}
+          consentRequired={config?.interface?.analyticsConsent !== false}
+        />
       </div>
     </div>
   );
@@ -233,13 +265,53 @@ function SharedView() {
     );
 
   return (
-    <ShareContext.Provider value={{ isSharedConvo: true, shareId }}>
-      <div className="relative flex h-screen w-full overflow-hidden dark:bg-surface-secondary">
-        <main className="relative flex w-full grow overflow-hidden dark:bg-surface-secondary">
-          {artifactsContainer}
-        </main>
-      </div>
-    </ShareContext.Provider>
+    <CodeHighlightThrottleContext.Provider
+      value={normalizeCodeHighlightThrottleMs(config?.interface?.codeHighlightThrottleMs)}
+    >
+      <ShareContext.Provider
+        value={{ isSharedConvo: true, shareId, hasConfiguredSender: data?.hasConfiguredSender }}
+      >
+        <AppChatSurface>
+          <div className="bg-presentation relative flex h-screen w-full overflow-hidden">
+            <main className="bg-presentation relative flex w-full grow overflow-hidden">
+              {artifactsContainer}
+            </main>
+          </div>
+          <SharedSubagentActivityDialog
+            shareId={shareId}
+            messages={data?.messages}
+            selected={subagentSelection}
+            setSelected={setSubagentSelection}
+          />
+        </AppChatSurface>
+      </ShareContext.Provider>
+    </CodeHighlightThrottleContext.Provider>
+  );
+}
+
+export function SharedLinkUnavailable({
+  message,
+  retryLabel,
+  isRetrying,
+  onRetry,
+}: {
+  message: string;
+  retryLabel: string;
+  isRetrying: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="flex h-screen flex-col items-center justify-center gap-4 px-4 text-center">
+      <p>{message}</p>
+      <Button type="button" variant="outline" onClick={onRetry} disabled={isRetrying}>
+        {isRetrying ? (
+          <Spinner className="size-4" />
+        ) : (
+          <RefreshCw className="size-4" aria-hidden="true" />
+        )}
+        {retryLabel}
+      </Button>
+    </div>
   );
 }
 
@@ -253,11 +325,11 @@ function ShareTitle({ title }: { title?: string }) {
       description={title}
       side="bottom"
       tabIndex={0}
-      className="block min-w-0 max-w-full cursor-default"
+      className="block max-w-full min-w-0 cursor-default"
       render={
         <h1
           data-testid="share-title"
-          className="cursor-default truncate text-2xl font-semibold text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary md:text-4xl"
+          className="text-text-primary focus-visible:ring-text-primary cursor-default truncate text-2xl font-semibold focus-visible:ring-2 focus-visible:outline-hidden md:text-4xl"
         >
           {title}
         </h1>
@@ -273,23 +345,30 @@ interface ShareHeaderProps {
   langcode: string;
   settingsLabel: string;
   continueLabel: string;
+  langfuseSessionLabel: string;
+  langfuseSessionUrl?: string;
   isContinuing: boolean;
   onContinue: () => void;
   onThemeChange: (value: string) => void;
   onLangChange: (value: string) => void;
+  /** Whether the link's deployment set `ANALYTICS_GTM_ID`, which adds the consent toggle. */
+  analyticsConfigured?: boolean;
 }
 
-function ShareHeader({
+export function ShareHeader({
   title,
   formattedDate,
   theme,
   langcode,
   settingsLabel,
   continueLabel,
+  langfuseSessionLabel,
+  langfuseSessionUrl,
   isContinuing,
   onContinue,
   onThemeChange,
   onLangChange,
+  analyticsConfigured = false,
 }: ShareHeaderProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsContent, setSettingsContent] = useState<HTMLDivElement | null>(null);
@@ -303,26 +382,34 @@ function ShareHeader({
   }, []);
 
   return (
-    <section className="mx-auto w-full px-2 pb-3 pt-4 md:px-5 md:pb-4 md:pt-6">
-      <div className="relative mx-auto flex w-full max-w-7xl flex-col gap-3 rounded-2xl border border-border-light bg-surface-secondary px-4 py-4 shadow-xl md:gap-4 md:rounded-3xl md:px-6 md:py-5">
+    <section className="mx-auto w-full px-2 pt-4 pb-3 md:px-5 md:pt-6 md:pb-4">
+      <div className="border-border-light bg-surface-secondary relative mx-auto flex w-full max-w-7xl flex-col gap-3 rounded-2xl border px-4 py-4 shadow-xl md:gap-4 md:rounded-3xl md:px-6 md:py-5">
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0 flex-1 space-y-1.5 md:space-y-2">
             <ShareTitle title={title} />
             {formattedDate && (
-              <div className="flex items-center gap-2 text-sm text-text-secondary">
+              <div className="text-text-secondary flex items-center gap-2 text-sm">
                 <CalendarDays className="size-4" aria-hidden="true" />
                 <span>{formattedDate}</span>
               </div>
             )}
           </div>
 
-          <div className="flex items-center gap-2 md:self-start">
+          <div className="flex flex-wrap items-center justify-end gap-2 md:flex-nowrap md:self-start">
+            {langfuseSessionUrl && (
+              <Button asChild variant="outline" shape="round" className="border-border-medium">
+                <a href={langfuseSessionUrl} target="_blank" rel="noopener noreferrer">
+                  <span>{langfuseSessionLabel}</span>
+                  <ExternalLink className="size-4 shrink-0" aria-hidden="true" />
+                </a>
+              </Button>
+            )}
             <Button
               type="button"
               variant="submit"
               onClick={onContinue}
               disabled={isContinuing}
-              className="gap-2 rounded-full px-4 py-2 text-sm"
+              shape="round"
             >
               {isContinuing ? (
                 <Spinner className="size-4" />
@@ -337,11 +424,12 @@ function ShareHeader({
                   size={isMobile ? 'icon' : 'default'}
                   type="button"
                   variant="outline"
+                  shape="round"
                   aria-label={settingsLabel}
                   className={cn(
-                    'rounded-full border-border-medium text-sm text-text-primary transition-colors',
+                    'border-border-medium transition-colors',
                     isMobile
-                      ? 'absolute bottom-4 right-4 justify-center p-0 shadow-lg'
+                      ? 'absolute inset-e-4 bottom-4 justify-center p-0 shadow-lg'
                       : 'gap-2 self-start px-4 py-2',
                   )}
                 >
@@ -356,7 +444,7 @@ function ShareHeader({
                 onPointerDownOutside={handleDialogOutside}
                 onInteractOutside={handleDialogOutside}
               >
-                <OGDialogHeader className="text-left">
+                <OGDialogHeader className="text-start">
                   <OGDialogTitle>{settingsLabel}</OGDialogTitle>
                 </OGDialogHeader>
                 <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto pt-2 text-sm">
@@ -373,6 +461,12 @@ function ShareHeader({
                     portalElement={settingsContent}
                     popoverClassName="z-[150]"
                   />
+                  {analyticsConfigured && (
+                    <>
+                      <Separator orientation="horizontal" />
+                      <AnalyticsConsentToggle />
+                    </>
+                  )}
                 </div>
               </OGDialogContent>
             </OGDialog>

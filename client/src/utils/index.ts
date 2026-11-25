@@ -1,23 +1,35 @@
 import React from 'react';
 import type { UIActionResult } from '@mcp-ui/client';
-import { TAskFunction } from '~/common';
+import type { TAskFunction } from '~/common';
 import logger from './logger';
 
 export * from './map';
+export * from './ttscache';
+export * from './policies';
 export * from './json';
 export * from './icons';
+export * from './svg';
+export * from './row';
 export * from './email';
 export * from './share';
 export * from './files';
+export * from './media';
 export * from './greeting';
-export * from './latex';
-export * from './tilde';
+export {
+  singleDollarMath,
+  remarkApproxTilde,
+  normalizeApproxTildes,
+  remarkSingleDollarMath,
+} from '@librechat/chat';
+export * from './morph';
 export * from './forms';
 export * from './roles';
 export * from './errors';
+export * from './promptErrors';
 export * from './agents';
 export * from './drafts';
 export * from './convos';
+export * from './queue';
 export * from './routes';
 export * from './presets';
 export * from './prompts';
@@ -25,8 +37,11 @@ export * from './voices';
 export * from './textarea';
 export * from './messages';
 export * from './focus';
+export * from './viewport';
 export * from './tokens';
+export * from './balance';
 export * from './redirect';
+export * from './links';
 export * from './languages';
 export * from './conversation';
 export * from './endpoints';
@@ -38,16 +53,32 @@ export * from './timestamps';
 export * from './localStorage';
 export * from './promptGroups';
 export * from './previewCache';
-export * from './groupToolCalls';
-export * from './toolLabels';
 export * from './favoritesError';
-export * from './approval';
-export * from './steer';
-export * from './activityLabels';
+export {
+  getSteerPart,
+  applySteerPart,
+  applyReasoningLabel,
+  MAX_QUOTE_COUNT,
+  dedupeSteersById,
+  insertQueuedOrigin,
+  resolveRunEndTarget,
+  mergeRestagedQuotes,
+  carriedSteerContext,
+  appendAppliedSteerIds,
+  findSteerMessageIndex,
+  findReasoningLabelMessageIndex,
+  collectAppliedSteerIds,
+  resolveAbortSteerTarget,
+  findResponseMessageIndex,
+  collectDroppedSteerQuotes,
+  isLegacyDeliveryUncertain,
+  collectQuotelessAppliedSteerIds,
+} from '@librechat/chat';
+export type { SteerCarriedContext } from '@librechat/chat';
+export { getChatPane, getFocusedChatPane, isFocusedChatPane } from '@librechat/chat';
+export * from './agentModelSelection';
 export * from './runStepDuration';
-export * from './toolCallPhase';
 export * from './documentTitle';
-export * from './reasoningLabels';
 export * from './numbers';
 export { default as cn } from './cn';
 export { default as logger } from './logger';
@@ -89,35 +120,18 @@ export const languages = [
 ];
 
 export const removeFocusOutlines = '';
-export const removeFocusRings =
-  'focus:outline-none focus:ring-0 focus:ring-opacity-0 focus:ring-offset-0';
+export const removeFocusRings = 'focus:outline-hidden focus:ring-0 focus:ring-offset-0';
 
 export const cardStyle =
-  'transition-colors rounded-md min-w-[75px] border border-border-medium font-normal bg-surface-secondary hover:bg-surface-hover text-text-primary focus:outline-none data-[state=open]:bg-surface-hover';
+  'transition-colors rounded-md min-w-[4.6875rem] border border-border-medium font-normal bg-surface-secondary hover:bg-surface-hover text-text-primary focus:outline-hidden data-[state=open]:bg-surface-hover';
 
 export const defaultTextProps =
-  'rounded-md border border-border-light focus:border-border-heavy focus:bg-surface-secondary bg-transparent text-sm text-text-primary shadow-[0_0_10px_rgba(0,0,0,0.05)] outline-none focus-within:placeholder:text-text-primary focus:placeholder:text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-text-primary focus:ring-opacity-20 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
+  'rounded-md border border-border-control focus:border-border-heavy focus:bg-surface-secondary bg-transparent text-sm text-text-primary shadow-[0_0_0.625rem_rgba(0,0,0,0.05)] outline-hidden focus-within:placeholder:text-text-primary focus:placeholder:text-text-primary placeholder:text-text-secondary focus:outline-hidden focus:ring-text-primary/20 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
 
 export const optionText =
   'p-0 shadow-none text-right pr-1 h-8 border-transparent hover:bg-surface-hover transition-colors';
 
-export const defaultTextPropsLabel =
-  'rounded-md border border-border-medium bg-transparent text-sm text-text-primary shadow-[0_0_10px_rgba(0,0,0,0.10)] outline-none focus-within:placeholder:text-text-primary focus:placeholder:text-text-primary placeholder:text-text-secondary focus:outline-none disabled:cursor-not-allowed disabled:opacity-50';
-
-export function capitalizeFirstLetter(string: string) {
-  return string.charAt(0).toUpperCase() + string.slice(1);
-}
-
-export const handleDoubleClick: React.MouseEventHandler<HTMLElement> = (event) => {
-  const range = document.createRange();
-  range.selectNodeContents(event.target as Node);
-  const selection = window.getSelection();
-  if (!selection) {
-    return;
-  }
-  selection.removeAllRanges();
-  selection.addRange(range);
-};
+export { selectContents as handleDoubleClick } from '@librechat/chat';
 
 export const extractContent = (
   children: React.ReactNode | { props: { children: React.ReactNode } } | string,
@@ -134,15 +148,9 @@ export const extractContent = (
   return '';
 };
 
+/** Converts supported legacy MCP-UI actions into the existing conversation submission path. */
 export const handleUIAction = async (result: UIActionResult, ask: TAskFunction) => {
-  const supportedTypes = ['intent', 'tool', 'prompt'];
-
   const { type, payload } = result;
-
-  if (!supportedTypes.includes(type)) {
-    return;
-  }
-
   let messageText = '';
 
   if (type === 'intent') {
@@ -178,6 +186,8 @@ ${prompt}
 
 Execute the intention of the prompt that is mentioned in the message using the tools available to you.
     `;
+  } else {
+    return;
   }
 
   logger.debug('MCP-UI', 'About to submit message:', messageText);

@@ -7,8 +7,14 @@ import {
   PermissionBits,
 } from 'librechat-data-provider';
 import type * as t from '~/types';
-import { createAclEntryMethods, permissionBitSupersets } from './aclEntry';
+import {
+  OWNER_ACL_PERMISSION_BITS,
+  createAclEntryMethods,
+  permissionBitSupersets,
+} from './aclEntry';
+import { tenantStorage } from '~/config/tenantContext';
 import aclEntrySchema from '~/schema/aclEntry';
+import logger from '~/config/winston';
 
 let mongoServer: MongoMemoryServer;
 let AclEntry: mongoose.Model<t.IAclEntry>;
@@ -24,7 +30,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(async () => {
@@ -91,39 +97,6 @@ describe('AclEntry Model Tests', () => {
       expect(entry?.principalType).toBe(PrincipalType.PUBLIC);
       expect(entry?.principalId).toBeUndefined();
       expect(entry?.principalModel).toBeUndefined();
-    });
-
-    test('should find entries by principal', async () => {
-      /** Create two different permissions for the same user */
-      await methods.grantPermission(
-        PrincipalType.USER,
-        userId,
-        ResourceType.AGENT,
-        resourceId,
-        PermissionBits.VIEW,
-        grantedById,
-      );
-      await methods.grantPermission(
-        PrincipalType.USER,
-        userId,
-        'project',
-        new mongoose.Types.ObjectId(),
-        PermissionBits.EDIT,
-        grantedById,
-      );
-
-      /** Find all entries for the user */
-      const entries = await methods.findEntriesByPrincipal(PrincipalType.USER, userId);
-      expect(entries).toHaveLength(2);
-
-      /** Find entries filtered by resource type */
-      const agentEntries = await methods.findEntriesByPrincipal(
-        PrincipalType.USER,
-        userId,
-        ResourceType.AGENT,
-      );
-      expect(agentEntries).toHaveLength(1);
-      expect(agentEntries[0].resourceType).toBe(ResourceType.AGENT);
     });
 
     test('should find entries by resource', async () => {
@@ -201,6 +174,25 @@ describe('AclEntry Model Tests', () => {
         resourceId,
       );
       expect(entries).toHaveLength(2);
+    });
+
+    test('reads mutation snapshots from the primary even when a session is supplied', async () => {
+      const read = jest.spyOn(mongoose.Query.prototype, 'read');
+      const session = await mongoose.startSession();
+      try {
+        const entries = await methods.findEntriesByPrincipalsAndResource(
+          [{ principalType: PrincipalType.USER, principalId: userId }],
+          ResourceType.AGENT,
+          resourceId,
+          session,
+          true,
+        );
+        expect(entries).toHaveLength(1);
+        expect(read).toHaveBeenCalledWith('primary');
+      } finally {
+        read.mockRestore();
+        await session.endSession();
+      }
     });
 
     test('should check if user has permission', async () => {
@@ -289,35 +281,6 @@ describe('AclEntry Model Tests', () => {
   });
 
   describe('Permission Modification', () => {
-    test('should revoke permission', async () => {
-      /** Grant permission first */
-      await methods.grantPermission(
-        PrincipalType.USER,
-        userId,
-        ResourceType.AGENT,
-        resourceId,
-        PermissionBits.VIEW,
-        grantedById,
-      );
-
-      /** Check it exists */
-      const entriesBefore = await methods.findEntriesByPrincipal(PrincipalType.USER, userId);
-      expect(entriesBefore).toHaveLength(1);
-
-      /** Revoke it */
-      const result = await methods.revokePermission(
-        PrincipalType.USER,
-        userId,
-        ResourceType.AGENT,
-        resourceId,
-      );
-      expect(result.deletedCount).toBe(1);
-
-      /** Verify it's gone */
-      const entriesAfter = await methods.findEntriesByPrincipal(PrincipalType.USER, userId);
-      expect(entriesAfter).toHaveLength(0);
-    });
-
     test('should modify permission bits - add permissions', async () => {
       /** Start with VIEW permission */
       await methods.grantPermission(
@@ -453,32 +416,6 @@ describe('AclEntry Model Tests', () => {
       expect(entry?.principalModel).toBe(PrincipalModel.ROLE);
     });
 
-    test('should handle string principalId in revokePermission', async () => {
-      // First grant permission with ObjectId
-      await methods.grantPermission(
-        PrincipalType.USER,
-        userId,
-        ResourceType.AGENT,
-        resourceId,
-        PermissionBits.VIEW,
-        grantedById,
-      );
-
-      // Then revoke with string ID
-      const result = await methods.revokePermission(
-        PrincipalType.USER,
-        userId.toString(), // Pass string
-        ResourceType.AGENT,
-        resourceId,
-      );
-
-      expect(result.deletedCount).toBe(1);
-
-      // Verify it's actually deleted
-      const entries = await methods.findEntriesByPrincipal(PrincipalType.USER, userId);
-      expect(entries).toHaveLength(0);
-    });
-
     test('should handle string principalId in modifyPermissionBits', async () => {
       // First grant permission with ObjectId
       await methods.grantPermission(
@@ -575,8 +512,102 @@ describe('AclEntry Model Tests', () => {
       );
 
       // Should still only be one entry
-      const entries = await methods.findEntriesByPrincipal(PrincipalType.USER, userId);
-      expect(entries).toHaveLength(1);
+      const entryCount = await AclEntry.countDocuments({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+      });
+      expect(entryCount).toBe(1);
+    });
+  });
+
+  describe('Grants made as a unique entry', () => {
+    const grantPublic = (uniqueEntry?: boolean) =>
+      methods.grantPermission(
+        PrincipalType.PUBLIC,
+        null,
+        ResourceType.SHARED_LINK,
+        resourceId,
+        PermissionBits.VIEW,
+        grantedById,
+        undefined,
+        undefined,
+        undefined,
+        uniqueEntry,
+      );
+    const grantUser = (principalId: mongoose.Types.ObjectId | string) =>
+      methods.grantPermission(
+        PrincipalType.USER,
+        principalId,
+        ResourceType.SHARED_LINK,
+        resourceId,
+        PermissionBits.VIEW,
+        grantedById,
+        undefined,
+        undefined,
+        undefined,
+        true,
+      );
+    const publicEntries = () =>
+      AclEntry.find({ principalType: PrincipalType.PUBLIC, resourceId }).lean();
+    const duplicateKey = () => {
+      throw Object.assign(new Error('E11000 duplicate key error'), { code: 11000 });
+    };
+
+    test('names the entry after the principal and the resource', async () => {
+      const first = await grantPublic(true);
+      await AclEntry.deleteMany({});
+      const again = await grantPublic(true);
+      const owner = await grantUser(userId);
+      await AclEntry.deleteOne({ _id: owner?._id });
+      const ownerByString = await grantUser(userId.toString());
+      const otherUser = await grantUser(new mongoose.Types.ObjectId());
+
+      expect(again?._id.toString()).toBe(first?._id.toString());
+      expect(ownerByString?._id.toString()).toBe(owner?._id.toString());
+      expect(new Set([first, owner, otherUser].map((entry) => entry?._id.toString())).size).toBe(3);
+    });
+
+    test('updates an entry that already exists under another id', async () => {
+      const existing = await grantPublic();
+
+      const entry = await grantPublic(true);
+
+      expect(entry?._id.toString()).toBe(existing?._id.toString());
+      expect(await publicEntries()).toHaveLength(1);
+    });
+
+    /**
+     * Without the option every one of these finds no entry and inserts its own, because the
+     * upsert matches on fields no unique index covers.
+     */
+    test('leaves one entry when the same grant runs concurrently', async () => {
+      const entries = await Promise.all(Array.from({ length: 16 }, () => grantPublic(true)));
+
+      expect(new Set(entries.map((entry) => entry?._id.toString())).size).toBe(1);
+      expect(await publicEntries()).toHaveLength(1);
+    });
+
+    test('replays the grant as an update when another writer inserted the entry first', async () => {
+      const existing = await grantPublic(true);
+      const findOneAndUpdate = jest.spyOn(AclEntry, 'findOneAndUpdate');
+      findOneAndUpdate.mockImplementationOnce(duplicateKey);
+
+      const entry = await grantPublic(true);
+
+      expect(findOneAndUpdate).toHaveBeenCalledTimes(2);
+      expect(entry?._id.toString()).toBe(existing?._id.toString());
+      expect(await publicEntries()).toHaveLength(1);
+      findOneAndUpdate.mockRestore();
+    });
+
+    test('does not replay a duplicate key for an ordinary grant', async () => {
+      const findOneAndUpdate = jest.spyOn(AclEntry, 'findOneAndUpdate');
+      findOneAndUpdate.mockImplementationOnce(duplicateKey);
+
+      await expect(grantPublic()).rejects.toMatchObject({ code: 11000 });
+
+      expect(findOneAndUpdate).toHaveBeenCalledTimes(1);
+      findOneAndUpdate.mockRestore();
     });
   });
 
@@ -1024,6 +1055,182 @@ describe('AclEntry Model Tests', () => {
     });
   });
 
+  describe('deletePrincipalAclEntries', () => {
+    const grantTo = (principalType: PrincipalType, principalId: string | mongoose.Types.ObjectId) =>
+      methods.grantPermission(
+        principalType,
+        principalId,
+        ResourceType.AGENT,
+        new mongoose.Types.ObjectId(),
+        PermissionBits.VIEW,
+        grantedById,
+      );
+    const remainingIds = async () =>
+      (await AclEntry.find({}).select('_id').lean()).map(({ _id }) => _id.toString()).sort();
+
+    it("removes a role's platform-level entries outside a tenant, never a tenant role's of that name", async () => {
+      await grantTo(PrincipalType.ROLE, 'editor');
+      const unclaimed = await grantTo(PrincipalType.ROLE, 'editor');
+      const tenant = await grantTo(PrincipalType.ROLE, 'editor');
+      const other = await grantTo(PrincipalType.ROLE, 'other');
+      await AclEntry.collection.updateOne({ _id: unclaimed?._id }, { $set: { tenantId: '' } });
+      await AclEntry.collection.updateOne({ _id: tenant?._id }, { $set: { tenantId: 'tenant-a' } });
+
+      await methods.deletePrincipalAclEntries({
+        principalType: PrincipalType.ROLE,
+        principalId: 'editor',
+      });
+
+      expect(await remainingIds()).toEqual([tenant?._id.toString(), other?._id.toString()].sort());
+    });
+
+    it("removes only the active tenant's role entries inside it", async () => {
+      const platform = await grantTo(PrincipalType.ROLE, 'editor');
+      const tenant = await grantTo(PrincipalType.ROLE, 'editor');
+      await AclEntry.collection.updateOne({ _id: tenant?._id }, { $set: { tenantId: 'tenant-a' } });
+
+      await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        methods.deletePrincipalAclEntries({
+          principalType: PrincipalType.ROLE,
+          principalId: 'editor',
+        }),
+      );
+
+      expect(await remainingIds()).toEqual([platform?._id.toString()]);
+    });
+
+    it('removes a group principal entries by id, whichever tenant holds them', async () => {
+      const groupId = new mongoose.Types.ObjectId();
+      const tenant = await grantTo(PrincipalType.GROUP, groupId);
+      const other = await grantTo(PrincipalType.GROUP, new mongoose.Types.ObjectId());
+      await AclEntry.collection.updateOne({ _id: tenant?._id }, { $set: { tenantId: 'tenant-a' } });
+
+      await methods.deletePrincipalAclEntries({
+        principalType: PrincipalType.GROUP,
+        principalId: groupId,
+      });
+
+      expect(await remainingIds()).toEqual([other?._id.toString()]);
+    });
+  });
+
+  describe('moveAclEntriesToPrincipal', () => {
+    const grantToRole = (roleName: string, bits: number) =>
+      methods.grantPermission(
+        PrincipalType.ROLE,
+        roleName,
+        ResourceType.AGENT,
+        new mongoose.Types.ObjectId(),
+        bits,
+        grantedById,
+      );
+
+    const entriesOf = (roleName: string) =>
+      AclEntry.find({ principalType: PrincipalType.ROLE, principalId: roleName }).lean();
+
+    it('re-keys a role principal entries to the new name, keeping identity and bits', async () => {
+      const viewed = await grantToRole('editor', PermissionBits.VIEW);
+      await grantToRole('editor', PermissionBits.EDIT);
+      await grantToRole('other', PermissionBits.VIEW);
+
+      const moved = await methods.moveAclEntriesToPrincipal(PrincipalType.ROLE, 'editor', 'writer');
+
+      expect(moved).toHaveLength(2);
+      expect(await entriesOf('editor')).toHaveLength(0);
+      const writer = await entriesOf('writer');
+      expect(writer.map((entry) => entry._id.toString()).sort()).toEqual([...moved].sort());
+      expect(writer.find((entry) => entry._id.equals(viewed?._id))?.permBits).toBe(
+        PermissionBits.VIEW,
+      );
+      expect(await entriesOf('other')).toHaveLength(1);
+    });
+
+    it('moves back only the entries a move returned', async () => {
+      await grantToRole('editor', PermissionBits.VIEW);
+      const writerBefore = await grantToRole('writer', PermissionBits.EDIT);
+
+      const moved = await methods.moveAclEntriesToPrincipal(PrincipalType.ROLE, 'editor', 'writer');
+      await methods.moveAclEntriesToPrincipal(PrincipalType.ROLE, 'writer', 'editor', {
+        ids: moved,
+      });
+
+      expect((await entriesOf('editor')).map((entry) => entry._id.toString())).toEqual(moved);
+      expect((await entriesOf('writer')).map((entry) => entry._id.toString())).toEqual([
+        writerBefore?._id.toString(),
+      ]);
+    });
+
+    it('returns nothing for a principal without entries', async () => {
+      expect(
+        await methods.moveAclEntriesToPrincipal(PrincipalType.ROLE, 'nobody', 'writer'),
+      ).toEqual([]);
+    });
+
+    it('moves only platform-level entries without a tenant context', async () => {
+      const platform = await grantToRole('editor', PermissionBits.VIEW);
+      const tenant = await grantToRole('editor', PermissionBits.EDIT);
+      await AclEntry.collection.updateOne({ _id: tenant?._id }, { $set: { tenantId: 'tenant-a' } });
+
+      const moved = await methods.moveAclEntriesToPrincipal(PrincipalType.ROLE, 'editor', 'writer');
+
+      expect(moved).toEqual([platform?._id.toString()]);
+      expect((await entriesOf('editor')).map((entry) => entry._id.toString())).toEqual([
+        tenant?._id.toString(),
+      ]);
+    });
+
+    it('moves unclaimed entries as platform-level, and only the active tenant entries inside one', async () => {
+      const absent = await grantToRole('editor', PermissionBits.VIEW);
+      const unclaimed = await grantToRole('editor', PermissionBits.EDIT);
+      const tenant = await grantToRole('editor', PermissionBits.DELETE);
+      await AclEntry.collection.updateOne({ _id: unclaimed?._id }, { $set: { tenantId: null } });
+      await AclEntry.collection.updateOne({ _id: tenant?._id }, { $set: { tenantId: 'tenant-a' } });
+
+      const platformMoved = await methods.moveAclEntriesToPrincipal(
+        PrincipalType.ROLE,
+        'editor',
+        'writer',
+      );
+      const tenantMoved = await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        methods.moveAclEntriesToPrincipal(PrincipalType.ROLE, 'editor', 'author'),
+      );
+
+      expect([...platformMoved].sort()).toEqual(
+        [absent?._id.toString(), unclaimed?._id.toString()].sort(),
+      );
+      expect(tenantMoved).toEqual([tenant?._id.toString()]);
+      expect(await entriesOf('editor')).toHaveLength(0);
+    });
+
+    it('logs the entry ids, never the error text, when the undo of a failed move fails too', async () => {
+      const entry = await grantToRole('editor', PermissionBits.VIEW);
+      const failure = new Error('write interrupted');
+      const updateMany = jest
+        .spyOn(AclEntry, 'updateMany')
+        .mockRejectedValueOnce(failure)
+        .mockRejectedValueOnce(new Error('undo failed near {"principalId":"editor"}'));
+      const logged = jest.spyOn(logger, 'error').mockReturnValue(logger);
+
+      await expect(
+        methods.moveAclEntriesToPrincipal(PrincipalType.ROLE, 'editor', 'writer'),
+      ).rejects.toBe(failure);
+      updateMany.mockRestore();
+
+      expect(logged).toHaveBeenCalledWith(
+        '[moveAclEntriesToPrincipal] undo after a failed move failed',
+        {
+          principalType: PrincipalType.ROLE,
+          fromPrincipalId: 'editor',
+          toPrincipalId: 'writer',
+          entryIds: entry?._id.toString(),
+          errName: 'Error',
+          errCode: null,
+        },
+      );
+      logged.mockRestore();
+    });
+  });
+
   describe('bulkWriteAclEntries', () => {
     test('should perform bulk inserts', async () => {
       const res1 = new mongoose.Types.ObjectId();
@@ -1277,6 +1484,85 @@ describe('AclEntry Model Tests', () => {
     });
   });
 
+  describe('getFirstOwnerIdsByResource', () => {
+    test('answers with the earliest owner when a transfer left two owner entries behind', async () => {
+      const formerOwner = new mongoose.Types.ObjectId();
+      const currentOwner = new mongoose.Types.ObjectId();
+      await methods.grantPermission(
+        PrincipalType.USER,
+        formerOwner,
+        ResourceType.AGENT,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS,
+        grantedById,
+      );
+      await methods.grantPermission(
+        PrincipalType.USER,
+        currentOwner,
+        ResourceType.AGENT,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS,
+        grantedById,
+      );
+
+      const owners = await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId]);
+
+      expect(owners.get(resourceId.toString())).toBe(formerOwner.toString());
+    });
+
+    /* Granting Agent Insights ORs VIEW_INSIGHTS into the owner's role bits, so an owner
+       entry is not always exactly OWNER_ACL_PERMISSION_BITS. */
+    test('recognises an owner whose entry also carries the insights bit', async () => {
+      const owner = new mongoose.Types.ObjectId();
+      await methods.grantPermission(
+        PrincipalType.USER,
+        owner,
+        ResourceType.AGENT,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS | PermissionBits.VIEW_INSIGHTS,
+        grantedById,
+      );
+
+      const owners = await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId]);
+
+      expect(owners.get(resourceId.toString())).toBe(owner.toString());
+    });
+
+    /* An agent and its remote counterpart share one id, so a lookup that ignored the
+       resource type would let a revoked remote owner decide the agent's public author. */
+    test('ignores an owner entry stored against another resource type with the same id', async () => {
+      const remoteOwner = new mongoose.Types.ObjectId();
+      await methods.grantPermission(
+        PrincipalType.USER,
+        remoteOwner,
+        ResourceType.MCPSERVER,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS,
+        grantedById,
+      );
+
+      const owners = await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId]);
+
+      expect(owners.size).toBe(0);
+    });
+
+    test('ignores a viewer and asks nothing of the database for an empty page', async () => {
+      await methods.grantPermission(
+        PrincipalType.USER,
+        userId,
+        ResourceType.AGENT,
+        resourceId,
+        PermissionBits.VIEW,
+        grantedById,
+      );
+
+      expect(
+        (await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId])).size,
+      ).toBe(0);
+      expect((await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [])).size).toBe(0);
+    });
+  });
+
   /**
    * These cases exercise the application-layer bitwise filtering that replaced
    * the `$bitsAllSet` query operator (which is not supported by MongoDB forks
@@ -1411,6 +1697,68 @@ describe('AclEntry Model Tests', () => {
         expect(result).toHaveLength(1);
         expect(result[0].toString()).toBe(viewEdit.toString());
       });
+
+      describe('resourceIds bound', () => {
+        const otherResource = new mongoose.Types.ObjectId();
+        beforeEach(async () => {
+          await methods.grantPermission(
+            PrincipalType.USER,
+            userId,
+            ResourceType.AGENT,
+            resourceId,
+            PermissionBits.VIEW,
+            grantedById,
+          );
+          await methods.grantPermission(
+            PrincipalType.USER,
+            userId,
+            ResourceType.AGENT,
+            otherResource,
+            PermissionBits.VIEW,
+            grantedById,
+          );
+        });
+
+        test('intersects access with the bound candidate ids only', async () => {
+          const result = await methods.findAccessibleResources(
+            [{ principalType: PrincipalType.USER, principalId: userId }],
+            ResourceType.AGENT,
+            PermissionBits.VIEW,
+            [resourceId, new mongoose.Types.ObjectId()],
+          );
+          expect(result).toHaveLength(1);
+          expect(result[0].toString()).toBe(resourceId.toString());
+        });
+
+        test('returns nothing when every accessible resource is outside the bound', async () => {
+          const result = await methods.findAccessibleResources(
+            [{ principalType: PrincipalType.USER, principalId: userId }],
+            ResourceType.AGENT,
+            PermissionBits.VIEW,
+            [new mongoose.Types.ObjectId()],
+          );
+          expect(result).toHaveLength(0);
+        });
+
+        test('an empty bound matches nothing rather than lifting the filter', async () => {
+          const result = await methods.findAccessibleResources(
+            [{ principalType: PrincipalType.USER, principalId: userId }],
+            ResourceType.AGENT,
+            PermissionBits.VIEW,
+            [],
+          );
+          expect(result).toHaveLength(0);
+        });
+
+        test('an unbound call still returns every accessible resource', async () => {
+          const result = await methods.findAccessibleResources(
+            [{ principalType: PrincipalType.USER, principalId: userId }],
+            ResourceType.AGENT,
+            PermissionBits.VIEW,
+          );
+          expect(result).toHaveLength(2);
+        });
+      });
     });
 
     describe('findPublicResourceIds', () => {
@@ -1431,6 +1779,42 @@ describe('AclEntry Model Tests', () => {
         );
         expect(result).toHaveLength(1);
         expect(result[0].toString()).toBe(shared.toString());
+      });
+
+      test('with resourceIds bound, intersects public access with the candidate ids', async () => {
+        const shared = new mongoose.Types.ObjectId();
+        const unreachable = new mongoose.Types.ObjectId();
+        await methods.grantPermission(
+          PrincipalType.PUBLIC,
+          null,
+          ResourceType.AGENT,
+          shared,
+          PermissionBits.VIEW,
+          grantedById,
+        );
+        await methods.grantPermission(
+          PrincipalType.PUBLIC,
+          null,
+          ResourceType.AGENT,
+          unreachable,
+          PermissionBits.VIEW,
+          grantedById,
+        );
+
+        const result = await methods.findPublicResourceIds(
+          ResourceType.AGENT,
+          PermissionBits.VIEW,
+          [shared, new mongoose.Types.ObjectId()],
+        );
+        expect(result).toHaveLength(1);
+        expect(result[0].toString()).toBe(shared.toString());
+
+        const emptyBound = await methods.findPublicResourceIds(
+          ResourceType.AGENT,
+          PermissionBits.VIEW,
+          [],
+        );
+        expect(emptyBound).toHaveLength(0);
       });
 
       test('deduplicates when duplicate public entries exist for the same resource', async () => {
@@ -1584,20 +1968,131 @@ describe('AclEntry Model Tests', () => {
    * `permBits: { $in: permissionBitSupersets(X) }`), so it warrants direct
    * coverage independent of the higher-level parity and behavior specs.
    */
-  describe('permissionBitSupersets', () => {
-    test('requiredBits=0 matches every permBits value in [0, 15]', () => {
-      const result = permissionBitSupersets(0);
-      expect(result).toHaveLength(16);
-      expect([...result].sort((a, b) => a - b)).toEqual([
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-      ]);
+  describe('modifyPermissionBits (atomic guarded writes, issue #16163)', () => {
+    const principal = new mongoose.Types.ObjectId();
+    const resource = new mongoose.Types.ObjectId();
+    const INSIGHTS = PermissionBits.VIEW_INSIGHTS;
+
+    const seed = (permBits: number) =>
+      AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: principal,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.AGENT,
+        resourceId: resource,
+        permBits,
+        grantedBy: grantedById,
+      });
+
+    const modify = (add?: number | null, remove?: number | null) =>
+      methods.modifyPermissionBits(
+        PrincipalType.USER,
+        principal,
+        ResourceType.AGENT,
+        resource,
+        add,
+        remove,
+      );
+
+    test('adds bits, leaving independently administered bits alone', async () => {
+      await seed(PermissionBits.VIEW | INSIGHTS);
+      const updated = await modify(PermissionBits.EDIT, null);
+      expect(updated?.permBits).toBe(PermissionBits.VIEW | PermissionBits.EDIT | INSIGHTS);
     });
 
-    test('requiredBits=15 (all four bits) matches only [15]', () => {
-      const result = permissionBitSupersets(
-        PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE,
+    test('removes bits, leaving independently administered bits alone', async () => {
+      await seed(PermissionBits.VIEW | PermissionBits.EDIT | INSIGHTS);
+      const updated = await modify(null, PermissionBits.EDIT);
+      expect(updated?.permBits).toBe(PermissionBits.VIEW | INSIGHTS);
+    });
+
+    test('applies an add and a remove in one stored value', async () => {
+      await seed(PermissionBits.VIEW | PermissionBits.EDIT | INSIGHTS);
+      const updated = await modify(PermissionBits.SHARE, PermissionBits.EDIT);
+      expect(updated?.permBits).toBe(PermissionBits.VIEW | PermissionBits.SHARE | INSIGHTS);
+    });
+
+    test('changes bits in one guarded write and never emits $bit', async () => {
+      await seed(PermissionBits.VIEW);
+      const spy = jest.spyOn(AclEntry, 'bulkWrite');
+      try {
+        await modify(PermissionBits.EDIT, PermissionBits.VIEW);
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy.mock.calls[0][0]).toHaveLength(1);
+        expect(spy.mock.calls[0][0][0]).toMatchObject({
+          updateOne: {
+            filter: { permBits: PermissionBits.VIEW },
+            update: { $set: { permBits: PermissionBits.EDIT } },
+          },
+        });
+        expect(JSON.stringify(spy.mock.calls)).not.toContain('$bit');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    test('retries a concurrent Insights grant without overwriting it', async () => {
+      await seed(PermissionBits.VIEW | PermissionBits.EDIT);
+      const real = AclEntry.bulkWrite.bind(AclEntry);
+      const race = (async (...args: Parameters<typeof real>) => {
+        await AclEntry.updateMany({ principalId: principal }, { $set: { permBits: 19 } });
+        return real(...args);
+      }) as unknown as typeof AclEntry.bulkWrite;
+      const spy = jest.spyOn(AclEntry, 'bulkWrite').mockImplementationOnce(race);
+      try {
+        const updated = await modify(PermissionBits.SHARE, PermissionBits.EDIT);
+        expect(updated?.permBits).toBe(PermissionBits.VIEW | PermissionBits.SHARE | INSIGHTS);
+        expect(spy).toHaveBeenCalledTimes(2);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    test('removes a bit named in both masks, matching the prior precedence', async () => {
+      await seed(PermissionBits.VIEW | INSIGHTS);
+      const updated = await modify(PermissionBits.EDIT | PermissionBits.SHARE, PermissionBits.EDIT);
+      expect(updated?.permBits).toBe(PermissionBits.VIEW | PermissionBits.SHARE | INSIGHTS);
+    });
+
+    test('initializes an absent permission field without inheriting anything', async () => {
+      await seed(PermissionBits.VIEW);
+      await mongoose.models.AclEntry.collection.updateMany(
+        { principalId: principal },
+        { $unset: { permBits: '' } },
       );
-      expect([...result].sort((a, b) => a - b)).toEqual([15]);
+      const updated = await modify(PermissionBits.EDIT, PermissionBits.VIEW);
+      expect(updated?.permBits).toBe(PermissionBits.EDIT);
+    });
+
+    test('returns null when no entry matches', async () => {
+      expect(await modify(PermissionBits.EDIT, PermissionBits.VIEW)).toBeNull();
+    });
+
+    test('returns the entry unchanged when neither side is requested', async () => {
+      await seed(PermissionBits.VIEW | INSIGHTS);
+      const updated = await modify(null, null);
+      expect(updated?.permBits).toBe(PermissionBits.VIEW | INSIGHTS);
+    });
+  });
+
+  describe('permissionBitSupersets', () => {
+    test('requiredBits=0 matches every permBits value in [0, 31]', () => {
+      const result = permissionBitSupersets(0);
+      expect(result).toHaveLength(32);
+      expect([...result].sort((a, b) => a - b)).toEqual(
+        Array.from({ length: 32 }, (_, value) => value),
+      );
+    });
+
+    test('all permission bits match only the upper bound', () => {
+      const result = permissionBitSupersets(
+        PermissionBits.VIEW |
+          PermissionBits.EDIT |
+          PermissionBits.DELETE |
+          PermissionBits.SHARE |
+          PermissionBits.VIEW_INSIGHTS,
+      );
+      expect([...result].sort((a, b) => a - b)).toEqual([31]);
     });
 
     test('every returned value is a bitwise superset of requiredBits', () => {
@@ -1606,6 +2101,8 @@ describe('AclEntry Model Tests', () => {
         PermissionBits.EDIT,
         PermissionBits.DELETE,
         PermissionBits.SHARE,
+        PermissionBits.VIEW_INSIGHTS,
+        PermissionBits.VIEW | PermissionBits.VIEW_INSIGHTS,
         PermissionBits.VIEW | PermissionBits.EDIT,
         PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE,
       ]) {
@@ -1619,12 +2116,12 @@ describe('AclEntry Model Tests', () => {
     test('returns exactly the values satisfying $bitsAllSet semantics', () => {
       /**
        * Parity check against the literal definition: for every required mask,
-       * the returned set must equal the set of all v in [0,15] whose bits
+       * the returned set must equal the set of all v in [0,31] whose bits
        * include `required`.
        */
-      for (let required = 0; required <= 15; required++) {
+      for (let required = 0; required <= 31; required++) {
         const expected: number[] = [];
-        for (let v = 0; v <= 15; v++) {
+        for (let v = 0; v <= 31; v++) {
           if ((v & required) === required) {
             expected.push(v);
           }
@@ -1661,7 +2158,11 @@ describe('AclEntry Model Tests', () => {
      */
     describe('rejection of out-of-range inputs (cache-growth safety)', () => {
       const MAX =
-        PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE;
+        PermissionBits.VIEW |
+        PermissionBits.EDIT |
+        PermissionBits.DELETE |
+        PermissionBits.SHARE |
+        PermissionBits.VIEW_INSIGHTS;
       const FIRST_TRUNCATED_32_BIT_VALUE = 2 ** 32;
       const SHARED_EMPTY = permissionBitSupersets(MAX + 1);
 
@@ -1695,11 +2196,11 @@ describe('AclEntry Model Tests', () => {
 
       test('rejects inputs with bits above MAX_PERM_BITS even if some in-range bits are set', () => {
         /**
-         * `permBits = 17 = 0b10001` has VIEW set AND bit 4 (out of range). A
-         * stored `permBits` can never be both ≤ 15 and have bit 4 set, so the
+         * `permBits = 33 = 0b100001` has VIEW set and an out-of-range bit. A
+         * stored `permBits` can never be both ≤ 31 and have bit 5 set, so the
          * match set is necessarily empty — reject before caching.
          */
-        expect(permissionBitSupersets(MAX + PermissionBits.VIEW)).toBe(SHARED_EMPTY);
+        expect(permissionBitSupersets(MAX + 1 + PermissionBits.VIEW)).toBe(SHARED_EMPTY);
       });
 
       test('does NOT cache rejected inputs (reference identity)', () => {
@@ -1769,7 +2270,11 @@ describe('AclEntry Model Tests', () => {
    */
   describe('permBits schema bounds', () => {
     const MAX_PERM_BITS =
-      PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE;
+      PermissionBits.VIEW |
+      PermissionBits.EDIT |
+      PermissionBits.DELETE |
+      PermissionBits.SHARE |
+      PermissionBits.VIEW_INSIGHTS;
 
     test('accepts permBits at the upper bound (all enum bits set)', async () => {
       const resource = new mongoose.Types.ObjectId();

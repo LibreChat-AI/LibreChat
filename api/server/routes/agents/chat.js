@@ -2,11 +2,15 @@ const express = require('express');
 const { logger } = require('@librechat/data-schemas');
 const {
   createMessageFilterPii,
+  getPreinspectedPrivateText,
+  reportLocatorTraversalFailure,
   generateCheckAccess,
   skipAgentCheck,
-  applyResumeContext,
-  applyResumeModelParameters,
+  createChatResumeContext,
   GenerationJobManager,
+  getSafeErrorMetadata,
+  validateChatMessageIds,
+  admitAssistantRequest,
 } = require('@librechat/api');
 const { PermissionTypes, Permissions, PermissionBits } = require('librechat-data-provider');
 const {
@@ -21,7 +25,7 @@ const guardSubagentThreadTurn = require('~/server/middleware/validate/subagentTh
 const AgentController = require('~/server/controllers/agents/request');
 const ResumeController = require('~/server/controllers/agents/resume');
 const addTitle = require('~/server/services/Endpoints/agents/title');
-const { getRoleByName } = require('~/models');
+const { getFiles, getRoleByName } = require('~/models');
 
 const router = express.Router();
 
@@ -35,41 +39,24 @@ const checkAgentResourceAccess = canAccessAgentFromBody({
   requiredPermission: PermissionBits.VIEW,
 });
 
-/**
- * Replay the paused turn's graph-determining config onto a resume request BEFORE the
- * rest of the chain (PII filter, agent-access, buildEndpointOption) reads it. The client
- * can't reliably re-send the ephemeral-agent config after a reload/cross-session, so the
- * server restores it from the pending action — the resume then rebuilds the SAME
- * agent/graph the run paused on (and a crafted resume can't swap the tool set). No-op for
- * every non-resume route.
- */
-const restoreResumeContext = async (req, res, next) => {
-  if (req.path !== '/resume') {
-    return next();
-  }
-  try {
-    const streamId = req.body?.conversationId;
-    if (streamId) {
-      const job = await GenerationJobManager.getJob(streamId);
-      const resumeContext = job?.metadata?.pendingAction?.resumeContext;
-      applyResumeContext(req.body, resumeContext);
-      // Replay the paused turn's resolved model parameters. Ephemeral agents derive these
-      // (temperature, max tokens, custom endpoint params) from the request body, which the
-      // resume payload omits — without this the continuation runs with defaults. They're
-      // scattered top-level fields (folded into model_parameters by buildOptions' rest
-      // spread), not part of the RESUME_CONTEXT_KEYS allowlist, so merge them back here.
-      // Generation params are authoritative, but routing, graph identity, and resume-action
-      // fields remain owned by the restored context/request envelope.
-      applyResumeModelParameters(req.body, resumeContext?.model_parameters);
-    }
-  } catch (err) {
-    logger.warn('[agents/chat] Failed to restore resume context', err?.message ?? err);
-  }
-  next();
-};
+const restoreResumeContext = createChatResumeContext({
+  jobs: GenerationJobManager,
+  onError: (error) =>
+    logger.warn('[agents/chat] Failed to restore resume context', getSafeErrorMetadata(error)),
+});
 
+router.use(admitAssistantRequest);
+router.use(validateChatMessageIds);
 router.use(restoreResumeContext);
-router.use(createMessageFilterPii({ getConfig: (req) => req.config?.messageFilter?.pii }));
+router.use(
+  createMessageFilterPii({
+    onTraversalFailure: reportLocatorTraversalFailure,
+    getConfig: (req) => req.config?.messageFilter?.pii,
+    getFilters: (req) => req.config?.filters,
+    getPreinspectedText: getPreinspectedPrivateText,
+    getFiles,
+  }),
+);
 router.use(moderateText);
 router.use(checkAgentAccess);
 router.use(checkAgentResourceAccess);

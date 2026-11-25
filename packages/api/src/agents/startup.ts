@@ -10,6 +10,7 @@ import {
   recordAgentStartupResult,
 } from '~/app/metrics';
 import { agentStartupMilestones, agentStartupResults } from './phases';
+import { getSafeSpanException } from '~/telemetry/safeException';
 
 const SPAN_NAME = 'librechat.agent.startup';
 const MILESTONES = new Set<string>(agentStartupMilestones);
@@ -170,7 +171,7 @@ export function createAgentStartupTelemetry(
     }
 
     if (tracingEnabled && error) {
-      span.recordException(error);
+      span.recordException(getSafeSpanException(error));
     }
     if (tracingEnabled && (normalizedResult === 'aborted' || normalizedResult === 'error')) {
       span.setStatus({ code: SpanStatusCode.ERROR });

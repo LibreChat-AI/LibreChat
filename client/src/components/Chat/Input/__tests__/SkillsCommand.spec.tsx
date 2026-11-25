@@ -13,6 +13,7 @@
 import React from 'react';
 import { act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { SkillsScope } from 'librechat-data-provider';
 import { render, screen } from '@testing-library/react';
 import type { TSkillSummary } from 'librechat-data-provider';
 
@@ -23,26 +24,37 @@ const mockSetEphemeralAgent = jest.fn();
 const mockSetPendingManualSkills = jest.fn();
 const mockShowSkillsPopover = { current: true };
 
+jest.mock('jotai', () => ({
+  ...jest.requireActual('jotai'),
+  useAtomValue: jest.fn((atom: unknown) =>
+    atom === 'show-skills-popover' ? mockShowSkillsPopover.current : undefined,
+  ),
+  useSetAtom: jest.fn((atom: unknown) => {
+    if (atom === 'show-skills-popover') {
+      return mockSetShowSkillsPopover;
+    }
+    if (atom === 'pending-manual-skills') {
+      return mockSetPendingManualSkills;
+    }
+    return jest.fn();
+  }),
+}));
+
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  pendingManualSkillsByConvoId: () => 'pending-manual-skills',
+  showSkillsPopoverFamily: () => 'show-skills-popover',
+}));
+
 jest.mock('recoil', () => {
   const actual = jest.requireActual('recoil');
   return {
     ...actual,
-    useRecoilValue: jest.fn((atom: unknown) => {
-      if (atom === 'show-skills-popover') {
-        return mockShowSkillsPopover.current;
-      }
-      return undefined;
-    }),
+    useRecoilValue: jest.fn(() => undefined),
     useRecoilState: jest.fn(() => [null, jest.fn()]),
     useSetRecoilState: jest.fn((atom: unknown) => {
-      if (atom === 'show-skills-popover') {
-        return mockSetShowSkillsPopover;
-      }
       if (atom === 'ephemeral-agent') {
         return mockSetEphemeralAgent;
-      }
-      if (atom === 'pending-manual-skills') {
-        return mockSetPendingManualSkills;
       }
       return jest.fn();
     }),
@@ -51,12 +63,7 @@ jest.mock('recoil', () => {
 
 jest.mock('~/store', () => ({
   __esModule: true,
-  default: {
-    showSkillsPopoverFamily: () => 'show-skills-popover',
-    pendingManualSkillsByConvoId: () => 'pending-manual-skills',
-  },
   ephemeralAgentByConvoId: () => 'ephemeral-agent',
-  pendingManualSkillsByConvoId: () => 'pending-manual-skills',
 }));
 
 const mockUseSkillsInfiniteQuery = jest.fn();
@@ -87,31 +94,6 @@ jest.mock('@librechat/client', () => {
     Spinner: () => null,
   };
 });
-
-/* react-virtualized renders nothing in jsdom without measured size; replace
-   AutoSizer + List with a flat ul so row clicks are exercised normally. */
-jest.mock('react-virtualized', () => ({
-  ...jest.requireActual('react-virtualized'),
-  AutoSizer: ({ children }: { children: (size: { width: number }) => React.ReactNode }) =>
-    children({ width: 320 }),
-  List: ({
-    rowCount,
-    rowRenderer,
-  }: {
-    rowCount: number;
-    rowRenderer: (args: {
-      index: number;
-      key: string;
-      style: React.CSSProperties;
-    }) => React.ReactNode;
-  }) => {
-    const rows: React.ReactNode[] = [];
-    for (let i = 0; i < rowCount; i++) {
-      rows.push(rowRenderer({ index: i, key: `row-${i}`, style: {} }));
-    }
-    return <ul data-testid="skills-list">{rows}</ul>;
-  },
-}));
 
 import SkillsCommand, { filterSkillsForPopover } from '../SkillsCommand';
 
@@ -200,7 +182,7 @@ describe('SkillsCommand', () => {
     expect(textAreaRef.current).toHaveValue('Keep this draft');
     expect(textAreaRef.current?.selectionStart).toBe(0);
 
-    await user.click(await screen.findByRole('button', { name: /Brand Guidelines/i }));
+    await user.click(await screen.findByRole('option', { name: /Brand Guidelines/i }));
 
     expect(textAreaRef.current).toHaveValue('Keep this draft');
     expect(document.activeElement).toBe(textAreaRef.current);
@@ -212,7 +194,7 @@ describe('SkillsCommand', () => {
 
     render(<SkillsCommand index={0} textAreaRef={textAreaRef} conversationId={CONVO_ID} />);
 
-    await user.click(await screen.findByRole('button', { name: /Brand Guidelines/i }));
+    await user.click(await screen.findByRole('option', { name: /Brand Guidelines/i }));
 
     expect(textAreaRef.current).toHaveValue('Keep this $');
   });
@@ -236,7 +218,7 @@ describe('SkillsCommand', () => {
     const textAreaRef = makeTextarea('$');
     render(<SkillsCommand index={0} textAreaRef={textAreaRef} conversationId={CONVO_ID} />);
 
-    const skillButton = await screen.findByRole('button', { name: /Brand Guidelines/i });
+    const skillButton = await screen.findByRole('option', { name: /Brand Guidelines/i });
     await act(async () => {
       await user.click(skillButton);
     });
@@ -291,8 +273,8 @@ describe('SkillsCommand', () => {
     );
 
     /* Only the skill whose _id is in agent.skills should appear. */
-    expect(screen.queryByRole('button', { name: /Brand Guidelines/i })).toBeNull();
-    expect(await screen.findByRole('button', { name: /Style Guide/i })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /Brand Guidelines/i })).toBeNull();
+    expect(await screen.findByRole('option', { name: /Style Guide/i })).toBeInTheDocument();
   });
 
   it('shows nothing when the agent has skills_enabled:false, regardless of allowlist', () => {
@@ -318,8 +300,8 @@ describe('SkillsCommand', () => {
       />,
     );
 
-    expect(screen.queryByRole('button', { name: /Brand Guidelines/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Style Guide/i })).toBeNull();
+    expect(screen.queryByRole('option', { name: /Brand Guidelines/i })).toBeNull();
+    expect(screen.queryByRole('option', { name: /Style Guide/i })).toBeNull();
   });
 
   it('hides all skills for a persisted agent with skills_enabled undefined (default off)', async () => {
@@ -348,8 +330,8 @@ describe('SkillsCommand', () => {
     /* Mirrors backend `resolveAgentScopedSkillIds`: persisted agents are
        off by default; the builder's `skills_enabled` master toggle is
        the only signal that activates skills for the agent. */
-    expect(screen.queryByRole('button', { name: /Brand Guidelines/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Style Guide/i })).toBeNull();
+    expect(screen.queryByRole('option', { name: /Brand Guidelines/i })).toBeNull();
+    expect(screen.queryByRole('option', { name: /Style Guide/i })).toBeNull();
   });
 
   it('shows the full catalog for a persisted agent with skills_enabled:true and empty allowlist', async () => {
@@ -375,8 +357,41 @@ describe('SkillsCommand', () => {
       />,
     );
 
-    expect(await screen.findByRole('button', { name: /Brand Guidelines/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Style Guide/i })).toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: /Brand Guidelines/i })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /Style Guide/i })).toBeInTheDocument();
+  });
+
+  it('shows no catalog entries for an enabled authoring-only agent', () => {
+    mockUseSkillsInfiniteQuery.mockReturnValue({
+      data: twoSkillsResponse,
+      isLoading: false,
+      isError: false,
+      fetchNextPage: jest.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
+    });
+    mockUseAgentsMapContext.mockReturnValue({
+      agent_1: {
+        id: 'agent_1',
+        skills: [],
+        skills_enabled: false,
+        skill_authoring_enabled: true,
+        skills_scope: SkillsScope.none,
+      },
+    });
+
+    const textAreaRef = makeTextarea('$');
+    render(
+      <SkillsCommand
+        index={0}
+        textAreaRef={textAreaRef}
+        conversationId={CONVO_ID}
+        agentId="agent_1"
+      />,
+    );
+
+    expect(screen.queryByRole('option', { name: /Brand Guidelines/i })).toBeNull();
+    expect(screen.queryByRole('option', { name: /Style Guide/i })).toBeNull();
   });
 
   it('treats an ephemeral agent id as unscoped and shows the full ACL catalog', async () => {
@@ -402,8 +417,8 @@ describe('SkillsCommand', () => {
 
     /* `ephemeral` doesn't start with `agent_`, so it's an ephemeral id;
        scope filter should be skipped and the full catalog displayed. */
-    expect(await screen.findByRole('button', { name: /Brand Guidelines/i })).toBeInTheDocument();
-    expect(await screen.findByRole('button', { name: /Style Guide/i })).toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: /Brand Guidelines/i })).toBeInTheDocument();
+    expect(await screen.findByRole('option', { name: /Style Guide/i })).toBeInTheDocument();
   });
 
   it('fails closed for persisted agents while the agents map is hydrating', async () => {
@@ -431,8 +446,8 @@ describe('SkillsCommand', () => {
        visibility we cannot prove the persisted agent opted in, so fail
        closed; otherwise the user can pick a skill the backend will then
        refuse for the turn. */
-    expect(screen.queryByRole('button', { name: /Brand Guidelines/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Style Guide/i })).toBeNull();
+    expect(screen.queryByRole('option', { name: /Brand Guidelines/i })).toBeNull();
+    expect(screen.queryByRole('option', { name: /Style Guide/i })).toBeNull();
   });
 
   it('fails closed when the agent id is set but missing from the agents map', () => {
@@ -456,8 +471,8 @@ describe('SkillsCommand', () => {
       />,
     );
 
-    expect(screen.queryByRole('button', { name: /Brand Guidelines/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Style Guide/i })).toBeNull();
+    expect(screen.queryByRole('option', { name: /Brand Guidelines/i })).toBeNull();
+    expect(screen.queryByRole('option', { name: /Style Guide/i })).toBeNull();
   });
 
   it('hides inactive skills from the popover', () => {
@@ -474,8 +489,8 @@ describe('SkillsCommand', () => {
     const textAreaRef = makeTextarea('$');
     render(<SkillsCommand index={0} textAreaRef={textAreaRef} conversationId={CONVO_ID} />);
 
-    expect(screen.queryByRole('button', { name: /Brand Guidelines/i })).toBeNull();
-    expect(screen.getByRole('button', { name: /Style Guide/i })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /Brand Guidelines/i })).toBeNull();
+    expect(screen.getByRole('option', { name: /Style Guide/i })).toBeInTheDocument();
   });
 
   it('resumes catalog pagination after an external refetch clears an error', () => {

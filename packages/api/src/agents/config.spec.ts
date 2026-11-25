@@ -1,5 +1,11 @@
+import { logger } from '@librechat/data-schemas';
 import type { TAgentsEndpoint } from 'librechat-data-provider';
-import { resolveRecursionLimit, resolveStreamLimits, resolveSubagentMaxTurns } from './config';
+import {
+  resolveStreamLimits,
+  resolveRecursionLimit,
+  resolveSubagentMaxTurns,
+  resolveModelTransportTimeouts,
+} from './config';
 
 describe('resolveRecursionLimit', () => {
   it('returns default 50 when no config or agent provided', () => {
@@ -53,6 +59,36 @@ describe('resolveRecursionLimit', () => {
   it('allows agent to override downward below yaml default', () => {
     const config = { recursionLimit: 100 } as TAgentsEndpoint;
     expect(resolveRecursionLimit(config, { recursion_limit: 30 })).toBe(30);
+  });
+
+  it.each([0, -5, 2.5])('treats a yaml recursionLimit of %s as unset', (recursionLimit) => {
+    const config = { recursionLimit } as TAgentsEndpoint;
+    expect(resolveRecursionLimit(config, {})).toBe(50);
+    expect(resolveRecursionLimit(config, { recursion_limit: 20 })).toBe(20);
+  });
+
+  it.each([0.5, 2.5, -1])('ignores a maxRecursionLimit of %s', (maxRecursionLimit) => {
+    const config = { recursionLimit: 100, maxRecursionLimit } as TAgentsEndpoint;
+    expect(resolveRecursionLimit(config, {})).toBe(100);
+    expect(resolveRecursionLimit(config, { recursion_limit: 200 })).toBe(200);
+  });
+
+  it('ignores a fractional agent.recursion_limit', () => {
+    const config = { recursionLimit: 100 } as TAgentsEndpoint;
+    expect(resolveRecursionLimit(config, { recursion_limit: 2.5 })).toBe(100);
+  });
+
+  it('warns once per unusable config value', () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const config = { recursionLimit: 0.25, maxRecursionLimit: 0.75 } as TAgentsEndpoint;
+    resolveRecursionLimit(config, {});
+    resolveRecursionLimit(config, {});
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn.mock.calls.map(([message]) => String(message))).toEqual([
+      expect.stringContaining('endpoints.agents.recursionLimit: 0.25'),
+      expect.stringContaining('endpoints.agents.maxRecursionLimit: 0.75'),
+    ]);
+    warn.mockRestore();
   });
 
   it('does not cap when agent.recursion_limit equals maxRecursionLimit', () => {
@@ -109,6 +145,21 @@ describe('resolveSubagentMaxTurns', () => {
     const turns = resolveSubagentMaxTurns(config, {});
     expect(turns).toBe(0);
     expect(turns * 3).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('resolveModelTransportTimeouts', () => {
+  it('uses finite defaults and preserves explicit overrides including zero', () => {
+    expect(resolveModelTransportTimeouts(undefined)).toEqual({
+      bodyTimeout: 900_000,
+      headersTimeout: 300_000,
+    });
+    expect(
+      resolveModelTransportTimeouts({
+        modelResponseBodyTimeoutMs: 1_800_000,
+        modelResponseHeadersTimeoutMs: 0,
+      }),
+    ).toEqual({ bodyTimeout: 1_800_000, headersTimeout: 0 });
   });
 });
 

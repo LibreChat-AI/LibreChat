@@ -4,6 +4,8 @@ import {
   splitToolCallName,
   normalizeMCPToolKey,
   buildServerNameAliases,
+  stripServerNamePrefix,
+  stripServerNamePrefixes,
 } from './config';
 
 describe('splitMCPToolKey', () => {
@@ -206,5 +208,129 @@ describe('splitToolCallName oauth precedence', () => {
       `oauth${d}reset`,
       'github',
     ]);
+  });
+});
+
+describe('stripServerNamePrefix', () => {
+  it('strips a leading server-name prefix from the tool name', () => {
+    expect(stripServerNamePrefix('acme_trace_top_time_consuming_operations', 'acme')).toBe(
+      'trace_top_time_consuming_operations',
+    );
+  });
+
+  it('matches the prefix case-insensitively', () => {
+    /** Display-cased server names ("Acme") conventionally prefix their
+     *  tools in lowercase — the redundancy is the same either way. */
+    expect(stripServerNamePrefix('acme_list_services', 'Acme')).toBe('list_services');
+  });
+
+  it('returns the name unchanged when the prefix does not match', () => {
+    expect(stripServerNamePrefix('github_create_issue', 'acme')).toBe('github_create_issue');
+  });
+
+  it('requires the underscore separator, not a bare substring match', () => {
+    expect(stripServerNamePrefix('acmecorp_tool', 'acme')).toBe('acmecorp_tool');
+  });
+
+  it('keeps a name that is exactly the server name or would strip to empty', () => {
+    expect(stripServerNamePrefix('acme', 'acme')).toBe('acme');
+    expect(stripServerNamePrefix('acme_', 'acme')).toBe('acme_');
+  });
+});
+
+describe('stripServerNamePrefixes', () => {
+  it('maps every raw name to its stripped model-facing name', () => {
+    const map = stripServerNamePrefixes(['acme_search', 'list_services'], 'acme');
+    expect(map.get('acme_search')).toBe('search');
+    expect(map.get('list_services')).toBe('list_services');
+  });
+
+  it('keeps the prefixed name when stripping would collide with a bare sibling', () => {
+    /** A server exposing BOTH `search` and `acme_search` must keep two
+     *  distinct keys — stripping would collapse them into one. */
+    const map = stripServerNamePrefixes(['search', 'acme_search'], 'acme');
+    expect(map.get('search')).toBe('search');
+    expect(map.get('acme_search')).toBe('acme_search');
+  });
+
+  it('keeps both raw names when case-variant prefixed siblings strip to the same result', () => {
+    /** The prefix match is case-insensitive, so `acme_Foo` and `Acme_Foo` are
+     *  distinct upstream tools with the SAME stripped remainder — both must
+     *  fall back to their raw names or one silently overwrites the other. */
+    const map = stripServerNamePrefixes(['acme_Foo', 'Acme_Foo'], 'acme');
+    expect(map.get('acme_Foo')).toBe('acme_Foo');
+    expect(map.get('Acme_Foo')).toBe('Acme_Foo');
+  });
+
+  it('collisions do not suppress stripping of unrelated siblings', () => {
+    const map = stripServerNamePrefixes(['search', 'acme_search', 'acme_trace'], 'acme');
+    expect(map.get('acme_trace')).toBe('trace');
+  });
+
+  it('reserves every sibling raw name, even when that sibling itself strips', () => {
+    /** Keys persisted BEFORE stripping embed raw names: if `acme_acme_foo`
+     *  stripped to `acme_foo`, a pre-rollout reference to the REAL `acme_foo`
+     *  would exact-match the wrong tool in the same snapshot. */
+    const map = stripServerNamePrefixes(['acme_foo', 'acme_acme_foo'], 'acme');
+    expect(map.get('acme_foo')).toBe('foo');
+    expect(map.get('acme_acme_foo')).toBe('acme_acme_foo');
+  });
+
+  it('resolves secondary collisions introduced by a fallback to a raw name', () => {
+    /** `acme_foo` falls back to raw because of the bare `foo`, which then
+     *  collides with `acme_acme_foo`'s stripped result — the guard must
+     *  iterate until no two final names coincide. */
+    const map = stripServerNamePrefixes(['foo', 'acme_foo', 'acme_acme_foo'], 'acme');
+    expect(map.get('foo')).toBe('foo');
+    expect(map.get('acme_foo')).toBe('acme_foo');
+    expect(map.get('acme_acme_foo')).toBe('acme_acme_foo');
+    expect(new Set(map.values()).size).toBe(3);
+  });
+
+  it('never strips a remainder that equals a synthetic MCP marker', () => {
+    /** `sys__all__sys` keys expand to every server tool, `sys__server__sys`
+     *  keys are skipped as UI placeholders, and `oauth${mcp_delimiter}` names
+     *  get OAuth-only handling in the client stream handlers — a real
+     *  upstream tool must not be renamed onto any of them. */
+    expect(stripServerNamePrefix(`acme_${Constants.mcp_all}`, 'acme')).toBe(
+      `acme_${Constants.mcp_all}`,
+    );
+    expect(stripServerNamePrefix(`acme_${Constants.mcp_server}`, 'acme')).toBe(
+      `acme_${Constants.mcp_server}`,
+    );
+    expect(stripServerNamePrefix('acme_oauth', 'acme')).toBe('acme_oauth');
+    /** Each marker is consumed by PREFIX (`isMCPAllPlaceholder`, the
+     *  server-pin skip, the client's OAuth classification), so the whole
+     *  `${marker}${mcp_delimiter}` namespace stays raw, not just the exact
+     *  name. */
+    expect(stripServerNamePrefix(`acme_oauth${Constants.mcp_delimiter}reset`, 'acme')).toBe(
+      `acme_oauth${Constants.mcp_delimiter}reset`,
+    );
+    expect(
+      stripServerNamePrefix(`acme_${Constants.mcp_all}${Constants.mcp_delimiter}reset`, 'acme'),
+    ).toBe(`acme_${Constants.mcp_all}${Constants.mcp_delimiter}reset`);
+    expect(
+      stripServerNamePrefix(`acme_${Constants.mcp_server}${Constants.mcp_delimiter}reset`, 'acme'),
+    ).toBe(`acme_${Constants.mcp_server}${Constants.mcp_delimiter}reset`);
+    /** `mcp_` opens the server-scoped pluginKey namespace and
+     *  `lc_transfer_to_` the agent-handoff namespace — pre-strip tool keys
+     *  could never enter either. */
+    expect(stripServerNamePrefix('acme_mcp_status', 'acme')).toBe('acme_mcp_status');
+    expect(stripServerNamePrefix('acme_lc_transfer_to_status', 'acme')).toBe(
+      'acme_lc_transfer_to_status',
+    );
+  });
+
+  it('never flips isActionTool classification for the produced key', () => {
+    /** `isActionTool` compares the FIRST `_action_` and `_mcp_` positions;
+     *  stripping moves `_mcp_` earlier, so a server whose normalized name
+     *  contains `_action_` (e.g. "svc action v1") would see a real MCP tool
+     *  reclassified as an OpenAPI action and bypass MCP authorization. */
+    expect(stripServerNamePrefix('svc_action_v1_report', 'svc_action_v1')).toBe(
+      'svc_action_v1_report',
+    );
+    /** A remainder containing `_action_` in the tool half does not flip and
+     *  still strips. */
+    expect(stripServerNamePrefix('acme_do_action_thing', 'acme')).toBe('do_action_thing');
   });
 });

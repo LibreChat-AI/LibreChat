@@ -1,5 +1,7 @@
 import { logger, tenantStorage } from '@librechat/data-schemas';
 import { Constants, EModelEndpoint } from 'librechat-data-provider';
+import type { CodeApprovalMode, TFile, TReasoningOverride } from 'librechat-data-provider';
+import type { ScheduledMCPIdentity } from 'librechat-data-provider';
 import type {
   AgentContinueTriggerEnvelope,
   AgentFireTriggerEnvelope,
@@ -8,7 +10,14 @@ import type {
   AgentTriggerMode,
 } from './envelope';
 import type { AgentTriggerDispatchContext } from './dispatch';
+import type { RunTrigger } from '~/agents/authority/trigger';
 import type { AgentRunPrincipal } from '../envelope';
+import {
+  EVENT_ACTOR_DETACHED_COMPLETION_SOURCE,
+  EVENT_ACTOR_DETACHED_COMPLETION_TYPE,
+  parseAgentEventActorDetachedCompletion,
+} from './detachedAction';
+import { readRunTrigger } from '~/agents/authority/trigger';
 import { dispatchAgentTrigger } from './dispatch';
 
 const DEFAULT_FIRE_TIMEOUT_MS = 30_000;
@@ -17,6 +26,16 @@ const GENERATION_PROTOCOL_HEADER = 'x-librechat-generation-protocol';
 const TRIGGER_USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 LibreChat-Agent-Trigger/1';
+
+/** Only server-authenticated automation can supply an already reserved new conversation ID. */
+export function getTrustedNewConversationId(input: {
+  isScheduledFire: boolean;
+  isAgentTrigger: boolean;
+  newConversationId?: string | null;
+}): string | null {
+  if (!input.isScheduledFire && !input.isAgentTrigger) return null;
+  return typeof input.newConversationId === 'string' ? input.newConversationId : null;
+}
 
 const PRE_CONNECT_ERROR_CODES = new Set([
   'ECONNREFUSED',
@@ -32,14 +51,42 @@ type FireStatus = 'started' | 'resumed' | 'replaced' | 'settled';
 
 export type AgentTriggerFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
+export interface AgentContinuationAdmissionSource {
+  source: string;
+  sourceId: string;
+  claimId: string;
+  claimBy: string;
+  effectivePredecessorCreatedAt?: number;
+  lineagePredecessorId?: string;
+}
+
 export type AgentTriggerContinuePreparation =
   | {
       status: 'ready';
+      scheduleMCPIdentity?: ScheduledMCPIdentity;
       input: string;
       parentMessageId: string;
+      expectedPredecessorCreatedAt?: number;
+      /** Complete user-turn context for internal continuations that must start
+       * a fresh ordinary Agent turn rather than inject into an existing run. */
+      files?: Partial<TFile>[];
+      quotes?: string[];
+      manualSkills?: string[];
+      /** Parent-selected coding preference for a completion turn. Admission
+       * revalidates it against live policy; event payloads cannot supply it. */
+      codeApprovalMode?: CodeApprovalMode;
+      reasoningOverride?: TReasoningOverride;
+      /** Trusted source identity committed by execution enrollment before the
+       * provider-start fence opens. */
+      admissionSource?: AgentContinuationAdmissionSource;
       /** Compensates a durable pre-admission claim only when the host knows
        * that no generation was admitted. Ambiguous outcomes retain the claim. */
-      releaseOnDefiniteFailure?: () => MaybePromise<void>;
+      releaseOnDefiniteFailure?: (error?: AgentTriggerExecutionError) => MaybePromise<void>;
+      /** Commits the source handoff after generation admission. Failure is
+       * outcome-ambiguous: the same delivery retries with the same request id. */
+      /** Durable possible-handoff marker written immediately before transport. */
+      beginDispatch?: () => MaybePromise<void>;
+      settleOnAdmission?: (result: AgentTriggerContinueResult) => MaybePromise<void>;
     }
   | { status: 'settled' };
 
@@ -89,6 +136,8 @@ export interface AgentTriggerFireResult {
   conversationId: string;
   streamId?: string;
   generationCreatedAt?: number;
+  /** Exact saved reply identity, retained after the generation cache is cleaned. */
+  responseMessageId?: string;
 }
 
 export interface AgentTriggerSteerResult {
@@ -110,6 +159,7 @@ export interface AgentTriggerContinueResult {
   conversationId: string;
   streamId?: string;
   generationCreatedAt?: number;
+  responseMessageId?: string;
 }
 
 export type AgentTriggerExecutionResult =
@@ -119,7 +169,7 @@ export type AgentTriggerExecutionResult =
 
 export interface AgentTriggerExecutionHostDeps {
   /** Trusted root URL for this LibreChat server. */
-  getBaseUrl: () => string;
+  getBaseUrl: (options?: { localOnly?: boolean }) => string;
   /** Mint a short-lived token for the envelope's already-authenticated principal. */
   mintToken: (principal: AgentRunPrincipal, envelope: AgentTriggerEnvelope) => MaybePromise<string>;
   /** Optional user-timezone resolver for dynamic date variables in a new run. */
@@ -141,7 +191,13 @@ export interface AgentTriggerExecutionHostDeps {
 export interface AgentTriggerExecutionHost {
   dispatch: (
     envelope: unknown,
-    options?: { signal?: AbortSignal },
+    options?: {
+      signal?: AbortSignal;
+      attempt?: number;
+      maxAttempts?: number;
+      deliveryClaimToken?: string;
+      requiredWorkerCapability?: string;
+    },
   ) => Promise<AgentTriggerExecutionResult>;
 }
 
@@ -162,6 +218,29 @@ function executionError(
   options: AgentTriggerExecutionErrorOptions,
 ): AgentTriggerExecutionError {
   return new AgentTriggerExecutionError(message, options);
+}
+
+/** The deliveries that report work a run sent to the background, each in a turn of its own. */
+const COMPLETION_SOURCES = ['subagent-completion', 'background-tool-completion'];
+
+/**
+ * What the work a delivery reports kept of the run that began it, for the turn to act for the
+ * same subject. Read only from a delivery the server made for itself, whose payload the
+ * server wrote: an event from outside brings a payload of its sender's choosing, and is never
+ * read here. One that cannot be read ends the delivery before anything is claimed for it: its
+ * turn would otherwise run for nobody, under no grant.
+ */
+function keptTrigger(payload: unknown, mode: AgentTriggerMode): RunTrigger | undefined {
+  try {
+    return readRunTrigger(payload);
+  } catch {
+    throw executionError('The run that began this work cannot be read.', {
+      mode,
+      certainty: 'definite',
+      retryable: false,
+      code: 'RUN_TRIGGER_INVALID',
+    });
+  }
 }
 
 function requireTimeout(timeoutMs: number | undefined): number {
@@ -297,7 +376,11 @@ async function readResponseBody(response: Response): Promise<BoundedResponseBody
       const remaining = MAX_RESPONSE_BODY_BYTES - size;
       if (chunk.value.byteLength > remaining) {
         if (remaining > 0) {
-          parts.push(decoder.decode(chunk.value.subarray(0, remaining), { stream: true }));
+          parts.push(
+            decoder.decode(chunk.value.subarray(0, remaining), {
+              stream: true,
+            }),
+          );
         }
         parts.push(decoder.decode());
         await reader.cancel().catch(() => undefined);
@@ -471,12 +554,16 @@ function parseStartResult(
   const generationCreatedAt = requireSafeInteger(
     'generationCreatedAt' in payload ? payload.generationCreatedAt : undefined,
   );
+  const responseMessageId = requireString(
+    'responseMessageId' in payload ? payload.responseMessageId : undefined,
+  );
   return {
     mode,
     status,
     conversationId,
     ...(streamId != null && { streamId }),
     ...(generationCreatedAt != null && { generationCreatedAt }),
+    ...(responseMessageId != null && { responseMessageId }),
   };
 }
 
@@ -505,7 +592,11 @@ function canReleasePreparedResult(error: AgentTriggerExecutionError): boolean {
   if (error.code === 'START_ABORTED' || error.status == null) {
     return true;
   }
-  if (error.code === 'PARENT_NOT_READY' || error.code === 'PARENT_STATE_UNAVAILABLE') {
+  if (
+    error.code === 'PARENT_NOT_READY' ||
+    error.code === 'PARENT_STATE_UNAVAILABLE' ||
+    error.code === 'EVENT_ACTOR_NOT_READY'
+  ) {
     return true;
   }
   return error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 409;
@@ -530,6 +621,21 @@ async function startRun(
   timeoutMs: number,
 ): Promise<AgentTriggerContinueResult | AgentTriggerFireResult> {
   const mode = envelope.mode;
+  const detachedCompletion =
+    mode === 'continue' &&
+    envelope.event.type === EVENT_ACTOR_DETACHED_COMPLETION_TYPE &&
+    envelope.event.source.type === 'internal' &&
+    envelope.event.source.id === EVENT_ACTOR_DETACHED_COMPLETION_SOURCE
+      ? parseAgentEventActorDetachedCompletion(envelope.event.payload)
+      : undefined;
+  const completion =
+    mode === 'continue' &&
+    envelope.event.source.type === 'internal' &&
+    COMPLETION_SOURCES.includes(envelope.event.source.id);
+  const kept =
+    completion || detachedCompletion != null
+      ? keptTrigger(envelope.event.payload, mode)
+      : undefined;
   const scope = abortScope(context.signal, timeoutMs);
   let preparation: AgentTriggerContinuePreparation | undefined;
   try {
@@ -554,7 +660,8 @@ async function startRun(
         conversationId: envelope.target.conversationId,
       };
     }
-    const input = preparation?.status === 'ready' ? preparation.input : envelope.input;
+    const readyPreparation = preparation?.status === 'ready' ? preparation : undefined;
+    const input = readyPreparation?.input ?? envelope.input;
     const parentMessageId = resolveParentMessageId(preparation, envelope);
     const [token, resolvedTimezone, baseUrl] = await Promise.all([
       setupValue(
@@ -569,7 +676,17 @@ async function startRun(
         scope,
         context.signal,
       ),
-      setupValue(() => deps.getBaseUrl(), mode, scope, context.signal),
+      setupValue(
+        () =>
+          deps.getBaseUrl(
+            detachedCompletion == null && readyPreparation?.admissionSource == null
+              ? undefined
+              : { localOnly: true },
+          ),
+        mode,
+        scope,
+        context.signal,
+      ),
     ]).catch((error: unknown) => {
       scope.abort();
       throw error;
@@ -579,6 +696,7 @@ async function startRun(
     const url = mode === 'fire' ? fireUrl(baseUrl) : continueUrl(baseUrl);
     const fetcher: AgentTriggerFetch = deps.fetch ?? globalThis.fetch;
     let response: Response;
+    await readyPreparation?.beginDispatch?.();
     try {
       response = await fetcher(url, {
         method: 'POST',
@@ -590,6 +708,12 @@ async function startRun(
           'User-Agent': TRIGGER_USER_AGENT,
           'x-lc-agent-trigger': '1',
           'x-request-id': context.idempotencyKey,
+          ...(envelope.mode === 'continue' && envelope.target.bindingId != null
+            ? {
+                'x-lc-agent-event-binding': envelope.target.bindingId,
+                'x-lc-agent-event-source-key': envelope.target.sourceKeyId!,
+              }
+            : {}),
           [GENERATION_PROTOCOL_HEADER]: '2',
         },
         body: JSON.stringify({
@@ -597,13 +721,76 @@ async function startRun(
           endpoint: EModelEndpoint.agents,
           agent_id: envelope.target.agentId,
           parentMessageId,
+          ...(readyPreparation?.expectedPredecessorCreatedAt != null && {
+            expectedPredecessorCreatedAt: readyPreparation.expectedPredecessorCreatedAt,
+          }),
           ...(envelope.mode === 'continue' && {
             conversationId: envelope.target.conversationId,
+          }),
+          ...(readyPreparation?.files != null && {
+            files: readyPreparation.files,
+          }),
+          ...(readyPreparation?.quotes != null && {
+            quotes: readyPreparation.quotes,
+          }),
+          ...(readyPreparation?.codeApprovalMode != null && {
+            codeApprovalMode: readyPreparation.codeApprovalMode,
+          }),
+          ...(readyPreparation?.manualSkills != null && {
+            manualSkills: readyPreparation.manualSkills,
+          }),
+          ...(readyPreparation?.reasoningOverride != null && {
+            reasoningOverride: readyPreparation.reasoningOverride,
           }),
           isContinued: false,
           isRegenerate: false,
           clientRequestId: context.idempotencyKey,
           generationProtocolVersion: 2,
+          ...(readyPreparation?.admissionSource != null && {
+            agentContinuationAdmission: readyPreparation.admissionSource,
+          }),
+          ...(envelope.mode === 'continue' &&
+            envelope.target.bindingId != null && {
+              agentEventDelivery: {
+                deliveryKey: context.idempotencyKey,
+                /** Identity only, matching the `fire` body: the actor uses this
+                 * to bind an invocation, never to build the turn's prompt. The
+                 * source payload is unbounded and would push large deliveries
+                 * past the chat route's body limit. */
+                event: {
+                  id: envelope.event.id,
+                  type: envelope.event.type,
+                  occurredAt: envelope.event.occurredAt,
+                  source: envelope.event.source,
+                },
+                ...(envelope.expectedAction != null && {
+                  expectedAction: envelope.expectedAction,
+                }),
+                ...(detachedCompletion == null ? {} : { internalCompletion: detachedCompletion }),
+                ...(kept && { trigger: kept }),
+              },
+            }),
+          /** Any other continuation names its event here, identity only as above, so the
+           * route can tell what delivery started every run the engine starts. */
+          ...(envelope.mode === 'continue' &&
+            envelope.target.bindingId == null && {
+              agentEvent: {
+                id: envelope.event.id,
+                type: envelope.event.type,
+                occurredAt: envelope.event.occurredAt,
+                source: envelope.event.source,
+              },
+            }),
+          ...(completion && {
+            agentCompletion: {
+              version: 1,
+              sourceId: envelope.event.source.id,
+              ...(readyPreparation?.scheduleMCPIdentity && {
+                scheduleMCPIdentity: readyPreparation.scheduleMCPIdentity,
+              }),
+              ...(kept && { trigger: kept }),
+            },
+          }),
           ...(envelope.mode === 'fire' && {
             agentTrigger: {
               version: envelope.version,
@@ -622,7 +809,9 @@ async function startRun(
           ...(run?.conversationId != null && {
             newConversationId: run.conversationId,
           }),
-          ...(run?.chatProjectId != null && { chatProjectId: run.chatProjectId }),
+          ...(run?.chatProjectId != null && {
+            chatProjectId: run.chatProjectId,
+          }),
           ...(run?.files != null && { files: run.files }),
           ...(typeof timezone === 'string' && timezone.trim().length > 0
             ? { timezone: timezone.trim() }
@@ -666,18 +855,15 @@ async function startRun(
     if (!response.ok) {
       const message =
         errorMessage(payload) ?? (boundedBody.text.slice(0, 300) || 'request rejected');
+      const deferredContinue =
+        mode === 'continue' &&
+        response.status === 409 &&
+        ['PARENT_NOT_READY', 'EVENT_ACTOR_NOT_READY'].includes(errorCode(payload) ?? '');
       throw executionError(`Agent trigger ${mode} was rejected (${response.status}): ${message}`, {
         mode,
         certainty: 'definite',
-        retryable:
-          isRetryableStatus(response.status) ||
-          (mode === 'continue' &&
-            response.status === 409 &&
-            errorCode(payload) === 'PARENT_NOT_READY'),
-        deferWithoutAttempt:
-          mode === 'continue' &&
-          response.status === 409 &&
-          errorCode(payload) === 'PARENT_NOT_READY',
+        retryable: isRetryableStatus(response.status) || deferredContinue,
+        deferWithoutAttempt: deferredContinue,
         code: errorCode(payload) ?? (mode === 'fire' ? 'FIRE_REJECTED' : 'CONTINUE_REJECTED'),
         status: response.status,
         ...(response.headers.get('retry-after') != null && {
@@ -727,6 +913,28 @@ async function startRun(
         status: response.status,
       });
     }
+    if (
+      mode === 'continue' &&
+      result.mode === 'continue' &&
+      readyPreparation?.settleOnAdmission != null
+    ) {
+      try {
+        await readyPreparation.settleOnAdmission(result);
+      } catch (error) {
+        throw executionError(
+          `Agent trigger continue admitted its generation but could not settle its prepared source: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          {
+            mode,
+            certainty: 'ambiguous',
+            retryable: true,
+            code: 'PREPARATION_SETTLEMENT_FAILED',
+            status: response.status,
+          },
+        );
+      }
+    }
     return result;
   } catch (error) {
     if (
@@ -736,7 +944,7 @@ async function startRun(
       canReleasePreparedResult(error)
     ) {
       try {
-        await preparation.releaseOnDefiniteFailure();
+        await preparation.releaseOnDefiniteFailure(error);
       } catch (releaseError) {
         throw executionError(
           `Agent trigger ${mode} could not release its rejected preparation: ${
@@ -747,6 +955,7 @@ async function startRun(
             certainty: 'definite',
             retryable: true,
             code: 'PREPARATION_RELEASE_FAILED',
+            deferWithoutAttempt: true,
           },
         );
       }

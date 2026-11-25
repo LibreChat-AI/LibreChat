@@ -2,6 +2,27 @@ import { ContentTypes } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
 
 type ActivityLabelPart = Extract<TMessageContentParts, { type: ContentTypes.ACTIVITY_LABEL }>;
+type SummaryPart = Extract<TMessageContentParts, { type: ContentTypes.SUMMARY }>;
+type RuntimeSummaryPart = Omit<SummaryPart, 'content'> & {
+  content?: SummaryPart['content'] | string;
+  text?: string;
+};
+
+function hasSummaryText(part: RuntimeSummaryPart): boolean {
+  if (typeof part.content === 'string') {
+    return part.content.trim().length > 0;
+  }
+
+  if (Array.isArray(part.content)) {
+    for (const block of part.content) {
+      if (typeof block?.text === 'string' && block.text.trim().length > 0) {
+        return true;
+      }
+    }
+  }
+
+  return typeof part.text === 'string' && part.text.trim().length > 0;
+}
 
 function isRetainablePart(
   part: TMessageContentParts | null | undefined,
@@ -12,6 +33,10 @@ function isRetainablePart(
 
   if (part.type === ContentTypes.TOOL_CALL) {
     return 'tool_call' in part && part.tool_call != null && typeof part.tool_call === 'object';
+  }
+
+  if (part.type === ContentTypes.SUMMARY) {
+    return hasSummaryText(part);
   }
 
   return true;
@@ -35,8 +60,8 @@ function rebaseBound(bound: number, retainedBefore: number[], sourceLength: numb
 }
 
 /**
- * Removes malformed tool call parts and any empty slots, then rebases parent
- * activity-phase bounds onto the compacted coordinates.
+ * Removes malformed tool calls, empty summaries, and empty slots, then rebases
+ * parent activity-phase bounds onto the compacted coordinates.
  *
  * The source array is frequently sparse: the aggregator writes parts at
  * provider-source indexes, so a model turn that emits no text before its tool
@@ -95,9 +120,9 @@ function compactContentParts(contentParts: TMessageContentParts[]): TMessageCont
 }
 
 /**
- * Produces the durable content array: drops malformed tool call parts that lack the
- * required tool_call property, compacts away empty slots, and rebases parent
- * activity-phase bounds onto the resulting coordinates.
+ * Produces the durable content array: drops malformed tool calls and empty summaries,
+ * compacts away empty slots, and rebases parent activity-phase bounds onto the
+ * resulting coordinates.
  *
  * Compaction is not incidental — the source array is frequently sparse, because the
  * aggregator writes parts at provider-source indexes. Since that shifts positions, any

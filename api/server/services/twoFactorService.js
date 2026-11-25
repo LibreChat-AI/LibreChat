@@ -1,32 +1,16 @@
-const { webcrypto } = require('node:crypto');
-const { hashBackupCode, decryptV3, decryptV2 } = require('@librechat/data-schemas');
-const { updateUser } = require('~/models');
+const { webcrypto, timingSafeEqual } = require('node:crypto');
+const { decryptV3, decryptV2 } = require('@librechat/data-schemas');
+const {
+  generateTwoFactorLoginChallengeToken,
+  generateTOTPSecret,
+  createBackupCodeGenerator,
+  createBackupCodeVerifier,
+} = require('@librechat/api');
+const { consumeBackupCode } = require('~/models');
 
-// Base32 alphabet for TOTP secret encoding.
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-
-/**
- * Encodes a Buffer into a Base32 string.
- * @param {Buffer} buffer
- * @returns {string}
- */
-const encodeBase32 = (buffer) => {
-  let bits = 0;
-  let value = 0;
-  let output = '';
-  for (const byte of buffer) {
-    value = (value << 8) | byte;
-    bits += 8;
-    while (bits >= 5) {
-      output += BASE32_ALPHABET[(value >>> (bits - 5)) & 31];
-      bits -= 5;
-    }
-  }
-  if (bits > 0) {
-    output += BASE32_ALPHABET[(value << (5 - bits)) & 31];
-  }
-  return output;
-};
+const verifyBackupCode = createBackupCodeVerifier(consumeBackupCode);
+const generateBackupCodes = createBackupCodeGenerator(process.env.TWO_FACTOR_BACKUP_CODE_FORMAT);
 
 /**
  * Decodes a Base32 string into a Buffer.
@@ -51,16 +35,6 @@ const decodeBase32 = (base32Str) => {
     }
   }
   return Buffer.from(output);
-};
-
-/**
- * Generates a new TOTP secret (Base32 encoded).
- * @returns {string}
- */
-const generateTOTPSecret = () => {
-  const randomArray = new Uint8Array(10);
-  webcrypto.getRandomValues(randomArray);
-  return encodeBase32(Buffer.from(randomArray));
 };
 
 /**
@@ -103,6 +77,31 @@ const generateTOTP = async (secret, forTime = Date.now()) => {
 };
 
 /**
+ * Constant-time comparison of a candidate 2FA code against the expected value.
+ * A plain `===` comparison short-circuits at the first differing character, so
+ * an attacker submitting codes to the 2FA verification endpoint could, in
+ * principle, learn how many leading digits are correct from the response time.
+ * Codes are of a fixed, public length, so returning early on a length mismatch
+ * (or a non-string input) leaks nothing secret while keeping the match path
+ * timing-independent. Mirrors the `crypto.timingSafeEqual(Buffer.from(...))`
+ * pattern already used for CSRF token checks in `packages/api`.
+ * @param {string} expected
+ * @param {string} candidate
+ * @returns {boolean}
+ */
+const constantTimeEqual = (expected, candidate) => {
+  if (typeof expected !== 'string' || typeof candidate !== 'string') {
+    return false;
+  }
+  const expectedBuffer = Buffer.from(expected, 'utf8');
+  const candidateBuffer = Buffer.from(candidate, 'utf8');
+  if (expectedBuffer.length !== candidateBuffer.length) {
+    return false;
+  }
+  return timingSafeEqual(expectedBuffer, candidateBuffer);
+};
+
+/**
  * Verifies a TOTP token by checking a ±1 time step window.
  * @param {string} secret
  * @param {string} token
@@ -113,7 +112,7 @@ const verifyTOTP = async (secret, token) => {
   const currentTime = Date.now();
   for (let offset = -1; offset <= 1; offset++) {
     const expected = await generateTOTP(secret, currentTime + offset * timeStepMS);
-    if (expected === token) {
+    if (constantTimeEqual(expected, token)) {
       return true;
     }
   }
@@ -121,73 +120,11 @@ const verifyTOTP = async (secret, token) => {
 };
 
 /**
- * Generates backup codes (default count: 10).
- * Each code is an 8-character hexadecimal string and stored with its SHA-256 hash.
- * @param {number} [count=10]
- * @returns {Promise<{ plainCodes: string[], codeObjects: Array<{ codeHash: string, used: boolean, usedAt: Date | null }> }>}
- */
-const generateBackupCodes = async (count = 10) => {
-  const plainCodes = [];
-  const codeObjects = [];
-  const encoder = new TextEncoder();
-
-  for (let i = 0; i < count; i++) {
-    const randomArray = new Uint8Array(4);
-    webcrypto.getRandomValues(randomArray);
-    const code = Array.from(randomArray)
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
-    plainCodes.push(code);
-
-    const codeBuffer = encoder.encode(code);
-    const hashBuffer = await webcrypto.subtle.digest('SHA-256', codeBuffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const codeHash = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
-    codeObjects.push({ codeHash, used: false, usedAt: null });
-  }
-  return { plainCodes, codeObjects };
-};
-
-/**
- * Verifies a backup code and, if valid, marks it as used.
- * @param {Object} params
- * @param {Object} params.user
- * @param {string} params.backupCode
- * @param {boolean} [params.persist=true] - Whether to persist the used-mark to the database.
- *   Pass `false` when the caller will immediately overwrite `backupCodes` (e.g. re-enrollment).
- * @returns {Promise<boolean>}
- */
-const verifyBackupCode = async ({ user, backupCode, persist = true }) => {
-  if (!backupCode || !user || !Array.isArray(user.backupCodes)) {
-    return false;
-  }
-
-  const hashedInput = await hashBackupCode(backupCode.trim());
-  const matchingCode = user.backupCodes.find(
-    (codeObj) => codeObj.codeHash === hashedInput && !codeObj.used,
-  );
-
-  if (!matchingCode) {
-    return false;
-  }
-
-  if (persist) {
-    const updatedBackupCodes = user.backupCodes.map((codeObj) =>
-      codeObj.codeHash === hashedInput && !codeObj.used
-        ? { ...codeObj, used: true, usedAt: new Date() }
-        : codeObj,
-    );
-    await updateUser(user._id, { backupCodes: updatedBackupCodes });
-  }
-  return true;
-};
-
-/**
  * Verifies a user's identity via TOTP token or backup code.
  * @param {Object} params
  * @param {Object} params.user - The user document (must include totpSecret and backupCodes).
  * @param {string} [params.token] - A 6-digit TOTP token.
- * @param {string} [params.backupCode] - An 8-character backup code.
+ * @param {string} [params.backupCode] - A recovery code (legacy or current format).
  * @param {boolean} [params.persistBackupUse=true] - Whether to mark the backup code as used in the DB.
  * @returns {Promise<{ verified: boolean, status?: number, message?: string }>}
  */
@@ -243,8 +180,7 @@ const getTOTPSecret = async (storedSecret) => {
  * @returns {string}
  */
 const generate2FATempToken = (userId) => {
-  const { sign } = require('jsonwebtoken');
-  return sign({ userId, twoFAPending: true }, process.env.JWT_SECRET, { expiresIn: '5m' });
+  return generateTwoFactorLoginChallengeToken(userId, process.env.JWT_SECRET);
 };
 
 module.exports = {

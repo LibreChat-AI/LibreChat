@@ -14,6 +14,26 @@ export interface RunStepTimestamps {
   closed_at?: number;
 }
 
+/** Host-reported close time; omit absent or unusable clocks instead of guessing. */
+export function getRunStepClosedAt(closed: RunStepTimestamps): number | undefined {
+  const { closed_at: closedAt, created_at: createdAt } = closed;
+  if (
+    typeof closedAt !== 'number' ||
+    !Number.isFinite(closedAt) ||
+    closedAt <= 0 ||
+    !Number.isFinite(new Date(closedAt).getTime()) ||
+    (typeof createdAt === 'number' && Number.isFinite(createdAt) && createdAt > closedAt)
+  ) {
+    return undefined;
+  }
+  return closedAt;
+}
+
+export function getRunStepCloseMetadata(closed: RunStepTimestamps): { runStepClosedAt?: number } {
+  const closedAt = getRunStepClosedAt(closed);
+  return closedAt == null ? {} : { runStepClosedAt: closedAt };
+}
+
 /**
  * Below this, a duration is noise rather than information: sub-second tool
  * calls are the common case, and labelling every one of them `· 0.3s` adds a

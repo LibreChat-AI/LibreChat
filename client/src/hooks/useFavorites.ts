@@ -1,6 +1,8 @@
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback } from 'react';
 import { useAtom } from 'jotai';
 import { useToastContext } from '@librechat/client';
+import { useIsMutating } from '@tanstack/react-query';
+import { MutationKeys } from 'librechat-data-provider';
 import type { Favorite } from '~/store/favorites';
 import { useGetFavoritesQuery, useUpdateFavoritesMutation } from '~/data-provider';
 import { favoritesAtom } from '~/store';
@@ -53,12 +55,10 @@ export default function useFavorites() {
   const getFavoritesQuery = useGetFavoritesQuery();
   const updateFavoritesMutation = useUpdateFavoritesMutation();
 
-  const isMutatingRef = useRef(false);
+  const writesInFlight = useIsMutating([MutationKeys.updateFavorites]);
 
   useEffect(() => {
-    // Skip updating local state if a mutation is in progress or just completed
-    // The local state is already optimistically updated by saveFavorites
-    if (isMutatingRef.current || updateFavoritesMutation.isLoading) {
+    if (writesInFlight > 0) {
       return;
     }
     if (getFavoritesQuery.data) {
@@ -68,7 +68,7 @@ export default function useFavorites() {
         setFavorites([]);
       }
     }
-  }, [getFavoritesQuery.data, setFavorites, updateFavoritesMutation.isLoading]);
+  }, [getFavoritesQuery.data, setFavorites, writesInFlight]);
 
   const getErrorMessage = useCallback(
     (error: unknown): string => {
@@ -91,20 +91,12 @@ export default function useFavorites() {
     async (newFavorites: typeof favorites) => {
       const cleaned = cleanFavorites(newFavorites);
       setFavorites(cleaned);
-      isMutatingRef.current = true;
       try {
         await updateFavoritesMutation.mutateAsync(cleaned);
       } catch (error) {
         logger.error('Error updating favorites:', error);
         showToast({ message: getErrorMessage(error), status: 'error' });
-        // Refetch to resync state with server
-        getFavoritesQuery.refetch();
-      } finally {
-        // Use a small delay to prevent the useEffect from triggering immediately
-        // after the mutation completes but before React has finished processing
-        setTimeout(() => {
-          isMutatingRef.current = false;
-        }, 100);
+        void getFavoritesQuery.refetch();
       }
     },
     [setFavorites, updateFavoritesMutation, showToast, getErrorMessage, getFavoritesQuery],
@@ -194,25 +186,13 @@ export default function useFavorites() {
    */
   const reorderFavorites = useCallback(
     async (newFavorites: typeof favorites, persist = false) => {
-      const cleaned = cleanFavorites(newFavorites);
-      setFavorites(cleaned);
       if (persist) {
-        isMutatingRef.current = true;
-        try {
-          await updateFavoritesMutation.mutateAsync(cleaned);
-        } catch (error) {
-          logger.error('Error reordering favorites:', error);
-          showToast({ message: getErrorMessage(error), status: 'error' });
-          // Refetch to resync state with server
-          getFavoritesQuery.refetch();
-        } finally {
-          setTimeout(() => {
-            isMutatingRef.current = false;
-          }, 100);
-        }
+        await saveFavorites(newFavorites);
+      } else {
+        setFavorites(cleanFavorites(newFavorites));
       }
     },
-    [setFavorites, updateFavoritesMutation, showToast, getErrorMessage, getFavoritesQuery],
+    [setFavorites, saveFavorites],
   );
 
   return {
@@ -232,6 +212,20 @@ export default function useFavorites() {
     reorderFavorites,
     /** Whether the favorites query is currently loading */
     isLoading: getFavoritesQuery.isLoading,
+    /** Whether the favorites list was actually retrieved. Not the inverse of
+     *  `isLoading`: an exhausted retry leaves loading false with no data. */
+    isSuccess: getFavoritesQuery.isSuccess,
+    /** Ready for membership-based pruning only after the atom absorbs the
+     *  settled query value, including a rollback with structurally shared data. */
+    isLoaded:
+      getFavoritesQuery.isSuccess &&
+      writesInFlight === 0 &&
+      !getFavoritesQuery.isFetching &&
+      favorites === getFavoritesQuery.data,
+    /** True while the list is being refetched, including the refetch that
+     *  recovers from a failed write. */
+    isFetching: getFavoritesQuery.isFetching,
+    dataUpdatedAt: getFavoritesQuery.dataUpdatedAt,
     /** Whether there was an error fetching favorites */
     isError: getFavoritesQuery.isError,
     /** Whether the update mutation is in progress */

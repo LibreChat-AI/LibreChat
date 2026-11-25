@@ -1,10 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import type { TStartupConfig } from 'librechat-data-provider';
+import {
+  DEFAULT_APP_TITLE,
+  setDocumentTitle,
+  getPostLoginRedirect,
+  isRequiredTwoFactorSetupRoute,
+} from '~/utils';
 import { TranslationKeys, useLocalize } from '~/hooks';
 import { useGetStartupConfig } from '~/data-provider';
 import AuthLayout from '~/components/Auth/AuthLayout';
-import { REDIRECT_PARAM, SESSION_KEY } from '~/utils';
 
 const headerMap: Record<string, TranslationKeys> = {
   '/login': 'com_auth_welcome_back',
@@ -12,39 +17,58 @@ const headerMap: Record<string, TranslationKeys> = {
   '/forgot-password': 'com_auth_reset_password',
   '/reset-password': 'com_auth_reset_password',
   '/login/2fa': 'com_auth_verify_your_identity',
+  '/login/2fa/setup': 'com_auth_two_factor_setup_required',
 };
 
 export default function StartupLayout({ isAuthenticated }: { isAuthenticated?: boolean }) {
   const [error, setError] = useState<TranslationKeys | null>(null);
   const [headerText, setHeaderText] = useState<TranslationKeys | null>(null);
-  const [startupConfig, setStartupConfig] = useState<TStartupConfig | null>(null);
+  const [cached, setCached] = useState<TStartupConfig | null>(null);
   const {
     data,
     isFetching,
     error: startupConfigError,
   } = useGetStartupConfig({
-    enabled: isAuthenticated ? startupConfig === null : true,
+    enabled: isAuthenticated ? cached === null : true,
   });
+  /**
+   * The screens render the query's own data, so the config and `isFetching` change in the same
+   * commit: a copy taken in an effect would commit one render where the fetch has settled but the
+   * config is still the previous value. The cached copy only covers the moment authentication flips
+   * the query key while this layout is mounted, when the new key has no data of its own and the
+   * guard above keeps it from fetching.
+   */
+  if (data && data !== cached) {
+    setCached(data);
+  }
+  const startupConfig = data ?? cached;
   const localize = useLocalize();
   const navigate = useNavigate();
   const location = useLocation();
 
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
+
+  /**
+   * Only an already-authenticated arrival is this layout's to redirect. When authentication
+   * completes while an auth route is mounted, the auth context has already consumed the pending
+   * destination and navigated there; re-resolving it here would find nothing left and replace that
+   * destination with `/c/new`. Mandatory enrollment is the one arrival that stays put: the user
+   * holding a setup token is authenticated precisely until they enroll, so sending them on would
+   * bounce them straight back out of the screen the server is demanding they complete.
+   */
   useEffect(() => {
-    if (isAuthenticated) {
-      const hasPendingRedirect =
-        new URLSearchParams(window.location.search).has(REDIRECT_PARAM) ||
-        sessionStorage.getItem(SESSION_KEY) != null;
-      if (!hasPendingRedirect) {
-        navigate('/c/new', { replace: true });
-      }
+    if (!isAuthenticated || isRequiredTwoFactorSetupRoute()) {
+      return;
     }
-    if (data) {
-      setStartupConfig(data);
-    }
-  }, [isAuthenticated, navigate, data]);
+    const destination =
+      getPostLoginRedirect(new URLSearchParams(window.location.search)) ?? '/c/new';
+    navigateRef.current(destination, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only by design; see comment above
+  }, []);
 
   useEffect(() => {
-    document.title = startupConfig?.appTitle || 'LibreChat';
+    setDocumentTitle(startupConfig?.appTitle || DEFAULT_APP_TITLE, true);
   }, [startupConfig?.appTitle]);
 
   useEffect(() => {

@@ -88,4 +88,28 @@ describe('CodeEnvRef', () => {
     expect(getCodeEnvRefForProfile({ codeEnvRef: legacy }, 'default')).toBe(legacy);
     expect(getCodeEnvRefForProfile({ codeEnvRef: legacy }, 'stateful')).toBeUndefined();
   });
+
+  it('retains independent pointers for configured environments sharing one profile', () => {
+    const first: CodeEnvRef = {
+      kind: 'skill',
+      id: 'skill-1',
+      version: 1,
+      storage_session_id: 'first-session',
+      file_id: 'first-file',
+      executionProfile: 'stateful',
+      executionRouteKey: 'stateful:first',
+    };
+    const second: CodeEnvRef = {
+      ...first,
+      storage_session_id: 'second-session',
+      file_id: 'second-file',
+      executionRouteKey: 'stateful:second',
+    };
+
+    const refs = mergeCodeEnvRef(mergeCodeEnvRef(undefined, first), second);
+
+    expect(getCodeEnvRefForProfile(refs, 'stateful:first')).toBe(first);
+    expect(getCodeEnvRefForProfile(refs, 'stateful:second')).toBe(second);
+    expect(Object.keys(refs.codeEnvRefs)).toEqual(['stateful:first', 'stateful:second']);
+  });
 });

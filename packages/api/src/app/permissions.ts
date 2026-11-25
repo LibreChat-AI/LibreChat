@@ -1,13 +1,26 @@
-import { logger, tenantStorage, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
+import { logger, getTenantId, tenantStorage, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
 import {
   SystemRoles,
   Permissions,
   roleDefaults,
+  EModelEndpoint,
   PermissionTypes,
   getConfigDefaults,
+  normalizeEndpointName,
 } from 'librechat-data-provider';
 import type { IRole, AppConfig } from '@librechat/data-schemas';
+import type { TPreset } from 'librechat-data-provider';
+import type { RecordAuditEntry } from '~/admin/audit';
+import { getOpenAIEndpointParameters } from '~/endpoints/openai/parameters';
+import { diffRolePermissions, recordSystemAuditEntry } from '~/admin/audit';
+import { extractDefaultParams } from '~/endpoints/openai/llm';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { isMemoryEnabled } from '~/memory/config';
+
+type RolePermissions = Partial<Record<PermissionTypes, Record<string, boolean | undefined>>>;
+
+/** The preset fields that select a spec's endpoint and its `web_search` request. */
+type SpecPreset = Partial<Pick<TPreset, 'endpoint' | 'model' | 'web_search'>>;
 
 /**
  * Checks if a permission type has explicit configuration
@@ -45,6 +58,8 @@ function hasExplicitConfig(
       return interfaceConfig?.mcpServers !== undefined;
     case PermissionTypes.REMOTE_AGENTS:
       return interfaceConfig?.remoteAgents !== undefined;
+    case PermissionTypes.AGENT_EVENTS:
+      return interfaceConfig?.agentEvents !== undefined;
     case PermissionTypes.SKILLS:
       return interfaceConfig?.skills !== undefined;
     case PermissionTypes.SHARED_LINKS:
@@ -67,32 +82,126 @@ function hasExplicitConfig(
   }
 }
 
-export async function updateInterfacePermissions({
-  appConfig,
-  getRoleByName,
-  updateAccessPermissions,
-  tenantId,
-}: {
-  appConfig: AppConfig;
-  getRoleByName: (roleName: string, fieldsToSelect?: string | string[]) => Promise<IRole | null>;
-  updateAccessPermissions: (
-    roleName: string,
-    permissionsUpdate: Partial<Record<PermissionTypes, Record<string, boolean | undefined>>>,
+/**
+ * The endpoint parameters that reach a spec's `web_search` switch: a custom endpoint's
+ * `addParams`, `dropParams` and `customParams.paramDefinitions` defaults, or the Azure group
+ * serving the spec's model. Matched the way `initializeCustom` and `initializeOpenAI` match them.
+ */
+function getSpecEndpointParams(
+  appConfig: AppConfig,
+  preset: SpecPreset,
+): {
+  addParams?: Record<string, unknown>;
+  dropParams?: string[];
+  defaultParams?: Record<string, unknown>;
+} {
+  const endpoint = preset.endpoint ?? '';
+  if (endpoint === EModelEndpoint.azureOpenAI) {
+    return getOpenAIEndpointParameters(appConfig, endpoint, preset.model ?? undefined);
+  }
+  const name = normalizeEndpointName(endpoint);
+  const custom = appConfig.endpoints?.[EModelEndpoint.custom]?.find(
+    (config) => normalizeEndpointName(config.name) === name,
+  );
+  if (custom == null) {
+    return {};
+  }
+  return {
+    addParams: custom.addParams,
+    dropParams: custom.dropParams,
+    defaultParams: extractDefaultParams(custom.customParams?.paramDefinitions),
+  };
+}
 
-    roleData?: IRole | null,
-  ) => Promise<void>;
-  /**
-   * Optional tenant ID for scoping role updates to a specific tenant.
-   * When provided (and not SYSTEM_TENANT_ID), runs inside `tenantStorage.run({ tenantId })`.
-   * When omitted or SYSTEM_TENANT_ID, uses the caller's existing ALS context.
-   */
-  tenantId?: string;
-}): Promise<void> {
+/**
+ * Whether a spec's request turns provider-native search on, resolved in the order every
+ * provider builder applies: the preset's value, an endpoint default when the preset leaves it
+ * unset, then `addParams`, and `dropParams` last. A spec on the agents endpoint is read from its
+ * preset alone, since the agent's own parameters are not known at startup.
+ */
+function requestsNativeWebSearch(appConfig: AppConfig, preset: SpecPreset): boolean {
+  const { addParams, dropParams, defaultParams } = getSpecEndpointParams(appConfig, preset);
+  let enabled = preset.web_search;
+  if (enabled === undefined && typeof defaultParams?.web_search === 'boolean') {
+    enabled = defaultParams.web_search;
+  }
+  if (typeof addParams?.web_search === 'boolean') {
+    enabled = addParams.web_search;
+  }
+  if (dropParams?.includes('web_search') === true) {
+    enabled = false;
+  }
+  return enabled === true;
+}
+
+/**
+ * `WEB_SEARCH.USE` gates provider-native search (the `web_search` model parameter) as well as
+ * LibreChat's `web_search` tool. Warns when model specs ask for native search that a role's
+ * effective permission blocks, whether `interface.webSearch: false` sets it or a stored role keeps it.
+ */
+function warnNativeWebSearchDenied(
+  appConfig: AppConfig,
+  deniedRoles: string[],
+  isExplicitlyConfigured: boolean,
+): void {
+  if (deniedRoles.length === 0) {
+    return;
+  }
+  const specs = (appConfig.modelSpecs?.list ?? [])
+    .filter((spec) => spec.preset != null && requestsNativeWebSearch(appConfig, spec.preset))
+    .map((spec) => spec.name);
+  if (specs.length === 0) {
+    return;
+  }
+  const source = isExplicitlyConfigured
+    ? '`interface.webSearch: false` denies'
+    : '`interface.webSearch` is not set, and the stored role permission keeps denying';
+  logger.warn(
+    `Model specs request provider-native web search (\`preset.web_search\`, or their endpoint's \`addParams\` or \`customParams\` defaults), but ${source} the \`WEB_SEARCH\` permission for roles ${deniedRoles.join(', ')}, which also blocks native search: ${specs.join(', ')}. ` +
+      "To offer native search without LibreChat's search tool, set `interface.webSearch: true` and remove `web_search` from `endpoints.agents.capabilities`. " +
+      'Removing `interface.webSearch` alone keeps the stored role permission; set it explicitly or update the role in the admin settings. See "Native-only web search" in UPGRADING.md.',
+  );
+}
+
+/** Auditing verifies each sync against the stored role, so it takes an uncached read. */
+type RoleSyncAudit =
+  | { recordAuditEntry?: undefined; getPartitionRole?: undefined }
+  | {
+      /** Records a `role.synced` entry for each role whose stored permissions changed. */
+      recordAuditEntry: RecordAuditEntry;
+      /**
+       * Reads the role as committed, bypassing the role cache, which can still hold the
+       * pre-write role when the update's cache write fails after the database write.
+       */
+      getPartitionRole: (roleName: string) => Promise<IRole | null>;
+    };
+
+export async function updateInterfacePermissions(
+  params: {
+    appConfig: AppConfig;
+    getRoleByName: (roleName: string, fieldsToSelect?: string | string[]) => Promise<IRole | null>;
+    updateAccessPermissions: (
+      roleName: string,
+      permissionsUpdate: Partial<Record<PermissionTypes, Record<string, boolean | undefined>>>,
+
+      roleData?: IRole | null,
+    ) => Promise<void>;
+    /**
+     * Optional tenant ID for scoping role updates to a specific tenant.
+     * When provided (and not SYSTEM_TENANT_ID), runs inside `tenantStorage.run({ tenantId })`.
+     * When omitted or SYSTEM_TENANT_ID, uses the caller's existing ALS context.
+     */
+    tenantId?: string;
+  } & RoleSyncAudit,
+): Promise<void> {
+  const { tenantId } = params;
   if (tenantId && tenantId !== SYSTEM_TENANT_ID) {
     return tenantStorage.run({ tenantId }, async () =>
-      updateInterfacePermissions({ appConfig, getRoleByName, updateAccessPermissions }),
+      updateInterfacePermissions({ ...params, tenantId: undefined }),
     );
   }
+  const { appConfig, getRoleByName, updateAccessPermissions, recordAuditEntry, getPartitionRole } =
+    params;
 
   const loadedInterface = appConfig?.interfaceConfig;
   if (!loadedInterface) {
@@ -124,6 +233,48 @@ export async function updateInterfacePermissions({
   };
 
   const defaults = getConfigDefaults().interface;
+  const webSearchDeniedRoles: string[] = [];
+
+  /**
+   * Re-reads the stored role so the entry lists what was persisted rather than what was
+   * requested (`updateAccessPermissions` logs and swallows its own failures).
+   */
+  const recordRoleSync = async (
+    record: RecordAuditEntry,
+    read: (roleName: string) => Promise<IRole | null>,
+    roleName: string,
+    before: RolePermissions | undefined,
+  ) => {
+    let after: IRole | null;
+    let changes: string[];
+    try {
+      after = await read(roleName);
+      changes = diffRolePermissions(before, after?.permissions as RolePermissions | undefined);
+    } catch (err) {
+      /** The verification read is part of auditing, which must not fail startup. */
+      logger.error(
+        `[updateInterfacePermissions] could not verify '${roleName}' for audit`,
+        getSafeErrorMetadata(err),
+      );
+      return;
+    }
+    if (!after || changes.length === 0) {
+      return;
+    }
+    const tenantId = getTenantId();
+    await recordSystemAuditEntry(
+      record,
+      {
+        action: 'role.synced',
+        severity: 'warning',
+        actor: { type: 'system', name: 'librechat.yaml interface sync' },
+        target: { type: 'role', id: roleName, name: roleName },
+        metadata: { changes: changes.join(', '), changeCount: changes.length },
+        tenantId: tenantId && tenantId !== SYSTEM_TENANT_ID ? tenantId : undefined,
+      },
+      '[updateInterfacePermissions]',
+    );
+  };
 
   // Permission precedence order:
   // 1. Explicit user configuration (from librechat.yaml)
@@ -570,6 +721,24 @@ export async function updateInterfacePermissions({
             }
           : {}),
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: getPermissionValue(
+          loadedInterface.agentEvents?.use,
+          defaultPerms[PermissionTypes.AGENT_EVENTS]?.[Permissions.USE],
+          defaults.agentEvents?.use,
+        ),
+        ...((typeof interfaceConfig?.agentEvents === 'object' &&
+          'create' in interfaceConfig.agentEvents) ||
+        !existingPermissions?.[PermissionTypes.AGENT_EVENTS]
+          ? {
+              [Permissions.CREATE]: getPermissionValue(
+                loadedInterface.agentEvents?.create,
+                defaultPerms[PermissionTypes.AGENT_EVENTS]?.[Permissions.CREATE],
+                defaults.agentEvents?.create,
+              ),
+            }
+          : {}),
+      },
     };
 
     // Check and add each permission type if needed
@@ -767,9 +936,25 @@ export async function updateInterfacePermissions({
       }
     }
 
+    const webSearchUse =
+      permissionsToUpdate[PermissionTypes.WEB_SEARCH]?.[Permissions.USE] ??
+      existingPermissions?.[PermissionTypes.WEB_SEARCH]?.[Permissions.USE];
+    if (webSearchUse === false) {
+      webSearchDeniedRoles.push(roleName);
+    }
+
     // Update permissions if any need updating
     if (Object.keys(permissionsToUpdate).length > 0) {
       await updateAccessPermissions(roleName, permissionsToUpdate, existingRole);
+      if (recordAuditEntry && getPartitionRole) {
+        await recordRoleSync(recordAuditEntry, getPartitionRole, roleName, existingPermissions);
+      }
     }
   }
+
+  warnNativeWebSearchDenied(
+    appConfig,
+    webSearchDeniedRoles,
+    hasExplicitConfig(interfaceConfig, PermissionTypes.WEB_SEARCH),
+  );
 }

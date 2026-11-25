@@ -9,6 +9,7 @@ import {
   selectMockEndpoint,
   sendMessage,
 } from './helpers';
+import { unroute } from './fixtures';
 
 const NO_PARENT = '00000000-0000-0000-0000-000000000000';
 
@@ -626,6 +627,9 @@ async function clickForkVisibleMessages(
   await render.scrollIntoViewIfNeeded();
   await render.hover();
   await render.getByRole('button', { name: 'Open Fork Menu' }).click();
+  const popover = page.getByRole('dialog', { name: 'Fork conversation' });
+  await popover.getByRole('button', { name: 'More options' }).click();
+  await popover.getByRole('radio', { name: 'Visible', exact: true }).click();
 
   const [response] = await Promise.all([
     page.waitForResponse(
@@ -635,7 +639,7 @@ async function clickForkVisibleMessages(
         res.status() === 200,
       { timeout: 30000 },
     ),
-    page.getByRole('button', { name: 'Visible messages only', exact: true }).click(),
+    popover.getByRole('button', { name: 'Fork', exact: true }).click(),
   ]);
 
   return (await response.json()) as ForkResponse;
@@ -1089,12 +1093,57 @@ test.describe('message tree stream operations', () => {
     await expectVisibleMessages(page, [editedMiddlePrompt, editedMiddleReply, afterEditReply]);
   });
 
+  /** Regression: the editor's submit button was disabled until the draft differed, so
+   *  reissuing a cancelled request or one that failed on a since-restarted backend meant
+   *  typing a throwaway character first. An untouched draft reruns as-is. */
+  test('reruns an untouched user request from the editor', async ({ page }) => {
+    const label = uniqueLabel('rerun-untouched');
+    const prompt = countedPrompt(label);
+    const firstReply = countedReplyText(label, 1);
+    const secondReply = countedReplyText(label, 2);
+
+    await openMockChat(page);
+    await sendAndExpectReply(page, prompt, firstReply);
+    const conversationId = await conversationIdFromPage(page);
+
+    await clickMessageTitleButton(page, prompt, 'Edit');
+    const editor = page.getByTestId('message-text-editor');
+    await expect(editor).toBeVisible();
+    await expect(editor).toHaveValue(prompt);
+
+    const rerun = page.getByRole('button', { name: 'Rerun', exact: true });
+    await expect(rerun).toBeEnabled();
+    /** Nothing to save, so that button stays out of reach; the rerun does not. */
+    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    await waitForGenerationStart(page, () => rerun.click());
+
+    await expect(messagesView(page).getByText(secondReply)).toBeVisible({ timeout: 30000 });
+
+    const messages = await waitForMessages(
+      page,
+      conversationId,
+      (items) => items.some((message) => messageText(message).includes(secondReply)),
+      'rerun of an untouched request',
+    );
+    /** Reissued verbatim: a second user turn carrying exactly the original text. */
+    const reissued = messages.filter(
+      (message) => message.isCreatedByUser === true && messageText(message) === prompt,
+    );
+    expect(reissued).toHaveLength(2);
+  });
+
   test('error responses remain valid parents for follow-ups', async ({ page }) => {
     const label = uniqueLabel('error');
     const basePrompt = replyPrompt(`${label}-base`);
     const baseReply = replyText(`${label}-base`);
     const errorPrompt = `E2E_FORCED_ERROR:${label}`;
-    const errorText = `E2E forced stream error ${label}`;
+    const providerError = `E2E forced stream error ${label}`;
+    const errorText = 'The model provider could not complete this request.';
+    /** No content policy is configured here, so the failure keeps the provider's own words. */
+    const errorPayload = `${errorText}\n${JSON.stringify({
+      type: 'upstream_model_error',
+      message: providerError,
+    })}`;
     const afterErrorPrompt = replyPrompt(`${label}-after-error`);
     const afterErrorReply = replyText(`${label}-after-error`);
 
@@ -1104,6 +1153,7 @@ test.describe('message tree stream operations', () => {
 
     await sendAndExpectReply(page, errorPrompt, errorText);
     await expect(messagesView(page).getByText(errorText)).toBeVisible({ timeout: 30000 });
+    await expect(messagesView(page).getByText(providerError)).toBeVisible();
 
     await sendAndExpectReply(page, afterErrorPrompt, afterErrorReply);
     const messages = await waitForMessages(
@@ -1114,8 +1164,8 @@ test.describe('message tree stream operations', () => {
     );
     expectNoFoldedMessages(messages);
     expectParent(messages, errorPrompt, baseReply, true);
-    expectParent(messages, errorText, errorPrompt, false);
-    expectParent(messages, afterErrorPrompt, errorText, true);
+    expectParent(messages, errorPayload, errorPrompt, false);
+    expectParent(messages, afterErrorPrompt, errorPayload, true);
     expectParent(messages, afterErrorReply, afterErrorPrompt, false);
 
     await reloadAndExpectMessages(page, [baseReply, errorText, afterErrorReply]);
@@ -1222,7 +1272,7 @@ test.describe('message tree stream operations', () => {
     await expect(page.getByRole('textbox', { name: 'Message input' })).toBeEnabled({
       timeout: 30000,
     });
-    await page.unroute('**/api/agents/chat**', failGenerationStart);
+    await unroute(page, '**/api/agents/chat**', failGenerationStart);
 
     await sendAndExpectReply(page, afterFailurePrompt, afterFailureReply);
     const messages = await waitForMessages(

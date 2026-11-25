@@ -40,7 +40,10 @@ jest.mock('@librechat/api', () => ({
     return false;
   },
   keyvMongo: {},
+  getBanIp: jest.requireActual('../../../../packages/api/src/middleware/ban').getBanIp,
   removePorts: jest.fn((req) => req.ip),
+  redirectToAuthFailure: (res, { clientDomain, authFailedError }) =>
+    res.redirect(`${clientDomain}/login?redirect=false&error=${authFailedError}`),
 }));
 
 jest.mock('~/models', () => ({
@@ -53,11 +56,15 @@ jest.mock('ua-parser-js', () => jest.fn(() => ({ browser: { name: 'Chrome' } }))
 
 const checkBan = require('~/server/middleware/checkBan');
 const { logger } = require('@librechat/data-schemas');
+const { ViolationTypes } = require('librechat-data-provider');
 const { findUser } = require('~/models');
+const denyRequest = require('~/server/middleware/denyRequest');
+const uap = require('ua-parser-js');
 
 const createReq = (overrides = {}) => ({
   ip: '192.168.1.1',
   user: { id: 'user123' },
+  method: 'GET',
   headers: { 'user-agent': 'Mozilla/5.0' },
   body: {},
   baseUrl: '/api',
@@ -68,6 +75,7 @@ const createReq = (overrides = {}) => ({
 const createRes = () => ({
   status: jest.fn().mockReturnThis(),
   json: jest.fn().mockReturnThis(),
+  redirect: jest.fn().mockReturnThis(),
 });
 
 describe('checkBan middleware', () => {
@@ -134,6 +142,93 @@ describe('checkBan middleware', () => {
     });
   });
 
+  describe.each([false, true])('verified trigger requests (USE_REDIS=%s)', (useRedis) => {
+    beforeEach(() => {
+      process.env.USE_REDIS = String(useRedis);
+    });
+
+    const userKey = useRedis ? 'ban_cache:user:user123' : 'user123';
+    const ipKey = useRedis ? 'ban_cache:ip:127.0.0.1' : '127.0.0.1';
+    const createTriggerReq = () => createReq({ ip: '127.0.0.1', _isAgentTrigger: true });
+
+    it('ignores cached and persistent loopback bans without querying either IP key', async () => {
+      const ban = { expiresAt: Date.now() + 60000 };
+      mockBanCacheGet.mockImplementation(async (key) => (key === ipKey ? ban : undefined));
+      mockBanLogsGet.mockImplementation(async (key) => (key === '127.0.0.1' ? ban : undefined));
+      const req = createTriggerReq();
+      const next = jest.fn();
+
+      await checkBan(req, createRes(), next);
+
+      expect(next).toHaveBeenCalledWith();
+      expect(req.banned).toBeUndefined();
+      expect(req.ip).toBe('127.0.0.1');
+      expect(mockBanCacheGet.mock.calls).toEqual([[userKey]]);
+      expect(mockBanLogsGet.mock.calls).toEqual([['user123']]);
+      expect(mockBanCacheSet).not.toHaveBeenCalled();
+    });
+
+    it('still rejects a cached user ban', async () => {
+      mockBanCacheGet.mockResolvedValueOnce({ expiresAt: Date.now() + 60000 });
+      const res = createRes();
+      const next = jest.fn();
+
+      await checkBan(createTriggerReq(), res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(mockBanCacheGet.mock.calls).toEqual([[userKey]]);
+      expect(mockBanLogsGet).not.toHaveBeenCalled();
+    });
+
+    it('caches a persistent user ban only under the user key', async () => {
+      const ban = { expiresAt: Date.now() + 60000 };
+      mockBanLogsGet.mockResolvedValueOnce(ban);
+      const res = createRes();
+      const next = jest.fn();
+
+      await checkBan(createTriggerReq(), res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(mockBanCacheSet).toHaveBeenCalledTimes(1);
+      expect(mockBanCacheSet).toHaveBeenCalledWith(userKey, ban, expect.any(Number));
+    });
+
+    it('cleans up an expired user ban without touching the transport IP', async () => {
+      mockBanLogsGet.mockResolvedValueOnce({ expiresAt: Date.now() - 1000 });
+      const next = jest.fn();
+
+      await checkBan(createTriggerReq(), createRes(), next);
+
+      expect(next).toHaveBeenCalledWith();
+      expect(mockBanLogsDelete.mock.calls).toEqual([['user123']]);
+      expect(mockBanCacheSet).not.toHaveBeenCalled();
+    });
+
+    it('does not treat a trigger header on an ordinary request as an exemption', async () => {
+      mockBanCacheGet.mockResolvedValueOnce({ expiresAt: Date.now() + 60000 });
+      const req = createReq({
+        ip: '127.0.0.1',
+        headers: { 'x-lc-agent-trigger': '1' },
+        _isAgentTrigger: false,
+      });
+      const res = createRes();
+      const next = jest.fn();
+
+      await checkBan(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(mockBanCacheGet).toHaveBeenCalledWith(ipKey);
+    });
+
+    afterEach(() => {
+      mockBanCacheGet.mockReset().mockResolvedValue(undefined);
+      mockBanLogsGet.mockReset().mockResolvedValue(undefined);
+    });
+  });
+
   describe('cache hit path', () => {
     it('returns 403 when IP ban is cached', async () => {
       mockBanCacheGet.mockResolvedValueOnce({ expiresAt: Date.now() + 60000 });
@@ -146,6 +241,26 @@ describe('checkBan middleware', () => {
       expect(next).not.toHaveBeenCalled();
       expect(req.banned).toBe(true);
       expect(res.status).toHaveBeenCalledWith(403);
+    });
+
+    it('redirects instead of sending JSON when the ban hits an OAuth navigation', async () => {
+      process.env.DOMAIN_CLIENT = 'http://client.test';
+      mockBanCacheGet.mockResolvedValueOnce({ expiresAt: Date.now() + 60000 });
+      const next = jest.fn();
+      const req = createReq({
+        isOAuthNavigation: true,
+        baseUrl: '/oauth',
+        originalUrl: '/oauth/openid/callback',
+      });
+      const res = createRes();
+
+      await checkBan(req, res, next);
+
+      expect(req.banned).toBe(true);
+      expect(res.json).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith(
+        'http://client.test/login?redirect=false&error=auth_banned',
+      );
     });
 
     it('returns 403 when user ban is cached (IP miss)', async () => {
@@ -169,6 +284,123 @@ describe('checkBan middleware', () => {
       await checkBan(createReq(), createRes(), jest.fn());
 
       expect(mockBanLogsGet).not.toHaveBeenCalled();
+    });
+
+    it.each(['/api/agents/chat/stream/stream-123', '/api/agents/chat/status/conversation-1'])(
+      'returns JSON for a banned browser GET without a request body: %s',
+      async (originalUrl) => {
+        mockBanCacheGet.mockResolvedValueOnce({ expiresAt: Date.now() + 60000 });
+        const req = createReq({
+          body: undefined,
+          baseUrl: '/api/agents',
+          originalUrl,
+        });
+        const res = createRes();
+
+        await checkBan(req, res, jest.fn());
+
+        expect(res.status).toHaveBeenCalledWith(403);
+        expect(res.json).toHaveBeenCalledWith({
+          message: 'Your account has been temporarily banned due to violations of our service.',
+        });
+        expect(denyRequest).not.toHaveBeenCalled();
+      },
+    );
+
+    it('treats a banned queued-turn POST as an early text-saving denial', async () => {
+      mockBanCacheGet.mockResolvedValueOnce({ expiresAt: Date.now() + 60000 });
+      const req = createReq({
+        method: 'POST',
+        baseUrl: '/api/agents',
+        originalUrl: '/api/agents/chat/queued-turns',
+        body: { text: 'submitted text' },
+      });
+      const res = createRes();
+      await checkBan(req, res, jest.fn());
+      expect(denyRequest).toHaveBeenCalledWith(req, res, { type: ViolationTypes.BAN });
+    });
+
+    it('preserves SSE denial for a banned browser interactive chat request', async () => {
+      mockBanCacheGet.mockResolvedValueOnce({ expiresAt: Date.now() + 60000 });
+      const req = createReq({
+        method: 'POST',
+        baseUrl: '/api/agents',
+        originalUrl: '/api/agents/chat/agents',
+      });
+      const res = createRes();
+
+      await checkBan(req, res, jest.fn());
+
+      expect(denyRequest).toHaveBeenCalledWith(req, res, { type: ViolationTypes.BAN });
+      expect(res.status).not.toHaveBeenCalled();
+    });
+
+    it.each(['active', 'status', 'stream'])(
+      'preserves SSE denial when a custom endpoint uses the POST-only name %s',
+      async (endpoint) => {
+        mockBanCacheGet.mockResolvedValueOnce({ expiresAt: Date.now() + 60000 });
+        const req = createReq({
+          method: 'POST',
+          baseUrl: '/api/agents',
+          originalUrl: `/api/agents/chat/${endpoint}`,
+        });
+        const res = createRes();
+
+        await checkBan(req, res, jest.fn());
+
+        expect(denyRequest).toHaveBeenCalledWith(req, res, { type: ViolationTypes.BAN });
+        expect(res.status).not.toHaveBeenCalled();
+      },
+    );
+
+    it('returns JSON for a bodyless browser POST to an interactive chat path', async () => {
+      mockBanCacheGet.mockResolvedValueOnce({ expiresAt: Date.now() + 60000 });
+      const req = createReq({
+        body: undefined,
+        method: 'POST',
+        baseUrl: '/api/agents',
+        originalUrl: '/api/agents/chat/agents',
+      });
+      const res = createRes();
+
+      await checkBan(req, res, jest.fn());
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(denyRequest).not.toHaveBeenCalled();
+    });
+
+    it.each(['abort', 'Abort', 'STEER', 'sTeEr'])(
+      'returns JSON for a banned browser agent control request: %s',
+      async (route) => {
+        mockBanCacheGet.mockResolvedValueOnce({ expiresAt: Date.now() + 60000 });
+        const req = createReq({
+          method: 'POST',
+          baseUrl: '/api/agents',
+          originalUrl: `/api/agents/chat/${route}`,
+        });
+        const res = createRes();
+
+        await checkBan(req, res, jest.fn());
+
+        expect(res.status).toHaveBeenCalledWith(403);
+        expect(denyRequest).not.toHaveBeenCalled();
+      },
+    );
+
+    it('keeps non-browser agent chat denial as JSON', async () => {
+      uap.mockReturnValueOnce({ browser: {} });
+      mockBanCacheGet.mockResolvedValueOnce({ expiresAt: Date.now() + 60000 });
+      const req = createReq({
+        method: 'POST',
+        baseUrl: '/api/agents',
+        originalUrl: '/api/agents/chat/agents',
+      });
+      const res = createRes();
+
+      await checkBan(req, res, jest.fn());
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(denyRequest).not.toHaveBeenCalled();
     });
   });
 
@@ -267,6 +499,55 @@ describe('checkBan middleware', () => {
       await checkBan(createReq({ user: null }), createRes(), jest.fn());
 
       expect(mockBanCacheSet).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('non-string cache keys (#16025)', () => {
+    const objectIdHex = '507f1f77bcf86cd799439011';
+    const objectId = {
+      toString() {
+        return objectIdHex;
+      },
+    };
+
+    it('stringifies ObjectId user keys when Redis is off', async () => {
+      const next = jest.fn();
+      const req = createReq({ user: { _id: objectId } });
+
+      await checkBan(req, createRes(), next);
+
+      expect(next).toHaveBeenCalledWith();
+      expect(mockBanCacheGet).toHaveBeenCalledWith(objectIdHex);
+      expect(mockBanLogsGet).toHaveBeenCalledWith(objectIdHex);
+      for (const [key] of mockBanCacheGet.mock.calls) {
+        expect(typeof key).toBe('string');
+      }
+    });
+
+    it('stringifies numeric user keys when Redis is off', async () => {
+      await checkBan(createReq({ user: { _id: 12345 } }), createRes(), jest.fn());
+
+      expect(mockBanCacheGet).toHaveBeenCalledWith('12345');
+      expect(mockBanLogsGet).toHaveBeenCalledWith('12345');
+    });
+
+    it('stringifies ObjectId user keys in Redis-prefixed cache lookups', async () => {
+      process.env.USE_REDIS = 'true';
+
+      await checkBan(createReq({ user: { _id: objectId } }), createRes(), jest.fn());
+
+      expect(mockBanCacheGet).toHaveBeenCalledWith(`ban_cache:user:${objectIdHex}`);
+      expect(mockBanLogsGet).toHaveBeenCalledWith(objectIdHex);
+    });
+
+    it('stringifies ObjectId user keys from email lookup', async () => {
+      findUser.mockResolvedValueOnce({ _id: objectId });
+      const req = createReq({ user: null, body: { email: 'oauth@example.com' } });
+
+      await checkBan(req, createRes(), jest.fn());
+
+      expect(mockBanCacheGet).toHaveBeenCalledWith(objectIdHex);
+      expect(mockBanLogsGet).toHaveBeenCalledWith(objectIdHex);
     });
   });
 

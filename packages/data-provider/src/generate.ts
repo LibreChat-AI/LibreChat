@@ -1,10 +1,7 @@
 import { z, ZodArray, ZodError, ZodIssueCode } from 'zod';
-import { tConversationSchema, googleSettings as google, openAISettings as openAI } from './schemas';
 import type { ZodIssue } from 'zod';
 import type { TConversation, TSetOption, TPreset } from './schemas';
-
-export type GoogleSettings = Partial<typeof google>;
-export type OpenAISettings = Partial<typeof google>;
+import { tConversationSchema } from './schemas';
 
 export type ComponentType =
   | 'input'
@@ -97,6 +94,38 @@ export interface SettingRange {
   min: number;
   max: number;
   step?: number;
+  /**
+   * Inclusive floor for non-negative values. Use when `min` is a sentinel
+   * (Google thinkingBudget `-1` for auto) and positive values have a higher
+   * documented minimum.
+   */
+  positiveMin?: number;
+  /**
+   * Set when this range came from the selected model rather than the shared
+   * fallback. Only then is it safe to normalize a stored value against it: a
+   * model that does not use the parameter leaves the generic range in place,
+   * and clamping to that would discard a value set for another model.
+   */
+  modelSpecific?: boolean;
+}
+
+export function clampSettingRange(value: number, range: SettingRange): number {
+  if (range.positiveMin != null) {
+    /** The minimum carries its own meaning here (Google's -1 for automatic),
+     *  and the schema admits it outright, so it survives rather than being
+     *  lifted to the floor. It need not be negative to be the sentinel. */
+    if (value === range.min) {
+      return range.min;
+    }
+    /** Below the sentinel there is nothing admissible to lift to, so the value
+     *  resolves to it. Between the sentinel and the floor, the floor is the
+     *  nearest value the generated schema accepts. */
+    if (value < Math.max(range.min, 0)) {
+      return range.min;
+    }
+    return Math.min(Math.max(value, range.positiveMin), range.max);
+  }
+  return Math.min(Math.max(value, range.min), range.max);
 }
 
 export type SettingsConfiguration = SettingDefinition[];
@@ -118,10 +147,23 @@ export function generateDynamicSchema(settings: SettingsConfiguration) {
     } = setting;
 
     if (type === SettingTypes.Number) {
-      let schema = z.number();
+      let numberSchema = z.number();
       if (range) {
-        schema = schema.min(range.min);
-        schema = schema.max(range.max);
+        numberSchema = numberSchema.min(range.min);
+        numberSchema = numberSchema.max(range.max);
+      }
+      /** Widened deliberately: refine returns ZodEffects, not ZodNumber, and
+       *  the number-specific chaining is already done above. */
+      let schema: z.ZodTypeAny = numberSchema;
+      if (range?.positiveMin != null) {
+        /** Mirrors clampSettingRange so the generated schema and the clamp
+         *  agree: `min` only admits the sentinel, and any non-negative value
+         *  must clear the documented floor. */
+        const { positiveMin, min } = range;
+        schema = numberSchema.refine(
+          (value) => value === min || value >= positiveMin,
+          `Expected ${min} or a value of at least ${positiveMin}`,
+        );
       }
       if (typeof defaultValue === 'number') {
         schemaFields[key] = schema.default(defaultValue);
@@ -196,9 +238,9 @@ export function generateDynamicSchema(settings: SettingsConfiguration) {
 }
 
 const ZodTypeToSettingType: Record<string, string | undefined> = {
-  ZodString: 'string',
-  ZodNumber: 'number',
-  ZodBoolean: 'boolean',
+  string: 'string',
+  number: 'number',
+  boolean: 'boolean',
 };
 
 const minColumns = 1;
@@ -363,8 +405,12 @@ export function validateSettingDefinitions(settings: SettingsConfiguration): voi
 
     if (setting.component === ComponentTypes.Slider && setting.type === SettingTypes.Number) {
       if (setting.default === undefined && setting.range) {
-        // Set default to the middle of the range if unspecified
-        setting.default = Math.round((setting.range.min + setting.range.max) / 2);
+        /** The midpoint of the admissible interval, which a positive floor
+         *  narrows: the span between the sentinel and that floor holds no value
+         *  the generated schema accepts, so a midpoint taken across it would
+         *  fail the validation below. */
+        const floor = Math.max(setting.range.min, setting.range.positiveMin ?? setting.range.min);
+        setting.default = Math.round((floor + setting.range.max) / 2);
       }
     }
 
@@ -454,7 +500,7 @@ export function validateSettingDefinitions(settings: SettingsConfiguration): voi
           path: ['optionType'],
         });
       } else {
-        const zodType = conversationSchema._def.typeName;
+        const zodType = conversationSchema.def.type;
         const settingTypeEquivalent = ZodTypeToSettingType[zodType] || null;
         if (settingTypeEquivalent !== setting.type) {
           errors.push({
@@ -530,6 +576,32 @@ export function validateSettingDefinitions(settings: SettingsConfiguration): voi
       });
     }
 
+    if (
+      setting.type === SettingTypes.Number &&
+      setting.range?.positiveMin != null &&
+      setting.range.positiveMin > setting.range.max
+    ) {
+      errors.push({
+        code: ZodIssueCode.custom,
+        message: `Invalid range for setting ${setting.key}. positiveMin (${setting.range.positiveMin}) cannot exceed max (${setting.range.max}).`,
+        path: ['range'],
+      });
+    }
+
+    if (
+      setting.type === SettingTypes.Number &&
+      setting.range?.positiveMin != null &&
+      typeof setting.default === 'number' &&
+      setting.default !== setting.range.min &&
+      setting.default < setting.range.positiveMin
+    ) {
+      errors.push({
+        code: ZodIssueCode.custom,
+        message: `Invalid default value for setting ${setting.key}. Must be ${setting.range.min} or at least ${setting.range.positiveMin}.`,
+        path: ['default'],
+      });
+    }
+
     // Validate enumMappings
     if (setting.enumMappings && setting.type === SettingTypes.Enum && setting.options) {
       for (const option of setting.options) {
@@ -548,89 +620,3 @@ export function validateSettingDefinitions(settings: SettingsConfiguration): voi
     throw new ZodError(errors);
   }
 }
-
-export const generateOpenAISchema = (customOpenAI: OpenAISettings) => {
-  const defaults = { ...openAI, ...customOpenAI };
-  return tConversationSchema
-    .pick({
-      model: true,
-      chatGptLabel: true,
-      promptPrefix: true,
-      temperature: true,
-      top_p: true,
-      presence_penalty: true,
-      frequency_penalty: true,
-      resendFiles: true,
-      imageDetail: true,
-      maxContextTokens: true,
-    })
-    .transform((obj) => ({
-      ...obj,
-      model: obj.model ?? defaults.model.default,
-      chatGptLabel: obj.chatGptLabel ?? null,
-      promptPrefix: obj.promptPrefix ?? null,
-      temperature: obj.temperature ?? defaults.temperature.default,
-      top_p: obj.top_p ?? defaults.top_p.default,
-      presence_penalty: obj.presence_penalty ?? defaults.presence_penalty.default,
-      frequency_penalty: obj.frequency_penalty ?? defaults.frequency_penalty.default,
-      resendFiles:
-        typeof obj.resendFiles === 'boolean' ? obj.resendFiles : defaults.resendFiles.default,
-      imageDetail: obj.imageDetail ?? defaults.imageDetail.default,
-      maxContextTokens: obj.maxContextTokens ?? undefined,
-    }))
-    .catch(() => ({
-      model: defaults.model.default,
-      chatGptLabel: null,
-      promptPrefix: null,
-      temperature: defaults.temperature.default,
-      top_p: defaults.top_p.default,
-      presence_penalty: defaults.presence_penalty.default,
-      frequency_penalty: defaults.frequency_penalty.default,
-      resendFiles: defaults.resendFiles.default,
-      imageDetail: defaults.imageDetail.default,
-      maxContextTokens: undefined,
-    }));
-};
-
-export const generateGoogleSchema = (customGoogle: GoogleSettings) => {
-  const defaults = { ...google, ...customGoogle };
-  return tConversationSchema
-    .pick({
-      model: true,
-      modelLabel: true,
-      promptPrefix: true,
-      examples: true,
-      temperature: true,
-      maxOutputTokens: true,
-      topP: true,
-      topK: true,
-      maxContextTokens: true,
-    })
-    .transform((obj) => {
-      return {
-        ...obj,
-        model: obj.model ?? defaults.model.default,
-        modelLabel: obj.modelLabel ?? null,
-        promptPrefix: obj.promptPrefix ?? null,
-        examples: obj.examples ?? [{ input: { content: '' }, output: { content: '' } }],
-        temperature: obj.temperature ?? defaults.temperature.default,
-        maxOutputTokens:
-          obj.maxOutputTokens ??
-          defaults.maxOutputTokens.reset(obj.model ?? defaults.model.default),
-        topP: obj.topP ?? defaults.topP.default,
-        topK: obj.topK ?? defaults.topK.default,
-        maxContextTokens: obj.maxContextTokens ?? undefined,
-      };
-    })
-    .catch(() => ({
-      model: defaults.model.default,
-      modelLabel: null,
-      promptPrefix: null,
-      examples: [{ input: { content: '' }, output: { content: '' } }],
-      temperature: defaults.temperature.default,
-      maxOutputTokens: defaults.maxOutputTokens.default,
-      topP: defaults.topP.default,
-      topK: defaults.topK.default,
-      maxContextTokens: undefined,
-    }));
-};

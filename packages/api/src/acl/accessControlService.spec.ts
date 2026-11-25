@@ -1,8 +1,19 @@
 import mongoose, { Types, Model } from 'mongoose';
-import { createModels, createMethods, RoleBits } from '@librechat/data-schemas';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { ResourceType, AccessRoleIds, PrincipalType } from 'librechat-data-provider';
-import { AccessControlService } from './accessControlService';
+import { createModels, createMethods, logger, RoleBits } from '@librechat/data-schemas';
+import {
+  ResourceType,
+  AccessRoleIds,
+  PermissionBits,
+  PrincipalModel,
+  PrincipalType,
+} from 'librechat-data-provider';
+import type { IAclEntry } from '@librechat/data-schemas';
+import {
+  AccessControlService,
+  permissionErrorCode,
+  ResourcePermissionsBusyError,
+} from './accessControlService';
 
 // Mock the logger
 jest.mock('@librechat/data-schemas', () => ({
@@ -16,7 +27,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 let mongoServer: MongoMemoryServer;
-let AclEntry: Model<unknown>;
+let AclEntry: Model<IAclEntry>;
 let service: AccessControlService;
 let dbMethods: ReturnType<typeof createMethods>;
 
@@ -30,8 +41,10 @@ beforeAll(async () => {
 
   // Initialize all models
   createModels(mongoose);
+  /** Lock acquisition gives a cold index build only 2s, so finish it before the first write. */
+  await mongoose.models.ResourceLock.createIndexes();
 
-  AclEntry = mongoose.models.AclEntry;
+  AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
 
   // Create methods and seed default roles
   dbMethods = createMethods(mongoose);
@@ -50,7 +63,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(async () => {
@@ -65,6 +78,760 @@ describe('AccessControlService', () => {
   const groupId = new Types.ObjectId();
   const resourceId = new Types.ObjectId();
   const grantedById = new Types.ObjectId();
+
+  describe('bulkUpdateResourcePermissions', () => {
+    test('plans the Insights revocation per request and leaves the access removed', async () => {
+      await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.AGENT,
+        resourceId,
+        updatedPrincipals: [
+          {
+            type: PrincipalType.USER,
+            id: userId.toString(),
+            accessRoleId: AccessRoleIds.AGENT_VIEWER,
+            viewInsights: true,
+          },
+        ],
+        grantedBy: grantedById,
+      });
+
+      const revoke = () =>
+        service.bulkUpdateResourcePermissions({
+          resourceType: ResourceType.AGENT,
+          resourceId,
+          revokedPrincipals: [{ type: PrincipalType.USER, id: userId.toString() }],
+          grantedBy: grantedById,
+        });
+      const results = await Promise.all([revoke(), revoke()]);
+
+      /** Audit precedes the write: a racing request plans the revocation it read, or none if it read after the delete. */
+      const planned = results.flatMap((result) => result.insightsChanges);
+      expect(planned.length).toBeGreaterThanOrEqual(1);
+      expect(planned.every((change) => change.action === 'removed')).toBe(true);
+      await expect(
+        AclEntry.exists({
+          principalType: PrincipalType.USER,
+          principalId: userId,
+          resourceType: ResourceType.AGENT,
+          resourceId,
+          permBits: { $bitsAllSet: PermissionBits.VIEW_INSIGHTS },
+        }),
+      ).resolves.toBeNull();
+    });
+
+    test('removes duplicate ACL entries for a revoked principal', async () => {
+      await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.AGENT,
+        resourceId,
+        updatedPrincipals: [
+          {
+            type: PrincipalType.USER,
+            id: userId.toString(),
+            accessRoleId: AccessRoleIds.AGENT_VIEWER,
+            viewInsights: true,
+          },
+        ],
+        grantedBy: grantedById,
+      });
+      const entry = await AclEntry.findOne({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        resourceType: ResourceType.AGENT,
+        resourceId,
+      }).lean();
+      await AclEntry.create({ ...entry, _id: new Types.ObjectId() });
+
+      const result = await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.AGENT,
+        resourceId,
+        revokedPrincipals: [{ type: PrincipalType.USER, id: userId.toString() }],
+        grantedBy: grantedById,
+      });
+
+      expect(result.insightsChanges).toHaveLength(1);
+      await expect(
+        AclEntry.countDocuments({
+          principalType: PrincipalType.USER,
+          principalId: userId,
+          resourceType: ResourceType.AGENT,
+          resourceId,
+        }),
+      ).resolves.toBe(0);
+    });
+
+    test('removes Insights access from every duplicate ACL entry', async () => {
+      await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.AGENT,
+        resourceId,
+        updatedPrincipals: [
+          {
+            type: PrincipalType.USER,
+            id: userId.toString(),
+            accessRoleId: AccessRoleIds.AGENT_VIEWER,
+            viewInsights: true,
+          },
+        ],
+        grantedBy: grantedById,
+      });
+      const entry = await AclEntry.findOne({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        resourceType: ResourceType.AGENT,
+        resourceId,
+      }).lean();
+      await AclEntry.create({
+        ...entry,
+        _id: new Types.ObjectId(),
+        permBits: PermissionBits.VIEW,
+      });
+
+      const result = await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.AGENT,
+        resourceId,
+        updatedPrincipals: [
+          {
+            type: PrincipalType.USER,
+            id: userId.toString(),
+            accessRoleId: AccessRoleIds.AGENT_VIEWER,
+            viewInsights: false,
+          },
+        ],
+        grantedBy: grantedById,
+      });
+
+      expect(result.insightsChanges).toEqual([expect.objectContaining({ action: 'removed' })]);
+      const entries = await AclEntry.find({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        resourceType: ResourceType.AGENT,
+        resourceId,
+      }).lean();
+      expect(entries).toHaveLength(2);
+      expect(
+        entries.every((candidate) => (candidate.permBits & PermissionBits.VIEW_INSIGHTS) === 0),
+      ).toBe(true);
+    });
+
+    test('audits a revoke when any duplicate ACL entry has Insights access', async () => {
+      const viewerRole = await dbMethods.findRoleByIdentifier(AccessRoleIds.AGENT_VIEWER);
+      await AclEntry.create([
+        {
+          principalType: PrincipalType.USER,
+          principalId: userId,
+          principalModel: PrincipalModel.USER,
+          resourceType: ResourceType.AGENT,
+          resourceId,
+          permBits: PermissionBits.VIEW,
+          roleId: viewerRole?._id,
+          grantedBy: grantedById,
+          grantedAt: new Date(),
+        },
+        {
+          principalType: PrincipalType.USER,
+          principalId: userId,
+          principalModel: PrincipalModel.USER,
+          resourceType: ResourceType.AGENT,
+          resourceId,
+          permBits: PermissionBits.VIEW | PermissionBits.VIEW_INSIGHTS,
+          roleId: viewerRole?._id,
+          grantedBy: grantedById,
+          grantedAt: new Date(),
+        },
+      ]);
+
+      const result = await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.AGENT,
+        resourceId,
+        revokedPrincipals: [{ type: PrincipalType.USER, id: userId.toString() }],
+        grantedBy: grantedById,
+      });
+
+      expect(result.insightsChanges).toEqual([
+        expect.objectContaining({
+          action: 'removed',
+          previous: expect.objectContaining({
+            permBits: PermissionBits.VIEW | PermissionBits.VIEW_INSIGHTS,
+          }),
+        }),
+      ]);
+    });
+
+    test('reports every effective ACL change as plain ids and bits', async () => {
+      const principal = { type: PrincipalType.USER, id: userId.toString() };
+      const grant = (accessRoleId: AccessRoleIds) =>
+        service.bulkUpdateResourcePermissions({
+          resourceType: ResourceType.PROMPTGROUP,
+          resourceId,
+          updatedPrincipals: [{ ...principal, accessRoleId }],
+          grantedBy: grantedById,
+        });
+      const entryBits = async () =>
+        (
+          await AclEntry.findOne({
+            principalId: userId,
+            resourceType: ResourceType.PROMPTGROUP,
+            resourceId,
+          })
+        )?.permBits;
+
+      const created = await grant(AccessRoleIds.PROMPTGROUP_VIEWER);
+      expect(created.insightsChanges).toEqual([]);
+      expect(created.aclChanges).toEqual([
+        { action: 'assigned', previous: null, written: expect.any(Object), principal },
+      ]);
+      const viewerBits = await entryBits();
+
+      const updated = await grant(AccessRoleIds.PROMPTGROUP_EDITOR);
+      expect(updated.aclChanges).toEqual([
+        expect.objectContaining({
+          action: 'assigned',
+          previous: { permBits: viewerBits, roleId: expect.any(String) },
+          written: { permBits: await entryBits(), roleId: expect.any(String) },
+        }),
+      ]);
+
+      const revoked = await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        revokedPrincipals: [principal],
+        grantedBy: grantedById,
+      });
+      expect(revoked.aclChanges).toEqual([
+        expect.objectContaining({ action: 'removed', written: null }),
+      ]);
+      expect(await entryBits()).toBeUndefined();
+
+      const noop = await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        revokedPrincipals: [{ type: PrincipalType.USER, id: new Types.ObjectId().toString() }],
+        grantedBy: grantedById,
+      });
+      expect(noop.aclChanges).toEqual([]);
+    });
+
+    test('calls beforeWrite with the changes before any ACL write, and a throw leaves the ACL untouched', async () => {
+      const seen: unknown[] = [];
+      const entryCount = () =>
+        AclEntry.countDocuments({ resourceType: ResourceType.PROMPTGROUP, resourceId });
+
+      await expect(
+        service.bulkUpdateResourcePermissions({
+          resourceType: ResourceType.PROMPTGROUP,
+          resourceId,
+          updatedPrincipals: [
+            {
+              type: PrincipalType.USER,
+              id: userId.toString(),
+              accessRoleId: AccessRoleIds.PROMPTGROUP_VIEWER,
+            },
+          ],
+          grantedBy: grantedById,
+          beforeWrite: async (plan) => {
+            seen.push(plan.aclChanges.length, await entryCount());
+            throw new Error('audit unavailable');
+          },
+        }),
+      ).rejects.toThrow('audit unavailable');
+
+      expect(seen).toEqual([1, 0]);
+      expect(await entryCount()).toBe(0);
+    });
+
+    test('a revoke with nothing audited does not delete an entry that appeared after the read', async () => {
+      const viewerRole = await dbMethods.findRoleByIdentifier(AccessRoleIds.PROMPTGROUP_VIEWER);
+
+      const result = await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        revokedPrincipals: [{ type: PrincipalType.USER, id: userId.toString() }],
+        grantedBy: grantedById,
+        beforeWrite: async () => {
+          throw new Error('beforeWrite must not run for an empty plan');
+        },
+      });
+      expect(result.aclChanges).toEqual([]);
+
+      const entry = {
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        permBits: PermissionBits.VIEW,
+        roleId: viewerRole?._id,
+        grantedBy: grantedById,
+        grantedAt: new Date(),
+      };
+      const spy = jest
+        .spyOn(service['_dbMethods'], 'findEntriesByPrincipalsAndResource')
+        .mockImplementationOnce(async () => {
+          await AclEntry.create(entry);
+          return [];
+        });
+      await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        revokedPrincipals: [{ type: PrincipalType.USER, id: userId.toString() }],
+        grantedBy: grantedById,
+      });
+      spy.mockRestore();
+
+      await expect(
+        AclEntry.exists({
+          principalId: userId,
+          resourceType: ResourceType.PROMPTGROUP,
+          resourceId,
+        }),
+      ).resolves.not.toBeNull();
+    });
+
+    test('audits a revoke whose principal id differs only in case from the stored id', async () => {
+      const viewerRole = await dbMethods.findRoleByIdentifier(AccessRoleIds.PROMPTGROUP_VIEWER);
+      await AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        permBits: PermissionBits.VIEW,
+        roleId: viewerRole?._id,
+        grantedBy: grantedById,
+        grantedAt: new Date(),
+      });
+      const planned: number[] = [];
+
+      const result = await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        revokedPrincipals: [{ type: PrincipalType.USER, id: userId.toString().toUpperCase() }],
+        grantedBy: grantedById,
+        beforeWrite: async (plan) => {
+          planned.push(plan.aclChanges.length);
+        },
+      });
+
+      expect(planned).toEqual([1]);
+      expect(result.aclChanges).toEqual([expect.objectContaining({ action: 'removed' })]);
+      await expect(
+        AclEntry.exists({
+          principalId: userId,
+          resourceType: ResourceType.PROMPTGROUP,
+          resourceId,
+        }),
+      ).resolves.toBeNull();
+    });
+
+    test('an explicit public disable wins over a public update in the same request', async () => {
+      const result = await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        updatedPrincipals: [
+          { type: PrincipalType.PUBLIC, accessRoleId: AccessRoleIds.PROMPTGROUP_VIEWER },
+        ],
+        revokedPrincipals: [{ type: PrincipalType.PUBLIC }],
+        grantedBy: grantedById,
+      });
+
+      expect(result.aclChanges).toEqual([]);
+      await expect(
+        AclEntry.exists({
+          principalType: PrincipalType.PUBLIC,
+          resourceType: ResourceType.PROMPTGROUP,
+          resourceId,
+        }),
+      ).resolves.toBeNull();
+    });
+
+    test('audits duplicate ACL rows as their combined permissions and ignores Insights on non-agents', async () => {
+      const viewerRole = await dbMethods.findRoleByIdentifier(AccessRoleIds.PROMPTGROUP_VIEWER);
+      const row = (permBits: number) => ({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        permBits,
+        roleId: viewerRole?._id,
+        grantedBy: grantedById,
+        grantedAt: new Date(),
+      });
+      await AclEntry.create([
+        row(PermissionBits.VIEW | PermissionBits.VIEW_INSIGHTS),
+        row(PermissionBits.VIEW | PermissionBits.EDIT),
+      ]);
+
+      const result = await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        revokedPrincipals: [{ type: PrincipalType.USER, id: userId.toString() }],
+        grantedBy: grantedById,
+      });
+
+      expect(result.insightsChanges).toEqual([]);
+      expect(result.aclChanges).toEqual([
+        expect.objectContaining({
+          previous: expect.objectContaining({
+            permBits: PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.VIEW_INSIGHTS,
+          }),
+        }),
+      ]);
+    });
+
+    test('plans one revocation when the same principal is revoked twice', async () => {
+      const viewerRole = await dbMethods.findRoleByIdentifier(AccessRoleIds.PROMPTGROUP_VIEWER);
+      await AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        permBits: PermissionBits.VIEW,
+        roleId: viewerRole?._id,
+        grantedBy: grantedById,
+        grantedAt: new Date(),
+      });
+      const principal = { type: PrincipalType.USER, id: userId.toString() };
+
+      const result = await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        revokedPrincipals: [principal, { ...principal, id: principal.id.toUpperCase() }],
+        grantedBy: grantedById,
+      });
+
+      expect(result.aclChanges).toHaveLength(1);
+    });
+
+    test('serializes concurrent updates of one resource so each audit precedes its own write', async () => {
+      const events: string[] = [];
+      const acquire = jest.spyOn(service['_dbMethods'], 'acquireResourceLock');
+      const update = (label: string, id: Types.ObjectId, hold: number) =>
+        service
+          .bulkUpdateResourcePermissions({
+            resourceType: ResourceType.PROMPTGROUP,
+            resourceId,
+            updatedPrincipals: [
+              {
+                type: PrincipalType.USER,
+                id: id.toString(),
+                accessRoleId: AccessRoleIds.PROMPTGROUP_VIEWER,
+              },
+            ],
+            grantedBy: grantedById,
+            beforeWrite: async () => {
+              events.push(`${label}:audit`);
+              await new Promise((resolve) => setTimeout(resolve, hold));
+            },
+          })
+          .then(() => events.push(`${label}:done`));
+
+      await Promise.all([update('A', userId, 150), update('B', new Types.ObjectId(), 0)]);
+
+      const first = events[0].split(':')[0];
+      expect(events.slice(0, 2)).toEqual([`${first}:audit`, `${first}:done`]);
+      expect(events).toHaveLength(4);
+      expect(acquire.mock.calls.length).toBeGreaterThanOrEqual(2);
+      acquire.mockRestore();
+    });
+
+    test('runs afterWrite even when the post-commit prompt invalidation throws', async () => {
+      const invalidate = jest
+        .spyOn(service['_dbMethods'], 'invalidatePromptGroupAccessContext')
+        .mockRejectedValue(new Error('cache down'));
+      const afterWrite = jest.fn().mockResolvedValue(undefined);
+
+      await expect(
+        service.bulkUpdateResourcePermissions({
+          resourceType: ResourceType.PROMPTGROUP,
+          resourceId,
+          updatedPrincipals: [],
+          grantedBy: grantedById,
+          afterWrite,
+        }),
+      ).rejects.toThrow('cache down');
+
+      expect(afterWrite).toHaveBeenCalledTimes(1);
+      invalidate.mockRestore();
+    });
+
+    test('answers a retryable 503 when the lock store fails', async () => {
+      const acquire = jest
+        .spyOn(service['_dbMethods'], 'acquireResourceLock')
+        .mockRejectedValue(new Error('mongo secret detail'));
+
+      await expect(
+        service.bulkUpdateResourcePermissions({
+          resourceType: ResourceType.PROMPTGROUP,
+          resourceId,
+          updatedPrincipals: [],
+          grantedBy: grantedById,
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 503,
+        code: 'RESOURCE_PERMISSIONS_UNAVAILABLE',
+        message: expect.not.stringContaining('secret'),
+      });
+      acquire.mockRestore();
+    });
+
+    test('answers a retryable 503 without writing when lock indexes are not ready', async () => {
+      const model = mongoose.models.ResourceLock;
+      await model.init();
+      let finish!: () => void;
+      const build = jest.spyOn(model, 'createIndexes').mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+      );
+      const insert = jest.spyOn(model.collection, 'insertOne');
+      const beforeWrite = jest.fn();
+      const cold = new AccessControlService(mongoose);
+
+      try {
+        await expect(
+          cold.bulkUpdateResourcePermissions({
+            resourceType: ResourceType.PROMPTGROUP,
+            resourceId,
+            updatedPrincipals: [
+              {
+                type: PrincipalType.USER,
+                id: userId.toString(),
+                accessRoleId: AccessRoleIds.PROMPTGROUP_VIEWER,
+              },
+            ],
+            grantedBy: grantedById,
+            leaseWaitMs: 0,
+            beforeWrite,
+          }),
+        ).rejects.toMatchObject({
+          statusCode: 503,
+          code: 'RESOURCE_PERMISSIONS_UNAVAILABLE',
+        });
+        expect(build).toHaveBeenCalledTimes(1);
+        expect(insert).not.toHaveBeenCalled();
+        expect(beforeWrite).not.toHaveBeenCalled();
+        await expect(AclEntry.exists({ resourceId })).resolves.toBeNull();
+      } finally {
+        finish();
+      }
+    });
+
+    test('answers a retryable 503 when the lease renewal fails', async () => {
+      const renew = jest
+        .spyOn(service['_dbMethods'], 'renewResourceLock')
+        .mockRejectedValue(new Error('mongo secret detail'));
+
+      await expect(
+        service.bulkUpdateResourcePermissions({
+          resourceType: ResourceType.PROMPTGROUP,
+          resourceId,
+          updatedPrincipals: [],
+          grantedBy: grantedById,
+          maxWriteAttempts: 1,
+          beforeWrite: async () => undefined,
+        }),
+      ).rejects.toMatchObject({ statusCode: 503, message: expect.not.stringContaining('secret') });
+      renew.mockRestore();
+    });
+
+    test('honors the configured lease wait and TTL', async () => {
+      const key = `acl:${ResourceType.PROMPTGROUP.toLowerCase()}:${resourceId}`;
+      await service['_dbMethods'].acquireResourceLock({ key, ownerId: 'other', ttlMs: 60_000 });
+      const started = Date.now();
+
+      await expect(
+        service.bulkUpdateResourcePermissions({
+          resourceType: ResourceType.PROMPTGROUP,
+          resourceId,
+          updatedPrincipals: [],
+          grantedBy: grantedById,
+          leaseWaitMs: 0,
+        }),
+      ).rejects.toMatchObject({ code: 'RESOURCE_PERMISSIONS_BUSY' });
+      expect(Date.now() - started).toBeLessThan(1000);
+
+      await service['_dbMethods'].releaseResourceLock({ key, ownerId: 'other' });
+      const acquire = jest.spyOn(service['_dbMethods'], 'acquireResourceLock');
+      await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        updatedPrincipals: [],
+        grantedBy: grantedById,
+        leaseTtlMs: 12_345,
+      });
+      expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ ttlMs: 12_345 }));
+      acquire.mockRestore();
+    });
+
+    test('exposes the busy code for the HTTP error body only', () => {
+      expect(permissionErrorCode(new ResourcePermissionsBusyError())).toEqual({
+        code: 'RESOURCE_PERMISSIONS_BUSY',
+      });
+      expect(
+        permissionErrorCode(
+          Object.assign(new Error('x'), { code: 'PERMISSION_AUDIT_UNAVAILABLE' }),
+        ),
+      ).toEqual({
+        code: 'PERMISSION_AUDIT_UNAVAILABLE',
+      });
+      expect(
+        permissionErrorCode(Object.assign(new Error('x'), { code: 'EOTHER' })),
+      ).toBeUndefined();
+      expect(permissionErrorCode(new Error('x'))).toBeUndefined();
+    });
+
+    test('keys the lease on the canonical resource id', async () => {
+      const acquire = jest.spyOn(service['_dbMethods'], 'acquireResourceLock');
+      for (const id of [resourceId.toString(), resourceId.toString().toUpperCase()]) {
+        await service.bulkUpdateResourcePermissions({
+          resourceType: ResourceType.PROMPTGROUP,
+          resourceId: id,
+          updatedPrincipals: [],
+          grantedBy: grantedById,
+        });
+      }
+      const keys = acquire.mock.calls.map(([data]) => data.key);
+      expect(new Set(keys).size).toBe(1);
+      acquire.mockRestore();
+    });
+
+    test('refuses to write once the lease was taken over', async () => {
+      const key = `acl:${ResourceType.PROMPTGROUP.toLowerCase()}:${resourceId}`;
+      await expect(
+        service.bulkUpdateResourcePermissions({
+          resourceType: ResourceType.PROMPTGROUP,
+          resourceId,
+          updatedPrincipals: [
+            {
+              type: PrincipalType.USER,
+              id: userId.toString(),
+              accessRoleId: AccessRoleIds.PROMPTGROUP_VIEWER,
+            },
+          ],
+          grantedBy: grantedById,
+          beforeWrite: async () => {
+            await mongoose.models.ResourceLock.updateOne(
+              { key },
+              { $set: { expiresAt: new Date(Date.now() - 1) } },
+            );
+            await service['_dbMethods'].acquireResourceLock({
+              key,
+              ownerId: 'taker',
+              ttlMs: 60_000,
+            });
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'RESOURCE_PERMISSIONS_BUSY' });
+      await expect(
+        AclEntry.exists({
+          principalId: userId,
+          resourceType: ResourceType.PROMPTGROUP,
+          resourceId,
+        }),
+      ).resolves.toBeNull();
+      await service['_dbMethods'].releaseResourceLock({ key, ownerId: 'taker' });
+    });
+
+    test('reports a conflict when the resource lease cannot be taken in time', async () => {
+      const key = `acl:${ResourceType.PROMPTGROUP.toLowerCase()}:${resourceId}`;
+      await service['_dbMethods'].acquireResourceLock({ key, ownerId: 'other', ttlMs: 60_000 });
+
+      await expect(
+        service.bulkUpdateResourcePermissions({
+          resourceType: ResourceType.PROMPTGROUP,
+          resourceId,
+          updatedPrincipals: [
+            {
+              type: PrincipalType.USER,
+              id: userId.toString(),
+              accessRoleId: AccessRoleIds.PROMPTGROUP_VIEWER,
+            },
+          ],
+          grantedBy: grantedById,
+        }),
+      ).rejects.toMatchObject({ statusCode: 409, code: 'RESOURCE_PERMISSIONS_BUSY' });
+      await service['_dbMethods'].releaseResourceLock({ key, ownerId: 'other' });
+    }, 15000);
+
+    test('revoking snapshots the principal without loading the rest of the ACL', async () => {
+      const otherUserId = new Types.ObjectId();
+      const viewerRole = await dbMethods.findRoleByIdentifier(AccessRoleIds.PROMPTGROUP_VIEWER);
+      for (const principalId of [userId, otherUserId]) {
+        await AclEntry.create({
+          principalType: PrincipalType.USER,
+          principalId,
+          principalModel: PrincipalModel.USER,
+          resourceType: ResourceType.PROMPTGROUP,
+          resourceId,
+          permBits: PermissionBits.VIEW,
+          roleId: viewerRole?._id,
+          grantedBy: grantedById,
+          grantedAt: new Date(),
+        });
+      }
+
+      const result = await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        revokedPrincipals: [{ type: PrincipalType.USER, id: userId.toString() }],
+        grantedBy: grantedById,
+      });
+
+      expect(result.aclChanges).toHaveLength(1);
+      expect(result.aclChanges[0].principal.id).toBe(userId.toString());
+      await expect(
+        AclEntry.exists({ principalId: otherUserId, resourceType: ResourceType.PROMPTGROUP }),
+      ).resolves.not.toBeNull();
+    });
+
+    test('does not treat a non-agent permission bit as an Insights revocation', async () => {
+      await AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: userId,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        permBits: PermissionBits.VIEW | PermissionBits.VIEW_INSIGHTS,
+        grantedBy: grantedById,
+        grantedAt: new Date(),
+      });
+
+      const result = await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId,
+        revokedPrincipals: [{ type: PrincipalType.USER, id: userId.toString() }],
+        grantedBy: grantedById,
+      });
+
+      expect(result.insightsChanges).toEqual([]);
+      await expect(
+        AclEntry.exists({ resourceType: ResourceType.PROMPTGROUP, resourceId }),
+      ).resolves.toBeNull();
+    });
+
+    test('rejects a missing user id instead of generating an orphan ACL id', async () => {
+      const result = await service.bulkUpdateResourcePermissions({
+        resourceType: ResourceType.AGENT,
+        resourceId,
+        updatedPrincipals: [
+          {
+            type: PrincipalType.USER,
+            accessRoleId: AccessRoleIds.AGENT_VIEWER,
+          },
+        ],
+        grantedBy: grantedById,
+      });
+
+      expect(result.granted).toEqual([]);
+      expect(result.errors).toEqual([
+        expect.objectContaining({ error: 'Invalid principal ID: undefined' }),
+      ]);
+      await expect(
+        AclEntry.exists({ resourceType: ResourceType.AGENT, resourceId }),
+      ).resolves.toBeNull();
+    });
+  });
 
   describe('grantPermission', () => {
     describe('validation', () => {
@@ -688,6 +1455,25 @@ describe('AccessControlService', () => {
         });
 
         expect(mockGetUserPrincipals).toHaveBeenCalledWith({ userId, role: 'admin' });
+      });
+
+      test('logs principal resolution failures before propagating them', async () => {
+        const error = new Error('principal lookup unavailable');
+        mockGetUserPrincipals.mockRejectedValue(error);
+
+        await expect(
+          service.getResourcePermissionsMap({
+            userId,
+            role: 'user',
+            resourceType: ResourceType.AGENT,
+            resourceIds: [resource1],
+          }),
+        ).rejects.toBe(error);
+
+        expect(logger.error).toHaveBeenCalledWith(
+          expect.stringContaining('Error resolving principals: principal lookup unavailable'),
+          error,
+        );
       });
     });
   });

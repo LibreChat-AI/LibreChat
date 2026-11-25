@@ -25,4 +25,33 @@ describe('Collapse', () => {
     expect(root).toHaveClass('grid-rows-[0fr]');
     expect(root).toHaveAttribute('aria-hidden', 'true');
   });
+
+  test('clips content while open by default', () => {
+    const { container } = render(
+      <Collapse open={true}>
+        <span data-testid="child" />
+      </Collapse>,
+    );
+    const clipWrapper = (container.firstChild as HTMLElement).firstElementChild as HTMLElement;
+    expect(clipWrapper).toHaveClass('overflow-hidden');
+  });
+
+  test('lifts the clip while open for popover-hosting content, restoring it when closed', () => {
+    const { container, rerender } = render(
+      <Collapse open={true} overflowVisibleWhenOpen>
+        <span data-testid="child" />
+      </Collapse>,
+    );
+    const clipWrapper = (container.firstChild as HTMLElement).firstElementChild as HTMLElement;
+    expect(clipWrapper).toHaveClass('overflow-visible');
+    expect(clipWrapper).not.toHaveClass('overflow-hidden');
+
+    rerender(
+      <Collapse open={false} overflowVisibleWhenOpen>
+        <span data-testid="child" />
+      </Collapse>,
+    );
+    expect(clipWrapper).toHaveClass('overflow-hidden');
+    expect(clipWrapper).not.toHaveClass('overflow-visible');
+  });
 });

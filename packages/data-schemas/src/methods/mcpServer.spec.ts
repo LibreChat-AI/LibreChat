@@ -1,9 +1,23 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import {
+  PrincipalType,
+  PrincipalModel,
+  ResourceType,
+  PermissionBits,
+} from 'librechat-data-provider';
 import type { MCPOptions } from 'librechat-data-provider';
 import type * as t from '~/types';
+import { applyTenantIsolation } from '~/models/plugins/tenantIsolation';
+import { migrateTenantIndexes } from '~/migrations/tenantIndexes';
+import { tenantStorage } from '~/config/tenantContext';
+import { createMCPNameModel } from '../models/mcpName';
 import { createMCPServerMethods } from './mcpServer';
+import { createAclEntryMethods } from './aclEntry';
 import mcpServerSchema from '~/schema/mcpServer';
+import aclEntrySchema from '~/schema/aclEntry';
+import groupSchema from '~/schema/group';
+import userSchema from '~/schema/user';
 
 let mongoServer: MongoMemoryServer;
 let MCPServer: mongoose.Model<t.MCPServerDocument>;
@@ -12,18 +26,32 @@ let methods: ReturnType<typeof createMCPServerMethods>;
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
   const mongoUri = mongoServer.getUri();
+  createMCPNameModel(mongoose);
+  applyTenantIsolation(mcpServerSchema);
   MCPServer = mongoose.models.MCPServer || mongoose.model('MCPServer', mcpServerSchema);
-  methods = createMCPServerMethods(mongoose);
+  if (!mongoose.models.AclEntry) {
+    mongoose.model('AclEntry', aclEntrySchema);
+  }
+  if (!mongoose.models.Group) {
+    mongoose.model('Group', groupSchema);
+  }
+  if (!mongoose.models.User) {
+    mongoose.model('User', userSchema);
+  }
+  methods = createMCPServerMethods(mongoose, {
+    getSoleOwnedResourceIds: createAclEntryMethods(mongoose).getSoleOwnedResourceIds,
+  });
   await mongoose.connect(mongoUri);
 });
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(async () => {
   await mongoose.connection.dropDatabase();
+  await mongoose.models.MCPName.syncIndexes();
 });
 
 describe('MCPServer Model Tests', () => {
@@ -332,69 +360,6 @@ describe('MCPServer Model Tests', () => {
     });
   });
 
-  describe('findMCPServersByAuthor', () => {
-    test('should find all servers by author', async () => {
-      await methods.createMCPServer({
-        config: createSSEConfig('Author Server 1'),
-        author: authorId,
-      });
-      await methods.createMCPServer({
-        config: createSSEConfig('Author Server 2'),
-        author: authorId,
-      });
-      await methods.createMCPServer({
-        config: createSSEConfig('Other Author Server'),
-        author: authorId2,
-      });
-
-      const servers = await methods.findMCPServersByAuthor(authorId);
-
-      expect(servers).toHaveLength(2);
-      expect(servers.every((s) => s.author.toString() === authorId.toString())).toBe(true);
-    });
-
-    test('should return empty array when author has no servers', async () => {
-      const servers = await methods.findMCPServersByAuthor(new mongoose.Types.ObjectId());
-
-      expect(servers).toEqual([]);
-    });
-
-    test('should sort by updatedAt descending', async () => {
-      // Create servers with slight delay to ensure different timestamps
-      const server1 = await methods.createMCPServer({
-        config: createSSEConfig('First Created'),
-        author: authorId,
-      });
-
-      // Update first server to make it most recently updated
-      await MCPServer.findByIdAndUpdate(server1._id, {
-        $set: { 'config.description': 'Updated' },
-      });
-
-      await methods.createMCPServer({
-        config: createSSEConfig('Second Created'),
-        author: authorId,
-      });
-
-      const servers = await methods.findMCPServersByAuthor(authorId);
-
-      expect(servers).toHaveLength(2);
-      // Most recently updated should come first
-      expect(servers[0].serverName).toBe('second-created');
-    });
-
-    test('should handle string author ID', async () => {
-      await methods.createMCPServer({
-        config: createSSEConfig('String Author Server'),
-        author: authorId,
-      });
-
-      const servers = await methods.findMCPServersByAuthor(authorId.toString());
-
-      expect(servers).toHaveLength(1);
-    });
-  });
-
   describe('getListMCPServersByIds', () => {
     let server1: t.MCPServerDocument;
     let server2: t.MCPServerDocument;
@@ -674,6 +639,71 @@ describe('MCPServer Model Tests', () => {
     });
   });
 
+  describe('deleteMCPServersWithAcl', () => {
+    test('keeps the owner ACL until the server is gone so a failed delete can be retried', async () => {
+      const ownerId = new mongoose.Types.ObjectId();
+      const created = await methods.createMCPServer({
+        config: createSSEConfig('Erase Retry'),
+        author: authorId,
+      });
+      await mongoose.model('AclEntry').create({
+        principalType: PrincipalType.USER,
+        principalId: ownerId,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.MCPSERVER,
+        resourceId: created._id,
+        permBits:
+          PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE,
+        grantedBy: ownerId,
+      });
+
+      const failure = jest
+        .spyOn(MCPServer, 'deleteMany')
+        .mockRejectedValueOnce(new Error('transient outage'));
+      await expect(methods.deleteMCPServersWithAcl([created._id.toString()])).rejects.toThrow(
+        'transient outage',
+      );
+      failure.mockRestore();
+
+      const found = await methods.findUserErasableMCPServers(ownerId.toString());
+      expect(found.map((s) => s.id)).toEqual([created._id.toString()]);
+
+      await methods.deleteMCPServersWithAcl(found.map((s) => s.id));
+      expect(await methods.findMCPServerByServerName(created.serverName)).toBeNull();
+      expect(await methods.findUserErasableMCPServers(ownerId.toString())).toEqual([]);
+    });
+  });
+
+  describe('findMCPServerViewerUserIds', () => {
+    test('expands direct and group viewers to user ids, external members by source id', async () => {
+      const directId = new mongoose.Types.ObjectId();
+      const localMemberId = new mongoose.Types.ObjectId();
+      const externalMemberId = new mongoose.Types.ObjectId();
+      const groupId = new mongoose.Types.ObjectId();
+      await mongoose.model('User').collection.insertMany([
+        { _id: localMemberId, email: 'local@example.com' },
+        { _id: externalMemberId, email: 'external@example.com', idOnTheSource: 'entra-7' },
+      ]);
+      await mongoose.model('Group').collection.insertOne({
+        _id: groupId,
+        name: 'Viewers',
+        source: 'local',
+        memberIds: [localMemberId.toString(), 'entra-7', 'entra-unknown'],
+      });
+
+      const userIds = await methods.findMCPServerViewerUserIds([
+        { principalType: PrincipalType.USER, principalId: directId },
+        { principalType: PrincipalType.GROUP, principalId: groupId.toString() },
+        { principalType: PrincipalType.ROLE, principalId: 'USER' },
+        { principalType: PrincipalType.PUBLIC },
+      ]);
+
+      expect(userIds.sort()).toEqual(
+        [directId, localMemberId, externalMemberId].map(String).sort(),
+      );
+    });
+  });
+
   describe('getListMCPServersByNames', () => {
     test('should return empty data for empty names array', async () => {
       const result = await methods.getListMCPServersByNames({ names: [] });
@@ -854,5 +884,64 @@ describe('MCPServer Model Tests', () => {
       // Whitespace-only title after trimming results in fallback
       expect(server.serverName).toBe('mcp-server');
     });
+  });
+});
+
+test.each(['single', 'bulk'])(
+  'deleted server names remain reserved after %s deletion',
+  async (mode) => {
+    const author = new mongoose.Types.ObjectId();
+    const config: MCPOptions = { title: 'Reserved', type: 'sse', url: 'https://example.test/mcp' };
+    const first = await methods.createMCPServer({ author, config });
+    if (mode === 'single') await methods.deleteMCPServer(first.serverName);
+    else await methods.deleteMCPServersWithAcl([first._id.toString()]);
+    const next = await methods.createMCPServer({ author, config });
+    expect(next.serverName).not.toBe(first.serverName);
+  },
+);
+
+describe('tenant-scoped durable name reservations', () => {
+  const config: MCPOptions = { type: 'sse', url: 'https://example.com/mcp', title: 'Shared' };
+  const author = new mongoose.Types.ObjectId();
+  const run = <T>(tenantId: string, fn: () => Promise<T>) => tenantStorage.run({ tenantId }, fn);
+
+  it('persists tenant identity and permits the same title in two tenants', async () => {
+    const a = await run('a', async () => methods.createMCPServer({ config, author }));
+    const b = await run('b', async () => methods.createMCPServer({ config, author }));
+    expect(a.serverName).toBe(b.serverName);
+    expect(await mongoose.models.MCPName.collection.distinct('tenantId')).toEqual(
+      expect.arrayContaining(['a', 'b']),
+    );
+  });
+
+  it('retains names after single and bulk deletion without touching another tenant', async () => {
+    const a = await run('a', async () => methods.createMCPServer({ config, author }));
+    const b = await run('b', async () => methods.createMCPServer({ config, author }));
+    await run('a', async () => methods.deleteMCPServer(a.serverName));
+    expect(await run('a', async () => methods.createMCPServer({ config, author }))).toMatchObject({
+      serverName: 'shared-2',
+    });
+    expect(await run('a', async () => methods.deleteMCPServersWithAcl([String(b._id)]))).toBe(0);
+    expect(await run('b', async () => methods.deleteMCPServersWithAcl([String(b._id)]))).toBe(1);
+    expect(await run('b', async () => methods.createMCPServer({ config, author }))).toMatchObject({
+      serverName: 'shared-2',
+    });
+  });
+
+  it('migrates the global index while preserving unattributable retired names', async () => {
+    const collection = mongoose.models.MCPName.collection;
+    await collection.dropIndex('name_1_tenantId_1');
+    await collection.createIndex({ name: 1 }, { unique: true });
+    await collection.insertOne({ name: 'shared' });
+    const result = await migrateTenantIndexes(mongoose.connection);
+    expect(result.errors).toEqual([]);
+    expect(result.dropped).toContain('mcpnames.name_1');
+    for (const tenantId of ['a', 'b']) {
+      expect(
+        await run(tenantId, async () => methods.createMCPServer({ config, author })),
+      ).toMatchObject({ serverName: 'shared-2' });
+    }
+    expect(await collection.findOne({ name: 'shared' })).not.toHaveProperty('tenantId');
+    expect((await migrateTenantIndexes(mongoose.connection)).errors).toEqual([]);
   });
 });

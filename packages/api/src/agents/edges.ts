@@ -139,6 +139,67 @@ export function filterOrphanedEdges(edges: GraphEdge[], skippedAgentIds: Set<str
   return result;
 }
 
+/** Applies the runtime graph's post-filter reachability rules to loaded agents and edges. */
+export function resolveReachableGraph(
+  explicitSeeds: Iterable<string>,
+  agentIds: Iterable<string>,
+  preFilterEdges: GraphEdge[],
+  skippedAgentIds: Set<string>,
+): { reachable: Set<string>; edges: GraphEdge[] } {
+  const filteredEdges = filterOrphanedEdges(preFilterEdges, skippedAgentIds);
+  const anyReachable = (value: string | string[], reachableSet: Set<string>): boolean =>
+    (Array.isArray(value) ? value : [value]).some(
+      (id) => typeof id === 'string' && reachableSet.has(id),
+    );
+  const allReachable = (value: string | string[], reachableSet: Set<string>): boolean =>
+    (Array.isArray(value) ? value : [value]).every(
+      (id) => typeof id !== 'string' || reachableSet.has(id),
+    );
+
+  const hadIncomingEdgePreFilter = new Set<string>();
+  for (const edge of preFilterEdges) {
+    for (const dest of Array.isArray(edge.to) ? edge.to : [edge.to]) {
+      if (typeof dest === 'string') hadIncomingEdgePreFilter.add(dest);
+    }
+  }
+
+  const seeds = new Set(explicitSeeds);
+  for (const agentId of agentIds) {
+    if (!hadIncomingEdgePreFilter.has(agentId)) seeds.add(agentId);
+  }
+
+  const reachable = new Set(seeds);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const edge of filteredEdges) {
+      if (!anyReachable(edge.from, reachable)) continue;
+      for (const dest of Array.isArray(edge.to) ? edge.to : [edge.to]) {
+        if (typeof dest === 'string' && !reachable.has(dest)) {
+          reachable.add(dest);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  const edges: GraphEdge[] = [];
+  for (const edge of filteredEdges) {
+    if (!anyReachable(edge.from, reachable) || !allReachable(edge.to, reachable)) continue;
+    if (!Array.isArray(edge.from)) {
+      edges.push(edge);
+      continue;
+    }
+    const reachableSources = edge.from.filter(
+      (source) => typeof source !== 'string' || reachable.has(source),
+    );
+    edges.push(
+      reachableSources.length === edge.from.length ? edge : { ...edge, from: reachableSources },
+    );
+  }
+  return { reachable, edges };
+}
+
 /** Collects all unique agent IDs referenced across an array of edges. */
 export function collectEdgeAgentIds(edges: GraphEdge[] | undefined): Set<string> {
   const ids = new Set<string>();

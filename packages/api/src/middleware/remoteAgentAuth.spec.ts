@@ -224,10 +224,11 @@ function makeFindUser(...users: IUser[]): jest.MockedFunction<UserMethods['findU
 function makeDeps(appConfig: AppConfig = makeConfig()) {
   return {
     findUser: makeFindUser(makeUser()),
-    updateUser: jest.fn(),
+    updateUser: jest.fn().mockResolvedValue({ _id: 'uid123' }),
     getRolesByNames: jest.fn(async (roleNames: string[]) =>
       roleNames.map((roleName) => ({ name: roleName })),
     ),
+    isPrincipalActive: jest.fn().mockResolvedValue(true),
     getAppConfig: jest.fn().mockResolvedValue(appConfig),
     apiKeyMiddleware: jest.fn((_req: unknown, _res: unknown, next: () => void) => next()),
   };
@@ -483,6 +484,24 @@ describe('createRemoteAgentAuth', () => {
       );
       expect(mockNext).toHaveBeenCalledWith();
       expect(deps.apiKeyMiddleware).not.toHaveBeenCalled();
+    });
+
+    it('rejects an OIDC principal while account deletion is fenced', async () => {
+      setupOidcMocks({ sub: 'sub123', email: 'agent@test.com', exp: 9999999999 });
+      const deps = makeDeps();
+      deps.isPrincipalActive.mockResolvedValue(false);
+      const req = makeReq({ authorization: `Bearer ${FAKE_TOKEN}` });
+      const { res, status, json } = makeRes();
+
+      await createRemoteAgentAuth(asDeps(deps))(req as Request, res, mockNext);
+
+      expect(status).toHaveBeenCalledWith(409);
+      expect(json).toHaveBeenCalledWith({
+        error: 'Account deletion is in progress',
+        code: 'ACCOUNT_DELETION_IN_PROGRESS',
+      });
+      expect(deps.updateUser).not.toHaveBeenCalled();
+      expect(mockNext).not.toHaveBeenCalled();
     });
 
     it('restores tenant context from the OIDC user before continuing', async () => {
@@ -741,34 +760,23 @@ describe('createRemoteAgentAuth', () => {
       );
     });
 
-    it('tries signing keys until a token without kid verifies', async () => {
+    it('rejects a token without kid before querying JWKS', async () => {
       const payload = { sub: 'sub123', email: 'agent@test.com' };
       setupOidcMocks(payload, null);
-      mockGetSigningKeys.mockResolvedValue([
-        { kid: 'first-kid', getPublicKey: () => 'first-public-key' },
-        { kid: 'second-kid', getPublicKey: () => 'second-public-key' },
-      ]);
-      (jwt.verify as jest.Mock).mockImplementation(
-        (_t: string, key: string, _o: VerifyOptions, cb: JwtVerifyCallback) => {
-          if (key === 'first-public-key') {
-            cb(new Error('invalid signature'));
-            return;
-          }
-          cb(null, payload);
-        },
+      const deps = makeDeps(makeConfig({}, { enabled: false }));
+      const { res, status } = makeRes();
+
+      await createRemoteAgentAuth(asDeps(deps))(
+        makeReq({ authorization: `Bearer ${FAKE_TOKEN}` }) as Request,
+        res,
+        mockNext,
       );
 
-      const deps = makeDeps();
-      const req = makeReq({ authorization: `Bearer ${FAKE_TOKEN}` });
-
-      await createRemoteAgentAuth(asDeps(deps))(req as Request, makeRes().res, mockNext);
-
+      expect(status).toHaveBeenCalledWith(401);
+      expect(jwksRsa).not.toHaveBeenCalled();
       expect(mockGetSigningKey).not.toHaveBeenCalled();
-      expect(jwt.verify).toHaveBeenCalledTimes(2);
-      expect((jwt.verify as jest.Mock).mock.calls[0][1]).toBe('first-public-key');
-      expect((jwt.verify as jest.Mock).mock.calls[1][1]).toBe('second-public-key');
-      expect(req.user).toMatchObject({ id: 'uid123', email: 'agent@test.com' });
-      expect(mockNext).toHaveBeenCalledWith();
+      expect(jwt.verify).not.toHaveBeenCalled();
+      expect(mockNext).not.toHaveBeenCalled();
     });
 
     it('attaches federatedTokens with access_token and expires_at', async () => {
@@ -1251,14 +1259,18 @@ describe('createRemoteAgentAuth', () => {
       );
     });
 
-    it('honors disabled JWKS caching', async () => {
+    it('retains a short signing-key safety cache when global JWKS caching is disabled', async () => {
       process.env.OPENID_JWKS_URL_CACHE_ENABLED = 'false';
       const deps = makeDeps(
         makeConfig({
-          jwksUri: 'https://cache-disabled.example.com/jwks',
+          jwksUri: undefined,
           issuer: 'https://issuer-cache-disabled.example.com',
         }),
       );
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ jwks_uri: 'https://cache-disabled.example.com/jwks' }),
+      });
 
       await createRemoteAgentAuth(asDeps(deps))(
         makeReq({ authorization: `Bearer ${FAKE_TOKEN}` }) as Request,
@@ -1272,7 +1284,16 @@ describe('createRemoteAgentAuth', () => {
         mockNext,
       );
 
-      expect(jwksRsa).toHaveBeenCalledTimes(2);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(jwksRsa).toHaveBeenCalledTimes(1);
+      expect(jwksRsa).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cache: true,
+          cacheMaxAge: 60000,
+          rateLimit: true,
+          jwksRequestsPerMinute: 10,
+        }),
+      );
     });
 
     it('evicts the oldest JWKS client entry when the cache exceeds its limit', async () => {
@@ -1328,7 +1349,7 @@ describe('createRemoteAgentAuth', () => {
           await runRequest(`expired-${i}`);
         }
 
-        nowSpy.mockReturnValue(2000);
+        nowSpy.mockReturnValue(61000);
         mockMath.mockReturnValue(60000);
         await runRequest('new');
 
@@ -1592,8 +1613,124 @@ describe('createRemoteAgentAuth', () => {
       const req = makeReq({ authorization: `Bearer ${FAKE_TOKEN}` });
       await createRemoteAgentAuth(asDeps(deps))(req as Request, makeRes().res, mockNext);
 
-      expect(deps.updateUser).toHaveBeenCalledWith('uid123', { role: 'STANDARD-USER' });
+      expect(deps.updateUser).toHaveBeenCalledWith(
+        'uid123',
+        { role: 'STANDARD-USER' },
+        { role: 'user' },
+      );
       expect(req.user).toMatchObject({ role: 'STANDARD-USER' });
+      expect(mockNext).toHaveBeenCalled();
+    });
+
+    it('records a user.role_changed audit entry after persisting a synced role', async () => {
+      enableApiRoleSync();
+      setupOidcMocks({ sub: 'sub123', email: 'agent@test.com', roles: ['STANDARD-USER'] });
+
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const deps = { ...makeDeps(), recordAuditEntry };
+      await createRemoteAgentAuth(asDeps(deps))(
+        makeReq({ authorization: `Bearer ${FAKE_TOKEN}` }) as Request,
+        makeRes().res,
+        mockNext,
+      );
+
+      expect(deps.updateUser).toHaveBeenCalledWith(
+        'uid123',
+        { role: 'STANDARD-USER' },
+        { role: 'user' },
+      );
+      expect(recordAuditEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'user.role_changed',
+          actor: expect.objectContaining({ type: 'system' }),
+          target: { type: 'user', id: 'uid123' },
+          metadata: expect.objectContaining({
+            role: 'STANDARD-USER',
+            source: 'remote_agent_oidc',
+          }),
+        }),
+      );
+      expect(mockNext).toHaveBeenCalled();
+    });
+
+    it('does not record an audit entry when the user is gone before the synced role is written', async () => {
+      enableApiRoleSync();
+      setupOidcMocks({ sub: 'sub123', email: 'agent@test.com', roles: ['STANDARD-USER'] });
+
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const base = makeDeps();
+      const findUser = jest.fn(async (query: Parameters<UserMethods['findUser']>[0]) =>
+        '_id' in query ? null : base.findUser(query),
+      );
+      const deps = {
+        ...base,
+        findUser,
+        updateUser: jest.fn().mockResolvedValue(null),
+        recordAuditEntry,
+      };
+      await createRemoteAgentAuth(asDeps(deps))(
+        makeReq({ authorization: `Bearer ${FAKE_TOKEN}` }) as Request,
+        makeRes().res,
+        mockNext,
+      );
+
+      expect(deps.updateUser).toHaveBeenCalledTimes(1);
+      expect(findUser).toHaveBeenCalledWith({ _id: 'uid123' }, 'role');
+      expect(recordAuditEntry).not.toHaveBeenCalled();
+    });
+
+    it('does not audit a synced role a concurrent request already wrote', async () => {
+      enableApiRoleSync();
+      setupOidcMocks({ sub: 'sub123', email: 'agent@test.com', roles: ['STANDARD-USER'] });
+
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const base = makeDeps();
+      const stored = makeUser({ role: 'STANDARD-USER' });
+      const findUser = jest.fn(async (query: Parameters<UserMethods['findUser']>[0]) =>
+        '_id' in query ? stored : base.findUser(query),
+      );
+      const updateUser = jest.fn(
+        async (_id: string, update: Partial<IUser>, expected?: { role?: string | null }) =>
+          expected?.role === stored.role ? { ...stored, ...update } : null,
+      );
+      const deps = { ...base, findUser, updateUser, recordAuditEntry };
+      const req = makeReq({ authorization: `Bearer ${FAKE_TOKEN}` });
+      await createRemoteAgentAuth(asDeps(deps))(req as Request, makeRes().res, mockNext);
+
+      expect(updateUser).toHaveBeenNthCalledWith(
+        1,
+        'uid123',
+        { role: 'STANDARD-USER' },
+        { role: 'user' },
+      );
+      expect(updateUser).toHaveBeenNthCalledWith(
+        2,
+        'uid123',
+        { role: 'STANDARD-USER' },
+        { role: 'STANDARD-USER' },
+      );
+      expect(recordAuditEntry).not.toHaveBeenCalled();
+      expect(req.user).toMatchObject({ role: 'STANDARD-USER' });
+      expect(mockNext).toHaveBeenCalled();
+    });
+
+    it('does not record an audit entry when role sync keeps the current role', async () => {
+      enableApiRoleSync();
+      setupOidcMocks({ sub: 'sub123', email: 'agent@test.com', roles: ['STANDARD-USER'] });
+
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const deps = {
+        ...makeDeps(),
+        findUser: makeFindUser(makeUser({ role: 'STANDARD-USER' })),
+        recordAuditEntry,
+      };
+      await createRemoteAgentAuth(asDeps(deps))(
+        makeReq({ authorization: `Bearer ${FAKE_TOKEN}` }) as Request,
+        makeRes().res,
+        mockNext,
+      );
+
+      expect(recordAuditEntry).not.toHaveBeenCalled();
       expect(mockNext).toHaveBeenCalled();
     });
 
@@ -1609,7 +1746,7 @@ describe('createRemoteAgentAuth', () => {
       const req = makeReq({ authorization: `Bearer ${FAKE_TOKEN}` });
       await createRemoteAgentAuth(asDeps(deps))(req as Request, makeRes().res, mockNext);
 
-      expect(deps.updateUser).toHaveBeenCalledWith('uid123', { role: 'USER' });
+      expect(deps.updateUser).toHaveBeenCalledWith('uid123', { role: 'USER' }, { role: 'user' });
       expect(req.user).toMatchObject({ role: 'USER' });
     });
 
@@ -1625,7 +1762,7 @@ describe('createRemoteAgentAuth', () => {
       const req = makeReq({ authorization: `Bearer ${FAKE_TOKEN}` });
       await createRemoteAgentAuth(asDeps(deps))(req as Request, makeRes().res, mockNext);
 
-      expect(deps.updateUser).toHaveBeenCalledWith('uid123', { role: 'USER' });
+      expect(deps.updateUser).toHaveBeenCalledWith('uid123', { role: 'USER' }, { role: 'user' });
       expect(req.user).toMatchObject({ role: 'USER' });
     });
 
@@ -1660,7 +1797,7 @@ describe('createRemoteAgentAuth', () => {
       expect(req.user).toMatchObject({ role: 'user' });
     });
 
-    it('does not apply fallback when API group overage is unresolved', async () => {
+    it('applies fallback when API group overage cannot be resolved', async () => {
       enableApiRoleSync({ OPENID_ROLE_SYNC_CLAIM: 'groups' });
       setupOidcMocks({
         sub: 'sub123',
@@ -1669,11 +1806,16 @@ describe('createRemoteAgentAuth', () => {
       });
 
       const deps = makeDeps();
+      deps.findUser = makeFindUser(makeUser({ role: 'STANDARD-USER' }));
       const req = makeReq({ authorization: `Bearer ${FAKE_TOKEN}` });
       await createRemoteAgentAuth(asDeps(deps))(req as Request, makeRes().res, mockNext);
 
-      expect(deps.updateUser).not.toHaveBeenCalled();
-      expect(req.user).toMatchObject({ role: 'user' });
+      expect(deps.updateUser).toHaveBeenCalledWith(
+        'uid123',
+        { role: 'USER' },
+        { role: 'STANDARD-USER' },
+      );
+      expect(req.user).toMatchObject({ role: 'USER' });
     });
 
     it('runs role lookup and persistence in the resolved user tenant context', async () => {
@@ -1695,7 +1837,11 @@ describe('createRemoteAgentAuth', () => {
         ['STANDARD-USER', 'BASIC-USER', 'USER'],
         'name',
       );
-      expect(deps.updateUser).toHaveBeenCalledWith('uid123', { role: 'BASIC-USER' });
+      expect(deps.updateUser).toHaveBeenCalledWith(
+        'uid123',
+        { role: 'BASIC-USER' },
+        { role: 'user' },
+      );
       expect(req.user).toMatchObject({ tenantId: 'tenant-role-sync', role: 'BASIC-USER' });
     });
 

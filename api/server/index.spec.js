@@ -1,5 +1,7 @@
 const fs = require('fs');
 const path = require('path');
+const { promisify } = require('util');
+const express = require('express');
 const request = require('supertest');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const mongoose = require('mongoose');
@@ -39,6 +41,10 @@ jest.mock('~/server/services/Agents/triggers', () => ({
   initializeAgentTriggerService: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('~/server/services/Events/reconcile', () => ({
+  initialize: jest.fn(),
+  stop: jest.fn().mockResolvedValue(undefined),
+}));
 jest.mock('~/server/services/Schedules', () => ({
   initializeScheduleEngine: jest.fn().mockResolvedValue(undefined),
 }));
@@ -100,7 +106,9 @@ describe('Telemetry wiring', () => {
     const ingressIndex = source.indexOf(
       "app.use('/api/agents/chat', agentStartupIngressMiddleware);",
     );
-    const jsonParserIndex = source.indexOf("app.use(express.json({ limit: '3mb' }));");
+    const jsonParserIndex = source.indexOf(
+      "app.use(excludeRumBodyParser(express.json({ limit: '3mb' })));",
+    );
     const recorderIndex = source.indexOf(
       "app.use('/api/agents/chat', agentStartupTelemetryMiddleware);",
     );
@@ -109,6 +117,7 @@ describe('Telemetry wiring', () => {
 
     expect(ingressIndex).toBeGreaterThan(-1);
     expect(recorderIndex).toBeGreaterThan(-1);
+    expect(jsonParserIndex).toBeGreaterThan(-1);
     expect(ingressIndex).toBeLessThan(jsonParserIndex);
     expect(tracingIndex).toBeLessThan(recorderIndex);
     expect(recorderIndex).toBeLessThan(agentsRouteIndex);
@@ -117,6 +126,55 @@ describe('Telemetry wiring', () => {
 
 describe('Startup readiness wiring', () => {
   const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+
+  it('starts code-environment lifecycle reconciliation only after Mongo connects', () => {
+    const connectIndex = source.indexOf('await connectDb();');
+    const reconcileIndex = source.indexOf(
+      'startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });',
+    );
+    const listenIndex = source.indexOf('const server = app.listen');
+
+    expect(connectIndex).toBeGreaterThan(-1);
+    expect(reconcileIndex).toBeGreaterThan(connectIndex);
+    expect(listenIndex).toBeGreaterThan(reconcileIndex);
+    expect(
+      source.match(/startCodeEnvironmentLifecycleReconciler\(\{ mongoose, idleCeilingMs \}\);/g),
+    ).toHaveLength(1);
+  });
+
+  it('reads the deployment-wide idle ceiling from the base config before it starts an idle loop', () => {
+    const configIndex = source.indexOf('const appConfig = await getAppConfig({ baseOnly: true });');
+    const ceilingIndex = source.indexOf(
+      'const idleCeilingMs = appConfig?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs;',
+    );
+    const reconcileIndex = source.indexOf(
+      'startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });',
+    );
+    const triggerStart = source.indexOf('await initializeAgentTriggerService({');
+
+    expect(configIndex).toBeGreaterThan(-1);
+    expect(ceilingIndex).toBeGreaterThan(configIndex);
+    expect(reconcileIndex).toBeGreaterThan(ceilingIndex);
+    expect(source.slice(triggerStart, source.indexOf('});', triggerStart))).toContain(
+      'idleCeilingMs,',
+    );
+    expect(source).toContain('await initializeScheduleEngine({ idleCeilingMs })');
+  });
+
+  it('configures social logins with the app config loaded at startup in both server entries', () => {
+    const experimental = fs.readFileSync(path.join(__dirname, 'experimental.js'), 'utf8');
+
+    for (const [name, contents] of [
+      ['index.js', source],
+      ['experimental.js', experimental],
+    ]) {
+      const appConfigIndex = contents.indexOf('const appConfig = await getAppConfig(');
+      const socialLoginsIndex = contents.indexOf('await configureSocialLogins(app, appConfig);');
+
+      expect([name, appConfigIndex > -1]).toEqual([name, true]);
+      expect([name, socialLoginsIndex > appConfigIndex]).toEqual([name, true]);
+    }
+  });
 
   it('awaits the shared Redis client before startup cache access', () => {
     const redisReadyIndex = source.indexOf('await waitForKeyvRedisClient();');
@@ -141,7 +199,9 @@ describe('Startup readiness wiring', () => {
   });
 
   it('configures subagent task routing before the server accepts requests', () => {
-    const routingIndex = source.indexOf('await configureSubagentTaskRouting();');
+    const routingIndex = source.indexOf(
+      'await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);',
+    );
     const listenIndex = source.indexOf('const server = app.listen');
 
     expect(routingIndex).toBeGreaterThan(-1);
@@ -158,6 +218,17 @@ describe('Startup readiness wiring', () => {
     expect(shutdownRegistrationIndex).toBeLessThan(listenIndex);
   });
 
+  it('registers background task draining with the graceful shutdown coordinator', () => {
+    const registrationIndex = source.indexOf('registerBackgroundTaskShutdown({');
+    const listenIndex = source.indexOf('const server = app.listen');
+
+    expect(registrationIndex).toBeGreaterThan(-1);
+    expect(registrationIndex).toBeLessThan(listenIndex);
+    expect(source).toContain(
+      'interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs',
+    );
+  });
+
   it('configures HTTP timeouts before graceful shutdown handling', () => {
     const listenIndex = source.indexOf('const server = app.listen');
     const timeoutConfigIndex = source.indexOf('configureServerTimeouts(server);');
@@ -168,6 +239,22 @@ describe('Startup readiness wiring', () => {
     expect(shutdownIndex).toBeGreaterThan(-1);
     expect(listenIndex).toBeLessThan(timeoutConfigIndex);
     expect(timeoutConfigIndex).toBeLessThan(shutdownIndex);
+  });
+
+  it('registers security headers ahead of the health endpoints in both server entries', () => {
+    const experimental = fs.readFileSync(path.join(__dirname, 'experimental.js'), 'utf8');
+
+    for (const [name, contents] of [
+      ['index.js', source],
+      ['experimental.js', experimental],
+    ]) {
+      const headersIndex = contents.indexOf('const securityHeaders = createSecurityHeaders();');
+      const healthIndex = contents.indexOf("app.get('/health'");
+
+      expect([name, headersIndex > -1]).toEqual([name, true]);
+      expect([name, healthIndex > -1]).toEqual([name, true]);
+      expect([name, headersIndex < healthIndex]).toEqual([name, true]);
+    }
   });
 
   it('mounts the chat-start readiness gate before agent routes', () => {
@@ -190,12 +277,16 @@ describe('Startup readiness wiring', () => {
   });
 });
 
+// A narrowed CI shard boots this on a cold Jest cache: 24-34 s there, over 60 s on a busy host.
+const BOOT_TIMEOUT_MS = 120_000;
+
 describe('Server Configuration', () => {
   // Increase the default timeout to allow for Mongo cleanup
   jest.setTimeout(30_000);
 
   let mongoServer;
   let app;
+  let server;
 
   /** Mocked fs.readFileSync for index.html */
   const originalReadFileSync = fs.readFileSync;
@@ -214,6 +305,7 @@ describe('Server Configuration', () => {
   });
 
   beforeAll(async () => {
+    const bootDeadline = Date.now() + BOOT_TIMEOUT_MS;
     // Create the required directories and files for the test
     const fs = require('fs');
     const path = require('path');
@@ -233,21 +325,53 @@ describe('Server Configuration', () => {
     mongoServer = await MongoMemoryServer.create();
     process.env.MONGO_URI = mongoServer.getUri();
     process.env.PORT = '0'; // Use a random available port
+    /* This deployment configures a footer, so the shell it serves has to say so
+       before any `/api/config` request: the composer lays out against it. */
+    process.env.CUSTOM_FOOTER = 'Operator policy footer';
+    /* index.js listens at module scope and exports only the app, so capture the server to close it. */
+    const listenSpy = jest.spyOn(express.application, 'listen');
     app = require('~/server');
 
     // Wait for the app to be healthy
-    await healthCheckPoll(app);
-  });
+    await healthCheckPoll(app, bootDeadline);
+    server = listenSpy.mock.results[0].value;
+    listenSpy.mockRestore();
+  }, BOOT_TIMEOUT_MS);
 
   afterAll(async () => {
-    await mongoServer.stop();
+    if (server) {
+      await promisify(server.close).call(server);
+    }
+    await mongoServer?.stop();
     await mongoose.disconnect();
+    delete process.env.CUSTOM_FOOTER;
   });
 
   it('should return OK for /health', async () => {
     const response = await request(app).get('/health');
     expect(response.status).toBe(200);
     expect(response.text).toBe('OK');
+  });
+
+  it('should set baseline security headers on health checks', async () => {
+    const response = await request(app).get('/health');
+
+    expect(response.headers['strict-transport-security']).toBe('max-age=31536000');
+    expect(response.headers['x-frame-options']).toBe('SAMEORIGIN');
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
+    expect(response.headers['cross-origin-opener-policy']).toBe('same-origin');
+    expect(response.headers['cross-origin-resource-policy']).toBe('same-origin');
+    expect(response.headers['referrer-policy']).toBe('no-referrer');
+  });
+
+  it('should set baseline security headers on the index page without a CSP', async () => {
+    const response = await request(app).get('/');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['x-frame-options']).toBe('SAMEORIGIN');
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
+    expect(response.headers['content-security-policy']).toBeUndefined();
+    expect(response.headers['content-security-policy-report-only']).toBeUndefined();
   });
 
   it('should not cache index page', async () => {
@@ -292,6 +416,22 @@ describe('Server Configuration', () => {
     expect(response.headers['content-type']).toMatch(/html/);
   });
 
+  it('serves the app shell at /oauth/error when a connect callback names an error', async () => {
+    const response = await request(app).get('/oauth/error?error=invalid_state&flow=flow-a');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toMatch(/html/);
+    expect(response.headers.location).toBeUndefined();
+    expect(response.text).toContain('<div id="root"></div>');
+  });
+
+  it('still sends a social login failure at /oauth/error to the login screen', async () => {
+    const response = await request(app).get('/oauth/error');
+
+    expect(response.status).toBe(302);
+    expect(response.headers.location).toMatch(/\/login\?redirect=false&error=auth_failed$/);
+  });
+
   it('should gate React Query Devtools config in SPA HTML by debug header', async () => {
     const defaultResponse = await request(app).get('/this/does/not/exist');
     const debugResponse = await request(app)
@@ -316,6 +456,19 @@ describe('Server Configuration', () => {
     expect(directIndexResponse.text).toContain('window.__LIBRECHAT_CONFIG__');
     expect(directIndexResponse.text).toContain('data-librechat-query-devtools="true"');
     expect(directIndexResponse.text).toContain('"enableQueryDevtools":true');
+  });
+
+  it('serves the configured-footer answer with the shell', async () => {
+    const [fallbackResponse, indexResponse] = await Promise.all([
+      request(app).get('/this/does/not/exist'),
+      request(app).get('/index.html'),
+    ]);
+
+    for (const response of [fallbackResponse, indexResponse]) {
+      expect(response.status).toBe(200);
+      expect(response.text).toContain('window.__LIBRECHAT_CONFIG__');
+      expect(response.text).toContain('"hasConfiguredFooter":true');
+    }
   });
 
   it('should return 500 for unknown errors via ErrorController', async () => {
@@ -343,9 +496,8 @@ describe('Server Configuration', () => {
   });
 });
 
-// Polls the /health endpoint every 30ms for up to 10 seconds to wait for the server to start completely
-async function healthCheckPoll(app, retries = 0) {
-  const maxRetries = Math.floor(10000 / 30); // 10 seconds / 30ms
+// Polls the /health endpoint every 30ms until the server is healthy or the boot deadline passes
+async function healthCheckPoll(app, deadline) {
   try {
     const response = await request(app).get('/health');
     if (response.status === 200) {
@@ -355,10 +507,10 @@ async function healthCheckPoll(app, retries = 0) {
     // Ignore connection errors during polling
   }
 
-  if (retries < maxRetries) {
+  if (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 30));
-    await healthCheckPoll(app, retries + 1);
+    await healthCheckPoll(app, deadline);
   } else {
-    throw new Error('App did not become healthy within 10 seconds.');
+    throw new Error(`App did not become healthy within ${BOOT_TIMEOUT_MS / 1000} seconds.`);
   }
 }

@@ -1,9 +1,10 @@
 import { useMemo } from 'react';
-import { getSettingsKeys } from 'librechat-data-provider';
+import { presetSettings, getSettingsKeys, applyModelAwareDefaults } from 'librechat-data-provider';
 import type { SettingDefinition } from 'librechat-data-provider';
 import type { TModelSelectProps } from '~/common';
 import { componentMapping } from '~/components/SidePanel/Parameters/components';
-import { presetSettings } from 'librechat-data-provider';
+import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
+import { useGetEndpointsQuery } from '~/data-provider';
 
 export default function OpenAISettings({
   conversation,
@@ -11,13 +12,42 @@ export default function OpenAISettings({
   models,
   readonly,
 }: TModelSelectProps) {
+  const { data: endpointsConfig } = useGetEndpointsQuery();
+  const { modelReasoning } = useModelReasoning(
+    endpointsConfig,
+    conversation?.endpoint ?? '',
+    conversation?.model ?? '',
+  );
   const parameters = useMemo(() => {
     const [combinedKey, endpointKey] = getSettingsKeys(
       conversation?.endpointType ?? conversation?.endpoint ?? '',
       conversation?.model ?? '',
     );
-    return presetSettings[combinedKey] ?? presetSettings[endpointKey];
-  }, [conversation]);
+    const settings = presetSettings[combinedKey] ?? presetSettings[endpointKey];
+    if (!settings) {
+      return undefined;
+    }
+    /** A custom endpoint's own parameter set (e.g. OpenRouter's) decides its model-aware defaults. */
+    const paramsKey =
+      endpointsConfig?.[conversation?.endpoint ?? '']?.customParams?.defaultParamsEndpoint ??
+      endpointKey;
+    return {
+      col1: applyModelAwareDefaults(
+        settings.col1,
+        paramsKey,
+        conversation?.model ?? undefined,
+        endpointsConfig?.[conversation?.endpoint ?? '']?.responsesApiRouting,
+        modelReasoning,
+      ),
+      col2: applyModelAwareDefaults(
+        settings.col2,
+        paramsKey,
+        conversation?.model ?? undefined,
+        endpointsConfig?.[conversation?.endpoint ?? '']?.responsesApiRouting,
+        modelReasoning,
+      ),
+    };
+  }, [conversation, endpointsConfig, modelReasoning]);
 
   if (!parameters) {
     return null;
@@ -34,7 +64,6 @@ export default function OpenAISettings({
     const { key, default: defaultValue, ...rest } = setting;
 
     const props = {
-      key,
       settingKey: key,
       defaultValue,
       ...rest,
@@ -44,10 +73,10 @@ export default function OpenAISettings({
     };
 
     if (key === 'model') {
-      return <Component {...props} options={models} />;
+      return <Component key={key} {...props} options={models} />;
     }
 
-    return <Component {...props} />;
+    return <Component key={key} {...props} />;
   };
 
   return (

@@ -20,7 +20,7 @@ export function validateAzureGroups(configs: TAzureGroups): TAzureConfigValidati
   const result = azureGroupConfigsSchema.safeParse(configs);
   if (!result.success) {
     isValid = false;
-    errors.push(errorsToString(result.error.errors));
+    errors.push(errorsToString(result.error.issues));
   } else {
     for (const group of result.data) {
       const {
@@ -227,92 +227,6 @@ export function mapModelToAzureConfig({
       throw new Error(`Azure configuration environment variable "${value}" was not found.`);
     }
   }
-
-  const result: MappedAzureConfig = { azureOptions };
-
-  if (baseURL) {
-    result.baseURL = extractEnvVariable(baseURL);
-  }
-
-  if (groupConfig.additionalHeaders) {
-    result.headers = groupConfig.additionalHeaders;
-  }
-
-  return result;
-}
-
-export function mapGroupToAzureConfig({
-  groupName,
-  groupMap,
-}: {
-  groupName: string;
-  groupMap: TAzureGroupMap;
-}): MappedAzureConfig {
-  const groupConfig = groupMap[groupName];
-  if (!groupConfig) {
-    throw new Error(`Group named "${groupName}" not found in configuration.`);
-  }
-
-  const instanceName = groupConfig.instanceName ?? '';
-  const serverless = groupConfig.serverless ?? false;
-  const baseURL = groupConfig.baseURL ?? '';
-
-  if (!instanceName && !serverless) {
-    throw new Error(
-      `Group "${groupName}" is missing an instanceName for non-serverless configuration.`,
-    );
-  }
-
-  if (serverless && !baseURL) {
-    throw new Error(
-      `Group "${groupName}" is missing the required base URL for serverless configuration.`,
-    );
-  }
-
-  const models = Object.keys(groupConfig.models);
-  if (models.length === 0) {
-    throw new Error(`Group "${groupName}" does not have any models configured.`);
-  }
-
-  // Use the first available model in the group
-  const firstModelName = models[0];
-  const modelDetails = groupConfig.models[firstModelName];
-
-  const azureOptions: AzureOptions = {
-    azureOpenAIApiVersion: extractEnvVariable(groupConfig.version ?? ''),
-    azureOpenAIApiKey: extractEnvVariable(groupConfig.apiKey),
-    azureOpenAIApiInstanceName: extractEnvVariable(instanceName),
-    // DeploymentName and Version set below
-  };
-
-  if (serverless) {
-    return {
-      azureOptions,
-      baseURL: extractEnvVariable(baseURL),
-      serverless: true,
-      ...(groupConfig.additionalHeaders && { headers: groupConfig.additionalHeaders }),
-    };
-  }
-
-  const { deploymentName = '', version = '' } =
-    typeof modelDetails === 'object'
-      ? {
-          deploymentName: modelDetails.deploymentName ?? groupConfig.deploymentName,
-          version: modelDetails.version ?? groupConfig.version,
-        }
-      : {
-          deploymentName: groupConfig.deploymentName,
-          version: groupConfig.version,
-        };
-
-  if (!deploymentName || !version) {
-    throw new Error(
-      `Model "${firstModelName}" in group "${groupName}" or the group itself is missing a deploymentName ("${deploymentName}") or version ("${version}").`,
-    );
-  }
-
-  azureOptions.azureOpenAIApiDeploymentName = extractEnvVariable(deploymentName);
-  azureOptions.azureOpenAIApiVersion = extractEnvVariable(version);
 
   const result: MappedAzureConfig = { azureOptions };
 

@@ -140,6 +140,20 @@ const extractUtf8 = (buffer: Buffer): string | null => {
   return truncate(buffer.toString('utf-8'), buffer);
 };
 
+export function extractCodeArtifactRawText(
+  buffer: Buffer,
+  category: CodeArtifactCategory,
+): string | null {
+  if (
+    buffer.length > MAX_TEXT_EXTRACT_BYTES ||
+    category !== 'utf8-text' ||
+    isBinaryBuffer(buffer)
+  ) {
+    return null;
+  }
+  return buffer.toString('utf-8');
+}
+
 /**
  * Map a known office-document extension back to its canonical MIME so we can
  * route through `parseDocument` even when buffer-sniffing yielded a generic
@@ -165,7 +179,7 @@ const documentMimeFromExtension = (name: string): string | null => {
   }
 };
 
-const extractDocument = async (
+const extractDocumentText = async (
   buffer: Buffer,
   name: string,
   mimeType: string,
@@ -189,10 +203,19 @@ const extractDocument = async (
     if (!result?.text) {
       return null;
     }
-    return truncate(result.text);
+    return result.text;
   } finally {
     fs.unlink(tempPath).catch(() => {});
   }
+};
+
+const extractDocument = async (
+  buffer: Buffer,
+  name: string,
+  mimeType: string,
+): Promise<string | null> => {
+  const text = await extractDocumentText(buffer, name, mimeType);
+  return text == null ? null : truncate(text);
 };
 
 /**
@@ -327,5 +350,71 @@ export async function extractCodeArtifactText(
       `[extractCodeArtifactText] Failed to extract "${name}" (${mimeType}): ${(error as Error).message}`,
     );
     return null;
+  }
+}
+
+export interface CodeArtifactInspectionText {
+  readonly text: string | null;
+  readonly complete: boolean;
+}
+
+/**
+ * Extracts text for content inspection independently of the persisted preview
+ * cache. Plain text and parsed documents are complete only when their full
+ * derived text fits inside the inspection ceiling. Parseable office documents
+ * use their full semantic extraction; office preview-only formats retain the
+ * available HTML for compatibility-mode inspection but stay marked partial
+ * because their producers have independent row, slide, and output caps.
+ */
+export async function extractCodeArtifactInspectionText(
+  buffer: Buffer,
+  name: string,
+  mimeType: string,
+  category: CodeArtifactCategory,
+): Promise<CodeArtifactInspectionText> {
+  const incomplete = (text: string | null = null): CodeArtifactInspectionText => ({
+    text,
+    complete: false,
+  });
+  const bounded = (text: string | null): CodeArtifactInspectionText => {
+    if (text == null) {
+      return incomplete();
+    }
+    if (Buffer.byteLength(text, 'utf-8') > MAX_TEXT_EXTRACT_BYTES) {
+      return incomplete(truncate(text));
+    }
+    return {
+      text,
+      complete: true,
+    };
+  };
+  if (buffer.length > MAX_TEXT_EXTRACT_BYTES) {
+    return incomplete();
+  }
+  try {
+    if (hasOfficeHtmlPath(name, mimeType)) {
+      if (category === 'utf8-text') {
+        return bounded(extractCodeArtifactRawText(buffer, category));
+      }
+      if (category === 'document') {
+        try {
+          return bounded(await extractDocumentText(buffer, name, mimeType));
+        } catch {
+          // Compatibility mode can still inspect the available preview below.
+        }
+      }
+      return incomplete(await renderOfficeHtml(buffer, name, mimeType));
+    }
+    if (category === 'utf8-text') {
+      return bounded(extractCodeArtifactRawText(buffer, category));
+    }
+    if (category !== 'document') {
+      return incomplete();
+    }
+
+    return bounded(await extractDocumentText(buffer, name, mimeType));
+  } catch {
+    logger.debug('[extractCodeArtifactInspectionText] Artifact inspection failed');
+    return incomplete();
   }
 }

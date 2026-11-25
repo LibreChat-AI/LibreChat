@@ -1,4 +1,5 @@
 import _ from 'lodash';
+import { randomUUID } from 'crypto';
 import { parseTextParts } from 'librechat-data-provider';
 import { MeiliSearch, MeiliSearchTimeOutError } from 'meilisearch';
 import type {
@@ -13,7 +14,16 @@ import type {
 import type { SearchResponse, SearchParams, Index, MeiliSearchErrorInfo } from 'meilisearch';
 import type { IConversation, IMessage } from '~/types';
 import { buildRetentionVisibilityFilter, legacyPermanentExpirationFilter } from '~/utils/retention';
+import { runAfterTransaction } from '~/utils/postCommit';
 import logger from '~/config/meiliLogger';
+
+/** Internal per-query bypass for writes to non-searchable bookkeeping fields. A WeakSet keeps
+ * this marker out of driver options and stored data. Other model middleware still runs. */
+const queriesWithoutMeiliIndexing = new WeakSet<object>();
+export function withoutMeiliIndexing<T extends object>(query: T): T {
+  queriesWithoutMeiliIndexing.add(query);
+  return query;
+}
 
 interface MongoMeiliOptions {
   host: string;
@@ -31,6 +41,8 @@ interface MeiliIndexable {
   [key: string]: unknown;
   _meiliIndex?: boolean;
   _meiliIndexAttempted?: boolean;
+  _meiliIndexVersion?: string;
+  _meiliIndexSchemaVersion?: number;
   _meiliCleanupVersion?: number;
 }
 
@@ -38,6 +50,7 @@ interface SyncProgress {
   lastSyncedId?: string;
   totalProcessed: number;
   totalDocuments: number;
+  pendingIndexing: number;
   pendingCleanup: number;
   isComplete: boolean;
 }
@@ -45,6 +58,8 @@ interface SyncProgress {
 interface _DocumentWithMeiliIndex extends Document {
   _meiliIndex?: boolean;
   _meiliIndexAttempted?: boolean;
+  _meiliIndexVersion?: string;
+  _meiliIndexSchemaVersion?: number;
   _meiliCleanupVersion?: number;
   isTemporary?: boolean;
   expiredAt?: Date | null;
@@ -52,9 +67,9 @@ interface _DocumentWithMeiliIndex extends Document {
   addObjectToMeili?: (next: CallbackWithoutResultAndOptionalError) => Promise<void>;
   updateObjectToMeili?: (next: CallbackWithoutResultAndOptionalError) => Promise<void>;
   deleteObjectFromMeili?: (next: CallbackWithoutResultAndOptionalError) => Promise<void>;
-  postSaveHook?: (next: CallbackWithoutResultAndOptionalError) => void;
-  postUpdateHook?: (next: CallbackWithoutResultAndOptionalError) => void;
-  postRemoveHook?: (next: CallbackWithoutResultAndOptionalError) => void;
+  postSaveHook?: (next: CallbackWithoutResultAndOptionalError) => Promise<void>;
+  postUpdateHook?: (next: CallbackWithoutResultAndOptionalError) => Promise<void> | void;
+  postRemoveHook?: (next: CallbackWithoutResultAndOptionalError) => Promise<void> | void;
 }
 
 export type DocumentWithMeiliIndex = _DocumentWithMeiliIndex & IConversation & Partial<IMessage>;
@@ -73,6 +88,7 @@ export interface SchemaWithMeiliMethods extends Model<DocumentWithMeiliIndex> {
     batchSize: number,
     delayMs: number,
   ): Promise<void>;
+  cleanupOwnerlessMeiliIndex(): Promise<void>;
   setMeiliIndexSettings(settings: Record<string, unknown>): Promise<unknown>;
   meiliSearch(
     q: string,
@@ -104,8 +120,59 @@ const getSyncConfig = () => ({
 const hasSchemaPath = (schema: Schema, path: string): boolean =>
   Object.prototype.hasOwnProperty.call(schema.obj, path);
 
+/** Bump when the indexed document shape or projection changes. */
+export const MEILI_INDEX_SCHEMA_VERSION = 1;
+
 const explicitTemporaryFlagKey = 'meiliExplicitTemporaryFlag';
+const previouslyIndexedFlagKey = 'meiliPreviouslyIndexed';
 const meiliCleanupVersion = 1;
+const meiliRequestTimeoutMs = 10_000;
+const meiliWriteMaxAttempts = 3;
+const meiliRetryBaseDelayMs = 250;
+const meiliVersionReconcileMaxAttempts = 3;
+/** Matches documents indexed before `user` joined the projection. */
+const ownerlessFilter = 'user NOT EXISTS OR user IS NULL OR user IS EMPTY';
+const completeDetachedOperation: CallbackWithoutResultAndOptionalError = () => undefined;
+
+const retryDetachedMeiliWrite = async (
+  operation: () => Promise<unknown>,
+  context: string,
+): Promise<void> => {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < meiliWriteMaxAttempts; attempt++) {
+    try {
+      await operation();
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 < meiliWriteMaxAttempts) {
+        logger.warn(`${context} Retrying detached Meili write`, error);
+        await new Promise((resolve) =>
+          setTimeout(resolve, meiliRetryBaseDelayMs * Math.pow(2, attempt)),
+        );
+      }
+    }
+  }
+  throw lastError;
+};
+
+const createDetachedMeiliRunner = () => {
+  const pendingOperations = new Map<string, Promise<void>>();
+
+  return (key: string, operation: () => Promise<void> | void, context: string): void => {
+    const previousOperation = pendingOperations.get(key) ?? Promise.resolve();
+    const operationPromise = previousOperation.then(operation).catch((error) => {
+      logger.error(context, error);
+    });
+    const trackedOperation = operationPromise.finally(() => {
+      if (pendingOperations.get(key) === trackedOperation) {
+        pendingOperations.delete(key);
+      }
+    });
+
+    pendingOperations.set(key, trackedOperation);
+  };
+};
 
 const buildRetentionIndexableQuery = (schema: Schema): FilterQuery<unknown> => {
   if (hasSchemaPath(schema, 'isTemporary')) {
@@ -132,7 +199,16 @@ const buildIndexableQuery = (
   };
 };
 
-const buildExcludedIndexedQuery = (excludeFromIndexPath?: string): FilterQuery<unknown> | null => {
+/**
+ * Excluded documents that may still hold a Meili entry. The legacy branch matches a
+ * `_meiliCleanupVersion` that is absent or null, written as a null equality rather than
+ * `$exists: false` so `meili_excluded_legacy_cleanup_v4` can serve it: a partial index
+ * accepts null equality and rejects `$exists: false`, and the planner only reaches a
+ * partial index through a predicate that implies its filter.
+ */
+export const buildExcludedIndexedQuery = (
+  excludeFromIndexPath?: string,
+): FilterQuery<unknown> | null => {
   if (excludeFromIndexPath == null) {
     return null;
   }
@@ -142,7 +218,7 @@ const buildExcludedIndexedQuery = (excludeFromIndexPath?: string): FilterQuery<u
     $or: [
       { _meiliIndex: true },
       { _meiliIndexAttempted: true },
-      { _meiliIndex: false, _meiliCleanupVersion: { $exists: false } },
+      { _meiliIndex: false, _meiliCleanupVersion: null },
     ],
   };
 };
@@ -246,6 +322,123 @@ const createMeiliMongooseModel = ({
 }) => {
   const syncConfig = { ...getSyncConfig(), ...syncOptions };
 
+  const loadLatestDocument = async (
+    doc: DocumentWithMeiliIndex,
+  ): Promise<DocumentWithMeiliIndex | null> => {
+    const model = doc.constructor as Model<DocumentWithMeiliIndex>;
+    const selection = [
+      ...attributesToIndex,
+      '+_meiliIndex',
+      '+_meiliIndexAttempted',
+      '+_meiliIndexVersion',
+      '+_meiliIndexSchemaVersion',
+      'isTemporary',
+      'expiredAt',
+      'unfinished',
+      ...(excludeFromIndexPath == null ? [] : [`+${excludeFromIndexPath}`]),
+    ].join(' ');
+    return await model.findById(doc._id).select(selection).exec();
+  };
+
+  const deleteDocumentAndWait = async (doc: DocumentWithMeiliIndex): Promise<void> => {
+    const deletion = await index.deleteDocument(
+      String(doc[primaryKey as keyof DocumentWithMeiliIndex]),
+    );
+    const deletionTask = await client.waitForTask(deletion.taskUid, {
+      timeOutMs: meiliRequestTimeoutMs,
+      intervalMs: 100,
+    });
+    if (deletionTask.status !== 'succeeded') {
+      throw new Error(`Meili cleanup task ${deletion.taskUid} ended with ${deletionTask.status}`);
+    }
+  };
+
+  /**
+   * Submit a versioned snapshot and acknowledge only the MongoDB write that
+   * produced it. If another replica wins the race, enqueue the latest snapshot
+   * after the stale Meili task so task ordering converges on current Mongo data.
+   */
+  const syncVersionedDocument = async (
+    initialDoc: DocumentWithMeiliIndex,
+    initialMode: 'add' | 'update',
+  ): Promise<void> => {
+    let doc = initialDoc;
+    let mode = initialMode;
+
+    for (let attempt = 0; attempt < meiliVersionReconcileMaxAttempts; attempt++) {
+      const version = doc._meiliIndexVersion;
+      if (!version) {
+        throw new Error('Missing _meiliIndexVersion for detached Meili write');
+      }
+
+      if (!isIndexableDocument(doc, excludeFromIndexPath) || doc.unfinished) {
+        await retryDetachedMeiliWrite(
+          () => deleteDocumentAndWait(doc),
+          '[mongoMeili] Failed to remove a non-indexable document.',
+        );
+        // eslint-disable-next-line no-restricted-syntax -- versioned internal bookkeeping must not re-enter document middleware
+        const cleanup = await doc.collection.updateOne(
+          { _id: doc._id as Types.ObjectId, _meiliIndexVersion: version },
+          {
+            $set: { _meiliCleanupVersion: meiliCleanupVersion },
+            $unset: { _meiliIndex: '', _meiliIndexAttempted: '' },
+          },
+        );
+        if (cleanup.matchedCount > 0) {
+          return;
+        }
+      } else {
+        const object = doc.preprocessObjectForIndex!();
+        await retryDetachedMeiliWrite(async () => {
+          const enqueued =
+            mode === 'update'
+              ? index.updateDocuments([object], { primaryKey })
+              : index.addDocuments([object], { primaryKey });
+          const task = await enqueued;
+          const completedTask = await client.waitForTask(task.taskUid, {
+            timeOutMs: meiliRequestTimeoutMs,
+            intervalMs: 100,
+          });
+          if (completedTask.status !== 'succeeded') {
+            throw new Error(`Meili write task ${task.taskUid} ended with ${completedTask.status}`);
+          }
+        }, '[mongoMeili] Failed to submit a document to Meili.');
+        // eslint-disable-next-line no-restricted-syntax -- versioned internal bookkeeping must not re-enter document middleware
+        const acknowledgement = await doc.collection.updateOne(
+          { _id: doc._id as Types.ObjectId, _meiliIndexVersion: version },
+          {
+            $set: {
+              _meiliIndex: true,
+              _meiliCleanupVersion: meiliCleanupVersion,
+              _meiliIndexSchemaVersion: MEILI_INDEX_SCHEMA_VERSION,
+            },
+          },
+        );
+        if (acknowledgement.matchedCount > 0) {
+          return;
+        }
+      }
+
+      const latestDoc = await loadLatestDocument(doc);
+      if (!latestDoc) {
+        await retryDetachedMeiliWrite(
+          () => deleteDocumentAndWait(doc),
+          '[mongoMeili] Failed to remove a concurrently deleted document.',
+        );
+        return;
+      }
+      doc = latestDoc;
+      mode = 'add';
+    }
+
+    // eslint-disable-next-line no-restricted-syntax -- versioned internal bookkeeping must not re-enter document middleware
+    await doc.collection.updateOne(
+      { _id: doc._id as Types.ObjectId, _meiliIndexVersion: doc._meiliIndexVersion },
+      { $set: { _meiliIndex: false, _meiliIndexAttempted: true } },
+    );
+    throw new Error('Meili indexing did not converge after concurrent MongoDB writes');
+  };
+
   class MeiliMongooseModel {
     /**
      * Get the current sync progress
@@ -253,28 +446,49 @@ const createMeiliMongooseModel = ({
     static async getSyncProgress(this: SchemaWithMeiliMethods): Promise<SyncProgress> {
       const indexableQuery = getIndexableQuery();
       const excludedIndexedQuery = getExcludedIndexedQuery();
-      const [totalDocuments, indexedDocuments, pendingCleanup] = await Promise.all([
+      const needsIndexingQuery: FilterQuery<unknown> = {
+        $and: [
+          indexableQuery,
+          {
+            $or: [
+              { _meiliIndex: { $ne: true }, _meiliIndexAttempted: true },
+              {
+                _meiliIndex: true,
+                _meiliIndexSchemaVersion: { $ne: MEILI_INDEX_SCHEMA_VERSION },
+              },
+            ],
+          },
+        ],
+      };
+      const [totalDocuments, totalProcessed, pendingIndexing, pendingCleanup] = await Promise.all([
         this.countDocuments(indexableQuery),
         this.countDocuments({
-          ...indexableQuery,
-          _meiliIndex: true,
+          $and: [
+            indexableQuery,
+            {
+              _meiliIndex: true,
+              _meiliIndexSchemaVersion: MEILI_INDEX_SCHEMA_VERSION,
+            },
+          ],
         }),
+        this.countDocuments(needsIndexingQuery),
         excludedIndexedQuery == null
           ? Promise.resolve(0)
           : this.countDocuments(excludedIndexedQuery),
       ]);
 
       return {
-        totalProcessed: indexedDocuments,
+        totalProcessed,
         totalDocuments,
+        pendingIndexing,
         pendingCleanup,
-        isComplete: indexedDocuments === totalDocuments && pendingCleanup === 0,
+        isComplete: totalProcessed === totalDocuments && pendingCleanup === 0,
       };
     }
 
     /**
      * Synchronizes data between the MongoDB collection and the MeiliSearch index by
-     * incrementally indexing only non-temporary documents where `_meiliIndex` is not `true`.
+     * incrementally indexing only non-temporary documents that are unindexed or stale.
      * */
     static async syncWithMeili(this: SchemaWithMeiliMethods): Promise<void> {
       const startTime = Date.now();
@@ -286,6 +500,7 @@ const createMeiliMongooseModel = ({
       );
 
       // Get approximate total count for raw estimation, the sync should not overcome this number
+      // eslint-disable-next-line no-restricted-syntax -- a collection-wide estimate is the quantity wanted here: it bounds a full-index sync and only feeds a progress log, so a tenant-scoped count would be wrong, not just unnecessary.
       const approxTotalCount = await this.estimatedDocumentCount();
       logger.info(
         `[syncWithMeili] Approximate total number of all ${collectionName}: ${approxTotalCount}`,
@@ -307,8 +522,18 @@ const createMeiliMongooseModel = ({
       while (hasMore) {
         const indexableQuery = getIndexableQuery();
         const query: FilterQuery<unknown> = {
-          ...indexableQuery,
-          _meiliIndex: { $ne: true },
+          $and: [
+            indexableQuery,
+            {
+              $or: [
+                { _meiliIndex: { $ne: true } },
+                {
+                  _meiliIndex: true,
+                  _meiliIndexSchemaVersion: { $ne: MEILI_INDEX_SCHEMA_VERSION },
+                },
+              ],
+            },
+          ],
         };
 
         try {
@@ -381,7 +606,13 @@ const createMeiliMongooseModel = ({
         // original conversation/message timestamps (fixes sidebar chronological sort).
         await this.updateMany(
           { _id: { $in: docsIds } },
-          { $set: { _meiliIndex: true, _meiliCleanupVersion: meiliCleanupVersion } },
+          {
+            $set: {
+              _meiliIndex: true,
+              _meiliCleanupVersion: meiliCleanupVersion,
+              _meiliIndexSchemaVersion: MEILI_INDEX_SCHEMA_VERSION,
+            },
+          },
           { timestamps: false },
         );
       } catch (error) {
@@ -518,6 +749,123 @@ const createMeiliMongooseModel = ({
     }
 
     /**
+     * Reconciles documents indexed before `user` joined the projection, which no
+     * user-scoped search can return. One whose MongoDB record is still indexable and
+     * owned is queued for reindexing rather than deleted, so the next sync replaces it
+     * with its owner; the rest are deleted. Skipped until `user` is filterable, which
+     * the filter needs, or while the index does not exist.
+     */
+    static async cleanupOwnerlessMeiliIndex(this: SchemaWithMeiliMethods): Promise<void> {
+      const { batchSize, delayMs } = syncConfig;
+      let offset = 0;
+      let deleted = 0;
+      let requeued = 0;
+      let previousPage: string | undefined;
+      let expectedTotal: number | undefined;
+
+      let settings: Awaited<ReturnType<typeof index.getSettings>>;
+      try {
+        settings = await index.getSettings();
+      } catch (error) {
+        if ((error as { code?: string }).code === 'index_not_found') {
+          return;
+        }
+        throw error;
+      }
+      if (!settings.filterableAttributes?.includes('user')) {
+        return;
+      }
+
+      /**
+       * Marks the owned, indexable records among `ids` for the next sync. A fresh
+       * version makes an in-flight write's acknowledgement miss, so that writer
+       * reloads and submits the document again instead of marking it indexed.
+       */
+      const requeue = async (ids: string[]): Promise<Set<string>> => {
+        const owned = await this.find({
+          $and: [getIndexableQuery(), { [primaryKey]: { $in: ids }, user: { $nin: [null, ''] } }],
+        })
+          .select(primaryKey)
+          .lean();
+        if (owned.length > 0) {
+          await this.updateMany(
+            { _id: { $in: owned.map((doc: Record<string, unknown>) => doc._id) } },
+            {
+              $set: {
+                _meiliIndex: false,
+                _meiliIndexAttempted: true,
+                _meiliIndexVersion: randomUUID(),
+              },
+            },
+            { timestamps: false },
+          );
+          requeued += owned.length;
+        }
+        return new Set(owned.map((doc: Record<string, unknown>) => String(doc[primaryKey])));
+      };
+
+      while (true) {
+        const batch = await index.getDocuments({
+          filter: ownerlessFilter,
+          fields: [primaryKey],
+          limit: batchSize,
+          offset,
+        });
+        /** Documents repaired by concurrent saves leave the filter and shift later ones back. */
+        const shortfall = expectedTotal == null ? 0 : expectedTotal - batch.total;
+        expectedTotal = batch.total;
+        if (shortfall > 0 && offset > 0) {
+          offset = Math.max(0, offset - shortfall);
+          previousPage = undefined;
+          continue;
+        }
+        if (batch.results.length === 0) {
+          break;
+        }
+
+        const ids = batch.results.map((doc) => String(doc[primaryKey]));
+        const page = `${offset}:${ids.join(',')}`;
+        if (page === previousPage) {
+          throw new Error(`Ownerless cleanup of ${index.uid} made no progress`);
+        }
+        previousPage = page;
+
+        const owned = await requeue(ids);
+        const orphans = ids.filter((id) => !owned.has(id));
+        if (orphans.length > 0) {
+          const deletion = await index.deleteDocuments(orphans);
+          const deletionTask = await client.waitForTask(deletion.taskUid, {
+            timeOutMs: meiliRequestTimeoutMs,
+            intervalMs: 100,
+          });
+          if (deletionTask.status !== 'succeeded') {
+            throw new Error(
+              `Meili cleanup task ${deletion.taskUid} ended with ${deletionTask.status}`,
+            );
+          }
+          deleted += orphans.length;
+          expectedTotal -= orphans.length;
+          /** A record that became indexable meanwhile may have lost a fresh document. */
+          await requeue(orphans);
+        }
+
+        if (batch.results.length < batchSize) {
+          break;
+        }
+        offset += owned.size;
+        if (delayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+      }
+
+      if (deleted > 0 || requeued > 0) {
+        logger.info(
+          `[cleanupOwnerlessMeiliIndex] ${index.uid}: deleted ${deleted} orphaned and queued ${requeued} owned documents for reindexing`,
+        );
+      }
+    }
+
+    /**
      * Updates settings for the MeiliSearch index
      */
     static async setMeiliIndexSettings(settings: Record<string, unknown>): Promise<unknown> {
@@ -541,7 +889,7 @@ const createMeiliMongooseModel = ({
 
         const projection = Object.keys(this.schema.obj).reduce<Record<string, number>>(
           (results, key) => {
-            if (!key.startsWith('$')) {
+            if (!key.startsWith('$') && this.schema.path(key)?.options?.select !== false) {
               results[key] = 1;
             }
             return results;
@@ -595,62 +943,20 @@ const createMeiliMongooseModel = ({
       return object;
     }
 
-    /**
-     * Adds the current document to the MeiliSearch index with retry logic
-     */
+    /** Adds the current document to the MeiliSearch index. */
     async addObjectToMeili(
       this: DocumentWithMeiliIndex,
       next: CallbackWithoutResultAndOptionalError,
     ): Promise<void> {
-      if (!isIndexableDocument(this, excludeFromIndexPath)) {
+      if (!this._meiliIndexVersion) {
         return next();
       }
-
-      const object = this.preprocessObjectForIndex!();
-      const maxRetries = 3;
-      let retryCount = 0;
-
       try {
-        // Mark the possible Meili presence before enqueueing the add. If the
-        // later Mongo acknowledgement fails, excluded-record cleanup can still
-        // distinguish this row from a child that was never submitted to Meili.
-        const model = this.constructor as Model<DocumentWithMeiliIndex>;
-        await model.updateOne(
-          { _id: this._id as Types.ObjectId },
-          { $set: { _meiliIndexAttempted: true } },
-          { timestamps: false },
-        );
+        await syncVersionedDocument(this, 'add');
       } catch (error) {
-        logger.error('[addObjectToMeili] Error marking Meili indexing attempt:', error);
+        logger.error('[addObjectToMeili] Error adding document to Meili:', error);
         return next();
       }
-
-      while (retryCount < maxRetries) {
-        try {
-          await index.addDocuments([object], { primaryKey });
-          break;
-        } catch (error) {
-          retryCount++;
-          if (retryCount >= maxRetries) {
-            logger.error('[addObjectToMeili] Error adding document to Meili after retries:', error);
-            return next();
-          }
-          // Exponential backoff
-          await new Promise((resolve) => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
-        }
-      }
-
-      try {
-        // eslint-disable-next-line no-restricted-syntax -- _meiliIndex is an internal bookkeeping flag, not tenant-scoped data
-        await this.collection.updateOne(
-          { _id: this._id as Types.ObjectId },
-          { $set: { _meiliIndex: true, _meiliCleanupVersion: meiliCleanupVersion } },
-        );
-      } catch (error) {
-        logger.error('[addObjectToMeili] Error updating _meiliIndex field:', error);
-        return next();
-      }
-
       next();
     }
 
@@ -661,33 +967,11 @@ const createMeiliMongooseModel = ({
       this: DocumentWithMeiliIndex,
       next: CallbackWithoutResultAndOptionalError,
     ): Promise<void> {
+      if (!this._meiliIndexVersion) {
+        return next();
+      }
       try {
-        if (!isIndexableDocument(this, excludeFromIndexPath)) {
-          const deletion = await index.deleteDocument(
-            String(this[primaryKey as keyof DocumentWithMeiliIndex]),
-          );
-          const deletionTask = await client.waitForTask(deletion.taskUid, {
-            timeOutMs: 10000,
-            intervalMs: 100,
-          });
-          if (deletionTask.status !== 'succeeded') {
-            throw new Error(
-              `Meili cleanup task ${deletion.taskUid} ended with ${deletionTask.status}`,
-            );
-          }
-          const model = this.constructor as Model<DocumentWithMeiliIndex>;
-          await model.updateOne(
-            { _id: this._id as Types.ObjectId },
-            {
-              $set: { _meiliCleanupVersion: meiliCleanupVersion },
-              $unset: { _meiliIndex: '', _meiliIndexAttempted: '' },
-            },
-          );
-          return next();
-        }
-
-        const object = this.preprocessObjectForIndex!();
-        await index.updateDocuments([object], { primaryKey });
+        await syncVersionedDocument(this, 'update');
         next();
       } catch (error) {
         logger.error('[updateObjectToMeili] Error updating document in Meili:', error);
@@ -719,12 +1003,14 @@ const createMeiliMongooseModel = ({
      * If the document is already indexed (i.e. `_meiliIndex` is true), it updates it;
      * otherwise, it adds the document to the index.
      */
-    postSaveHook(this: DocumentWithMeiliIndex, next: CallbackWithoutResultAndOptionalError): void {
-      if (this._meiliIndex) {
-        this.updateObjectToMeili!(next);
-      } else {
-        this.addObjectToMeili!(next);
+    postSaveHook(
+      this: DocumentWithMeiliIndex,
+      next: CallbackWithoutResultAndOptionalError,
+    ): Promise<void> {
+      if (this.$locals?.[previouslyIndexedFlagKey] === true || this._meiliIndex) {
+        return this.updateObjectToMeili!(next);
       }
+      return this.addObjectToMeili!(next);
     }
 
     /**
@@ -802,6 +1088,16 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
       required: false,
       select: false,
     },
+    _meiliIndexVersion: {
+      type: String,
+      required: false,
+      select: false,
+    },
+    _meiliIndexSchemaVersion: {
+      type: Number,
+      required: false,
+      select: false,
+    },
     _meiliCleanupVersion: {
       type: Number,
       required: false,
@@ -831,14 +1127,21 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
         },
       },
     );
+    /* Serves the legacy branch of `buildExcludedIndexedQuery`. MongoDB rewrites
+     * `$exists: false` into `$not`, which no `partialFilterExpression` accepts, so the
+     * unstamped state is expressed as a null equality: it admits an absent or null
+     * `_meiliCleanupVersion` and keeps every already-stamped document out, which is what
+     * bounds this index to the shrinking legacy population rather than to every
+     * excluded document ever written. Cleanup stamps the version, and the document
+     * leaves the index. */
     schema.index(
       { _meiliIndex: 1, _meiliCleanupVersion: 1, [options.primaryKey]: 1 },
       {
-        name: 'meili_excluded_legacy_cleanup_v3',
+        name: 'meili_excluded_legacy_cleanup_v4',
         partialFilterExpression: {
           [options.excludeFromIndexPath]: { $exists: true },
           _meiliIndex: { $eq: false },
-          _meiliCleanupVersion: { $exists: false },
+          _meiliCleanupVersion: { $eq: null },
         },
       },
     );
@@ -851,12 +1154,16 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
       ? options.excludeFromIndexPath
       : undefined;
   const queriesWithInjectedPrivatePath = new WeakSet<object>();
+  const findOneAndUpdateVersions = new WeakMap<object, string>();
   const syncOptions = {
     batchSize: options.syncBatchSize || getSyncConfig().batchSize,
     delayMs: options.syncDelayMs || getSyncConfig().delayMs,
   };
 
-  const client = new MeiliSearch({ host, apiKey });
+  const client = new MeiliSearch({ host, apiKey, timeout: meiliRequestTimeoutMs });
+  const runDetachedMeiliOperation = createDetachedMeiliRunner();
+  const getOperationKey = (doc: DocumentWithMeiliIndex): string =>
+    `${indexName}:${String(doc[primaryKey as keyof DocumentWithMeiliIndex] ?? doc._id)}`;
 
   /** Create index only if it doesn't exist */
   const index = client.index<MeiliIndexable>(indexName);
@@ -941,16 +1248,49 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
     if (hasSchemaPath(schema, 'isTemporary')) {
       captureExplicitTemporaryFlag(this);
     }
+    this.$locals[previouslyIndexedFlagKey] = this._meiliIndex === true;
+    if (
+      isIndexableDocument(this, options.excludeFromIndexPath) ||
+      this._meiliIndex === true ||
+      this._meiliIndexAttempted === true
+    ) {
+      this._meiliIndexVersion = new mongoose.Types.ObjectId().toString();
+      this._meiliIndex = false;
+      this._meiliIndexAttempted = true;
+      this.markModified('_meiliIndexVersion');
+      this.markModified('_meiliIndex');
+      this.markModified('_meiliIndexAttempted');
+    }
     next();
   });
 
   schema.post('save', function (doc: DocumentWithMeiliIndex, next) {
-    doc.postSaveHook?.(next);
+    next();
+    if (typeof doc.postSaveHook === 'function') {
+      runDetachedMeiliOperation(
+        getOperationKey(doc),
+        () => doc.postSaveHook!(completeDetachedOperation),
+        '[mongoMeili] Detached post-save indexing failed:',
+      );
+    }
   });
 
   schema.pre('findOneAndUpdate', function (next) {
+    if (queriesWithoutMeiliIndexing.has(this)) {
+      next();
+      return;
+    }
+    const query = this as Query<unknown, unknown>;
+    if (meiliEnabled) {
+      const version = new mongoose.Types.ObjectId().toString();
+      query.set({
+        _meiliIndex: false,
+        _meiliIndexAttempted: true,
+        _meiliIndexVersion: version,
+      });
+      findOneAndUpdateVersions.set(query, version);
+    }
     if (privateExcludedPath != null) {
-      const query = this as Query<unknown, unknown>;
       const projection = query.projection() as Record<string, number> | null;
       const callerRequestedPrivatePath = Object.entries(projection ?? {}).some(
         ([path, included]) =>
@@ -968,17 +1308,25 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
   });
 
   schema.post('updateOne', function (doc: DocumentWithMeiliIndex, next) {
+    next();
     if (typeof doc.postUpdateHook === 'function') {
-      return doc.postUpdateHook(next);
+      runDetachedMeiliOperation(
+        getOperationKey(doc),
+        () => doc.postUpdateHook!(completeDetachedOperation),
+        '[mongoMeili] Detached post-update indexing failed:',
+      );
     }
-    return next();
   });
 
   schema.post('deleteOne', function (doc: DocumentWithMeiliIndex, next) {
+    next();
     if (typeof doc.postRemoveHook === 'function') {
-      return doc.postRemoveHook(next);
+      runDetachedMeiliOperation(
+        getOperationKey(doc),
+        () => doc.postRemoveHook!(completeDetachedOperation),
+        '[mongoMeili] Detached post-remove indexing failed:',
+      );
     }
-    return next();
   });
 
   // Pre-deleteMany hook: remove corresponding documents from MeiliSearch when multiple documents are deleted.
@@ -1039,7 +1387,7 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
   // Post-findOneAndUpdate hook
   schema.post(
     'findOneAndUpdate',
-    async function (
+    function (
       res: DocumentWithMeiliIndex | { value: DocumentWithMeiliIndex | null } | null,
       next: CallbackWithoutResultAndOptionalError,
     ) {
@@ -1054,55 +1402,46 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
       } else {
         doc = res;
       }
-      const finish = (error?: Error | null): void => {
-        if (
-          doc != null &&
-          privateExcludedPath != null &&
-          queriesWithInjectedPrivatePath.has(this)
-        ) {
-          if (doc instanceof mongoose.Document) {
-            doc.set(privateExcludedPath, undefined);
-          } else {
-            _.unset(doc, privateExcludedPath);
-          }
+      if (doc != null && privateExcludedPath != null && queriesWithInjectedPrivatePath.has(this)) {
+        if (doc instanceof mongoose.Document) {
+          doc.set(privateExcludedPath, undefined);
+        } else {
+          _.unset(doc, privateExcludedPath);
         }
-        next(error ?? undefined);
-      };
+      }
 
-      if (!meiliEnabled) {
-        finish();
+      const version = findOneAndUpdateVersions.get(this);
+      if (!meiliEnabled || !doc || !version) {
+        next();
         return;
       }
 
-      if (!doc || doc.unfinished) {
-        finish();
-        return;
-      }
-
-      let meiliDoc: Record<string, unknown> | undefined;
-      if (doc.messages) {
-        try {
-          meiliDoc = await client.index('convos').getDocument(doc.conversationId as string);
-        } catch (error: unknown) {
-          logger.debug(
-            '[MeiliMongooseModel.findOneAndUpdate] Convo not found in MeiliSearch and will index ' +
-              doc.conversationId,
-            error as Record<string, unknown>,
+      const savedDoc = doc;
+      const model = (this as Query<unknown, DocumentWithMeiliIndex>).model;
+      next();
+      void runAfterTransaction(
+        (this as Query<unknown, DocumentWithMeiliIndex>).getOptions().session ?? undefined,
+        async () => {
+          runDetachedMeiliOperation(
+            getOperationKey(savedDoc),
+            async () => {
+              const latestDoc = await model
+                .findById(savedDoc._id)
+                .select(
+                  [
+                    '+_meiliIndex',
+                    '+_meiliIndexAttempted',
+                    '+_meiliIndexVersion',
+                    ...(privateExcludedPath == null ? [] : [`+${privateExcludedPath}`]),
+                  ].join(' '),
+                )
+                .exec();
+              await latestDoc?.addObjectToMeili?.(completeDetachedOperation);
+            },
+            '[mongoMeili] Detached findOneAndUpdate indexing failed:',
           );
-        }
-      }
-
-      if (meiliDoc && meiliDoc.title === doc.title) {
-        finish();
-        return;
-      }
-
-      if (typeof doc.postSaveHook === 'function') {
-        await doc.postSaveHook(finish);
-        return;
-      }
-
-      finish();
+        },
+      );
     },
   );
 }

@@ -3,7 +3,12 @@ import type { MenuItemProps } from '~/common';
 
 const mockAccess: Record<string, boolean> = {};
 const mockBookmarkArgs: { enabled?: boolean }[] = [];
+const mockPullRequestArgs: string[] = [];
 const mockHookState = {
+  pullRequest: {
+    item: undefined as MenuItemProps | undefined,
+    dialog: null as React.ReactNode,
+  },
   multiConvo: { show: true, addConversation: jest.fn() },
   temporary: { show: true, isTemporary: false, toggle: jest.fn() },
   bookmarks: {
@@ -29,22 +34,28 @@ jest.mock('~/hooks', () => ({
     mockAccess[permissionType] ?? true,
 }));
 
-jest.mock('~/hooks/Chat/useMultiConvo', () => ({
+jest.mock('~/components/Chat/PullRequest', () => ({
+  usePullRequestMenu: (conversationId: string) => {
+    mockPullRequestArgs.push(conversationId);
+    return mockHookState.pullRequest;
+  },
+}));
+jest.mock('~/hooks/Conversations/useMultiConvo', () => ({
   __esModule: true,
   default: () => mockHookState.multiConvo,
 }));
-jest.mock('~/hooks/Chat/useTemporaryChat', () => ({
+jest.mock('~/hooks/Conversations/useTemporaryChat', () => ({
   __esModule: true,
   default: () => mockHookState.temporary,
 }));
-jest.mock('~/hooks/Chat/useBookmarkItems', () => ({
+jest.mock('~/hooks/Sharing/useBookmarkItems', () => ({
   __esModule: true,
   default: (args: { enabled?: boolean } = {}) => {
     mockBookmarkArgs.push(args);
     return mockHookState.bookmarks;
   },
 }));
-jest.mock('~/hooks/Chat/useExportShare', () => ({
+jest.mock('~/hooks/Sharing/useChatOptions', () => ({
   __esModule: true,
   default: () => mockHookState.exportShare,
 }));
@@ -101,6 +112,8 @@ const labels = () =>
 describe('HeaderMenu', () => {
   beforeEach(() => {
     mockBookmarkArgs.length = 0;
+    mockPullRequestArgs.length = 0;
+    mockHookState.pullRequest = { item: undefined, dialog: null };
     for (const key of Object.keys(mockAccess)) {
       delete mockAccess[key];
     }
@@ -123,6 +136,52 @@ describe('HeaderMenu', () => {
       'export',
       'com_ui_temporary',
     ]);
+  });
+
+  it('offers the pull request in its own group, ahead of share and export', () => {
+    mockHookState.pullRequest = {
+      item: { label: 'PR #7' },
+      dialog: <div data-testid="pull-request-dialog" />,
+    };
+
+    render(<HeaderMenu pullRequestConversationId="convo-1" />);
+
+    expect(labels()).toEqual([
+      'com_ui_bookmarks',
+      'com_ui_add_multi_conversation',
+      'PR #7',
+      'share',
+      'export',
+      'com_ui_temporary',
+    ]);
+    expect(screen.getByTestId('pull-request-dialog')).toBeInTheDocument();
+    expect(mockPullRequestArgs).toContain('convo-1');
+  });
+
+  it('leaves the menu unchanged when the chat has no pull request', () => {
+    render(<HeaderMenu pullRequestConversationId="convo-1" />);
+
+    expect(labels()).not.toContain('PR #7');
+    expect(screen.queryByTestId('pull-request-dialog')).not.toBeInTheDocument();
+  });
+
+  it('asks for no pull request when the header names no conversation', () => {
+    render(<HeaderMenu />);
+
+    expect(mockPullRequestArgs.every((id) => id === '')).toBe(true);
+  });
+
+  it('shows the menu for a pull request alone', () => {
+    mockHookState.multiConvo.show = false;
+    mockHookState.temporary.show = false;
+    mockHookState.bookmarks.show = false;
+    mockHookState.exportShare.show = false;
+    mockHookState.pullRequest = { item: { label: 'PR #7' }, dialog: null };
+
+    render(<HeaderMenu pullRequestConversationId="convo-1" />);
+
+    expect(labels()).toEqual(['PR #7']);
+    expect(rows()[0]).toHaveAttribute('data-kind', 'item');
   });
 
   it('keeps every action reachable when groups are divided', () => {
@@ -186,8 +245,37 @@ describe('HeaderMenu', () => {
     expect(screen.getByTestId('header-menu-shared-link-indicator')).toBeInTheDocument();
     expect(screen.getByTestId('header-overflow-menu')).toHaveAttribute(
       'aria-label',
-      'com_ui_export_share_link_active',
+      'com_ui_chat_options_link_active',
     );
+  });
+
+  it('offers the trace in its own group only when the header says one is available', () => {
+    const { rerender } = render(<HeaderMenu trace={{ show: false, open: jest.fn() }} />);
+    expect(labels()).not.toContain('com_ui_trace_view');
+
+    rerender(<HeaderMenu trace={{ show: true, open: jest.fn() }} />);
+
+    expect(labels()).toEqual([
+      'com_ui_bookmarks',
+      'com_ui_add_multi_conversation',
+      'com_ui_trace_view',
+      'share',
+      'export',
+      'com_ui_temporary',
+    ]);
+    expect(rows().filter((node) => node.getAttribute('data-kind') === 'separator')).toHaveLength(3);
+  });
+
+  it('keeps the trace reachable when it is the only action left', () => {
+    mockHookState.multiConvo.show = false;
+    mockHookState.temporary.show = false;
+    mockHookState.bookmarks.show = false;
+    mockHookState.exportShare.show = false;
+
+    render(<HeaderMenu trace={{ show: true, open: jest.fn() }} />);
+
+    expect(labels()).toEqual(['com_ui_trace_view']);
+    expect(rows()[0]).toHaveAttribute('data-kind', 'item');
   });
 
   it('shows temporary chat as active to sighted users, not just assistive tech', () => {

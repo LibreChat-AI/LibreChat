@@ -132,9 +132,113 @@ describe('SharedLinkButton', () => {
         snapshotFiles: true,
       });
     });
-    expect(updateButton.querySelector('svg')).toHaveClass('animate-refresh-link-spin');
+    await waitFor(() =>
+      expect(updateButton.querySelector('svg')).toHaveClass('animate-refresh-link-spin'),
+    );
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(setSharedLink).toHaveBeenCalledWith(expect.stringContaining('/share/share-old'));
+  });
+
+  it('refetches the persisted tail and retries once when link creation misses it', async () => {
+    const resolveTargetMessageId = jest.fn().mockResolvedValue('message-1');
+    mockCreate
+      .mockRejectedValueOnce({
+        response: { data: { code: 'TARGET_MESSAGE_NOT_FOUND' } },
+      })
+      .mockResolvedValueOnce({ shareId: 'share-new' });
+    const setSharedLink = jest.fn();
+    renderActions({
+      share: { success: false, shareId: null },
+      resolveTargetMessageId,
+      setSharedLink,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_create_link' }));
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledTimes(2));
+    expect(resolveTargetMessageId).toHaveBeenCalledTimes(2);
+    expect(mockCreate).toHaveBeenNthCalledWith(1, {
+      conversationId: 'conversation-1',
+      targetMessageId: 'message-1',
+      snapshotFiles: true,
+    });
+    expect(mockCreate).toHaveBeenNthCalledWith(2, {
+      conversationId: 'conversation-1',
+      targetMessageId: 'message-1',
+      snapshotFiles: true,
+    });
+    expect(setSharedLink).toHaveBeenCalledWith(expect.stringContaining('/share/share-new'));
+    expect(mockShowToast).not.toHaveBeenCalled();
+  });
+
+  it('does not publish another branch when the selected tail is still unsaved', async () => {
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const missingTail = Object.assign(new Error('missing tail'), {
+      code: 'TARGET_MESSAGE_NOT_FOUND',
+    });
+    const resolveTargetMessageId = jest.fn().mockRejectedValue(missingTail);
+    renderActions({
+      share: { success: false, shareId: null },
+      resolveTargetMessageId,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_create_link' }));
+
+    await waitFor(() => expect(resolveTargetMessageId).toHaveBeenCalledTimes(2));
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_ui_share_target_not_saved',
+      severity: 'error',
+      showIcon: true,
+    });
+    consoleError.mockRestore();
+  });
+
+  it('retries a temporary empty read and publishes once persistence catches up', async () => {
+    const noMessages = Object.assign(new Error('no messages'), { code: 'NO_MESSAGES' });
+    const resolveTargetMessageId = jest
+      .fn()
+      .mockRejectedValueOnce(noMessages)
+      .mockResolvedValueOnce('message-1');
+    mockCreate.mockResolvedValue({ shareId: 'share-new' });
+    const setSharedLink = jest.fn();
+    renderActions({
+      share: { success: false, shareId: null },
+      resolveTargetMessageId,
+      setSharedLink,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_create_link' }));
+
+    await waitFor(() => expect(resolveTargetMessageId).toHaveBeenCalledTimes(2));
+    expect(mockCreate).toHaveBeenCalledWith({
+      conversationId: 'conversation-1',
+      targetMessageId: 'message-1',
+      snapshotFiles: true,
+    });
+    expect(setSharedLink).toHaveBeenCalledWith(expect.stringContaining('/share/share-new'));
+    expect(mockShowToast).not.toHaveBeenCalled();
+  });
+
+  it('shows a precise error when messages are still absent after the retry', async () => {
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const noMessages = Object.assign(new Error('no messages'), { code: 'NO_MESSAGES' });
+    const resolveTargetMessageId = jest.fn().mockRejectedValue(noMessages);
+    renderActions({
+      share: { success: false, shareId: null },
+      resolveTargetMessageId,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_create_link' }));
+
+    await waitFor(() => expect(resolveTargetMessageId).toHaveBeenCalledTimes(2));
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_ui_share_no_messages',
+      severity: 'error',
+      showIcon: true,
+    });
+    consoleError.mockRestore();
   });
 
   it('does not fake success when updating the link fails', async () => {

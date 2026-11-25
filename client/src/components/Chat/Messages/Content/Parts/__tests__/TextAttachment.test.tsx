@@ -1,6 +1,12 @@
 import React from 'react';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import type { TAttachment } from 'librechat-data-provider';
+
+let mockRemScale = 1;
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useRemScale: () => mockRemScale,
+}));
 import Attachment, { AttachmentGroup } from '../Attachment';
 
 jest.mock('~/hooks', () => ({
@@ -17,10 +23,6 @@ jest.mock('~/hooks', () => ({
    * deferred-preview lifecycle. Stub to a no-op for tests that
    * don't exercise the preview flow. */
   useAttachmentPreviewSync: () => ({ status: 'ready', previewError: undefined, isPolling: false }),
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
-    ref: { current: null },
-  }),
 }));
 
 const mockHandleDownload = jest.fn();
@@ -28,13 +30,18 @@ jest.mock('../LogLink', () => ({
   useAttachmentLink: () => ({ handleDownload: mockHandleDownload }),
 }));
 
-jest.mock('~/components/Chat/Input/Files/FileContainer', () => ({
-  __esModule: true,
-  default: ({ file, onClick }: { file: { filename?: string }; onClick?: () => void }) => (
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  useExpandCollapse: (isExpanded: boolean) => ({
+    style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
+    ref: { current: null },
+  }),
+  FileContainer: ({ file, onClick }: { file: { filename?: string }; onClick?: () => void }) => (
     <button type="button" data-testid="file-container" onClick={onClick}>
       {file.filename ?? ''}
     </button>
   ),
+  FilePreview: () => <div data-testid="file-preview" />,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/Image', () => ({
@@ -47,11 +54,6 @@ jest.mock('~/components/Messages/Content/Mermaid/Mermaid', () => ({
   default: ({ children }: { children: string }) => (
     <div data-testid="mermaid-render">{children}</div>
   ),
-}));
-
-jest.mock('~/components/Chat/Input/Files/FilePreview', () => ({
-  __esModule: true,
-  default: () => <div data-testid="file-preview" />,
 }));
 
 jest.mock('~/utils', () => ({
@@ -101,11 +103,13 @@ const restoreScrollHeight = () => {
 };
 
 afterAll(() => {
+  mockRemScale = 1;
   restoreScrollHeight();
 });
 
 describe('TextAttachment (via Attachment default export)', () => {
   beforeEach(() => {
+    mockRemScale = 1;
     mockHandleDownload.mockReset();
     setScrollHeight(0);
   });
@@ -119,12 +123,12 @@ describe('TextAttachment (via Attachment default export)', () => {
 
   it('renders a download chip when filepath is present', () => {
     render(<Attachment attachment={textAttachment()} />);
-    expect(screen.getByTestId('file-container')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'output.json' })).toBeInTheDocument();
   });
 
   it('hides the download chip when filepath is absent', () => {
     render(<Attachment attachment={textAttachment({ filepath: '' })} />);
-    expect(screen.queryByTestId('file-container')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'output.json' })).not.toBeInTheDocument();
   });
 
   it('does not render a show/collapse button when content fits', () => {
@@ -136,7 +140,7 @@ describe('TextAttachment (via Attachment default export)', () => {
   it('renders an expand button with aria-expanded=false when content overflows', () => {
     setScrollHeight(800); // > COLLAPSED_MAX_HEIGHT (320)
     render(<Attachment attachment={textAttachment()} />);
-    const button = screen.getByRole('button', { name: 'Show all' });
+    const button = screen.getByRole('button', { name: 'Show All' });
     expect(button).toHaveAttribute('aria-expanded', 'false');
     expect(button).toHaveAttribute('aria-controls');
   });
@@ -144,12 +148,32 @@ describe('TextAttachment (via Attachment default export)', () => {
   it('toggles aria-expanded and label when the button is clicked', () => {
     setScrollHeight(800);
     render(<Attachment attachment={textAttachment()} />);
-    const button = screen.getByRole('button', { name: 'Show all' });
+    const button = screen.getByRole('button', { name: 'Show All' });
     act(() => {
       fireEvent.click(button);
     });
     const expanded = screen.getByRole('button', { name: 'Collapse' });
     expect(expanded).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('recalculates the text preview when the root scale changes', () => {
+    setScrollHeight(300);
+    mockRemScale = 1.5;
+    const { container, rerender } = render(<Attachment attachment={textAttachment()} />);
+    expect(screen.queryByRole('button', { name: 'Show All' })).not.toBeInTheDocument();
+
+    mockRemScale = 0.5;
+    rerender(<Attachment attachment={textAttachment()} />);
+    expect(screen.getByRole('button', { name: 'Show All' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(container.querySelector('pre')).toHaveStyle({ maxHeight: '160px' });
+
+    mockRemScale = 1.5;
+    rerender(<Attachment attachment={textAttachment()} />);
+    expect(screen.queryByRole('button', { name: 'Show All' })).not.toBeInTheDocument();
+    expect(container.querySelector('pre')?.style.maxHeight).toBe('');
   });
 
   it('falls through to FileAttachment when text is missing', () => {
@@ -158,19 +182,20 @@ describe('TextAttachment (via Attachment default export)', () => {
     // FileAttachment also renders the FileContainer mock — we assert the
     // <pre> is absent to confirm the text branch was not taken.
     expect(screen.queryByText('a,b,c\n1,2,3')).not.toBeInTheDocument();
-    expect(screen.getByTestId('file-container')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'output.json' })).toBeInTheDocument();
   });
 
   it('falls through to FileAttachment when text is the empty string', () => {
     const empty = textAttachment({ text: '' });
     const { container } = render(<Attachment attachment={empty} />);
     expect(container.querySelector('pre')).toBeNull();
-    expect(screen.getByTestId('file-container')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'output.json' })).toBeInTheDocument();
   });
 });
 
 describe('AttachmentGroup', () => {
   beforeEach(() => {
+    mockRemScale = 1;
     setScrollHeight(0);
   });
 
@@ -194,7 +219,7 @@ describe('AttachmentGroup', () => {
     ] as TAttachment[];
     const { container } = render(<AttachmentGroup attachments={attachments} />);
     expect(container.querySelector('pre')).toBeNull();
-    expect(screen.getAllByTestId('file-container').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'archive.zip' })).toBeInTheDocument();
   });
 
   it('does not collapse a single downloadable text preview with a non-downloadable placeholder', () => {
@@ -215,9 +240,9 @@ describe('AttachmentGroup', () => {
 
     const { container } = render(<AttachmentGroup attachments={attachments} />);
 
-    expect(screen.queryByRole('button', { name: 'com_ui_show_n_files' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Show 2 files' })).not.toBeInTheDocument();
     expect(container.querySelector('pre')?.textContent).toBe('{"ok":true}');
-    expect(screen.getByTestId('file-container')).toHaveTextContent('output.json');
+    expect(screen.getByRole('button', { name: 'output.json' })).toBeInTheDocument();
   });
 
   it('keeps long grouped text previews clamped until the nested preview is expanded', () => {
@@ -238,14 +263,14 @@ describe('AttachmentGroup', () => {
     ] as TAttachment[];
 
     const { container } = render(<AttachmentGroup attachments={attachments} />);
-    const groupToggle = screen.getByRole('button', { name: 'com_ui_show_n_files' });
+    const groupToggle = screen.getByRole('button', { name: 'Show 2 files' });
     fireEvent.click(groupToggle);
 
     expect(screen.getByText('output.json')).toBeInTheDocument();
     const pre = container.querySelector('pre');
     expect(pre).not.toBeNull();
     expect(pre).toHaveStyle({ maxHeight: '320px' });
-    const previewToggle = screen.getByRole('button', { name: 'Show all' });
+    const previewToggle = screen.getByRole('button', { name: 'Show All' });
     expect(previewToggle).toHaveAttribute('aria-expanded', 'false');
 
     fireEvent.click(previewToggle);

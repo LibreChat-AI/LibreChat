@@ -1,7 +1,7 @@
 /* eslint-disable i18next/no-literal-string */
 import userEvent from '@testing-library/user-event';
 import { render, screen } from 'test/layout-test-utils';
-import { SettingsDialog } from '../index';
+import SettingsDialog from '../Dialog';
 
 jest.mock('../Content', () =>
   jest.fn(({ query }: { activeTab: string; query: string; ctx: unknown }) =>

@@ -1,6 +1,6 @@
 import winston from 'winston';
 import 'winston-daily-rotate-file';
-import { getLogDirectory } from './utils';
+import { getLogDirectory, logLevels, resolveConsoleLevel } from './utils';
 
 const { NODE_ENV, DEBUG_LOGGING = 'false', LOG_TO_FILE } = process.env;
 
@@ -9,17 +9,6 @@ const useDebugLogging =
   DEBUG_LOGGING === 'true';
 
 const useFileLogging = typeof LOG_TO_FILE !== 'string' || LOG_TO_FILE.toLowerCase() !== 'false';
-
-const levels: winston.config.AbstractConfigSetLevels = {
-  error: 0,
-  warn: 1,
-  info: 2,
-  http: 3,
-  verbose: 4,
-  debug: 5,
-  activity: 6,
-  silly: 7,
-};
 
 winston.addColors({
   info: 'green',
@@ -65,16 +54,19 @@ const consoleFormat = winston.format.combine(
   winston.format.printf((info) => `${info.timestamp} ${info.level}: ${info.message}`),
 );
 
+const { level: consoleLevel, silent: consoleSilent } = resolveConsoleLevel();
+
 transports.push(
   new winston.transports.Console({
-    level: 'info',
+    level: consoleLevel,
+    silent: consoleSilent,
     format: consoleFormat,
   }),
 );
 
 const logger: winston.Logger = winston.createLogger({
   level: level(),
-  levels,
+  levels: logLevels,
   transports,
 });
 

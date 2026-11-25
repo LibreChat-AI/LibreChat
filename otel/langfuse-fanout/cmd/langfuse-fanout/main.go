@@ -42,6 +42,9 @@ const (
 	metricsPath           = "/metrics"
 	tenantExportAttribute = "librechat.langfuse.tenant_export.enabled"
 	tenantDestAttribute   = "librechat.langfuse.destination"
+	tenantIDAttribute     = "librechat.tenant.id"
+	unknownTenantID       = "<unknown>"
+	multipleTenantIDs     = "<multiple>"
 )
 
 type config struct {
@@ -269,19 +272,25 @@ func (g *gateway) handle(w http.ResponseWriter, r *http.Request) {
 func (g *gateway) handleTraces(w http.ResponseWriter, r *http.Request, route route) {
 	body, err := readMaybeGzip(r)
 	if err != nil {
+		g.recordTraceExport(route, "error", unknownTenantID)
 		g.writeGatewayError(w, r, route, "trace_export", http.StatusBadRequest, "failed to read request body", err)
 		return
 	}
 
 	contentType := r.Header.Get("Content-Type")
-	if route.destination != "" &&
+	tenantID := unknownTenantID
+	authorizedTenantRoute := route.destination != "" &&
 		g.cfg.tenants[route.destination] != "" &&
-		strings.TrimSpace(r.Header.Get("Authorization")) != "" {
-		body, err = addTenantRouteAttributes(body, contentType, route.destination)
+		strings.TrimSpace(r.Header.Get("Authorization")) != ""
+	if authorizedTenantRoute {
+		body, tenantID, err = addTenantRouteAttributes(body, contentType, route.destination)
 		if err != nil {
+			g.recordTraceExport(route, "error", tenantID)
 			g.writeGatewayError(w, r, route, "trace_route_attributes", http.StatusBadRequest, "failed to add OTLP tenant routing attributes", err)
 			return
 		}
+	} else if g.metrics != nil {
+		tenantID = extractTraceTenantID(body, contentType)
 	}
 
 	contentEncoding := ""
@@ -289,6 +298,7 @@ func (g *gateway) handleTraces(w http.ResponseWriter, r *http.Request, route rou
 		contentEncoding = "gzip"
 		body, err = gzipBytes(body)
 		if err != nil {
+			g.recordTraceExport(route, "error", tenantID)
 			g.writeGatewayError(w, r, route, "trace_gzip", http.StatusInternalServerError, "failed to encode request body", err)
 			return
 		}
@@ -296,13 +306,13 @@ func (g *gateway) handleTraces(w http.ResponseWriter, r *http.Request, route rou
 
 	resp, err := g.forwardTraceToCollector(r.Context(), r.Header, body, contentType, contentEncoding)
 	if err != nil {
-		g.recordTraceExport(route, "error")
+		g.recordTraceExport(route, "error", tenantID)
 		g.writeGatewayError(w, r, route, "trace_collector", http.StatusBadGateway, "trace collector export failed", err)
 		return
 	}
 	defer resp.Body.Close()
 
-	g.recordTraceExport(route, "success")
+	g.recordTraceExport(route, "success", tenantID)
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
@@ -734,11 +744,15 @@ func (g *gateway) doUpstreamWithClient(client *http.Client, req *http.Request, o
 	return resp, nil
 }
 
-func (g *gateway) recordTraceExport(route route, result string) {
+func (g *gateway) recordTraceExport(route route, result string, tenantID string) {
 	if g.metrics == nil {
 		return
 	}
-	g.metrics.recordTraceExport(routeDestinationLabel(route), result)
+	destination := centralName
+	if _, ok := g.cfg.tenants[route.destination]; ok {
+		destination = routeDestinationLabel(route)
+	}
+	g.metrics.recordTraceExport(destination, result, tenantID)
 }
 
 func (g *gateway) recordMediaDivergence(kind string, destination string) {
@@ -774,18 +788,111 @@ func (g *gateway) recordUploadPlanStoreError(operation string) {
 	}
 }
 
-func addTenantRouteAttributes(body []byte, contentType string, destination string) ([]byte, error) {
+func addTenantRouteAttributes(body []byte, contentType string, destination string) ([]byte, string, error) {
 	if isJSONContentType(contentType) {
 		return addJSONTenantRouteAttributes(body, destination)
 	}
 	return addProtobufTenantRouteAttributes(body, destination)
 }
 
-func addProtobufTenantRouteAttributes(body []byte, destination string) ([]byte, error) {
+func extractTraceTenantID(body []byte, contentType string) string {
+	if isJSONContentType(contentType) {
+		return extractJSONTraceTenantID(body)
+	}
+	return extractProtobufTraceTenantID(body)
+}
+
+func resolveTraceTenantID(tenantIDs map[string]struct{}) string {
+	if len(tenantIDs) == 0 {
+		return unknownTenantID
+	}
+	if len(tenantIDs) > 1 {
+		return multipleTenantIDs
+	}
+	for tenantID := range tenantIDs {
+		return tenantID
+	}
+	return unknownTenantID
+}
+
+func extractProtobufTraceTenantID(body []byte) string {
 	var request tracepb.ExportTraceServiceRequest
 	if err := proto.Unmarshal(body, &request); err != nil {
-		return nil, err
+		return unknownTenantID
 	}
+	return protobufTraceTenantID(&request)
+}
+
+func protobufTraceTenantID(request *tracepb.ExportTraceServiceRequest) string {
+	tenantIDs := make(map[string]struct{})
+	for _, resourceSpan := range request.ResourceSpans {
+		for _, scopeSpan := range resourceSpan.ScopeSpans {
+			for _, span := range scopeSpan.Spans {
+				for _, attribute := range span.Attributes {
+					if attribute.Key != tenantIDAttribute {
+						continue
+					}
+					tenantID := strings.TrimSpace(attribute.Value.GetStringValue())
+					if tenantID != "" {
+						tenantIDs[tenantID] = struct{}{}
+						if len(tenantIDs) > 1 {
+							return multipleTenantIDs
+						}
+					}
+				}
+			}
+		}
+	}
+	return resolveTraceTenantID(tenantIDs)
+}
+
+func extractJSONTraceTenantID(body []byte) string {
+	var request map[string]any
+	if err := json.Unmarshal(body, &request); err != nil {
+		return unknownTenantID
+	}
+	return jsonTraceTenantID(request)
+}
+
+func jsonTraceTenantID(request map[string]any) string {
+	tenantIDs := make(map[string]struct{})
+	resourceSpans, _ := request["resourceSpans"].([]any)
+	for _, resourceSpan := range resourceSpans {
+		resourceSpanMap, _ := resourceSpan.(map[string]any)
+		scopeSpans, _ := resourceSpanMap["scopeSpans"].([]any)
+		for _, scopeSpan := range scopeSpans {
+			scopeSpanMap, _ := scopeSpan.(map[string]any)
+			spans, _ := scopeSpanMap["spans"].([]any)
+			for _, span := range spans {
+				spanMap, _ := span.(map[string]any)
+				attributes, _ := spanMap["attributes"].([]any)
+				for _, attribute := range attributes {
+					attributeMap, _ := attribute.(map[string]any)
+					if attributeMap["key"] != tenantIDAttribute {
+						continue
+					}
+					value, _ := attributeMap["value"].(map[string]any)
+					tenantID, _ := value["stringValue"].(string)
+					tenantID = strings.TrimSpace(tenantID)
+					if tenantID != "" {
+						tenantIDs[tenantID] = struct{}{}
+						if len(tenantIDs) > 1 {
+							return multipleTenantIDs
+						}
+					}
+				}
+			}
+		}
+	}
+	return resolveTraceTenantID(tenantIDs)
+}
+
+func addProtobufTenantRouteAttributes(body []byte, destination string) ([]byte, string, error) {
+	var request tracepb.ExportTraceServiceRequest
+	if err := proto.Unmarshal(body, &request); err != nil {
+		return nil, unknownTenantID, err
+	}
+	tenantID := protobufTraceTenantID(&request)
 
 	for _, resourceSpan := range request.ResourceSpans {
 		for _, scopeSpan := range resourceSpan.ScopeSpans {
@@ -796,7 +903,8 @@ func addProtobufTenantRouteAttributes(body []byte, destination string) ([]byte, 
 		}
 	}
 
-	return proto.Marshal(&request)
+	updatedBody, err := proto.Marshal(&request)
+	return updatedBody, tenantID, err
 }
 
 func upsertSpanStringAttribute(span *tracev1.Span, key string, value string) {
@@ -818,11 +926,12 @@ func stringAnyValue(value string) *commonv1.AnyValue {
 	}
 }
 
-func addJSONTenantRouteAttributes(body []byte, destination string) ([]byte, error) {
+func addJSONTenantRouteAttributes(body []byte, destination string) ([]byte, string, error) {
 	var request map[string]any
 	if err := json.Unmarshal(body, &request); err != nil {
-		return nil, err
+		return nil, unknownTenantID, err
 	}
+	tenantID := jsonTraceTenantID(request)
 	resourceSpans, _ := request["resourceSpans"].([]any)
 	for _, resourceSpan := range resourceSpans {
 		resourceSpanMap, _ := resourceSpan.(map[string]any)
@@ -837,7 +946,8 @@ func addJSONTenantRouteAttributes(body []byte, destination string) ([]byte, erro
 			}
 		}
 	}
-	return json.Marshal(request)
+	updatedBody, err := json.Marshal(request)
+	return updatedBody, tenantID, err
 }
 
 func upsertJSONSpanStringAttribute(span map[string]any, key string, value string) {
@@ -1174,9 +1284,20 @@ func isAzureUploadURL(value string) bool {
 
 func allowedUploadContentType(value string) bool {
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(value, ";")[0]))
-	return mediaType == "application/octet-stream" ||
-		mediaType == "application/pdf" ||
-		strings.HasPrefix(mediaType, "image/") ||
+	switch mediaType {
+	case "text/plain", "text/html", "text/css", "text/csv", "text/markdown",
+		"text/x-python", "text/x-typescript", "application/javascript", "application/x-yaml",
+		"application/pdf", "application/msword", "application/rtf",
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"application/vnd.ms-excel",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		"application/json", "application/x-ndjson", "application/xml",
+		"application/vnd.apache.parquet", "application/zip", "application/gzip",
+		"application/x-tar", "application/x-7z-compressed", "application/octet-stream":
+		return true
+	}
+	return strings.HasPrefix(mediaType, "image/") ||
 		strings.HasPrefix(mediaType, "audio/") ||
 		strings.HasPrefix(mediaType, "video/")
 }

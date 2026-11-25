@@ -1,5 +1,6 @@
-import { useRecoilCallback } from 'recoil';
-import store from '~/store';
+import { useCallback } from 'react';
+import { useStore } from 'jotai';
+import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 
 /**
  * Focus a regenerated response's fork on its newest sibling. A regeneration
@@ -12,14 +13,14 @@ import store from '~/store';
  * event so there is no flash on the kept sibling in between.
  */
 export default function useFocusRegeneratedResponse() {
-  return useRecoilCallback(
-    ({ set }) =>
-      (parentMessageId?: string | null) => {
-        if (parentMessageId == null) {
-          return;
-        }
-        set(store.messagesSiblingIdxFamily(parentMessageId), 0);
-      },
-    [],
+  const jotaiStore = useStore();
+  return useCallback(
+    (parentMessageId?: string | null) => {
+      if (parentMessageId == null) {
+        return;
+      }
+      jotaiStore.set(siblingIdxFamily(siblingKey(parentMessageId)), 0);
+    },
+    [jotaiStore],
   );
 }

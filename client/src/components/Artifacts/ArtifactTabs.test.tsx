@@ -16,6 +16,7 @@ const mockUseGetSharedStartupConfig = jest.fn((_shareId?: unknown, _options?: un
   data: {},
 }));
 let mockCurrentCode: string | undefined;
+let mockCodeArtifactId: string | undefined;
 
 jest.mock('./ArtifactCodeEditor', () => ({
   ArtifactCodeEditor: (props: EditorProps) => mockEditor(props),
@@ -52,7 +53,8 @@ jest.mock('~/components/Messages/Content/Mermaid/Mermaid', () => {
 });
 
 jest.mock('~/Providers/EditorContext', () => ({
-  useCodeState: () => ({ currentCode: mockCurrentCode, setCurrentCode: jest.fn() }),
+  useArtifactCode: (artifactId: string) =>
+    mockCodeArtifactId === artifactId ? mockCurrentCode : undefined,
 }));
 
 jest.mock('~/Providers', () => ({
@@ -87,6 +89,7 @@ describe('ArtifactTabs Mermaid editing', () => {
     mockUseGetStartupConfig.mockClear();
     mockUseGetSharedStartupConfig.mockClear();
     mockCurrentCode = undefined;
+    mockCodeArtifactId = undefined;
   });
 
   it('renders Mermaid natively without loading startup config or Sandpack preview', () => {
@@ -139,9 +142,10 @@ describe('ArtifactTabs Mermaid editing', () => {
       </Tabs.Root>,
     );
 
-    /* Editor text only belongs to the preview once it was typed against the
-     * artifact on screen, so it is applied on a later render, not on mount. */
+    /* Editor text belongs to the preview only while it is this artifact's
+     * buffer, so the ownership the editor recorded is what applies it. */
     mockCurrentCode = 'graph TD\nA-->C';
+    mockCodeArtifactId = artifact.id;
     rerender(
       <Tabs.Root value="preview">
         <ArtifactTabs artifact={artifact} previewRef={previewRef} />
@@ -231,12 +235,13 @@ describe('ArtifactTabs Mermaid editing', () => {
     };
 
     mockCurrentCode = 'graph TD\nEDITED-->A';
+    mockCodeArtifactId = first.id;
     const { rerender } = render(
       <Tabs.Root value="preview">
         <ArtifactTabs artifact={first} previewRef={previewRef} />
       </Tabs.Root>,
     );
-
+    testGlobal.nativeMermaidRenderer?.mockClear();
     rerender(
       <Tabs.Root value="preview">
         <ArtifactTabs artifact={second} previewRef={previewRef} />

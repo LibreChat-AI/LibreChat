@@ -1,5 +1,7 @@
 import {
+  AGENT_TRIGGER_COALESCE_WINDOW_MS,
   AgentTriggerDeliveryError,
+  MAX_AGENT_TRIGGER_BATCH_BYTES,
   MAX_AGENT_TRIGGER_ENVELOPE_BYTES,
   prepareAgentTriggerDelivery,
 } from './delivery';
@@ -90,6 +92,83 @@ describe('prepareAgentTriggerDelivery', () => {
 
     expect(second.orderingKey).toBe(first.orderingKey);
     expect(anotherUser.orderingKey).not.toBe(first.orderingKey);
+  });
+
+  it('bounds opt-in coalescing to one authenticated child binding', () => {
+    const availableAt = new Date('2026-08-17T12:00:00.000Z');
+    const bound = envelope({
+      mode: 'continue',
+      target: {
+        agentId: 'agent-1',
+        conversationId: 'child-thread',
+        parentMessageId: 'placeholder',
+        bindingId: `evtbind_${'a'.repeat(48)}`,
+        sourceKeyId: 'source-key',
+      },
+    });
+    const prepared = prepareAgentTriggerDelivery(bound, {
+      availableAt,
+      coalesce: { key: 'commentary' },
+    });
+
+    expect(prepared).toMatchObject({
+      coalesceKey: expect.stringMatching(/^trigger_batch_[a-f0-9]{64}$/),
+      coalesceFrom: availableAt,
+      coalesceUntil: new Date(availableAt.getTime() + AGENT_TRIGGER_COALESCE_WINDOW_MS),
+      availableAt: new Date(availableAt.getTime() + AGENT_TRIGGER_COALESCE_WINDOW_MS),
+      envelopeBytes: expect.any(Number),
+    });
+    expect(() =>
+      prepareAgentTriggerDelivery(envelope(), { coalesce: { key: 'commentary' } }),
+    ).toThrow('only for authenticated bound-child continue events');
+    expect(() => prepareAgentTriggerDelivery(bound, { coalesce: { key: ' '.repeat(2) } })).toThrow(
+      'coalesce.key',
+    );
+  });
+
+  it('bounds an explicitly coalesced envelope below the ordinary single-delivery cap', () => {
+    const bound = envelope({
+      mode: 'continue',
+      target: {
+        agentId: 'agent-1',
+        conversationId: 'child-thread',
+        parentMessageId: 'placeholder',
+        bindingId: `evtbind_${'a'.repeat(48)}`,
+        sourceKeyId: 'source-key',
+      },
+      input: 'x'.repeat(MAX_AGENT_TRIGGER_BATCH_BYTES),
+    });
+
+    expect(() => prepareAgentTriggerDelivery(bound, { coalesce: { key: 'commentary' } })).toThrow(
+      `Coalesced agent trigger envelope exceeds ${MAX_AGENT_TRIGGER_BATCH_BYTES} bytes`,
+    );
+  });
+
+  it('rejects action evidence contracts on observational batches', () => {
+    const bound = envelope({
+      mode: 'continue',
+      target: {
+        agentId: 'agent-1',
+        conversationId: 'child-thread',
+        parentMessageId: 'placeholder',
+        bindingId: `evtbind_${'a'.repeat(48)}`,
+        sourceKeyId: 'source-key',
+      },
+      expectedAction: {
+        toolName: 'submit_move',
+        argumentSubset: { gameId: 'game-1', expectedPly: 7 },
+      },
+    });
+
+    expect(() => prepareAgentTriggerDelivery(bound, { coalesce: { key: 'commentary' } })).toThrow(
+      'Expected actions cannot be coalesced',
+    );
+  });
+
+  it('accepts action evidence contracts only for bound child continuations', () => {
+    expect(() =>
+      prepareAgentTriggerDelivery(envelope({ expectedAction: { toolName: 'submit_move' } })),
+    ).toThrow('Expected actions require an authenticated bound-child continue event');
   });
 
   it('rejects invalid scheduling metadata and oversized envelopes', () => {

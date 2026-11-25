@@ -1,6 +1,8 @@
+import { RetentionMode } from 'librechat-data-provider';
 import type { AppConfig } from '~/types';
 import {
   createTempChatExpirationDate,
+  createChatExpirationDate,
   getTempChatRetentionHours,
   DEFAULT_RETENTION_HOURS,
   MIN_RETENTION_HOURS,
@@ -87,6 +89,46 @@ describe('tempChatRetention', () => {
       };
       const result = getTempChatRetentionHours(config?.interfaceConfig);
       expect(result).toBe(DEFAULT_RETENTION_HOURS);
+    });
+  });
+
+  describe('createChatExpirationDate', () => {
+    it.each([
+      [RetentionMode.ALL, true, 1],
+      [RetentionMode.ALL, false, 2160],
+      [RetentionMode.TEMPORARY, true, 1],
+      [RetentionMode.TEMPORARY, false, 1],
+    ])('selects the policy for mode=%s, temporary=%s', (retentionMode, isTemporary, hours) => {
+      const now = Date.now();
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      expect(
+        createChatExpirationDate(
+          {
+            retentionMode,
+            temporaryChatRetention: 1,
+            generalChatRetention: 2160,
+          },
+          isTemporary,
+        ),
+      ).toEqual(new Date(now + hours * 3600000));
+    });
+
+    it('keeps the existing environment fallback when general retention is omitted', () => {
+      process.env.TEMP_CHAT_RETENTION_HOURS = '48';
+      const now = Date.now();
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      expect(createChatExpirationDate({ retentionMode: RetentionMode.ALL })).toEqual(
+        new Date(now + 48 * 3600000),
+      );
+    });
+
+    it('uses general retention ahead of the temporary environment setting', () => {
+      process.env.TEMP_CHAT_RETENTION_HOURS = '1';
+      const now = Date.now();
+      jest.spyOn(Date, 'now').mockReturnValue(now);
+      expect(
+        createChatExpirationDate({ retentionMode: RetentionMode.ALL, generalChatRetention: 2160 }),
+      ).toEqual(new Date(now + 2160 * 3600000));
     });
   });
 

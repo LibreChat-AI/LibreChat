@@ -1,5 +1,6 @@
 import axios from 'axios';
-import { decryptV2 } from '@librechat/data-schemas';
+import { inspect } from 'util';
+import { logger, decryptV2 } from '@librechat/data-schemas';
 import { TokenExchangeMethodEnum } from 'librechat-data-provider';
 import type { AxiosRequestConfig } from 'axios';
 import { getAccessToken, refreshAccessToken } from './tokens';
@@ -21,6 +22,18 @@ jest.mock('@librechat/data-schemas', () => ({
     }
     if (value === 'encrypted-refresh-token') {
       return 'refresh-token';
+    }
+    if (value === 'encrypted-encoded-client-id') {
+      return 'client%40id.com';
+    }
+    if (value === 'encrypted-encoded-client-secret') {
+      return 's%2Bcret%3D%2Fend';
+    }
+    if (value === 'encrypted-legacy-client-id') {
+      return 'legacy%value';
+    }
+    if (value === 'encrypted-legacy-client-secret') {
+      return '100%secret';
     }
     return value;
   }),
@@ -64,6 +77,76 @@ describe('action OAuth token exchange validation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedAxios.mockResolvedValue({ data: tokenResponse });
+  });
+
+  describe.each(['exchange', 'refresh'] as const)('%s credential-safe diagnostics', (operation) => {
+    const message =
+      operation === 'exchange' ? 'Error exchanging OAuth code' : 'Error refreshing OAuth tokens';
+
+    function requestTokens() {
+      const fields = {
+        ...baseFields,
+        token_exchange_method: TokenExchangeMethodEnum.DefaultPost,
+      };
+      const methods = createTokenMethods();
+      return {
+        methods,
+        request:
+          operation === 'exchange'
+            ? getAccessToken(
+                {
+                  ...fields,
+                  code: 'authorization-code',
+                  redirect_uri: 'https://chat.example.com/api/actions/action-1/oauth/callback',
+                },
+                methods,
+              )
+            : refreshAccessToken({ ...fields, refresh_token: 'refresh-token' }, methods),
+      };
+    }
+
+    it.each([true, false])('omits raw errors with an HTTP response: %s', async (hasResponse) => {
+      const secret = 'sentinel-oauth-credential';
+      const error = Object.assign(new Error(`Provider echoed ${secret}`), {
+        isAxiosError: true,
+        config: {
+          data: `client_secret=${secret}&refresh_token=${secret}`,
+          headers: { Authorization: `Basic ${secret}` },
+          url: `${baseFields.client_url}?secret=${secret}`,
+        },
+        request: { body: secret },
+        ...(hasResponse && {
+          response: {
+            status: 400,
+            data: { error_description: secret, refresh_token: secret },
+            headers: { 'set-cookie': secret },
+          },
+        }),
+      });
+      mockedAxios.mockRejectedValueOnce(error);
+      const { request, methods } = requestTokens();
+
+      await expect(request).rejects.toThrow(message);
+      expect(logger.error).toHaveBeenCalledWith(message, {
+        type: 'Error',
+        ...(hasResponse && { status: 400 }),
+      });
+      expect(inspect(jest.mocked(logger.error).mock.calls, { depth: null })).not.toContain(secret);
+      expect(methods.findToken).not.toHaveBeenCalled();
+      expect(methods.createToken).not.toHaveBeenCalled();
+    });
+
+    it('does not log or store a token response missing its access token', async () => {
+      const secret = 'sentinel-refresh-token';
+      mockedAxios.mockResolvedValueOnce({ data: { refresh_token: secret, extra: secret } });
+      const { request, methods } = requestTokens();
+
+      await expect(request).rejects.toThrow(message);
+      expect(logger.error).toHaveBeenCalledWith('Access token not found');
+      expect(inspect(jest.mocked(logger.error).mock.calls, { depth: null })).not.toContain(secret);
+      expect(methods.findToken).not.toHaveBeenCalled();
+      expect(methods.createToken).not.toHaveBeenCalled();
+    });
   });
 
   it.each([
@@ -165,6 +248,37 @@ describe('action OAuth token exchange validation', () => {
     expect(params.get('grant_type')).toBe('refresh_token');
     expect(params.get('client_id')).toBe('client-id');
     expect(params.get('client_secret')).toBe('client-secret');
+    expect(config.timeout).toBe(300_000);
+  });
+
+  it('bounds the refresh-token exchange by the caller timeout', async () => {
+    await refreshAccessToken(
+      {
+        ...baseFields,
+        refresh_token: 'refresh-token',
+        token_exchange_method: TokenExchangeMethodEnum.DefaultPost,
+        timeout: 5_000,
+      },
+      createTokenMethods(),
+    );
+
+    expect(getAxiosConfig().timeout).toBe(5_000);
+  });
+
+  it('bounds the authorization-code exchange by the caller timeout', async () => {
+    await getAccessToken(
+      {
+        ...baseFields,
+        code: 'authorization-code',
+        redirect_uri: 'https://chat.example.com/api/actions/action-1/oauth/callback',
+        token_exchange_method: TokenExchangeMethodEnum.DefaultPost,
+        timeout: 5_000,
+      },
+      createTokenMethods(),
+    );
+
+    expect(getAxiosConfig().timeout).toBe(5_000);
+    expect(getAxiosConfig().signal).toBeInstanceOf(AbortSignal);
   });
 
   it('uses Basic auth for refresh-token exchanges without putting client secrets in the body', async () => {
@@ -213,6 +327,132 @@ describe('action OAuth token exchange validation', () => {
     );
 
     expect(accessConfig.httpsAgent).toBe(refreshConfig.httpsAgent);
+  });
+
+  describe('URL-encoded stored credentials', () => {
+    const encodedFields = {
+      ...baseFields,
+      encrypted_oauth_client_id: 'encrypted-encoded-client-id',
+      encrypted_oauth_client_secret: 'encrypted-encoded-client-secret',
+    };
+
+    const legacyFields = {
+      ...baseFields,
+      encrypted_oauth_client_id: 'encrypted-legacy-client-id',
+      encrypted_oauth_client_secret: 'encrypted-legacy-client-secret',
+    };
+
+    it('decodes credentials in the authorization-code exchange body', async () => {
+      await getAccessToken(
+        {
+          ...encodedFields,
+          code: 'authorization-code',
+          redirect_uri: 'https://chat.example.com/api/actions/action-1/oauth/callback',
+          token_exchange_method: TokenExchangeMethodEnum.DefaultPost,
+        },
+        createTokenMethods(),
+      );
+
+      const params = new URLSearchParams(getAxiosConfig().data as string);
+
+      expect(params.get('client_id')).toBe('client@id.com');
+      expect(params.get('client_secret')).toBe('s+cret=/end');
+    });
+
+    it('decodes credentials in the authorization-code Basic auth header', async () => {
+      await getAccessToken(
+        {
+          ...encodedFields,
+          code: 'authorization-code',
+          redirect_uri: 'https://chat.example.com/api/actions/action-1/oauth/callback',
+          token_exchange_method: TokenExchangeMethodEnum.BasicAuthHeader,
+        },
+        createTokenMethods(),
+      );
+
+      const headers = getAxiosConfig().headers as Record<string, string>;
+      const credentials = Buffer.from(
+        headers.Authorization.replace('Basic ', ''),
+        'base64',
+      ).toString('utf8');
+
+      expect(credentials).toBe('client@id.com:s+cret=/end');
+    });
+
+    it('decodes credentials in the refresh-token exchange body', async () => {
+      await refreshAccessToken(
+        {
+          ...encodedFields,
+          refresh_token: 'refresh-token',
+          token_exchange_method: TokenExchangeMethodEnum.DefaultPost,
+        },
+        createTokenMethods(),
+      );
+
+      const params = new URLSearchParams(getAxiosConfig().data as string);
+
+      expect(params.get('client_id')).toBe('client@id.com');
+      expect(params.get('client_secret')).toBe('s+cret=/end');
+    });
+
+    it('decodes credentials in the refresh-token Basic auth header', async () => {
+      await refreshAccessToken(
+        {
+          ...encodedFields,
+          refresh_token: 'refresh-token',
+          token_exchange_method: TokenExchangeMethodEnum.BasicAuthHeader,
+        },
+        createTokenMethods(),
+      );
+
+      const headers = getAxiosConfig().headers as Record<string, string>;
+      const credentials = Buffer.from(
+        headers.Authorization.replace('Basic ', ''),
+        'base64',
+      ).toString('utf8');
+
+      expect(credentials).toBe('client@id.com:s+cret=/end');
+    });
+
+    it('passes through legacy unencoded credentials containing a stray percent sign', async () => {
+      await expect(
+        getAccessToken(
+          {
+            ...legacyFields,
+            code: 'authorization-code',
+            redirect_uri: 'https://chat.example.com/api/actions/action-1/oauth/callback',
+            token_exchange_method: TokenExchangeMethodEnum.DefaultPost,
+          },
+          createTokenMethods(),
+        ),
+      ).resolves.toEqual(tokenResponse);
+
+      const params = new URLSearchParams(getAxiosConfig().data as string);
+
+      expect(params.get('client_id')).toBe('legacy%value');
+      expect(params.get('client_secret')).toBe('100%secret');
+    });
+
+    it('passes through legacy unencoded credentials when refreshing', async () => {
+      await expect(
+        refreshAccessToken(
+          {
+            ...legacyFields,
+            refresh_token: 'refresh-token',
+            token_exchange_method: TokenExchangeMethodEnum.BasicAuthHeader,
+          },
+          createTokenMethods(),
+        ),
+      ).resolves.toEqual(tokenResponse);
+
+      const headers = getAxiosConfig().headers as Record<string, string>;
+      const credentials = Buffer.from(
+        headers.Authorization.replace('Basic ', ''),
+        'base64',
+      ).toString('utf8');
+
+      expect(credentials).toBe('legacy%value:100%secret');
+    });
   });
 
   it('allows explicitly exempted private token endpoints', async () => {

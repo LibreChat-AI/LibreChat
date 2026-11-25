@@ -19,6 +19,42 @@ export interface ChunkPublicationOptions {
   coalesce?: boolean;
 }
 
+/**
+ * Who emitted a chunk and where it sits in that emitter's order: a manager's id and its
+ * emission count. A subscriber on the emitting replica compares it with the count its resume
+ * snapshot was copied at, so it can tell a delta the snapshot already holds from a later one.
+ */
+export type ChunkEmission = readonly [emitter: string, ordinal: number];
+
+/**
+ * Beside the event rather than inside it: the event is the client's payload, and the
+ * publication call shapes are part of the transport contract.
+ */
+const chunkEmissions = new WeakMap<object, ChunkEmission>();
+
+export function stampChunkEmission(event: unknown, emission: ChunkEmission): void {
+  if (event != null && typeof event === 'object') {
+    chunkEmissions.set(event, emission);
+  }
+}
+
+export function readChunkEmission(event: unknown): ChunkEmission | undefined {
+  return event != null && typeof event === 'object' ? chunkEmissions.get(event) : undefined;
+}
+
+/** A stamp read off the wire, where an older or foreign publisher may have sent anything. */
+export function parseChunkEmission(value: unknown): ChunkEmission | undefined {
+  if (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    typeof value[0] === 'string' &&
+    Number.isSafeInteger(value[1])
+  ) {
+    return [value[0], value[1]];
+  }
+  return undefined;
+}
+
 type ChunkPublicationCapability = (
   streamId: string,
   event: unknown,
@@ -59,4 +95,27 @@ export function emitChunkWithReceipt(
       : capability(streamId, event, generationId, options);
   }
   return Promise.resolve(transport.emitChunk(streamId, event, generationId));
+}
+
+/**
+ * Publish an observational chunk while surfacing operational transport failure.
+ *
+ * The public Redis `emitChunk` contract intentionally preserves legacy best-effort
+ * behavior for generation streaming. Detached activity needs the stronger signal so
+ * its per-task circuit can stop issuing a failing Redis command for every token.
+ */
+export async function emitObservedChunk(
+  transport: IEventTransport,
+  streamId: string,
+  event: unknown,
+): Promise<void> {
+  const capability = chunkPublicationCapabilities.get(transport);
+  if (!capability) {
+    await transport.emitChunk(streamId, event);
+    return;
+  }
+  const receipt = await capability(streamId, event);
+  if (receipt === undefined) {
+    throw new Error('Observed chunk publication failed');
+  }
 }

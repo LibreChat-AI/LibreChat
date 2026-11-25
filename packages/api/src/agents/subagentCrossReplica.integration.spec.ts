@@ -22,8 +22,11 @@ import {
   SubagentTaskOwnerUnavailableError,
 } from './subagentTaskRouting';
 import { buildSubagentThreadTaskConfig, SubagentThreadTaskStore } from './subagentThreads';
+import { snapshotActivity, snapshotActivitySummary } from './digest';
 import { __resetShutdownStateForTests } from '../app/shutdown';
 import { createAgentTriggerService } from './triggers/service';
+import { SubagentActivityStream } from './subagentActivity';
+import { RedisEventTransport } from '~/stream';
 
 const DB_SETUP_TIMEOUT_MS = 60_000;
 const REDIS_URI = process.env.REDIS_URI;
@@ -86,6 +89,14 @@ async function createRoutingTransport(instanceId: string, namespace: string) {
   });
 }
 
+async function createActivityStream(): Promise<SubagentActivityStream> {
+  const [publisher, subscriber] = await Promise.all([
+    connectedRedisClient(),
+    connectedRedisClient(),
+  ]);
+  return new SubagentActivityStream(new RedisEventTransport(publisher, subscriber));
+}
+
 function taskRequest(
   scopeId: string,
   input: string,
@@ -144,7 +155,10 @@ afterEach(async () => {
   triggerService = undefined;
   __resetShutdownStateForTests();
   await Promise.all(
-    taskStores.splice(0).map((store) => store.destroyTaskControlTransport().catch(() => undefined)),
+    taskStores.splice(0).map(async (store) => {
+      await store.destroyTaskControlTransport().catch(() => undefined);
+      store.destroyActivityStream();
+    }),
   );
   await Promise.all(redisClients.splice(0).map((client) => client.quit().catch(() => undefined)));
   await mongoose.connection.db?.dropDatabase();
@@ -152,7 +166,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongod.stop();
+  await mongod?.stop();
 }, DB_SETUP_TIMEOUT_MS);
 
 describeWithRedis('subagent cross-replica orchestration', () => {
@@ -264,25 +278,43 @@ describeWithRedis('subagent cross-replica orchestration', () => {
     await requesterStore.configureTaskControlTransport(
       await createRoutingTransport('delivery-owner', namespace),
     );
-    const config = buildSubagentThreadTaskConfig(ownerStore, {
-      userId,
-      tenantId,
-      parentConversationId,
-    });
+    ownerStore.configureActivityStream(await createActivityStream());
+    requesterStore.configureActivityStream(await createActivityStream());
+    const config = buildSubagentThreadTaskConfig(
+      ownerStore,
+      { userId, tenantId, parentConversationId },
+      { completionWakeups: true },
+    );
 
     const releases: Array<() => void> = [];
     const entered: Promise<void>[] = [];
     const childRun = (result: string) => {
       let markEntered = (): void => undefined;
       entered.push(new Promise<void>((resolve) => (markEntered = resolve)));
-      return async (_runtime: SubagentTaskRuntime) => {
+      return async (runtime: SubagentTaskRuntime) => {
         markEntered();
         return new Promise<{ content: string }>((resolve) =>
-          releases.push(() => resolve({ content: result })),
+          releases.push(() => {
+            runtime.reportProgress({
+              runId: 'root-run',
+              parentRunId: 'parent-run',
+              subagentRunId: runtime.taskId,
+              subagentType: 'worker',
+              subagentKind: 'agent',
+              subagentAgentId: 'agent-worker',
+              parentToolCallId: 'tool-call',
+              depth: 1,
+              ancestry: [],
+              phase: 'message_delta',
+              data: { delta: { content: [{ type: 'text', text: result }] } },
+              timestamp: new Date().toISOString(),
+            });
+            resolve({ content: result });
+          }),
         );
       };
     };
-    const first = ownerStore.start(
+    const first = config.store.start(
       taskRequest(
         config.scopeId,
         'first child task',
@@ -290,7 +322,7 @@ describeWithRedis('subagent cross-replica orchestration', () => {
         childRun('First durable result.'),
       ),
     );
-    const second = ownerStore.start(
+    const second = config.store.start(
       taskRequest(
         config.scopeId,
         'second child task',
@@ -302,6 +334,23 @@ describeWithRedis('subagent cross-replica orchestration', () => {
 
     const firstTaskId = accepted(first).task.taskId;
     const secondTaskId = accepted(second).task.taskId;
+    const remoteActivity: unknown[] = [];
+    let resolveRemoteDone!: (status: string) => void;
+    const remoteDone = new Promise<string>((resolve) => {
+      resolveRemoteDone = resolve;
+    });
+    const remoteSubscription = requesterStore.subscribeActivity(
+      accepted(first).task.threadId!,
+      firstTaskId,
+      {
+        onEvent: (event) =>
+          remoteActivity.push(
+            ...(event.event === 'subagent_activity_replay' ? event.data : [event]),
+          ),
+        onDone: (event) => resolveRemoteDone(event.status),
+      },
+    );
+    await remoteSubscription.ready;
     await expect(requesterStore.listTasks(config.scopeId)).resolves.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ taskId: firstTaskId, status: 'running' }),
@@ -318,6 +367,13 @@ describeWithRedis('subagent cross-replica orchestration', () => {
     ).resolves.toMatchObject({ status: 'accepted' });
 
     releases.forEach((release) => release());
+    await expect(remoteDone).resolves.toBe('completed');
+    expect(remoteActivity).toEqual([
+      expect.objectContaining({
+        event: 'on_subagent_update',
+        data: expect.objectContaining({ subagentRunId: firstTaskId }),
+      }),
+    ]);
     await waitUntil(() => {
       const tasks = [
         ownerStore.get(config.scopeId, firstTaskId),
@@ -377,6 +433,90 @@ describeWithRedis('subagent cross-replica orchestration', () => {
     expect(parentMessages.filter((message) => message.isCreatedByUser)).toHaveLength(2);
     expect(parentMessages.filter((message) => !message.isCreatedByUser)).toHaveLength(3);
 
+    await requesterStore.destroyTaskControlTransport();
+  });
+
+  it('serves a running child progress tree to a poll on another replica over Redis', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const tenantId = 'tenant-progress';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, tenantId, parentConversationId);
+    const ownerStore = new SubagentThreadTaskStore(methods);
+    const requesterStore = new SubagentThreadTaskStore(methods);
+    taskStores.push(ownerStore, requesterStore);
+    const namespace = `subagent-progress-${randomUUID()}`;
+    await ownerStore.configureTaskControlTransport(
+      await createRoutingTransport('progress-owner', namespace),
+    );
+    await requesterStore.configureTaskControlTransport(
+      await createRoutingTransport('progress-requester', namespace),
+    );
+    const config = buildSubagentThreadTaskConfig(ownerStore, {
+      userId,
+      tenantId,
+      parentConversationId,
+    });
+    let finish = (_value: { content: string }): void => undefined;
+    let reported = false;
+    const started = accepted(
+      config.store.start(
+        taskRequest(config.scopeId, 'review the change', 'reviewer', async (runtime) => {
+          const base = {
+            runId: 'root-run',
+            subagentRunId: runtime.taskId,
+            subagentType: 'reviewer',
+            subagentAgentId: 'agent-reviewer',
+            timestamp: new Date().toISOString(),
+          };
+          runtime.reportProgress({
+            ...base,
+            phase: 'run_step',
+            data: {
+              id: 'step-1',
+              stepDetails: {
+                type: 'tool_calls',
+                tool_calls: [
+                  {
+                    id: 'call-1',
+                    name: 'bash_tool',
+                    args: { intent: 'Running the suite', env: 'KEY=1' },
+                  },
+                ],
+              },
+            },
+          });
+          reported = true;
+          return new Promise<{ content: string }>((resolve) => (finish = resolve));
+        }),
+      ),
+    );
+    await waitUntil(() => (reported ? true : undefined));
+
+    const routed = await waitUntil(async () => {
+      const claim = await requesterStore.claimTask(config.scopeId, started.task.taskId);
+      return claim.status === 'running' && snapshotActivity(claim.task) != null ? claim : undefined;
+    });
+    const tree = routed.status === 'running' ? snapshotActivity(routed.task) : undefined;
+    expect(tree?.root.turns[0].children[0]).toMatchObject({
+      kind: 'tool',
+      name: 'bash_tool',
+      label: 'Running the suite',
+      status: 'running',
+    });
+    expect(JSON.stringify(tree)).not.toContain('KEY=1');
+    const [listed] = await requesterStore.listTasks(config.scopeId);
+    expect(snapshotActivitySummary(listed)).toMatchObject({ turns: 1, tools: 1 });
+
+    const otherTenant = buildSubagentThreadTaskConfig(requesterStore, {
+      userId,
+      tenantId: 'tenant-other',
+      parentConversationId,
+    });
+    await expect(
+      requesterStore.claimTask(otherTenant.scopeId, started.task.taskId),
+    ).resolves.toEqual({ status: 'not_found' });
+
+    finish({ content: 'Review complete.' });
     await requesterStore.destroyTaskControlTransport();
   });
 });

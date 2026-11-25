@@ -32,6 +32,44 @@ export class ServerConfigsCacheInMemory {
     this.cache.set(serverName, { ...config, updatedAt: Date.now() });
   }
 
+  /** Merges derived fields into an existing entry without bumping `updatedAt` —
+   * see the interface doc: a bump would mark live connections stale. */
+  public async patch(
+    serverName: string,
+    fields: Partial<ParsedServerConfig>,
+    expectedUpdatedAt?: number,
+  ): Promise<boolean> {
+    const existing = this.cache.get(serverName);
+    if (!existing) {
+      return false;
+    }
+    if (expectedUpdatedAt != null && existing.updatedAt !== expectedUpdatedAt) {
+      return false;
+    }
+    if (fields.resolvedInstructions != null && existing.resolvedInstructions != null) {
+      return false;
+    }
+    /** Spreading a Partial over the transport-discriminated union widens it past the
+     * discriminant; the merge only touches shared inspector-derived fields. */
+    this.cache.set(serverName, { ...existing, ...fields } as ParsedServerConfig);
+    return true;
+  }
+
+  /** Replaces a failed-inspection stub only while it is still that stub — see the interface doc. */
+  public async replaceStub(
+    serverName: string,
+    config: ParsedServerConfig,
+    stubUpdatedAt: number | undefined,
+  ): Promise<ParsedServerConfig | undefined> {
+    const existing = this.cache.get(serverName);
+    if (existing?.inspectionFailed !== true || existing.updatedAt !== stubUpdatedAt) {
+      return undefined;
+    }
+    const storedConfig = { ...config, updatedAt: Date.now() };
+    this.cache.set(serverName, storedConfig);
+    return storedConfig;
+  }
+
   public async remove(serverName: string): Promise<void> {
     if (!this.cache.delete(serverName)) {
       throw new Error(`Failed to remove server "${serverName}" in cache.`);

@@ -1,0 +1,15 @@
+version: 1.3.17
+cache: true
+interface:
+  modelSelect: true
+  theme:
+    version: 1
+    name: acme
+    modes:
+      light:
+        colors:
+          rgb-surface-primary: '240 244 255'
+          rgb-future-role: 'red'
+      dark:
+        colors:
+          'Surface Tertiary': '245 245 245'

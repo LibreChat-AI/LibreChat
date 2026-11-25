@@ -1,8 +1,30 @@
+{{- if and .Release.IsUpgrade .Values.mongodb.enabled .Values.mongodb.auth.enabled }}
+UPGRADE NOTICE: the bundled MongoDB now runs with authentication enabled by default.
+If this release was installed with the previous unauthenticated default, its existing data volume has no root user
+and LibreChat will fail to connect. Either set mongodb.auth.enabled=false to keep the old behavior, or create the
+root user in the existing database first (see the chart readme, "Upgrading from an unauthenticated bundled MongoDB").
+
+{{ end -}}
 1. Get the application URL by running these commands:
 {{- if .Values.ingress.enabled }}
+{{- $covered := list }}
+{{- $tlsAll := false }}
+{{- range .Values.ingress.tls }}
+{{- if .hosts }}{{ $covered = concat $covered .hosts }}{{ else }}{{ $tlsAll = true }}{{ end }}
+{{- end }}
+{{- $plain := list }}
+{{- range .Values.ingress.hosts }}
+{{- if not (or $tlsAll (has .host $covered)) }}{{ $plain = append $plain .host }}{{ end }}
+{{- end }}
+{{- if $plain }}
+
+WARNING: no ingress.tls entry covers {{ join ", " $plain }}, so traffic (including credentials and session cookies) is served over plain HTTP.
+Set ingress.tls with a secretName and hosts, or terminate TLS at your load balancer.
+
+{{- end }}
 {{- range $host := .Values.ingress.hosts }}
   {{- range .paths }}
-  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}
+  http{{ if or $tlsAll (has $host.host $covered) }}s{{ end }}://{{ $host.host }}{{ .path }}
   {{- end }}
 {{- end }}
 {{- else if contains "NodePort" .Values.service.type }}

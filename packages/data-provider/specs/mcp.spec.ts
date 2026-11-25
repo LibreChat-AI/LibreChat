@@ -4,6 +4,7 @@ import {
   StreamableHTTPOptionsSchema,
   MCPServerUserInputSchema,
   MCP_USER_INPUT_FIELDS,
+  MAX_MCP_ICON_PATH_LENGTH,
 } from '../src/mcp';
 
 describe('MCP server title validation', () => {
@@ -86,6 +87,16 @@ describe('MCPOptionsSchema', () => {
       });
       expect(result.success).toBe(false);
     });
+  });
+
+  it('accepts the direct OpenID bearer placeholder for operator configuration', () => {
+    const result = MCPOptionsSchema.safeParse({
+      type: 'streamable-http',
+      url: 'https://mcp-server.com/http',
+      headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+    });
+
+    expect(result.success).toBe(true);
   });
 });
 
@@ -221,6 +232,17 @@ describe('MCP schemas', () => {
         expect(result.data.oauth.redirect_uri).toBeUndefined();
         expect(result.data.oauth.revocation_endpoint).toBeUndefined();
       }
+    });
+  });
+
+  describe('iconPath', () => {
+    it('accepts an over-limit iconPath so editing a server with a pre-existing oversized icon is not rejected (the cap is enforced server-side by sanitizeMcpIconPath, not at parse time)', () => {
+      const result = MCPServerUserInputSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        iconPath: `data:image/png;base64,${'A'.repeat(MAX_MCP_ICON_PATH_LENGTH + 1000)}`,
+      });
+      expect(result.success).toBe(true);
     });
   });
 
@@ -564,6 +586,20 @@ describe('MCP schemas', () => {
       expect(result.success).toBe(false);
     });
 
+    it('should reject the RFC 8707 resource opt-out from user-managed OAuth configuration', () => {
+      // Stripping it silently would save the server while discarding the requested
+      // opt-out, so the flow would keep sending `resource` with nothing telling the user.
+      const result = MCPServerUserInputSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        oauth: {
+          send_resource_parameter: false,
+        },
+      });
+
+      expect(result.success).toBe(false);
+    });
+
     it('should continue accepting non-audience OAuth fields from user-managed configuration', () => {
       const result = MCPServerUserInputSchema.safeParse({
         type: 'streamable-http',
@@ -713,6 +749,39 @@ describe('MCP schemas', () => {
       expect(result.success).toBe(false);
     });
 
+    it('should accept send_resource_parameter = false (Entra opt-out) from admin config', () => {
+      const result = MCPOptionsSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        oauth: {
+          authorization_url: 'https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize',
+          token_url: 'https://login.microsoftonline.com/tenant/oauth2/v2.0/token',
+          client_id: 'app-id',
+          client_secret: 'secret',
+          scope: 'api://app-id/access_as_user openid offline_access',
+          send_resource_parameter: false,
+        },
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success && result.data.oauth) {
+        expect(result.data.oauth.send_resource_parameter).toBe(false);
+      }
+    });
+
+    it('should default send_resource_parameter to undefined when omitted', () => {
+      const result = MCPOptionsSchema.safeParse({
+        type: 'streamable-http',
+        url: 'https://mcp-server.com/http',
+        oauth: { client_id: 'app-id' },
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success && result.data.oauth) {
+        expect(result.data.oauth.send_resource_parameter).toBeUndefined();
+      }
+    });
+
     it('should accept forward_audience_on_refresh = false (Cognito opt-out)', () => {
       const result = MCPOptionsSchema.safeParse({
         type: 'streamable-http',
@@ -746,6 +815,47 @@ describe('MCP schemas', () => {
   });
 });
 
+describe('requestHeaders', () => {
+  it('accepts the operator map on remote transports', () => {
+    const result = StreamableHTTPOptionsSchema.safeParse({
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/mcp',
+      headers: { Authorization: 'Bearer token' },
+      requestHeaders: { 'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}' },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.requestHeaders).toEqual({
+        'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+      });
+      expect(result.data.headers).toEqual({ Authorization: 'Bearer token' });
+    }
+  });
+
+  it('rejects non-string header values', () => {
+    const result = StreamableHTTPOptionsSchema.safeParse({
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/mcp',
+      requestHeaders: { 'X-Conversation-Id': 42 },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('is optional, leaving existing configurations unchanged', () => {
+    const result = StreamableHTTPOptionsSchema.safeParse({
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/mcp',
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.requestHeaders).toBeUndefined();
+    }
+  });
+});
+
 describe('MCP_USER_INPUT_FIELDS', () => {
   it('includes the expected user-input fields and excludes server-managed ones', () => {
     // Sanity check on the schema-derived field set. This is the comparison
@@ -762,6 +872,7 @@ describe('MCP_USER_INPUT_FIELDS', () => {
     expect(MCP_USER_INPUT_FIELDS.has('obo')).toBe(true);
     expect(MCP_USER_INPUT_FIELDS.has('proxy')).toBe(true);
     expect(MCP_USER_INPUT_FIELDS.has('headers')).toBe(true);
+    expect(MCP_USER_INPUT_FIELDS.has('requestHeaders')).toBe(true);
 
     // Server-managed fields should NOT be in this set — they're stripped by
     // omitServerManagedFields() before MCPServerUserInputSchema is built.
@@ -771,11 +882,114 @@ describe('MCP_USER_INPUT_FIELDS', () => {
     expect(MCP_USER_INPUT_FIELDS.has('requiresOAuth')).toBe(false);
     expect(MCP_USER_INPUT_FIELDS.has('customUserVars')).toBe(false);
     expect(MCP_USER_INPUT_FIELDS.has('oauth_headers')).toBe(false);
+    expect(MCP_USER_INPUT_FIELDS.has('oauthPrompt')).toBe(false);
+    expect(MCP_USER_INPUT_FIELDS.has('oauthToolCatalog')).toBe(false);
 
     // Stdio is intentionally excluded from MCPServerUserInputSchema (security
     // posture), so its transport-only fields should not be in the set either.
     expect(MCP_USER_INPUT_FIELDS.has('command')).toBe(false);
     expect(MCP_USER_INPUT_FIELDS.has('args')).toBe(false);
     expect(MCP_USER_INPUT_FIELDS.has('env')).toBe(false);
+  });
+});
+
+describe('OAuth coordination rollout configuration', () => {
+  const server = { type: 'sse', url: 'https://mcp.example.com' };
+  it('leaves coordination disabled unless explicitly enabled', () => {
+    expect(MCPOptionsSchema.parse(server).oauthRefreshCoordination).not.toBe(true);
+    expect(
+      MCPOptionsSchema.parse({ ...server, oauthRefreshCoordination: true })
+        .oauthRefreshCoordination,
+    ).toBe(true);
+  });
+  it.each([0, -1, 1.5, 840001])(
+    'rejects an invalid persistence wait %s',
+    (oauthPersistenceWaitTimeout) => {
+      expect(MCPOptionsSchema.safeParse({ ...server, oauthPersistenceWaitTimeout }).success).toBe(
+        false,
+      );
+    },
+  );
+  it('accepts a longer publication wait and keeps coordination admin-managed', () => {
+    expect(
+      MCPOptionsSchema.parse({ ...server, oauthPersistenceWaitTimeout: 90000 })
+        .oauthPersistenceWaitTimeout,
+    ).toBe(90000);
+    const user = MCPServerUserInputSchema.parse({
+      ...server,
+      oauthRefreshCoordination: true,
+      oauthPersistenceWaitTimeout: 90000,
+    });
+    expect(user).not.toHaveProperty('oauthRefreshCoordination');
+    expect(user).not.toHaveProperty('oauthPersistenceWaitTimeout');
+  });
+});
+
+describe('oauthToolCatalog', () => {
+  const server = {
+    type: 'streamable-http',
+    url: 'https://mcp.example.com/mcp',
+    oauthPrompt: 'on_use',
+  };
+  const catalog = [
+    {
+      name: 'read_sheet',
+      description: 'Read the values in a spreadsheet range',
+      inputSchema: {
+        type: 'object',
+        properties: { range: { type: 'string', enum: ['A1', 'B2'] } },
+        required: ['range'],
+      },
+    },
+  ];
+
+  it('accepts an operator-declared catalog', () => {
+    expect(
+      MCPOptionsSchema.parse({ ...server, oauthToolCatalog: catalog }).oauthToolCatalog,
+    ).toEqual(catalog);
+  });
+
+  it('rejects schema keywords it cannot carry instead of dropping them', () => {
+    const nested = [
+      {
+        name: 'read_sheet',
+        inputSchema: {
+          type: 'object',
+          properties: { range: { type: 'object', properties: { a1: { type: 'string' } } } },
+        },
+      },
+    ];
+    expect(MCPOptionsSchema.safeParse({ ...server, oauthToolCatalog: nested }).success).toBe(false);
+  });
+
+  it.each([
+    ['an unknown type', { type: 'strng' }],
+    ['an empty type list', { type: [] }],
+    ['an empty enum', { type: 'string', enum: [] }],
+  ])('rejects a property with %s', (_label, property) => {
+    const invalid = [
+      { name: 'read_sheet', inputSchema: { type: 'object', properties: { range: property } } },
+    ];
+    expect(MCPOptionsSchema.safeParse({ ...server, oauthToolCatalog: invalid }).success).toBe(
+      false,
+    );
+  });
+
+  it('rejects a misspelled catalog entry key', () => {
+    const typo = [{ name: 'read_sheet', input_schema: { type: 'object' } }];
+    expect(MCPOptionsSchema.safeParse({ ...server, oauthToolCatalog: typo }).success).toBe(false);
+  });
+
+  it('rejects an input schema that is not an object schema', () => {
+    const invalid = [{ name: 'read_sheet', inputSchema: { type: 'string' } }];
+    expect(MCPOptionsSchema.safeParse({ ...server, oauthToolCatalog: invalid }).success).toBe(
+      false,
+    );
+  });
+
+  it('is not part of the user-managed server schema', () => {
+    const parsed = MCPServerUserInputSchema.parse({ ...server, oauthToolCatalog: catalog });
+    expect(parsed).not.toHaveProperty('oauthToolCatalog');
+    expect(parsed).not.toHaveProperty('oauthPrompt');
   });
 });

@@ -1,9 +1,13 @@
 import { useMemo } from 'react';
 import { normalizeServerName } from 'librechat-data-provider';
+import { useCatalogReady } from '../useCatalogWarmup';
 import { useMCPServersQuery } from '~/data-provider';
 
+/** These observers mount from rendered messages, so they must not pull the
+ * server catalog onto the first-render path ahead of the warmup schedule. */
 export function useMCPIconMap(): Map<string, string> {
-  const { data: servers } = useMCPServersQuery();
+  const mcpServersReady = useCatalogReady('mcpServers');
+  const { data: servers } = useMCPServersQuery({ enabled: mcpServersReady });
 
   return useMemo(() => {
     const map = new Map<string, string>();
@@ -26,6 +30,7 @@ export function useMCPIconMap(): Map<string, string> {
  * so they can be matched against a key. The config is keyed by the raw name.
  */
 export function useMCPServerNames(): string[] {
-  const { data: servers } = useMCPServersQuery();
+  const mcpServersReady = useCatalogReady('mcpServers');
+  const { data: servers } = useMCPServersQuery({ enabled: mcpServersReady });
   return useMemo(() => (servers ? Object.keys(servers).map(normalizeServerName) : []), [servers]);
 }

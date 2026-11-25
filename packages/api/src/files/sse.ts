@@ -1,4 +1,7 @@
 import type { Request, Response } from 'express';
+import { getContentFilterError } from '~/middleware/contentFilter';
+import { SpreadsheetLimitError } from './documents/workbook';
+import { SpreadsheetBusyError } from './upload/errors';
 import { isEnabled } from '~/utils';
 
 const HEARTBEAT_INTERVAL_MS = 1000;
@@ -39,6 +42,57 @@ export interface UploadSseStream {
   sendError: <T>(data: T) => void;
   /** Emits the terminal `event:close` message, stops the heartbeat, and ends the response. */
   close: () => void;
+}
+
+export interface UploadPolicyErrorContext {
+  readonly tempFileId?: string | null;
+  readonly toolResource?: string | null;
+}
+
+export function sendUploadPolicyError(
+  res: Response,
+  sseStream: UploadSseStream | null | undefined,
+  error: unknown,
+  context: UploadPolicyErrorContext = {},
+): boolean {
+  if (error instanceof SpreadsheetBusyError || error instanceof SpreadsheetLimitError) {
+    const retryable = error instanceof SpreadsheetBusyError;
+    const body = {
+      error: error.code,
+      message: error.message,
+      retryable,
+      ...(retryable ? { retry_after: 1 } : {}),
+    };
+    if (sseStream) {
+      sseStream.sendError({
+        ...body,
+        code: error.userErrorStatusCode,
+        temp_file_id: context.tempFileId,
+        tool_resource: context.toolResource,
+        display_to_user: true,
+      });
+    } else {
+      if (retryable) res.setHeader('Retry-After', '1');
+      res.status(error.userErrorStatusCode).json(body);
+    }
+    return true;
+  }
+  const policyError = getContentFilterError(error);
+  if (policyError == null) {
+    return false;
+  }
+  if (sseStream) {
+    sseStream.sendError({
+      ...policyError.body,
+      code: policyError.statusCode,
+      temp_file_id: context.tempFileId,
+      tool_resource: context.toolResource,
+      display_to_user: true,
+    });
+    return true;
+  }
+  res.status(policyError.statusCode).json(policyError.body);
+  return true;
 }
 
 /**

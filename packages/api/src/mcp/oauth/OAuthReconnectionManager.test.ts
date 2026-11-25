@@ -4,6 +4,7 @@ import type { ParsedServerConfig } from '../..';
 import { OAuthReconnectionManager } from './OAuthReconnectionManager';
 import { OAuthReconnectionTracker } from './OAuthReconnectionTracker';
 import { FlowStateManager, MCPConnection, MCPOptions } from '../..';
+import { STANDARD_MCP_CAPABILITY_PROFILE } from '../capabilities';
 import { MCPManager } from '../MCPManager';
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -216,6 +217,7 @@ describe('OAuthReconnectionManager', () => {
       expect(mockMCPManager.getUserConnection).toHaveBeenCalledWith({
         serverName: 'server3',
         user: { id: userId },
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
         serverConfig: { initTimeout: 5000 },
         flowManager,
         tokenMethods,
@@ -255,7 +257,10 @@ describe('OAuthReconnectionManager', () => {
       // Verify failure handling
       expect(reconnectionTracker.isFailed(userId, 'server1')).toBe(true);
       expect(reconnectionTracker.isActive(userId, 'server1')).toBe(false);
-      expect(mockMCPManager.disconnectUserConnection).toHaveBeenCalledWith(userId, 'server1');
+      expect(mockMCPManager.disconnectUserConnection).toHaveBeenCalledWith(userId, 'server1', {
+        reason: 'lifecycle',
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+      });
     });
 
     it('should not reconnect servers with expired tokens and no refresh token', async () => {
@@ -394,7 +399,10 @@ describe('OAuthReconnectionManager', () => {
       expect(mockConnection.disconnect).toHaveBeenCalled();
       expect(reconnectionTracker.isFailed(userId, 'server1')).toBe(true);
       expect(reconnectionTracker.isActive(userId, 'server1')).toBe(false);
-      expect(mockMCPManager.disconnectUserConnection).toHaveBeenCalledWith(userId, 'server1');
+      expect(mockMCPManager.disconnectUserConnection).toHaveBeenCalledWith(userId, 'server1', {
+        reason: 'lifecycle',
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+      });
     });
 
     it('should handle MCPManager not available gracefully', async () => {
@@ -661,7 +669,10 @@ describe('OAuthReconnectionManager', () => {
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to reconnect'));
       expect(reconnectionTracker.isActive(userId, 'server1')).toBe(false);
       expect(reconnectionTracker.isFailed(userId, 'server1')).toBe(true);
-      expect(mockMCPManager.disconnectUserConnection).toHaveBeenCalledWith(userId, 'server1');
+      expect(mockMCPManager.disconnectUserConnection).toHaveBeenCalledWith(userId, 'server1', {
+        reason: 'lifecycle',
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+      });
     });
   });
 

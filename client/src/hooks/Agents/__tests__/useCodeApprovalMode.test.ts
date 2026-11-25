@@ -1,0 +1,878 @@
+import { Provider } from 'jotai';
+import { renderHook } from '@testing-library/react';
+import { resolveCodeApprovalModes } from '@librechat/chat';
+import { LocalStorageKeys } from 'librechat-data-provider';
+import type { Agent, TConversation } from 'librechat-data-provider';
+import useCodeApprovalMode, {
+  collectReachableAgents,
+  resolveReachableCodeWorkspaceInheritance,
+} from '../useCodeApprovalMode';
+
+const mockUseGetAgentsConfig = jest.fn();
+const mockUseAgentToolPermissions = jest.fn();
+const mockUseAgentsMapContext = jest.fn();
+
+jest.mock('../useGetAgentsConfig', () => () => mockUseGetAgentsConfig());
+jest.mock(
+  '../useAgentToolPermissions',
+  () => (agentId?: string) => mockUseAgentToolPermissions(agentId),
+);
+jest.mock('~/Providers', () => ({ useAgentsMapContext: () => mockUseAgentsMapContext() }));
+
+const conversation = {
+  conversationId: 'conversation-1',
+  endpoint: 'agents',
+  agent_id: 'agent_1',
+  title: 'Code',
+  createdAt: '2026-09-01T00:00:00.000Z',
+  updatedAt: '2026-09-01T00:00:00.000Z',
+  codeApprovalMode: 'acceptEdits',
+} as TConversation;
+
+describe('useCodeApprovalMode', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseAgentsMapContext.mockReturnValue({});
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+      },
+    });
+    mockUseGetAgentsConfig.mockReturnValue({
+      agentsConfig: {
+        capabilities: ['subagents', 'subagent_graphs'],
+        statefulCodeSessions: {
+          approvalsEnabled: true,
+          approvalModes: ['ask', 'acceptEdits'],
+          environments: [
+            {
+              id: 'mac',
+              name: 'Mac',
+              type: 'attached',
+              configSchema: {
+                permissions: {
+                  fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+                  commandExecution: { allowed: ['ask'], default: 'ask' },
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  test('returns the selected mode when the attached environment permits it', () => {
+    const { result } = renderHook(() => useCodeApprovalMode(conversation));
+
+    expect(result.current).toMatchObject({
+      available: true,
+      modes: ['ask', 'acceptEdits'],
+      selected: 'acceptEdits',
+    });
+  });
+
+  test.each(['attached', 'without_attached'] as const)(
+    'exposes inputs that resolve to what the hook reports under %s',
+    (codeEnvironmentMode) => {
+      const { result } = renderHook(() =>
+        useCodeApprovalMode(conversation, undefined, codeEnvironmentMode),
+      );
+      const { readInputs, ...reported } = result.current;
+
+      expect(resolveCodeApprovalModes({ ...readInputs(), codeEnvironmentMode })).toEqual(reported);
+    },
+  );
+
+  test('offers no attached mode once the chat runs without a workspace, and submits ask', () => {
+    const { result, rerender } = renderHook(
+      ({ codeEnvironmentMode }: Pick<TConversation, 'codeEnvironmentMode'>) =>
+        useCodeApprovalMode({ ...conversation, codeEnvironmentMode }),
+      { initialProps: { codeEnvironmentMode: 'without_attached' } },
+    );
+
+    expect(result.current).toMatchObject({ available: false, modes: [], selected: 'ask' });
+    rerender({ codeEnvironmentMode: 'attached' });
+    expect(result.current).toMatchObject({
+      available: true,
+      modes: ['ask', 'acceptEdits'],
+      selected: 'acceptEdits',
+    });
+  });
+
+  test('follows the composer-resolved mode for a chat that records no decision', () => {
+    const { result, rerender } = renderHook(
+      ({ resolved }: { resolved?: TConversation['codeEnvironmentMode'] }) =>
+        useCodeApprovalMode(conversation, undefined, resolved),
+      { initialProps: { resolved: 'without_attached' } },
+    );
+
+    expect(result.current).toMatchObject({ available: false, modes: [], selected: 'ask' });
+    rerender({ resolved: 'attached' });
+    expect(result.current).toMatchObject({
+      available: true,
+      modes: ['ask', 'acceptEdits'],
+      selected: 'acceptEdits',
+    });
+  });
+
+  test('uses the chosen machine policy without inheriting full access from the default', () => {
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+        code_environment_ids: ['runtime'],
+      },
+    });
+    mockUseGetAgentsConfig.mockReturnValue({
+      agentsConfig: {
+        statefulCodeSessions: {
+          allowEnvironmentSelection: true,
+          approvalsEnabled: true,
+          approvalModes: ['ask', 'acceptEdits', 'fullAccess'],
+          environments: [
+            {
+              id: 'mac',
+              type: 'attached',
+              configSchema: {
+                permissions: {
+                  fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+                  commandExecution: { allowed: ['ask', 'allow'], default: 'ask' },
+                },
+              },
+            },
+            {
+              id: 'runtime',
+              type: 'attached',
+              configSchema: {
+                permissions: {
+                  fileWrite: { allowed: ['ask'], default: 'ask' },
+                  commandExecution: { allowed: ['ask'], default: 'ask' },
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+    const runtime = renderHook(() =>
+      useCodeApprovalMode({
+        ...conversation,
+        codeApprovalMode: 'fullAccess',
+        codeWorkspaces: [{ environmentId: 'runtime', workspaceId: 'primary' }],
+      }),
+    );
+    expect(runtime.result.current.modes).toEqual(['ask']);
+    expect(runtime.result.current.selected).toBe('ask');
+    const application = renderHook(() =>
+      useCodeApprovalMode({
+        ...conversation,
+        codeApprovalMode: 'fullAccess',
+        codeWorkspaces: undefined,
+      }),
+    );
+    expect(application.result.current.selected).toBe('fullAccess');
+  });
+
+  test.each(['permitted', 'restricted', 'missing'])(
+    'full access requires every reachable machine: %s',
+    (policy) => {
+      const permissions = {
+        fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+        commandExecution: { allowed: ['ask', 'allow'], default: 'ask' },
+      };
+      mockUseAgentToolPermissions.mockReturnValue({
+        agent: {
+          id: 'agent_1',
+          tools: ['execute_code'],
+          stateful_code_sessions: true,
+          code_environment_id: 'mac',
+          subagents: { enabled: true, agent_ids: ['child'] },
+        },
+      });
+      mockUseAgentsMapContext.mockReturnValue(
+        policy === 'missing'
+          ? {}
+          : {
+              child: {
+                id: 'child',
+                tools: ['execute_code'],
+                stateful_code_sessions: true,
+                code_environment_id: 'child-machine',
+              },
+            },
+      );
+      mockUseGetAgentsConfig.mockReturnValue({
+        agentsConfig: {
+          statefulCodeSessions: {
+            approvalsEnabled: true,
+            approvalModes: ['ask', 'acceptEdits', 'fullAccess'],
+            environments: [
+              { id: 'mac', type: 'attached', configSchema: { permissions } },
+              {
+                id: 'child-machine',
+                type: 'attached',
+                configSchema: { permissions: policy === 'permitted' ? permissions : {} },
+              },
+            ],
+          },
+        },
+      });
+      const { result } = renderHook(() =>
+        useCodeApprovalMode({ ...conversation, codeApprovalMode: 'fullAccess' }),
+      );
+      expect(result.current.modes.includes('fullAccess')).toBe(policy === 'permitted');
+      expect(result.current.selected).toBe(policy === 'permitted' ? 'fullAccess' : 'ask');
+    },
+  );
+
+  test.each(['agent_1', 'agent_2'])(
+    'waits for unresolved root %s before full access',
+    (missingId) => {
+      const permissions = {
+        fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+        commandExecution: { allowed: ['ask', 'allow'], default: 'ask' },
+      };
+      mockUseGetAgentsConfig.mockReturnValue({
+        agentsConfig: {
+          statefulCodeSessions: {
+            approvalsEnabled: true,
+            approvalModes: ['ask', 'acceptEdits', 'fullAccess'],
+            environments: [{ id: 'mac', type: 'attached', configSchema: { permissions } }],
+          },
+        },
+      });
+      let loaded = false;
+      mockUseAgentToolPermissions.mockImplementation((id?: string) => ({
+        agent:
+          id === missingId && !loaded
+            ? undefined
+            : {
+                id,
+                tools: ['execute_code'],
+                stateful_code_sessions: true,
+                code_environment_id: 'mac',
+              },
+      }));
+      const { result, rerender } = renderHook(() =>
+        useCodeApprovalMode(
+          { ...conversation, codeApprovalMode: 'fullAccess' },
+          { ...conversation, agent_id: 'agent_2' },
+        ),
+      );
+      expect(result.current.modes).not.toContain('fullAccess');
+      expect(result.current.selected).toBe('ask');
+      loaded = true;
+      rerender();
+      expect(result.current.modes).toContain('fullAccess');
+      expect(result.current.selected).toBe('fullAccess');
+    },
+  );
+
+  test('falls back to ask when a saved mode is no longer permitted', () => {
+    mockUseGetAgentsConfig.mockReturnValue({
+      agentsConfig: {
+        statefulCodeSessions: {
+          approvalsEnabled: true,
+          approvalModes: ['ask', 'acceptEdits'],
+          environments: [
+            {
+              id: 'mac',
+              name: 'Mac',
+              type: 'attached',
+              configSchema: {
+                permissions: { fileWrite: { allowed: ['ask'], default: 'ask' } },
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    const { result } = renderHook(() => useCodeApprovalMode(conversation));
+
+    expect(result.current.selected).toBe('ask');
+    expect(result.current.modes).toEqual(['ask']);
+  });
+
+  test('omits the mode when approvals are administratively disabled', () => {
+    mockUseGetAgentsConfig.mockReturnValue({
+      agentsConfig: {
+        statefulCodeSessions: {
+          approvalsEnabled: false,
+          approvalModes: [],
+          environments: [{ id: 'mac', name: 'Mac', type: 'attached' }],
+        },
+      },
+    });
+
+    const { result } = renderHook(() => useCodeApprovalMode(conversation));
+
+    expect(result.current).toMatchObject({ available: false, modes: [], selected: undefined });
+  });
+
+  test('requires an affirmative server approval capability', () => {
+    mockUseGetAgentsConfig.mockReturnValue({
+      agentsConfig: {
+        statefulCodeSessions: {
+          environments: [{ id: 'mac', name: 'Mac', type: 'attached' }],
+        },
+      },
+    });
+
+    const { result } = renderHook(() => useCodeApprovalMode(conversation));
+
+    expect(result.current).toMatchObject({ available: false, modes: [], selected: undefined });
+  });
+
+  test('keeps ask fail-closed when an older server does not advertise approval modes', () => {
+    mockUseGetAgentsConfig.mockReturnValue({
+      agentsConfig: {
+        statefulCodeSessions: {
+          approvalsEnabled: true,
+          environments: [{ id: 'mac', name: 'Mac', type: 'attached' }],
+        },
+      },
+    });
+
+    const { result } = renderHook(() => useCodeApprovalMode(conversation));
+
+    expect(result.current).toMatchObject({ available: false, modes: [], selected: 'ask' });
+  });
+
+  test('keeps ask fail-closed while agent metadata is unavailable', () => {
+    mockUseAgentToolPermissions.mockReturnValue({ agent: undefined });
+
+    const { result } = renderHook(() => useCodeApprovalMode(conversation));
+
+    expect(result.current).toMatchObject({ available: false, modes: [], selected: 'ask' });
+  });
+
+  test('removing the graph capability removes graph-member approval requirements', () => {
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: [],
+        subagents: {
+          enabled: false,
+          graphsEnabled: true,
+          graphs: [{ agent_ids: ['graph-member'] }],
+        },
+      },
+    });
+    mockUseAgentsMapContext.mockReturnValue({
+      'graph-member': {
+        id: 'graph-member',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+      },
+    });
+    const { result, rerender } = renderHook(() => useCodeApprovalMode(conversation));
+    expect(result.current.available).toBe(true);
+    mockUseGetAgentsConfig().agentsConfig.capabilities = ['subagents'];
+    rerender();
+    expect(result.current.available).toBe(false);
+    expect(result.current.modes).toEqual([]);
+  });
+
+  test.each([true, false])(
+    'workspace inheritance excludes a graph with capability enabled=%s',
+    (enabled) => {
+      const root = {
+        id: 'agent_1',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+        subagents: {
+          enabled: false,
+          graphsEnabled: true,
+          graphs: [{ agent_ids: ['graph-member'] }],
+        },
+      } as Agent;
+      const member = {
+        id: 'graph-member',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'child-machine',
+        code_environment_ids: ['mac'],
+      } as Agent;
+      const inherited = resolveReachableCodeWorkspaceInheritance(
+        [root],
+        { 'graph-member': member },
+        [
+          { id: 'mac', name: 'Mac', type: 'attached' },
+          { id: 'child-machine', name: 'Child', type: 'attached' },
+        ],
+        true,
+        [{ environmentId: 'mac', workspaceId: 'project' }],
+        false,
+        enabled ? ['subagent_graphs'] : ['subagents'],
+      );
+      expect(inherited.has('graph-member')).toBe(enabled);
+      if (enabled) expect(inherited.get('graph-member')).toBe('mac');
+    },
+  );
+
+  test('terminal graph descendants cannot restrict approval modes', () => {
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: [],
+        subagents: { enabled: false, graphsEnabled: true, graphs: [{ agent_ids: ['member'] }] },
+      },
+    });
+    mockUseAgentsMapContext.mockReturnValue({
+      member: {
+        id: 'member',
+        tools: [],
+        subagents: { enabled: true, agent_ids: ['attached'] },
+        edges: [{ from: 'member', to: 'attached', edgeType: 'handoff' }],
+      },
+      attached: {
+        id: 'attached',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+      },
+    });
+    const { result } = renderHook(() => useCodeApprovalMode(conversation));
+    expect(result.current.available).toBe(false);
+    expect(result.current.modes).toEqual([]);
+  });
+
+  test('graph-only teams remain reachable in public execution metadata', () => {
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: [],
+        subagents: {
+          enabled: false,
+          graphsEnabled: true,
+          graphs: [{ agent_ids: ['graph-member'] }],
+        },
+      },
+    });
+    mockUseAgentsMapContext.mockReturnValue({
+      'graph-member': {
+        id: 'graph-member',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+      },
+    });
+    const { result } = renderHook(() => useCodeApprovalMode(conversation));
+    expect(result.current.available).toBe(true);
+    expect(result.current.modes).toEqual(['ask', 'acceptEdits']);
+  });
+
+  test('includes attached subagents while preserving their mandatory asks', () => {
+    const primary = {
+      id: 'agent_1',
+      tools: [],
+      stateful_code_sessions: false,
+      subagents: { enabled: true, agent_ids: ['child-1', 'child-2'] },
+    };
+    mockUseAgentToolPermissions.mockReturnValue({ agent: primary });
+    mockUseAgentsMapContext.mockReturnValue({
+      'child-1': {
+        id: 'child-1',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+      },
+      'child-2': {
+        id: 'child-2',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'restricted',
+      },
+    });
+    mockUseGetAgentsConfig.mockReturnValue({
+      agentsConfig: {
+        statefulCodeSessions: {
+          approvalsEnabled: true,
+          approvalModes: ['ask', 'acceptEdits'],
+          environments: [
+            {
+              id: 'mac',
+              name: 'Mac',
+              type: 'attached',
+              configSchema: {
+                permissions: { fileWrite: { allowed: ['ask', 'allow'], default: 'ask' } },
+              },
+            },
+            {
+              id: 'restricted',
+              name: 'Restricted',
+              type: 'attached',
+              configSchema: {
+                permissions: { fileWrite: { allowed: ['ask'], default: 'ask' } },
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    const { result } = renderHook(() => useCodeApprovalMode(conversation));
+
+    expect(result.current.available).toBe(true);
+    expect(result.current.modes).toEqual(['ask', 'acceptEdits']);
+  });
+
+  test.each(['restricted', 'missing'])(
+    'downgrades saved Full Access for a %s added agent',
+    (kind) => {
+      const primary = {
+        id: 'agent_1',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'open',
+      };
+      const added = { ...primary, id: 'agent_2', code_environment_id: 'restricted' };
+      mockUseAgentToolPermissions.mockImplementation((id?: string) => {
+        if (id === 'agent_1') {
+          return { agent: primary };
+        }
+        return { agent: id === 'agent_2' && kind !== 'missing' ? added : undefined };
+      });
+      mockUseGetAgentsConfig.mockReturnValue({
+        agentsConfig: {
+          statefulCodeSessions: {
+            approvalsEnabled: true,
+            approvalModes: ['ask', 'fullAccess'],
+            environments: [
+              {
+                id: 'open',
+                type: 'attached',
+                configSchema: {
+                  permissions: {
+                    fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+                    commandExecution: { allowed: ['ask', 'allow'], default: 'ask' },
+                  },
+                },
+              },
+              {
+                id: 'restricted',
+                type: 'attached',
+                configSchema: {
+                  permissions: {
+                    commandExecution: { allowed: ['ask'], default: 'ask' },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      });
+      const primaryConversation = { ...conversation, codeApprovalMode: 'fullAccess' as const };
+      const primaryOnly = renderHook(() => useCodeApprovalMode(primaryConversation));
+      expect(primaryOnly.result.current.selected).toBe('fullAccess');
+      const combined = renderHook(() =>
+        useCodeApprovalMode(primaryConversation, { ...conversation, agent_id: 'agent_2' }),
+      );
+      expect(combined.result.current.selected).toBe('ask');
+      expect(combined.result.current.modes).not.toContain('fullAccess');
+    },
+  );
+
+  test('includes the active parallel conversation agent', () => {
+    const primary = {
+      id: 'agent_1',
+      tools: [],
+      stateful_code_sessions: false,
+    };
+    const addedAgent = {
+      id: 'agent_2',
+      tools: ['execute_code'],
+      stateful_code_sessions: true,
+      code_environment_id: 'mac',
+    };
+    mockUseAgentToolPermissions.mockImplementation((agentId?: string) => ({
+      agent: agentId === 'agent_2' ? addedAgent : primary,
+    }));
+    const addedConversation = { endpoint: 'agents', agent_id: 'agent_2' } as TConversation;
+
+    const { result } = renderHook(() => useCodeApprovalMode(conversation, addedConversation));
+
+    expect(result.current.available).toBe(true);
+    expect(result.current.modes).toEqual(['ask', 'acceptEdits']);
+  });
+
+  test('does not traverse disabled subagent configurations', () => {
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'restricted',
+        subagents: { enabled: false, agent_ids: ['child-1'] },
+      },
+    });
+    mockUseAgentsMapContext.mockReturnValue({
+      'child-1': {
+        id: 'child-1',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+      },
+    });
+    mockUseGetAgentsConfig.mockReturnValue({
+      agentsConfig: {
+        statefulCodeSessions: {
+          approvalsEnabled: true,
+          approvalModes: ['ask', 'acceptEdits'],
+          environments: [
+            {
+              id: 'mac',
+              name: 'Mac',
+              type: 'attached',
+              configSchema: {
+                permissions: { fileWrite: { allowed: ['ask', 'allow'], default: 'ask' } },
+              },
+            },
+            {
+              id: 'restricted',
+              name: 'Restricted',
+              type: 'attached',
+              configSchema: {
+                permissions: { fileWrite: { allowed: ['ask'], default: 'ask' } },
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    const { result } = renderHook(() => useCodeApprovalMode(conversation));
+
+    expect(result.current.modes).toEqual(['ask']);
+    expect(result.current.selected).toBe('ask');
+  });
+});
+
+describe('useCodeApprovalMode remembered pick', () => {
+  const withoutMode = { ...conversation, codeApprovalMode: undefined } as TConversation;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    localStorage.clear();
+    mockUseAgentsMapContext.mockReturnValue({});
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+      },
+    });
+    mockUseGetAgentsConfig.mockReturnValue({
+      agentsConfig: {
+        statefulCodeSessions: {
+          approvalsEnabled: true,
+          approvalModes: ['ask', 'acceptEdits'],
+          environments: [
+            {
+              id: 'mac',
+              name: 'Mac',
+              type: 'attached',
+              configSchema: {
+                permissions: {
+                  fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+                  commandExecution: { allowed: ['ask'], default: 'ask' },
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  test('opens a conversation with no stored mode on the last pick', () => {
+    localStorage.setItem(LocalStorageKeys.LAST_CODE_APPROVAL_MODE, JSON.stringify('acceptEdits'));
+    const { result } = renderHook(() => useCodeApprovalMode(withoutMode), { wrapper: Provider });
+    expect(result.current.selected).toBe('acceptEdits');
+  });
+
+  test('a stored conversation mode still wins over the remembered pick', () => {
+    localStorage.setItem(LocalStorageKeys.LAST_CODE_APPROVAL_MODE, JSON.stringify('acceptEdits'));
+    const { result } = renderHook(
+      () => useCodeApprovalMode({ ...conversation, codeApprovalMode: 'ask' } as TConversation),
+      { wrapper: Provider },
+    );
+    expect(result.current.selected).toBe('ask');
+  });
+
+  test('falls back to ask when policy no longer allows the remembered pick', () => {
+    localStorage.setItem(LocalStorageKeys.LAST_CODE_APPROVAL_MODE, JSON.stringify('fullAccess'));
+    const { result } = renderHook(() => useCodeApprovalMode(withoutMode), { wrapper: Provider });
+    expect(result.current.modes).not.toContain('fullAccess');
+    expect(result.current.selected).toBe('ask');
+  });
+
+  test('ignores a corrupted remembered value', () => {
+    localStorage.setItem(LocalStorageKeys.LAST_CODE_APPROVAL_MODE, JSON.stringify('nonsense'));
+    const { result } = renderHook(() => useCodeApprovalMode(withoutMode), { wrapper: Provider });
+    expect(result.current.selected).toBe('ask');
+  });
+});
+
+describe('terminal graph traversal', () => {
+  const agent = (id: string, rest: Partial<Agent> = {}): Agent =>
+    ({
+      id,
+      tools: ['execute_code'],
+      stateful_code_sessions: true,
+      code_environment_id: 'mac',
+      code_environment_ids: ['mac'],
+      ...rest,
+    }) as Agent;
+  const graph = (id: string) => ({
+    type: 'team',
+    name: 'Team',
+    description: 'Work',
+    agent_ids: [id],
+    edges: [],
+    entry_agent_id: id,
+    result_agent_id: id,
+  });
+  const capabilities = ['subagents', 'subagent_graphs'];
+  const parent = agent('parent', {
+    subagents: { enabled: false, graphsEnabled: true, graphs: [graph('member')] },
+  });
+  const member = agent('member', {
+    code_environment_id: 'child',
+    subagents: { enabled: true, agent_ids: ['leaf'] },
+    edges: [{ from: 'member', to: 'handoff', edgeType: 'handoff' }],
+  });
+
+  test.each([false, true])(
+    'isolated ordinary children ignore saved handoffs but keep nested spawns, reverse=%s',
+    (reverse) => {
+      const root = agent('root', {
+        subagents: {
+          enabled: true,
+          agent_ids: reverse ? ['member', 'child'] : ['child', 'member'],
+        },
+      });
+      const child = agent('child', {
+        subagents: { enabled: true, agent_ids: ['leaf'] },
+        agent_ids: ['unused-chain'],
+        edges: [
+          { from: 'child', to: 'member', edgeType: 'handoff' },
+          { from: 'child', to: 'unused-handoff', edgeType: 'handoff' },
+        ],
+      });
+      const leaf = agent('leaf', { code_environment_id: 'child' });
+      const isolated = agent('member', { code_environment_id: 'child' });
+      const result = collectReachableAgents(
+        [root],
+        { child, member: isolated, leaf },
+        ['root'],
+        capabilities,
+      );
+      expect(result.complete).toBe(true);
+      expect(new Set(result.agents.map(({ id }) => id))).toEqual(
+        new Set(['root', 'child', 'member', 'leaf']),
+      );
+      const inherited = resolveReachableCodeWorkspaceInheritance(
+        [root],
+        { child, member: isolated, leaf },
+        [
+          { id: 'mac', name: 'Mac', type: 'attached' },
+          { id: 'child', name: 'Child', type: 'attached' },
+        ],
+        true,
+        [{ environmentId: 'mac', workspaceId: 'project', agentIds: ['root'] }],
+        false,
+        capabilities,
+      );
+      expect(inherited.get('member')).toBe('mac');
+      expect(inherited.get('leaf')).toBe('mac');
+    },
+  );
+
+  test('does not load missing graph descendants or lower completeness', () => {
+    expect(collectReachableAgents([parent], { member }, ['parent'], capabilities)).toEqual({
+      agents: [parent, member],
+      complete: true,
+    });
+    expect(collectReachableAgents([parent], {}, ['parent'], ['subagents'])).toEqual({
+      agents: [parent],
+      complete: true,
+    });
+    const inherited = resolveReachableCodeWorkspaceInheritance(
+      [parent],
+      { member },
+      [
+        { id: 'mac', name: 'Mac', type: 'attached' },
+        { id: 'child', name: 'Child', type: 'attached' },
+      ],
+      true,
+      [{ environmentId: 'mac', workspaceId: 'project' }],
+      false,
+      capabilities,
+    );
+    expect([...inherited.keys()]).toEqual(['member']);
+  });
+
+  test.each(['ordinary', 'handoff'] as const)(
+    '%s path upgrades a shared member in either order',
+    (path) => {
+      const ordinary = agent(
+        'ordinary',
+        path === 'ordinary'
+          ? { subagents: { enabled: true, agent_ids: ['member'] } }
+          : { edges: [{ from: 'ordinary', to: 'member', edgeType: 'handoff' }] },
+      );
+      const leaf = agent('leaf', {
+        code_environment_id: 'child',
+        subagents: { enabled: true, agent_ids: ['member', 'handoff'] },
+      });
+      const handoff = agent('handoff', { subagents: { enabled: true, agent_ids: ['leaf'] } });
+      const subagents = jest.fn(() => member.subagents);
+      const shared = { ...member };
+      Object.defineProperty(shared, 'subagents', { get: subagents });
+      for (const roots of [
+        [parent, ordinary],
+        [ordinary, parent],
+      ]) {
+        subagents.mockClear();
+        const result = collectReachableAgents(
+          roots,
+          { member: shared, leaf, handoff },
+          roots.map(({ id }) => id),
+          capabilities,
+        );
+        expect(result.complete).toBe(true);
+        expect(new Set(result.agents.map(({ id }) => id))).toEqual(
+          new Set(['parent', 'ordinary', 'member', 'leaf', 'handoff']),
+        );
+        expect(result.agents).toHaveLength(5);
+        expect(subagents).toHaveBeenCalledTimes(1);
+        if (path === 'ordinary') {
+          const inherited = resolveReachableCodeWorkspaceInheritance(
+            roots,
+            { member: shared, leaf, handoff },
+            [
+              { id: 'mac', name: 'Mac', type: 'attached' },
+              { id: 'child', name: 'Child', type: 'attached' },
+            ],
+            true,
+            [{ environmentId: 'mac', workspaceId: 'project' }],
+            false,
+            capabilities,
+          );
+          expect(inherited.get('leaf')).toBe('mac');
+        }
+      }
+    },
+  );
+});

@@ -1,7 +1,8 @@
 import { HttpsProxyAgent } from 'https-proxy-agent';
-import { EnvHttpProxyAgent, ProxyAgent } from 'undici';
+import { Agent, EnvHttpProxyAgent, ProxyAgent } from 'undici';
 import {
   applyAxiosProxyConfig,
+  getDirectDispatcher,
   getEnvProxyDispatcher,
   getHttpsProxyAgent,
   getProxyDispatcher,
@@ -15,10 +16,12 @@ jest.mock('https-proxy-agent', () => ({
 }));
 
 jest.mock('undici', () => ({
+  Agent: jest.fn(),
   EnvHttpProxyAgent: jest.fn(),
   ProxyAgent: jest.fn(),
 }));
 
+const MockAgent = Agent as jest.MockedClass<typeof Agent>;
 const MockEnvHttpProxyAgent = EnvHttpProxyAgent as jest.MockedClass<typeof EnvHttpProxyAgent>;
 const MockProxyAgent = ProxyAgent as jest.MockedClass<typeof ProxyAgent>;
 const MockHttpsProxyAgent = HttpsProxyAgent as jest.MockedClass<typeof HttpsProxyAgent>;
@@ -41,6 +44,40 @@ describe('proxy helpers', () => {
 
   afterAll(() => {
     process.env = originalEnv;
+  });
+
+  it('reuses direct dispatchers with the same transport timeout policy', () => {
+    const options = { bodyTimeout: 0, headersTimeout: 300_000 };
+
+    const first = getDirectDispatcher(options);
+    const second = getDirectDispatcher(options);
+
+    expect(second).toBe(first);
+    expect(MockAgent).toHaveBeenCalledTimes(1);
+    expect(MockAgent).toHaveBeenCalledWith(options);
+  });
+
+  it('keys only supported timeout options and discards unkeyed connection callbacks', () => {
+    const options = { bodyTimeout: 123_456, headersTimeout: 654_321, connect: jest.fn() };
+    const direct = getDirectDispatcher(options);
+    expect(getDirectDispatcher({ headersTimeout: 654_321, bodyTimeout: 123_456 })).toBe(direct);
+    expect(MockAgent).toHaveBeenLastCalledWith({ bodyTimeout: 123_456, headersTimeout: 654_321 });
+
+    getProxyDispatcher('http://sanitized-proxy:8080', options);
+    expect(MockProxyAgent).toHaveBeenLastCalledWith({
+      uri: 'http://sanitized-proxy:8080',
+      bodyTimeout: 123_456,
+      headersTimeout: 654_321,
+    });
+    process.env.PROXY = 'http://sanitized-env-proxy:8080';
+    getEnvProxyDispatcher(options);
+    expect(MockEnvHttpProxyAgent).toHaveBeenLastCalledWith({
+      httpProxy: 'http://sanitized-env-proxy:8080',
+      httpsProxy: 'http://sanitized-env-proxy:8080',
+      noProxy: undefined,
+      bodyTimeout: 123_456,
+      headersTimeout: 654_321,
+    });
   });
 
   it('returns undefined when no proxy env is configured', () => {
@@ -105,6 +142,28 @@ describe('proxy helpers', () => {
     expect(second).toBe(first);
     expect(MockProxyAgent).toHaveBeenCalledTimes(1);
     expect(MockProxyAgent).toHaveBeenCalledWith('http://explicit-proxy:8080');
+  });
+
+  it('keys proxy dispatchers by transport options', () => {
+    const proxy = 'http://timeout-proxy:8080';
+
+    const defaultDispatcher = getProxyDispatcher(proxy);
+    const longStreamDispatcher = getProxyDispatcher(proxy, {
+      bodyTimeout: 0,
+      headersTimeout: 300_000,
+    });
+    const repeatedLongStreamDispatcher = getProxyDispatcher(proxy, {
+      bodyTimeout: 0,
+      headersTimeout: 300_000,
+    });
+
+    expect(longStreamDispatcher).not.toBe(defaultDispatcher);
+    expect(repeatedLongStreamDispatcher).toBe(longStreamDispatcher);
+    expect(MockProxyAgent).toHaveBeenLastCalledWith({
+      uri: proxy,
+      bodyTimeout: 0,
+      headersTimeout: 300_000,
+    });
   });
 
   it('uses the env dispatcher when the explicit proxy matches PROXY', () => {

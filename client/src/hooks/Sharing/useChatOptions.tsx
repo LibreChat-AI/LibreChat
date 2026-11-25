@@ -1,0 +1,339 @@
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { useRecoilValue } from 'recoil';
+import { useToastContext } from '@librechat/client';
+import { Constants } from 'librechat-data-provider';
+import { useQueryClient } from '@tanstack/react-query';
+import { useNavigate, useParams } from 'react-router-dom';
+import { Pen, Pin, Info, Trash, Archive, CopyPlus, ArchiveRestore } from 'lucide-react';
+import type { TConversation } from 'librechat-data-provider';
+import type { ReactNode } from 'react';
+import type * as t from '~/common';
+import {
+  useActiveJobs,
+  useGetStartupConfig,
+  useGetConvoIdQuery,
+  useArchiveConvoMutation,
+  usePinConversationMutation,
+  useDuplicateConversationMutation,
+} from '~/data-provider';
+import { findConvoInAllQueries, isTemporaryConversation, hasRealTitle } from '~/utils';
+import DeleteButton from '~/components/Conversations/ConvoOptions/DeleteButton';
+import { useLocalize, useNavigateToConvo, useNewConvo } from '~/hooks';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
+import useProjectMenuItem from '~/hooks/Chat/useProjectMenuItem';
+import { useChatContext, useLiveAnnouncer } from '~/Providers';
+import ConversationInfo from '~/components/Chat/Info';
+import useClockFormat from '~/hooks/useClockFormat';
+import { NotificationSeverity } from '~/common';
+import useExportShare from './useExportShare';
+import Rename from '~/components/Chat/Rename';
+import store from '~/store';
+
+export type UseChatOptionsResult = {
+  show: boolean;
+  items: t.MenuItemProps[];
+  hasSharedLink: boolean;
+  /** Rendered by the surface that owns the menu, next to its trigger. */
+  dialogs: ReactNode;
+};
+
+type DialogKind = 'rename' | 'delete' | 'info';
+
+const iconClass = 'size-4 text-text-secondary';
+const noop = () => {};
+
+/**
+ * Everything the sidebar row's overflow menu does to a chat, for the chat that is open,
+ * grouped for the header: share and export first, then organizing, then the two actions
+ * that remove it from view. Mark unread is left out because the open chat is read by definition.
+ */
+export default function useChatOptions({
+  isSharedButtonEnabled,
+  closeMenu,
+  isMenuOpen = false,
+  readOnly = false,
+}: {
+  isSharedButtonEnabled: boolean;
+  closeMenu: () => void;
+  /** The project list behind "Change project" is only fetched while the menu is open. */
+  isMenuOpen?: boolean;
+  /** A durable subagent thread allows information, sharing and export without editing. */
+  readOnly?: boolean;
+}): UseChatOptionsResult {
+  const localize = useLocalize();
+  const hour12 = useClockFormat();
+  const navigate = useNavigate();
+  const { showToast } = useToastContext();
+  const { announcePolite } = useLiveAnnouncer();
+  const { newConversation } = useNewConvo();
+  const { setConversation } = useChatContext();
+  const { navigateToConvo } = useNavigateToConvo(0);
+  const { config } = useChatSettings();
+  const { data: startupConfig } = useGetStartupConfig();
+  const { data: activeJobs } = useActiveJobs();
+  const { conversationId: routeConversationId } = useParams();
+  /** A request outlives the click: the route that matters is the one open when it resolves. */
+  const openConvoIdRef = useRef(routeConversationId);
+  openConvoIdRef.current = routeConversationId;
+  const exportShare = useExportShare({ isSharedButtonEnabled });
+  const conversation = useRecoilValue(store.conversationByIndex(0));
+
+  const conversationId = conversation?.conversationId ?? '';
+  const queryClient = useQueryClient();
+  /** Pin and project changes land in the query cache, not in the chat's own state. The observer
+   *  re-renders on a change to the point entry; the freshest copy across it and the lists is read
+   *  here, because a revisited chat's point entry can predate an edit the lists already hold. */
+  const { data: cached } = useGetConvoIdQuery(conversationId, { enabled: false });
+  const freshest = conversationId ? findConvoInAllQueries(queryClient, conversationId) : undefined;
+  const base = cached ?? conversation;
+  const current = freshest ? { ...base, ...freshest } : base;
+  const isPinned = current?.pinned === true;
+  const isArchived = current?.isArchived === true;
+  const chatProjectId = current?.chatProjectId ?? null;
+  const title = current?.title ?? '';
+  const isTemporary = isTemporaryConversation(current);
+  const isGenerating = activeJobs?.activeJobIds?.includes(conversationId) === true;
+  /** The sidebar's rule: a running chat can only be renamed where the deployment can protect
+   *  the manual title from the pending generated one. */
+  const canRename =
+    config.canRenameRunningChat ||
+    (!isGenerating && (current?.titleSetByUser === true || hasRealTitle(title)));
+
+  const renameRef = useRef<HTMLButtonElement>(null);
+  const deleteRef = useRef<HTMLButtonElement>(null);
+  const infoRef = useRef<HTMLButtonElement>(null);
+  const canShowInfo =
+    current != null &&
+    conversationId !== '' &&
+    conversationId !== Constants.NEW_CONVO &&
+    conversationId !== Constants.PENDING_CONVO &&
+    conversationId !== Constants.SEARCH &&
+    conversationId === routeConversationId;
+  /** ChatView stays mounted across a route change, so a dialog is tied to the chat it was opened
+   *  for rather than to whichever chat is open when it renders. */
+  const [openDialog, setOpenDialog] = useState<{ kind: DialogKind; id: string } | null>(null);
+  /** The route moves before the chat state does, and the menu and dialogs are portaled outside the
+   *  hidden pane, so they are dismissed on either change rather than left aimed at the old chat. */
+  const closeMenuRef = useRef(closeMenu);
+  closeMenuRef.current = closeMenu;
+  const scopeRef = useRef(`${conversationId}|${routeConversationId}|${readOnly}`);
+  useEffect(() => {
+    const scope = `${conversationId}|${routeConversationId}|${readOnly}`;
+    if (scopeRef.current === scope) {
+      return;
+    }
+    scopeRef.current = scope;
+    setOpenDialog(null);
+    closeMenuRef.current();
+  }, [conversationId, routeConversationId, readOnly]);
+  const isDialogOpen = (kind: DialogKind) =>
+    (!readOnly || kind === 'info') &&
+    openDialog?.kind === kind &&
+    openDialog.id === conversationId &&
+    (routeConversationId == null || routeConversationId === conversationId);
+  const showRename = isDialogOpen('rename');
+  const showDelete = isDialogOpen('delete');
+  const showInfo = canShowInfo && isDialogOpen('info');
+  /** A close only clears the dialog it belongs to: a delete that settles after another chat
+   *  opened its own dialog must not take that one down. */
+  const toggleDialog = (kind: DialogKind) => (open: boolean) =>
+    setOpenDialog((prev) => {
+      if (open) {
+        return { kind, id: conversationId };
+      }
+      return prev?.kind === kind && prev.id === conversationId ? null : prev;
+    });
+  const setShowRename = toggleDialog('rename');
+  const setShowDelete = toggleDialog('delete');
+  const setShowInfo = toggleDialog('info');
+
+  const pinMutation = usePinConversationMutation();
+  const archiveMutation = useArchiveConvoMutation();
+  const duplicateMutation = useDuplicateConversationMutation({
+    onSuccess: (data) => {
+      navigateToConvo(data.conversation);
+      showToast({ message: localize('com_ui_duplication_success'), status: 'success' });
+    },
+    onMutate: () => {
+      showToast({ message: localize('com_ui_duplication_processing'), status: 'info' });
+    },
+    onError: () => {
+      showToast({ message: localize('com_ui_duplication_error'), status: 'error' });
+    },
+  });
+
+  const showError = useCallback(
+    (key: Parameters<typeof localize>[0]) =>
+      showToast({ message: localize(key), severity: NotificationSeverity.ERROR, showIcon: true }),
+    [localize, showToast],
+  );
+
+  /** The request outlives the click, so the open chat is matched at commit time. The query cache
+   *  only carries the change when its entry exists, and this state is what the menu falls back to. */
+  const mirrorToOpenChat = (patch: Partial<TConversation>) =>
+    setConversation((prev) =>
+      prev?.conversationId === conversationId ? { ...prev, ...patch } : prev,
+    );
+
+  const togglePin = () => {
+    pinMutation.mutate(
+      { conversationId, pinned: !isPinned },
+      {
+        onSuccess: () => mirrorToOpenChat({ pinned: !isPinned }),
+        onError: () => showError(isPinned ? 'com_ui_unpin_error' : 'com_ui_pin_error'),
+      },
+    );
+  };
+
+  const projectItem = useProjectMenuItem({
+    conversationId,
+    chatProjectId,
+    /** The header omits this whole group for a conversation that is not saved yet. */
+    enabled: isMenuOpen && exportShare.show && !readOnly && !isTemporary,
+    onAssigned: (projectId) => mirrorToOpenChat({ chatProjectId: projectId }),
+  });
+
+  const toggleArchive = () => {
+    archiveMutation.mutate(
+      { conversationId, isArchived: !isArchived },
+      {
+        onSuccess: () => {
+          mirrorToOpenChat({ isArchived: !isArchived });
+          announcePolite({
+            message: localize(isArchived ? 'com_ui_convo_unarchived' : 'com_ui_convo_archived'),
+            isStatus: true,
+          });
+          /** An archived chat leaves the list, so the open one is replaced; a restored one stays.
+           *  Another chat opened since the click is left alone. */
+          const openConvoId = openConvoIdRef.current;
+          if (!isArchived && (openConvoId === conversationId || openConvoId === 'new')) {
+            newConversation();
+            navigate('/c/new', { replace: true });
+          }
+        },
+        onError: () => showError(isArchived ? 'com_ui_unarchive_error' : 'com_ui_archive_error'),
+      },
+    );
+  };
+
+  /** A temporary chat is excluded from the history, pinned, archived and project lists, so
+   *  organizing it would report success and show nowhere. */
+  const canOrganize = !isTemporary;
+
+  const sharedItems: t.MenuItemProps[] = [
+    ...exportShare.items,
+    {
+      label: localize('com_ui_conversation_info'),
+      icon: <Info className={iconClass} aria-hidden="true" />,
+      onClick: () => setShowInfo(true),
+      show: canShowInfo,
+      ariaHasPopup: 'dialog',
+      // Preserve the menu item while the dialog owns focus, matching Share and Export.
+      hideOnClick: false,
+      ref: infoRef,
+      render: (props) => <button {...props} data-testid="conversation-info-menu-item" />,
+    },
+  ];
+
+  const items: t.MenuItemProps[] = [
+    ...sharedItems,
+    { separate: true },
+    {
+      label: localize('com_ui_rename'),
+      onClick: () => setShowRename(true),
+      icon: <Pen className={iconClass} aria-hidden="true" />,
+      disabled: !canRename,
+      ariaHasPopup: 'dialog',
+      ariaControls: 'rename-conversation-dialog',
+      /** NOTE: THE FOLLOWING PROPS ARE REQUIRED FOR MENU ITEMS THAT OPEN DIALOGS */
+      hideOnClick: false,
+      ref: renameRef,
+      render: (props) => <button {...props} />,
+    },
+    {
+      label: localize(isPinned ? 'com_ui_unpin' : 'com_ui_pin'),
+      onClick: togglePin,
+      show: canOrganize,
+      icon: <Pin className={iconClass} aria-hidden="true" />,
+    },
+    { ...projectItem, show: canOrganize },
+    {
+      label: localize('com_ui_duplicate'),
+      onClick: () => duplicateMutation.mutate({ conversationId }),
+      icon: <CopyPlus className={iconClass} aria-hidden="true" />,
+    },
+    { separate: true },
+    {
+      label: localize(isArchived ? 'com_ui_unarchive' : 'com_ui_archive'),
+      onClick: toggleArchive,
+      show: canOrganize,
+      icon: isArchived ? (
+        <ArchiveRestore className={iconClass} aria-hidden="true" />
+      ) : (
+        <Archive className={iconClass} aria-hidden="true" />
+      ),
+    },
+    {
+      label: localize('com_ui_delete'),
+      onClick: () => setShowDelete(true),
+      icon: <Trash className={iconClass} aria-hidden="true" />,
+      ariaHasPopup: 'dialog',
+      ariaControls: 'delete-conversation-dialog',
+      /** NOTE: THE FOLLOWING PROPS ARE REQUIRED FOR MENU ITEMS THAT OPEN DIALOGS */
+      hideOnClick: false,
+      ref: deleteRef,
+      render: (props) => <button {...props} />,
+    },
+  ];
+
+  return {
+    show: exportShare.show,
+    items: readOnly ? sharedItems : items,
+    hasSharedLink: exportShare.hasSharedLink,
+    dialogs: exportShare.show ? (
+      <>
+        {exportShare.dialogs}
+        {current != null && canShowInfo && (
+          <ConversationInfo
+            key={conversationId}
+            conversation={current}
+            open={showInfo}
+            onOpenChange={setShowInfo}
+            triggerRef={infoRef}
+            showUsage={startupConfig != null && startupConfig.interface?.contextUsage !== false}
+            showCost={startupConfig?.interface?.contextCost === true}
+            hour12={hour12}
+            currency={startupConfig?.interface?.currency}
+          />
+        )}
+        {showRename && (
+          <Rename
+            open={showRename}
+            onOpenChange={setShowRename}
+            conversationId={conversationId}
+            title={title}
+            titleSetByUser={current?.titleSetByUser === true}
+            triggerRef={renameRef}
+          />
+        )}
+        {showDelete && (
+          <DeleteButton
+            title={title}
+            retainView={noop}
+            triggerRef={deleteRef}
+            getCurrentConversationId={() => openConvoIdRef.current}
+            setMenuOpen={() => {
+              /** A delete that settles after another chat opened must not close that chat's menu. */
+              if (openConvoIdRef.current === conversationId) {
+                closeMenu();
+              }
+            }}
+            conversationId={conversationId}
+            showDeleteDialog={showDelete}
+            setShowDeleteDialog={setShowDelete}
+          />
+        )}
+      </>
+    ) : null,
+  };
+}

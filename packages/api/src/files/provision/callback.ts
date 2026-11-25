@@ -1,0 +1,502 @@
+import { Constants } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
+import { EToolResources, mergeCodeEnvRef } from 'librechat-data-provider';
+import type { CodeEnvFile, SubagentExecutionContext } from '@librechat/agents';
+import type { TFile } from 'librechat-data-provider';
+import type { CodeEnvRefUpdate, ProvisionService, ProvisionedCodeFile } from './service';
+import type { ProvisionToolContext } from '../code/queued';
+import type { FileProvisionStorage } from '../operations';
+import type { UploadBatchMember } from './batch';
+import type { ServerRequest } from '~/types';
+import { createCodeApiRateLimitBudget, isCodeApiRateLimitError } from '~/utils';
+import { planCodeUploadBatches } from '../code/batch';
+import { withFileProvisioning } from '../operations';
+import { planCodeFileUploads } from '../code/queued';
+import { isCodeFileToolName } from '~/agents/tools';
+import { createUploadBatch } from './batch';
+
+/** Deferred database write produced by a successful provisioning call. */
+interface FileUpdate {
+  file_id: string;
+  metadata?: Record<string, unknown>;
+  embedded?: boolean;
+}
+
+export type { ProvisionToolContext } from '../code/queued';
+
+export interface ProvisionCallbackDeps {
+  req: ServerRequest;
+  fileStorage: FileProvisionStorage;
+  agentToolContexts: Map<string, ProvisionToolContext>;
+  resolvePrimaryAgentId?: () => string | undefined;
+  /** A child routed per call keeps its own context, keyed by its execution. */
+  resolveExecutionContext?: (
+    agentId: string | undefined,
+    executionContext: SubagentExecutionContext | undefined,
+  ) => ProvisionToolContext | undefined;
+  provisionToCodeEnv: ProvisionService['provisionToCodeEnv'];
+  /** Uploads the files of one tool-load batch with as few Code API requests as their sizes
+   *  allow. Without it every file is its own request. */
+  provisionBatchToCodeEnv?: ProvisionService['provisionBatchToCodeEnv'];
+  provisionToVectorDB: ProvisionService['provisionToVectorDB'];
+  updateFile: (update: FileUpdate) => Promise<unknown>;
+  updateCodeEnvRef: (update: CodeEnvRefUpdate) => Promise<unknown>;
+  /** Records one vector namespace without disturbing the others already recorded. */
+  addEmbeddedEntity: (update: { file_id: string; entityId: string }) => Promise<unknown>;
+}
+
+/**
+ * Selects the tool context for a provisioning batch and reports which agent id it
+ * belongs to. The batch id is preferred, then the primary agent, then the sole context
+ * when only one exists, mirroring how the tool loaders resolve theirs.
+ *
+ */
+function resolveProvisionContext({
+  agentId,
+  agentToolContexts,
+  primaryAgentId,
+}: {
+  agentId?: string;
+  agentToolContexts: Map<string, ProvisionToolContext>;
+  primaryAgentId?: string;
+}): { ctx?: ProvisionToolContext; resolvedAgentId?: string } {
+  if (agentId != null && agentToolContexts.has(agentId)) {
+    return { ctx: agentToolContexts.get(agentId), resolvedAgentId: agentId };
+  }
+  if (primaryAgentId != null && agentToolContexts.has(primaryAgentId)) {
+    return { ctx: agentToolContexts.get(primaryAgentId), resolvedAgentId: primaryAgentId };
+  }
+  if (agentToolContexts.size === 1) {
+    const sole = agentToolContexts.entries().next().value;
+    if (sole) {
+      const [key, ctx] = sole;
+      return { ctx, resolvedAgentId: key };
+    }
+  }
+  return {};
+}
+
+function getRetryAfterMs(reason: unknown): number {
+  return reason != null &&
+    typeof reason === 'object' &&
+    'retryAfterMs' in reason &&
+    typeof reason.retryAfterMs === 'number'
+    ? reason.retryAfterMs
+    : 0;
+}
+
+/**
+ * The one failure a tool batch reports when code provisioning did not complete. A turn turned
+ * away by the Code API limiter says so once, with the longest wait any request was given,
+ * instead of a count of files that hides the cause.
+ */
+function createCodeProvisionError(reasons: unknown[], failed: number): unknown {
+  const limited = reasons.filter(isCodeApiRateLimitError);
+  const longestWait = limited.reduce<unknown>(
+    (longest, reason) => (getRetryAfterMs(reason) > getRetryAfterMs(longest) ? reason : longest),
+    limited[0],
+  );
+  if (limited.length > 0 && limited.length === reasons.length) {
+    return longestWait;
+  }
+  const retryAfterMs = getRetryAfterMs(longestWait);
+  const retryHint = retryAfterMs > 0 ? ` (retry in ${Math.ceil(retryAfterMs / 1000)}s)` : '';
+  const rateLimitNote =
+    limited.length > 0
+      ? `. The Code API rate limit turned away ${limited.length} of them${retryHint}`
+      : '';
+  return Object.assign(
+    new Error(
+      `Failed to provision ${failed} file(s) to the code environment; aborting tool execution rather than running without them${rateLimitNote}`,
+      reasons[0] !== undefined ? { cause: reasons[0] } : undefined,
+    ),
+    { errors: reasons },
+  );
+}
+
+/**
+ * Builds the ON_TOOL_EXECUTE provisioning callback. Shared by the chat path and the
+ * OpenAI-compatible controllers so every surface provisions queued attachments before
+ * the tool that needs them loads.
+ */
+export function createProvisionFilesCallback({
+  req,
+  fileStorage,
+  agentToolContexts,
+  resolvePrimaryAgentId,
+  resolveExecutionContext,
+  provisionToCodeEnv,
+  provisionBatchToCodeEnv,
+  provisionToVectorDB,
+}: ProvisionCallbackDeps): (
+  toolNames: string[],
+  agentId?: string,
+  signal?: AbortSignal,
+  executionContext?: SubagentExecutionContext,
+) => Promise<CodeEnvFile[]> {
+  /* Agents in a handoff or parallel graph are initialized independently over the same
+   * request attachments, so each holds its own ProvisionState for the same file. Keyed
+   * per file, destination and scope, this makes the upload happen once for the request;
+   * every agent still applies the result to its own tool resources below. The shared
+   * work includes the database write, because the tools loaded right after this callback
+   * re-read the stored record and skip files whose reference is not there yet. */
+  const inFlight = new Map<string, Promise<unknown>>();
+
+  function shareProvisioning<T>(key: string | undefined, start: () => Promise<T>): Promise<T> {
+    if (key == null) {
+      return start();
+    }
+    const existing = inFlight.get(key) as Promise<T> | undefined;
+    if (existing) {
+      return existing;
+    }
+    const promise = start();
+    inFlight.set(key, promise);
+    /* Forget failures so a later tool call in the same request retries the upload
+     * instead of replaying the rejection. */
+    promise.catch(() => {
+      if (inFlight.get(key) === promise) {
+        inFlight.delete(key);
+      }
+    });
+    return promise;
+  }
+
+  return async function provisionFiles(
+    toolNames: string[],
+    agentId?: string,
+    signal?: AbortSignal,
+    executionContext?: SubagentExecutionContext,
+  ): Promise<CodeEnvFile[]> {
+    signal?.throwIfAborted();
+    /* agentId is optional on this callback and a batch for the primary agent may omit
+     * it, so fall back the way the tool loaders do. Otherwise the queue is missed and
+     * the tool runs without its attachments. */
+    /* Resolve the context and the id together. Scoping agent files by the raw argument
+     * while reading state from a fallback context would upload them as user-scoped,
+     * then reconstruct them as agent-scoped on the next turn, and the entity id used to
+     * query those vectors would no longer match the one they were stored under. */
+    const placedCtx = resolveExecutionContext?.(agentId, executionContext);
+    const { ctx, resolvedAgentId } =
+      placedCtx != null
+        ? { ctx: placedCtx, resolvedAgentId: agentId }
+        : resolveProvisionContext({
+            agentId,
+            agentToolContexts,
+            primaryAgentId: resolvePrimaryAgentId?.(),
+          });
+    if (!ctx?.provisionState) {
+      return [];
+    }
+
+    const { provisionState } = ctx;
+    /** The same set that decides whether an agent wants code-file provisioning at all,
+     *  so a tool cannot be eligible in one place and unrecognized in the other. */
+    const needsCode = toolNames.some(isCodeFileToolName);
+    /** Programmatic tool calling orchestrates nested tools whose names never reach
+     *  this predicate, so a file_search reachable only through PTC would otherwise
+     *  run before its attachments were embedded. Provision when PTC is invoked. */
+    const needsSearch =
+      toolNames.includes('file_search') ||
+      toolNames.includes(Constants.PROGRAMMATIC_TOOL_CALLING) ||
+      toolNames.includes(Constants.BASH_PROGRAMMATIC_TOOL_CALLING);
+
+    if (!needsCode && !needsSearch) {
+      return [];
+    }
+
+    const userId = req.user?.id;
+    if (!userId) throw new Error('File provisioning requires an authenticated user');
+
+    /** Chat attachments and generated code outputs stay in the user's sandbox and unscoped
+     *  vector index; only this agent's own setup files are scoped to it. Membership decides
+     *  that, not the record's context: a user may attach another agent's setup file to this
+     *  conversation, and provisioning it under this agent would place it in a namespace
+     *  this agent's other users can read. */
+    const entityIdForFile = (file: TFile) =>
+      file.file_id && provisionState.agentScopedFileIds.has(file.file_id)
+        ? resolvedAgentId
+        : undefined;
+
+    /** Which vector namespace holds the file after this upload. Unscoped uploads are
+     *  partitioned by the requesting user, so recording only agent namespaces would leave
+     *  a foreign setup file looking unembedded here forever, re-embedding every turn. */
+    const namespaceForFile = (file: TFile) => entityIdForFile(file) ?? req?.user?.id;
+
+    /** Two agents may resolve different code deployments, where the same file genuinely
+     *  needs uploading to each, so the destination is part of the sharing key. */
+    const codeRouteKey =
+      ctx.codeExecutionContext?.executionRouteKey ??
+      ctx.codeExecutionContext?.executionProfile ??
+      'default';
+    const shareKey = (resource: string, file: TFile, destination = '') =>
+      file.file_id
+        ? `${resource}:${file.file_id}:${entityIdForFile(file) ?? ''}:${destination}`
+        : undefined;
+
+    /** Surface a just-provisioned file to the tool loaded immediately after: the code
+     *  and file_search primers read `tool_resources.<resource>.files`. */
+    if (!ctx.tool_resources) {
+      ctx.tool_resources = {};
+    }
+    const addProvisionedFile = (
+      file: TFile,
+      resourceType: EToolResources,
+      agentScoped?: boolean,
+    ) => {
+      if (!file.file_id) {
+        return;
+      }
+      const toolResources = ctx.tool_resources as Record<
+        string,
+        { files?: TFile[]; file_ids?: string[] } | undefined
+      >;
+      const resource = toolResources[resourceType] ?? {};
+      /** Agent-scoped file_search files are embedded under `entity_id: agentId`, so
+       *  they must be queried by `file_ids` (primeFiles marks those `fromAgent` and
+       *  passes `entity_id`); user chat attachments and code files live in `files`. */
+      if (agentScoped && resourceType === EToolResources.file_search) {
+        const fileIds = resource.file_ids ? [...resource.file_ids] : [];
+        if (!fileIds.includes(file.file_id)) {
+          fileIds.push(file.file_id);
+        }
+        toolResources[resourceType] = { ...resource, file_ids: fileIds };
+        return;
+      }
+      const files = resource.files ? [...resource.files] : [];
+      if (!files.some((existing) => existing.file_id === file.file_id)) {
+        files.push(file);
+      }
+      toolResources[resourceType] = { ...resource, files };
+    };
+
+    /** Files whose provisioning rejected this turn; kept queued so a transient
+     *  outage can retry next turn instead of being silently dropped. */
+    const failedCodeFiles: TFile[] = [];
+    const codeFailureReasons: unknown[] = [];
+    const failedVectorFiles: TFile[] = [];
+    /* The graph seeded each tool call's code-session context from the sessions that
+     * existed at run start, which predate this upload. Returning the refs lets the
+     * caller fold them into the current batch, since the sandbox receives files only
+     * through that context. */
+    const provisionedCodeFiles: CodeEnvFile[] = needsCode
+      ? [...(ctx.pendingProvisionedCodeFiles ?? [])]
+      : [];
+    if (needsCode && provisionState.codeEnvFiles.length > 0) {
+      const uploads = planCodeFileUploads({
+        context: ctx,
+        contexts: agentToolContexts.values(),
+        agentId: resolvedAgentId,
+        userId: req.user?.id,
+        useAdvertisedNames: true,
+      });
+      provisionState.codeEnvDestinations ??= new Map();
+      for (const { file, destination } of uploads) {
+        provisionState.codeEnvDestinations.set(file.file_id, destination);
+      }
+      const queuedCodeFiles = uploads.map(({ file }) => file);
+      /** Every file in this tool-load batch shares one wait allowance. */
+      const codeApiRateLimitBudget = createCodeApiRateLimitBudget(
+        req.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+      );
+      /** Files sharing a request, keyed by file. One request carries one resource identity. */
+      const batchMembers = new Map<string, UploadBatchMember<ProvisionedCodeFile>>();
+      if (provisionBatchToCodeEnv) {
+        const byScope = new Map<string | undefined, typeof uploads>();
+        for (const upload of uploads) {
+          const scope = entityIdForFile(upload.file);
+          const scoped = byScope.get(scope);
+          if (scoped) scoped.push(upload);
+          else byScope.set(scope, [upload]);
+        }
+        for (const [entity_id, scoped] of byScope) {
+          for (const batch of planCodeUploadBatches(scoped, ({ file }) => file.bytes).batches) {
+            const members = createUploadBatch(batch, (joined) =>
+              provisionBatchToCodeEnv({
+                req,
+                entity_id,
+                route: ctx.codeExecutionContext,
+                signal,
+                rateLimitBudget: codeApiRateLimitBudget,
+                files: joined.map(({ entry, onUploadStart }) => ({
+                  file: entry.file,
+                  sandboxFilename: entry.destination,
+                  onUploadStart,
+                })),
+              }),
+            );
+            for (let i = 0; i < batch.length; i++) {
+              batchMembers.set(batch[i].file.file_id, members[i]);
+            }
+          }
+        }
+      }
+      const results = await Promise.allSettled(
+        uploads.map(async ({ file, destination: sandboxFilename }) => {
+          const batchMember = batchMembers.get(file.file_id);
+          const provisioned = await shareProvisioning(
+            shareKey(`code:${codeRouteKey}`, file, sandboxFilename),
+            () =>
+              withFileProvisioning({
+                file,
+                userId,
+                storage: fileStorage,
+                destination: JSON.stringify([
+                  'code',
+                  codeRouteKey,
+                  entityIdForFile(file) ? 'agent' : 'user',
+                  entityIdForFile(file) ?? userId,
+                  null,
+                  sandboxFilename,
+                ]),
+                operation: async (_claim, onUploadStart) => {
+                  const { refUpdate, sandboxFilename: storedSandboxFilename } = batchMember
+                    ? await batchMember.upload(onUploadStart)
+                    : await provisionToCodeEnv({
+                        req,
+                        file,
+                        entity_id: entityIdForFile(file),
+                        route: ctx.codeExecutionContext,
+                        sandboxFilename,
+                        signal,
+                        rateLimitBudget: codeApiRateLimitBudget,
+                        onUploadStart,
+                      });
+                  const ref = { ...refUpdate.ref, sandboxFilename: storedSandboxFilename };
+                  return {
+                    value: ref,
+                    commit: { code: { ...refUpdate, ref } },
+                  };
+                },
+              }),
+          ).finally(() => batchMember?.release());
+          file.metadata = { ...file.metadata, ...mergeCodeEnvRef(file.metadata, provisioned) };
+          addProvisionedFile(file, EToolResources.execute_code);
+          const ref = provisioned;
+          if (ref?.storage_session_id && ref.file_id) {
+            const codeFile = {
+              id: ref.file_id,
+              resource_id: ref.id,
+              storage_session_id: ref.storage_session_id,
+              /* The name the sandbox stored it under: a converted image is renamed on
+               * upload, and telling the model the record's name sends it to a path that
+               * does not exist. */
+              name: ref.sandboxFilename ?? file.filename,
+              kind: ref.kind,
+            } as CodeEnvFile;
+            const existingIndex = provisionedCodeFiles.findIndex(
+              (existing) => existing.id === codeFile.id && existing.name === codeFile.name,
+            );
+            if (existingIndex >= 0) {
+              provisionedCodeFiles[existingIndex] = codeFile;
+            } else {
+              provisionedCodeFiles.push(codeFile);
+            }
+          }
+        }),
+      );
+      /* allSettled keeps independent file failures retryable, but cancellation belongs
+       * to the whole tool run. Preserve it before translating rejections into queued
+       * files or starting search provisioning. */
+      signal?.throwIfAborted();
+      /* Files sharing one refused request fail for one reason; it is logged once. */
+      const loggedReasons = new Set<unknown>();
+      results.forEach((result, index) => {
+        if (result.status === 'rejected') {
+          if (!loggedReasons.has(result.reason)) {
+            loggedReasons.add(result.reason);
+            logger.error('[provisionFiles] Code env provisioning failed', result.reason);
+          }
+          failedCodeFiles.push(queuedCodeFiles[index]);
+          codeFailureReasons.push(result.reason);
+        }
+      });
+      provisionState.codeEnvFiles = failedCodeFiles;
+      if (provisionedCodeFiles.length > 0) {
+        ctx.pendingProvisionedCodeFiles = provisionedCodeFiles;
+      }
+    }
+
+    if (needsSearch && provisionState.vectorDBFiles.length > 0) {
+      const queuedVectorFiles = provisionState.vectorDBFiles;
+      const results = await Promise.allSettled(
+        queuedVectorFiles.map(async (file) => {
+          const result = await shareProvisioning(shareKey('search', file), () =>
+            withFileProvisioning({
+              file,
+              userId,
+              storage: fileStorage,
+              destination: JSON.stringify(['search', namespaceForFile(file)]),
+              operation: async (_claim, onUploadStart) => {
+                const provisioned = await provisionToVectorDB({
+                  req,
+                  file,
+                  entity_id: entityIdForFile(file),
+                  signal,
+                  onUploadStart,
+                });
+                if (!provisioned.embedded || !provisioned.fileUpdate) {
+                  throw new Error('Vector store did not confirm file provisioning');
+                }
+                return {
+                  value: provisioned,
+                  commit: { embedded: true, entityId: namespaceForFile(file) },
+                };
+              },
+            }),
+          );
+          if (result.embedded) {
+            file.embedded = true;
+            const namespace = namespaceForFile(file);
+            if (namespace != null) {
+              const recorded = new Set(file.metadata?.embeddedEntities ?? []);
+              recorded.add(namespace);
+              file.metadata = { ...file.metadata, embeddedEntities: [...recorded] };
+            }
+            addProvisionedFile(
+              file,
+              EToolResources.file_search,
+              entityIdForFile(file) !== undefined,
+            );
+            return;
+          }
+          /* Resolving with embedded false is a normal outcome of the service, returned
+           * when the vector store declines the file, and it means the same thing as a
+           * throw: the vectors are not there. Treated as a failure so the file stays
+           * queued and search does not proceed without it. */
+          throw new Error(`Vector store did not embed "${file.filename}" (${file.file_id})`);
+        }),
+      );
+      signal?.throwIfAborted();
+      results.forEach((result, index) => {
+        if (result.status === 'rejected') {
+          logger.error('[provisionFiles] Vector DB provisioning failed', result.reason);
+          failedVectorFiles.push(queuedVectorFiles[index]);
+        }
+      });
+      /* Preserved for a later retry, and fatal for this turn like a code failure. An
+       * earlier version let search proceed on the grounds that a missing embedding only
+       * narrows results, but a search that silently omits the file the user asked about
+       * is a wrong answer, not a smaller one. */
+      provisionState.vectorDBFiles = failedVectorFiles;
+    }
+
+    /* Provisioning failed outright, so the sandbox or vector store does not have the
+     * attachment; running the tool anyway would answer from missing input. */
+    if (failedCodeFiles.length > 0) {
+      throw createCodeProvisionError(codeFailureReasons, failedCodeFiles.length);
+    }
+    if (failedVectorFiles.length > 0) {
+      throw new Error(
+        `Failed to provision ${failedVectorFiles.length} file(s) for search; aborting tool execution rather than searching without them`,
+      );
+    }
+
+    /* A read_file batch may be a skill reference the host answers without the sandbox, so it
+     * keeps the handoff for the code call that follows instead of claiming it. */
+    if (toolNames.some((name) => name !== Constants.READ_FILE && isCodeFileToolName(name))) {
+      ctx.pendingProvisionedCodeFiles = undefined;
+    }
+    return provisionedCodeFiles;
+  };
+}

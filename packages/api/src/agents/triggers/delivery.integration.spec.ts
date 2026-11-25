@@ -1,9 +1,16 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { createMethods, createModels } from '@librechat/data-schemas';
+import {
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
+  createMethods,
+  createModels,
+} from '@librechat/data-schemas';
 import type { AgentTriggerDeliveryPersistence, AgentTriggerService } from './service';
 import type { AgentTriggerFetch } from './host';
+import { createBackgroundToolCompletionWakeupHandler } from '../backgroundCompletionWakeup';
 import { __resetShutdownStateForTests } from '../../app/shutdown';
+import { prepareAgentTriggerDelivery } from './delivery';
 import { createAgentTriggerEnvelope } from './envelope';
 import { createAgentTriggerService } from './service';
 
@@ -26,7 +33,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 }, DB_SETUP_TIMEOUT_MS);
 
 const envelope = () =>
@@ -46,6 +53,30 @@ const envelope = () =>
     input: 'Handle the ready resource.',
   });
 
+const boundEnvelope = (userId: string, index: number) =>
+  createAgentTriggerEnvelope({
+    mode: 'continue',
+    requestId: `request-${index}`,
+    deliveryId: `delivery-${index}`,
+    receivedAt: Date.now(),
+    principal: { id: userId, tenantId: 'tenant-1' },
+    target: {
+      agentId: 'commentator',
+      conversationId: 'commentator-thread',
+      parentMessageId: 'placeholder',
+      bindingId: `evtbind_${'a'.repeat(48)}`,
+      sourceKeyId: 'source-key',
+    },
+    event: {
+      id: `game-${index}-started`,
+      type: 'game.started',
+      occurredAt: index,
+      source: { id: 'source-key', type: 'remote_api_key' },
+      payload: { gameId: `game-${index}` },
+    },
+    input: `Comment on game ${index}.`,
+  });
+
 async function eventuallySucceeded(deliveryKey: string) {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
@@ -59,6 +90,192 @@ async function eventuallySucceeded(deliveryKey: string) {
 }
 
 describe('durable trigger delivery integration', () => {
+  it('recovers an abandoned publication across two idle workers without a producer wake', async () => {
+    const fetcher = jest.fn<ReturnType<AgentTriggerFetch>, Parameters<AgentTriggerFetch>>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            status: 'started',
+            streamId: 'cross-replica',
+            conversationId: 'cross-replica',
+            generationCreatedAt: 25,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    const bundles = [createMethods(mongoose), createMethods(mongoose)];
+    const scans = bundles.map((methods) =>
+      jest.spyOn(methods, 'recoverAgentTriggerLanePublications'),
+    );
+    const workers = bundles.map((methods) =>
+      createAgentTriggerService({
+        methods: methods as typeof methods & AgentTriggerDeliveryPersistence,
+        fetch: fetcher,
+        mintToken: () => 'trigger-token',
+        purgeRecoveryIntervalMs: 20,
+        deliveryOptions: {
+          concurrency: 1,
+          tickMs: 5,
+          maxIdleTickMs: 40,
+        },
+      }),
+    );
+    const until = async (condition: () => boolean | Promise<boolean>) => {
+      const deadline = Date.now() + 5_000;
+      while (!(await condition())) {
+        if (Date.now() >= deadline) throw new Error('Timed out waiting for cross-replica recovery');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
+    try {
+      for (const worker of workers)
+        await worker.initialize({
+          address: { address: '127.0.0.1', family: 'IPv4', port: 3080 },
+          idlePolling: { maintenanceMaxIntervalMs: 80 },
+        });
+      await until(() => scans.every((scan) => scan.mock.calls.length >= 3));
+      const prepared = prepareAgentTriggerDelivery(envelope(), { orderingKey: 'crashed-producer' });
+      // A producer died after its staging write. Neither worker receives enqueue()
+      // or wake(); both must discover and fence publication via their Mongo fallback.
+      await mongoose.models.AgentTriggerDelivery.create({
+        ...prepared,
+        laneSequence: 0,
+        status: 'staging',
+        attempts: 0,
+        requeueCount: 0,
+        claimAvailableAt: prepared.availableAt,
+        stagingRecoveryAt: new Date(),
+      });
+      await until(
+        async () =>
+          (await bundles[0].getAgentTriggerDelivery(prepared.deliveryKey))?.status === 'succeeded',
+      );
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      const delivered = await bundles[1].getAgentTriggerDelivery(prepared.deliveryKey);
+      expect(delivered).toMatchObject({
+        status: 'succeeded',
+        attempts: 1,
+        history: [{ outcome: 'succeeded' }],
+      });
+    } finally {
+      await Promise.all(workers.map((worker) => worker.stop()));
+      scans.forEach((scan) => scan.mockRestore());
+    }
+  });
+
+  it('backs off idle maintenance while the conversation sweep spans many full pages', async () => {
+    /** The legacy-receipt sweep pages the whole conversations collection, and every full page
+     * used to count as activity. With more conversations than one page holds the loop never went
+     * idle: it polled at its base interval whatever `maintenanceMaxIntervalMs` said. */
+    const Conversation = mongoose.models.Conversation;
+    await Conversation.insertMany(
+      Array.from({ length: 20 }, () => ({
+        conversationId: new mongoose.Types.ObjectId().toString(),
+        user: 'sweep-user',
+        endpoint: 'agents',
+      })),
+    );
+    const methods = createMethods(mongoose);
+    const sweep = methods.expireLegacyAgentEventActorReceipts.bind(methods);
+    const passes: number[] = [];
+    jest.spyOn(methods, 'expireLegacyAgentEventActorReceipts').mockImplementation((...args) => {
+      passes.push(Date.now());
+      return sweep(...args);
+    });
+    service = createAgentTriggerService({
+      methods: methods as typeof methods & AgentTriggerDeliveryPersistence,
+      purgeRecoveryIntervalMs: 40,
+      purgeRecoveryLimit: 2,
+      deliveryOptions: { concurrency: 1, tickMs: 60_000 },
+    });
+    try {
+      await service.initialize({
+        address: { address: '127.0.0.1', family: 'IPv4', port: 3080 },
+        idlePolling: { maintenanceMaxIntervalMs: 640 },
+      });
+      const deadline = Date.now() + 8_000;
+      while (passes.length < 5) {
+        if (Date.now() >= deadline)
+          throw new Error('Timed out waiting for five maintenance passes');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const gaps = passes.slice(1, 5).map((at, index) => at - passes[index]);
+      /** Idle passes double the wait (80, 160, 320, 640 ms); a loop held at its base interval stays near 40 ms. */
+      expect(gaps[3]).toBeGreaterThan(gaps[0] * 3);
+    } finally {
+      await Conversation.deleteMany({});
+    }
+  });
+
+  it('lets the deployment-wide ceiling replace a lower maintenance cap', async () => {
+    await mongoose.models.Conversation.insertMany(
+      Array.from({ length: 20 }, () => ({
+        conversationId: new mongoose.Types.ObjectId().toString(),
+        user: 'sweep-user',
+        endpoint: 'agents',
+      })),
+    );
+    const methods = createMethods(mongoose);
+    const sweep = methods.expireLegacyAgentEventActorReceipts.bind(methods);
+    const passes: number[] = [];
+    jest.spyOn(methods, 'expireLegacyAgentEventActorReceipts').mockImplementation((...args) => {
+      passes.push(Date.now());
+      return sweep(...args);
+    });
+    service = createAgentTriggerService({
+      methods: methods as typeof methods & AgentTriggerDeliveryPersistence,
+      purgeRecoveryIntervalMs: 40,
+      purgeRecoveryLimit: 2,
+      deliveryOptions: { concurrency: 1, tickMs: 60_000 },
+    });
+    try {
+      await service.initialize({
+        address: { address: '127.0.0.1', family: 'IPv4', port: 3080 },
+        idlePolling: { maintenanceMaxIntervalMs: 80 },
+        idleCeilingMs: 640,
+      });
+      const deadline = Date.now() + 8_000;
+      while (passes.length < 5) {
+        if (Date.now() >= deadline)
+          throw new Error('Timed out waiting for five maintenance passes');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const gaps = passes.slice(1, 5).map((at, index) => at - passes[index]);
+      /** The 80 ms cap would hold every gap near 80 ms; the ceiling lets them double to 640 ms. */
+      expect(gaps[3]).toBeGreaterThan(gaps[0] * 3);
+    } finally {
+      await mongoose.models.Conversation.deleteMany({});
+    }
+  });
+
+  it('lets the deployment-wide ceiling replace the delivery claim cap', async () => {
+    const methods = createMethods(mongoose);
+    const claim = methods.claimNextAgentTriggerDelivery.bind(methods);
+    const polls: number[] = [];
+    jest.spyOn(methods, 'claimNextAgentTriggerDelivery').mockImplementation((...args) => {
+      polls.push(Date.now());
+      return claim(...args);
+    });
+    service = createAgentTriggerService({
+      methods: methods as typeof methods & AgentTriggerDeliveryPersistence,
+      purgeRecoveryIntervalMs: 60_000,
+      deliveryOptions: { concurrency: 1, tickMs: 20 },
+    });
+    await service.initialize({
+      address: { address: '127.0.0.1', family: 'IPv4', port: 3080 },
+      idlePolling: { deliveryMaxIntervalMs: 40 },
+      idleCeilingMs: 320,
+    });
+    const deadline = Date.now() + 8_000;
+    while (polls.length < 6) {
+      if (Date.now() >= deadline) throw new Error('Timed out waiting for six claim passes');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const gaps = polls.slice(1, 6).map((at, index) => at - polls[index]);
+    /** The 40 ms cap would hold every gap near 40 ms; the ceiling lets the claim polls double to 320 ms. */
+    expect(gaps[4]).toBeGreaterThan(gaps[0] * 4);
+  });
+
   it('moves a trusted envelope through Mongo, the lease worker, and host admission', async () => {
     const fetcher = jest.fn<ReturnType<AgentTriggerFetch>, Parameters<AgentTriggerFetch>>(
       async () =>
@@ -99,4 +316,105 @@ describe('durable trigger delivery integration', () => {
       history: [{ attempt: 1, outcome: 'succeeded' }],
     });
   });
+
+  it('delivers one structured child turn while preserving every burst receipt', async () => {
+    const fetcher = jest.fn<ReturnType<AgentTriggerFetch>, Parameters<AgentTriggerFetch>>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            status: 'started',
+            streamId: 'stream-1',
+            conversationId: 'commentator-thread',
+            generationCreatedAt: 25,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    service = createAgentTriggerService({
+      methods: createMethods(mongoose) as ReturnType<typeof createMethods> &
+        AgentTriggerDeliveryPersistence,
+      fetch: fetcher,
+      mintToken: () => 'trigger-token',
+      deliveryOptions: { concurrency: 4, tickMs: 5, retryBaseMs: 5 },
+    });
+    await service.initialize({
+      address: { address: '127.0.0.1', family: 'IPv4', port: 3080 },
+    });
+    const userId = new mongoose.Types.ObjectId().toString();
+    const receipts = await Promise.all(
+      Array.from({ length: 4 }, (_, index) =>
+        service!.enqueue(boundEnvelope(userId, index + 1), {
+          coalesce: { key: 'championship-commentary' },
+        }),
+      ),
+    );
+
+    const settled = await Promise.all(
+      receipts.map(({ deliveryKey }) => eventuallySucceeded(deliveryKey)),
+    );
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const request = fetcher.mock.calls[0][1];
+    const body = JSON.parse(String(request?.body)) as { text: string };
+    expect(JSON.parse(body.text)).toMatchObject({
+      kind: 'librechat.agent_event_batch',
+      count: 4,
+      summary: { eventTypes: [{ type: 'game.started', count: 4 }] },
+    });
+    expect(settled.every((delivery) => delivery.status === 'succeeded')).toBe(true);
+    expect(new Set(receipts.map(({ deliveryKey }) => deliveryKey)).size).toBe(4);
+  });
+
+  it.each([
+    ['unset', undefined, AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3],
+    ['true', true, AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3],
+    ['false', false, AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2],
+  ])(
+    'admits background completions for receipt batching %s with the matching capability',
+    async (_label, completionReceiptBatching, requiredWorkerCapability) => {
+      const fetcher = jest.fn<ReturnType<AgentTriggerFetch>, Parameters<AgentTriggerFetch>>(
+        async () => new Response('{}', { status: 503 }),
+      );
+      const active = createAgentTriggerService({
+        methods: createMethods(mongoose) as ReturnType<typeof createMethods> &
+          AgentTriggerDeliveryPersistence,
+        fetch: fetcher,
+        mintToken: () => 'trigger-token',
+        deliveryOptions: { concurrency: 1, tickMs: 60_000 },
+      });
+      service = active;
+      await active.initialize({
+        address: { address: '127.0.0.1', family: 'IPv4', port: 3080 },
+        ...(completionReceiptBatching != null && { completionReceiptBatching }),
+      });
+      const preregister = createBackgroundToolCompletionWakeupHandler(
+        active.enqueue,
+        active.retire,
+        active.renewProducerLease,
+        undefined,
+        undefined,
+        active.getBackgroundCompletionReceiptBatching,
+      );
+
+      const admission = await preregister({
+        taskId: 'task-1',
+        toolCallId: 'call-1',
+        toolName: 'slow_tool',
+        userId: new mongoose.Types.ObjectId().toString(),
+        tenantId: 'tenant-1',
+        conversationId: 'conversation-1',
+        parentMessageId: 'response-1',
+        parentAgentId: 'agent_parent_1',
+        createdAt: Date.now(),
+      });
+
+      expect(admission).not.toBe(false);
+      const rows = await mongoose.models.AgentTriggerDelivery.find({
+        'envelope.event.payload.taskId': 'task-1',
+      })
+        .select('requiredWorkerCapability')
+        .lean<{ requiredWorkerCapability?: string }[]>();
+      expect(rows).toEqual([expect.objectContaining({ requiredWorkerCapability })]);
+    },
+  );
 });

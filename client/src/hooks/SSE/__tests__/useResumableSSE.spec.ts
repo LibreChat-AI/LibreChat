@@ -1,13 +1,27 @@
-import { renderHook, act, waitFor } from '@testing-library/react';
+import { createElement } from 'react';
+import { getDefaultStore } from 'jotai';
+import { QueryClient } from '@tanstack/react-query';
+import { renderHook as renderBareHook, act, waitFor } from '@testing-library/react';
 import {
   Constants,
   ContentTypes,
   LocalStorageKeys,
   QueryKeys,
   StepEvents,
+  StepTypes,
   request,
 } from 'librechat-data-provider';
+import type { RenderHookOptions, RenderHookResult } from '@testing-library/react';
 import type { TMessage, TSubmission } from 'librechat-data-provider';
+import type { Query, QueryKey } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
+import {
+  activeUsageResponseIdFamily,
+  liveTokensFamily,
+  pendingUsageFamily,
+  removeUsageAtoms,
+} from '~/components/Chat/Input/TokenUsage/store';
+import { registerComposerDraft, captureComposerDraft, bindComposerLaunch } from '~/utils/drafts';
 
 type SSEEventListener = (e: Partial<MessageEvent> & { responseCode?: number }) => void;
 
@@ -16,10 +30,14 @@ interface MockSSEInstance {
   addEventListener: jest.Mock;
   stream: jest.Mock;
   close: jest.Mock;
+  dispatchEvent: jest.Mock;
   headers: Record<string, string>;
   readyState: number;
   _listeners: Record<string, SSEEventListener>;
-  _emit: (event: string, data?: Partial<MessageEvent> & { responseCode?: number }) => void;
+  _emit: (
+    event: string,
+    data?: Partial<MessageEvent> & { responseCode?: number; readyState?: number },
+  ) => void;
 }
 
 const mockSSEInstances: MockSSEInstance[] = [];
@@ -37,6 +55,7 @@ jest.mock('sse.js', () => {
           listeners[event] = cb;
         }),
         stream: jest.fn(),
+        dispatchEvent: jest.fn(),
         close: jest.fn(() => {
           if (instance.readyState === 2) {
             return;
@@ -56,31 +75,39 @@ jest.mock('sse.js', () => {
   return { SSE };
 });
 
+const mockRedirectIfTwoFactorSetupPayload = jest.fn((_payload: unknown) => false);
 const mockSetQueryData = jest.fn();
 const mockGetQueryData = jest.fn();
 const mockFetchQuery = jest.fn();
 const mockInvalidateQueries = jest.fn();
 const mockRemoveQueries = jest.fn();
-const mockFindAll = jest.fn((_queryKey?: unknown): Array<{ queryKey: unknown[] }> => []);
+const mockBackingQueryClient = new QueryClient();
+const mockCancelQueries = jest.fn(
+  mockBackingQueryClient.cancelQueries.bind(mockBackingQueryClient),
+);
+const mockQueryCache = mockBackingQueryClient.getQueryCache();
+const mockFindAll = jest.fn((_queryKey?: QueryKey): Query[] => []);
 const mockQueryClient = {
   setQueryData: mockSetQueryData,
   getQueryData: mockGetQueryData,
   fetchQuery: mockFetchQuery,
   invalidateQueries: mockInvalidateQueries,
   removeQueries: mockRemoveQueries,
+  cancelQueries: mockCancelQueries,
+  getQueryState: mockBackingQueryClient.getQueryState.bind(mockBackingQueryClient),
   getQueryCache: () => ({
     findAll: mockFindAll,
+    getAll: mockQueryCache.getAll.bind(mockQueryCache),
+    get: mockQueryCache.get.bind(mockQueryCache),
+    find: mockQueryCache.find.bind(mockQueryCache),
+    subscribe: mockQueryCache.subscribe.bind(mockQueryCache),
   }),
 };
 
-const mockActiveRunAtom = { key: 'activeRun' };
-const mockAbortScrollAtom = { key: 'abortScroll' };
-const mockSubmissionAtom = { key: 'submission' };
-const mockShowStopButtonAtom = { key: 'showStopButton' };
-const mockRunEndAtom = { key: 'runEnd' };
-const mockDrainAfterAbortAtom = { key: 'drainAfterAbort' };
-const mockPendingSteersAtom = { key: 'pendingSteers' };
-const mockQueuedMessagesAtom = { key: 'queuedMessages' };
+/** The follow-up queue a restored submission lands back in. */
+const queuedIn = (conversationId: string) =>
+  getDefaultStore().get(queuedMessagesByConvoId(conversationId));
+
 const mockSetActiveRun = jest.fn();
 const mockSetAbortScroll = jest.fn();
 const mockSetSubmission = jest.fn();
@@ -93,41 +120,7 @@ const mockSeedSteerChips = jest.fn();
 const mockSettleAppliedSteerParts = jest.fn();
 const mockConvertLocalSteersToQueued = jest.fn();
 const mockUpdateGenerationEpoch = jest.fn();
-const mockRestoreQueuedSubmission = jest.fn();
-let mockRecoilCallbackIndex = 0;
-const mockRecoilCallbacks = [
-  mockRestoreQueuedSubmission,
-  mockResolveSteerChip,
-  mockUpdateSteerChips,
-  mockSeedSteerChips,
-  mockSettleAppliedSteerParts,
-  mockConvertLocalSteersToQueued,
-  mockUpdateGenerationEpoch,
-];
-function mockUseRecoilCallback() {
-  return mockRecoilCallbacks[mockRecoilCallbackIndex++ % mockRecoilCallbacks.length];
-}
-const mockUseSetRecoilStateMock = jest.fn((atom: unknown) => {
-  if (atom === mockActiveRunAtom) {
-    return mockSetActiveRun;
-  }
-  if (atom === mockAbortScrollAtom) {
-    return mockSetAbortScroll;
-  }
-  if (atom === mockSubmissionAtom) {
-    return mockSetSubmission;
-  }
-  if (atom === mockShowStopButtonAtom) {
-    return mockSetShowStopButton;
-  }
-  if (atom === mockRunEndAtom) {
-    return mockSetRunEnd;
-  }
-  if (atom === mockDrainAfterAbortAtom) {
-    return mockSetDrainAfterAbort;
-  }
-  return jest.fn();
-});
+const mockUseSetRecoilStateMock = jest.fn((_atom: unknown) => jest.fn());
 function mockUseSetRecoilState(atom: unknown) {
   return mockUseSetRecoilStateMock(atom);
 }
@@ -159,28 +152,53 @@ jest.mock('@tanstack/react-query', () => ({
 jest.mock('recoil', () => ({
   ...jest.requireActual('recoil'),
   useSetRecoilState: mockUseSetRecoilState,
-  // The hook's steer-chip/queue callbacks need a RecoilRoot; these tests render
-  // bare, so return stable named spies in the hook's declaration order.
-  useRecoilCallback: mockUseRecoilCallback,
 }));
+
+/** The run-end, interrupt-drain, abort-scroll and stop-button state are Jotai atoms; their pane
+ *  setters are swapped for spies, the same way the Recoil setters above are. */
+jest.mock('jotai', () => {
+  const actual = jest.requireActual('jotai');
+  return {
+    ...actual,
+    useSetAtom: (atom: unknown) => {
+      const queue = jest.requireActual('@librechat/chat/react');
+      if (atom === queue.runEndByIndex(0)) {
+        return mockSetRunEnd;
+      }
+      if (atom === queue.drainAfterAbortByIndex(0)) {
+        return mockSetDrainAfterAbort;
+      }
+      const generation = jest.requireActual('@librechat/chat/react');
+      if (atom === generation.submissionByIndex(0)) {
+        return mockSetSubmission;
+      }
+      if (atom === generation.abortScrollFamily(0)) {
+        return mockSetAbortScroll;
+      }
+      if (atom === generation.showStopButtonByIndex(0)) {
+        return mockSetShowStopButton;
+      }
+      if (atom === jest.requireActual('~/hooks/SSE/atoms').activeRunFamily(0)) {
+        return mockSetActiveRun;
+      }
+      return actual.useSetAtom(atom);
+    },
+  };
+});
 
 jest.mock('~/store', () => ({
   __esModule: true,
-  default: {
-    activeRunFamily: jest.fn(() => mockActiveRunAtom),
-    abortScrollFamily: jest.fn(() => mockAbortScrollAtom),
-    submissionByIndex: jest.fn(() => mockSubmissionAtom),
-    showStopButtonByIndex: jest.fn(() => mockShowStopButtonAtom),
-    runEndByIndex: jest.fn(() => mockRunEndAtom),
-    drainAfterAbortByIndex: jest.fn(() => mockDrainAfterAbortAtom),
-    pendingSteersByConvoId: jest.fn(() => mockPendingSteersAtom),
-    queuedMessagesByConvoId: jest.fn(() => mockQueuedMessagesAtom),
-  },
+  default: {},
 }));
 
-jest.mock('~/hooks/AuthContext', () => ({
-  useAuthContext: () => ({ token: 'test-token', isAuthenticated: true }),
-}));
+jest.mock('~/Providers/ChatSettingsContext', () => {
+  const actual = jest.requireActual('~/Providers/ChatSettingsContext');
+  const settings = {
+    ...actual.defaultChatSettings,
+    auth: { token: 'test-token', isAuthenticated: true },
+  };
+  return { ...actual, useChatSettings: () => settings };
+});
 
 const mockFetchStreamStatus = jest.fn();
 const mockGetConversationById = jest.fn();
@@ -208,9 +226,46 @@ jest.mock('~/data-provider', () => ({
   postGenerationRequest: (...args: unknown[]) => mockPostGenerationRequest(...args),
 }));
 
-jest.mock('~/hooks/Chat/useSteerConvert', () => ({
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useSteerConvert: () => mockConvertSteersToQueued,
+  useEventHandlers: jest.fn(() => ({
+    errorHandler: mockErrorHandler,
+    finalHandler: mockFinalHandler,
+    createdHandler: mockCreatedHandler,
+    attachmentHandler: jest.fn(),
+    stepHandler: mockStepHandler,
+    titleHandler: mockTitleHandler,
+    contentHandler: mockContentHandler,
+    syncHandler: mockSyncHandler,
+    resetContentHandler: jest.fn(),
+    syncStepMessage: jest.fn(),
+    prunePtcTraces: jest.fn(),
+    clearStepMaps: mockClearStepMaps,
+    flushPendingDeltas: jest.fn(),
+    cancelPendingDeltaFlush: jest.fn(),
+    abortConversation: jest.fn(),
+    messageHandler: jest.fn(),
+    setIsSubmitting: mockSetIsSubmitting,
+    setShowStopButton: jest.fn(),
+  })),
+}));
+
+/** The steer-chip/queue writers are swapped for stable named spies, so these tests
+ *  assert what the hook hands them rather than the chip state they would write. */
+const mockSteerState = {
+  resolveSteerChip: mockResolveSteerChip,
+  updateSteerChips: mockUpdateSteerChips,
+  seedSteerChips: mockSeedSteerChips,
+  settleAppliedSteerParts: mockSettleAppliedSteerParts,
+  convertSteersToQueued: mockConvertSteersToQueued,
+  adoptPromotedSteers: jest.fn(() => []),
+  convertLocalSteersToQueued: mockConvertLocalSteersToQueued,
+  updateActiveGenerationCreatedAt: mockUpdateGenerationEpoch,
+};
+jest.mock('~/hooks/SSE/steer', () => ({
   __esModule: true,
-  default: () => mockConvertSteersToQueued,
+  default: () => mockSteerState,
 }));
 
 const mockErrorHandler = jest.fn();
@@ -218,32 +273,10 @@ const mockFinalHandler = jest.fn();
 const mockCreatedHandler = jest.fn();
 const mockStepHandler = jest.fn();
 const mockTitleHandler = jest.fn();
+const mockContentHandler = jest.fn();
+const mockSyncHandler = jest.fn();
 const mockSetIsSubmitting = jest.fn();
 const mockClearStepMaps = jest.fn();
-
-jest.mock('~/hooks/SSE/useEventHandlers', () => {
-  const actual = jest.requireActual('~/hooks/SSE/useEventHandlers');
-  return {
-    __esModule: true,
-    ...actual,
-    default: jest.fn(() => ({
-      errorHandler: mockErrorHandler,
-      finalHandler: mockFinalHandler,
-      createdHandler: mockCreatedHandler,
-      attachmentHandler: jest.fn(),
-      stepHandler: mockStepHandler,
-      titleHandler: mockTitleHandler,
-      contentHandler: jest.fn(),
-      resetContentHandler: jest.fn(),
-      syncStepMessage: jest.fn(),
-      clearStepMaps: mockClearStepMaps,
-      flushPendingDeltas: jest.fn(),
-      messageHandler: jest.fn(),
-      setIsSubmitting: mockSetIsSubmitting,
-      setShowStopButton: jest.fn(),
-    })),
-  };
-});
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -266,16 +299,51 @@ jest.mock('librechat-data-provider', () => {
       }),
       refreshToken: jest.fn(),
       dispatchTokenUpdatedEvent: jest.fn(),
+      redirectIfTwoFactorSetupPayload: (payload: unknown) =>
+        mockRedirectIfTwoFactorSetupPayload(payload),
     },
   };
 });
 
-import useResumableSSE from '~/hooks/SSE/useResumableSSE';
+import { selectLocalSteersForQueue, ABORT_SWEEP_STATUSES } from '~/hooks/SSE/resumable';
+import { appStreamHost } from '~/Providers/StreamHostContext';
+import type { PendingSteer } from '@librechat/chat';
+import type { Transport } from '~/hooks/Chat/contract';
+import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTransportContext';
+import {
+  useResumableSSE,
+  StreamHostProvider,
+  recoveryDispositionsFamily,
+  queuedMessagesByConvoId,
+  stopRequestedByConvoId,
+  detachedRunByConvoId,
+  resetQueueFamilies,
+  pendingApprovalActionFamily,
+} from '@librechat/chat/react';
+
+/** Every hook here renders under the app's stream host, as `Root` mounts it. */
+function renderHook<Result, Props>(
+  callback: (props: Props) => Result,
+  options?: RenderHookOptions<Props>,
+): RenderHookResult<Result, Props> {
+  const Inner = options?.wrapper;
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(
+      StreamHostProvider,
+      { host: appStreamHost },
+      Inner ? createElement(Inner, null, children) : children,
+    );
+  return renderBareHook(callback, { ...options, wrapper });
+}
 
 const CONV_ID = 'conv-abc-123';
 
 type PartialSubmission = {
   conversation: { conversationId?: string };
+  isRegenerate?: boolean;
+  compact?: boolean;
+  editedContent?: Record<string, unknown>;
+  editPrefixLength?: number;
   clientRequestId?: string;
   recoverySteerId?: string;
   expectedPredecessorCreatedAt?: number;
@@ -351,6 +419,7 @@ const advanceRetryTimer = async (ms: number) => {
 
 describe('useResumableSSE', () => {
   beforeEach(() => {
+    getDefaultStore().set(recoveryDispositionsFamily(CONV_ID), {});
     mockSSEInstances.length = 0;
     localStorage.clear();
     mockErrorHandler.mockClear();
@@ -368,7 +437,10 @@ describe('useResumableSSE', () => {
     );
     mockInvalidateQueries.mockClear();
     mockRemoveQueries.mockClear();
-    mockFindAll.mockClear();
+    mockCancelQueries.mockClear();
+    mockFindAll.mockReset();
+    mockFindAll.mockReturnValue([]);
+    mockBackingQueryClient.clear();
     mockUseSetRecoilStateMock.mockClear();
     mockSetActiveRun.mockClear();
     mockSetAbortScroll.mockClear();
@@ -382,8 +454,7 @@ describe('useResumableSSE', () => {
     mockSettleAppliedSteerParts.mockClear();
     mockConvertLocalSteersToQueued.mockClear();
     mockUpdateGenerationEpoch.mockClear();
-    mockRestoreQueuedSubmission.mockClear();
-    mockRecoilCallbackIndex = 0;
+    resetQueueFamilies();
     mockConvertSteersToQueued.mockClear();
     mockFetchStreamStatus.mockReset();
     mockFetchStreamStatus.mockResolvedValue({ active: false });
@@ -392,6 +463,8 @@ describe('useResumableSSE', () => {
       conversationId: CONV_ID,
       endpoint: 'agents',
     });
+    mockRedirectIfTwoFactorSetupPayload.mockReset();
+    mockRedirectIfTwoFactorSetupPayload.mockReturnValue(false);
     (request.post as jest.Mock).mockReset();
     (request.post as jest.Mock).mockResolvedValue({
       streamId: 'stream-123',
@@ -439,6 +512,142 @@ describe('useResumableSSE', () => {
 
     return { sse, unmount, chatHelpers };
   };
+
+  it('adopts the acknowledged composer before hydrating a resumable submission', async () => {
+    window.history.replaceState({}, '', '/c/new?prompt=hello');
+    const release = registerComposerDraft(0, Constants.NEW_CONVO, Constants.PENDING_CONVO, {});
+    const submission = buildSubmission({
+      conversation: { conversationId: String(Constants.NEW_CONVO) },
+    });
+    bindComposerLaunch(submission.conversation, 0);
+    const captured = captureComposerDraft(0, Constants.NEW_CONVO);
+    const helpers = buildChatHelpers();
+    const { unmount } = renderHook(() => useResumableSSE(submission, helpers));
+    await flushMicrotasks();
+    expect(captured.conversationId()).toBe('stream-123');
+    expect(window.location.pathname).toBe('/c/stream-123');
+    expect(window.location.search).toBe('?prompt=hello');
+    expect(captured()).toBe(true);
+    getLastSSE().readyState = MOCK_SSE_CLOSED;
+    unmount();
+    release();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it.each([useResumableSSE])(
+    '%p binds a created response before any output or usage',
+    async (useTransport) => {
+      removeUsageAtoms(CONV_ID);
+      const submission = buildSubmission();
+      const { unmount } = renderHook(() => useTransport(submission, buildChatHelpers()));
+      await flushMicrotasks();
+      const sse = getLastSSE();
+      await act(async () => {
+        sse._emit('message', {
+          data: JSON.stringify({
+            created: true,
+            message: { ...submission.userMessage, messageId: 'created-user-id' },
+          }),
+        });
+      });
+      expect(getDefaultStore().get(activeUsageResponseIdFamily(CONV_ID))).toBe('created-user-id_');
+      expect(getDefaultStore().get(pendingUsageFamily(CONV_ID)).eventCount).toBe(0);
+      sse.readyState = MOCK_SSE_CLOSED;
+      unmount();
+    },
+  );
+
+  it('binds the waiting submission before the start request resolves', async () => {
+    removeUsageAtoms(CONV_ID);
+    let finishStart!: (value: unknown) => void;
+    (request.post as jest.Mock).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishStart = resolve;
+        }),
+    );
+    const submission = buildSubmission();
+    const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+    expect(getDefaultStore().get(activeUsageResponseIdFamily(CONV_ID))).toBe('resp-1');
+    expect(getDefaultStore().get(pendingUsageFamily(CONV_ID)).eventCount).toBe(0);
+    unmount();
+    await act(async () => {
+      finishStart({ streamId: 'stream-123', generationCreatedAt: 1000 });
+    });
+  });
+
+  it('calls a host transport start on the transport itself', async () => {
+    const receivers: unknown[] = [];
+    const hostTransport: Transport = {
+      ...defaultChatTransport,
+      start(this: Transport, startRequest, options) {
+        receivers.push(this);
+        return defaultChatTransport.start(startRequest, options);
+      },
+    };
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(ChatTransportContext.Provider, { value: hostTransport }, children);
+    const { unmount } = renderHook(() => useResumableSSE(buildSubmission(), buildChatHelpers()), {
+      wrapper,
+    });
+    await waitFor(() => expect(receivers).toHaveLength(1));
+    expect(receivers[0]).toBe(hostTransport);
+    unmount();
+  });
+
+  it.each([useResumableSSE])(
+    '%p retains authoritative legacy text response ownership for subsequent usage events',
+    async (useTransport) => {
+      removeUsageAtoms(CONV_ID);
+      const submission = buildSubmission();
+      const { unmount } = renderHook(() => useTransport(submission, buildChatHelpers()));
+      await flushMicrotasks();
+      const sse = getLastSSE();
+      await act(async () => {
+        sse._emit('message', {
+          data: JSON.stringify({
+            message: true,
+            messageId: 'server-text-id',
+            parentMessageId: 'msg-1',
+            text: 'a'.repeat(400),
+          }),
+        });
+      });
+      const store = getDefaultStore();
+      expect(store.get(activeUsageResponseIdFamily(CONV_ID))).toBe('server-text-id');
+      expect(store.get(liveTokensFamily(CONV_ID))).toBe(100);
+      await act(async () => {
+        sse._emit('message', {
+          data: JSON.stringify({
+            event: 'on_token_usage',
+            data: { input_tokens: 5, output_tokens: 100, runId: 'legacy-call', seq: 1 },
+          }),
+        });
+      });
+      expect(store.get(activeUsageResponseIdFamily(CONV_ID))).toBe('server-text-id');
+      expect(store.get(pendingUsageFamily(CONV_ID)).eventCount).toBe(1);
+      await act(async () => {
+        sse._emit('message', {
+          data: JSON.stringify({
+            final: true,
+            responseMessage: {
+              messageId: 'server-text-id',
+              parentMessageId: 'msg-1',
+              conversationId: CONV_ID,
+              isCreatedByUser: false,
+              text: 'done',
+            },
+            conversation: { conversationId: CONV_ID },
+          }),
+        });
+      });
+      expect(store.get(activeUsageResponseIdFamily(CONV_ID))).toBeNull();
+      expect(store.get(pendingUsageFamily(CONV_ID)).eventCount).toBe(0);
+      // A finalized legacy stream closes without dispatching cancellation.
+      sse.readyState = MOCK_SSE_CLOSED;
+      unmount();
+    },
+  );
 
   it('clears the text and files draft from localStorage on 404', async () => {
     seedDraft(CONV_ID);
@@ -494,10 +703,11 @@ describe('useResumableSSE', () => {
   });
 
   it('invalidates the stream conversation id on 404 for a new conversation', async () => {
+    mockGetConversationById.mockRejectedValueOnce({ response: { status: 404 } });
     /* Key-aware: the conversation cache helpers now run a second, pinned-keyed pass,
        and a fixed return value would attribute those writes to allConversations. */
-    mockFindAll.mockImplementation((queryKey?: unknown) => [
-      { queryKey: [(queryKey as unknown[])[0]] },
+    mockFindAll.mockImplementation((queryKey?: QueryKey) => [
+      mockQueryCache.build(mockBackingQueryClient, { queryKey: [queryKey![0]] as QueryKey }),
     ]);
     const submission = buildSubmission({
       conversation: {},
@@ -538,6 +748,11 @@ describe('useResumableSSE', () => {
       queryKey: ['streamStatus', 'stream-123'],
     });
 
+    expect(mockCancelQueries).toHaveBeenCalledWith({
+      queryKey: [QueryKeys.runningConversation, 'stream-123'],
+      exact: true,
+    });
+
     const allConversationWrites = mockSetQueryData.mock.calls.filter(
       ([queryKey]) => Array.isArray(queryKey) && queryKey[0] === QueryKeys.allConversations,
     );
@@ -560,11 +775,87 @@ describe('useResumableSSE', () => {
     unmount();
   });
 
+  it('hydrates a first conversation when a fast run finishes before stream attachment', async () => {
+    const persisted = {
+      conversationId: 'stream-123',
+      endpoint: 'agents',
+      agent_id: 'ordinary',
+      codeEnvironmentMode: 'without_attached',
+    };
+    const messages = [{ messageId: 'saved-response', conversationId: 'stream-123', text: 'Done' }];
+    mockGetConversationById.mockResolvedValue(persisted);
+    mockFetchQuery.mockImplementation(({ queryFn }) => {
+      if (typeof queryFn !== 'function') throw new Error('Missing queryFn');
+      return Promise.resolve(messages);
+    });
+    const chatHelpers = buildChatHelpers();
+    const { unmount } = renderHook(() =>
+      useResumableSSE(
+        buildSubmission({
+          conversation: {},
+          userMessage: {
+            messageId: 'msg-1',
+            conversationId: null,
+            text: 'Hello',
+            isCreatedByUser: true,
+            sender: 'User',
+            parentMessageId: Constants.NO_PARENT,
+          },
+        }),
+        chatHelpers,
+      ),
+    );
+    await flushMicrotasks();
+    await act(async () => {
+      await getLastSSE()._emit('error', { responseCode: 404 });
+    });
+    expect(mockGetConversationById).toHaveBeenCalledWith('stream-123');
+    expect(chatHelpers.setMessages).toHaveBeenCalledWith(messages);
+    const update = chatHelpers.setConversation.mock.calls.at(-1)?.[0];
+    expect(update({ conversationId: 'new', codeApprovalMode: 'ask' })).toEqual({
+      ...persisted,
+      codeApprovalMode: 'ask',
+    });
+    const other = { conversationId: 'other', agent_id: 'different' };
+    expect(update(other)).toBe(other);
+    expect(mockSetRunEnd).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'aborted' }));
+    unmount();
+  });
+
+  it('ignores a first-stream conversation lookup that returns after navigation', async () => {
+    let finish!: (value: unknown) => void;
+    mockGetConversationById.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const chatHelpers = buildChatHelpers();
+    const { unmount } = renderHook(() =>
+      useResumableSSE(buildSubmission({ conversation: {} }), chatHelpers),
+    );
+    await flushMicrotasks();
+    await act(async () => {
+      getLastSSE()._emit('error', { responseCode: 404 });
+    });
+    await waitFor(() => expect(finish).toBeDefined());
+    unmount();
+    mockSetQueryData.mockClear();
+    chatHelpers.setConversation.mockClear();
+    chatHelpers.setMessages.mockClear();
+    await act(async () =>
+      finish({ conversationId: 'stream-123', codeEnvironmentMode: 'without_attached' }),
+    );
+    expect(chatHelpers.setConversation).not.toHaveBeenCalled();
+    expect(chatHelpers.setMessages).not.toHaveBeenCalled();
+    expect(mockSetQueryData).not.toHaveBeenCalled();
+  });
+
   it('reconciles conversations via refetch instead of removing them on a resume 404', async () => {
     /* Key-aware: the conversation cache helpers now run a second, pinned-keyed pass,
        and a fixed return value would attribute those writes to allConversations. */
-    mockFindAll.mockImplementation((queryKey?: unknown) => [
-      { queryKey: [(queryKey as unknown[])[0]] },
+    mockFindAll.mockImplementation((queryKey?: QueryKey) => [
+      mockQueryCache.build(mockBackingQueryClient, { queryKey: [queryKey![0]] as QueryKey }),
     ]);
     // A deduped start returns status: 'resumed', so the client subscribes with resume=true.
     (request.post as jest.Mock).mockResolvedValue({ streamId: 'stream-123', status: 'resumed' });
@@ -673,7 +964,7 @@ describe('useResumableSSE', () => {
     expect(mockConvertSteersToQueued).toHaveBeenCalledWith(CONV_ID, parked, {
       generationProtocolVersion: 1,
     });
-    // The true outcome is unknown — the run-end signal must release parked
+    // The true outcome is unknown: the run-end signal must release parked
     // interrupt flags WITHOUT auto-sending queued messages.
     expect(mockSetRunEnd).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: CONV_ID, outcome: 'aborted' }),
@@ -682,6 +973,358 @@ describe('useResumableSSE', () => {
       expect.objectContaining({ outcome: 'completed' }),
     );
     unmount();
+  });
+
+  describe('a run the user leaves mid-stream', () => {
+    const renderLeavable = async () => {
+      const chatHelpers = buildChatHelpers();
+      const rendered = renderHook(
+        ({ current }: { current: TSubmission | null }) => useResumableSSE(current, chatHelpers),
+        { initialProps: { current: buildSubmission() as TSubmission | null } },
+      );
+      await flushMicrotasks();
+      expect(mockSSEInstances.length).toBeGreaterThan(0);
+      await confirmCreated();
+      return rendered;
+    };
+    const detachedRun = () => getDefaultStore().get(detachedRunByConvoId(CONV_ID));
+    /** The server names the run's user message, which differs from the optimistic one. */
+    const confirmCreated = async () => {
+      await act(async () => {
+        getLastSSE()._emit('message', {
+          data: JSON.stringify({
+            created: true,
+            message: { messageId: 'server-msg-1', conversationId: CONV_ID },
+          }),
+        });
+      });
+    };
+    const confirmResume = async () => {
+      await act(async () => {
+        getLastSSE()._emit('message', {
+          data: JSON.stringify({
+            sync: true,
+            resumeState: {
+              runSteps: [],
+              userMessage: { messageId: 'msg-1', conversationId: CONV_ID },
+            },
+          }),
+        });
+      });
+    };
+    const leftRun = expect.objectContaining({
+      userMessageId: 'server-msg-1',
+      generationCreatedAt: 1000,
+    });
+
+    it('remembers the run when navigation clears the submission, so its end is read on return', async () => {
+      const { rerender, unmount } = await renderLeavable();
+      rerender({ current: {} as TSubmission });
+      expect(detachedRun()).toEqual(leftRun);
+      unmount();
+    });
+
+    it('remembers the run when switching to a saved chat clears the submission to null', async () => {
+      const { rerender, unmount } = await renderLeavable();
+      rerender({ current: null });
+      expect(detachedRun()).toEqual(leftRun);
+      unmount();
+    });
+
+    it('records nothing for a run left before created names its user message', async () => {
+      const chatHelpers = buildChatHelpers();
+      const { unmount } = renderHook(() => useResumableSSE(buildSubmission(), chatHelpers));
+      await flushMicrotasks();
+      unmount();
+      expect(detachedRun()).toBeNull();
+    });
+
+    it('records nothing for a run on a server that reports no epoch', async () => {
+      (request.post as jest.Mock).mockResolvedValue({ streamId: 'stream-without-epoch' });
+      const { unmount } = await renderLeavable();
+      unmount();
+      expect(detachedRun()).toBeNull();
+    });
+
+    it('records nothing for a regeneration, which waits for a manual send', async () => {
+      const chatHelpers = buildChatHelpers();
+      const resumed = { ...resumeOf(4200), isRegenerate: true } as TSubmission;
+      const { unmount } = renderHook(() => useResumableSSE(resumed, chatHelpers));
+      await flushMicrotasks();
+      await confirmResume();
+      unmount();
+      expect(detachedRun()).toBeNull();
+    });
+
+    it('carries a resumed epoch once the resume names its user message', async () => {
+      const chatHelpers = buildChatHelpers();
+      const { unmount } = renderHook(() => useResumableSSE(resumeOf(4200), chatHelpers));
+      await flushMicrotasks();
+      await confirmResume();
+      unmount();
+      expect(detachedRun()).toEqual(
+        expect.objectContaining({ userMessageId: 'msg-1', generationCreatedAt: 4200 }),
+      );
+    });
+
+    it('remembers the run when the chat unmounts mid-stream', async () => {
+      const { unmount } = await renderLeavable();
+      unmount();
+      expect(detachedRun()).toEqual(leftRun);
+    });
+
+    it('forgets a left run once a new run starts in that conversation', async () => {
+      const { rerender, unmount } = await renderLeavable();
+      rerender({ current: null });
+      expect(detachedRun()).not.toBeNull();
+      rerender({
+        current: buildSubmission({
+          userMessage: {
+            messageId: 'msg-2',
+            conversationId: CONV_ID,
+            text: 'Next',
+            isCreatedByUser: true,
+            sender: 'User',
+            parentMessageId: 'resp-1',
+          },
+        }),
+      });
+      expect(detachedRun()).toBeNull();
+      unmount();
+    });
+
+    it('records no detached run once the run end already reached the drain', async () => {
+      mockFetchStreamStatus.mockResolvedValue({ active: false });
+      const { rerender, unmount } = await renderLeavable();
+      await act(async () => {
+        getLastSSE()._emit('error', { responseCode: 404 });
+      });
+      await waitFor(() => expect(mockSetRunEnd).toHaveBeenCalled());
+      rerender({ current: {} as TSubmission });
+      expect(detachedRun()).toBeNull();
+      unmount();
+    });
+
+    const resumeOf = (generationCreatedAt?: number) =>
+      ({
+        ...buildSubmission(),
+        resumeStreamId: CONV_ID,
+        resumeGenerationCreatedAt: generationCreatedAt,
+      }) as TSubmission;
+
+    it('resolves a reattached run from history when its job is gone before the attach', async () => {
+      getDefaultStore().set(detachedRunByConvoId(CONV_ID), {
+        userMessageId: 'msg-1',
+        responseMessageId: 'resp-1',
+        generationCreatedAt: 4200,
+      });
+      mockFetchStreamStatus.mockResolvedValue({ active: false });
+      mockGetQueryData.mockImplementation((queryKey: unknown[]) =>
+        queryKey[0] === QueryKeys.messages
+          ? [
+              {
+                messageId: 'resp-1',
+                parentMessageId: 'msg-1',
+                conversationId: CONV_ID,
+                isCreatedByUser: false,
+                text: 'finished while away',
+                updatedAt: new Date(5000).toISOString(),
+              },
+            ]
+          : undefined,
+      );
+      const resumed = resumeOf(4200);
+      const chatHelpers = buildChatHelpers();
+      const { unmount } = renderHook(() => useResumableSSE(resumed, chatHelpers));
+      await flushMicrotasks();
+      expect(detachedRun()).not.toBeNull();
+      await act(async () => {
+        getLastSSE()._emit('error', { responseCode: 404 });
+      });
+      await waitFor(() =>
+        expect(mockSetRunEnd).toHaveBeenCalledWith(
+          expect.objectContaining({
+            outcome: 'completed',
+            responseMessageId: 'resp-1',
+            generationCreatedAt: 4200,
+          }),
+        ),
+      );
+      expect(mockSetRunEnd).toHaveBeenCalledTimes(1);
+      expect(detachedRun()).toBeNull();
+      unmount();
+    });
+
+    it('keeps the marker when 404 history has not caught up with the reattached run', async () => {
+      const left = {
+        userMessageId: 'msg-1',
+        responseMessageId: 'resp-1',
+        generationCreatedAt: 4200,
+      };
+      getDefaultStore().set(detachedRunByConvoId(CONV_ID), left);
+      mockFetchStreamStatus.mockResolvedValue({ active: false });
+      mockGetQueryData.mockImplementation((queryKey: unknown[]) =>
+        queryKey[0] === QueryKeys.messages ? [] : undefined,
+      );
+      const resumed = resumeOf(4200);
+      const chatHelpers = buildChatHelpers();
+      const { unmount } = renderHook(() => useResumableSSE(resumed, chatHelpers));
+      await flushMicrotasks();
+      await act(async () => {
+        getLastSSE()._emit('error', { responseCode: 404 });
+      });
+      await waitFor(() => expect(mockSetRunEnd).toHaveBeenCalledTimes(1));
+      expect(mockSetRunEnd).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'aborted' }));
+      expect(detachedRun()).toEqual(left);
+      unmount();
+    });
+
+    it('keeps the marker when 404 history holds only the unfinished disconnect snapshot', async () => {
+      const left = {
+        userMessageId: 'msg-1',
+        responseMessageId: 'resp-1',
+        generationCreatedAt: 4200,
+      };
+      getDefaultStore().set(detachedRunByConvoId(CONV_ID), left);
+      mockFetchStreamStatus.mockResolvedValue({ active: false });
+      mockGetQueryData.mockImplementation((queryKey: unknown[]) =>
+        queryKey[0] === QueryKeys.messages
+          ? [
+              {
+                messageId: 'resp-1',
+                parentMessageId: 'msg-1',
+                conversationId: CONV_ID,
+                isCreatedByUser: false,
+                text: 'partial saved when the pane left',
+                unfinished: true,
+                updatedAt: new Date(5000).toISOString(),
+              },
+            ]
+          : undefined,
+      );
+      const resumed = resumeOf(4200);
+      const chatHelpers = buildChatHelpers();
+      const { unmount } = renderHook(() => useResumableSSE(resumed, chatHelpers));
+      await flushMicrotasks();
+      await act(async () => {
+        getLastSSE()._emit('error', { responseCode: 404 });
+      });
+      await waitFor(() => expect(mockSetRunEnd).toHaveBeenCalledTimes(1));
+      expect(mockSetRunEnd).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'aborted', generationCreatedAt: 4200 }),
+      );
+      expect(detachedRun()).toEqual(left);
+      unmount();
+    });
+
+    it('settles a reattached run the user stopped as stopped on 404, even if it persisted as done', async () => {
+      getDefaultStore().set(detachedRunByConvoId(CONV_ID), {
+        userMessageId: 'msg-1',
+        responseMessageId: 'resp-1',
+        generationCreatedAt: 4200,
+      });
+      getDefaultStore().set(stopRequestedByConvoId(CONV_ID), { generationCreatedAt: 4200 });
+      mockFetchStreamStatus.mockResolvedValue({ active: false });
+      mockGetQueryData.mockImplementation((queryKey: unknown[]) =>
+        queryKey[0] === QueryKeys.messages
+          ? [
+              {
+                messageId: 'resp-1',
+                parentMessageId: 'msg-1',
+                conversationId: CONV_ID,
+                isCreatedByUser: false,
+                text: 'stopped compaction settles as finished',
+                updatedAt: new Date(5000).toISOString(),
+              },
+            ]
+          : undefined,
+      );
+      const resumed = resumeOf(4200);
+      const chatHelpers = buildChatHelpers();
+      const { unmount } = renderHook(() => useResumableSSE(resumed, chatHelpers));
+      await flushMicrotasks();
+      await act(async () => {
+        getLastSSE()._emit('error', { responseCode: 404 });
+      });
+      await waitFor(() => expect(mockSetRunEnd).toHaveBeenCalledTimes(1));
+      expect(mockSetRunEnd).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'aborted' }));
+      expect(detachedRun()).toBeNull();
+      unmount();
+    });
+
+    it('does not carry a resumed run into a fresh run left before created', async () => {
+      const chatHelpers = buildChatHelpers();
+      const rendered = renderHook(
+        ({ current }: { current: TSubmission | null }) => useResumableSSE(current, chatHelpers),
+        { initialProps: { current: resumeOf(4200) as TSubmission | null } },
+      );
+      await flushMicrotasks();
+      await confirmResume();
+      rendered.rerender({ current: null });
+      expect(detachedRun()).toEqual(expect.objectContaining({ generationCreatedAt: 4200 }));
+      rendered.rerender({
+        current: buildSubmission({
+          userMessage: {
+            messageId: 'msg-2',
+            conversationId: CONV_ID,
+            text: 'Next',
+            isCreatedByUser: true,
+            sender: 'User',
+            parentMessageId: 'resp-1',
+          },
+        }),
+      });
+      await flushMicrotasks();
+      rendered.rerender({ current: null });
+      expect(detachedRun()).toBeNull();
+      rendered.unmount();
+    });
+
+    it('keeps a Stop through a reattach to the stopped run, so leaving again records nothing', async () => {
+      getDefaultStore().set(stopRequestedByConvoId(CONV_ID), { generationCreatedAt: 4200 });
+      const resumed = resumeOf(4200);
+      const chatHelpers = buildChatHelpers();
+      const { unmount } = renderHook(() => useResumableSSE(resumed, chatHelpers));
+      await flushMicrotasks();
+      await confirmResume();
+      unmount();
+      expect(detachedRun()).toBeNull();
+      expect(getDefaultStore().get(stopRequestedByConvoId(CONV_ID))).toEqual({
+        generationCreatedAt: 4200,
+      });
+    });
+
+    it('drops a Stop for a reattach whose epoch the server does not report, and records nothing', async () => {
+      getDefaultStore().set(stopRequestedByConvoId(CONV_ID), { generationCreatedAt: 4200 });
+      const resumed = resumeOf();
+      const chatHelpers = buildChatHelpers();
+      const { unmount } = renderHook(() => useResumableSSE(resumed, chatHelpers));
+      await flushMicrotasks();
+      await confirmResume();
+      expect(getDefaultStore().get(stopRequestedByConvoId(CONV_ID))).toBeNull();
+      unmount();
+      expect(detachedRun()).toBeNull();
+    });
+
+    it('drops a Stop once a different run reattaches, and remembers that run when left', async () => {
+      getDefaultStore().set(stopRequestedByConvoId(CONV_ID), { generationCreatedAt: 4200 });
+      const resumed = resumeOf(9000);
+      const chatHelpers = buildChatHelpers();
+      const { unmount } = renderHook(() => useResumableSSE(resumed, chatHelpers));
+      await flushMicrotasks();
+      expect(getDefaultStore().get(stopRequestedByConvoId(CONV_ID))).toBeNull();
+      await confirmResume();
+      unmount();
+      expect(detachedRun()).toEqual(expect.objectContaining({ generationCreatedAt: 9000 }));
+    });
+
+    it('records no detached run for a run the user stopped before leaving', async () => {
+      const { rerender, unmount } = await renderLeavable();
+      getDefaultStore().set(stopRequestedByConvoId(CONV_ID), { generationCreatedAt: 1000 });
+      rerender({ current: {} as TSubmission });
+      expect(detachedRun()).toBeNull();
+      unmount();
+    });
   });
 
   it('authorizes only the exact failed recovery source past the conversion tombstone', async () => {
@@ -830,6 +1473,36 @@ describe('useResumableSSE', () => {
     );
     expect(mockFindAll).toHaveBeenCalledWith([QueryKeys.allConversations], { exact: false });
 
+    unmount();
+  });
+
+  it.each([
+    {
+      codeEnvironmentMode: 'attached' as const,
+      codeWorkspaces: [{ environmentId: 'vm', workspaceId: 'project' }],
+    },
+    { codeWorkspaces: [{ environmentId: 'vm', workspaceId: 'project' }] },
+    { codeEnvironmentMode: 'without_attached' as const },
+  ])('caches the acknowledged code decision for navigation: %j', async (decision) => {
+    const submission = {
+      ...buildSubmission({ conversation: { conversationId: String(Constants.NEW_CONVO) } }),
+      ...decision,
+    };
+    const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+    await flushMicrotasks();
+
+    const cacheWrite = mockSetQueryData.mock.calls.find(
+      ([key]) => key[0] === QueryKeys.conversation && key[1] === 'stream-123',
+    );
+    expect(cacheWrite).toBeDefined();
+    const cached = cacheWrite![1](undefined);
+    expect(cached).toMatchObject({
+      conversationId: 'stream-123',
+      codeEnvironmentMode: decision.codeEnvironmentMode ?? 'attached',
+    });
+    expect(cached.codeWorkspaces).toEqual(decision.codeWorkspaces);
+    const newer = { ...cached, codeEnvironmentMode: 'without_attached', codeWorkspaces: undefined };
+    expect(cacheWrite![1](newer)).toBe(newer);
     unmount();
   });
 
@@ -1330,6 +2003,34 @@ describe('useResumableSSE', () => {
     unmount();
   });
 
+  it('reattaches without waiting for the foreground once the resume body ends before final', async () => {
+    jest.useFakeTimers();
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await flushMicrotasks();
+
+    const initialSSE = getLastSSE();
+    await act(async () => {
+      initialSSE._emit('message', {
+        data: JSON.stringify({ event: 'on.message.delta', data: { text: 'part' } }),
+      });
+    });
+
+    await act(async () => {
+      initialSSE._emit('readystatechange', { readyState: 2 });
+    });
+    await advanceRetryTimer(1000);
+
+    expect(mockSSEInstances).toHaveLength(2);
+    expect(getLastSSE()._url).toBe(
+      '/api/agents/chat/stream/stream-123?resume=true&generationCreatedAt=1000&generationProtocolVersion=2',
+    );
+    expect(mockErrorHandler).not.toHaveBeenCalled();
+    unmount();
+  });
+
   it('preserves the generation protocol header across a 401 token refresh', async () => {
     (request.refreshToken as jest.Mock).mockResolvedValueOnce({ token: 'refreshed-token' });
     const submission = buildSubmission();
@@ -1459,6 +2160,44 @@ describe('useResumableSSE', () => {
     });
     expect(mockSetRunEnd).toHaveBeenCalledWith(
       expect.objectContaining({ conversationId: CONV_ID, outcome: 'aborted' }),
+    );
+    unmount();
+  });
+
+  it('keeps a mode picked while a settled start was pending', async () => {
+    (request.post as jest.Mock).mockResolvedValue({
+      conversationId: CONV_ID,
+      status: 'settled',
+      generationProtocolVersion: 2,
+    });
+    mockGetConversationById.mockResolvedValue({
+      conversationId: CONV_ID,
+      endpoint: 'agents',
+      codeApprovalMode: 'fullAccess',
+    });
+    mockGetQueryData.mockImplementation((queryKey: unknown[]) =>
+      queryKey[0] === QueryKeys.conversation
+        ? { conversationId: CONV_ID, codeApprovalMode: 'ask' }
+        : undefined,
+    );
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(buildSubmission(), chatHelpers));
+
+    await waitFor(() => {
+      expect(chatHelpers.setConversation).toHaveBeenCalled();
+    });
+
+    const update = chatHelpers.setConversation.mock.calls.at(-1)?.[0];
+    expect(update({ conversationId: CONV_ID, codeApprovalMode: 'ask' }).codeApprovalMode).toBe(
+      'ask',
+    );
+    expect(
+      update({ conversationId: 'conv-elsewhere', codeApprovalMode: 'ask' }).codeApprovalMode,
+    ).toBe('fullAccess');
+    expect(mockSetQueryData).toHaveBeenCalledWith(
+      [QueryKeys.conversation, CONV_ID],
+      expect.objectContaining({ codeApprovalMode: 'ask' }),
     );
     unmount();
   });
@@ -2147,66 +2886,114 @@ describe('useResumableSSE', () => {
     unmount();
   });
 
-  it('reconciles a synthesized terminal frame without rendering a bogus final or error', async () => {
-    (request.post as jest.Mock).mockResolvedValue({
-      streamId: CONV_ID,
-      status: 'started',
-      generationCreatedAt: 1000,
-      generationProtocolVersion: 2,
-    });
-    const persisted = [
-      {
-        messageId: 'persisted-response',
-        conversationId: CONV_ID,
-        isCreatedByUser: false,
-        text: 'Persisted answer',
-      },
-    ] as TMessage[];
-    mockGetQueryData.mockReturnValue(persisted);
-    mockFetchStreamStatus.mockResolvedValue({ active: false, generationProtocolVersion: 2 });
-    const submission = buildSubmission();
-    const chatHelpers = buildChatHelpers();
-
-    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
-    await flushMicrotasks();
-
-    const sse = getLastSSE();
-    await act(async () => {
-      sse._emit('message', {
-        data: JSON.stringify({
-          final: true,
-          reconcile: true,
-          reconcileReason: 'terminal_payload_missing',
-          terminalStatus: 'complete',
-          generationCreatedAt: 1000,
-          generationProtocolVersion: 2,
-          conversation: { conversationId: CONV_ID },
+  it.each([
+    'status',
+    'submission',
+    'unique-placeholder',
+    'ambiguous-placeholder',
+    'missing-response',
+  ])(
+    'reconciles a synthesized terminal using %s response identity instead of a later sibling',
+    async (identitySource) => {
+      (request.post as jest.Mock).mockResolvedValue({
+        streamId: CONV_ID,
+        status: 'started',
+        generationCreatedAt: 1000,
+        generationProtocolVersion: 2,
+      });
+      const persisted = [
+        {
+          messageId: 'persisted-response',
+          parentMessageId: 'msg-1',
+          conversationId: CONV_ID,
+          isCreatedByUser: false,
+          text: 'Persisted answer',
+        },
+        {
+          messageId: 'later-sibling',
+          parentMessageId: 'msg-1',
+          conversationId: CONV_ID,
+          isCreatedByUser: false,
+          text: 'A different branch',
+        },
+      ] as TMessage[];
+      if (identitySource === 'unique-placeholder') {
+        persisted.pop();
+      }
+      mockGetQueryData.mockReturnValue(persisted);
+      mockFetchStreamStatus.mockResolvedValue({
+        active: false,
+        generationProtocolVersion: 2,
+        ...(identitySource === 'status' && {
+          resumeState: { responseMessageId: 'persisted-response' },
         }),
       });
-      await Promise.resolve();
-    });
-    await flushMicrotasks();
+      const responseIds: Record<string, string> = {
+        submission: 'persisted-response_',
+        'missing-response': 'missing-response_',
+      };
+      const submission = buildSubmission({
+        initialResponse: { messageId: responseIds[identitySource] ?? 'msg-1_' },
+      });
+      const chatHelpers = buildChatHelpers();
+      getDefaultStore().set(pendingApprovalActionFamily(CONV_ID), {
+        actionId: 'stale-action',
+        streamId: CONV_ID,
+        createdAt: 1000,
+        payload: { type: 'tool_approval', action_requests: [], review_configs: [] },
+      });
 
-    expect(mockFinalHandler).not.toHaveBeenCalled();
-    expect(mockErrorHandler).not.toHaveBeenCalled();
-    expect(mockInvalidateQueries).toHaveBeenCalledWith({
-      queryKey: [QueryKeys.messages, CONV_ID],
-      refetchType: 'none',
-    });
-    expect(mockInvalidateQueries).toHaveBeenCalledWith({
-      queryKey: [QueryKeys.allConversations],
-    });
-    expect(mockInvalidateQueries).toHaveBeenCalledWith({
-      queryKey: [QueryKeys.pinnedConversations],
-    });
-    expect(mockSettleAppliedSteerParts).toHaveBeenCalledWith(CONV_ID, persisted);
-    expect(mockSetRunEnd).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: CONV_ID, outcome: 'completed' }),
-    );
-    expect(mockSetSubmission).toHaveBeenCalledWith(null);
-    expect(mockUpdateGenerationEpoch).toHaveBeenCalledWith(CONV_ID, null, 1000);
-    unmount();
-  });
+      const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+      await flushMicrotasks();
+
+      const sse = getLastSSE();
+      await act(async () => {
+        sse._emit('message', {
+          data: JSON.stringify({
+            final: true,
+            reconcile: true,
+            reconcileReason: 'terminal_payload_missing',
+            terminalStatus: 'complete',
+            generationCreatedAt: 1000,
+            generationProtocolVersion: 2,
+            conversation: { conversationId: CONV_ID },
+          }),
+        });
+        await Promise.resolve();
+      });
+      await flushMicrotasks();
+
+      expect(mockFinalHandler).not.toHaveBeenCalled();
+      expect(mockErrorHandler).not.toHaveBeenCalled();
+      expect(getDefaultStore().get(pendingApprovalActionFamily(CONV_ID))).toBeNull();
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: [QueryKeys.messages, CONV_ID],
+        refetchType: 'none',
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: [QueryKeys.allConversations],
+      });
+      expect(mockInvalidateQueries).toHaveBeenCalledWith({
+        queryKey: [QueryKeys.pinnedConversations],
+      });
+      expect(mockSettleAppliedSteerParts).toHaveBeenCalledWith(CONV_ID, persisted);
+      expect(mockSetRunEnd).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: CONV_ID,
+          outcome: 'completed',
+          ...(['status', 'submission', 'unique-placeholder'].includes(identitySource) && {
+            responseMessageId: 'persisted-response',
+          }),
+        }),
+      );
+      if (['ambiguous-placeholder', 'missing-response'].includes(identitySource)) {
+        expect(mockSetRunEnd.mock.calls.at(-1)?.[0]).not.toHaveProperty('responseMessageId');
+      }
+      expect(mockSetSubmission).toHaveBeenCalledWith(null);
+      expect(mockUpdateGenerationEpoch).toHaveBeenCalledWith(CONV_ID, null, 1000);
+      unmount();
+    },
+  );
 
   it('ignores v2-only lifecycle reconciliation on a legacy generation', async () => {
     (request.post as jest.Mock).mockResolvedValue({
@@ -2390,6 +3177,265 @@ describe('useResumableSSE', () => {
     unmount();
   });
 
+  it('renders a steer applied before the first run step on the live placeholder', async () => {
+    const requestFrame = jest.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    const userMessage = {
+      messageId: 'user-1',
+      conversationId: CONV_ID,
+      text: 'Hello',
+      isCreatedByUser: true,
+    } as TMessage;
+    const submission = buildSubmission({ userMessage });
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await flushMicrotasks();
+    const sse = getLastSSE();
+
+    /** `created` carries only the user message; the pane renders the response
+     *  under `${userMessageId}_` until the first run step renames it. */
+    await act(async () => {
+      sse._emit('message', {
+        data: JSON.stringify({ created: true, message: { ...userMessage } }),
+      });
+    });
+    chatHelpers.getMessages.mockReturnValue([
+      userMessage,
+      { messageId: 'user-1_', conversationId: CONV_ID, isCreatedByUser: false, content: [] },
+    ] as TMessage[]);
+    chatHelpers.setMessages.mockClear();
+
+    /** An interrupt before the model has said a word: the steer is injected at
+     *  content index 0, stamped with the server's pre-allocated response id —
+     *  which no local row carries yet. */
+    await act(async () => {
+      sse._emit('message', {
+        data: JSON.stringify({
+          event: 'on_steer_applied',
+          data: {
+            steerId: 'server-1',
+            clientSteerId: 'client-1',
+            conversationId: CONV_ID,
+            responseMessageId: 'a1b2c3d4-preallocated',
+            index: 0,
+            part: {
+              type: ContentTypes.STEER,
+              [ContentTypes.STEER]: 'change of plan',
+              steerId: 'server-1',
+              clientSteerId: 'client-1',
+            },
+          },
+        }),
+      });
+    });
+
+    const committed = chatHelpers.setMessages.mock.calls
+      .map(([messages]) => messages as TMessage[])
+      .find((messages) => messages?.some((m) => m.messageId === 'user-1_'));
+    const placeholder = committed?.find((m) => m.messageId === 'user-1_');
+    expect(placeholder?.content?.[0]).toEqual(
+      expect.objectContaining({ type: ContentTypes.STEER, steerId: 'server-1' }),
+    );
+    /** Landed on the first pass — no frame retries burned waiting for a rename
+     *  that only the first run step can perform. */
+    expect(requestFrame).not.toHaveBeenCalled();
+    requestFrame.mockRestore();
+    unmount();
+  });
+
+  it('hands the step handler a submission whose placeholder carries the early steer', async () => {
+    /** A regenerate seeds the renamed response from `submission.initialResponse`,
+     *  not from the store tail, so the steer landed on the placeholder must also
+     *  reach the submission the first run step is handed. */
+    const requestFrame = jest.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    const userMessage = {
+      messageId: 'user-1',
+      conversationId: CONV_ID,
+      text: 'Hello',
+      isCreatedByUser: true,
+    } as TMessage;
+    const submission = buildSubmission({
+      userMessage,
+      isRegenerate: true,
+      initialResponse: {
+        messageId: 'user-1_',
+        parentMessageId: 'user-1',
+        conversationId: CONV_ID,
+        text: '',
+        isCreatedByUser: false,
+        sender: 'Assistant',
+      },
+    });
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await flushMicrotasks();
+    const sse = getLastSSE();
+
+    await act(async () => {
+      sse._emit('message', {
+        data: JSON.stringify({ created: true, message: { ...userMessage } }),
+      });
+    });
+    chatHelpers.getMessages.mockReturnValue([
+      userMessage,
+      { messageId: 'user-1_', conversationId: CONV_ID, isCreatedByUser: false, content: [] },
+    ] as TMessage[]);
+
+    await act(async () => {
+      sse._emit('message', {
+        data: JSON.stringify({
+          event: 'on_steer_applied',
+          data: {
+            steerId: 'server-1',
+            clientSteerId: 'client-1',
+            conversationId: CONV_ID,
+            responseMessageId: 'a1b2c3d4-preallocated',
+            index: 0,
+            part: {
+              type: ContentTypes.STEER,
+              [ContentTypes.STEER]: 'change of plan',
+              steerId: 'server-1',
+              clientSteerId: 'client-1',
+            },
+          },
+        }),
+      });
+    });
+
+    mockStepHandler.mockClear();
+    await act(async () => {
+      sse._emit('message', {
+        data: JSON.stringify({
+          event: 'on_run_step',
+          data: {
+            id: 'step-1',
+            runId: 'a1b2c3d4-preallocated',
+            index: 1,
+            type: 'message_creation',
+            stepDetails: { type: 'message_creation', message_creation: { message_id: 'm-1' } },
+          },
+        }),
+      });
+    });
+
+    expect(mockStepHandler).toHaveBeenCalled();
+    const calls = mockStepHandler.mock.calls;
+    const handed = calls[calls.length - 1][1] as TSubmission;
+    expect(handed.initialResponse?.messageId).toBe('user-1_');
+    expect(handed.initialResponse?.content?.[0]).toEqual(
+      expect.objectContaining({ type: ContentTypes.STEER, steerId: 'server-1' }),
+    );
+    requestFrame.mockRestore();
+    unmount();
+  });
+
+  it('shifts an early steer past the retained prefix of an edited resubmission', async () => {
+    /** The server indexes only the NEW content of an edited resubmission and
+     *  the steer claims that same server-local space, so it lands after the
+     *  kept prefix — and the seed handed to the first run step carries it. */
+    const requestFrame = jest.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1);
+    const userMessage = {
+      messageId: 'user-1',
+      conversationId: CONV_ID,
+      text: 'Hello',
+      isCreatedByUser: true,
+    } as TMessage;
+    const keptPrefix = [
+      { type: ContentTypes.TEXT, text: 'kept one' },
+      { type: ContentTypes.TEXT, text: 'kept two' },
+    ];
+    const submission = buildSubmission({
+      userMessage,
+      editedContent: { index: 1, type: ContentTypes.TEXT, text: 'kept two' },
+      editPrefixLength: keptPrefix.length,
+      initialResponse: {
+        messageId: 'user-1_',
+        parentMessageId: 'user-1',
+        conversationId: CONV_ID,
+        text: '',
+        isCreatedByUser: false,
+        sender: 'Assistant',
+        content: keptPrefix,
+      },
+    });
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await flushMicrotasks();
+    const sse = getLastSSE();
+
+    await act(async () => {
+      sse._emit('message', {
+        data: JSON.stringify({ created: true, message: { ...userMessage } }),
+      });
+    });
+    chatHelpers.getMessages.mockReturnValue([
+      userMessage,
+      {
+        messageId: 'user-1_',
+        conversationId: CONV_ID,
+        isCreatedByUser: false,
+        content: keptPrefix,
+      },
+    ] as TMessage[]);
+    chatHelpers.setMessages.mockClear();
+
+    await act(async () => {
+      sse._emit('message', {
+        data: JSON.stringify({
+          event: 'on_steer_applied',
+          data: {
+            steerId: 'server-1',
+            clientSteerId: 'client-1',
+            conversationId: CONV_ID,
+            responseMessageId: 'a1b2c3d4-preallocated',
+            index: 0,
+            part: {
+              type: ContentTypes.STEER,
+              [ContentTypes.STEER]: 'change of plan',
+              steerId: 'server-1',
+              clientSteerId: 'client-1',
+            },
+          },
+        }),
+      });
+    });
+
+    const committed = chatHelpers.setMessages.mock.calls
+      .map(([messages]) => messages as TMessage[])
+      .find((messages) => messages?.some((m) => m.messageId === 'user-1_'));
+    const placeholder = committed?.find((m) => m.messageId === 'user-1_');
+    expect(placeholder?.content?.[0]).toEqual(expect.objectContaining({ text: 'kept one' }));
+    expect(placeholder?.content?.[1]).toEqual(expect.objectContaining({ text: 'kept two' }));
+    expect(placeholder?.content?.[2]).toEqual(
+      expect.objectContaining({ type: ContentTypes.STEER, steerId: 'server-1' }),
+    );
+
+    mockStepHandler.mockClear();
+    await act(async () => {
+      sse._emit('message', {
+        data: JSON.stringify({
+          event: 'on_run_step',
+          data: {
+            id: 'step-1',
+            runId: 'a1b2c3d4-preallocated',
+            index: 1,
+            type: 'message_creation',
+            stepDetails: { type: 'message_creation', message_creation: { message_id: 'm-1' } },
+          },
+        }),
+      });
+    });
+    const calls = mockStepHandler.mock.calls;
+    const handed = calls[calls.length - 1][1] as TSubmission;
+    expect(handed.initialResponse?.content?.[2]).toEqual(
+      expect.objectContaining({ type: ContentTypes.STEER, steerId: 'server-1' }),
+    );
+    requestFrame.mockRestore();
+    unmount();
+  });
+
   it('settles every applied steer immediately and cancels all render retries at terminal', async () => {
     let nextFrameId = 0;
     const requestFrame = jest
@@ -2428,8 +3474,22 @@ describe('useResumableSSE', () => {
       });
     }
 
-    expect(mockResolveSteerChip).toHaveBeenNthCalledWith(1, CONV_ID, 'server-1', 'client-1');
-    expect(mockResolveSteerChip).toHaveBeenNthCalledWith(2, CONV_ID, 'server-2', 'client-2');
+    // 4th arg: the applied part's quotes (absent here) — see the pre-quotes
+    // server restage in resolveSteerChip.
+    expect(mockResolveSteerChip).toHaveBeenNthCalledWith(
+      1,
+      CONV_ID,
+      'server-1',
+      'client-1',
+      undefined,
+    );
+    expect(mockResolveSteerChip).toHaveBeenNthCalledWith(
+      2,
+      CONV_ID,
+      'server-2',
+      'client-2',
+      undefined,
+    );
     expect(requestFrame).toHaveBeenCalledTimes(2);
 
     await act(async () => {
@@ -2598,6 +3658,69 @@ describe('useResumableSSE', () => {
     unmount();
   });
 
+  it.each(['RECOVERY_PAYLOAD_MISMATCH', 'INVALID_RECOVERY_REQUEST'])(
+    'holds a rejected recovery (%s) without changing its words or binding',
+    async (code) => {
+      (request.post as jest.Mock).mockRejectedValueOnce({
+        response: { status: 409, data: { code } },
+      });
+      const item = {
+        id: 'leftover',
+        text: 'original words',
+        createdAt: 1,
+        recoverySteerId: 'source',
+        recoveryClientSteerId: 'client-source',
+        clientRequestId: 'attempt',
+        quotes: ['original excerpt'],
+        files: [{ file_id: 'original-file' }],
+      };
+      const submission = buildSubmission({
+        recoverySteerId: 'source',
+        clientRequestId: 'attempt',
+        queuedMessageOrigin: { item, beforeIds: [], afterIds: [] },
+      });
+      const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+      await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
+      expect(getDefaultStore().get(recoveryDispositionsFamily(CONV_ID))).toEqual({
+        source: 'blocked',
+      });
+      expect(queuedIn(CONV_ID)).toEqual([item]);
+      expect(mockConvertSteersToQueued).not.toHaveBeenCalled();
+      expect(request.post).toHaveBeenCalledTimes(1);
+      unmount();
+    },
+  );
+
+  it('does not permanently hold a rate-limited recovery', async () => {
+    (request.post as jest.Mock).mockRejectedValueOnce({ response: { status: 429 } });
+    const submission = buildSubmission({ recoverySteerId: 'source', clientRequestId: 'attempt' });
+    const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+    await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
+    expect(getDefaultStore().get(recoveryDispositionsFamily(CONV_ID))).toEqual({});
+    unmount();
+  });
+
+  it('refetches the terms status when a send is refused for unaccepted terms', async () => {
+    (request.post as jest.Mock).mockRejectedValueOnce({
+      response: { status: 403, data: { code: 'terms_not_accepted' } },
+    });
+    const { unmount } = renderHook(() => useResumableSSE(buildSubmission(), buildChatHelpers()));
+    await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
+    expect(mockInvalidateQueries).toHaveBeenCalledWith([QueryKeys.userTerms]);
+    expect(mockInvalidateQueries).toHaveBeenCalledWith([QueryKeys.startupConfig]);
+    unmount();
+  });
+
+  it('does not dispatch a recovery cancelled between dequeuing and startup', async () => {
+    getDefaultStore().set(recoveryDispositionsFamily(CONV_ID), { source: 'cancelled' });
+    const submission = buildSubmission({ recoverySteerId: 'source', clientRequestId: 'attempt' });
+    const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+    await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
+    expect(request.post).not.toHaveBeenCalled();
+    expect(mockSSEInstances).toHaveLength(0);
+    unmount();
+  });
+
   it('restores an exact queued row after a definitive pre-create rejection', async () => {
     (request.post as jest.Mock).mockRejectedValueOnce({
       response: { status: 429, data: { message: 'too many requests' } },
@@ -2612,7 +3735,7 @@ describe('useResumableSSE', () => {
 
     await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
 
-    expect(mockRestoreQueuedSubmission).toHaveBeenCalledWith(submission);
+    expect(queuedIn(CONV_ID)).toEqual([queuedMessageOrigin.item]);
     expect(mockSSEInstances).toHaveLength(0);
     unmount();
   });
@@ -2653,8 +3776,9 @@ describe('useResumableSSE', () => {
     await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
 
     expect(request.post).toHaveBeenCalledTimes(1);
-    expect(mockRestoreQueuedSubmission).toHaveBeenNthCalledWith(1, submission);
-    expect(mockRestoreQueuedSubmission).toHaveBeenLastCalledWith(submission, 2000);
+    expect(queuedIn(CONV_ID)).toEqual([
+      { ...queuedMessageOrigin.item, expectedPredecessorCreatedAt: 2000 },
+    ]);
     expect(mockSSEInstances).toHaveLength(0);
     expect(mockSetQueryData).toHaveBeenCalledWith(
       ['streamStatus', CONV_ID],
@@ -2720,8 +3844,9 @@ describe('useResumableSSE', () => {
     await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
 
     expect(request.post).toHaveBeenCalledTimes(1);
-    expect(mockRestoreQueuedSubmission).toHaveBeenNthCalledWith(1, submission);
-    expect(mockRestoreQueuedSubmission).toHaveBeenLastCalledWith(submission, 2000);
+    expect(queuedIn(CONV_ID)).toEqual([
+      { ...queuedMessageOrigin.item, expectedPredecessorCreatedAt: 2000 },
+    ]);
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: [QueryKeys.messages, CONV_ID],
       refetchType: 'all',
@@ -2773,7 +3898,7 @@ describe('useResumableSSE', () => {
       generationProtocolVersion: 2,
       allowPreviouslyConvertedIds: ['source-steer'],
     });
-    expect(mockRestoreQueuedSubmission).not.toHaveBeenCalled();
+    expect(queuedIn(CONV_ID)).toEqual([]);
     unmount();
   });
 
@@ -2964,14 +4089,19 @@ describe('useResumableSSE', () => {
       unmount();
     });
 
-    /**
-     * Regenerate: the new run's response id is not in the loaded history yet, so the
-     * parent-based fallback lands on the answer being REPLACED. Preserving that row's
-     * content would make the regenerated run's deltas append to the stale answer, so an
-     * empty snapshot must still clear a row we only matched heuristically.
-     */
-    it('does not preserve content on a row matched only by the parent fallback', async () => {
-      const submission = buildSubmission();
+    it('does not reuse an older response that only shares the user parent', async () => {
+      const submission = buildSubmission({
+        initialResponse: {
+          messageId: 'resp-1',
+          conversationId: CONV_ID,
+          text: '',
+          isCreatedByUser: false,
+          sender: 'Custom Assistant',
+          endpoint: 'azureOpenAI',
+          iconURL: 'https://example.com/assistant.png',
+          model: 'gpt-4.1',
+        },
+      });
       const chatHelpers = buildChatHelpers();
       chatHelpers.getMessages.mockReturnValue([
         {
@@ -3009,12 +4139,27 @@ describe('useResumableSSE', () => {
         });
       });
 
-      const synced = chatHelpers.setMessages.mock.calls
+      const syncedMessages = chatHelpers.setMessages.mock.calls
         .map(([messages]) => messages as TMessage[])
         .reverse()
-        .find((messages) => messages?.some((m) => m.messageId === 'resp-previous'))
-        ?.find((m) => m.messageId === 'resp-previous');
-      expect(synced?.content).toEqual([]);
+        .find((messages) => messages?.some((m) => m.messageId === 'resp-regenerated'));
+      expect(syncedMessages?.find((m) => m.messageId === 'resp-previous')?.content).toEqual([
+        { type: 'text', text: 'the answer being regenerated' },
+      ]);
+      expect(syncedMessages?.map((message) => message.messageId)).toEqual([
+        'msg-1',
+        'resp-previous',
+        'resp-regenerated',
+      ]);
+      expect(syncedMessages?.find((m) => m.messageId === 'resp-regenerated')).toEqual(
+        expect.objectContaining({
+          content: [],
+          sender: 'Custom Assistant',
+          endpoint: 'azureOpenAI',
+          iconURL: 'https://example.com/assistant.png',
+          model: 'gpt-4.1',
+        }),
+      );
       unmount();
     });
 
@@ -3225,6 +4370,97 @@ describe('useResumableSSE', () => {
     unmount();
   });
 
+  it('hydrates a projected pending OAuth prompt once against the resumed response', async () => {
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const runStep = {
+      id: 'step-oauth',
+      runId: Constants.USE_PRELIM_RESPONSE_MESSAGE_ID,
+      index: 0,
+      type: StepTypes.TOOL_CALLS,
+      stepDetails: {
+        type: StepTypes.TOOL_CALLS,
+        tool_calls: [{ id: 'call-oauth', name: 'oauth_mcp_Google-Workspace', args: '' }],
+      },
+    };
+    const replayEvent = {
+      event: StepEvents.ON_RUN_STEP_DELTA,
+      data: {
+        id: 'step-oauth',
+        delta: {
+          type: StepTypes.TOOL_CALLS,
+          tool_calls: [{ id: 'call-oauth', name: 'oauth_mcp_Google-Workspace', args: '' }],
+          auth: 'https://auth.example.com/oauth',
+        },
+      },
+    };
+
+    await act(async () => {
+      getLastSSE()._emit('message', {
+        data: JSON.stringify({
+          sync: true,
+          resumeState: {
+            runSteps: [runStep],
+            replayEvents: [replayEvent],
+            responseMessageId: 'resumed-response',
+            userMessage: {
+              messageId: 'resumed-user',
+              conversationId: CONV_ID,
+              text: 'Use Google Workspace',
+            },
+            pendingOAuthPrompts: [
+              {
+                stepId: 'step-oauth',
+                runId: Constants.USE_PRELIM_RESPONSE_MESSAGE_ID,
+                index: 0,
+                toolCallId: 'call-oauth',
+                toolName: 'oauth_mcp_Google-Workspace',
+                authURL: 'https://auth.example.com/oauth',
+              },
+            ],
+          },
+        }),
+      });
+    });
+
+    expect(mockStepHandler).toHaveBeenCalledTimes(2);
+    expect(mockStepHandler).toHaveBeenNthCalledWith(
+      1,
+      {
+        event: StepEvents.ON_RUN_STEP,
+        data: expect.objectContaining({
+          id: 'step-oauth',
+          runId: Constants.USE_PRELIM_RESPONSE_MESSAGE_ID,
+          index: 0,
+        }),
+      },
+      expect.objectContaining({
+        initialResponse: expect.objectContaining({ messageId: 'resumed-response' }),
+      }),
+    );
+    expect(mockStepHandler).toHaveBeenNthCalledWith(
+      2,
+      {
+        event: StepEvents.ON_RUN_STEP_DELTA,
+        data: expect.objectContaining({
+          id: 'step-oauth',
+          delta: expect.objectContaining({ auth: 'https://auth.example.com/oauth' }),
+        }),
+      },
+      expect.objectContaining({
+        initialResponse: expect.objectContaining({ messageId: 'resumed-response' }),
+      }),
+    );
+
+    unmount();
+  });
+
   it('merges resumed user and response messages into loaded conversation history', async () => {
     const originalUser = {
       messageId: 'original-user',
@@ -3313,6 +4549,217 @@ describe('useResumableSSE', () => {
         content: expect.any(Array),
         iconURL: 'https://example.com/spec-icon.png',
         model: 'gpt-4.1',
+      }),
+    );
+
+    unmount();
+  });
+
+  it('keeps a compaction anchor intact when a resumed sync carries its user-message slot', async () => {
+    /** A manual compaction submits no user turn: its `userMessage` slot holds
+     *  the LEAF it summarizes up to (see `useCompactConversation`), and the
+     *  server's job metadata projects that anchor the same way — identity
+     *  only, no parent, no author. Merging it as a row would rewrite the
+     *  answer it points at into an empty, parentless user message, which the
+     *  message tree renders as a phantom root: the thread folds. */
+    const originalUser = {
+      messageId: 'original-user',
+      conversationId: CONV_ID,
+      text: 'Original prompt',
+      isCreatedByUser: true,
+      sender: 'User',
+      parentMessageId: String(Constants.NO_PARENT),
+    };
+    const anchor = {
+      messageId: 'original-response',
+      conversationId: CONV_ID,
+      text: 'Original response',
+      isCreatedByUser: false,
+      sender: 'Assistant',
+      parentMessageId: 'original-user',
+    };
+    const summaryPlaceholder = {
+      messageId: 'original-response_',
+      conversationId: CONV_ID,
+      text: '',
+      isCreatedByUser: false,
+      sender: 'Assistant',
+      parentMessageId: 'original-response',
+      content: [],
+    };
+    const submission = {
+      ...buildSubmission({
+        conversation: { conversationId: CONV_ID },
+        /** Exactly what `useChatFunctions` builds for a compaction. */
+        userMessage: {
+          messageId: 'original-response',
+          parentMessageId: 'original-response',
+          conversationId: CONV_ID,
+          text: '',
+          isCreatedByUser: true,
+          sender: 'User',
+        },
+        initialResponse: summaryPlaceholder,
+        isRegenerate: true,
+        compact: true,
+        messages: [originalUser, anchor] as TMessage[],
+      }),
+      resumeStreamId: CONV_ID,
+    } as TSubmission & { resumeStreamId: string };
+    const chatHelpers = buildChatHelpers();
+    chatHelpers.getMessages.mockReturnValue([
+      originalUser,
+      anchor,
+      summaryPlaceholder,
+    ] as TMessage[]);
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const sse = getLastSSE();
+    await act(async () => {
+      sse._emit('message', {
+        data: JSON.stringify({
+          sync: true,
+          resumeState: {
+            runSteps: [],
+            replayEvents: [],
+            aggregatedContent: [
+              {
+                type: ContentTypes.SUMMARY,
+                summary: { content: [{ type: 'text', text: 'Earlier turns, compacted.' }] },
+              },
+            ],
+            responseMessageId: 'original-response_',
+            conversationId: CONV_ID,
+            isRegenerate: true,
+            /** `projectCompactionAnchor` on the server: identity only. */
+            userMessage: {
+              messageId: 'original-response',
+              conversationId: CONV_ID,
+              text: '',
+            },
+          },
+        }),
+      });
+    });
+
+    const lastMessages = chatHelpers.setMessages.mock.calls.at(-1)?.[0] as TMessage[];
+    expect(lastMessages.map((message) => message.messageId)).toEqual([
+      'original-user',
+      'original-response',
+      'original-response_',
+    ]);
+    /** The anchor is still the answer it always was. */
+    expect(lastMessages[1]).toEqual(
+      expect.objectContaining({
+        messageId: 'original-response',
+        parentMessageId: 'original-user',
+        text: 'Original response',
+        isCreatedByUser: false,
+      }),
+    );
+    /** ...and the summary still hangs off it. */
+    expect(lastMessages[2]).toEqual(
+      expect.objectContaining({
+        messageId: 'original-response_',
+        parentMessageId: 'original-response',
+        isCreatedByUser: false,
+      }),
+    );
+
+    unmount();
+  });
+
+  it('keeps a user-leaf compaction anchor intact when the submission carries no flag', async () => {
+    /** A compaction anchored on a user turn, re-attached by a submission that
+     *  never learned it was one. The projection is identity-only either way, so
+     *  merging it as a row blanks the prompt still on screen. The anchor is
+     *  recognized from that SHAPE, not from a flag the submission may not carry. */
+    const rootUser = {
+      messageId: 'root-user',
+      conversationId: CONV_ID,
+      text: 'Original prompt',
+      isCreatedByUser: true,
+      sender: 'User',
+      parentMessageId: String(Constants.NO_PARENT),
+    };
+    const userLeaf = {
+      messageId: 'user-leaf',
+      conversationId: CONV_ID,
+      text: 'Compact this before I continue',
+      isCreatedByUser: true,
+      sender: 'User',
+      parentMessageId: 'root-user',
+    };
+    const summaryPlaceholder = {
+      messageId: 'user-leaf_',
+      conversationId: CONV_ID,
+      text: '',
+      isCreatedByUser: false,
+      sender: 'Assistant',
+      parentMessageId: 'user-leaf',
+      content: [],
+    };
+    const submission = {
+      ...buildSubmission({
+        conversation: { conversationId: CONV_ID },
+        userMessage: userLeaf,
+        initialResponse: summaryPlaceholder,
+        isRegenerate: true,
+        messages: [rootUser, userLeaf] as TMessage[],
+      }),
+      resumeStreamId: CONV_ID,
+    } as TSubmission & { resumeStreamId: string };
+    const chatHelpers = buildChatHelpers();
+    chatHelpers.getMessages.mockReturnValue([rootUser, userLeaf, summaryPlaceholder] as TMessage[]);
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const sse = getLastSSE();
+    await act(async () => {
+      sse._emit('message', {
+        data: JSON.stringify({
+          sync: true,
+          resumeState: {
+            runSteps: [],
+            replayEvents: [],
+            aggregatedContent: [
+              {
+                type: ContentTypes.SUMMARY,
+                summary: { content: [{ type: 'text', text: 'Earlier turns, compacted.' }] },
+              },
+            ],
+            responseMessageId: 'user-leaf_',
+            conversationId: CONV_ID,
+            isRegenerate: true,
+            userMessage: { messageId: 'user-leaf', conversationId: CONV_ID, text: '' },
+          },
+        }),
+      });
+    });
+
+    const lastMessages = chatHelpers.setMessages.mock.calls.at(-1)?.[0] as TMessage[];
+    /** One row per id: the anchor is never appended a second time. */
+    expect(lastMessages.map((message) => message.messageId)).toEqual([
+      'root-user',
+      'user-leaf',
+      'user-leaf_',
+    ]);
+    /** The prompt survives the resume. */
+    expect(lastMessages[1]).toEqual(
+      expect.objectContaining({
+        messageId: 'user-leaf',
+        parentMessageId: 'root-user',
+        text: 'Compact this before I continue',
+        isCreatedByUser: true,
       }),
     );
 
@@ -3668,6 +5115,97 @@ describe('useResumableSSE', () => {
     unmount();
   });
 
+  /**
+   * The stream runs on a raw XHR, so the interceptor that turns an enrollment 403 into the setup
+   * redirect never sees it. Without the explicit branch the condition looks like a transport
+   * failure and burns the whole reconnect ladder on a request the server is bound to refuse.
+   */
+  const enrollmentBody = JSON.stringify({
+    code: 'two_factor_enrollment_required',
+    twoFASetupRequired: true,
+    tempToken: 'setup-token',
+  });
+
+  it('leaves for setup on an enrollment 403 instead of reconnecting', async () => {
+    jest.useFakeTimers();
+    mockRedirectIfTwoFactorSetupPayload.mockReturnValue(true);
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await flushMicrotasks();
+
+    const sse = getLastSSE();
+    const sseCount = mockSSEInstances.length;
+
+    await act(async () => {
+      sse._emit('error', { responseCode: 403, data: enrollmentBody });
+    });
+    await advanceRetryTimer(60000);
+
+    expect(mockRedirectIfTwoFactorSetupPayload).toHaveBeenCalledWith(enrollmentBody);
+    expect(mockSSEInstances.length).toBe(sseCount);
+    expect(mockErrorHandler).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('keeps reconnecting on a 403 that is not an enrollment response', async () => {
+    jest.useFakeTimers();
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await flushMicrotasks();
+
+    const sse = getLastSSE();
+    const sseCount = mockSSEInstances.length;
+
+    await act(async () => {
+      sse._emit('error', { responseCode: 403, data: JSON.stringify({ message: 'Forbidden' }) });
+    });
+    await advanceRetryTimer(60000);
+
+    /** Only enrollment may short-circuit; every other 403 keeps the existing recovery. */
+    expect(mockSSEInstances.length).toBeGreaterThan(sseCount);
+    unmount();
+  });
+
+  /**
+   * An access token that expired first turns enforcement into a 401, so the refresh is where the
+   * setup credential arrives. It answers successfully and without a token, which reads as a failed
+   * refresh unless the payload is inspected.
+   */
+  it('leaves for setup when the 401 refresh answers with enrollment', async () => {
+    jest.useFakeTimers();
+    const enrollmentPayload = {
+      code: 'two_factor_enrollment_required',
+      twoFASetupRequired: true,
+      tempToken: 'setup-token',
+    };
+    (request.refreshToken as jest.Mock).mockResolvedValueOnce(enrollmentPayload);
+    mockRedirectIfTwoFactorSetupPayload.mockReturnValue(true);
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await flushMicrotasks();
+
+    const sse = getLastSSE();
+    const sseCount = mockSSEInstances.length;
+
+    await act(async () => {
+      sse._emit('error', { responseCode: 401 });
+      await Promise.resolve();
+    });
+    await advanceRetryTimer(60000);
+
+    expect(mockRedirectIfTwoFactorSetupPayload).toHaveBeenCalledWith(enrollmentPayload);
+    expect(sse.stream).toHaveBeenCalledTimes(1);
+    expect(mockSSEInstances.length).toBe(sseCount);
+    expect(mockErrorHandler).not.toHaveBeenCalled();
+    unmount();
+  });
+
   it.each([undefined, 500, 503])(
     'does not call errorHandler for responseCode %s (reconnect path)',
     async (responseCode) => {
@@ -3916,7 +5454,29 @@ describe('useResumableSSE', () => {
     unmount();
   });
 
-  it('leaves a still-open stream alone when the page returns to the foreground', async () => {
+  it('reconciles durable messages when an apparently open stream is terminal on foreground', async () => {
+    (request.post as jest.Mock).mockResolvedValue({
+      streamId: 'stream-epoch',
+      status: 'started',
+      generationCreatedAt: 1000,
+      generationProtocolVersion: 2,
+    });
+    mockFetchStreamStatus.mockResolvedValue({
+      active: false,
+      status: 'complete',
+      createdAt: 1000,
+      generationProtocolVersion: 2,
+    });
+    const persisted = [
+      {
+        messageId: 'resp-1',
+        parentMessageId: 'msg-1',
+        conversationId: CONV_ID,
+        text: 'Completed while backgrounded',
+        isCreatedByUser: false,
+      },
+    ] as TMessage[];
+    mockFetchQuery.mockResolvedValue(persisted);
     const submission = buildSubmission();
     const chatHelpers = buildChatHelpers();
 
@@ -3929,9 +5489,85 @@ describe('useResumableSSE', () => {
 
     await act(async () => {
       document.dispatchEvent(new Event('visibilitychange'));
+      await Promise.resolve();
     });
+    await flushMicrotasks();
+
+    expect(mockFetchStreamStatus).toHaveBeenCalledWith(CONV_ID);
+    expect(mockSSEInstances).toHaveLength(sseCount + 1);
+    expect(getLastSSE()._url).toBe(
+      '/api/agents/chat/stream/stream-epoch?resume=true&generationCreatedAt=1000&generationProtocolVersion=2',
+    );
+    expect(initialSSE.close).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      getLastSSE()._emit('error', { responseCode: 404 });
+      await Promise.resolve();
+    });
+    await flushMicrotasks();
+
+    expect(mockFetchQuery).toHaveBeenCalledWith({
+      queryKey: [QueryKeys.messages, CONV_ID],
+      queryFn: expect.any(Function),
+    });
+    expect(mockSettleAppliedSteerParts).toHaveBeenCalledWith(CONV_ID, persisted);
+    unmount();
+  });
+
+  it('leaves a still-open active stream alone when the page returns to the foreground', async () => {
+    mockFetchStreamStatus.mockResolvedValue({
+      active: true,
+      streamId: 'stream-123',
+      status: 'running',
+      createdAt: 1000,
+      generationProtocolVersion: 2,
+    });
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await flushMicrotasks();
+
+    const initialSSE = getLastSSE();
+    const sseCount = mockSSEInstances.length;
+    initialSSE.readyState = MOCK_SSE_OPEN;
+
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      await Promise.resolve();
+    });
+    await flushMicrotasks();
+
+    expect(mockFetchStreamStatus).toHaveBeenCalledWith(CONV_ID);
+    expect(mockSSEInstances).toHaveLength(sseCount);
+    expect(initialSSE.close).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('keeps an apparently open stream when foreground status belongs to another epoch', async () => {
+    mockFetchStreamStatus.mockResolvedValue({
+      active: false,
+      status: 'complete',
+      createdAt: 2000,
+      generationProtocolVersion: 2,
+    });
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await flushMicrotasks();
+
+    const initialSSE = getLastSSE();
+    const sseCount = mockSSEInstances.length;
+
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      await Promise.resolve();
+    });
+    await flushMicrotasks();
 
     expect(mockSSEInstances).toHaveLength(sseCount);
+    expect(initialSSE.close).not.toHaveBeenCalled();
     unmount();
   });
 
@@ -4065,8 +5701,8 @@ describe('useResumableSSE', () => {
   it('removes the optimistic sidebar row when a new conversation errors before created', async () => {
     /* Key-aware: the conversation cache helpers now run a second, pinned-keyed pass,
        and a fixed return value would attribute those writes to allConversations. */
-    mockFindAll.mockImplementation((queryKey?: unknown) => [
-      { queryKey: [(queryKey as unknown[])[0]] },
+    mockFindAll.mockImplementation((queryKey?: QueryKey) => [
+      mockQueryCache.build(mockBackingQueryClient, { queryKey: [queryKey![0]] as QueryKey }),
     ]);
     const submission = buildSubmission({
       conversation: {},
@@ -4126,5 +5762,379 @@ describe('useResumableSSE', () => {
       }),
     );
     unmount();
+  });
+});
+
+describe('useResumableSSE - sync response identity', () => {
+  beforeEach(() => {
+    mockSSEInstances.length = 0;
+    mockSetIsSubmitting.mockClear();
+  });
+
+  const emitSync = async (
+    sse: MockSSEInstance,
+    aggregatedContent: TMessage['content'],
+    responseMessageId?: string,
+    sender?: string,
+    userMessage?: Partial<TMessage>,
+  ) => {
+    await act(async () => {
+      sse._emit('message', {
+        data: JSON.stringify({
+          sync: true,
+          resumeState: { aggregatedContent, responseMessageId, sender, userMessage },
+        }),
+      });
+    });
+  };
+
+  it('updates the submission-owned response when sync omits the response ID', async () => {
+    const userMessage = {
+      messageId: 'server-user-id',
+      conversationId: CONV_ID,
+      text: 'Hello',
+      isCreatedByUser: true,
+    } as TMessage;
+    const activeResponse = {
+      messageId: 'server-response-id',
+      parentMessageId: 'server-user-id',
+      conversationId: CONV_ID,
+      text: '',
+      content: [],
+      isCreatedByUser: false,
+    } as TMessage;
+    const submission = {
+      ...buildSubmission({ userMessage, initialResponse: activeResponse }),
+      resumeStreamId: CONV_ID,
+    } as TSubmission & { resumeStreamId: string };
+    const chatHelpers = buildChatHelpers();
+    chatHelpers.getMessages.mockReturnValue([userMessage, activeResponse]);
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const aggregatedContent: TMessage['content'] = [
+      { type: ContentTypes.TEXT, text: { value: 'Recovered answer' } },
+    ];
+    await emitSync(getLastSSE(), aggregatedContent);
+
+    const updatedMessages = chatHelpers.setMessages.mock.calls.at(-1)?.[0] as TMessage[];
+    expect(updatedMessages).toHaveLength(2);
+    expect(updatedMessages.find((message) => message.messageId === 'server-response-id')).toEqual({
+      ...activeResponse,
+      content: aggregatedContent,
+    });
+    expect(
+      updatedMessages.find((message) => message.messageId === 'server-user-id_'),
+    ).toBeUndefined();
+    unmount();
+  });
+
+  it('adds resumed sender metadata to an exact persisted response', async () => {
+    const userMessage = {
+      messageId: 'server-user-id',
+      conversationId: CONV_ID,
+      text: 'Hello',
+      isCreatedByUser: true,
+    } as TMessage;
+    const activeResponse = {
+      messageId: 'server-response-id',
+      parentMessageId: 'server-user-id',
+      conversationId: CONV_ID,
+      text: '',
+      content: [],
+      isCreatedByUser: false,
+    } as TMessage;
+    const submission = {
+      ...buildSubmission({ userMessage, initialResponse: activeResponse }),
+      resumeStreamId: CONV_ID,
+    } as TSubmission & { resumeStreamId: string };
+    const chatHelpers = buildChatHelpers();
+    chatHelpers.getMessages.mockReturnValue([userMessage, activeResponse]);
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await emitSync(getLastSSE(), [], activeResponse.messageId, 'Restored Assistant');
+
+    const updatedMessages = chatHelpers.setMessages.mock.calls.at(-1)?.[0] as TMessage[];
+    expect(updatedMessages[1]).toEqual({
+      ...activeResponse,
+      sender: 'Restored Assistant',
+    });
+    unmount();
+  });
+
+  it('appends a missing submission-owned response after older regeneration siblings', async () => {
+    const userMessage = {
+      messageId: 'server-user-id',
+      conversationId: CONV_ID,
+      text: 'Hello',
+      isCreatedByUser: true,
+    } as TMessage;
+    const olderResponse = {
+      messageId: 'older-response-id',
+      parentMessageId: 'server-user-id',
+      conversationId: CONV_ID,
+      text: 'Earlier answer',
+      content: [{ type: 'text', text: { value: 'Earlier answer' } }],
+      isCreatedByUser: false,
+    } as TMessage;
+    const activeResponse = {
+      messageId: 'active-response-id',
+      parentMessageId: 'server-user-id',
+      conversationId: CONV_ID,
+      text: '',
+      content: [],
+      isCreatedByUser: false,
+    } as TMessage;
+    const submission = {
+      ...buildSubmission({ userMessage, initialResponse: activeResponse }),
+      isRegenerate: true,
+      resumeStreamId: CONV_ID,
+    } as TSubmission & { resumeStreamId: string };
+    const chatHelpers = buildChatHelpers();
+    chatHelpers.getMessages.mockReturnValue([userMessage, olderResponse]);
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const aggregatedContent: TMessage['content'] = [
+      { type: ContentTypes.TEXT, text: { value: 'Regenerated answer' } },
+    ];
+    await emitSync(getLastSSE(), aggregatedContent);
+
+    const updatedMessages = chatHelpers.setMessages.mock.calls.at(-1)?.[0] as TMessage[];
+    expect(updatedMessages.find((message) => message.messageId === 'older-response-id')).toEqual(
+      olderResponse,
+    );
+    expect(updatedMessages.map((message) => message.messageId)).toEqual([
+      'server-user-id',
+      'older-response-id',
+      'active-response-id',
+    ]);
+    expect(updatedMessages.find((message) => message.messageId === 'active-response-id')).toEqual({
+      ...activeResponse,
+      content: aggregatedContent,
+    });
+    unmount();
+  });
+
+  it('replaces the current-run placeholder without erasing its loaded content', async () => {
+    const userMessage = {
+      messageId: 'server-user-id',
+      conversationId: CONV_ID,
+      text: 'Hello',
+      isCreatedByUser: true,
+    } as TMessage;
+    const preliminaryResponse = {
+      messageId: 'server-user-id_',
+      parentMessageId: 'server-user-id',
+      conversationId: CONV_ID,
+      text: '',
+      content: [{ type: ContentTypes.TEXT, text: { value: 'Already streaming' } }],
+      sender: 'Assistant',
+      isCreatedByUser: false,
+    } as TMessage;
+    const submission = {
+      ...buildSubmission({ userMessage, initialResponse: preliminaryResponse }),
+      resumeStreamId: CONV_ID,
+    } as TSubmission & { resumeStreamId: string };
+    const chatHelpers = buildChatHelpers();
+    chatHelpers.getMessages.mockReturnValue([userMessage, preliminaryResponse]);
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await emitSync(getLastSSE(), [], 'assigned-response-id');
+
+    const updatedMessages = chatHelpers.setMessages.mock.calls.at(-1)?.[0] as TMessage[];
+    expect(updatedMessages.map((message) => message.messageId)).toEqual([
+      'server-user-id',
+      'assigned-response-id',
+    ]);
+    expect(updatedMessages[1]).toEqual({
+      ...preliminaryResponse,
+      messageId: 'assigned-response-id',
+    });
+    unmount();
+  });
+
+  it('replaces the current-run user when sync assigns both durable IDs', async () => {
+    const preliminaryUser = {
+      messageId: 'client-user-id',
+      parentMessageId: 'previous-response-id',
+      conversationId: CONV_ID,
+      text: 'Hello',
+      isCreatedByUser: true,
+    } as TMessage;
+    const preliminaryResponse = {
+      messageId: 'client-user-id_',
+      parentMessageId: preliminaryUser.messageId,
+      conversationId: CONV_ID,
+      text: '',
+      content: [],
+      isCreatedByUser: false,
+    } as TMessage;
+    const submission = {
+      ...buildSubmission({ userMessage: preliminaryUser, initialResponse: preliminaryResponse }),
+      resumeStreamId: CONV_ID,
+    } as TSubmission & { resumeStreamId: string };
+    const chatHelpers = buildChatHelpers();
+    chatHelpers.getMessages.mockReturnValue([preliminaryUser, preliminaryResponse]);
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const assignedUser = {
+      ...preliminaryUser,
+      messageId: 'assigned-user-id',
+    };
+    await emitSync(getLastSSE(), [], 'assigned-response-id', undefined, assignedUser);
+
+    const updatedMessages = chatHelpers.setMessages.mock.calls.at(-1)?.[0] as TMessage[];
+    expect(updatedMessages.map((message) => message.messageId)).toEqual([
+      'assigned-user-id',
+      'assigned-response-id',
+    ]);
+    expect(updatedMessages[1]?.parentMessageId).toBe('assigned-user-id');
+    unmount();
+  });
+});
+
+/**
+ * `convertLocalSteersToQueued` (the `final` handler and the intentional-close
+ * `abort` listener both call it, alongside the two failure-terminal paths
+ * covered above) is a thin `useSteerState` callback: read the conversation's
+ * chips, run them through this selection, hand the result to `useSteerConvert`.
+ * This file's `~/hooks/SSE/steer` mock (see above, `mockSteerState`) makes that
+ * callback, and every other steer-state writer in this hook
+ * (`resolveSteerChip`, `seedSteerChips` included; neither has a direct test
+ * in this file either), inert: calling it from the `final`/`abort` source
+ * lines is invisible to `mockConvertSteersToQueued` assertions here, since the
+ * mock discards the real closure before it can ever call through. Covering
+ * the selection logic directly (this is the exact piece of logic finding 3
+ * was about: which statuses survive a run end) rather than faking a
+ * store-backed integration around the rest of this large hook's mocks.
+ *
+ * The `statuses` parameter pins a second contract: the `final` handler and
+ * the two error/404 terminals call `convertLocalSteersToQueued` with no
+ * override (default `pending || failed`, the run is genuinely over), while
+ * the intentional-close `abort` listener passes `{ statuses: ['failed'] }`
+ * because that listener also fires on navigation away while the run
+ * CONTINUES server-side: a server-ACK'd `pending` chip must be left alone
+ * there, not swept into the queue as a duplicate of the server's own injection.
+ */
+describe('selectLocalSteersForQueue', () => {
+  const chip = (over: Partial<PendingSteer> = {}): PendingSteer => ({
+    steerId: 's1',
+    text: 'default text',
+    status: 'pending',
+    createdAt: 1,
+    ...over,
+  });
+
+  it('final/error-path selection (default statuses) includes pending and failed chips, excluding sending', () => {
+    const chips = [
+      chip({ steerId: 'p1', status: 'pending' }),
+      chip({ steerId: 'f1', status: 'failed' }),
+      chip({ steerId: 'sending-1', status: 'sending' }),
+    ];
+    expect(selectLocalSteersForQueue(chips).map((steer) => steer.steerId)).toEqual(['p1', 'f1']);
+  });
+
+  it('abort-path selection (statuses: ["failed"]) sweeps only failed chips, leaving pending alone', () => {
+    // The abort listener fires on navigation away while the run CONTINUES
+    // server-side: a `pending` chip already has a server id and will be
+    // injected by the server regardless, so sweeping it here too would make
+    // `useQueueDrain` resend the same words as a duplicate turn at run end.
+    const chips = [
+      chip({ steerId: 'p1', status: 'pending' }),
+      chip({ steerId: 'f1', status: 'failed' }),
+      chip({ steerId: 'sending-1', status: 'sending' }),
+    ];
+    expect(selectLocalSteersForQueue(chips, ['failed']).map((steer) => steer.steerId)).toEqual([
+      'f1',
+    ]);
+  });
+
+  it('converts a failed local chip present at a run-end path into a queueable item', () => {
+    // The leak finding 3 was about: a `failed` chip carries a local-* id the
+    // server never reports, so `data.pendingSteers`/the abort response can
+    // never carry it: this selection is the ONLY place left that can catch
+    // it before the `final`/`abort` paths hand off to `useSteerConvert`.
+    const failed = chip({ steerId: 'local-failed', status: 'failed', text: 'redo this' });
+    expect(selectLocalSteersForQueue([failed])).toEqual([
+      expect.objectContaining({ steerId: 'local-failed', text: 'redo this', createdAt: 1 }),
+    ]);
+  });
+
+  it('does not sweep a sending chip: its own POST callback owns it', () => {
+    // Converting it here too would race that callback: a late ACK's re-add
+    // in `resolveAcknowledgedSteer` could then double-queue the same words.
+    const sending = chip({ steerId: 'in-flight', status: 'sending' });
+    expect(selectLocalSteersForQueue([sending])).toEqual([]);
+  });
+
+  it('preserves uncertain deliveries for explicit same-id recovery', () => {
+    const legacy = chip({
+      steerId: 'legacy-uncertain',
+      status: 'failed',
+      deliveryUncertain: true,
+      generationProtocolVersion: 1,
+    });
+    const modern = chip({
+      steerId: 'modern-uncertain',
+      status: 'failed',
+      deliveryUncertain: true,
+      generationProtocolVersion: 2,
+    });
+
+    expect(selectLocalSteersForQueue([legacy, modern])).toEqual([]);
+    expect(selectLocalSteersForQueue([legacy], ABORT_SWEEP_STATUSES)).toEqual([]);
+  });
+
+  it('carries files only when present', () => {
+    const withFiles = chip({
+      steerId: 'p2',
+      files: [{ file_id: 'f1', filename: 'a.png' }],
+    });
+    const withoutFiles = chip({ steerId: 'p3' });
+    const [withResult, withoutResult] = selectLocalSteersForQueue([withFiles, withoutFiles]);
+    expect(withResult.files).toEqual(withFiles.files);
+    expect(withoutResult.files).toBeUndefined();
+  });
+
+  describe('the abort sweep', () => {
+    /* The abort path is the one terminal where the run may still be live on the
+       server, so a chip it has already ACK'd must be left for it to inject. */
+    it('sweeps only what never reached the server', () => {
+      expect([...ABORT_SWEEP_STATUSES]).toEqual(['failed']);
+    });
+
+    it("leaves an ACK'd chip alone where the default sweep would take it", () => {
+      const chips = [
+        chip({ steerId: 'acked', status: 'pending' }),
+        chip({ steerId: 'never-sent', status: 'failed' }),
+      ];
+      expect(selectLocalSteersForQueue(chips, ABORT_SWEEP_STATUSES).map((s) => s.steerId)).toEqual([
+        'never-sent',
+      ]);
+      /* Where the run has genuinely ended, both are swept. */
+      expect(selectLocalSteersForQueue(chips).map((s) => s.steerId)).toEqual([
+        'acked',
+        'never-sent',
+      ]);
+    });
   });
 });

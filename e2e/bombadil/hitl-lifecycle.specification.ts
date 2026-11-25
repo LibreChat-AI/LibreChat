@@ -22,7 +22,10 @@ const HITL_PROMPT = `E2E_ASK_USER_QUESTION:${HITL_LABEL}`;
 const HITL_QUESTION = `Which environment should Bombadil use for ${HITL_LABEL}?`;
 const HITL_OPTION = 'Staging';
 const FINAL_REPLY = 'E2E mock reply: pong';
-const COMPLETED_ANSWER = 'You answered: Staging';
+const COMPLETED_ANSWER_LABEL = 'You answered:';
+/** The settled Q&A record: a collapsed tool-call line naming the question,
+ *  over a panel holding the description and the answer. */
+const ASK_RECORD = '[data-testid="ask-user-question-call"]';
 let reloadIssued = false;
 let pausedReloadIssued = false;
 
@@ -79,6 +82,12 @@ function target(
   return null;
 }
 
+function visibleCount(state: State, selector: string): number {
+  return Array.from(state.document.querySelectorAll(selector)).filter(
+    (element) => visiblePoint(state, element) !== null,
+  ).length;
+}
+
 function visibleTextCount(
   state: State,
   selector: string,
@@ -110,6 +119,7 @@ function clickOrWait(targetValue: Target | null): Action[] {
 
 const ui = extract((state: State) => {
   const messageElements = Array.from(state.document.querySelectorAll('.message-render'));
+  const askRecordCount = visibleCount(state, ASK_RECORD);
   const messageText = messageElements.map((element) => element.textContent ?? '').join('\n');
   const modelTrigger = state.document.querySelector('button[aria-label="Select a model"]');
   return {
@@ -124,14 +134,22 @@ const ui = extract((state: State) => {
     emailFocused: isFocused(state, '#email'),
     passwordValue: inputValue(state, '#password'),
     passwordFocused: isFocused(state, '#password'),
-    questionCount: visibleTextCount(state, 'p', HITL_QUESTION),
+    /** Once the pause settles, the record IS the question's presentation, so
+     *  count records rather than every node repeating their text — an
+     *  expanded record (Auto-expand tool details) shows the question in both
+     *  its summary line and its panel, and matching text would count one
+     *  record twice. Before a record exists the live pause renders the
+     *  question as a paragraph. */
+    questionCount:
+      askRecordCount > 0 ? askRecordCount : visibleTextCount(state, 'p', HITL_QUESTION),
     answerOptionCount: visibleTextCount(state, 'button', HITL_OPTION, true),
     finalReplyCount: messageElements.filter((element) =>
       (element.textContent ?? '').includes(FINAL_REPLY),
     ).length,
-    completedAnswerCount: messageElements.filter((element) =>
-      (element.textContent ?? '').includes(COMPLETED_ANSWER),
-    ).length,
+    completedAnswerCount: messageElements.filter((element) => {
+      const text = element.textContent ?? '';
+      return text.includes(COMPLETED_ANSWER_LABEL) && text.includes(HITL_OPTION);
+    }).length,
     isSubmitting: state.document.querySelector('button[aria-label="Stop generating"]') !== null,
     hasComposer: state.document.querySelector('#prompt-textarea') !== null,
     loginEmail: target(state, '#email', 'Login email'),
@@ -141,6 +159,10 @@ const ui = extract((state: State) => {
     modelTrigger: target(state, 'button[aria-label="Select a model"]', 'Model selector'),
     hitlModelSpec: target(state, '[role="option"]', HITL_MODEL_SPEC, HITL_MODEL_SPEC),
     stagingOption: target(state, 'button', 'Answer Staging', HITL_OPTION, true),
+    stagingSelected: Array.from(
+      state.document.querySelectorAll('button[aria-pressed="true"]'),
+    ).some((element) => element.textContent?.trim() === HITL_OPTION),
+    answerSubmit: target(state, 'button:not([disabled])', 'Submit answer', 'Submit'),
   };
 });
 
@@ -171,6 +193,9 @@ export const hitlLifecycleActions = actions((): Action[] => {
     if (!pausedReloadIssued) {
       pausedReloadIssued = true;
       return ['Reload'];
+    }
+    if (state.stagingSelected) {
+      return clickOrWait(state.answerSubmit);
     }
     return clickOrWait(state.stagingOption);
   }

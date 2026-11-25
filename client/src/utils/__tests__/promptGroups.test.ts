@@ -1,14 +1,19 @@
-import { InfiniteCollections } from 'librechat-data-provider';
-import type { InfiniteData } from '@tanstack/react-query';
+import { QueryClient, QueryObserver } from '@tanstack/react-query';
+import { InfiniteCollections, QueryKeys, PermissionBits } from 'librechat-data-provider';
 import type { PromptGroupListResponse, TPromptGroup } from 'librechat-data-provider';
+import type { InfiniteData } from '@tanstack/react-query';
 import {
+  addGroupToAll,
   addPromptGroup,
   deletePromptGroup,
+  removeGroupFromAll,
   updateGroupFields,
   updateGroupFieldsInPlace,
+  updateGroupInAll,
   updatePromptGroup,
-  getSnippet,
   findPromptGroup,
+  isExternalPromptGroup,
+  getPromptGroupPermissions,
 } from '../promptGroups';
 
 // ---------------------------------------------------------------------------
@@ -32,6 +37,34 @@ function makeInfiniteData(
     pages: pages as PromptGroupListResponse[],
     pageParams: pages.map((_, i) => i),
   };
+}
+
+async function expectFirstAllGroupsFetchRestart(
+  mutate: (queryClient: QueryClient) => void,
+  freshList: TPromptGroup[],
+) {
+  const queryClient = new QueryClient();
+  const queryKey = [QueryKeys.allPromptGroups];
+  const staleList = [makeGroup({ _id: 'stale', name: 'Stale Group' })];
+  const deferreds: Array<{ resolve: (value: TPromptGroup[]) => void }> = [];
+  const queryFn = () => new Promise<TPromptGroup[]>((resolve) => deferreds.push({ resolve }));
+  const observer = new QueryObserver<TPromptGroup[]>(queryClient, { queryKey, queryFn });
+  const unsubscribe = observer.subscribe(() => undefined);
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(deferreds).toHaveLength(1);
+
+  mutate(queryClient);
+  deferreds[0].resolve(staleList);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(deferreds).toHaveLength(2);
+
+  deferreds[1].resolve(freshList);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(queryClient.getQueryData<TPromptGroup[]>(queryKey)).toEqual(freshList);
+
+  unsubscribe();
+  queryClient.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -294,35 +327,170 @@ describe('findPromptGroup', () => {
 });
 
 // ---------------------------------------------------------------------------
-// getSnippet
+// isExternalPromptGroup
 // ---------------------------------------------------------------------------
 
-describe('getSnippet', () => {
-  it('returns the full string when it is within the default length', () => {
-    const short = 'Hello';
-    expect(getSnippet(short)).toBe('Hello');
+describe('isExternalPromptGroup', () => {
+  it('returns false for a native group', () => {
+    expect(isExternalPromptGroup(makeGroup({ source: 'native' }))).toBe(false);
   });
 
-  it('truncates and appends ellipsis when string exceeds default length', () => {
-    const long = 'a'.repeat(60);
-    const result = getSnippet(long);
-    expect(result.endsWith('...')).toBe(true);
-    expect(result.length).toBe(56);
+  it('returns true for a Langfuse-sourced group', () => {
+    expect(isExternalPromptGroup(makeGroup({ source: 'langfuse' }))).toBe(true);
   });
 
-  it('respects a custom length parameter', () => {
-    const text = 'abcdefghij';
-    const result = getSnippet(text, 7);
-    expect(result).toBe('abcd...');
-    expect(result.length).toBe(7);
+  it('returns false for undefined or null', () => {
+    expect(isExternalPromptGroup(undefined)).toBe(false);
+    expect(isExternalPromptGroup(null)).toBe(false);
   });
 
-  it('returns the original string when it equals the length exactly', () => {
-    const text = 'a'.repeat(56);
-    expect(getSnippet(text)).toBe(text);
+  it('returns false for a group without a source (older server during a rolling deploy)', () => {
+    const { source: _source, ...rest } = makeGroup({ source: 'native' });
+    const groupWithoutSource = rest as { source?: TPromptGroup['source'] };
+    expect(isExternalPromptGroup(groupWithoutSource)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getPromptGroupPermissions
+// ---------------------------------------------------------------------------
+
+describe('getPromptGroupPermissions', () => {
+  const ALL_BITS =
+    PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE;
+
+  it('grants full control for a native group with full ACL bits', () => {
+    const result = getPromptGroupPermissions(makeGroup({ source: 'native' }), ALL_BITS);
+    expect(result).toEqual({
+      isExternal: false,
+      canView: true,
+      canEdit: true,
+      canDelete: true,
+    });
   });
 
-  it('handles an empty string without throwing', () => {
-    expect(getSnippet('')).toBe('');
+  it('denies edit and delete for a Langfuse group even with full ACL bits', () => {
+    const result = getPromptGroupPermissions(makeGroup({ source: 'langfuse' }), ALL_BITS);
+    expect(result.isExternal).toBe(true);
+    expect(result.canView).toBe(true);
+    expect(result.canEdit).toBe(false);
+    expect(result.canDelete).toBe(false);
+  });
+
+  it('treats a group with no source as native (older server during a rolling deploy)', () => {
+    const { source: _source, ...rest } = makeGroup({ source: 'native' });
+    const groupWithoutSource = rest as { source?: TPromptGroup['source'] };
+    const result = getPromptGroupPermissions(groupWithoutSource, ALL_BITS);
+    expect(result.isExternal).toBe(false);
+    expect(result.canEdit).toBe(true);
+    expect(result.canDelete).toBe(true);
+  });
+
+  it('denies view, edit and delete when permission bits are 0', () => {
+    const result = getPromptGroupPermissions(makeGroup({ source: 'native' }), 0);
+    expect(result).toEqual({
+      isExternal: false,
+      canView: false,
+      canEdit: false,
+      canDelete: false,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// addGroupToAll
+// ---------------------------------------------------------------------------
+
+describe('addGroupToAll', () => {
+  it('does not seed the all-prompt-groups list before its first fetch', () => {
+    const queryClient = new QueryClient();
+    addGroupToAll(queryClient, makeGroup({ _id: 'group-new' }));
+    expect(queryClient.getQueryData([QueryKeys.allPromptGroups])).toBeUndefined();
+  });
+
+  it('appends to an already fetched list', () => {
+    const queryClient = new QueryClient();
+    const existing = [makeGroup({ _id: 'group-a' })];
+    queryClient.setQueryData([QueryKeys.allPromptGroups], existing);
+    addGroupToAll(queryClient, makeGroup({ _id: 'group-b' }));
+    expect(queryClient.getQueryData<TPromptGroup[]>([QueryKeys.allPromptGroups])).toHaveLength(2);
+  });
+
+  it('restarts a first fetch already in flight so it settles with the created group', async () => {
+    const queryClient = new QueryClient();
+    const queryKey = [QueryKeys.allPromptGroups];
+    const newList = [makeGroup({ _id: 'group-new' })];
+    const deferreds: Array<{ resolve: (value: TPromptGroup[]) => void }> = [];
+    const queryFn = () => new Promise<TPromptGroup[]>((resolve) => deferreds.push({ resolve }));
+    const observer = new QueryObserver<TPromptGroup[]>(queryClient, { queryKey, queryFn });
+    const unsubscribe = observer.subscribe(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(deferreds).toHaveLength(1);
+
+    addGroupToAll(queryClient, makeGroup({ _id: 'group-new' }));
+    deferreds[0].resolve([]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    /* The pre-creation read must not be allowed to stand: a restart has to
+       have started a second fetch that can settle with the created group. */
+    expect(deferreds).toHaveLength(2);
+    deferreds[1].resolve(newList);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(queryClient.getQueryData<TPromptGroup[]>(queryKey)).toEqual(newList);
+    unsubscribe();
+    queryClient.clear();
+  });
+
+  it('refetches an errored list after creation so the command appears', async () => {
+    const queryClient = new QueryClient();
+    const queryKey = [QueryKeys.allPromptGroups];
+    const newList = [makeGroup({ _id: 'group-new' })];
+    const deferreds: Array<{
+      resolve: (value: TPromptGroup[]) => void;
+      reject: (reason: Error) => void;
+    }> = [];
+    const queryFn = () =>
+      new Promise<TPromptGroup[]>((resolve, reject) => deferreds.push({ resolve, reject }));
+    const observer = new QueryObserver<TPromptGroup[]>(queryClient, {
+      queryKey,
+      queryFn,
+      retry: false,
+    });
+    const unsubscribe = observer.subscribe(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    deferreds[0].reject(new Error('boom'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(queryClient.getQueryState(queryKey)?.status).toBe('error');
+
+    addGroupToAll(queryClient, makeGroup({ _id: 'group-new' }));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(deferreds).toHaveLength(2);
+    deferreds[1].resolve(newList);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(queryClient.getQueryData<TPromptGroup[]>(queryKey)).toEqual(newList);
+    unsubscribe();
+    queryClient.clear();
+  });
+});
+
+describe('all-prompt-groups mutation reconciliation', () => {
+  it('restarts a first fetch that would overwrite a group update', async () => {
+    expect.assertions(3);
+    const updatedGroup = makeGroup({ _id: 'stale', name: 'Updated Group' });
+    await expectFirstAllGroupsFetchRestart(
+      (queryClient) => updateGroupInAll(queryClient, { _id: 'stale', name: 'Updated Group' }),
+      [updatedGroup],
+    );
+  });
+
+  it('restarts a first fetch that would restore a deleted group', async () => {
+    expect.assertions(3);
+    await expectFirstAllGroupsFetchRestart(
+      (queryClient) => removeGroupFromAll(queryClient, 'stale'),
+      [],
+    );
   });
 });

@@ -1,6 +1,7 @@
 const { nanoid } = require('nanoid');
 const { checkAccess } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
+const { applyCitationLimits, selectFileCitationSources } = require('@librechat/api');
 const {
   Tools,
   Permissions,
@@ -54,22 +55,15 @@ async function processFileCitations({ user, appConfig, toolArtifact, toolCallId,
       }
     }
 
-    const maxCitations = appConfig.endpoints?.[EModelEndpoint.agents]?.maxCitations ?? 30;
-    const maxCitationsPerFile =
-      appConfig.endpoints?.[EModelEndpoint.agents]?.maxCitationsPerFile ?? 5;
-    const minRelevanceScore =
-      appConfig.endpoints?.[EModelEndpoint.agents]?.minRelevanceScore ?? 0.45;
-
-    const sources = toolArtifact[Tools.file_search].sources || [];
-    const filteredSources = sources.filter((source) => source.relevance >= minRelevanceScore);
-    if (filteredSources.length === 0) {
-      logger.debug(
-        `[processFileCitations] No sources above relevance threshold of ${minRelevanceScore}`,
-      );
+    const selectedSources = selectFileCitationSources(toolArtifact[Tools.file_search].sources, {
+      maxCitations: appConfig.endpoints?.[EModelEndpoint.agents]?.maxCitations,
+      maxCitationsPerFile: appConfig.endpoints?.[EModelEndpoint.agents]?.maxCitationsPerFile,
+      minRelevanceScore: appConfig.endpoints?.[EModelEndpoint.agents]?.minRelevanceScore,
+    });
+    if (selectedSources.length === 0) {
       return null;
     }
 
-    const selectedSources = applyCitationLimits(filteredSources, maxCitations, maxCitationsPerFile);
     const enhancedSources = await enhanceSourcesWithMetadata(selectedSources, appConfig);
 
     if (enhancedSources.length > 0) {
@@ -90,32 +84,6 @@ async function processFileCitations({ user, appConfig, toolArtifact, toolCallId,
     logger.error('[processFileCitations] Error processing file citations:', error);
     return null;
   }
-}
-
-/**
- * Apply citation limits to sources
- * @param {Array} sources - All sources
- * @param {number} maxCitations - Maximum total citations
- * @param {number} maxCitationsPerFile - Maximum citations per file
- * @returns {Array} Selected sources
- */
-function applyCitationLimits(sources, maxCitations, maxCitationsPerFile) {
-  const byFile = {};
-  sources.forEach((source) => {
-    if (!byFile[source.fileId]) {
-      byFile[source.fileId] = [];
-    }
-    byFile[source.fileId].push(source);
-  });
-
-  const representatives = [];
-  for (const fileId in byFile) {
-    const fileSources = byFile[fileId].sort((a, b) => b.relevance - a.relevance);
-    const selectedFromFile = fileSources.slice(0, maxCitationsPerFile);
-    representatives.push(...selectedFromFile);
-  }
-
-  return representatives.sort((a, b) => b.relevance - a.relevance).slice(0, maxCitations);
 }
 
 /**
@@ -156,6 +124,7 @@ async function enhanceSourcesWithMetadata(sources, appConfig) {
 }
 
 module.exports = {
+  selectFileCitationSources,
   applyCitationLimits,
   processFileCitations,
   enhanceSourcesWithMetadata,

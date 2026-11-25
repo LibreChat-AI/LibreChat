@@ -2,6 +2,8 @@ import { logger } from '@librechat/data-schemas';
 import {
   INSIGHTS_SEARCH_MAX_LENGTH,
   INSIGHTS_SEARCH_MIN_LENGTH,
+  INSIGHTS_AGENT_ID_MAX_LENGTH,
+  type TInsightsAgent,
   type TInsightsParams,
 } from 'librechat-data-provider';
 import type { InsightsMethods } from '@librechat/data-schemas';
@@ -11,9 +13,13 @@ import type { ServerRequest } from '~/types';
 type InsightsHandlerDeps = {
   isInsightsEnabled: () => boolean;
   getInsights: InsightsMethods['getInsights'];
+  getAccessibleAgents: (user: NonNullable<ServerRequest['user']>) => Promise<TInsightsAgent[]>;
 };
 
-type InsightsAccessHandlerDeps = Pick<InsightsHandlerDeps, 'isInsightsEnabled'>;
+type InsightsAccessHandlerDeps = Pick<
+  InsightsHandlerDeps,
+  'isInsightsEnabled' | 'getAccessibleAgents'
+>;
 
 const firstQueryValue = (value: unknown): string | undefined => {
   if (Array.isArray(value)) {
@@ -30,6 +36,13 @@ const positiveInteger = (value: unknown, fallback: number): number => {
 const stringValue = (input: unknown): string | undefined => {
   const value = firstQueryValue(input)?.trim();
   return value ? value : undefined;
+};
+
+const stringValues = (input: unknown): string[] => {
+  const values = Array.isArray(input) ? input : [input];
+  return [
+    ...new Set(values.map(stringValue).filter((value): value is string => value != null)),
+  ].sort((a, b) => a.localeCompare(b));
 };
 
 const validRanges = new Set<TInsightsParams['range']>(['24h', '7d', '30d', 'custom']);
@@ -52,11 +65,24 @@ const timeZoneValue = (value: unknown): string | undefined => {
   }
 };
 
-export function createInsightsAccessHandler({ isInsightsEnabled }: InsightsAccessHandlerDeps) {
-  return async (_req: ServerRequest, res: Response): Promise<void> => {
+export function createInsightsAccessHandler({
+  isInsightsEnabled,
+  getAccessibleAgents,
+}: InsightsAccessHandlerDeps) {
+  return async (req: ServerRequest, res: Response): Promise<void> => {
     try {
       if (!isInsightsEnabled()) {
         res.status(404).json({ message: 'Not found' });
+        return;
+      }
+
+      if (!req.user) {
+        res.status(401).json({ message: 'Authentication required' });
+        return;
+      }
+      const agents = await getAccessibleAgents(req.user);
+      if (agents.length === 0) {
+        res.status(403).json({ message: 'Forbidden' });
         return;
       }
 
@@ -68,13 +94,39 @@ export function createInsightsAccessHandler({ isInsightsEnabled }: InsightsAcces
   };
 }
 
-export function createInsightsHandler({ isInsightsEnabled, getInsights }: InsightsHandlerDeps) {
+export function createInsightsHandler({
+  isInsightsEnabled,
+  getInsights,
+  getAccessibleAgents,
+}: InsightsHandlerDeps) {
   return async (req: ServerRequest, res: Response): Promise<void> => {
     try {
       if (!isInsightsEnabled()) {
         res.status(404).json({ message: 'Not found' });
         return;
       }
+      if (!req.user) {
+        res.status(401).json({ message: 'Authentication required' });
+        return;
+      }
+
+      const agents = await getAccessibleAgents(req.user);
+      if (agents.length === 0) {
+        res.status(403).json({ message: 'Forbidden' });
+        return;
+      }
+      const requestedAgentIds = stringValues(req.query.agentIds);
+      const authorizedAgentIds = new Set(agents.map((agent) => agent.id));
+      if (
+        requestedAgentIds.some(
+          (agentId) =>
+            agentId.length > INSIGHTS_AGENT_ID_MAX_LENGTH || !authorizedAgentIds.has(agentId),
+        )
+      ) {
+        res.status(403).json({ message: 'Forbidden' });
+        return;
+      }
+      const agentIds = requestedAgentIds.length > 0 ? requestedAgentIds : [...authorizedAgentIds];
 
       const page = positiveInteger(req.query.page, 1);
       const pageSize = Math.min(50, Math.max(5, positiveInteger(req.query.pageSize, 10)));
@@ -88,6 +140,8 @@ export function createInsightsHandler({ isInsightsEnabled, getInsights }: Insigh
         page,
         pageSize,
         tenantId,
+        agents,
+        agentIds,
         search,
         range: insightsRange(req.query.range),
         fromTimestamp: stringValue(req.query.fromTimestamp),

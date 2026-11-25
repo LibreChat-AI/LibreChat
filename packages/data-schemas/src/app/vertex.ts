@@ -3,6 +3,10 @@ import {
   extractEnvVariable,
   envVarRegex,
   TVertexModelMap,
+  VERTEX_REGION_PATTERN,
+  getVertexDeploymentName,
+  ENV_VAR_REFERENCE_PATTERN,
+  VERTEX_PATH_SEGMENT_PATTERN,
 } from 'librechat-data-provider';
 import type {
   TCustomConfig,
@@ -19,11 +23,14 @@ import logger from '~/config/winston';
  */
 export const defaultVertexModels: string[] = [
   'claude-opus-5',
+  'claude-opus-5-5',
+  'claude-sonnet-5-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
   'claude-sonnet-5',
   'claude-sonnet-4-6',
+  'claude-haiku-5-5',
   'claude-3-7-sonnet-20250219',
   'claude-3-5-sonnet-v2@20241022',
   'claude-3-5-sonnet@20240620',
@@ -41,7 +48,7 @@ const MULTI_REGION_LOCATIONS = new Set(['global', 'us', 'eu']);
  * and return 404 for anything newer.
  */
 const REQUIRES_MULTI_REGION =
-  /^claude-(?:opus-(?:4-[7-9]|[5-9])|sonnet-[5-9]|fable-[5-9]|mythos-[5-9])/;
+  /^claude-(?:opus-(?:4-[7-9]|[5-9])|sonnet-[5-9]|haiku-(?:5-[5-9]|[6-9])|fable-[5-9]|mythos-[5-9])/;
 
 /**
  * Whether the configured location can serve models that require `global` or a
@@ -111,6 +118,81 @@ function processVertexModels(
 }
 
 /**
+ * `models` with each entry's own `deploymentName` resolved, as the default one is, and the models
+ * whose `${VAR}` there is not set.
+ */
+function resolveModelDeploymentNames(models: TVertexAISchema['models']): {
+  models: TVertexAISchema['models'];
+  unresolved: string[];
+} {
+  const unresolved: string[] = [];
+  if (models == null || Array.isArray(models)) {
+    return { models, unresolved };
+  }
+  const resolved: Record<string, TVertexModelConfig> = {};
+  for (const [modelName, modelConfig] of Object.entries(models)) {
+    if (modelConfig == null || typeof modelConfig !== 'object' || !modelConfig.deploymentName) {
+      resolved[modelName] = modelConfig;
+      continue;
+    }
+    const deploymentName = extractEnvVariable(modelConfig.deploymentName);
+    if (envVarRegex.test(deploymentName)) {
+      unresolved.push(modelName);
+    }
+    resolved[modelName] = { ...modelConfig, deploymentName };
+  }
+  return { models: resolved, unresolved };
+}
+
+/**
+ * The resolved settings that would leave their place in the Vertex AI request: the region is
+ * part of the API host, and the project ID and the deployment name each model's requests send
+ * ({@link getVertexDeploymentName}) one segment of its path. A configured value still holding a
+ * whole `${VAR}` is reported as unresolved on its own; a model name is sent as written, never
+ * resolved, so it must be a segment itself.
+ */
+function getVertexValueErrors({
+  region,
+  projectId,
+  deploymentName: defaultDeploymentName,
+  models,
+  modelNames,
+}: {
+  region: string;
+  projectId?: string;
+  deploymentName?: string;
+  models: TVertexAISchema['models'];
+  modelNames: string[];
+}): string[] {
+  const errors: string[] = [];
+  const isSegment = (value: string) =>
+    ENV_VAR_REFERENCE_PATTERN.test(value) || VERTEX_PATH_SEGMENT_PATTERN.test(value);
+  if (!ENV_VAR_REFERENCE_PATTERN.test(region) && !VERTEX_REGION_PATTERN.test(region)) {
+    errors.push('Vertex AI region may contain only letters, digits and hyphens.');
+  }
+  if (projectId && !isSegment(projectId)) {
+    errors.push('Vertex AI projectId is not a valid project ID.');
+  }
+  if (defaultDeploymentName && !isSegment(defaultDeploymentName)) {
+    errors.push('Vertex AI deploymentName is not a valid deployment name.');
+  }
+  for (const modelName of modelNames) {
+    const deploymentName = getVertexDeploymentName(modelName, {
+      models,
+      deploymentName: defaultDeploymentName,
+    });
+    const isValid =
+      deploymentName === modelName
+        ? VERTEX_PATH_SEGMENT_PATTERN.test(modelName)
+        : isSegment(deploymentName);
+    if (!isValid) {
+      errors.push(`Vertex AI deployment name for model "${modelName}" is not valid.`);
+    }
+  }
+  return errors;
+}
+
+/**
  * Validates and processes Vertex AI configuration
  * @param vertexConfig - The Vertex AI configuration object
  * @returns Validated configuration with errors if any
@@ -158,11 +240,28 @@ export function validateVertexConfig(
     );
   }
 
+  const { models, unresolved } = resolveModelDeploymentNames(vertexConfig.models);
+  for (const modelName of unresolved) {
+    errors.push(
+      `Vertex AI deployment name environment variable for model "${modelName}" was not found.`,
+    );
+  }
+
   // Process models and create deployment mapping
   const { modelNames, modelDeploymentMap } = processVertexModels(
-    vertexConfig.models,
+    models,
     defaultDeploymentName,
     region,
+  );
+
+  errors.push(
+    ...getVertexValueErrors({
+      region,
+      projectId,
+      deploymentName: defaultDeploymentName,
+      models,
+      modelNames,
+    }),
   );
 
   // Note: projectId is optional - if not provided, it will be auto-detected from the service key file
@@ -175,7 +274,7 @@ export function validateVertexConfig(
     region,
     serviceKeyFile,
     deploymentName: defaultDeploymentName,
-    models: vertexConfig.models,
+    models,
     modelNames,
     modelDeploymentMap,
     isValid,

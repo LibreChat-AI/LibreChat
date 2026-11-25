@@ -3,6 +3,7 @@ import type { FileConfig } from 'librechat-data-provider';
 import {
   getViableUploadOptions,
   resolvePastedTextFile,
+  nextPastedTextFilename,
   PASTE_AS_FILE_MIN_LENGTH,
   PASTED_TEXT_FILENAME,
   type UploadOptionContext,
@@ -198,5 +199,23 @@ describe('resolvePastedTextFile', () => {
     resolvePastedTextFile(shortText, baseCtx({ getOptions }));
 
     expect(getOptions).not.toHaveBeenCalled();
+  });
+});
+
+describe('nextPastedTextFilename', () => {
+  it('starts at the bare name and counts from 2', () => {
+    const attachedFilenames = new Set<string>();
+    const generated = Array.from({ length: 4 }, () => {
+      const name = nextPastedTextFilename(attachedFilenames);
+      attachedFilenames.add(name);
+      return name;
+    });
+
+    expect(generated).toEqual([
+      PASTED_TEXT_FILENAME,
+      'pasted-text-2.txt',
+      'pasted-text-3.txt',
+      'pasted-text-4.txt',
+    ]);
   });
 });

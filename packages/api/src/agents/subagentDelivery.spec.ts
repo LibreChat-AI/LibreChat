@@ -1,15 +1,37 @@
+import type { TAgentsEndpoint } from 'librechat-data-provider';
 import type { PostToolUseHookInput } from '@librechat/agents';
-import { SUBAGENT_WAKEUP_GUIDANCE, createSubagentWakeupHandleHook } from './subagentDelivery';
+import {
+  SUBAGENT_WAKEUP_GUIDANCE,
+  backgroundCompletionWakeupsEnabled,
+  createSubagentWakeupHandleHook,
+} from './subagentDelivery';
+
+describe('background completion wakeup policy', () => {
+  it('defaults to automatic delivery and honors the administrator opt-out', () => {
+    expect(backgroundCompletionWakeupsEnabled(undefined)).toBe(true);
+    expect(backgroundCompletionWakeupsEnabled({} as TAgentsEndpoint)).toBe(true);
+    expect(
+      backgroundCompletionWakeupsEnabled({
+        backgroundTasks: { completionWakeups: false },
+      } as TAgentsEndpoint),
+    ).toBe(false);
+  });
+});
 
 const hookSignal = new AbortController().signal;
 
-function input(toolName: string, toolOutput: unknown): PostToolUseHookInput {
+function input(
+  toolName: string,
+  toolOutput: unknown,
+  executingAgentId = 'agent_parent',
+): PostToolUseHookInput {
   return {
     hook_event_name: 'PostToolUse',
     toolName,
     toolInput: {},
     toolOutput,
     toolUseId: 'call-1',
+    executingAgentId,
   } as PostToolUseHookInput;
 }
 
@@ -31,8 +53,9 @@ describe('createSubagentWakeupHandleHook', () => {
       background_task_id: 'task-1',
       subagent_thread_id: 'thread-1',
       status: 'running',
-      message: SUBAGENT_WAKEUP_GUIDANCE,
     });
+    expect(updated.message).toContain('background_task_id "task-1"');
+    expect(updated.message).toContain(SUBAGENT_WAKEUP_GUIDANCE);
   });
 
   it('leaves ordinary background tools and terminal subagent results unchanged', async () => {
@@ -59,5 +82,18 @@ describe('createSubagentWakeupHandleHook', () => {
     await expect(
       hook(input('subagent', JSON.stringify({ status: 'running' })), hookSignal),
     ).resolves.toEqual({});
+  });
+
+  it('leaves the handle unchanged when the executing agent cannot receive wakeups', async () => {
+    const hook = createSubagentWakeupHandleHook((agentId) => agentId === 'agent_supported');
+    const output = JSON.stringify({ background_task_id: 'task-1', status: 'running' });
+
+    await expect(hook(input('subagent', output, 'ephemeral'), hookSignal)).resolves.toEqual({});
+    await expect(
+      hook({ ...input('subagent', output), executingAgentId: undefined }, hookSignal),
+    ).resolves.toEqual({});
+    await expect(hook(input('subagent', output, 'agent_supported'), hookSignal)).resolves.toEqual(
+      expect.objectContaining({ updatedOutput: expect.any(String) }),
+    );
   });
 });

@@ -1,15 +1,15 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
-import { useRecoilValue } from 'recoil';
 import { useForm } from 'react-hook-form';
+import { findRerunParent } from '@librechat/chat';
+import { Container } from '@librechat/chat/components';
 import { Alert, Button, TextareaAutosize } from '@librechat/client';
 import { useUpdateMessageMutation } from 'librechat-data-provider/react-query';
 import type { TEditProps } from '~/common';
-import { useMessagesOperations, useMessagesConversation } from '~/Providers';
-import { useGetAddedConvo } from '~/hooks/Chat';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
+import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
+import { cn, isSubmittableMessage } from '~/utils';
 import { useLocalize } from '~/hooks';
-import Container from './Container';
-import { cn } from '~/utils';
-import store from '~/store';
+import EditFiles from './EditFiles';
 
 const EditMessage = ({
   text,
@@ -23,22 +23,34 @@ const EditMessage = ({
   const saveButtonRef = useRef<HTMLButtonElement | null>(null);
   const submitButtonRef = useRef<HTMLButtonElement | null>(null);
   const [saveError, setSaveError] = useState(false);
-  const { conversation } = useMessagesConversation();
-  const { getMessages, setMessages } = useMessagesOperations();
+  const { useChatDirection, useMessagesEditing } = useMessagePartsHost();
+  const { conversation, getMessages, setMessages } = useMessagesEditing();
 
   const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const { conversationId, parentMessageId, messageId } = message;
+  /** Only a user turn's draft becomes the submission; an assistant turn's is discarded
+   *  by the rerun (see `resubmitMessage`), so it must not be labelled as an update. */
+  const isUserTurn = message.isCreatedByUser === true;
+  /** A rerun replays the parent as the turn's user message, so a model turn with no
+   *  user turn behind it — chained onto another model turn, or left at the root by an
+   *  import — has none. The action is withheld rather than offered and silently
+   *  refused, the footer says why, and Save still applies. */
+  const canRerun = isUserTurn || findRerunParent(getMessages(), parentMessageId) != null;
+  /** The files the rerun will carry. Removing one only shapes the new version of the turn: the
+   *  message as it was keeps its files on its own branch, and nothing is deleted. */
+  const [keptFiles, setKeptFiles] = useState(message.files);
+  const filesRemoved = isUserTurn && (keptFiles?.length ?? 0) < (message.files?.length ?? 0);
   const updateMessageMutation = useUpdateMessageMutation(conversationId ?? '');
   const localize = useLocalize();
 
-  const chatDirection = useRecoilValue(store.chatDirection).toLowerCase();
-  const isRTL = chatDirection === 'rtl';
+  const chatDirection = useChatDirection();
 
   const getAddedConvo = useGetAddedConvo();
 
   const {
     register,
+    watch,
     handleSubmit,
     setValue,
     formState: { isDirty, isValid },
@@ -62,63 +74,71 @@ const EditMessage = ({
    *  returning false. Closing the editor regardless would throw the draft away for
    *  a rerun that never started, so a refused send leaves the editor as it was. */
   const resubmitMessage = (data: { text: string }) => {
-    if (message.isCreatedByUser) {
-      const submitted = ask(
-        {
-          text: data.text,
-          parentMessageId,
-          conversationId,
-        },
-        {
-          overrideFiles: message.files,
-          /** Pills on the edited user message stay visible after save-and-submit;
-           *  carry the picks forward so the new turn primes the same skills
-           *  instead of running unprimed. */
-          overrideManualSkills: message.manualSkills,
-          /** Carry the edited user message's quoted excerpts forward so the new
-           *  turn sends the same referenced context the pills still show. */
-          overrideQuotes: message.quotes,
-          addedConvo: getAddedConvo() || undefined,
-        },
-      );
+    const submitted = ask(
+      {
+        text: data.text,
+        parentMessageId,
+        conversationId,
+      },
+      {
+        overrideFiles: keptFiles ?? [],
+        /** Pills on the edited user message stay visible after save-and-submit;
+         *  carry the picks forward so the new turn primes the same skills
+         *  instead of running unprimed. */
+        overrideManualSkills: message.manualSkills,
+        /** Carry the edited user message's quoted excerpts forward so the new
+         *  turn sends the same referenced context the pills still show. */
+        overrideQuotes: message.quotes,
+        overrideReasoning: message.reasoningOverride ?? null,
+        addedConvo: getAddedConvo() || undefined,
+      },
+    );
 
-      if (submitted === false) {
-        return;
-      }
-
-      setSiblingIdx((siblingIdx ?? 0) - 1);
-    } else {
-      const messages = getMessages();
-      const parentMessage = messages?.find((msg) => msg.messageId === parentMessageId);
-
-      if (!parentMessage) {
-        return;
-      }
-      const submitted = ask(
-        { ...parentMessage },
-        {
-          editedText: data.text,
-          editedMessageId: messageId,
-          isRegenerate: true,
-          isEdited: true,
-          /** Edit-assistant-response flow replays the parent user turn; keep
-           *  the same manual skills so the regenerated response is primed
-           *  identically. */
-          overrideManualSkills: parentMessage.manualSkills,
-          /** Replaying the parent user turn: keep its quoted excerpts so the
-           *  regenerated response is sent the same referenced context. */
-          overrideQuotes: parentMessage.quotes,
-          addedConvo: getAddedConvo() || undefined,
-        },
-      );
-
-      if (submitted === false) {
-        return;
-      }
-
-      setSiblingIdx((siblingIdx ?? 0) - 1);
+    if (submitted === false) {
+      return;
     }
 
+    setSiblingIdx((siblingIdx ?? 0) - 1);
+    enterEdit(true);
+  };
+
+  /** No draft reaches the submission: `editedContent` is index-addressed over a content
+   *  array and this editor only opens on messages that have none, so a text edit has
+   *  nothing to target. Rerunning an answer is therefore a plain regeneration, the same
+   *  one the hover action sends, which is why the draft neither gates this nor is
+   *  offered as an update. Deliberately NOT routed through `handleSubmit`: the field is
+   *  required so Save cannot blank a response, and a response that is already empty (a
+   *  cancellation before the first token) is exactly what needs rerunning. */
+  const rerunResponse = () => {
+    /** The same resolution the withheld button is gated on, so a rendered Rerun and
+     *  the submission it runs cannot disagree about the turn being replayed. */
+    const parentMessage = findRerunParent(getMessages(), parentMessageId);
+    if (!parentMessage) {
+      return;
+    }
+    const submitted = ask(
+      { ...parentMessage },
+      {
+        isRegenerate: true,
+        /** Name the response being regenerated. Without it the submission resolves the
+         *  NEWEST answer for this turn, so rerunning an older sibling prunes the wrong
+         *  subtree from the optimistic thread. */
+        targetResponseMessageId: messageId,
+        /** Replaying the parent user turn: keep its manual skills and quoted excerpts so
+         *  the regenerated response is primed and given the same context as the first. */
+        overrideManualSkills: parentMessage.manualSkills,
+        overrideQuotes: parentMessage.quotes,
+        overrideReasoning: parentMessage.reasoningOverride ?? null,
+        addedConvo: getAddedConvo() || undefined,
+      },
+    );
+
+    if (submitted === false) {
+      return;
+    }
+
+    /** The new answer is a sibling of this one, not of the user turn `siblingIdx` walks,
+     *  so the index stays put and the thread follows the appended child. */
     enterEdit(true);
   };
 
@@ -147,6 +167,7 @@ const EditMessage = ({
       );
       if (!isInMessages) {
         message.text = data.text;
+        message.privacyRevision = undefined;
       } else {
         setMessages(
           messages.map((msg) =>
@@ -154,6 +175,7 @@ const EditMessage = ({
               ? {
                   ...msg,
                   text: data.text,
+                  privacyRevision: undefined,
                 }
               : msg,
           ),
@@ -187,11 +209,42 @@ const EditMessage = ({
   const { ref, ...registerProps } = register('text', {
     /** Retained attachments make an otherwise empty edit submittable, matching
      *  the composer; `ask` replays them through `overrideFiles`. */
-    required: (message.files?.length ?? 0) === 0,
+    required: (keptFiles?.length ?? 0) === 0,
     onChange: (e) => {
       setValue('text', e.target.value, { shouldDirty: true, shouldValidate: true });
     },
   });
+
+  /** The footer carries one status line, so it reports the most actionable state:
+   *  an unsaved draft first, because Cancel discards it, then why the footer offers
+   *  no rerun — the question a Save-only editor otherwise leaves unanswered. */
+  const getStatusMessage = () => {
+    if (filesRemoved) {
+      return localize('com_ui_edit_files_removed');
+    }
+    if (isDirty) {
+      return localize(
+        isUserTurn || !canRerun ? 'com_ui_unsaved_changes' : 'com_ui_rerun_discards_changes',
+      );
+    }
+    if (!canRerun) {
+      return localize('com_ui_rerun_needs_user_turn');
+    }
+    return '';
+  };
+
+  /** A changed draft is checked against what it would send: removing the last file of a
+   *  files-only message leaves nothing. A pristine one is the persisted message and is never
+   *  gated, because the form's first validation pass has not settled right after mount. */
+  const draftText = watch('text');
+  const isDraftChanged = isDirty || filesRemoved;
+  const isDraftSendable = isSubmittableMessage(draftText, keptFiles?.length ?? 0);
+  const focusEditor = useCallback(() => textAreaRef.current?.focus(), []);
+  const removeFile = useCallback(
+    (file: NonNullable<typeof keptFiles>[number]) =>
+      setKeptFiles((current) => current?.filter((kept) => kept !== file)),
+    [],
+  );
 
   return (
     <Container message={message}>
@@ -200,7 +253,16 @@ const EditMessage = ({
         className="mt-2 flex w-full flex-col gap-2"
       >
         {saveError && <Alert variant="error">{localize('com_ui_save_message_error')}</Alert>}
+        {isUserTurn && (
+          <EditFiles
+            files={keptFiles ?? []}
+            onRemove={removeFile}
+            onEmpty={focusEditor}
+            disabled={isSubmitting || updateMessageMutation.isLoading}
+          />
+        )}
         <TextareaAutosize
+          focusOutline="hidden"
           {...registerProps}
           ref={(e) => {
             ref(e);
@@ -210,26 +272,28 @@ const EditMessage = ({
           data-testid="message-text-editor"
           className={cn(
             'message-editor-text max-h-[65vh] min-h-24 w-full resize-y whitespace-pre-wrap',
-            'break-words rounded-lg border border-border-medium bg-surface-tertiary-alt',
-            'px-3 py-2 text-text-primary',
-            'focus-visible:outline-none',
-            isRTL ? 'text-right' : 'text-left',
+            'border-border-medium bg-surface-tertiary-alt rounded-lg border break-words',
+            'text-text-primary px-3 py-2 text-start',
             'disabled:opacity-50 md:max-h-[75vh]',
           )}
           aria-label={localize('com_ui_message_input')}
-          aria-keyshortcuts="Control+Enter Meta+Enter Control+S Meta+S Escape"
+          aria-keyshortcuts={
+            canRerun
+              ? 'Control+Enter Meta+Enter Control+S Meta+S Escape'
+              : 'Control+S Meta+S Escape'
+          }
           disabled={isSubmitting || updateMessageMutation.isLoading}
-          dir={isRTL ? 'rtl' : 'ltr'}
+          dir={chatDirection}
         />
         {/* The actions wrap rather than hold one unbreakable row: on a 320px assistant
             turn the identity column and page padding leave less width than the three
             English labels need, and a translated label needs more still. */}
         <footer className="flex flex-wrap items-center justify-between gap-2">
           <span
-            className="line-clamp-2 min-w-0 flex-1 text-xs text-text-secondary"
+            className="text-text-secondary line-clamp-2 min-w-0 flex-1 text-xs"
             aria-live="polite"
           >
-            {isDirty ? localize('com_ui_unsaved_changes') : ''}
+            {getStatusMessage()}
           </span>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
@@ -244,22 +308,43 @@ const EditMessage = ({
               ref={saveButtonRef}
               size="sm"
               variant="outline"
-              disabled={isSubmitting || updateMessageMutation.isLoading || !isDirty || !isValid}
+              disabled={
+                isSubmitting ||
+                updateMessageMutation.isLoading ||
+                !isDirty ||
+                !isValid ||
+                filesRemoved
+              }
               onClick={handleSubmit(updateMessage)}
             >
               {updateMessageMutation.isLoading
                 ? localize('com_ui_saving')
                 : localize('com_ui_save')}
             </Button>
-            <Button
-              ref={submitButtonRef}
-              size="sm"
-              variant="submit"
-              disabled={isSubmitting || updateMessageMutation.isLoading || !isDirty || !isValid}
-              onClick={handleSubmit(resubmitMessage)}
-            >
-              {localize('com_ui_update_rerun')}
-            </Button>
+            {/* A rerun with no edits is a first-class action, not a mistake: a cancelled
+                or failed response, or a backend restarted on different parameters, has
+                to be reissued byte-for-byte. Validity gates only an edited USER draft,
+                which is the one that becomes the submission: a pristine draft is the
+                persisted message, already submittable by construction, `isValid` is
+                false for a tick after mount while the form's first validation pass
+                settles, and an answer's draft is never sent at all. */}
+            {canRerun && (
+              <Button
+                ref={submitButtonRef}
+                size="sm"
+                variant="submit"
+                disabled={
+                  isSubmitting ||
+                  updateMessageMutation.isLoading ||
+                  (isUserTurn && isDraftChanged && !isDraftSendable)
+                }
+                onClick={isUserTurn ? handleSubmit(resubmitMessage) : rerunResponse}
+              >
+                {isDraftChanged && isUserTurn
+                  ? localize('com_ui_update_rerun')
+                  : localize('com_ui_rerun')}
+              </Button>
+            )}
           </div>
         </footer>
       </section>

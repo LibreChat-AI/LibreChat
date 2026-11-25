@@ -52,26 +52,87 @@ test.describe('MCP admin-panel allowlist override', () => {
     expect(userId).toBeTruthy();
 
     const headers = { Authorization: `Bearer ${token}` };
+    let installed = false;
 
-    // Baseline: the fixture's origin is not in the YAML allowlist, so reinit fails.
-    const before = await reinitialize(request, headers);
-    expect(before.status).toBe(200);
-    expect(before.success).toBe(false);
+    /**
+     * The override is per-USER and this is the shared primary user, so it must
+     * not outlive the test: the list holds only this fixture's origin and
+     * allowlist matching is port-inclusive, so every other MCP fixture would be
+     * blocked for the rest of the shard (`e2e-oauth` fails inspection and an
+     * agent expecting its tools 503s with AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE).
+     * The baseline assertion sits inside the cleanup scope on purpose: if an
+     * interrupted earlier attempt left the override behind, the baseline is
+     * what fails, and the `finally` is the only thing that can un-poison the
+     * shard for the retry and for every spec after it.
+     */
+    try {
+      // Baseline: the fixture's origin is not in the YAML allowlist, so reinit fails.
+      const before = await reinitialize(request, headers);
+      expect(before.status).toBe(200);
+      expect(before.success).toBe(false);
 
-    // Admin-panel override: allow the fixture's origin for this user.
-    const put = await request.put(`/api/admin/config/user/${userId}`, {
-      headers,
-      data: { overrides: { mcpSettings: { allowedDomains: [FIXTURE_ORIGIN] } } },
-    });
-    expect(put.ok()).toBeTruthy();
+      // Admin-panel override: allow the fixture's origin for this user.
+      const put = await request.put(`/api/admin/config/user/${userId}`, {
+        headers,
+        data: { overrides: { mcpSettings: { allowedDomains: [FIXTURE_ORIGIN] } } },
+      });
+      expect(put.ok()).toBeTruthy();
+      installed = true;
 
-    // The override is honored on reinit: the server now connects. invalidateConfigCaches
-    // runs asynchronously after the PUT, so poll until the merged allowlist lands.
-    await expect
-      .poll(async () => (await reinitialize(request, headers)).success, {
-        timeout: 30000,
-        intervals: [1000, 2000, 3000],
-      })
-      .toBe(true);
+      // The override is honored on reinit: the server now connects. The handler
+      // invalidates config caches asynchronously after responding, so poll until
+      // the merged allowlist has actually landed.
+      await expect
+        .poll(async () => (await reinitialize(request, headers)).success, {
+          timeout: 30000,
+          intervals: [1000, 2000, 3000],
+        })
+        .toBe(true);
+    } finally {
+      /**
+       * Always run, whether or not this attempt installed anything: a leaked
+       * override from an earlier interrupted attempt is exactly the state the
+       * cleanup exists to remove. A 404 means there was nothing to delete, which
+       * is only a failure if this attempt had installed the override — and an
+       * assertion here must never mask the error that prevented installing it.
+       */
+      const del = await request.delete(`/api/admin/config/user/${userId}`, { headers });
+      if (installed || del.status() !== 404) {
+        expect(del.ok()).toBeTruthy();
+      }
+      /**
+       * Confirm the override document is gone, retrying anything that is not a
+       * definitive answer (only 200-without-the-override and 404 are). The cache
+       * that gates the next spec — the merged app config that agent tool loading
+       * consults per request — is in-memory in these shards and is cleared by the
+       * mutation's (asynchronous) invalidation; the downstream victim,
+       * `mcp-oauth-resume`, passes with this cleanup in place. `reinitialize` is
+       * deliberately NOT used as the "reverted" signal: a server that has already
+       * connected keeps re-initializing successfully long after the override is
+       * removed (observed for more than 90 seconds in CI, past the 60-second
+       * merged-config TTL), because its allow decision is not on the path that
+       * poisoned the shard.
+       */
+      await expect
+        .poll(
+          async () => {
+            const res = await request.get(`/api/admin/config/user/${userId}`, { headers });
+            if (res.status() === 404) {
+              return 'cleared';
+            }
+            if (res.status() !== 200) {
+              return `retry:${res.status()}`;
+            }
+            const body = (await res.json()) as {
+              config?: { overrides?: { mcpSettings?: { allowedDomains?: string[] } } };
+            };
+            return body.config?.overrides?.mcpSettings?.allowedDomains == null
+              ? 'cleared'
+              : 'override still present';
+          },
+          { timeout: 30000, intervals: [500, 1000, 2000] },
+        )
+        .toBe('cleared');
+    }
   });
 });

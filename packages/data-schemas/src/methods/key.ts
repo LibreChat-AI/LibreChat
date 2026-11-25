@@ -1,19 +1,30 @@
 import { ErrorTypes } from 'librechat-data-provider';
+import type { TCredentialsConfig } from 'librechat-data-provider';
 // Note: checkUserKeyExpiry moved to @librechat/api (utils/key.ts) as it's a pure validation utility
-import { encrypt, decrypt } from '~/crypto';
+import { encrypt, decrypt, encryptV3, decryptV3 } from '~/crypto';
 import logger from '~/config/winston';
+
+type KeyLookup = { userId: string; name: string; activeOnly?: boolean };
+
+const V3_PREFIX = 'v3:';
+
+/** Values written by earlier releases are bare hex (fixed IV); `v3:` values carry a random IV. */
+function decryptStoredKey(value: string): Promise<string> | string {
+  return value.startsWith(V3_PREFIX) ? decryptV3(value) : decrypt(value);
+}
 
 /** Factory function that takes mongoose instance and returns the key methods */
 export function createKeyMethods(mongoose: typeof import('mongoose')): {
-  getUserKey: (params: { userId: string; name: string }) => Promise<string>;
+  getUserKey: (params: KeyLookup) => Promise<string>;
   updateUserKey: (params: {
     userId: string;
     name: string;
     value: string;
     expiresAt?: Date | null;
+    writeFormat?: TCredentialsConfig['writeFormat'];
   }) => Promise<unknown>;
   deleteUserKey: (params: { userId: string; name?: string; all?: boolean }) => Promise<unknown>;
-  getUserKeyValues: (params: { userId: string; name: string }) => Promise<Record<string, string>>;
+  getUserKeyValues: (params: KeyLookup) => Promise<Record<string, string>>;
   getUserKeyExpiry: (params: {
     userId: string;
     name: string;
@@ -30,10 +41,13 @@ export function createKeyMethods(mongoose: typeof import('mongoose')): {
    *              If found, it decrypts the value of the key and returns it. If no key is found, it throws
    *              an error indicating that there is no user key available.
    */
-  async function getUserKey(params: { userId: string; name: string }): Promise<string> {
-    const { userId, name } = params;
+  async function getUserKey({ userId, name, activeOnly }: KeyLookup): Promise<string> {
     const Key = mongoose.models.Key;
-    const keyValue = (await Key.findOne({ userId, name }).lean()) as {
+    const keyValue = (await Key.findOne({
+      userId,
+      name,
+      ...(activeOnly ? { $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }] } : {}),
+    }).lean()) as {
       value: string;
     } | null;
     if (!keyValue) {
@@ -43,7 +57,7 @@ export function createKeyMethods(mongoose: typeof import('mongoose')): {
         }),
       );
     }
-    return await decrypt(keyValue.value);
+    return await decryptStoredKey(keyValue.value);
   }
 
   /**
@@ -57,12 +71,8 @@ export function createKeyMethods(mongoose: typeof import('mongoose')): {
    *              and then attempts to parse the decrypted string into a JSON object. If the parsing fails,
    *              it throws an error indicating that the user key is invalid.
    */
-  async function getUserKeyValues(params: {
-    userId: string;
-    name: string;
-  }): Promise<Record<string, string>> {
-    const { userId, name } = params;
-    const userValues = await getUserKey({ userId, name });
+  async function getUserKeyValues(params: KeyLookup): Promise<Record<string, string>> {
+    const userValues = await getUserKey(params);
     try {
       return JSON.parse(userValues) as Record<string, string>;
     } catch (e) {
@@ -106,6 +116,8 @@ export function createKeyMethods(mongoose: typeof import('mongoose')): {
    * @param params.name - The name associated with the key
    * @param params.value - The value to be encrypted and stored as the key's value
    * @param params.expiresAt - The expiry date for the key [optional]
+   * @param params.writeFormat - `v3` (default) writes a random IV per value; `legacy` writes the
+   *   fixed-IV format that releases predating `v3` can read (rolling upgrades)
    * @returns The updated or newly inserted key document
    * @description This function either updates an existing user key or inserts a new one into the database,
    *              after encrypting the provided value. It sets the provided expiry date for the key (or unsets for no expiry).
@@ -115,10 +127,11 @@ export function createKeyMethods(mongoose: typeof import('mongoose')): {
     name: string;
     value: string;
     expiresAt?: Date | null;
+    writeFormat?: TCredentialsConfig['writeFormat'];
   }): Promise<unknown> {
-    const { userId, name, value, expiresAt = null } = params;
+    const { userId, name, value, expiresAt = null, writeFormat = 'v3' } = params;
     const Key = mongoose.models.Key;
-    const encryptedValue = await encrypt(value);
+    const encryptedValue = writeFormat === 'legacy' ? await encrypt(value) : encryptV3(value);
     const updateObject: { userId: string; name: string; value: string; expiresAt?: Date } = {
       userId,
       name,

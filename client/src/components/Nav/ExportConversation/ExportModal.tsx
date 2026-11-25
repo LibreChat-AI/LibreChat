@@ -89,7 +89,7 @@ export default function ExportModal({
           <div className="flex w-full flex-col items-center gap-6">
             <div className="grid w-full gap-6 sm:grid-cols-2">
               <div className="col-span-1 flex flex-col items-start justify-start gap-2">
-                <Label htmlFor="filename" className="text-left text-sm font-medium">
+                <Label htmlFor="filename" className="text-start text-sm font-medium">
                   {localize('com_nav_export_filename')}
                 </Label>
                 <Input
@@ -100,7 +100,7 @@ export default function ExportModal({
                 />
               </div>
               <div className="col-span-1 flex w-full flex-col items-start justify-start gap-2">
-                <Label htmlFor="type" className="text-left text-sm font-medium">
+                <Label htmlFor="type" className="text-start text-sm font-medium">
                   {localize('com_nav_export_type')}
                 </Label>
                 <Dropdown
@@ -116,10 +116,10 @@ export default function ExportModal({
             <div className="grid w-full gap-6 sm:grid-cols-2">
               <div className="col-span-1 flex flex-col items-start justify-start gap-2">
                 <div className="grid w-full items-center gap-2">
-                  <Label htmlFor="includeOptions" className="text-left text-sm font-medium">
+                  <Label htmlFor="includeOptions" className="text-start text-sm font-medium">
                     {localize('com_nav_export_include_endpoint_options')}
                   </Label>
-                  <div className="flex h-[40px] w-full items-center space-x-3">
+                  <div className="flex h-[2.5rem] w-full items-center space-x-3">
                     <Checkbox
                       id="includeOptions"
                       disabled={!exportOptionsSupport}
@@ -130,7 +130,7 @@ export default function ExportModal({
                     <Label
                       id="includeOptions-label"
                       htmlFor="includeOptions"
-                      className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                      className="text-sm leading-none font-medium"
                     >
                       {exportOptionsSupport
                         ? localize('com_nav_export_include_endpoint_options')
@@ -140,10 +140,10 @@ export default function ExportModal({
                 </div>
               </div>
               <div className="grid w-full items-center gap-2">
-                <Label htmlFor="exportBranches" className="text-left text-sm font-medium">
+                <Label htmlFor="exportBranches" className="text-start text-sm font-medium">
                   {localize('com_nav_export_all_message_branches')}
                 </Label>
-                <div className="flex h-[40px] w-full items-center space-x-3">
+                <div className="flex h-[2.5rem] w-full items-center space-x-3">
                   <Checkbox
                     id="exportBranches"
                     disabled={!exportBranchesSupport}
@@ -154,7 +154,7 @@ export default function ExportModal({
                   <Label
                     id="exportBranches-label"
                     htmlFor="exportBranches"
-                    className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                    className="text-sm leading-none font-medium"
                   >
                     {exportBranchesSupport
                       ? localize('com_nav_export_all_message_branches')
@@ -164,10 +164,10 @@ export default function ExportModal({
               </div>
               {type === 'json' ? (
                 <div className="grid w-full items-center gap-2">
-                  <Label htmlFor="recursive" className="text-left text-sm font-medium">
+                  <Label htmlFor="recursive" className="text-start text-sm font-medium">
                     {localize('com_nav_export_recursive_or_sequential')}
                   </Label>
-                  <div className="flex h-[40px] w-full items-center space-x-3">
+                  <div className="flex h-[2.5rem] w-full items-center space-x-3">
                     <Checkbox
                       id="recursive"
                       checked={recursive}
@@ -177,7 +177,7 @@ export default function ExportModal({
                     <Label
                       id="recursive-label"
                       htmlFor="recursive"
-                      className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                      className="text-sm leading-none font-medium"
                     >
                       {localize('com_nav_export_recursive')}
                     </Label>

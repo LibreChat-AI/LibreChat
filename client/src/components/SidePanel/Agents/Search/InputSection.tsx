@@ -62,15 +62,15 @@ export default function InputSection({
             trigger={
               <Menu.MenuButton
                 onClick={() => setDropdownOpen(!dropdownOpen)}
-                className="flex items-center rounded-md border border-border-light px-3 py-1 text-sm text-text-secondary"
+                className="border-border-light text-text-secondary flex items-center rounded-md border px-3 py-1 text-sm"
               >
                 {selectedOption?.label}
-                <ChevronDown className="ml-1 h-4 w-4" />
+                <ChevronDown className="ms-1 h-4 w-4" />
               </Menu.MenuButton>
             }
           />
         ) : (
-          <div className="text-sm text-text-secondary">{selectedOption?.label}</div>
+          <div className="text-text-secondary text-sm">{selectedOption?.label}</div>
         )}
       </div>
       {selectedOption?.inputs &&
@@ -98,12 +98,12 @@ export default function InputSection({
               )}
             </div>
             {config.link && (
-              <div className="mt-1 text-xs text-text-secondary">
+              <div className="text-text-secondary mt-1 text-xs">
                 <a
                   href={config.link.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300"
+                  className="text-link hover:text-link-hover underline"
                 >
                   {config.link.text}
                 </a>

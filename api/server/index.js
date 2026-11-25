@@ -7,19 +7,29 @@ require('module-alias')({ base: path.resolve(__dirname, '..') });
 const cors = require('cors');
 const axios = require('axios');
 const express = require('express');
+const mongoose = require('mongoose');
 const passport = require('passport');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
 const mongoSanitize = require('express-mongo-sanitize');
-const { logger, runAsSystem } = require('@librechat/data-schemas');
+const { logger, runAsSystem, createRoleChangeSource } = require('@librechat/data-schemas');
+const { CacheKeys } = require('librechat-data-provider');
+const getLogStores = require('~/cache/getLogStores');
 const {
   isEnabled,
+  issueCsp,
   apiNotFound,
   createMetrics,
+  applyCspNonce,
+  createCspPolicy,
+  shellCacheHeaders,
+  escapeHtmlAttribute,
   ErrorController,
   memoryDiagnostics,
+  createSecurityHeaders,
   performStartupChecks,
   handleJsonParseError,
+  excludeRumBodyParser,
   GenerationJobManager,
   QUERY_DEVTOOLS_HEADER,
   createStreamServices,
@@ -32,32 +42,77 @@ const {
   getDeploymentPluginHookCapabilities,
   registerDeploymentPluginHooks,
   hasDeploymentPluginHooks,
+  hasDeploymentPluginToolApprovalHooks,
   setPluginHookSource,
   loadToolApprovalHooks,
   maybeInjectQueryDevtoolsBootstrap,
+  injectConfiguredFooterBootstrap,
+  injectColorModeHandoff,
+  readBundledThemeBoot,
+  createDeploymentThemeShell,
   preAuthTenantMiddleware,
   requestContextMiddleware,
   registerShutdownTask,
+  startRoleCacheInvalidation,
+  reportRoleCacheError,
+  reportRoleCacheInvalidation,
+  getRemainingShutdownMs,
+  registerBackgroundTaskShutdown,
   configureServerTimeouts,
+  createReadinessHandler,
+  keyvRedisClient,
+  ioredisClient,
+  cacheConfig,
   setupGracefulShutdown,
   updateInterfacePermissions,
   configureMessageFilterRegexValidator,
   configureFileConfigRegexEngine,
+  configureAgentEventRuntime,
+  createAgentEventTerminalHandler,
   createScheduleWriteGate,
+  startCodeEnvironmentLifecycleReconciler,
   waitForKeyvRedisClient,
+  warnOnUnreachableDeliveryPaths,
+  createCodeApiUploadRegistry,
+  createSdkModelHost,
+  createSdkFileHost,
+  createRequestSanitizer,
+  reportEndpointOverrides,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const {
   updateAccessPermissions,
   sweepOrphanedPreviews,
+  getPartitionRole,
   getRoleByName,
   seedDatabase,
+  initializeFavorites,
+  closeFavorites,
+  listAllConfigs,
+  recordAuditEntry,
 } = require('~/models');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
 const { capabilityContextMiddleware } = require('./middleware/roles/capabilities');
 const createValidateImageRequest = require('./middleware/validateImageRequest');
 const { initializeGitHubSkillSync } = require('./services/Skills/sync');
-const { initializeAgentTriggerService } = require('./services/Agents/triggers');
+const { startSkillDeletionSweep } = require('./services/Skills/deletion');
+const {
+  initializeAgentTriggerService,
+  enqueueAgentTrigger,
+  isAgentTriggerServiceReady,
+} = require('./services/Agents/triggers');
+const {
+  initializeBackgroundResponses,
+  configureBackgroundResponseQueue,
+} = require('./services/Responses');
+const {
+  initializeChannelFeedback,
+  stopChannelFeedback,
+  initializeChannelCleanup,
+  stopChannelCleanup,
+} = require('./services/Channels');
+const { resumeAgentEventDetachedAction } = require('./services/Agents/detachedActionResume');
+const subscriptionRuns = require('./services/Events/reconcile');
 const { initializeScheduleEngine, recordExpiredScheduleApproval } = require('./services/Schedules');
 const { jwtLogin, ldapLogin, passportLogin } = require('~/strategies');
 const { startExpiredFileSweep } = require('./services/Files/process');
@@ -67,10 +122,10 @@ const initializeMCPs = require('./services/initializeMCPs');
 const { configureSubagentTaskRouting } = require('./services/Endpoints/agents/subagentThreadStore');
 const configureSocialLogins = require('./socialLogins');
 const createSpaFallback = require('./utils/fallback');
-const { getAppConfig } = require('./services/Config');
+const { getAppConfig, rederiveEndpoints, loadCustomConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
 const noIndex = require('./middleware/noIndex');
-const routes = require('./routes');
+const agentEventMethods = require('~/models');
 
 /** Route admin file-config MIME patterns through a linear-time engine (ReDoS-safe) on upload. */
 configureFileConfigRegexEngine();
@@ -86,6 +141,7 @@ const host = HOST || 'localhost';
 const trusted_proxy = Number(TRUST_PROXY) || 1; /* trust first proxy by default */
 
 const app = express();
+app.locals.codeApiUploadRegistry = createCodeApiUploadRegistry();
 let serverReady = false;
 /** @type {import('@librechat/api').ScheduleEngineState} */
 let scheduleEngineState = 'starting';
@@ -117,6 +173,12 @@ const configureGenerationStreams = () => {
     cleanupOnComplete: !isEnabled(process.env.STREAM_KEEP_COMPLETED_JOBS),
   });
   GenerationJobManager.setApprovalExpiredHandler(recordExpiredScheduleApproval);
+  GenerationJobManager.setAdmissionGuard(agentEventMethods.isAgentTriggerPrincipalActive);
+  GenerationJobManager.setTerminalHostActionHandler(
+    createAgentEventTerminalHandler(agentEventMethods, {
+      resumeDetachedAction: resumeAgentEventDetachedAction,
+    }),
+  );
   GenerationJobManager.initialize();
   // Stop active generations and close their SSE streams while the HTTP server drains.
   registerShutdownTask(
@@ -127,16 +189,41 @@ const configureGenerationStreams = () => {
       priority: 100,
     },
   );
+  /** Spend the shutdown budget that is actually left waiting for detached generations to
+   *  record their own provider drains, holding back a reserve for the tasks after this one.
+   *  Abandoning an unrecorded drain fences the next generation permanently. */
+  const destroyGenerationJobManager = () => {
+    const remaining = getRemainingShutdownMs();
+    return GenerationJobManager.destroy(
+      remaining == null
+        ? undefined
+        : { settlementBudgetMs: Math.max(0, remaining - SHUTDOWN_TEARDOWN_RESERVE_MS) },
+    );
+  };
   // Tear down stream resources before shared caches and telemetry exporters shut down.
-  registerShutdownTask('generation job manager', () => GenerationJobManager.destroy(), {
-    priority: 100,
-  });
+  registerShutdownTask('generation job manager', destroyGenerationJobManager, { priority: 100 });
 };
+
+/** Reserved for the shutdown tasks that run after the generation job manager. */
+const SHUTDOWN_TEARDOWN_RESERVE_MS = 10_000;
 
 const startServer = async () => {
   await waitForKeyvRedisClient();
-  await configureSubagentTaskRouting();
-  const { metricsMiddleware, metricsRouter } = createMetrics();
+  const { metricsMiddleware, metricsRouter } = createMetrics({
+    collectAgentEventActorStorageMetrics: () =>
+      runAsSystem(async () => {
+        const now = new Date();
+        const [receiptMetrics, reconciliationMetrics] = await Promise.all([
+          agentEventMethods.getAgentEventActorReceiptStorageMetrics(now),
+          agentEventMethods.getAgentEventActorReconciliationStorageMetrics(now),
+        ]);
+        return {
+          ...receiptMetrics,
+          pendingReconciliations: reconciliationMetrics.pending,
+          oldestPendingAgeSeconds: reconciliationMetrics.oldestPendingAgeSeconds,
+        };
+      }),
+  });
   if (!process.env.METRICS_SECRET) {
     logger.warn('[metrics] METRICS_SECRET is not set - /metrics will return 401 for all requests');
   }
@@ -153,6 +240,12 @@ const startServer = async () => {
 
   app.disable('x-powered-by');
   app.set('trust proxy', trusted_proxy);
+
+  /* Registered ahead of every route so health checks carry the headers too. */
+  const securityHeaders = createSecurityHeaders();
+  if (securityHeaders) {
+    app.use(securityHeaders);
+  }
 
   if (isEnabled(process.env.TRUST_TENANT_HEADER)) {
     logger.warn(
@@ -174,7 +267,31 @@ const startServer = async () => {
   runAsSystem(sweepOrphanedPreviews).catch((err) => {
     logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
   });
+  await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
+  registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
   const appConfig = await getAppConfig({ baseOnly: true });
+  /* One ceiling for every idle recovery loop below; each keeps its own default while it is unset. */
+  const idleCeilingMs = appConfig?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs;
+  startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });
+  registerShutdownTask(
+    'role cache invalidation',
+    await startRoleCacheInvalidation({
+      config: appConfig?.config?.roleCache,
+      cache: getLogStores(CacheKeys.ROLES),
+      open: createRoleChangeSource(mongoose),
+      onError: reportRoleCacheError,
+      onInvalidate: reportRoleCacheInvalidation,
+    }),
+    { priority: 50 },
+  );
+  app.locals.sdkFileHost = createSdkFileHost(appConfig?.endpoints?.agents?.sdkHostFiles);
+  app.locals.sdkModelHost = createSdkModelHost(appConfig?.endpoints?.agents?.sdkHostModels);
+  await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);
+  registerBackgroundTaskShutdown({
+    interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
+  });
+  configureAgentEventRuntime(appConfig?.endpoints?.agents?.eventDriven);
+  warnOnUnreachableDeliveryPaths(appConfig);
   initializeFileStorage(appConfig);
   const projectRoot = path.resolve(__dirname, '../..');
   // Plugin hooks execute only when the operator opts in via DEPLOYMENT_PLUGIN_HOOKS;
@@ -187,6 +304,7 @@ const startServer = async () => {
   // agents -> plugins import (see agents/hooks/source.ts).
   setPluginHookSource({
     hasHooks: hasDeploymentPluginHooks,
+    hasToolApprovalHooks: hasDeploymentPluginToolApprovalHooks,
     register: registerDeploymentPluginHooks,
   });
   await initializeDeploymentSkills({
@@ -194,6 +312,7 @@ const startServer = async () => {
     additionalSkills: getDeploymentPluginSkills(),
   });
   initializeGitHubSkillSync(appConfig);
+  startSkillDeletionSweep(appConfig.skillDeletion);
   startExpiredFileSweep({ appConfig, loadAppConfig: getAppConfig });
   // Register any programmatic tool-approval policy hooks declared in
   // `endpoints.agents.toolApproval.hooks`. Honor the `enabled` kill switch: when tool
@@ -207,8 +326,18 @@ const startServer = async () => {
   });
   await runAsSystem(async () => {
     await performStartupChecks(appConfig);
-    await updateInterfacePermissions({ appConfig, getRoleByName, updateAccessPermissions });
+    await updateInterfacePermissions({
+      appConfig,
+      getRoleByName,
+      updateAccessPermissions,
+      recordAuditEntry,
+      getPartitionRole,
+    });
   });
+
+  /* Route modules build their rate limiters as they load, so they load only after the
+   * startup checks have applied `rateLimits` from librechat.yaml. */
+  const routes = require('./routes');
 
   const indexPath = path.join(appConfig.paths.dist, 'index.html');
   let indexHTML = fs.readFileSync(indexPath, 'utf8');
@@ -226,18 +355,44 @@ const startServer = async () => {
     }
   }
 
+  /* The composer lays out against whether a footer bar sits beneath it, and
+     `/api/config` answers that only after it has painted. One shell serves every
+     request, before there is a caller whose overrides could be resolved, so the
+     answer is the deployment's base configuration; `/api/config` resolves the
+     caller's and the client prefers it. */
+  indexHTML = injectConfiguredFooterBootstrap(indexHTML, {
+    customFooter: process.env.CUSTOM_FOOTER,
+    landingFooter: appConfig?.interfaceConfig?.landingFooter,
+  });
+
+  indexHTML = injectColorModeHandoff(indexHTML, appConfig.interfaceConfig?.colorModeFromUrl);
+  const indexShell = createDeploymentThemeShell(
+    indexHTML,
+    appConfig.interfaceConfig?.theme,
+    readBundledThemeBoot(appConfig.paths.dist),
+  );
+
+  const cspPolicy = createCspPolicy();
+  const shellCache = shellCacheHeaders(cspPolicy != null);
+
   const sendIndexHtml = (req, res) => {
-    res.set({
-      'Cache-Control': process.env.INDEX_CACHE_CONTROL || 'no-cache, no-store, must-revalidate',
-      Pragma: process.env.INDEX_PRAGMA || 'no-cache',
-      Expires: process.env.INDEX_EXPIRES || '0',
-    });
+    res.set(shellCache);
     res.vary(QUERY_DEVTOOLS_HEADER);
 
     const lang = req.cookies.lang || req.headers['accept-language']?.split(',')[0] || 'en-US';
-    const saneLang = lang.replace(/"/g, '&quot;');
-    let updatedIndexHtml = indexHTML.replace(/lang="en-US"/g, `lang="${saneLang}"`);
+    const saneLang = escapeHtmlAttribute(lang);
+    let updatedIndexHtml = indexShell(req, res).replace(
+      /lang="en-US"/g,
+      () => `lang="${saneLang}"`,
+    );
     updatedIndexHtml = maybeInjectQueryDevtoolsBootstrap(updatedIndexHtml, req);
+
+    /* Nonce last: every injected script above must be stamped too. */
+    if (cspPolicy) {
+      const csp = issueCsp(cspPolicy);
+      res.set(csp.headerName, csp.headerValue);
+      updatedIndexHtml = applyCspNonce(updatedIndexHtml, csp.nonce);
+    }
 
     res.type('html');
     res.send(updatedIndexHtml);
@@ -245,20 +400,22 @@ const startServer = async () => {
 
   app.get('/health', (_req, res) => res.status(200).send('OK'));
   app.get('/livez', (_req, res) => res.status(200).send('OK'));
-  app.get('/readyz', (_req, res) => {
-    if (!serverReady) {
-      return res.status(503).send('NOT_READY');
-    }
-    return res.status(200).send('OK');
-  });
+  app.get(
+    '/readyz',
+    createReadinessHandler(() => serverReady, {
+      useRedis: cacheConfig.USE_REDIS,
+      ioredis: ioredisClient,
+      keyv: keyvRedisClient,
+    }),
+  );
 
   /* Middleware */
   app.use(requestContextMiddleware);
   app.use('/api/agents/chat', agentStartupIngressMiddleware);
   app.use(metricsMiddleware);
   app.use(noIndex);
-  app.use(express.json({ limit: '3mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '3mb' }));
+  app.use(excludeRumBodyParser(express.json({ limit: '3mb' })));
+  app.use(excludeRumBodyParser(express.urlencoded({ extended: true, limit: '3mb' })));
   app.use(handleJsonParseError);
 
   /**
@@ -274,7 +431,7 @@ const startServer = async () => {
     next();
   });
 
-  app.use(mongoSanitize());
+  app.use(createRequestSanitizer(mongoSanitize));
   app.use(cors());
   app.use(cookieParser());
 
@@ -309,7 +466,7 @@ const startServer = async () => {
   }
 
   if (isEnabled(ALLOW_SOCIAL_LOGIN)) {
-    await configureSocialLogins(app);
+    await configureSocialLogins(app, appConfig);
   }
 
   /* Per-request capability cache — must be registered before any route that calls hasCapability */
@@ -320,9 +477,11 @@ const startServer = async () => {
   app.use('/oauth', preAuthTenantMiddleware, routes.oauth);
   /* API Endpoints */
   app.use('/api/auth', preAuthTenantMiddleware, routes.auth);
-  app.use('/api/admin/insights', routes.insights);
+  app.use('/api/insights', routes.insights);
   app.use('/api/admin', routes.adminAuth);
   app.use('/api/admin/config', routes.adminConfig);
+  app.use('/api/admin/code-environments', routes.adminCodeEnvironments);
+  app.use('/api/code-environments', routes.codeEnvironments);
   app.use('/api/admin/langfuse', routes.adminLangfuse);
   app.use('/api/admin/grants', routes.adminGrants);
   app.use('/api/admin/groups', routes.adminGroups);
@@ -330,6 +489,7 @@ const startServer = async () => {
   app.use('/api/admin/skills', routes.adminSkills);
   app.use('/api/admin/users', routes.adminUsers);
   app.use('/api/admin/audit-log', routes.adminAuditLog);
+  app.use('/api/admin/events', routes.adminEvents);
   app.use('/api/actions', routes.actions);
   app.use('/api/keys', routes.keys);
   app.use('/api/api-keys', routes.apiKeys);
@@ -337,6 +497,8 @@ const startServer = async () => {
   app.use('/api/search', routes.search);
   app.use('/api/messages', routes.messages);
   app.use('/api/convos', routes.convos);
+  app.use('/api/pull-requests', preAuthTenantMiddleware, routes.pullRequests);
+  app.use('/api/traces', routes.traces);
   app.use('/api/presets', routes.presets);
   app.use('/api/projects', routes.projects);
   app.use('/api/prompts', routes.prompts);
@@ -348,11 +510,20 @@ const startServer = async () => {
   app.use('/api/config', preAuthTenantMiddleware, optionalJwtAuth, routes.config);
   app.use('/api/assistants', routes.assistants);
   app.use('/api/files', await routes.files.initialize());
-  app.use('/images/', createValidateImageRequest(appConfig.secureImageLinks), routes.staticRoute);
+  app.use(
+    '/images/',
+    createValidateImageRequest({
+      secureImageLinks: appConfig.secureImageLinks,
+    }),
+    routes.staticRoute,
+  );
   app.use('/api/share', preAuthTenantMiddleware, routes.share);
   app.use('/api/roles', routes.roles);
   app.use('/api/agents/chat', rejectChatStartsUntilReady);
+  /** Before `/api/agents`, whose `/:id` routes would otherwise read `events` as an agent id. */
+  app.use('/api/agents/events', routes.events);
   app.use('/api/agents', routes.agents);
+  app.use('/api/channels', routes.channels);
   app.use('/api/banner', routes.banner);
   app.use('/api/memories', routes.memories);
   app.use('/api/schedules', rejectScheduleWritesUntilReady, routes.schedules);
@@ -363,6 +534,8 @@ const startServer = async () => {
   app.use('/api/rum', routes.rum);
 
   app.use('/metrics', metricsRouter);
+
+  app.use('/api', routes.openapi);
 
   /** 404 for unmatched API routes */
   app.use('/api', apiNotFound);
@@ -379,6 +552,10 @@ const startServer = async () => {
 
   configureGenerationStreams();
 
+  configureBackgroundResponseQueue({
+    enqueue: enqueueAgentTrigger,
+    isReady: isAgentTriggerServiceReady,
+  });
   const server = app.listen(port, host, async (err) => {
     if (err) {
       logger.error('Failed to start server:', err);
@@ -406,14 +583,38 @@ const startServer = async () => {
         await initializeMCPs();
         await initializeOAuthReconnectManager();
       });
+      /** Logs only, so readiness never waits on reading every config document. */
+      reportEndpointOverrides({
+        listConfigs: () => runAsSystem(() => listAllConfigs()),
+        baseYaml: appConfig?.config ?? {},
+        rederiveEndpoints,
+      }).catch((err) => {
+        logger.error('[config] Failed to report endpoint overrides:', err);
+      });
       await checkMigrations();
 
       const inspectFlags = process.execArgv.some((arg) => arg.startsWith('--inspect'));
       if (inspectFlags || isEnabled(process.env.MEM_DIAG)) {
         memoryDiagnostics.start();
       }
-      await initializeAgentTriggerService({ address: server.address() });
-      const scheduleEngineArmed = (await initializeScheduleEngine()) != null;
+      initializeBackgroundResponses(server.address());
+      await initializeAgentTriggerService({
+        address: server.address(),
+        completionResultBatchSize:
+          appConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
+        completionReceiptBatching:
+          appConfig?.endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
+        deadLetterRetentionDays: appConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays,
+        idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
+        idleCeilingMs,
+      });
+      const scheduleEngineArmed = (await initializeScheduleEngine({ idleCeilingMs })) != null;
+      subscriptionRuns.initialize();
+      registerShutdownTask('subscription runs', subscriptionRuns.stop, { priority: 100 });
+      await initializeChannelFeedback();
+      registerShutdownTask('channel feedback export', stopChannelFeedback, { priority: 100 });
+      registerShutdownTask('channel authority cleanup', stopChannelCleanup, { priority: 100 });
+      await initializeChannelCleanup();
       scheduleEngineState = scheduleEngineArmed ? 'armed' : 'unavailable';
       if (!scheduleEngineArmed) {
         // Terminal, not transient: arming is attempted once, so schedule writes are refused
@@ -452,7 +653,8 @@ const startServer = async () => {
  * liveness probe eventually times out. Mirrors the pattern in
  * `experimental.js`.
  */
-startServer().catch((err) => {
+startServer().catch(async (err) => {
+  await closeFavorites().catch(() => undefined);
   logger.error('Failed to start server:', err);
   process.exit(1);
 });

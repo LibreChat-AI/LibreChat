@@ -11,11 +11,15 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useGetEndpointsQuery: () => ({ data: {} }),
-}));
-
-jest.mock('~/hooks/Endpoint/Icons', () => ({
-  icons: {},
+  useGetEndpointsQuery: () => ({
+    data: {
+      Branded: {
+        type: 'custom',
+        iconURL: 'https://cdn.example.com/x.png',
+        order: 0,
+      },
+    },
+  }),
 }));
 
 const preset = {
@@ -114,5 +118,27 @@ describe('PresetItems clear-all dialog', () => {
     await waitFor(() => {
       expect(document.activeElement).toBe(trigger);
     });
+  });
+});
+
+describe('PresetItems icons', () => {
+  it('renders a configured endpoint image instead of the generic mark', () => {
+    render(
+      <RecoilRoot>
+        <Popover.Root open={true}>
+          <PresetItems
+            presets={[{ presetId: 'branded', title: 'Branded', endpoint: 'Branded' } as TPreset]}
+            onSetDefaultPreset={jest.fn()}
+            onSelectPreset={jest.fn()}
+            onChangePreset={jest.fn()}
+            onDeletePreset={jest.fn()}
+            clearAllPresets={jest.fn()}
+            onFileSelected={jest.fn()}
+          />
+        </Popover.Root>
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByRole('img')).toHaveAttribute('src', 'https://cdn.example.com/x.png');
   });
 });

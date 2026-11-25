@@ -1,12 +1,19 @@
-import type { IThemeAppearance, IThemeRGB, ResolvedThemeDefinition } from '../types';
-import { themeAppearanceProperties, themeColorTokens } from '../registry';
+import {
+  describeThemeColors,
+  describeResolvedTheme,
+  THEME_DISABLED_ATTRIBUTE,
+  THEME_FIELD_FOCUS_ATTRIBUTE,
+  themeOwnedProperties,
+} from 'librechat-data-provider';
+import type { IThemeRGB, ResolvedThemeDefinition } from 'librechat-data-provider';
 
-const colorProperty = (token: keyof IThemeRGB): `--${string}` => `--${token.slice(4)}`;
-
-export const themeOwnedProperties: readonly string[] = Object.freeze([
-  ...themeColorTokens.map(colorProperty),
-  ...Object.values(themeAppearanceProperties),
-]);
+export {
+  describeResolvedTheme,
+  themeOwnedProperties,
+  THEME_DISABLED_ATTRIBUTE,
+  THEME_FIELD_FOCUS_ATTRIBUTE,
+} from 'librechat-data-provider';
+export type { ResolvedThemeStyle } from 'librechat-data-provider';
 
 const rgbPattern = /^(\d{1,3})\s+(\d{1,3})\s+(\d{1,3})$/;
 
@@ -15,45 +22,38 @@ function validateRGB(rgb: string): boolean {
   return match !== null && match.slice(1).every((channel) => Number(channel) <= 255);
 }
 
-function mapColors(colors: IThemeRGB): Array<[string, string]> {
-  const variables = themeColorTokens.reduce<Array<[string, string]>>((result, token) => {
-    const value = colors[token];
-    if (value !== undefined) {
-      result.push([colorProperty(token), value]);
-    }
-    return result;
-  }, []);
+/**
+ * Marks a root other than the document one that a legacy palette themes. The stylesheet points
+ * the avatar backdrop at that root's own secondary surface, or its tertiary one under a `.dark`
+ * ancestor, as the document root's alias does, so the backdrop follows a later mode change.
+ */
+export const THEME_SCOPE_ATTRIBUTE = 'data-theme-scope';
 
-  if (
-    colors['rgb-surface-composer-hover'] === undefined &&
-    colors['rgb-surface-hover'] !== undefined
-  ) {
-    variables.push(['--surface-composer-hover', colors['rgb-surface-hover']]);
-  }
-
-  return variables;
-}
-
-function mapAppearance(appearance: IThemeAppearance): Array<[string, string]> {
-  return Object.entries(themeAppearanceProperties).map(([key, property]) => [
-    property,
-    appearance[key as keyof IThemeAppearance],
-  ]);
-}
+/**
+ * Marks a root that `client/index.html` painted from the cached deployment theme before the
+ * bundle ran. The provider drops that copy before it snapshots the root, so a later restore
+ * returns to the stylesheet rather than to a theme the server may since have withdrawn.
+ */
+export const THEME_BOOT_ATTRIBUTE = 'data-theme-boot';
 
 export function clearAppliedTheme(root: HTMLElement = document.documentElement): void {
   themeOwnedProperties.forEach((property) => root.style.removeProperty(property));
   root.removeAttribute('data-theme');
+  root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
+  root.removeAttribute(THEME_SCOPE_ATTRIBUTE);
+  root.removeAttribute(THEME_FIELD_FOCUS_ATTRIBUTE);
+  root.removeAttribute(THEME_BOOT_ATTRIBUTE);
 }
 
 export function applyResolvedTheme(
   theme: ResolvedThemeDefinition,
   root: HTMLElement = document.documentElement,
 ): void {
-  const variables = [...mapColors(theme.colors), ...mapAppearance(theme.appearance)];
-
-  variables.forEach(([property, value]) => root.style.setProperty(property, value));
-  root.dataset.theme = theme.name;
+  const { properties, attributes } = describeResolvedTheme(theme);
+  properties.forEach(([property, value]) => root.style.setProperty(property, value));
+  root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
+  root.removeAttribute(THEME_FIELD_FOCUS_ATTRIBUTE);
+  Object.entries(attributes).forEach(([name, value]) => root.setAttribute(name, value));
 }
 
 /**
@@ -63,12 +63,16 @@ export function applyResolvedTheme(
 export default function applyTheme(
   themeRGB?: IThemeRGB,
   root: HTMLElement = document.documentElement,
+  base?: IThemeRGB,
 ): void {
   if (!themeRGB) {
     return;
   }
 
-  mapColors(themeRGB).forEach(([property, value]) => {
+  if (root !== root.ownerDocument.documentElement) {
+    root.setAttribute(THEME_SCOPE_ATTRIBUTE, '');
+  }
+  describeThemeColors(themeRGB, base).forEach(([property, value]) => {
     if (!validateRGB(value)) {
       console.error(`Invalid RGB value for ${property}: ${value}`);
       return;

@@ -20,12 +20,19 @@
  * @see https://openresponses.org/specification
  */
 const express = require('express');
+const { logger } = require('@librechat/data-schemas');
+const { createStoredToolContinuation } = require('@librechat/api');
+const db = require('~/models');
 const {
   createResponse,
   getResponse,
   listModels,
 } = require('~/server/controllers/agents/responses');
-const { configMiddleware } = require('~/server/middleware');
+const { configMiddleware, requireTermsAcceptance } = require('~/server/middleware');
+const {
+  createBackgroundResponseHandlers,
+  authenticateBackgroundResponses,
+} = require('~/server/services/Responses');
 const {
   checkAgentPermission,
   preAuthTenantMiddleware,
@@ -34,9 +41,18 @@ const {
 } = require('./middleware');
 
 const router = express.Router();
+const background = createBackgroundResponseHandlers({
+  create: createResponse,
+  retrieve: getResponse,
+});
+const continueTools = createStoredToolContinuation({
+  getMessage: db.getMessage,
+  logger,
+});
 
 router.use(preAuthTenantMiddleware);
-router.use(requireRemoteAgentAuth);
+router.use(authenticateBackgroundResponses(requireRemoteAgentAuth));
+router.use(requireTermsAcceptance);
 router.use(configMiddleware);
 router.use(checkRemoteAgentsFeature);
 
@@ -81,7 +97,8 @@ router.use(checkRemoteAgentsFeature);
  *   "usage": { ... }
  * }
  */
-router.post('/', checkAgentPermission, createResponse);
+router.post('/', checkAgentPermission, continueTools, background.create);
+router.post('/:id/cancel', background.cancel);
 
 /**
  * @route GET /v1/responses/models
@@ -120,6 +137,6 @@ router.get('/models', listModels);
  *   "usage": { ... }
  * }
  */
-router.get('/:id', getResponse);
+router.get('/:id', background.retrieve);
 
 module.exports = router;

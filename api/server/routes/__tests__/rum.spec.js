@@ -3,15 +3,50 @@ const request = require('supertest');
 
 const mockRequireRumProxyAuth = jest.fn((_req, _res, next) => next());
 const mockIsRumProxyEnabled = jest.fn();
+const mockIsRumLogsEndpointEnabled = jest.fn(() => true);
 const mockProxyRumRequest = jest.fn((_req, res) => res.status(202).send());
+const mockRumProxyLimiter = jest.fn((_req, _res, next) => next());
+const mockGetAppConfig = jest.fn(async () => ({ config: {} }));
+const mockLimiterSetup = [];
+const mockCreateRumProxyLimiter = jest.fn((options) => {
+  mockLimiterSetup.push(['createRumProxyLimiter', options]);
+  return mockRumProxyLimiter;
+});
+const mockLimiterCache = jest.fn((prefix) => {
+  mockLimiterSetup.push(['limiterCache', prefix]);
+  return 'limiter-store';
+});
 
 jest.mock('~/server/middleware', () => ({
   requireRumProxyAuth: (...args) => mockRequireRumProxyAuth(...args),
 }));
 
+jest.mock('~/server/services/Config/app', () => ({
+  getAppConfig: (...args) => mockGetAppConfig(...args),
+}));
+
 jest.mock('@librechat/api', () => ({
+  loadRumConfig: (getAppConfig) => async (req, _res, next) => {
+    try {
+      req.config = await getAppConfig({ baseOnly: true });
+      next();
+    } catch (error) {
+      next(error);
+    }
+  },
   getRumProxyBodyLimit: jest.fn(() => '3mb'),
-  isRumProxyEnabled: (...args) => mockIsRumProxyEnabled(...args),
+  limiterCache: (...args) => mockLimiterCache(...args),
+  createRumProxyLimiter: (...args) => mockCreateRumProxyLimiter(...args),
+  requireRumProxyEnabled: (_req, res, next) =>
+    mockIsRumProxyEnabled()
+      ? next()
+      : res.status(404).json({ message: 'RUM proxy is not configured' }),
+  requireRumLogsEnabled: (_req, res, next) =>
+    mockIsRumLogsEndpointEnabled()
+      ? next()
+      : res.status(404).json({ message: 'RUM logs are not enabled' }),
+  handleJsonParseError: (err, _req, res, next) =>
+    err.type === 'entity.parse.failed' ? res.status(400).end() : next(err),
   proxyRumRequest: (...args) => mockProxyRumRequest(...args),
 }));
 
@@ -29,9 +64,35 @@ describe('RUM proxy routes', () => {
     mockRequireRumProxyAuth.mockClear();
     mockIsRumProxyEnabled.mockReset();
     mockProxyRumRequest.mockClear();
+    mockRumProxyLimiter.mockClear();
+    mockGetAppConfig.mockClear();
+    mockIsRumLogsEndpointEnabled.mockReset();
+    mockIsRumLogsEndpointEnabled.mockReturnValue(true);
   });
 
-  it('returns 404 before auth and proxying when RUM proxy mode is disabled', async () => {
+  it('refuses logs, but not traces, when no browser log source is enabled', async () => {
+    mockIsRumProxyEnabled.mockReturnValue(true);
+    mockIsRumLogsEndpointEnabled.mockReturnValue(false);
+
+    const logs = await request(app)
+      .post('/api/rum/v1/logs')
+      .set('Content-Type', 'application/json')
+      .send({ resourceLogs: [] });
+    const traces = await request(app)
+      .post('/api/rum/v1/traces')
+      .set('Content-Type', 'application/json')
+      .send({ resourceSpans: [] });
+
+    expect(logs.status).toBe(404);
+    expect(traces.status).toBe(202);
+    expect(mockProxyRumRequest).toHaveBeenCalledTimes(1);
+  });
+
+  afterEach(() => {
+    delete process.env.RUM_PROXY_AUTHORIZATION;
+  });
+
+  it('returns 404 after auth and limiting when RUM proxy mode is disabled', async () => {
     mockIsRumProxyEnabled.mockReturnValue(false);
 
     const response = await request(app)
@@ -41,22 +102,63 @@ describe('RUM proxy routes', () => {
 
     expect(response.status).toBe(404);
     expect(response.body).toEqual({ message: 'RUM proxy is not configured' });
-    expect(mockRequireRumProxyAuth).not.toHaveBeenCalled();
+    expect(mockRequireRumProxyAuth).toHaveBeenCalledTimes(1);
+    expect(mockRumProxyLimiter).toHaveBeenCalledTimes(1);
+    expect(mockGetAppConfig).toHaveBeenCalledWith({ baseOnly: true });
     expect(mockProxyRumRequest).not.toHaveBeenCalled();
   });
 
-  it('authenticates and proxies when RUM proxy mode is enabled', async () => {
-    mockIsRumProxyEnabled.mockReturnValue(true);
+  it.each(['traces', 'logs'])(
+    'passes server authorization to the %s proxy after auth',
+    async (signal) => {
+      process.env.RUM_PROXY_AUTHORIZATION = 'server-only-ingestion-key';
+      mockIsRumProxyEnabled.mockReturnValue(true);
 
-    const response = await request(app)
-      .post('/api/rum/v1/traces')
-      .set('Content-Type', 'application/x-protobuf')
-      .send(Buffer.from('payload'));
+      const response = await request(app)
+        .post(`/api/rum/v1/${signal}`)
+        .set('Content-Type', 'application/x-protobuf')
+        .send(Buffer.from('payload'));
 
-    expect(response.status).toBe(202);
-    expect(mockRequireRumProxyAuth).toHaveBeenCalledTimes(1);
-    expect(mockProxyRumRequest).toHaveBeenCalledTimes(1);
-  });
+      expect(response.status).toBe(202);
+      expect(mockRequireRumProxyAuth).toHaveBeenCalledTimes(1);
+      expect(mockGetAppConfig).toHaveBeenCalledTimes(1);
+      expect(mockGetAppConfig).toHaveBeenCalledWith({ baseOnly: true });
+      expect(mockRequireRumProxyAuth.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRumProxyLimiter.mock.invocationCallOrder[0],
+      );
+      expect(mockRumProxyLimiter.mock.invocationCallOrder[0]).toBeLessThan(
+        mockGetAppConfig.mock.invocationCallOrder[0],
+      );
+      expect(mockGetAppConfig.mock.invocationCallOrder[0]).toBeLessThan(
+        mockProxyRumRequest.mock.invocationCallOrder[0],
+      );
+      expect(mockProxyRumRequest).toHaveBeenCalledTimes(1);
+      expect(mockProxyRumRequest).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.any(Object),
+        'server-only-ingestion-key',
+      );
+    },
+  );
+
+  it.each(['traces', 'logs'])(
+    'does not export %s when session authentication fails',
+    async (signal) => {
+      process.env.RUM_PROXY_AUTHORIZATION = 'server-only-ingestion-key';
+      mockIsRumProxyEnabled.mockReturnValue(true);
+      mockRequireRumProxyAuth.mockImplementationOnce((_req, res) => res.status(401).end());
+
+      const response = await request(app)
+        .post(`/api/rum/v1/${signal}`)
+        .set('Content-Type', 'application/x-protobuf')
+        .send(Buffer.from('payload'));
+
+      expect(response.status).toBe(401);
+      expect(mockGetAppConfig).not.toHaveBeenCalled();
+      expect(mockRumProxyLimiter).not.toHaveBeenCalled();
+      expect(mockProxyRumRequest).not.toHaveBeenCalled();
+    },
+  );
 
   it('uses RUM-specific auth for logs as well as traces', async () => {
     mockIsRumProxyEnabled.mockReturnValue(true);
@@ -69,5 +171,63 @@ describe('RUM proxy routes', () => {
     expect(response.status).toBe(202);
     expect(mockRequireRumProxyAuth).toHaveBeenCalledTimes(1);
     expect(mockProxyRumRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('builds the per-user limiter on the shared limiter store', () => {
+    expect(mockLimiterSetup).toEqual([
+      ['limiterCache', 'rum_proxy_user_limiter'],
+      ['createRumProxyLimiter', { store: 'limiter-store' }],
+    ]);
+  });
+
+  it.each(['traces', 'logs'])('rate limits %s after auth and before proxying', async (signal) => {
+    mockIsRumProxyEnabled.mockReturnValue(true);
+    const order = [];
+    mockRequireRumProxyAuth.mockImplementationOnce((_req, _res, next) => {
+      order.push('auth');
+      next();
+    });
+    mockRumProxyLimiter.mockImplementationOnce((_req, res) => {
+      order.push('limit');
+      res.status(429).json({ message: 'Too many RUM telemetry requests' });
+    });
+
+    const response = await request(app)
+      .post(`/api/rum/v1/${signal}`)
+      .set('Content-Type', 'application/json')
+      .send({ resourceLogs: [] });
+
+    expect(response.status).toBe(429);
+    expect(order).toEqual(['auth', 'limit']);
+    expect(mockGetAppConfig).not.toHaveBeenCalled();
+    expect(mockProxyRumRequest).not.toHaveBeenCalled();
+  });
+
+  it('skips the limiter when session authentication drops the request', async () => {
+    mockIsRumProxyEnabled.mockReturnValue(true);
+    mockRequireRumProxyAuth.mockImplementationOnce((_req, res) => res.status(204).end());
+
+    const response = await request(app)
+      .post('/api/rum/v1/logs')
+      .set('Content-Type', 'application/json')
+      .send({ resourceLogs: [] });
+
+    expect(response.status).toBe(204);
+    expect(mockGetAppConfig).not.toHaveBeenCalled();
+    expect(mockRumProxyLimiter).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['get', '/api/rum/v1/traces'],
+    ['put', '/api/rum/v1/logs'],
+    ['post', '/api/rum/v1/unknown'],
+  ])('does not load config for unmatched %s %s requests', async (method, path) => {
+    const response = await request(app)[method](path);
+
+    expect(response.status).toBe(404);
+    expect(mockGetAppConfig).not.toHaveBeenCalled();
+    expect(mockRequireRumProxyAuth).not.toHaveBeenCalled();
+    expect(mockRumProxyLimiter).not.toHaveBeenCalled();
+    expect(mockProxyRumRequest).not.toHaveBeenCalled();
   });
 });

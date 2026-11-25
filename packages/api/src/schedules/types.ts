@@ -4,6 +4,9 @@ import type {
   AgentTriggerDeliveryStatus,
   AgentTriggerDeliveryFailure,
 } from '@librechat/data-schemas';
+import type { ScheduledMCPEnrollment } from 'librechat-data-provider';
+import type { ScheduledMCPIdentity } from 'librechat-data-provider';
+import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
 import type { AgentTriggerEnqueueOptions, AgentTriggerEnvelope } from '../agents/triggers';
 import type { SlotClaimResult } from './capacity';
@@ -11,10 +14,22 @@ import type { SlotClaimResult } from './capacity';
 export interface ScheduleLimits {
   /** Feature-level switch: when false the engine claims/fires nothing. */
   enabled: boolean;
+  mcpConsent?: {
+    enabled: boolean;
+    maxLifetimeHours: number;
+    /** From then on a never-authorized schedule can no longer use MCP tools. */
+    requireAfterMs?: number;
+  };
   maxPerUser: number;
   minIntervalMinutes: number;
   autoDisableAfterFailures: number;
+  /** Maximum claimed occurrences concurrently passing readiness admission per replica. */
+  admissionConcurrency: number;
   fireConcurrency: number;
+  /** Maximum MCP readiness probes active during one schedule admission. */
+  mcpPreflightConcurrency: number;
+  /** Maximum wall-clock time for one unattended MCP readiness admission. */
+  mcpPreflightTimeoutMs: number;
   /** Every schedule must be filed under a chat project. A pinned `projectId`
    *  implies this, so callers only ever have to read one flag. */
   requireProject: boolean;
@@ -29,7 +44,10 @@ export const DEFAULT_SCHEDULE_LIMITS: ScheduleLimits = {
   maxPerUser: 10,
   minIntervalMinutes: 60,
   autoDisableAfterFailures: 5,
+  admissionConcurrency: 20,
   fireConcurrency: 5,
+  mcpPreflightConcurrency: 3,
+  mcpPreflightTimeoutMs: 5 * 60_000,
   requireProject: false,
 };
 
@@ -51,6 +69,8 @@ export interface ScheduleUserContext {
   id: string;
   tenantId?: string;
   role?: string;
+  /** Absent on an owner row that predates the flag, which counts as not accepted. */
+  termsAccepted?: boolean;
 }
 
 /**
@@ -170,10 +190,16 @@ export interface ScheduleFileRef {
 }
 
 export interface ScheduleEngineDeps {
+  /** Retried even when Mongo has no active/unbookkept run left to enumerate. Resolves how many
+   *  retained jobs it examined when it reports one. */
+  reconcileRetainedJobs?: () => Promise<number | void>;
+  /** Host erasure fence for exact-generation receipt acknowledgements. */
+  eraseSettledSchedule?: ScheduleMethods['eraseScheduleIfDrained'];
+  preflightMCP: ScheduleMCPPreflight;
   methods: ScheduleMethods;
   /** Resolves interface.schedules limits, per-principal when a user is given. */
   getLimits: (user?: ScheduleUserContext) => Promise<ScheduleLimits>;
-  /** Loads the owning user (id + tenant) or null when deleted/disabled. */
+  /** Loads the owning user (id, tenant, role, terms acceptance) or null when deleted/disabled. */
   getUserContext: (userId: string | Types.ObjectId) => Promise<ScheduleUserContext | null>;
   /** Whether the balance feature gates this user and they are out of credits. */
   isOutOfBalance: (user: ScheduleUserContext) => Promise<boolean>;
@@ -200,8 +226,8 @@ export interface ScheduleEngineDeps {
   ) => Promise<unknown>;
   /**
    * Reads the durable trigger delivery for a reservation's `deliveryKey`, so
-   * reconciliation can tell a still-live admission (`staging`/`pending`/`leased`, which a
-   * `Retry-After` can defer up to 24h) or a dead-letter (`dead`, with its `lastError`)
+   * reconciliation can tell a still-live admission (`staging`/`batched`/`pending`/`leased`, which
+   * a `Retry-After` can defer up to 24h) or a dead-letter (`dead`, with its `lastError`)
    * apart from a genuinely orphaned jobless run. Null when no delivery record exists.
    */
   getTriggerDelivery: (deliveryKey: string) => Promise<{
@@ -254,6 +280,13 @@ export interface ScheduleEngineDeps {
   /** Whether the run owner's account deletion has begun. Fail-closed (unknown == true). */
   isOwnerDeleting: (userId: string) => Promise<boolean>;
   /**
+   * Whether the owner must still accept the terms of service before anything is processed
+   * for them: the effective-config check the HTTP terms gate applies to the same user.
+   * Throws when that config cannot be resolved, so the fire retries instead of running
+   * unchecked.
+   */
+  isTermsBlocked: (user: ScheduleUserContext) => Promise<boolean>;
+  /**
    * Runs `claim` against the lowest free GLOBAL capacity slot, retrying the next slot
    * when the unique partial index rejects a collision. Enforces fireConcurrency in the
    * database instead of via a read-then-compare count, so concurrent admissions of
@@ -268,13 +301,18 @@ export interface ScheduleEngineDeps {
 
 /** The immutable scheduled identity of a generation job, for reconcile/abort fencing. */
 export interface JobIdentity {
+  createdAt?: number;
   scheduleId: string;
   scheduledFor: string | Date;
 }
 
 /** Job-store state plus the job's scheduled identity (absent on a replacement turn). */
 export interface JobState {
+  providerDrained?: boolean;
+  terminalPersistencePending?: boolean;
+  terminalHostActionPending?: boolean;
   status: string;
+  checkpointNamespace?: string;
   createdAt?: number;
   scheduleId?: string;
   scheduledFor?: string;
@@ -287,10 +325,13 @@ export interface JobState {
    *  owner left it. See SerializableJobData.scheduleOutcome. */
   scheduleOutcome?: string;
   scheduleOutcomeError?: string;
+  scheduleMCPFailure?: ScheduleMCPOutcome;
   preserveForScheduleReconcile?: boolean;
 }
 
 export interface FireResult {
+  mcp?: ScheduleMCPOutcome[];
+  mcpPreflightUnavailable?: boolean;
   fired: boolean;
   conversationId?: string;
   skipped?:
@@ -302,6 +343,7 @@ export interface FireResult {
     | 'agent_deleted'
     | 'user_missing'
     | 'user_deleting'
+    | 'terms_not_accepted'
     | 'permission_revoked'
     | 'project_deleted'
     | 'project_required'
@@ -311,3 +353,41 @@ export interface FireResult {
 }
 
 export type FireableSchedule = ISchedule;
+
+export type ScheduleMCPPreflight = (
+  agentId: string,
+  user: ScheduleUserContext,
+  options: {
+    concurrency: number;
+    signal?: AbortSignal;
+    deadlineMs?: number;
+    scheduleId?: string;
+    stage?: 'activation' | 'invoke' | 'resume';
+    /** Trusted fire host provenance, never a body-provided permission. */
+    manual?: boolean;
+    /**
+     * The grant a schedule is being created or edited with. It is not stored yet, so it is
+     * handed over: readiness then covers the MCP tools it allows, as for a stored grant, and
+     * the grant the edit replaces is not consulted.
+     */
+    grant?: Pick<ScheduledMCPEnrollment, 'consents' | 'everything' | 'tools'>;
+  },
+) => Promise<ScheduleMCPOutcome[]>;
+
+/** Trusted occurrence attribution for a safe MCP authorization failure. */
+export interface ScheduleMCPFailureInput {
+  error: unknown;
+  streamId?: string;
+  jobCreatedAt?: number;
+  userId?: string;
+  serverName: string;
+  identity?: ScheduledMCPIdentity;
+}
+
+/** The trusted host retires this exact MCP request before occurrence settlement. */
+export interface ScheduleMCPSettlementBoundary {
+  identity: ScheduledMCPIdentity;
+  streamId: string;
+  jobCreatedAt: number;
+  quiesce: () => Promise<void>;
+}

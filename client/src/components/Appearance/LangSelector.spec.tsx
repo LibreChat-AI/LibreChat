@@ -1,6 +1,7 @@
 import 'test/matchMedia.mock';
 import React from 'react';
-import { render, fireEvent, waitFor } from '@testing-library/react';
+import { render, waitFor } from '@testing-library/react';
+import { clickDropdown, flushDropdownEffects } from 'test/dropdown';
 import '@testing-library/jest-dom/extend-expect';
 import { RecoilRoot } from 'recoil';
 import { LangSelector } from './Selectors';
@@ -13,7 +14,7 @@ describe('LangSelector', () => {
     mockOnChange = jest.fn();
   });
 
-  it('renders correctly', () => {
+  it('renders correctly', async () => {
     global.ResizeObserver = class MockedResizeObserver {
       observe = jest.fn();
       unobserve = jest.fn();
@@ -28,6 +29,8 @@ describe('LangSelector', () => {
     expect(getByText('Language')).toBeInTheDocument();
     const dropdownButton = getByRole('combobox');
     expect(dropdownButton).toHaveTextContent('English');
+
+    await flushDropdownEffects();
   });
 
   it('calls onChange when the select value changes', async () => {
@@ -46,10 +49,10 @@ describe('LangSelector', () => {
 
     const dropdownButton = getByTestId('dropdown-menu');
 
-    fireEvent.click(dropdownButton);
+    await clickDropdown(dropdownButton);
 
     const italianOption = getByRole('option', { name: 'Italiano' });
-    fireEvent.click(italianOption);
+    await clickDropdown(italianOption);
 
     await waitFor(() => {
       expect(mockOnChange).toHaveBeenCalledWith('it-IT');

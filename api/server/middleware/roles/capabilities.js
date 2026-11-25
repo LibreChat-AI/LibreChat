@@ -3,26 +3,28 @@ const {
   getUserPrincipals,
   hasAnyConfigReadAccess,
   hasCapabilityForPrincipals,
-  getHeldCapabilities,
+  getHeldCapabilities: getHeldCapabilitiesForPrincipals,
 } = require('~/models');
 
 const {
   hasCapability,
   requireCapability,
   hasConfigCapability,
+  getHeldCapabilities,
   hasAnyConfigReadAccess: checkAnyConfigReadAccess,
   getReadableConfigSections,
 } = generateCapabilityCheck({
   getUserPrincipals,
   hasAnyConfigReadAccess,
   hasCapabilityForPrincipals,
-  getHeldCapabilities,
+  getHeldCapabilities: getHeldCapabilitiesForPrincipals,
 });
 
 module.exports = {
   hasCapability,
   requireCapability,
   hasConfigCapability,
+  getHeldCapabilities,
   capabilityContextMiddleware,
   hasAnyConfigReadAccess: checkAnyConfigReadAccess,
   getReadableConfigSections,

@@ -1,11 +1,9 @@
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import supersub from 'remark-supersub';
-import rehypeKatex from 'rehype-katex';
-import rehypeHighlight from 'rehype-highlight';
 import remarkDirective from 'remark-directive';
-import type { PluggableList } from 'unified';
+import { rehypeList, replyRemark, markdownElements } from '@librechat/chat/components';
+import type { MarkdownBlocksProps } from '@librechat/chat/components';
+import type { MarkdownExtensions } from '@librechat/chat/react';
 import type { ElementType } from 'react';
+import type { RehypeModules } from './rehype';
 import {
   mcpUIResourcePlugin,
   MCPUIResource,
@@ -13,68 +11,57 @@ import {
 } from '~/components/MCPUIResource';
 import { Citation, CompositeCitation, HighlightedText } from '~/components/Web/Citation';
 import { Artifact, artifactPlugin } from '~/components/Artifacts/Artifact';
-import { code, a, p, img, table } from './MarkdownComponents';
-import { langSubset, remarkApproxTilde } from '~/utils';
+import { setAppMarkdownExtensions } from './Parts/slots';
 import { unicodeCitation } from '~/components/Web';
+/* The reply's elements come from the chat package; this registers the code block and the diagram
+ * this app draws them with. */
+import './MarkdownComponents';
+
+type Plugins = MarkdownBlocksProps['remarkPlugins'];
+
+let extensions: MarkdownExtensions | null = null;
 
 /**
- * Single source of truth for the markdown rendering pipeline, shared by the
- * whole-message renderer and the per-block memoized renderer so both produce
- * identical output.
- *
- * These are exposed as lazily-initialized, cached getters rather than top-level
- * consts on purpose: `MarkdownComponents` participates in a circular import
- * (`MarkdownComponents` → `CodeBlock` → `Parts` → `Markdown` → here →
- * `MarkdownComponents`). Reading `code`/`a`/… at module-evaluation time throws
- * `Cannot access 'code' before initialization` under native ESM. Deferring the
- * read to first call (render time) sidesteps the temporal dead zone, and caching
- * keeps a stable reference so react-markdown does not rebuild its processor.
+ * What this app adds to a reply's markdown: artifacts (and the directive syntax they are written
+ * in), citations and embedded MCP resources. Built on first use and kept: the artifact, citation
+ * and resource modules import one another in a cycle (through the parts that render markdown), so
+ * reading them while this module loads throws under native ESM.
  */
-let remarkPluginsCache: PluggableList | null = null;
-let rehypePluginsCache: PluggableList | null = null;
-let markdownComponentsCache: { [nodeType: string]: ElementType } | null = null;
-
-export const getRemarkPlugins = (): PluggableList => {
-  if (remarkPluginsCache === null) {
-    remarkPluginsCache = [
-      remarkApproxTilde,
-      supersub,
-      remarkGfm,
+export function getMarkdownExtensions(): MarkdownExtensions {
+  extensions ??= {
+    remarkPlugins: [
       remarkDirective,
-      artifactPlugin,
-      [remarkMath, { singleDollarTextMath: false }],
+      /* The artifact plugin is typed against the `unified` this app resolves, which is older
+         than the one `react-markdown` runs it on, so the cast is on its type alone. */
+      artifactPlugin as unknown as Plugins[number],
       unicodeCitation,
       mcpUIResourcePlugin,
-    ];
-  }
-  return remarkPluginsCache;
-};
-
-export const getRehypePlugins = (): PluggableList => {
-  if (rehypePluginsCache === null) {
-    rehypePluginsCache = [
-      [rehypeKatex],
-      [rehypeHighlight, { detect: true, ignoreMissing: true, subset: langSubset }],
-    ];
-  }
-  return rehypePluginsCache;
-};
-
-export const getMarkdownComponents = (): { [nodeType: string]: ElementType } => {
-  if (markdownComponentsCache === null) {
-    markdownComponentsCache = {
-      code,
-      a,
-      p,
-      img,
-      table,
+    ],
+    elements: {
       artifact: Artifact,
       citation: Citation,
       'highlighted-text': HighlightedText,
       'composite-citation': CompositeCitation,
       'mcp-ui-resource': MCPUIResource,
       'mcp-ui-carousel': MCPUIResourceCarousel,
-    };
-  }
-  return markdownComponentsCache;
-};
+    },
+  };
+  return extensions;
+}
+
+setAppMarkdownExtensions(getMarkdownExtensions);
+
+/**
+ * The reply renderer's pipeline, as the chat package composes it from its own plugins and this
+ * app's additions. Specs and benchmarks render with these so they run what a reply runs.
+ */
+export const getRemarkPlugins = (latexParsing = true): Plugins =>
+  replyRemark(latexParsing, getMarkdownExtensions().remarkPlugins);
+
+/** Empty until `useRehypeModules` has loaded KaTeX and highlight.js; see `./rehype`. */
+export const getRehypePlugins = (modules: RehypeModules | null): Plugins => rehypeList(modules);
+
+export const getMarkdownComponents = (): { [nodeType: string]: ElementType } => ({
+  ...markdownElements,
+  ...getMarkdownExtensions().elements,
+});

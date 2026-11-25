@@ -1,18 +1,34 @@
+import { isBalanceRefillDue, Permissions, PermissionTypes } from 'librechat-data-provider';
 import { logger, runAsSystem, tenantStorage, isRuntimeDisabled } from '@librechat/data-schemas';
-import { getRefillEligibilityDate, Permissions, PermissionTypes } from 'librechat-data-provider';
+import {
+  DEFAULT_RUN_GRANT_LIFETIME_HOURS,
+  isScheduleMCPAuthorizationFailure,
+  readScheduleMCPOutcomes,
+  getScheduleMCPDisabledReason,
+  projectScheduleMCPReceipt,
+  readScheduleMCPReceipts,
+  mergeScheduleMCPReceipts,
+} from 'librechat-data-provider';
 import type { ScheduleMethods, AppConfig, IBalance, IChatProject } from '@librechat/data-schemas';
 import type { TCheckpointerConfig } from 'librechat-data-provider';
+import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
 import type {
   ScheduleEngineDeps,
   ScheduleDeleteResult,
+  ScheduleMCPPreflight,
   ScheduleLimits,
   ScheduleUserContext,
   FireableSchedule,
   FireResult,
   JobIdentity,
+  JobState,
+  ScheduleMCPFailureInput,
+  ScheduleMCPSettlementBoundary,
 } from './types';
-import type { SerializableJobData } from '../stream/interfaces/IJobStore';
+import type { SerializableJobData, ScheduleProviderOwner } from '../stream/interfaces/IJobStore';
+import type { AgentCheckpointGeneration } from '../agents/checkpointer';
+import type { RunGrantExecution } from '~/agents/authority/execution';
 import type { BalanceUpdateFields } from '../types/balance';
 import type { GetAppConfigOptions } from '../app/service';
 import {
@@ -20,17 +36,29 @@ import {
   DEFAULT_SCHEDULE_LIMITS,
   SCHEDULE_FILE_HOLD,
   hasResumeHandoffInFlight,
+  retainedOutcome,
   hasAbortInFlight,
 } from './types';
-import { deleteAgentCheckpoint, captureAgentCheckpointGeneration } from '../agents/checkpointer';
+import {
+  deleteAgentCheckpoint,
+  captureAgentCheckpointGeneration,
+  checkpointStorageConfigs,
+} from '../agents/checkpointer';
+import { isStopConfirmed, PROVIDER_DRAIN_TIMEOUT_MS } from '../stream/interfaces/IJobStore';
+import { isShutdownInProgress, getShutdownSignal } from '../app/shutdown';
+import { scheduleMCPFailurePriority } from '~/stream/scheduleFailure';
 import { fireSchedule, BALANCE_SKIP_DISABLE_THRESHOLD } from './fire';
 import { GenerationJobManager } from '../stream/GenerationJobManager';
-import { isStopConfirmed } from '../stream/interfaces/IJobStore';
 import { buildBalanceUpdateFields } from '../middleware/balance';
+import { RunGrantPolicyError } from '~/agents/authority/policy';
 import { getAppConfigOptionsFromUser } from '../app/service';
-import { isShutdownInProgress } from '../app/shutdown';
+import { createTermsBlockCheck } from '../middleware/terms';
+import { OboTokenResolutionError } from '../mcp/oauth/obo';
+import { ScheduledMCPBearerError } from '../mcp/errors';
 import { startScheduleErasureSweep } from './erasure';
 import { getBalanceConfig } from '../app/config';
+import { isTopologySafeToArm } from './topology';
+import { waitUntilDeadline } from '~/mcp/utils';
 import { startScheduleEngine } from './engine';
 import { withCapacitySlot } from './capacity';
 import { isEnabled } from '../utils/common';
@@ -55,30 +83,16 @@ const QUIESCE_SETTLE_ERRORS: Partial<Record<ScheduleRunOutcomeStatus, string>> =
 /** Short schedule-document fence spanning capacity admission -> approval CAS. */
 const SCHEDULE_RESUME_LEASE_MS = 60_000;
 
-/**
- * Whether this process may arm the scheduler at all.
- *
- * v1 is single-process by design, but the standard entrypoint runs
- * `initializeScheduleEngine` in EVERY replica and nothing stops an operator from scaling
- * it. That is only safe when replicas can see each other's generations: a shared stream
- * store (Redis) gives every replica the same job view, so reconciliation and
- * deletion-time aborts reach the run's real owner. With the process-local store a peer
- * sees the globally visible `started` row but no job, and after the orphan cutoff it
- * marks a still-running generation interrupted and frees its capacity slot.
- *
- * A single replica with the in-memory store is perfectly safe, but a process cannot
- * observe its own replica count, so that case needs an explicit operator assertion.
- */
-function isTopologySafeToArm(): boolean {
-  return GenerationJobManager.isRedis || isEnabled(process.env.SCHEDULES_SINGLE_PROCESS);
-}
-
 /** Whether a persisted job still carries a given scheduled occurrence's identity. */
 function jobMatchesIdentity(
-  job: Pick<SerializableJobData, 'scheduleId' | 'scheduledFor'>,
+  job: Pick<SerializableJobData, 'scheduleId' | 'scheduledFor'> & { createdAt?: number },
   identity: JobIdentity,
 ): boolean {
-  if (job.scheduleId !== identity.scheduleId || job.scheduledFor == null) {
+  if (
+    job.scheduleId !== identity.scheduleId ||
+    job.scheduledFor == null ||
+    (identity.createdAt != null && identity.createdAt !== job.createdAt)
+  ) {
     return false;
   }
   return new Date(job.scheduledFor).getTime() === new Date(identity.scheduledFor).getTime();
@@ -92,6 +106,7 @@ export interface RecordScheduleOutcomeInput {
   jobCreatedAt?: number;
   status: ScheduleRunOutcomeStatus;
   conversationId?: string;
+  checkpointNamespace?: string;
   /** Erase the row's reserved conversationId (pre-start abort: no conversation exists). */
   clearConversationId?: boolean;
   error?: string;
@@ -108,6 +123,7 @@ export type ScheduleResumeClaimResult =
  * directly.
  */
 export interface SchedulesServiceDeps {
+  preflightMCP: ScheduleMCPPreflight;
   methods: ScheduleMethods & {
     getRoleByName: (
       role?: string,
@@ -133,10 +149,14 @@ export interface SchedulesServiceDeps {
     ) => Promise<number>;
   };
   getAppConfig: (options?: GetAppConfigOptions) => Promise<AppConfig | undefined>;
-  findUserById: (
-    userId: string | Types.ObjectId,
-  ) => Promise<{ _id: Types.ObjectId; tenantId?: string; role?: string } | null>;
-  findBalance: (userId: string) => Promise<IBalance | null>;
+  findUserById: (userId: string | Types.ObjectId) => Promise<{
+    _id: string | Types.ObjectId;
+    tenantId?: string;
+    role?: string;
+    termsAccepted?: boolean;
+  } | null>;
+  /** Reads the balance record together with the credits unexpired in-flight reservations hold. */
+  findBalance: (userId: string, options?: { applyReset?: boolean }) => Promise<IBalance | null>;
   /**
    * Upserts a balance record. `setOnInsert` carries fields that must ONLY apply to a
    * document this call creates — chiefly the starting credit — so a record created by a
@@ -166,6 +186,11 @@ export interface SchedulesServiceDeps {
    *  them. Chat projects are user-owned, so this is both the existence check and the
    *  authorization check. */
   getChatProject: (userId: string, projectId: string) => Promise<IChatProject | null>;
+  /** Positive process-termination proof for this exact provider segment, never a heartbeat timeout.
+   * Hosts without proof retain the obligation. This hook must return null for alive/unknown owners. */
+  confirmScheduleProviderOwnerLoss?: (
+    owner: ScheduleProviderOwner,
+  ) => Promise<ScheduleProviderOwner | null>;
   /** Whether this user's account deletion has begun. Fail-closed (unknown == true). */
   isUserDeleting: (userId: string) => Promise<boolean>;
   /** Shared durable trigger admission from the merged agent-trigger service. */
@@ -181,8 +206,14 @@ export interface SchedulesService {
   fireScheduleNow: (
     schedule: FireableSchedule,
     limits: ScheduleLimits,
+    options?: { signal?: AbortSignal },
   ) => Promise<FireResult | null>;
   recordScheduleOutcome: (input: RecordScheduleOutcomeInput) => Promise<boolean>;
+  recordMCPToolAuthFailure: (input: ScheduleMCPFailureInput) => Promise<boolean>;
+  getMCPReceiptRetryPolicy: (
+    input: ScheduleMCPFailureInput,
+  ) => Promise<ScheduleMCPReceiptRetryPolicy | undefined>;
+  registerMCPSettlement: (boundary: ScheduleMCPSettlementBoundary) => void;
   /**
    * Stamps a scheduled run's interactive Stop BEFORE the abort is signalled, so the owner
    * settlement barrier, reconciliation, and schedule/account deletion hold off settling or
@@ -262,13 +293,184 @@ export interface SchedulesService {
    *  entrypoint does not start it. Returns undefined when index creation failed, or when
    *  the topology cannot be shown safe (process-local job store with no single-process
    *  assertion) — see isTopologySafeToArm. */
-  initializeScheduleEngine: () => Promise<ReturnType<typeof startScheduleEngine> | undefined>;
-  /** Starts erasure-ONLY maintenance for an entrypoint that never arms the engine (the
+  initializeScheduleEngine: (
+    options?: ScheduleLoopOptions,
+  ) => Promise<ReturnType<typeof startScheduleEngine> | undefined>;
+  /** Starts bounded maintenance for an entrypoint that never arms the engine (the
    *  clustered worker). Idempotent per process and a no-op once the full engine is armed.
-   *  Arms nothing else — no claims, firing, cadence advancement, or absence-based
-   *  reconciliation — and refuses to infer owner death from a process-local missing job
-   *  (isTopologySafeToArm gates that). See startScheduleErasureSweep. */
-  initializeScheduleErasureSweep: () => void;
+   *  Replays terminal permanent-MCP bookkeeping but never claims, fires, advances, or
+   *  infers owner death from a process-local missing job. See startScheduleErasureSweep. */
+  initializeScheduleErasureSweep: (options?: ScheduleLoopOptions) => void;
+  reconcileRetainedJobs: () => Promise<number>;
+}
+
+/** What the host tells the fallback maintenance loop when it starts it. */
+export interface ScheduleLoopOptions {
+  /** The deployment-wide `eventDriven.idlePolling.maxIntervalMs`, when configured. */
+  idleCeilingMs?: number;
+}
+
+/** A replaced/foreign generation cannot receive an old denial or model-visible result. */
+export class ScheduledMCPReceiptFencedError extends Error {
+  constructor() {
+    super('Scheduled generation is no longer current.');
+    this.name = 'AbortError';
+  }
+}
+
+export interface ScheduleMCPReceiptRetryPolicy {
+  baseMs?: number;
+  maxMs?: number;
+}
+const receiptFlights = new WeakMap<
+  SchedulesService['recordMCPToolAuthFailure'],
+  Map<string, Promise<boolean>>
+>();
+
+/** Scheduled authorization failures cannot become model errors before durable admission. */
+export function recordScheduledMCPToolAuthFailure(
+  input: ScheduleMCPFailureInput,
+  getRecorder: () => SchedulesService['recordMCPToolAuthFailure'],
+  getRetryPolicy?: () => Promise<ScheduleMCPReceiptRetryPolicy | undefined>,
+): Promise<boolean> {
+  // A grant held by an API key has no schedule run to record against.
+  if (input.identity != null && !('scheduleId' in input.identity)) return Promise.resolve(false);
+  const bearer =
+    input.error instanceof ScheduledMCPBearerError || input.error instanceof RunGrantPolicyError;
+  const cause = input.error instanceof Error ? input.error.cause : undefined;
+  const missing = input.error instanceof OboTokenResolutionError ? input.error : cause;
+  if (
+    (!bearer &&
+      (!(missing instanceof OboTokenResolutionError) ||
+        missing.reason !== 'missing_upstream_provider')) ||
+    !input.streamId ||
+    input.jobCreatedAt == null ||
+    !input.userId ||
+    (input.error instanceof ScheduledMCPBearerError && !input.identity)
+  ) {
+    return bearer ? Promise.reject(new ScheduledMCPReceiptFencedError()) : Promise.resolve(false);
+  }
+  if (isShutdownInProgress()) return Promise.reject(new ScheduledMCPReceiptFencedError());
+  let record: SchedulesService['recordMCPToolAuthFailure'];
+  try {
+    record = getRecorder();
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  const key = JSON.stringify([
+    input.streamId,
+    input.jobCreatedAt,
+    input.userId,
+    input.identity,
+    input.serverName,
+    input.error instanceof ScheduledMCPBearerError || input.error instanceof RunGrantPolicyError
+      ? input.error.outcomes
+      : 'missing_upstream_provider',
+  ]);
+  let flights = receiptFlights.get(record);
+  if (!flights) {
+    flights = new Map();
+    receiptFlights.set(record, flights);
+  }
+  const current = flights.get(key);
+  if (current) return current;
+  const flight = (async () => {
+    let interval = 250;
+    let cap = 30_000;
+    let configured = false;
+    const signal = getShutdownSignal();
+    for (;;) {
+      if (signal.aborted || isShutdownInProgress()) throw new ScheduledMCPReceiptFencedError();
+      try {
+        const result = await waitUntilDeadline(record(input), undefined, signal);
+        if (!result.settled) throw new ScheduledMCPReceiptFencedError();
+        if (result.value) return true;
+      } catch (error) {
+        if (error instanceof ScheduledMCPReceiptFencedError) throw error;
+        if (!bearer) {
+          logger.warn('[schedules] could not persist MCP authorization failure receipt:', error);
+          return false;
+        }
+      }
+      if (!bearer) return false;
+      if (!configured) {
+        const loaded = await waitUntilDeadline(
+          getRetryPolicy?.().catch(() => undefined) ?? Promise.resolve(undefined),
+          undefined,
+          signal,
+        );
+        if (!loaded.settled) throw new ScheduledMCPReceiptFencedError();
+        const policy = loaded.value;
+        const { baseMs, maxMs } = policy ?? {};
+        if (
+          typeof baseMs === 'number' &&
+          Number.isSafeInteger(baseMs) &&
+          baseMs >= 100 &&
+          baseMs <= 60_000
+        )
+          interval = baseMs;
+        if (
+          typeof maxMs === 'number' &&
+          Number.isSafeInteger(maxMs) &&
+          maxMs >= 100 &&
+          maxMs <= 600_000
+        )
+          cap = maxMs;
+        cap = Math.max(interval, cap);
+        configured = true;
+      }
+      // Equal jitter; no caller cancellation may turn an unrecorded denial into model continuation.
+      try {
+        await new Promise<void>((resolve, reject) => {
+          if (signal.aborted) {
+            reject(new ScheduledMCPReceiptFencedError());
+            return;
+          }
+          const finish = () => {
+            signal.removeEventListener('abort', abort);
+            resolve();
+          };
+          const timer = setTimeout(finish, Math.ceil(interval * (0.5 + Math.random() * 0.5)));
+          const abort = () => {
+            clearTimeout(timer);
+            signal.removeEventListener('abort', abort);
+            reject(new ScheduledMCPReceiptFencedError());
+          };
+          signal.addEventListener('abort', abort, { once: true });
+        });
+      } catch {
+        throw new ScheduledMCPReceiptFencedError();
+      }
+      interval = Math.min(cap, interval * 2);
+    }
+  })().finally(() => {
+    flights!.delete(key);
+  });
+  flights.set(key, flight);
+  return flight;
+}
+
+/** Captures host scope, never model arguments or mutable runnable config. */
+export function createScheduledMCPPolicyRecorder(
+  execution: RunGrantExecution | undefined,
+  job: { streamId?: string | null; jobCreatedAt?: number; userId?: string; tenantId?: string },
+  record: SchedulesService['recordMCPToolAuthFailure'],
+): ((error: RunGrantPolicyError) => Promise<boolean>) | undefined {
+  if (!execution) return;
+  const identity = Object.freeze({ ...execution.identity });
+  const scope = Object.freeze({ ...job });
+  return (error) => {
+    if (scope.userId !== identity.ownerId || (scope.tenantId ?? null) !== identity.tenantId)
+      return Promise.reject(new ScheduledMCPReceiptFencedError());
+    return record({
+      error,
+      identity,
+      streamId: scope.streamId ?? undefined,
+      jobCreatedAt: scope.jobCreatedAt,
+      userId: identity.ownerId,
+      serverName: error.outcomes[0].server,
+    });
+  };
 }
 
 /** Test-only overrides for the service's bounded waits (drains, barriers). */
@@ -284,11 +486,149 @@ export interface ScheduleServiceTimings {
  * own engine singleton and job-store-shared flag, so state never leaks between
  * instances.
  */
+export function createScheduleLimitsResolver(
+  getAppConfig: SchedulesServiceDeps['getAppConfig'],
+): SchedulesService['getLimits'] {
+  /**
+   * Resolves schedule limits, honoring per-principal (role/user) config overrides
+   * when a user is supplied (routes pass req.user, the fire path passes the owner).
+   */
+  return async function getLimits(user?: ScheduleUserContext): Promise<ScheduleLimits> {
+    // The BASE `interface.schedules: false` is a global stop and must win over any
+    // principal override. Without this a tenant/role/user override resolving to
+    // enabled would let the sidebar and CRUD handlers admit schedules that
+    // isGloballyDisabled() correctly refuses to ever fire.
+    // isRuntimeDisabled, NOT `=== false`: the base stop has TWO shapes (`false` and
+    // `{ use: false }`), and deepMerge turns a base `{ use: false, ... }` plus a principal
+    // override of `true` into `{ use: true, ... }`. A literal-false check missed that, so
+    // getLimits reported the feature enabled and Run Now dispatched straight through
+    // fireSchedule — bypassing the operator's object-form emergency stop. Same predicate
+    // the engine gate (isGloballyDisabled) already uses.
+    if (
+      user != null &&
+      isRuntimeDisabled((await getAppConfig({ baseOnly: true }))?.interfaceConfig?.schedules)
+    ) {
+      return { ...DEFAULT_SCHEDULE_LIMITS, enabled: false };
+    }
+    // NO principal means the DEPLOYMENT's config, so it must be read base-only. A bare
+    // getAppConfig() still resolves principals and picks up the tenant from the ALS
+    // context, and both callers of this form run inside one: fireSchedule clamps the
+    // global capacity allocator from within runInTenantContext(owner), and the engine
+    // tick budgets from within runAsSystem. Either would otherwise resolve a TENANT
+    // override as if it were the deployment-wide value, which is exactly what the
+    // global cap exists to prevent an override from widening.
+    const appConfig = user
+      ? await getAppConfig(getAppConfigOptionsFromUser(user))
+      : await getAppConfig({ baseOnly: true });
+    // The env kill switch is a GLOBAL stop and must be visible everywhere limits are
+    // consulted (write handlers, fire path), not only at the engine tick.
+    if (isEnabled(process.env.SCHEDULES_DISABLED)) {
+      return { ...DEFAULT_SCHEDULE_LIMITS, enabled: false };
+    }
+    const config = appConfig?.interfaceConfig?.schedules;
+    // EXPERIMENTAL, default-OFF (v1): scheduled chats are disabled unless an admin
+    // explicitly enables them. Absence, null, or `false` all resolve to disabled, so a
+    // deployment that never opts in never runs the scheduler. `true` uses the defaults;
+    // an object opts in unless it sets `use: false`.
+    if (config == null || config === false) {
+      return { ...DEFAULT_SCHEDULE_LIMITS, enabled: false };
+    }
+    if (config === true) {
+      return DEFAULT_SCHEDULE_LIMITS;
+    }
+    // A pinned project is itself a requirement: leaving `requireProject` to be set
+    // separately would let `projectId` alone resolve to "optional destination that
+    // happens to be forced", and a schedule created before the pin would keep firing
+    // with no project at all rather than being stopped for review.
+    const projectId = config.projectId?.trim() || undefined;
+    return {
+      enabled: config.use !== false,
+      ...(config.mcpConsent && {
+        mcpConsent: {
+          enabled: config.mcpConsent.enabled === true,
+          maxLifetimeHours: config.mcpConsent.maxLifetimeHours ?? DEFAULT_RUN_GRANT_LIFETIME_HOURS,
+          ...(config.mcpConsent.requireAfter != null && {
+            requireAfterMs: Date.parse(config.mcpConsent.requireAfter),
+          }),
+        },
+      }),
+      maxPerUser: config.maxPerUser ?? DEFAULT_SCHEDULE_LIMITS.maxPerUser,
+      minIntervalMinutes: config.minIntervalMinutes ?? DEFAULT_SCHEDULE_LIMITS.minIntervalMinutes,
+      autoDisableAfterFailures:
+        config.autoDisableAfterFailures ?? DEFAULT_SCHEDULE_LIMITS.autoDisableAfterFailures,
+      admissionConcurrency:
+        config.admissionConcurrency ?? DEFAULT_SCHEDULE_LIMITS.admissionConcurrency,
+      fireConcurrency: config.fireConcurrency ?? DEFAULT_SCHEDULE_LIMITS.fireConcurrency,
+      mcpPreflightConcurrency:
+        config.mcpPreflightConcurrency ?? DEFAULT_SCHEDULE_LIMITS.mcpPreflightConcurrency,
+      mcpPreflightTimeoutMs:
+        config.mcpPreflightTimeoutMs ?? DEFAULT_SCHEDULE_LIMITS.mcpPreflightTimeoutMs,
+      requireProject: config.requireProject === true || projectId != null,
+      ...(projectId != null && { projectId }),
+    };
+  };
+}
+
 export function createSchedulesService(
   deps: SchedulesServiceDeps,
   timings?: ScheduleServiceTimings,
 ): SchedulesService {
   const { methods } = deps;
+
+  // Recovery evidence only: no authorization or bearer is cached here.
+  const pendingBearerFailures = new Map<
+    string,
+    Parameters<SchedulesService['recordMCPToolAuthFailure']>[0] & {
+      admitted: boolean;
+      outcomes: ScheduleMCPOutcome[];
+    }
+  >();
+  const mcpBoundaries = new Map<
+    string,
+    { scheduleId: string; quiesce: () => Promise<void>; flight?: Promise<void> }
+  >();
+  function registerMCPSettlement(boundary: ScheduleMCPSettlementBoundary): void {
+    const key = receiptKey(boundary.streamId, boundary.jobCreatedAt);
+    if (mcpBoundaries.get(key)?.flight) throw new ScheduledMCPReceiptFencedError();
+    mcpBoundaries.set(key, { scheduleId: boundary.identity.scheduleId, quiesce: boundary.quiesce });
+  }
+  async function hasScheduleCleanupObligation(scope: {
+    scheduleId?: string;
+    userId?: string;
+  }): Promise<boolean> {
+    const store = GenerationJobManager.getJobStore();
+    if (!store) return false;
+    return !store.hasScheduleCleanupObligation || (await store.hasScheduleCleanupObligation(scope));
+  }
+  async function eraseSettledSchedule(scheduleId: string): Promise<boolean> {
+    for (const pending of pendingBearerFailures.values()) {
+      if (pending.identity?.scheduleId === scheduleId) return false;
+    }
+    if (await hasScheduleCleanupObligation({ scheduleId })) return false;
+    return methods.eraseScheduleIfDrained(scheduleId);
+  }
+
+  const receiptKey = (stream: string, epoch: number): string => JSON.stringify([stream, epoch]);
+  const outcomeKey = (outcome: ScheduleMCPOutcome): string =>
+    JSON.stringify([
+      outcome.server,
+      outcome.agentId,
+      outcome.status,
+      outcome.reason,
+      outcome.recovery,
+      outcome.detail,
+      outcome.automaticReplay,
+    ]);
+  const mergeReceipts = mergeScheduleMCPReceipts;
+  const preferFailure = (
+    previous: ScheduleMCPOutcome | undefined,
+    next: ScheduleMCPOutcome,
+  ): ScheduleMCPOutcome =>
+    scheduleMCPFailurePriority(next) > scheduleMCPFailurePriority(previous)
+      ? next
+      : (previous ?? next);
+  const encodeReceipts = (outcomes: ScheduleMCPOutcome[]): string =>
+    `${getScheduleMCPDisabledReason(outcomes) ?? 'mcp_unavailable'}: ${JSON.stringify(outcomes)}`;
 
   // Fail LOUDLY at construction, not per-fire. The JS adapter (api/server/services/
   // Schedules) is not typechecked against SchedulesServiceDeps, so a missing dep would
@@ -313,70 +653,7 @@ export function createSchedulesService(
     }
   }
 
-  /**
-   * Resolves schedule limits, honoring per-principal (role/user) config overrides
-   * when a user is supplied (routes pass req.user, the fire path passes the owner).
-   */
-  async function getLimits(user?: ScheduleUserContext): Promise<ScheduleLimits> {
-    // The BASE `interface.schedules: false` is a global stop and must win over any
-    // principal override. Without this a tenant/role/user override resolving to
-    // enabled would let the sidebar and CRUD handlers admit schedules that
-    // isGloballyDisabled() correctly refuses to ever fire.
-    // isRuntimeDisabled, NOT `=== false`: the base stop has TWO shapes (`false` and
-    // `{ use: false }`), and deepMerge turns a base `{ use: false, ... }` plus a principal
-    // override of `true` into `{ use: true, ... }`. A literal-false check missed that, so
-    // getLimits reported the feature enabled and Run Now dispatched straight through
-    // fireSchedule — bypassing the operator's object-form emergency stop. Same predicate
-    // the engine gate (isGloballyDisabled) already uses.
-    if (
-      user != null &&
-      isRuntimeDisabled((await deps.getAppConfig({ baseOnly: true }))?.interfaceConfig?.schedules)
-    ) {
-      return { ...DEFAULT_SCHEDULE_LIMITS, enabled: false };
-    }
-    // NO principal means the DEPLOYMENT's config, so it must be read base-only. A bare
-    // getAppConfig() still resolves principals and picks up the tenant from the ALS
-    // context, and both callers of this form run inside one: fireSchedule clamps the
-    // global capacity allocator from within runInTenantContext(owner), and the engine
-    // tick budgets from within runAsSystem. Either would otherwise resolve a TENANT
-    // override as if it were the deployment-wide value, which is exactly what the
-    // global cap exists to prevent an override from widening.
-    const appConfig = user
-      ? await deps.getAppConfig(getAppConfigOptionsFromUser(user))
-      : await deps.getAppConfig({ baseOnly: true });
-    // The env kill switch is a GLOBAL stop and must be visible everywhere limits are
-    // consulted (write handlers, fire path), not only at the engine tick.
-    if (isEnabled(process.env.SCHEDULES_DISABLED)) {
-      return { ...DEFAULT_SCHEDULE_LIMITS, enabled: false };
-    }
-    const config = appConfig?.interfaceConfig?.schedules;
-    // EXPERIMENTAL, default-OFF (v1): scheduled chats are disabled unless an admin
-    // explicitly enables them. Absence, null, or `false` all resolve to disabled, so a
-    // deployment that never opts in never runs the scheduler. `true` uses the defaults;
-    // an object opts in unless it sets `use: false`.
-    if (config == null || config === false) {
-      return { ...DEFAULT_SCHEDULE_LIMITS, enabled: false };
-    }
-    if (config === true) {
-      return DEFAULT_SCHEDULE_LIMITS;
-    }
-    // A pinned project is itself a requirement: leaving `requireProject` to be set
-    // separately would let `projectId` alone resolve to "optional destination that
-    // happens to be forced", and a schedule created before the pin would keep firing
-    // with no project at all rather than being stopped for review.
-    const projectId = config.projectId?.trim() || undefined;
-    return {
-      enabled: config.use !== false,
-      maxPerUser: config.maxPerUser ?? DEFAULT_SCHEDULE_LIMITS.maxPerUser,
-      minIntervalMinutes: config.minIntervalMinutes ?? DEFAULT_SCHEDULE_LIMITS.minIntervalMinutes,
-      autoDisableAfterFailures:
-        config.autoDisableAfterFailures ?? DEFAULT_SCHEDULE_LIMITS.autoDisableAfterFailures,
-      fireConcurrency: config.fireConcurrency ?? DEFAULT_SCHEDULE_LIMITS.fireConcurrency,
-      requireProject: config.requireProject === true || projectId != null,
-      ...(projectId != null && { projectId }),
-    };
-  }
-
+  const getLimits = createScheduleLimitsResolver(deps.getAppConfig);
   const MANUAL_RUN_LEASE_MS = 5 * 60 * 1000;
   // Bounded wait for aborted scheduled runs to settle during account-deletion quiesce,
   // before the message/conversation cascade runs. Long enough to cover a generation that
@@ -397,30 +674,13 @@ export function createSchedulesService(
    * mirroring the chat balance check's auto-refill eligibility (record-based).
    */
   function isRefillEligible(record: IBalance | null | undefined): boolean {
-    if (record?.autoRefillEnabled !== true) {
-      return false;
-    }
-    if (!(typeof record.refillAmount === 'number' && record.refillAmount > 0)) {
-      return false;
-    }
-    const lastRefillDate = new Date(record.lastRefill ?? 0);
-    if (Number.isNaN(lastRefillDate.getTime())) {
-      return true;
-    }
-    // Mirror checkBalanceRecord's fallbacks exactly (interval 0 / 'days' when a
-    // partially-synced record is missing them) so we never pre-skip a record the
-    // interactive chat balance check would have refilled.
-    return (
-      new Date() >=
-      getRefillEligibilityDate(
-        lastRefillDate,
-        record.refillIntervalValue ?? 0,
-        record.refillIntervalUnit ?? 'days',
-      )
-    );
+    return record != null && isBalanceRefillDue(record, new Date());
   }
 
   const engineDeps: ScheduleEngineDeps = {
+    reconcileRetainedJobs,
+    eraseSettledSchedule,
+    preflightMCP: deps.preflightMCP,
     methods,
     getLimits,
     // On the BASE deps, not only the engine's per-pass wrapper: fireScheduleNow
@@ -432,7 +692,12 @@ export function createSchedulesService(
       if (user == null) {
         return null;
       }
-      return { id: user._id.toString(), tenantId: user.tenantId, role: user.role };
+      return {
+        id: user._id.toString(),
+        tenantId: user.tenantId,
+        role: user.role,
+        termsAccepted: user.termsAccepted,
+      };
     },
     hasScheduleAccess: async (user) => {
       const role = await methods.getRoleByName(user.role);
@@ -444,7 +709,11 @@ export function createSchedulesService(
       if (balanceConfig?.enabled !== true) {
         return false;
       }
-      let record = await deps.findBalance(user.id);
+      let record = await deps.findBalance(user.id, { applyReset: false });
+      // Credits in-flight requests hold are unavailable to this fire as well: the chat
+      // balance check admits against the unreserved amount. Taken from this read because
+      // the initialization/sync writes below return the record without the total.
+      let reservedCredits = record?.reservedCredits ?? 0;
       // Initialize/sync the record exactly as the chat's balance middleware would,
       // so a new user's startBalance is applied before we read it (avoids skipping
       // a schedule that an interactive chat would have allowed).
@@ -456,7 +725,16 @@ export function createSchedulesService(
           // record in between must never be handed back its starting balance. Each case
           // fences the credit write so it can only create, never restore, credits. The
           // refill-config fields are a genuine sync and never carry a credit.
-          const { user: initUser, tokenCredits, ...syncFields } = updateFields;
+          const {
+            user: initUser,
+            tokenCredits,
+            allotment,
+            allottedAt,
+            lastRefill,
+            ...syncFields
+          } = updateFields;
+          // The grant tuple is written only with the credit, so a racing creator keeps its period.
+          const grant = { allotment, allottedAt, lastRefill };
           if (record == null) {
             // ABSENT record: upsert. The credit rides `$setOnInsert` so a document created
             // by a concurrent charge keeps its charged balance; the refill-config sync is
@@ -465,7 +743,7 @@ export function createSchedulesService(
               set: syncFields,
               setOnInsert: {
                 ...(initUser != null ? { user: initUser } : {}),
-                ...(tokenCredits != null ? { tokenCredits } : {}),
+                ...(tokenCredits != null ? { tokenCredits, ...grant } : {}),
               },
             });
           } else if (tokenCredits != null) {
@@ -473,11 +751,13 @@ export function createSchedulesService(
             // concurrent initializer/charge already set and spent between the read and
             // here. Initialize under a `{ tokenCredits: null }` CAS; on a miss re-read the
             // winner's balance instead of overwriting it.
+            // The allotment rides the CAS so it is written only with the credit it describes.
             const initialized = await deps.initializeNullBalance(user.id, {
               tokenCredits,
-              sync: syncFields,
+              sync: { ...syncFields, ...grant },
             });
-            record = initialized ?? (await deps.findBalance(user.id)) ?? record;
+            record =
+              initialized ?? (await deps.findBalance(user.id, { applyReset: false })) ?? record;
           } else if (Object.keys(syncFields).length > 0) {
             // EXISTING record with a real credit: only refill-config sync remains, which
             // never touches `tokenCredits` and is safe to `$set` directly.
@@ -485,7 +765,15 @@ export function createSchedulesService(
           }
         }
       }
-      const credits = record?.tokenCredits ?? 0;
+      if (
+        balanceConfig.autoRefillEnabled === true &&
+        record?.refillMode === 'reset' &&
+        isBalanceRefillDue(record, new Date())
+      ) {
+        record = await deps.findBalance(user.id, { applyReset: true });
+        reservedCredits = record?.reservedCredits ?? 0;
+      }
+      const credits = (record?.tokenCredits ?? 0) - reservedCredits;
       if (credits > 0) {
         return false;
       }
@@ -541,17 +829,30 @@ export function createSchedulesService(
       if (job == null) {
         return null;
       }
+      const pending = pendingBearerFailures.get(receiptKey(conversationId, job.createdAt));
+      const retained =
+        pending?.identity &&
+        job.scheduleId === pending.identity.scheduleId &&
+        job.userId === pending.identity.ownerId &&
+        (job.tenantId ?? null) === pending.identity.tenantId
+          ? pending.outcomes.reduce(preferFailure, job.scheduleMCPFailure ?? pending.outcomes[0])
+          : job.scheduleMCPFailure;
       return {
         status: job.status,
         createdAt: job.createdAt,
+        checkpointNamespace: job.checkpointNamespace,
         scheduleId: job.scheduleId,
         scheduledFor: job.scheduledFor,
         createdEventEmitted: job.createdEventEmitted === true,
+        providerDrained: job.providerDrained,
+        terminalPersistencePending: job.terminalPersistencePending,
+        terminalHostActionPending: job.terminalHostActionPending,
         preserveForScheduleReconcile: job.preserveForScheduleReconcile === true,
         ...(job.scheduleOutcome != null && { scheduleOutcome: job.scheduleOutcome }),
         ...(job.scheduleOutcomeError != null && {
           scheduleOutcomeError: job.scheduleOutcomeError,
         }),
+        ...(retained && { scheduleMCPFailure: retained }),
       };
     },
     abortScheduledJob: async (conversationId, identity, options) => {
@@ -566,13 +867,17 @@ export function createSchedulesService(
       if (job == null || !jobMatchesIdentity(job, identity)) {
         return false;
       }
-      if (options?.preserve !== false) {
+      {
+        const retained = projectScheduleMCPReceipt(
+          { status: 'interrupted', error: 'Schedule deleted' },
+          readScheduleMCPReceipts(job.scheduleOutcomeError),
+        );
         await GenerationJobManager.updateMetadata(
           conversationId,
           {
             preserveForScheduleReconcile: true,
-            scheduleOutcome: 'interrupted',
-            scheduleOutcomeError: 'Schedule deleted',
+            scheduleOutcome: retained.status,
+            scheduleOutcomeError: retained.error,
           },
           job.createdAt,
         );
@@ -592,9 +897,36 @@ export function createSchedulesService(
       if (!isStopConfirmed(aborted)) {
         return false;
       }
-      if (options?.preserve === false) {
-        await store.deleteJob(conversationId, job.createdAt);
+      // Read again after the exact provider/pause drain; evidence may have arrived during it.
+      const current = await store.getJob(conversationId);
+      if (
+        current?.createdAt !== job.createdAt ||
+        !jobMatchesIdentity(current, identity) ||
+        current.providerDrained === false ||
+        current.terminalPersistencePending === true ||
+        current.terminalHostActionPending === true
+      )
+        return false;
+      if (
+        readScheduleMCPReceipts(current.scheduleOutcomeError).length > 0 ||
+        pendingBearerFailures.has(receiptKey(conversationId, job.createdAt))
+      ) {
+        const settled = await recordScheduleOutcome({
+          scheduleId: job.scheduleId!,
+          scheduledFor: job.scheduledFor!,
+          streamId: conversationId,
+          jobCreatedAt: job.createdAt,
+          conversationId: job.conversationId,
+          status: 'interrupted',
+          error: 'Schedule deleted while the run was active',
+        });
+        if (!settled) return false;
       }
+      if (options?.preserve === false)
+        await engineDeps.clearReconciledJob(conversationId, {
+          ...identity,
+          createdAt: job.createdAt,
+        });
       return true;
     },
     clearReconciledJob: async (conversationId, identity) => {
@@ -608,6 +940,20 @@ export function createSchedulesService(
       if (job == null || !jobMatchesIdentity(job, identity)) {
         return;
       }
+      if (
+        job.providerDrained === false ||
+        job.terminalPersistencePending === true ||
+        job.terminalHostActionPending === true ||
+        job.status === 'running' ||
+        job.status === 'requires_action'
+      )
+        return;
+      if (job.preserveForScheduleReconcile === true)
+        await GenerationJobManager.updateMetadata(
+          conversationId,
+          { preserveForScheduleReconcile: false },
+          job.createdAt,
+        );
       // CAS, not read-then-delete: the identity check above is a READ, and a replacement
       // generation can land between it and the delete. Passing the observed createdAt
       // makes the delete conditional on the job still being that exact generation, so
@@ -618,6 +964,9 @@ export function createSchedulesService(
     // count would let multiple tenants collectively exceed fireConcurrency.
     countActiveRunsGlobal: () => runAsSystem(() => methods.countActiveRuns()),
     isOwnerDeleting: (userId) => deps.isUserDeleting(userId),
+    // The HTTP gate's own check, over this service's config reader, so a fire resolves the
+    // owner's effective `modalAcceptance` exactly as their requests do.
+    isTermsBlocked: createTermsBlockCheck({ getAppConfig: deps.getAppConfig }),
     isGloballyDisabled: async () => {
       // Env first: an incident lever that must work even if the DB/config plane is the
       // thing failing (a kill switch that needs a healthy DB is the one that fails when
@@ -654,11 +1003,12 @@ export function createSchedulesService(
    * elsewhere, or a failed one-shot erase) would retain the hidden prompt forever.
    * The engine's own reconcile pass covers this when armed, so never run both.
    */
-  function startErasureFallback(): void {
+  function startErasureFallback(options: ScheduleLoopOptions = {}): void {
     if (erasureSweep != null || engine != null) {
       return;
     }
     erasureSweep = startScheduleErasureSweep({
+      idleCeilingMs: options.idleCeilingMs,
       methods,
       getJobStatus: engineDeps.getJobStatus,
       // Positive-evidence delivery convergence: a dead delivery settles its reservation
@@ -668,6 +1018,9 @@ export function createSchedulesService(
       // evidence (kept without `completedAt`, and therefore invisible to the store's
       // finished-job sweep) cannot outlive the run it belonged to.
       clearReconciledJob: engineDeps.clearReconciledJob,
+      abortScheduledJob: engineDeps.abortScheduledJob,
+      reconcileRetainedJobs,
+      eraseSettledSchedule,
       // If topology itself prevented arming, this process's missing job says
       // nothing about peer liveness. If only index creation failed, the topology
       // proof still holds and the existing owner-death backstop remains valid.
@@ -675,9 +1028,15 @@ export function createSchedulesService(
     });
   }
 
-  async function initializeScheduleEngine(): Promise<
-    ReturnType<typeof startScheduleEngine> | undefined
-  > {
+  /** A delete that leaves its row `deleting` is the fallback sweep's to converge, and the sweep may be
+   *  backed off while nothing else is pending. A no-op when the armed engine owns erasure. */
+  function leaveToErasureSweep(): void {
+    erasureSweep?.hint();
+  }
+
+  async function initializeScheduleEngine(
+    options: ScheduleLoopOptions = {},
+  ): Promise<ReturnType<typeof startScheduleEngine> | undefined> {
     if (engine != null) {
       return engine;
     }
@@ -706,7 +1065,7 @@ export function createSchedulesService(
           'SCHEDULES_SINGLE_PROCESS=true to assert this deployment runs exactly one replica. ' +
           'Schedule writes are refused (503) until then.',
       );
-      startErasureFallback();
+      startErasureFallback(options);
       return undefined;
     }
     try {
@@ -716,7 +1075,7 @@ export function createSchedulesService(
         '[schedules] index creation failed — scheduler NOT started (fires need the unique idempotency index):',
         err,
       );
-      startErasureFallback();
+      startErasureFallback(options);
       return undefined;
     }
     engine = startScheduleEngine(engineDeps);
@@ -730,15 +1089,13 @@ export function createSchedulesService(
   }
 
   /**
-   * The clustered entrypoint's ONLY schedule maintenance. Exposes the same erasure sweep
-   * the standard entrypoint falls back to, so a soft-deleted row whose delete/terminal
-   * erase-on-settle attempts missed still drains instead of retaining the owner's prompt
-   * forever. It shares startErasureFallback's idempotent startup guard, the sweep's own
-   * shutdown registration, and the topology-fenced owner-death policy — and arms nothing
-   * else, so running it in every clustered replica changes nothing about v1 scheduling.
+   * The clustered entrypoint's ONLY schedule maintenance. The fallback erases soft-deleted
+   * rows and converges terminal evidence, including permanent MCP bookkeeping interrupted
+   * between the run-row transition and card projection. It shares startErasureFallback's
+   * idempotent startup guard and topology-fenced owner-death policy, and never fires work.
    */
-  function initializeScheduleErasureSweep(): void {
-    startErasureFallback();
+  function initializeScheduleErasureSweep(options: ScheduleLoopOptions = {}): void {
+    startErasureFallback(options);
   }
 
   /**
@@ -750,6 +1107,7 @@ export function createSchedulesService(
   async function fireScheduleNow(
     schedule: FireableSchedule,
     limits: ScheduleLimits,
+    options?: { signal?: AbortSignal },
   ): Promise<FireResult | null> {
     // The global stop means STOP: a manual run dispatches the same billed generation as
     // an automatic one, so gating only the engine tick would leave Run Now wide open.
@@ -769,7 +1127,10 @@ export function createSchedulesService(
       // Fire the FRESH leased row (post-image with the new claim token), not the
       // snapshot the route read before the lease — an edit that committed in the
       // window in between is reflected, so a stale prompt/agent is never dispatched.
-      return await fireSchedule(engineDeps, leased, limits, new Date(), { manual: true });
+      return await fireSchedule(engineDeps, leased, limits, new Date(), {
+        manual: true,
+        signal: options?.signal,
+      });
     } catch (err) {
       const released =
         claimToken != null
@@ -783,6 +1144,255 @@ export function createSchedulesService(
       }
       throw err;
     }
+  }
+
+  async function recordMCPToolAuthFailure(
+    input: Parameters<SchedulesService['recordMCPToolAuthFailure']>[0],
+  ): Promise<boolean> {
+    const { error, streamId, jobCreatedAt, userId, serverName, identity } = input;
+    const cause = error instanceof Error ? error.cause : undefined;
+    const missing = error instanceof OboTokenResolutionError ? error : cause;
+    const bearer = error instanceof ScheduledMCPBearerError || error instanceof RunGrantPolicyError;
+    if (
+      (!bearer &&
+        (!(missing instanceof OboTokenResolutionError) ||
+          missing.reason !== 'missing_upstream_provider')) ||
+      !streamId ||
+      jobCreatedAt == null ||
+      !userId
+    )
+      return false;
+    const key = receiptKey(streamId, jobCreatedAt);
+    if (bearer && identity && identity.ownerId === userId) {
+      const previous = pendingBearerFailures.get(key);
+      const priority = (value: unknown): number =>
+        value instanceof ScheduledMCPBearerError || value instanceof RunGrantPolicyError
+          ? {
+              mcp_unavailable: 1,
+              mcp_reauth_required: 2,
+              mcp_configuration_missing: 3,
+              mcp_permission_denied: 4,
+            }[value.code]
+          : 0;
+      const incoming = error.outcomes;
+      const outcomes = mergeReceipts(previous?.outcomes ?? [], incoming);
+      const admitted = previous?.admitted === true && outcomes.length === previous.outcomes.length;
+      const retained = previous && priority(previous.error) > priority(error) ? previous : input;
+      pendingBearerFailures.set(key, {
+        ...retained,
+        identity: Object.freeze({ ...identity }),
+        admitted,
+        outcomes,
+      });
+    }
+    const store = GenerationJobManager.getJobStore();
+    const job = await store?.getJob(streamId);
+    if (
+      job?.createdAt !== jobCreatedAt ||
+      job.userId !== userId ||
+      !job.scheduleId ||
+      !job.scheduledFor ||
+      !job.conversationId ||
+      (error instanceof ScheduledMCPBearerError && !identity) ||
+      (identity != null &&
+        (identity.ownerId !== job.userId ||
+          identity.scheduleId !== job.scheduleId ||
+          identity.tenantId !== (job.tenantId ?? null) ||
+          ((error instanceof ScheduledMCPBearerError || job.agent_id != null) &&
+            identity.agentId !== job.agent_id)))
+    ) {
+      pendingBearerFailures.delete(key);
+      if (bearer) throw new ScheduledMCPReceiptFencedError();
+      return false;
+    }
+    if (error instanceof RunGrantPolicyError && !pendingBearerFailures.has(key)) {
+      pendingBearerFailures.set(key, {
+        ...input,
+        identity: identity ?? {
+          scheduleId: job.scheduleId,
+          ownerId: job.userId,
+          tenantId: job.tenantId ?? null,
+          agentId: job.agent_id ?? '',
+          invocationMode: 'delegated',
+        },
+        admitted: false,
+        outcomes: error.outcomes,
+      });
+    }
+    const payload = {
+      scheduleId: job.scheduleId,
+      scheduledFor: new Date(job.scheduledFor),
+      conversationId: job.conversationId,
+      ...(job.tenantId && { tenantId: job.tenantId }),
+      server: serverName,
+    };
+    if (!bearer) return methods.recordMCPToolAuthFailure(payload);
+    const pendingReceipt = pendingBearerFailures.get(key);
+    if (pendingReceipt?.admitted) return true;
+    const pendingError = pendingReceipt?.error;
+    const receiptError =
+      pendingError instanceof ScheduledMCPBearerError || pendingError instanceof RunGrantPolicyError
+        ? pendingError
+        : error;
+    const admittedOutcomes = mergeReceipts(
+      pendingReceipt?.outcomes ?? receiptError.outcomes,
+      error.outcomes,
+    );
+    const outcomes = mergeReceipts(
+      readScheduleMCPOutcomes(job.scheduleOutcomeError),
+      admittedOutcomes,
+    );
+    const encoded = encodeReceipts(outcomes);
+    const writes = await Promise.allSettled([
+      methods.recordMCPToolAuthFailure({
+        ...payload,
+        outcomes: admittedOutcomes,
+        ...(error instanceof RunGrantPolicyError && { outcome: receiptError.outcomes[0] }),
+      }),
+      GenerationJobManager.updateMetadata(
+        streamId,
+        {
+          preserveForScheduleReconcile: true,
+          scheduleOutcome: 'error',
+          scheduleOutcomeError: encoded,
+          scheduleMCPFailure: admittedOutcomes.reduce(
+            (previous, next) =>
+              scheduleMCPFailurePriority(next) > scheduleMCPFailurePriority(previous)
+                ? next
+                : previous,
+            job.scheduleMCPFailure ?? admittedOutcomes[0],
+          ),
+        },
+        jobCreatedAt,
+      ),
+    ]);
+    const latest = await store?.getJob(streamId).catch(() => null);
+    const retained =
+      latest?.createdAt === jobCreatedAt &&
+      latest.scheduleId === job.scheduleId &&
+      latest.userId === userId &&
+      latest.scheduledFor === job.scheduledFor &&
+      readScheduleMCPOutcomes(latest.scheduleOutcomeError).some(
+        (item) => outcomeKey(item) === outcomeKey(receiptError.outcomes[0]),
+      );
+    if (
+      (writes[0].status === 'fulfilled' && writes[0].value) ||
+      (store?.durableScheduleReceipts === true && writes[1].status === 'fulfilled' && retained)
+    ) {
+      const current = pendingBearerFailures.get(key);
+      if (current)
+        current.admitted =
+          mergeReceipts(admittedOutcomes, current.outcomes).length === admittedOutcomes.length;
+      return true;
+    }
+    return false;
+  }
+
+  async function getMCPReceiptRetryPolicy(
+    input: ScheduleMCPFailureInput,
+  ): Promise<ScheduleMCPReceiptRetryPolicy | undefined> {
+    if (!input.identity || input.userId !== input.identity.ownerId) return;
+    const owner = await engineDeps.getUserContext(input.identity.ownerId);
+    if (!owner || (owner.tenantId ?? null) !== input.identity.tenantId) return;
+    return engineDeps.runInTenantContext(owner, async () => {
+      const config = await deps.getAppConfig(getAppConfigOptionsFromUser(owner));
+      const schedules = config?.interfaceConfig?.schedules;
+      return typeof schedules === 'object' ? schedules.mcpReceiptRetry : undefined;
+    });
+  }
+
+  /** The job outbox survives both owner death and a crash after Mongo bookkeeping. Resolves how many
+   *  retained jobs it examined, so the fallback sweep can tell an empty outbox from a busy one. */
+  async function reconcileRetainedJobs(): Promise<number> {
+    const store = GenerationJobManager.getJobStore();
+    if (!store?.getScheduleReconcileJobs) return 0;
+    const retained = await store.getScheduleReconcileJobs(100);
+    for (const held of retained) {
+      let job = held;
+      if (job.terminalPersistencePending === true) {
+        try {
+          // The manager owns the bounded, epoch-fenced stale final-write recovery.
+          await GenerationJobManager.getCleanupJob(job.streamId);
+          const current = await store.getJob(job.streamId);
+          if (current?.createdAt !== held.createdAt) continue;
+          job = current;
+        } catch (error) {
+          logger.warn('[schedules] retained terminal recovery deferred:', error);
+          continue;
+        }
+      }
+      if (
+        job.status === 'error' &&
+        job.error === 'Scheduled generation owner became unavailable' &&
+        job.providerDrained === false &&
+        job.providerExecutionId &&
+        job.scheduleId &&
+        job.scheduledFor &&
+        deps.confirmScheduleProviderOwnerLoss &&
+        store.recoverScheduleProviderOwnerLoss
+      ) {
+        const owner: ScheduleProviderOwner = {
+          streamId: job.streamId,
+          createdAt: job.createdAt,
+          providerExecutionId: job.providerExecutionId,
+          scheduleId: job.scheduleId,
+          scheduledFor: job.scheduledFor,
+          userId: job.userId,
+          tenantId: job.tenantId ?? null,
+          lastActiveAt: job.lastActiveAt ?? job.createdAt,
+        };
+        try {
+          const observed = await waitUntilDeadline(
+            deps.confirmScheduleProviderOwnerLoss(Object.freeze(owner)),
+            Date.now() + PROVIDER_DRAIN_TIMEOUT_MS,
+          );
+          const proof = observed.settled ? observed.value : null;
+          if (
+            proof &&
+            Object.keys(owner).every(
+              (key) =>
+                owner[key as keyof ScheduleProviderOwner] ===
+                proof[key as keyof ScheduleProviderOwner],
+            ) &&
+            (await store.recoverScheduleProviderOwnerLoss(owner))
+          ) {
+            const current = await store.getJob(job.streamId);
+            if (!current || current.createdAt !== owner.createdAt) continue;
+            job = current;
+          }
+        } catch {
+          continue;
+        }
+      }
+      if (
+        !job.scheduleId ||
+        !job.scheduledFor ||
+        job.status === 'running' ||
+        job.status === 'requires_action' ||
+        job.providerDrained === false ||
+        job.terminalPersistencePending === true ||
+        job.terminalHostActionPending === true
+      )
+        continue;
+      const intended =
+        job.status === 'aborted'
+          ? { status: 'interrupted' as const, error: undefined }
+          : retainedOutcome(job, job.status === 'complete' ? 'success' : 'error');
+      try {
+        await recordScheduleOutcome({
+          scheduleId: job.scheduleId,
+          scheduledFor: job.scheduledFor,
+          streamId: job.streamId,
+          jobCreatedAt: job.createdAt,
+          conversationId: job.conversationId,
+          status: intended.status,
+          error: intended.error,
+        });
+      } catch (error) {
+        logger.warn('[schedules] retained outcome recovery deferred:', error);
+      }
+    }
+    return retained.length;
   }
 
   const OUTCOME_RETRY_ATTEMPTS = 3;
@@ -803,10 +1413,19 @@ export function createSchedulesService(
    * marker, a non-stop source, or a stamp gone stale (its route presumed dead) proceeds
    * immediately, so the stale-owner timeout remains the bounded recovery path.
    */
-  async function waitForStopPersistence(scheduleId: string, scheduledFor: Date): Promise<boolean> {
+  async function waitForStopPersistence(
+    scheduleId: string,
+    scheduledFor: Date,
+    initialState?: Awaited<ReturnType<ScheduleMethods['getScheduleRunAbortState']>>,
+  ): Promise<ScheduleMCPOutcome[] | null> {
+    let observed = initialState;
     const deadline = Date.now() + STOP_BARRIER_TIMEOUT_MS;
     for (;;) {
-      const state = await methods.getScheduleRunAbortState(scheduleId, scheduledFor);
+      const state =
+        observed !== undefined
+          ? observed
+          : await methods.getScheduleRunAbortState(scheduleId, scheduledFor);
+      observed = undefined;
       if (
         state == null ||
         state.abortSource !== 'stop' ||
@@ -815,7 +1434,7 @@ export function createSchedulesService(
       ) {
         // Cleared to settle: no Stop owns the run, it acknowledged, or its owner is past
         // the stale cutoff and is presumed dead (the bounded recovery path).
-        return true;
+        return state?.mcp?.filter(isScheduleMCPAuthorizationFailure) ?? [];
       }
       if (Date.now() >= deadline) {
         // Still an UNACKNOWLEDGED, FRESH Stop. The poll budget expiring proves nothing about
@@ -824,7 +1443,7 @@ export function createSchedulesService(
         // its deletion/erasure barriers) while beforePublish may still be writing. DEFER
         // instead: the acknowledgement settles it, or the stale-owner cutoff authorizes a
         // later attempt.
-        return false;
+        return null;
       }
       await new Promise((resolve) => setTimeout(resolve, STOP_BARRIER_POLL_MS));
     }
@@ -837,44 +1456,167 @@ export function createSchedulesService(
     jobCreatedAt,
     status,
     conversationId,
+    checkpointNamespace,
     clearConversationId,
     error,
   }: RecordScheduleOutcomeInput): Promise<boolean> {
     if (!scheduleId || !scheduledFor) {
       return true;
     }
-    const terminal = status !== 'requires_action';
-    if (terminal) {
+    const boundaryKey =
+      streamId && jobCreatedAt != null ? receiptKey(streamId, jobCreatedAt) : undefined;
+    const boundary = boundaryKey && mcpBoundaries.get(boundaryKey);
+    if (boundary && boundary.scheduleId === scheduleId) {
+      try {
+        boundary.flight ??= boundary.quiesce();
+        await boundary.flight;
+        if (mcpBoundaries.get(boundaryKey!) === boundary) mcpBoundaries.delete(boundaryKey!);
+      } catch {
+        return false;
+      }
+    }
+    let terminal = status !== 'requires_action';
+    let mcp: ScheduleMCPOutcome[] = [];
+    const receipt =
+      streamId && jobCreatedAt != null ? receiptKey(streamId, jobCreatedAt) : undefined;
+    const pending = receipt && pendingBearerFailures.get(receipt);
+    let retiredPolicyGeneration = false;
+    if (pending && pending.identity?.scheduleId === scheduleId) {
+      if (!pending.admitted) {
+        try {
+          const current = await GenerationJobManager.getJobStore()?.getJob(streamId!);
+          retiredPolicyGeneration =
+            pending.error instanceof RunGrantPolicyError &&
+            terminal &&
+            current != null &&
+            current.createdAt > jobCreatedAt! &&
+            current.userId === pending.identity.ownerId &&
+            (current.tenantId ?? null) === pending.identity.tenantId;
+          if (retiredPolicyGeneration) {
+            // A trusted denial may outlive its worker epoch; persist it only to the
+            // old occurrence, never to the successor's generation metadata.
+            if (
+              !(await methods.recordMCPToolAuthFailure({
+                scheduleId,
+                scheduledFor: new Date(scheduledFor),
+                conversationId: streamId!,
+                ...(pending.identity.tenantId && { tenantId: pending.identity.tenantId }),
+                server: pending.serverName,
+                outcomes: pending.outcomes,
+              }))
+            )
+              return false;
+            pending.admitted = true;
+          } else if (!(await recordMCPToolAuthFailure(pending))) return false;
+        } catch {
+          return false;
+        }
+      }
+      const acknowledged = receipt ? pendingBearerFailures.get(receipt) : undefined;
+      if (!acknowledged?.admitted) return false;
+      mcp = mergeReceipts(mcp, acknowledged.outcomes);
+    }
+    if (streamId && jobCreatedAt != null) {
+      try {
+        const job = await GenerationJobManager.getJobStore()?.getJob(streamId);
+        if (
+          job?.createdAt === jobCreatedAt &&
+          job.scheduleId === scheduleId &&
+          new Date(job.scheduledFor ?? '').getTime() === new Date(scheduledFor).getTime()
+        ) {
+          mcp = mergeReceipts(
+            mcp,
+            readScheduleMCPReceipts(job.scheduleOutcomeError),
+            job.scheduleMCPFailure ? [job.scheduleMCPFailure] : [],
+          );
+        }
+      } catch {
+        return false;
+      }
+    }
+
+    let pauseState: Awaited<ReturnType<ScheduleMethods['getScheduleRunAbortState']>> | undefined;
+    if (!terminal && !pending && mcp.length === 0) {
+      try {
+        // A peer can own the only denial. Ordinary pauses still do not wait on Stop.
+        pauseState = await methods.getScheduleRunAbortState(scheduleId, new Date(scheduledFor));
+        mcp = mergeReceipts(
+          mcp,
+          pauseState?.mcp?.filter((item) => isScheduleMCPAuthorizationFailure(item)) ?? [],
+        );
+      } catch {
+        return false;
+      }
+    }
+    if (terminal || pending || mcp.length > 0) {
       // Honor an in-flight interactive Stop's persistence before terminalizing. A deferral
       // is NOT a failure to record — the run is deliberately left active/preserved — but it
       // must report "not settled" so callers with durable retry (the approval-expiry host
       // action, reconciliation) re-drive it rather than assuming the outcome landed.
-      if (!(await waitForStopPersistence(scheduleId, new Date(scheduledFor)))) {
+      const observed = await waitForStopPersistence(scheduleId, new Date(scheduledFor), pauseState);
+      if (observed == null) {
         logger.info(
           `[schedules] deferring terminal settlement for ${scheduleId}: interactive Stop persistence is still unacknowledged`,
         );
         return false;
       }
+      mcp = mergeReceipts(mcp, observed);
     }
-    if (terminal && streamId && jobCreatedAt != null) {
+    const retained = mcp.length > 0 ? mcp.reduce(preferFailure, mcp[0]) : undefined;
+    const missingAuth = mcp.length > 0;
+    if (missingAuth) terminal = true;
+    const effectiveStatus = missingAuth ? 'error' : status;
+    let effectiveError = error;
+    if (missingAuth)
+      effectiveError = mcp.some((item) => item.reason)
+        ? encodeReceipts(mcp)
+        : 'MCP unattended authorization unavailable';
+    if (terminal && streamId && jobCreatedAt != null && !retiredPolicyGeneration) {
       try {
         await GenerationJobManager.updateMetadata(
           streamId,
           {
             preserveForScheduleReconcile: true,
+            ...(retained && { scheduleMCPFailure: retained }),
             scheduleOutcome:
-              status === 'success' ||
-              status === 'error' ||
-              status === 'interrupted' ||
-              status === 'skipped_balance'
-                ? status
+              effectiveStatus === 'success' ||
+              effectiveStatus === 'error' ||
+              effectiveStatus === 'interrupted' ||
+              effectiveStatus === 'skipped_balance'
+                ? effectiveStatus
                 : 'error',
-            ...(error ? { scheduleOutcomeError: error } : {}),
+            ...(effectiveError ? { scheduleOutcomeError: effectiveError } : {}),
           },
           jobCreatedAt,
         );
       } catch (err) {
         logger.error('[schedules] failed to retain terminal outcome evidence:', err);
+        return false;
+      }
+    }
+    if (missingAuth && status === 'requires_action' && (!streamId || jobCreatedAt == null))
+      return false;
+    if (missingAuth && streamId && jobCreatedAt != null && !retiredPolicyGeneration) {
+      try {
+        const live = await GenerationJobManager.getJobStore()?.getJob(streamId);
+        if (
+          live?.createdAt !== jobCreatedAt ||
+          live.scheduleId !== scheduleId ||
+          new Date(live.scheduledFor ?? '').getTime() !== new Date(scheduledFor).getTime() ||
+          live.providerDrained === false ||
+          live.terminalPersistencePending === true
+        )
+          return false;
+        if (live.status === 'requires_action') {
+          // The abort owner parks accepted steers and re-enters settlement only after drain.
+          return await engineDeps.abortScheduledJob(
+            streamId,
+            { scheduleId, scheduledFor, createdAt: jobCreatedAt },
+            { preserve: true },
+          );
+        }
+      } catch (error) {
+        logger.warn('[schedules] denied generation drain deferred:', error);
         return false;
       }
     }
@@ -888,32 +1630,44 @@ export function createSchedulesService(
         await methods.recordRunOutcome({
           scheduleId,
           scheduledFor: new Date(scheduledFor),
-          status,
+          status: effectiveStatus,
           clearConversationId,
           conversationId,
-          error,
+          ...(status === 'requires_action' && checkpointNamespace != null
+            ? { checkpointNamespace }
+            : {}),
+          error: effectiveError,
+          ...(mcp.length > 0 ? { mcp } : {}),
           autoDisableAfterFailures: limits.autoDisableAfterFailures,
           balanceSkipDisableThreshold: BALANCE_SKIP_DISABLE_THRESHOLD,
         });
-        // ERASE-ON-SETTLE: whichever process records a run's terminal outcome also
-        // attempts the deferred erase of a deleting schedule. This is what makes a
-        // delete's `draining` state converge in EVERY topology — the clustered
-        // entrypoint runs no reconciler, so without this the hidden schedule (and its
-        // prompt, which has no TTL) survived its last run indefinitely there. A cheap
-        // guarded no-op for live schedules (the erase filters on `deleting: true`).
-        if (status !== 'requires_action') {
-          await methods.eraseScheduleIfDrained(scheduleId).catch((err) => {
-            logger.warn(`[schedules] erase-on-settle failed for ${scheduleId}:`, err);
-          });
-        }
-        if (terminal && streamId && jobCreatedAt != null) {
-          await GenerationJobManager.updateMetadata(
-            streamId,
-            { preserveForScheduleReconcile: false },
-            jobCreatedAt,
-          ).catch((err) => {
-            logger.warn('[schedules] failed to release terminal outcome evidence:', err);
-          });
+        if (terminal && streamId && jobCreatedAt != null && !retiredPolicyGeneration) {
+          try {
+            const current = await GenerationJobManager.getJobStore()?.getJob(streamId);
+            if (
+              current?.createdAt === jobCreatedAt &&
+              (current.providerDrained === false ||
+                current.terminalPersistencePending === true ||
+                current.terminalHostActionPending === true)
+            ) {
+              // Its host callback may settle Mongo while independently retained cleanup stays pending.
+              return true;
+            }
+            const latest = receipt && pendingBearerFailures.get(receipt);
+            if (
+              latest &&
+              (!latest.admitted || mergeReceipts(mcp, latest.outcomes).length !== mcp.length)
+            )
+              return false;
+            await GenerationJobManager.updateMetadata(
+              streamId,
+              { preserveForScheduleReconcile: false },
+              jobCreatedAt,
+            );
+          } catch (error) {
+            logger.warn('[schedules] failed to release terminal outcome evidence:', error);
+            return false;
+          }
 
           // A paused occurrence can be aborted while its provider is already drained.
           // In that case the manager's normal drain-time cleanup has already passed;
@@ -924,6 +1678,7 @@ export function createSchedulesService(
             job?.createdAt === jobCreatedAt &&
             job.providerDrained !== false &&
             job.terminalPersistencePending !== true &&
+            job.terminalHostActionPending !== true &&
             job.status !== 'running' &&
             job.status !== 'requires_action' &&
             job.preserveForScheduleReconcile !== true
@@ -932,6 +1687,18 @@ export function createSchedulesService(
               logger.warn('[schedules] failed to clear settled generation evidence:', err);
             });
           }
+        }
+        if (terminal && receipt) pendingBearerFailures.delete(receipt);
+        // ERASE-ON-SETTLE: whichever process records a run's terminal outcome also
+        // attempts the deferred erase of a deleting schedule. This is what makes a
+        // delete's `draining` state converge in EVERY topology — the clustered
+        // entrypoint runs no reconciler, so without this the hidden schedule (and its
+        // prompt, which has no TTL) survived its last run indefinitely there. A cheap
+        // guarded no-op for live schedules (the erase filters on `deleting: true`).
+        if (terminal) {
+          await eraseSettledSchedule(scheduleId).catch((err) => {
+            logger.warn(`[schedules] erase-on-settle failed for ${scheduleId}:`, err);
+          });
         }
         return true;
       } catch (err) {
@@ -1247,10 +2014,12 @@ export function createSchedulesService(
         return false;
       }
     }
+    const before = await engineDeps.getJobStatus(run.conversationId).catch(() => null);
+    const generation = before && jobMatchesIdentity(before, run) ? before.createdAt : undefined;
     const stopped = await engineDeps
       .abortScheduledJob(
         run.conversationId,
-        { scheduleId: run.scheduleId, scheduledFor: run.scheduledFor },
+        { scheduleId: run.scheduleId, scheduledFor: run.scheduledFor, createdAt: generation },
         { preserve },
       )
       .catch((err) => {
@@ -1268,6 +2037,8 @@ export function createSchedulesService(
       scheduleId: run.scheduleId,
       scheduledFor: run.scheduledFor,
       status: 'interrupted',
+      streamId: run.conversationId,
+      jobCreatedAt: generation,
       conversationId: run.conversationId,
       error: 'Schedule deleted while the run was active',
     });
@@ -1296,6 +2067,30 @@ export function createSchedulesService(
       deps.getAppConfig(getAppConfigOptionsFromUser(owner)),
     );
     return appConfig?.endpoints?.agents?.checkpointer;
+  }
+
+  function deletionSettlementBlocked(job: JobState | null | undefined): boolean {
+    return (
+      job != null &&
+      (job.status === 'running' ||
+        job.providerDrained === false ||
+        job.terminalPersistencePending === true ||
+        job.terminalHostActionPending === true)
+    );
+  }
+
+  async function cleanupStillPending(
+    runs: Array<{ scheduleId: string; scheduledFor: Date; conversationId?: string }>,
+  ): Promise<boolean> {
+    for (const run of runs) {
+      try {
+        const job = run.conversationId ? await engineDeps.getJobStatus(run.conversationId) : null;
+        if (job && jobMatchesIdentity(job, run) && deletionSettlementBlocked(job)) return true;
+      } catch {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -1331,7 +2126,17 @@ export function createSchedulesService(
           return undefined;
         })
       : undefined;
+    const stores = hasPausedRun
+      ? await checkpointStorageConfigs(userId, schedule.tenantId, checkpointer).catch((err) => {
+          logger.warn(
+            `[schedules] checkpoint storage lookup failed for delete ${scheduleId}:`,
+            err,
+          );
+          return [checkpointer];
+        })
+      : [];
     let unconfirmed = 0;
+    const cleanupPending: typeof active = [];
     for (const run of active) {
       // UNKNOWN is not ABSENT — the same distinction the quiesce path draws. A lookup
       // that succeeded and returned null is positive evidence no generation holds this
@@ -1351,10 +2156,29 @@ export function createSchedulesService(
       // Capture the paused run's checkpoint ids BEFORE any terminal transition below:
       // the prune afterwards is scoped to exactly this set, so checkpoints a
       // replacement turn writes after this point can never be swept up by it.
-      const checkpointGeneration =
-        run.status === 'requires_action' && run.conversationId
-          ? await captureAgentCheckpointGeneration(run.conversationId, checkpointer)
+      const checkpointNamespace =
+        isThisGeneration || live.job == null
+          ? (live.job?.checkpointNamespace ?? run.checkpointNamespace)
           : undefined;
+      const captured: Array<{
+        storage: TCheckpointerConfig | undefined;
+        generation: AgentCheckpointGeneration;
+      }> = [];
+      if (
+        run.status === 'requires_action' &&
+        run.conversationId &&
+        live.known &&
+        (live.job == null || isThisGeneration)
+      ) {
+        for (const storage of stores) {
+          const generation = await captureAgentCheckpointGeneration(
+            run.conversationId,
+            storage,
+            checkpointNamespace == null ? {} : { checkpointNamespace },
+          );
+          if (generation != null) captured.push({ storage, generation });
+        }
+      }
       // Same abort-in-flight deferral as quiesce: post-abort job state (status `aborted`,
       // or absence once the abort deleted the job) appears before the owner has persisted
       // and settled, so it is not evidence that the generation is done.
@@ -1375,7 +2199,7 @@ export function createSchedulesService(
         live.known &&
         !hasAbortInFlight(run, Date.now()) &&
         !pauseHandoffInFlight &&
-        !(isThisGeneration && live.job?.status === 'running');
+        !(isThisGeneration && deletionSettlementBlocked(live.job));
       if (settleable) {
         // Positive evidence nothing is generating: settle the row HERE so the erase
         // below can proceed without any reconciler — the clustered entrypoint has
@@ -1390,9 +2214,15 @@ export function createSchedulesService(
           .recordRunOutcome({
             scheduleId: run.scheduleId,
             scheduledFor: run.scheduledFor,
-            status: settledStatus,
+            ...projectScheduleMCPReceipt(
+              {
+                status: settledStatus,
+                mcp: run.mcp,
+                error: settledStatus === 'interrupted' ? 'Schedule deleted' : undefined,
+              },
+              isThisGeneration ? readScheduleMCPReceipts(live.job?.scheduleOutcomeError) : [],
+            ),
             conversationId: run.conversationId,
-            ...(settledStatus === 'interrupted' ? { error: 'Schedule deleted' } : {}),
             autoDisableAfterFailures: DEFAULT_SCHEDULE_LIMITS.autoDisableAfterFailures,
           })
           .then(
@@ -1407,10 +2237,11 @@ export function createSchedulesService(
           // signalled, so the stamp is NOT renewed — re-arming the owner-death fence
           // on every delete retry would keep a dead owner's row from ever aging into
           // the reconciler's recovery.
-          await abortActiveRun(run, false, {
+          const cleaned = await abortActiveRun(run, false, {
             stampRenewal: false,
             settleAfterAbort: false,
           });
+          if (!cleaned && isThisGeneration) cleanupPending.push(run);
         } else {
           unconfirmed += 1;
         }
@@ -1437,8 +2268,7 @@ export function createSchedulesService(
       if (
         run.status === 'requires_action' &&
         run.conversationId &&
-        checkpointGeneration != null &&
-        checkpointGeneration.checkpointIds.length > 0
+        captured.some(({ generation }) => generation.checkpointIds.length > 0)
       ) {
         const fresh = await engineDeps.getJobStatus(run.conversationId).then(
           (job) => ({ known: true, job }),
@@ -1452,9 +2282,11 @@ export function createSchedulesService(
           });
         const ownsConversation = fresh.known && (fresh.job == null || freshIsThisGeneration);
         if (ownsConversation) {
-          await deleteAgentCheckpoint(run.conversationId, checkpointer, checkpointGeneration).catch(
-            () => undefined,
-          );
+          for (const { storage, generation } of captured) {
+            await deleteAgentCheckpoint(run.conversationId, storage, generation).catch(
+              () => undefined,
+            );
+          }
         }
       }
     }
@@ -1474,10 +2306,15 @@ export function createSchedulesService(
         }
       }
       if (remaining > 0) {
+        leaveToErasureSweep();
         return 'unconfirmed';
       }
     }
-    const erased = await methods.eraseScheduleIfDrained(scheduleId).catch((err) => {
+    if (await cleanupStillPending(cleanupPending)) {
+      leaveToErasureSweep();
+      return 'unconfirmed';
+    }
+    const erased = await eraseSettledSchedule(scheduleId).catch((err) => {
       logger.warn(`[schedules] erase failed for ${scheduleId}:`, err);
       return false;
     });
@@ -1487,6 +2324,7 @@ export function createSchedulesService(
     // eraseScheduleIfDrained already returns true when the row was concurrently
     // erased or is absent. A false result therefore means the deleting row is still
     // protected by a live lease/run, or the erase could not be confirmed.
+    leaveToErasureSweep();
     return 'draining';
   }
 
@@ -1502,6 +2340,7 @@ export function createSchedulesService(
     await methods.suspendUserSchedulesForDeletion(userId, token);
     const active = await methods.getActiveRunsForUser(userId);
     const unconfirmed: string[] = [];
+    const cleanupPending: typeof active = [];
     for (const run of active) {
       // Current resumes promote the row back to `started` with a capacity slot, but a
       // rolling deploy or crash-era row may still be `requires_action` while its job is
@@ -1546,7 +2385,7 @@ export function createSchedulesService(
         live.known &&
         !abortInFlight &&
         !pauseHandoffInFlight &&
-        !(isThisGeneration && live.job?.status === 'running');
+        !(isThisGeneration && deletionSettlementBlocked(live.job));
       // Aborts here never preserve for reconcile: account deletion hard-deletes these
       // run rows, so no reconcile pass would ever finalize or clear a retained job.
       const retainedOutcome = isThisGeneration
@@ -1575,9 +2414,11 @@ export function createSchedulesService(
           .recordRunOutcome({
             scheduleId: run.scheduleId,
             scheduledFor: run.scheduledFor,
-            status: settledStatus,
+            ...projectScheduleMCPReceipt(
+              { status: settledStatus, mcp: run.mcp, error: settledError },
+              isThisGeneration ? readScheduleMCPReceipts(live.job?.scheduleOutcomeError) : [],
+            ),
             conversationId: run.conversationId,
-            ...(settledError ? { error: settledError } : {}),
             autoDisableAfterFailures: DEFAULT_SCHEDULE_LIMITS.autoDisableAfterFailures,
           })
           .then(() => true)
@@ -1591,10 +2432,11 @@ export function createSchedulesService(
         // or every quiesce retry would re-arm the owner-death fence and a dead owner's
         // row could never age into recovery.
         if (settled) {
-          await abortActiveRun(run, false, {
+          const cleaned = await abortActiveRun(run, false, {
             stampRenewal: false,
             settleAfterAbort: false,
           });
+          if (!cleaned && isThisGeneration) cleanupPending.push(run);
         }
         continue;
       }
@@ -1624,7 +2466,10 @@ export function createSchedulesService(
     // finishes and records a terminal outcome during the drain poll. The run is genuinely
     // settled at that point, so keeping its id in `unconfirmed` would defer account
     // deletion forever. The DRAIN is the authority; delivery is only a hint.
-    const confirmed = remaining === 0;
+    const confirmed =
+      remaining === 0 &&
+      !(await cleanupStillPending(cleanupPending)) &&
+      !(await hasScheduleCleanupObligation({ userId }));
     if (confirmed && unconfirmed.length > 0) {
       logger.info(
         `[schedules] ${unconfirmed.length} abort(s) were not confirmed delivered but their ` +
@@ -1633,7 +2478,7 @@ export function createSchedulesService(
     }
     if (!confirmed) {
       logger.warn(
-        `[schedules] account-deletion quiesce did not confirm ${Math.max(remaining, unconfirmed.length)} ` +
+        `[schedules] account-deletion quiesce did not confirm ${Math.max(remaining, unconfirmed.length, cleanupPending.length)} ` +
           `in-flight scheduled run(s) settled${unconfirmed.length ? ` [${unconfirmed.join(', ')}]` : ''} ` +
           '— a peer worker generation may still persist data. Guaranteed quiescing requires a ' +
           'shared stream store (USE_REDIS_STREAMS).',
@@ -1657,6 +2502,9 @@ export function createSchedulesService(
     engineDeps,
     fireScheduleNow,
     recordScheduleOutcome,
+    recordMCPToolAuthFailure,
+    getMCPReceiptRetryPolicy,
+    registerMCPSettlement,
     beginScheduledStop,
     acknowledgeScheduledStopPersistence,
     claimScheduleResume,
@@ -1669,5 +2517,6 @@ export function createSchedulesService(
     restoreUserSchedulesFromDeletion,
     initializeScheduleEngine,
     initializeScheduleErasureSweep,
+    reconcileRetainedJobs,
   };
 }

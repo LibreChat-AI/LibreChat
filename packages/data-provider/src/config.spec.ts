@@ -1,14 +1,110 @@
 import type { TEndpointsConfig } from './types';
+
 import {
   allowedAddressesSchema,
+  agentsEndpointSchema,
+  BASE_ONLY_CONFIG_PATHS,
+  BASE_ONLY_CONFIG_SECTIONS,
+  DEPLOYMENT_ONLY_CONFIG_PATHS,
+  getAllowedAddressEntryIssue,
+  DEFAULT_RETAINED_ANSWER_TOKENS,
+  DEFAULT_HISTORY_CACHE_MAX_BYTES,
+  DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
   bedrockModels,
   configSchema,
+  telemetrySchema,
+  chatProjectsConfigSchema,
+  DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
+  codeEnvironmentUserConfigSchema,
+  interfaceSchema,
+  supportsConversationTitleOwnership,
+  CODE_ENVIRONMENT_ADMISSION_MAX_MS,
   excludedKeys,
+  MAX_IDLE_POLLING_INTERVAL_MS,
+  DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
+  DEFAULT_MCP_APP_PERSISTED_BYTES,
+  DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
+  DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
+  MAX_MCP_APP_ACTIVE_VIEWS,
+  MAX_MCP_APP_ACTION_PREVIEW_CHARS,
+  DEFAULT_MCP_APP_OPERATION_LIMITS,
+  MAX_MCP_APP_PERSISTED_BYTES,
+  resolveMCPAppRateLimits,
+  resolveMCPAppsPolicy,
+  endpointSchema,
+  isTwoFactorPolicyProvider,
   resolveEndpointType,
   webSearchSchema,
+  isSafeLinkUrl,
 } from './config';
+
+describe('local configuration cache limits', () => {
+  it('defaults an explicit block and keeps the policy deployment-only', () => {
+    expect(configSchema.parse({ version: '1.3.18' }).configCache).toBeUndefined();
+    expect(configSchema.parse({ version: '1.3.18', configCache: {} }).configCache).toEqual({
+      maxBytes: 16 * 1024 * 1024,
+      maxEntries: 1000,
+    });
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS.configCache).toBe('operator');
+  });
+
+  it.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1, '100'])(
+    'rejects invalid bounds %p',
+    (value) => {
+      for (const field of ['maxBytes', 'maxEntries']) {
+        expect(
+          configSchema.safeParse({ version: '1.3.18', configCache: { [field]: value } }).success,
+        ).toBe(false);
+      }
+    },
+  );
+
+  it('accepts explicit positive bounds and rejects unknown settings', () => {
+    expect(
+      configSchema.parse({ version: '1.3.18', configCache: { maxBytes: 4096, maxEntries: 2 } })
+        .configCache,
+    ).toEqual({ maxBytes: 4096, maxEntries: 2 });
+    expect(configSchema.safeParse({ version: '1.3.18', configCache: { maxSize: 1 } }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('independent browser replay opt-in', () => {
+  it('preserves absent configuration for existing environment-based RUM deployments', () => {
+    expect(configSchema.parse({ version: '1.3.17' }).telemetry).toBeUndefined();
+    expect(telemetrySchema.parse({ rum: { enabled: true } })).toEqual({ rum: { enabled: true } });
+  });
+
+  it('defaults an explicitly configured replay block to off', () => {
+    expect(telemetrySchema.parse({ rum: { enabled: true, sessionReplay: {} } })).toEqual({
+      rum: { enabled: true, sessionReplay: { enabled: false } },
+    });
+  });
+
+  it.each([
+    { rum: { sessionReplay: { enabled: 'true' } } },
+    { rum: { sessionReplay: { enable: false } } },
+    { rum: { enable: true } },
+  ])('rejects invalid or misspelled policy %p', (telemetry) => {
+    expect(telemetrySchema.safeParse(telemetry).success).toBe(false);
+  });
+});
+
+describe('telemetry.stackTraceLimit', () => {
+  it('stays absent unless configured, so the process default applies', () => {
+    expect(telemetrySchema.parse({})).toEqual({});
+    expect(telemetrySchema.parse({ stackTraceLimit: 50 })).toEqual({ stackTraceLimit: 50 });
+  });
+
+  it.each([0, -1, 2.5, 1001, '50'])('rejects %p', (stackTraceLimit) => {
+    expect(telemetrySchema.safeParse({ stackTraceLimit }).success).toBe(false);
+  });
+});
 import { EModelEndpoint, isDocumentSupportedProvider } from './schemas';
 import { getEndpointFileConfig, mergeFileConfig } from './file-config';
+import { DEFAULT_MCP_APP_CSP_LIMITS } from './mcp/csp';
+import { modelSpecSubagentsSchema } from './models';
 
 const endpointsConfig: TEndpointsConfig = {
   [EModelEndpoint.openAI]: { userProvide: false, order: 0 },
@@ -20,8 +116,555 @@ const endpointsConfig: TEndpointsConfig = {
   Gemini: { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
 };
 
+describe('host-side file edit limits', () => {
+  it('keeps configuration optional and resolves safe defaults when configured', () => {
+    expect(agentsEndpointSchema.parse({}).hostFileEdits).toBeUndefined();
+    expect(agentsEndpointSchema.parse({ hostFileEdits: {} }).hostFileEdits).toEqual({
+      maxEdits: 100,
+      maxWorkBytes: 67108864,
+      maxOccurrences: 100000,
+      timeoutMs: 2000,
+      maxConcurrent: 2,
+    });
+  });
+  it.each([
+    { maxEdits: 101 },
+    { maxEdits: 0 },
+    { maxWorkBytes: 0 },
+    { maxOccurrences: 1000001 },
+    { timeoutMs: 0 },
+    { timeoutMs: 10001 },
+    { maxConcurrent: 9 },
+    { maxConcurrent: 1.5 },
+    { ignored: true },
+  ])('rejects unsafe limits %p', (hostFileEdits) => {
+    expect(agentsEndpointSchema.safeParse({ hostFileEdits }).success).toBe(false);
+  });
+});
+
+describe('skill deletion worker config', () => {
+  it('defaults and accepts deployment-specific sweep timing', () => {
+    expect(configSchema.parse({ version: '1.0' }).skillDeletion).toEqual({
+      finalizationEnabled: false,
+      sweepIntervalMs: 60_000,
+      claimLeaseMs: 120_000,
+      batchSize: 100,
+      recheckIntervalMs: 3_600_000,
+    });
+    expect(
+      configSchema.parse({ version: '1.0', skillDeletion: { claimLeaseMs: 180_000 } })
+        .skillDeletion,
+    ).toEqual({
+      finalizationEnabled: false,
+      sweepIntervalMs: 60_000,
+      claimLeaseMs: 180_000,
+      batchSize: 100,
+      recheckIntervalMs: 3_600_000,
+    });
+    expect(
+      configSchema.parse({ version: '1.0', skillDeletion: { finalizationEnabled: true } })
+        .skillDeletion.finalizationEnabled,
+    ).toBe(true);
+  });
+
+  it('rejects invalid sweep timing', () => {
+    expect(
+      configSchema.safeParse({ version: '1.0', skillDeletion: { sweepIntervalMs: 999 } }).success,
+    ).toBe(false);
+    expect(
+      configSchema.safeParse({ version: '1.0', skillDeletion: { recheckIntervalMs: 999 } }).success,
+    ).toBe(false);
+  });
+});
+
+describe('stream keepalive interval', () => {
+  it('defaults to 25 seconds and accepts 0 to disable', () => {
+    expect(agentsEndpointSchema.parse({}).streamKeepaliveIntervalMs).toBe(25_000);
+    expect(
+      agentsEndpointSchema.parse({ streamKeepaliveIntervalMs: 0 }).streamKeepaliveIntervalMs,
+    ).toBe(0);
+  });
+
+  it.each([1, 999])('rejects a sub-second interval of %p ms', (streamKeepaliveIntervalMs) => {
+    expect(agentsEndpointSchema.safeParse({ streamKeepaliveIntervalMs }).success).toBe(false);
+  });
+});
+
+describe('Redis finalization recovery', () => {
+  it.each([
+    [undefined, 30_000],
+    [1200, 1200],
+    [0, 0],
+  ])('parses %s with a %s ms budget', (timeout, expected) => {
+    const config = configSchema.parse({
+      version: '1.0',
+      endpoints: { agents: { redisFinalizationRecoveryTimeoutMs: timeout } },
+    });
+    expect(config.endpoints?.agents?.redisFinalizationRecoveryTimeoutMs).toBe(expected);
+  });
+
+  it.each([-1, 1.5, 300_001])('rejects a retry budget of %p', (timeout) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: { agents: { redisFinalizationRecoveryTimeoutMs: timeout } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('authenticated 2FA management rate limits', () => {
+  it('accepts an account budget and defaults an empty configuration to seven requests', () => {
+    for (const [input, expected] of [
+      [{}, 7],
+      [{ requestsPerFiveMinutes: 3 }, 3],
+    ] as const) {
+      const result = configSchema.parse({
+        version: '1.0',
+        rateLimits: { twoFactorManagement: input },
+      });
+      expect(result.rateLimits?.twoFactorManagement?.requestsPerFiveMinutes).toBe(expected);
+    }
+  });
+
+  it.each([0, -1, 1, 2, 1.5, Infinity, '7'])('rejects an invalid budget: %s', (value) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        rateLimits: { twoFactorManagement: { requestsPerFiveMinutes: value } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('tenant-scoped custom endpoints', () => {
+  const endpoint = {
+    name: 'Private Gateway',
+    apiKey: 'test-key',
+    baseURL: 'https://gateway.example',
+    models: { default: ['test-model'] },
+  };
+
+  it('keeps unscoped endpoints backward compatible', () => {
+    expect(endpointSchema.parse(endpoint)).not.toHaveProperty('tenantId');
+  });
+
+  it.each(['tenant-a', 'tenant_123.example', '-tenant', 'a'.repeat(128)])(
+    'preserves the exact valid tenant ID %s',
+    (tenantId) => {
+      expect(endpointSchema.parse({ ...endpoint, tenantId }).tenantId).toBe(tenantId);
+      expect(
+        configSchema.parse({ version: '1.2.1', endpoints: { custom: [{ ...endpoint, tenantId }] } })
+          .endpoints?.custom?.[0].tenantId,
+      ).toBe(tenantId);
+    },
+  );
+
+  it.each([
+    '',
+    ' ',
+    ' tenant-a',
+    'tenant-a ',
+    'tenant a',
+    'tenant/a',
+    'tenant:a',
+    'tenant\\a',
+    'tenant😀',
+    '__SYSTEM__',
+    'a'.repeat(129),
+  ])('rejects the unreachable tenant ID %j', (tenantId) => {
+    expect(endpointSchema.safeParse({ ...endpoint, tenantId }).success).toBe(false);
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        endpoints: { custom: [{ ...endpoint, tenantId }] },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('agent model response timeouts', () => {
+  it('ships finite defaults and accepts explicit overrides including disabled timeouts', () => {
+    expect(agentsEndpointSchema.parse({})).toMatchObject({
+      modelResponseBodyTimeoutMs: 900_000,
+      modelResponseHeadersTimeoutMs: 300_000,
+    });
+    expect(
+      agentsEndpointSchema.parse({
+        modelResponseBodyTimeoutMs: 1_800_000,
+        modelResponseHeadersTimeoutMs: 0,
+      }),
+    ).toMatchObject({
+      modelResponseBodyTimeoutMs: 1_800_000,
+      modelResponseHeadersTimeoutMs: 0,
+    });
+  });
+
+  it('rejects negative, fractional, and over-one-day values', () => {
+    for (const value of [-1, 1.5, 86_400_001]) {
+      expect(agentsEndpointSchema.safeParse({ modelResponseBodyTimeoutMs: value }).success).toBe(
+        false,
+      );
+      expect(agentsEndpointSchema.safeParse({ modelResponseHeadersTimeoutMs: value }).success).toBe(
+        false,
+      );
+    }
+  });
+});
+
+describe('repository instruction configuration', () => {
+  it('defaults optional reads to two seconds and bounds operator overrides', () => {
+    expect(agentsEndpointSchema.parse({}).repositoryInstructions).toBeUndefined();
+    expect(
+      agentsEndpointSchema.parse({ repositoryInstructions: {} }).repositoryInstructions,
+    ).toEqual({ timeoutMs: 2000 });
+    expect(
+      agentsEndpointSchema.parse({ repositoryInstructions: { timeoutMs: 5000 } })
+        .repositoryInstructions,
+    ).toEqual({ timeoutMs: 5000 });
+    for (const timeoutMs of [0, 99, 30_001, 1.5]) {
+      expect(
+        agentsEndpointSchema.safeParse({ repositoryInstructions: { timeoutMs } }).success,
+      ).toBe(false);
+    }
+  });
+});
+
+describe('workspace attachment configuration', () => {
+  it('defaults the copy budget to ten seconds and bounds operator overrides', () => {
+    expect(agentsEndpointSchema.parse({}).workspaceAttachments).toBeUndefined();
+    expect(agentsEndpointSchema.parse({ workspaceAttachments: {} }).workspaceAttachments).toEqual({
+      timeoutMs: 10_000,
+      concurrency: 3,
+    });
+    expect(
+      agentsEndpointSchema.parse({ workspaceAttachments: { timeoutMs: 30_000 } })
+        .workspaceAttachments,
+    ).toEqual({ timeoutMs: 30_000, concurrency: 3 });
+    for (const concurrency of [0, 17, 1.5]) {
+      expect(
+        agentsEndpointSchema.safeParse({ workspaceAttachments: { concurrency } }).success,
+      ).toBe(false);
+    }
+    for (const timeoutMs of [0, 999, 120_001, 1.5]) {
+      expect(agentsEndpointSchema.safeParse({ workspaceAttachments: { timeoutMs } }).success).toBe(
+        false,
+      );
+    }
+  });
+});
+
+describe('inactive history payload budget', () => {
+  it('defaults the budget with and without an interface block', () => {
+    expect(interfaceSchema.parse({}).historyCacheMaxBytes).toBe(DEFAULT_HISTORY_CACHE_MAX_BYTES);
+    expect(interfaceSchema.parse(undefined).historyCacheMaxBytes).toBe(
+      DEFAULT_HISTORY_CACHE_MAX_BYTES,
+    );
+  });
+
+  it('accepts zero to disable the inactive-history grace', () => {
+    expect(interfaceSchema.parse({ historyCacheMaxBytes: 0 }).historyCacheMaxBytes).toBe(0);
+  });
+
+  it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '8MB'])(
+    'rejects an invalid payload budget %p',
+    (historyCacheMaxBytes) => {
+      expect(interfaceSchema.safeParse({ historyCacheMaxBytes }).success).toBe(false);
+    },
+  );
+});
+
+describe('steer escalation confirmation timeout', () => {
+  it('defaults to the existing ten-second confirmation window', () => {
+    expect(interfaceSchema.parse({}).steerArmConfirmationTimeoutMs).toBe(
+      DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
+    );
+    expect(configSchema.parse({ version: '1.0' }).interface?.steerArmConfirmationTimeoutMs).toBe(
+      DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
+    );
+  });
+
+  it('accepts a configured confirmation window', () => {
+    expect(
+      configSchema.parse({
+        version: '1.0',
+        interface: { steerArmConfirmationTimeoutMs: 30_000 },
+      }).interface?.steerArmConfirmationTimeoutMs,
+    ).toBe(30_000);
+  });
+
+  it.each([0, -1, 1.5, 2_147_483_648, '30s'])('rejects invalid confirmation window %p', (value) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        interface: { steerArmConfirmationTimeoutMs: value },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('linked instructions configuration', () => {
+  it('defaults optional reads and the native cache TTL, and bounds operator overrides', () => {
+    expect(agentsEndpointSchema.parse({}).linkedInstructions).toBeUndefined();
+    expect(agentsEndpointSchema.parse({ linkedInstructions: {} }).linkedInstructions).toEqual({
+      timeoutMs: 2000,
+      native: { cacheTtlMs: 300_000, cacheClearTimeoutMs: 1000 },
+      langfuse: { enabled: false },
+    });
+    expect(
+      agentsEndpointSchema.parse({
+        linkedInstructions: { timeoutMs: 5000, native: { cacheTtlMs: 0 } },
+      }).linkedInstructions,
+    ).toEqual({
+      timeoutMs: 5000,
+      native: { cacheTtlMs: 0, cacheClearTimeoutMs: 1000 },
+      langfuse: { enabled: false },
+    });
+    expect(
+      agentsEndpointSchema.parse({ linkedInstructions: { langfuse: { enabled: true } } })
+        .linkedInstructions?.langfuse,
+    ).toEqual({ enabled: true });
+    for (const timeoutMs of [0, 99, 30_001, 1.5]) {
+      expect(agentsEndpointSchema.safeParse({ linkedInstructions: { timeoutMs } }).success).toBe(
+        false,
+      );
+    }
+    for (const cacheTtlMs of [-1, 3_600_001, 1.5]) {
+      expect(
+        agentsEndpointSchema.safeParse({ linkedInstructions: { native: { cacheTtlMs } } }).success,
+      ).toBe(false);
+    }
+    for (const cacheClearTimeoutMs of [0, 30_001, 1.5]) {
+      expect(
+        agentsEndpointSchema.safeParse({ linkedInstructions: { native: { cacheClearTimeoutMs } } })
+          .success,
+      ).toBe(false);
+    }
+  });
+});
+
+describe('ask user retained answers', () => {
+  it('leaves the block unconfigured by default and accepts an operator budget', () => {
+    expect(agentsEndpointSchema.parse({}).askUserQuestion).toBeUndefined();
+    expect(
+      agentsEndpointSchema.parse({
+        askUserQuestion: { retainedAnswers: { enabled: false, maxTokens: 2048 } },
+      }).askUserQuestion,
+    ).toEqual({ retainedAnswers: { enabled: false, maxTokens: 2048 } });
+    expect(DEFAULT_RETAINED_ANSWER_TOKENS).toBe(4096);
+  });
+
+  it('rejects a budget that is not a positive integer', () => {
+    for (const maxTokens of [0, -1, 1.5, '2048']) {
+      expect(
+        agentsEndpointSchema.safeParse({ askUserQuestion: { retainedAnswers: { maxTokens } } })
+          .success,
+      ).toBe(false);
+    }
+  });
+});
+
+describe('passkey enrollment config', () => {
+  it('ships a per-account cap a deployment can raise or lower', () => {
+    expect(configSchema.parse({ version: '1.0' }).passkeys).toEqual({});
+    expect(
+      configSchema.parse({ version: '1.0', passkeys: { perUserMax: 5 } }).passkeys.perUserMax,
+    ).toBe(5);
+    /** A cap below one would brick enrollment; a fraction of a credential is nonsense. */
+    expect(configSchema.safeParse({ version: '1.0', passkeys: { perUserMax: 0 } }).success).toBe(
+      false,
+    );
+    expect(configSchema.safeParse({ version: '1.0', passkeys: { perUserMax: 1.5 } }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('retained tool-count ceiling', () => {
+  it('ships the exact-count budget a deployment can raise or lower', () => {
+    /** The save path tokenizes a stopped turn's retained tool results to add an
+     *  exact figure to the context gauge; this bounds that work. */
+    expect(agentsEndpointSchema.parse({}).maxRetainedToolCountChars).toBe(
+      DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
+    );
+    expect(
+      agentsEndpointSchema.parse({ maxRetainedToolCountChars: 1_048_576 })
+        .maxRetainedToolCountChars,
+    ).toBe(1_048_576);
+    /** Zero withholds the figure entirely; a fraction of a character is nonsense. */
+    expect(
+      agentsEndpointSchema.parse({ maxRetainedToolCountChars: 0 }).maxRetainedToolCountChars,
+    ).toBe(0);
+    expect(agentsEndpointSchema.safeParse({ maxRetainedToolCountChars: -1 }).success).toBe(false);
+    expect(agentsEndpointSchema.safeParse({ maxRetainedToolCountChars: 1.5 }).success).toBe(false);
+  });
+});
+
+describe('run-scoped subagent file sharing config', () => {
+  it('preserves the opt-in default for existing configurations', () => {
+    expect(agentsEndpointSchema.parse({}).fileSharing).toBeUndefined();
+    expect(agentsEndpointSchema.parse({ fileSharing: {} }).fileSharing).toEqual({
+      enabled: false,
+      allowSiblingSharing: false,
+      maxFiles: 100,
+      maxPrivateBytes: 268_435_456,
+      ttlMs: 3_600_000,
+    });
+    expect(modelSpecSubagentsSchema.parse({ enabled: true })).not.toHaveProperty('shareFiles');
+  });
+
+  it('retains explicit deployment and model-spec opt-ins through config parsing', () => {
+    const result = configSchema.parse({
+      version: '1.2.1',
+      endpoints: {
+        agents: {
+          fileSharing: {
+            enabled: true,
+            allowSiblingSharing: true,
+            maxFiles: 50,
+            maxPrivateBytes: 16_777_216,
+            ttlMs: 120_000,
+          },
+        },
+      },
+      modelSpecs: {
+        list: [
+          {
+            name: 'file-team',
+            label: 'File team',
+            preset: { endpoint: EModelEndpoint.agents },
+            subagents: { enabled: true, shareFiles: true },
+          },
+        ],
+      },
+    });
+    expect(result.endpoints?.agents?.fileSharing).toEqual({
+      enabled: true,
+      allowSiblingSharing: true,
+      maxFiles: 50,
+      maxPrivateBytes: 16_777_216,
+      ttlMs: 120_000,
+    });
+    expect(result.modelSpecs?.list[0].subagents?.shareFiles).toBe(true);
+    expect(modelSpecSubagentsSchema.parse({ shareFiles: false }).shareFiles).toBe(false);
+  });
+
+  it.each([
+    { maxFiles: 0 },
+    { maxFiles: 1_001 },
+    { maxFiles: 1.5 },
+    { maxPrivateBytes: 0 },
+    { maxPrivateBytes: 10_737_418_241 },
+    { maxPrivateBytes: 1.5 },
+    { ttlMs: 0 },
+    { ttlMs: 86_400_001 },
+    { ttlMs: 1.5 },
+  ])('rejects invalid manifest limits: %j', (fileSharing) => {
+    expect(agentsEndpointSchema.safeParse({ fileSharing }).success).toBe(false);
+  });
+});
+
+describe('Chat Projects config', () => {
+  it('defaults project limits and accepts operator overrides', () => {
+    const defaults = configSchema.parse({ version: '1.2.1' });
+    expect(defaults.projects).toEqual({
+      maxFiles: 50,
+      maxInstructionsLength: 16000,
+      maxDescriptionLength: 1000,
+    });
+
+    const configured = configSchema.parse({
+      version: '1.2.1',
+      projects: {
+        maxFiles: 75,
+        maxInstructionsLength: 24000,
+        maxDescriptionLength: 2000,
+      },
+    });
+    expect(configured.projects).toEqual({
+      maxFiles: 75,
+      maxInstructionsLength: 24000,
+      maxDescriptionLength: 2000,
+    });
+  });
+});
+
+describe('scheduled MCP preflight config', () => {
+  it('bounds the separate readiness admission pool', () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, admissionConcurrency: 100 } },
+      }).success,
+    ).toBe(true);
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, admissionConcurrency: 101 } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('caps per-admission connection concurrency', () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, mcpPreflightConcurrency: 10 } },
+      }).success,
+    ).toBe(true);
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, mcpPreflightConcurrency: 11 } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('bounds the aggregate readiness timeout', () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, mcpPreflightTimeoutMs: 600000 } },
+      }).success,
+    ).toBe(true);
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, mcpPreflightTimeoutMs: 600001 } },
+      }).success,
+    ).toBe(false);
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, mcpPreflightTimeoutMs: 999 } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('isTwoFactorPolicyProvider', () => {
+  it.each(['local', 'ldap', null, undefined])('includes provider %s', (provider) => {
+    expect(isTwoFactorPolicyProvider(provider)).toBe(true);
+  });
+
+  it.each(['openid', 'google', 'saml'])('excludes federated provider %s', (provider) => {
+    expect(isTwoFactorPolicyProvider(provider)).toBe(false);
+  });
+});
+
 describe('excludedKeys', () => {
-  it.each(['_id', 'user', 'conversationId', '__v'])('excludes system field "%s"', (field) => {
+  it.each([
+    '_id',
+    'user',
+    'conversationId',
+    'agentEventBinding',
+    'agentEventActor',
+    'agentEventActorCleanup',
+    'agentEventActorSuspension',
+    'agentEventActorReconciliations',
+    'lastResponseMessageId',
+    '__v',
+  ])('excludes system field "%s"', (field) => {
     expect(excludedKeys.has(field)).toBe(true);
   });
 
@@ -55,6 +698,1120 @@ describe('bedrockEndpointSchema', () => {
       return;
     }
     expect(result.data.endpoints?.bedrock?.guardrailConfig).toEqual(guardrailConfig);
+  });
+});
+
+describe('Agent Management authentication config', () => {
+  const binding = {
+    clientId: 'machine-client',
+    userId: '507f1f77bcf86cd799439011',
+    tenantId: 'tenant-a',
+  };
+
+  it('accepts an enabled OIDC configuration with a client binding', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {
+                enabled: true,
+                issuer: 'https://issuer.example.com',
+                audience: 'https://agents.example.com',
+              },
+              clients: [binding],
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      return;
+    }
+    expect(result.data.endpoints?.agents?.managementApi?.auth?.clients).toEqual([
+      { ...binding, enabled: true },
+    ]);
+  });
+
+  it('accepts a provider-specific token subject in a client binding', () => {
+    const subject = 'opaque-service-principal-subject';
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {},
+              clients: [{ ...binding, subject }],
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.endpoints?.agents?.managementApi?.auth?.clients[0].subject).toBe(subject);
+  });
+
+  it('accepts Cognito access-token validation', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {
+                enabled: true,
+                issuer: 'https://cognito-idp.us-west-2.amazonaws.com/us-west-2_example',
+                tokenUse: 'access',
+                requiredScopes: ['agents-api/manage'],
+              },
+              clients: [binding],
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts audience-bound access-token validation without required scopes', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {
+                enabled: true,
+                issuer: 'https://issuer.example.com',
+                audience: 'https://agents.example.com',
+                tokenUse: 'access',
+              },
+              clients: [binding],
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects audience-less access-token validation without required scopes', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {
+                enabled: true,
+                issuer: 'https://issuer.example.com',
+                tokenUse: 'access',
+              },
+              clients: [binding],
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it.each(['agents-api/manage another-scope', 'agents-api/manage\tanother-scope'])(
+    'rejects a required scope containing whitespace: %j',
+    (requiredScope) => {
+      const result = configSchema.safeParse({
+        version: '1.0',
+        endpoints: {
+          agents: {
+            managementApi: {
+              auth: {
+                oidc: {
+                  enabled: true,
+                  issuer: 'https://issuer.example.com',
+                  tokenUse: 'access',
+                  requiredScopes: [requiredScope],
+                },
+                clients: [binding],
+              },
+            },
+          },
+        },
+      });
+
+      expect(result.success).toBe(false);
+    },
+  );
+
+  it('rejects enabled management auth without an audience or access-token validation', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {
+                enabled: true,
+                issuer: 'https://issuer.example.com',
+              },
+              clients: [binding],
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('normalizes binding User ObjectIds', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {},
+              clients: [{ ...binding, userId: binding.userId.toUpperCase() }],
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.endpoints?.agents?.managementApi?.auth?.clients[0].userId).toBe(
+      binding.userId,
+    );
+  });
+
+  it('rejects enabled auth without a client binding', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {
+                enabled: true,
+                issuer: 'https://issuer.example.com',
+                audience: 'https://agents.example.com',
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it.each([
+    ['duplicate client IDs', [binding, { ...binding, tenantId: 'tenant-b' }]],
+    ['an invalid user ID', [{ ...binding, userId: 'not-an-object-id' }]],
+    ['an invalid tenant ID', [{ ...binding, tenantId: '-tenant' }]],
+    ['the system tenant', [{ ...binding, tenantId: '__SYSTEM__' }]],
+    ['an empty token subject', [{ ...binding, subject: '  ' }]],
+  ])('rejects %s', (_label, clients) => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          managementApi: {
+            auth: {
+              oidc: {},
+              clients,
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects remote-execution scopes and unknown management auth fields', () => {
+    const makeConfig = (auth: Record<string, unknown>) => ({
+      version: '1.0',
+      endpoints: { agents: { managementApi: { auth } } },
+    });
+
+    expect(
+      configSchema.safeParse(
+        makeConfig({
+          oidc: { scope: 'remote_agent' },
+          clients: [binding],
+        }),
+      ).success,
+    ).toBe(false);
+    expect(
+      configSchema.safeParse(
+        makeConfig({
+          oidc: {},
+          clients: [binding],
+          apiKey: { enabled: true },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+});
+
+describe('attached code environment user config schema', () => {
+  it.each([1, 60_000, 300_000])(
+    'accepts a foreground default of %i ms',
+    (defaultCommandTimeoutMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.parse({ limits: { defaultCommandTimeoutMs } }),
+      ).toEqual({
+        limits: { defaultCommandTimeoutMs },
+      });
+    },
+  );
+
+  it.each([0, -1, 0.5, 300_001, NaN, Infinity])(
+    'rejects an invalid foreground default of %s',
+    (defaultCommandTimeoutMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { defaultCommandTimeoutMs } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it.each([1, 200, 500])('accepts a default read window of %i lines', (defaultReadFileLines) => {
+    expect(codeEnvironmentUserConfigSchema.parse({ limits: { defaultReadFileLines } })).toEqual({
+      limits: { defaultReadFileLines },
+    });
+  });
+
+  it.each([0, -1, 0.5, 501, NaN, Infinity])(
+    'rejects an invalid default read window of %s',
+    (defaultReadFileLines) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { defaultReadFileLines } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it('keeps defaults optional and accepts a foreground default above the configured ceiling for runtime clamping', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({})).toEqual({});
+    expect(codeEnvironmentUserConfigSchema.parse({ limits: {} })).toEqual({ limits: {} });
+    expect(
+      codeEnvironmentUserConfigSchema.parse({
+        limits: { defaultCommandTimeoutMs: 60_000, maxCommandTimeoutMs: 5_000 },
+      }),
+    ).toEqual({
+      limits: { defaultCommandTimeoutMs: 60_000, maxCommandTimeoutMs: 5_000 },
+    });
+  });
+
+  it.each([0, 1200, 300000])(
+    'preserves an admission budget of %i milliseconds',
+    (maxQueueWaitMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { maxQueueWaitMs } })).toEqual({
+        limits: { maxQueueWaitMs },
+      });
+    },
+  );
+
+  it.each([-1, 0.5, 300001, NaN, Infinity])(
+    'rejects an invalid admission budget of %s',
+    (maxQueueWaitMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { maxQueueWaitMs } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it.each([60_000, 125_000, 610_000])(
+    'accepts a bounded %i ms workspace HTTP limit',
+    (maxRequestTimeoutMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { maxRequestTimeoutMs } })).toEqual({
+        limits: { maxRequestTimeoutMs },
+      });
+    },
+  );
+
+  it.each([0, -1, 0.5, 610_001, NaN, Infinity])(
+    'rejects an invalid workspace HTTP limit of %s',
+    (maxRequestTimeoutMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { maxRequestTimeoutMs } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it('accepts an explicit tolerant-matching opt-in and nothing else under edits', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({ edits: { tolerantMatching: true } })).toEqual({
+      edits: { tolerantMatching: true },
+    });
+    expect(codeEnvironmentUserConfigSchema.parse({})).toEqual({});
+    expect(
+      codeEnvironmentUserConfigSchema.safeParse({ edits: { tolerantMatching: 'yes' } }).success,
+    ).toBe(false);
+    expect(codeEnvironmentUserConfigSchema.safeParse({ edits: { fuzzy: true } }).success).toBe(
+      false,
+    );
+  });
+
+  it('keeps an omitted admission budget backward compatible', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({ limits: {} })).toEqual({ limits: {} });
+  });
+
+  it.each([1_000, 15_000, CODE_ENVIRONMENT_ADMISSION_MAX_MS])(
+    'accepts a bounded %i ms command admission allowance',
+    (minCommandAdmissionMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { minCommandAdmissionMs } })).toEqual({
+        limits: { minCommandAdmissionMs },
+      });
+    },
+  );
+
+  it.each([0, -1, 0.5, 999, CODE_ENVIRONMENT_ADMISSION_MAX_MS + 1, NaN, Infinity])(
+    'rejects an invalid command admission allowance of %s',
+    (minCommandAdmissionMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { minCommandAdmissionMs } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it.each([20_001, 90_000])(
+    'preserves omission of the command admission allowance with a fitting %i ms budget',
+    (maxRequestTimeoutMs) => {
+      expect(codeEnvironmentUserConfigSchema.parse({ limits: { maxRequestTimeoutMs } })).toEqual({
+        limits: { maxRequestTimeoutMs },
+      });
+    },
+  );
+
+  it.each([5_000, 10_002, 15_000, 20_000])(
+    'rejects an undersized %i ms request budget with the default command reserve',
+    (maxRequestTimeoutMs) => {
+      const parsed = codeEnvironmentUserConfigSchema.safeParse({ limits: { maxRequestTimeoutMs } });
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) {
+        expect(parsed.error.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ path: ['limits', 'maxRequestTimeoutMs'] }),
+          ]),
+        );
+      }
+    },
+  );
+
+  it.each([
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 79_999 },
+    { maxRequestTimeoutMs: 11_001, minCommandAdmissionMs: 1_000 },
+    { maxRequestTimeoutMs: 610_000, minCommandAdmissionMs: 300_000 },
+  ])('accepts an admission reserve with execution time left: %j', (limits) => {
+    expect(codeEnvironmentUserConfigSchema.parse({ limits })).toEqual({ limits });
+  });
+
+  it.each([
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 80_000 },
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 100_000 },
+    { maxRequestTimeoutMs: 11_000, minCommandAdmissionMs: 1_000 },
+  ])('rejects a command reserve that cannot fit inside its request budget: %j', (limits) => {
+    const parsed = codeEnvironmentUserConfigSchema.safeParse({ limits });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: ['limits', 'minCommandAdmissionMs'] }),
+        ]),
+      );
+    }
+  });
+
+  it('allows a command reserve without a request budget (the legacy per-attempt path)', () => {
+    expect(
+      codeEnvironmentUserConfigSchema.parse({ limits: { minCommandAdmissionMs: 300_000 } }),
+    ).toEqual({ limits: { minCommandAdmissionMs: 300_000 } });
+  });
+
+  it.each([
+    { maxRequestTimeoutMs: 90_000, minCommandAdmissionMs: 100_000 },
+    { maxRequestTimeoutMs: 15_000 },
+  ])('rejects an impossible command reserve in the top-level deployment config: %j', (limits) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: {
+          agents: {
+            statefulCodeSessions: {
+              allowedEnvironments: ['user'],
+              environments: [
+                {
+                  id: 'personal-vm',
+                  name: 'Personal VM',
+                  type: 'attached',
+                  baseURL: 'https://code.example.com/v1',
+                  configSchema: { limits },
+                },
+              ],
+            },
+          },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts typed permission controls exposed by the administrator', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            allowedEnvironments: ['user'],
+            environments: [
+              {
+                id: 'personal-vm',
+                name: 'Personal VM',
+                type: 'attached',
+                baseURL: 'https://code.example.com/v1',
+                default: true,
+                configSchema: {
+                  permissions: {
+                    fileWrite: { allowed: ['allow', 'ask', 'deny'], default: 'ask' },
+                    commandExecution: { allowed: ['ask', 'deny'], default: 'ask' },
+                  },
+                  limits: {
+                    maxCommandTimeoutMs: 120000,
+                    maxRequestTimeoutMs: 125_000,
+                    minCommandAdmissionMs: 15_000,
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    if (!result.success) {
+      throw new Error(result.error.toString());
+    }
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            environments: [
+              {
+                configSchema: {
+                  limits: { maxRequestTimeoutMs: 125_000, minCommandAdmissionMs: 15_000 },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+  });
+
+  it('keeps checkout selection disabled by default without creating workspace policy', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({})).not.toHaveProperty('workspaces');
+    expect(codeEnvironmentUserConfigSchema.parse({ workspaces: {} }).workspaces).toEqual({
+      allowCheckoutSelection: false,
+    });
+  });
+
+  it.each([
+    [{ linkedWorktrees: true }, true],
+    [{ allowCheckoutSelection: true }, true],
+    [{ allowCheckoutSelection: false }, true],
+    [{ allowCheckoutSelection: 'yes' }, false],
+    [{ linkedWorktrees: 'yes' }, false],
+    [{ linkedWorktrees: true, subdirectories: true }, false],
+    [{ detachedCommands: true }, true],
+    [{ detachedCommands: false }, true],
+    [{ detachedCommands: 'yes' }, false],
+  ])('validates the workspace toggles %p', (workspaces, valid) => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            allowedEnvironments: ['user'],
+            environments: [
+              {
+                id: 'personal-vm',
+                name: 'Personal VM',
+                type: 'attached',
+                baseURL: 'https://code.example.com/v1',
+                default: true,
+                configSchema: { workspaces },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(valid);
+  });
+
+  it('rejects an attached command timeout above the protocol hard cap', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            allowedEnvironments: ['user'],
+            environments: [
+              {
+                id: 'personal-vm',
+                name: 'Personal VM',
+                type: 'attached',
+                baseURL: 'https://code.example.com/v1',
+                configSchema: { limits: { maxCommandTimeoutMs: 300001 } },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a permission default the administrator did not expose', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            allowedEnvironments: ['user'],
+            environments: [
+              {
+                id: 'personal-vm',
+                name: 'Personal VM',
+                type: 'attached',
+                baseURL: 'https://code.example.com/v1',
+                default: true,
+                configSchema: {
+                  permissions: {
+                    commandExecution: { allowed: ['ask', 'deny'], default: 'allow' },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('agent pull request config', () => {
+  const parse = (pullRequests?: unknown) =>
+    configSchema.safeParse({ version: '1.0', endpoints: { agents: { pullRequests } } });
+
+  it('is absent when not configured, and has no switch of its own until one is set', () => {
+    const absent = configSchema.parse({ version: '1.0', endpoints: { agents: {} } });
+    expect(absent.endpoints?.agents?.pullRequests).toBeUndefined();
+    const empty = configSchema.parse({
+      version: '1.0',
+      endpoints: { agents: { pullRequests: {} } },
+    });
+    expect(empty.endpoints?.agents?.pullRequests).toEqual({
+      cacheTtlSeconds: 30,
+      requestTimeoutSeconds: 10,
+      lookupTimeoutSeconds: 30,
+      maxCheckRunPages: 10,
+      maxCandidatePullRequests: 10,
+      maxCandidatePages: 1,
+      maxHeadComparisons: 3,
+      cacheMaxEntries: 500,
+      cacheMaxCredentials: 256,
+      maxConcurrentLookups: 4,
+      batchTimeoutSeconds: 20,
+      sharedCache: false,
+      sharedCacheTimeoutMs: 250,
+      sharedCacheSlots: 65_536,
+    });
+  });
+
+  it('shares the cache between replicas only when asked to, and only as a boolean', () => {
+    expect(parse({ sharedCache: true }).success).toBe(true);
+    expect(parse({ sharedCache: false }).success).toBe(true);
+    expect(parse({ sharedCache: 'true' }).success).toBe(false);
+  });
+
+  const enabled = {
+    enabled: true,
+    token: '${GITHUB_PULL_REQUEST_TOKEN}',
+    allowedRepositories: ['LibreChat-AI/LibreChat'],
+  };
+
+  it('accepts an enabled block with a token reference and an allowed repository', () => {
+    expect(parse(enabled).success).toBe(true);
+  });
+
+  it("needs no token reference, so the deployment's own GitHub token can be used", () => {
+    expect(parse({ ...enabled, token: undefined }).success).toBe(true);
+    expect(parse({ allowAllRepositories: true }).success).toBe(true);
+  });
+
+  it('accepts the opt-in to every repository, and nothing but a boolean for it', () => {
+    expect(parse({ allowAllRepositories: true }).success).toBe(true);
+    expect(parse({ allowAllRepositories: false }).success).toBe(true);
+    expect(parse({ allowAllRepositories: 'yes' }).success).toBe(false);
+  });
+
+  it('can be switched off explicitly', () => {
+    expect(parse({ enabled: false }).success).toBe(true);
+  });
+
+  it.each(['LibreChat-AI/*', 'o/r', 'My.Org/my_repo-2'])('accepts the repository %s', (repo) => {
+    expect(parse({ ...enabled, allowedRepositories: [repo] }).success).toBe(true);
+  });
+
+  it.each(['g/sub/r', 'g/sub/*', 'a/b/c/d'])('accepts the nested group path %s', (repo) => {
+    expect(parse({ ...enabled, allowedRepositories: [repo] }).success).toBe(true);
+  });
+
+  it.each(['github', 'gitlab', 'bitbucket'])('accepts the provider %s', (provider) => {
+    expect(parse({ ...enabled, provider }).success).toBe(true);
+  });
+
+  it('accepts an OAuth app given by environment references', () => {
+    const oauth = { clientId: '${GH_CLIENT_ID}', clientSecret: '${GH_CLIENT_SECRET}' };
+    expect(parse({ ...enabled, oauth }).success).toBe(true);
+    expect(parse({ ...enabled, oauth: { ...oauth, scope: 'read_api read_user' } }).success).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    ['a literal secret', { clientId: '${ID}', clientSecret: 'shhh' }],
+    ['a missing secret', { clientId: '${ID}' }],
+    ['a scope with odd characters', { clientId: '${ID}', clientSecret: '${S}', scope: 'a;b' }],
+  ])('rejects an OAuth app with %s', (_label, oauth) => {
+    expect(parse({ ...enabled, oauth }).success).toBe(false);
+  });
+
+  it('rejects a provider it does not know', () => {
+    expect(parse({ ...enabled, provider: 'gitea' }).success).toBe(false);
+  });
+
+  it.each(['*/*', '*', 'owner', 'g/*/r', '../x', 'o/..', 'g/../r', 'a b/c', 'o/*x', 'o//r', ''])(
+    'rejects %p as an allowed repository',
+    (repo) => {
+      expect(parse({ ...enabled, allowedRepositories: [repo] }).success).toBe(false);
+    },
+  );
+
+  it.each([
+    'github.com',
+    'github.example.com',
+    'acme.ghe.com',
+    'GHE.Example.com',
+    'ghe.local:8443',
+  ])('accepts %s as the GitHub host', (host) => {
+    expect(parse({ ...enabled, host }).success).toBe(true);
+  });
+
+  it.each([
+    'https://github.example.com',
+    'github.example.com/api/v3',
+    'user@github.example.com',
+    '-github.com',
+    'github.com.',
+    'ghe.local:0',
+    'ghe.local:65536',
+    '',
+  ])('rejects %p as the GitHub host', (host) => {
+    expect(parse({ ...enabled, host }).success).toBe(false);
+  });
+
+  it.each(['ghp_abcdef', '${bad name}', '$GITHUB_TOKEN', '${}'])(
+    'rejects %s as a token because only a reference is allowed',
+    (token) => {
+      expect(parse({ ...enabled, token }).success).toBe(false);
+    },
+  );
+
+  it.each([
+    ['requestTimeoutSeconds', 0],
+    ['requestTimeoutSeconds', 61],
+    ['lookupTimeoutSeconds', 0],
+    ['lookupTimeoutSeconds', 121],
+    ['maxCheckRunPages', 0],
+    ['maxCheckRunPages', 51],
+    ['maxCheckRunPages', 1.5],
+    ['maxCandidatePullRequests', 0],
+    ['maxCandidatePullRequests', 101],
+    ['maxCandidatePages', 0],
+    ['maxCandidatePages', 11],
+    ['maxHeadComparisons', -1],
+    ['maxHeadComparisons', 21],
+    ['maxHeadComparisons', 1.5],
+    ['cacheMaxEntries', 9],
+    ['cacheMaxEntries', 100_001],
+    ['cacheMaxEntries', 1.5],
+    ['cacheMaxCredentials', 0],
+    ['cacheMaxCredentials', 10_001],
+    ['cacheMaxCredentials', 1.5],
+    ['maxConcurrentLookups', 0],
+    ['maxConcurrentLookups', 17],
+    ['maxConcurrentLookups', 1.5],
+    ['batchTimeoutSeconds', 0],
+    ['batchTimeoutSeconds', 121],
+    ['batchTimeoutSeconds', 1.5],
+    ['sharedCacheTimeoutMs', 9],
+    ['sharedCacheTimeoutMs', 5001],
+    ['sharedCacheTimeoutMs', 1.5],
+    ['sharedCacheSlots', 63],
+    ['sharedCacheSlots', 1_000_001],
+    ['sharedCacheSlots', 1.5],
+  ])('rejects %s of %s', (field, value) => {
+    expect(parse({ [field]: value }).success).toBe(false);
+  });
+
+  it('accepts the documented bounds', () => {
+    expect(
+      parse({
+        requestTimeoutSeconds: 60,
+        lookupTimeoutSeconds: 120,
+        maxCheckRunPages: 50,
+        maxCandidatePullRequests: 100,
+        maxCandidatePages: 10,
+        maxHeadComparisons: 20,
+        cacheMaxEntries: 100_000,
+        maxConcurrentLookups: 16,
+        batchTimeoutSeconds: 120,
+        sharedCacheTimeoutMs: 5000,
+      }).success,
+    ).toBe(true);
+    expect(parse({ maxHeadComparisons: 0 }).success).toBe(true);
+    expect(parse({ sharedCacheTimeoutMs: 10 }).success).toBe(true);
+    expect(parse({ sharedCacheSlots: 64 }).success).toBe(true);
+    expect(parse({ sharedCacheSlots: 1_000_000 }).success).toBe(true);
+  });
+
+  it.each([4, 3601, 1.5])('rejects a cache lifetime of %s seconds', (cacheTtlSeconds) => {
+    expect(parse({ cacheTtlSeconds }).success).toBe(false);
+  });
+});
+
+describe('agent events config', () => {
+  const github = {
+    appId: '${GITHUB_APP_ID}',
+    privateKey: '${GITHUB_APP_PRIVATE_KEY}',
+    webhookSecret: '${GITHUB_APP_WEBHOOK_SECRET}',
+  };
+  const parse = (events?: unknown) =>
+    configSchema.safeParse({ version: '1.0', endpoints: { agents: { events } } });
+
+  it('is absent unless configured and off unless enabled', () => {
+    const absent = configSchema.parse({ version: '1.0', endpoints: { agents: {} } });
+    expect(absent.endpoints?.agents?.events).toBeUndefined();
+    const empty = configSchema.parse({ version: '1.0', endpoints: { agents: { events: {} } } });
+    expect(empty.endpoints?.agents?.events).toEqual({ enabled: false });
+  });
+
+  it('keeps what an operator sets and leaves unset bounds to the reader', () => {
+    const parsed = parse({
+      enabled: true,
+      limits: { excerpt: 500 },
+      github: { ...github, host: 'github.example.com', requestTimeoutSeconds: 5 },
+    });
+    expect(parsed.success && parsed.data.endpoints?.agents?.events).toEqual({
+      enabled: true,
+      limits: { excerpt: 500 },
+      github: { ...github, host: 'github.example.com', requestTimeoutSeconds: 5 },
+    });
+  });
+
+  it.each(['appId', 'privateKey', 'webhookSecret'] as const)(
+    'takes %s as an environment variable reference, never a value',
+    (field) => {
+      expect(parse({ github: { ...github, [field]: 'a-literal-value' } }).success).toBe(false);
+      expect(parse({ github: { ...github, [field]: '${lower_Case_1}' } }).success).toBe(true);
+      const { [field]: _omitted, ...rest } = github;
+      expect(parse({ github: rest }).success).toBe(false);
+    },
+  );
+
+  it.each([
+    ['a URL as the host', { github: { ...github, host: 'https://github.example.com' } }],
+    ['a host with a path', { github: { ...github, host: 'github.example.com/api' } }],
+    ['a request timeout of zero', { github: { ...github, requestTimeoutSeconds: 0 } }],
+    ['a request timeout over a minute', { github: { ...github, requestTimeoutSeconds: 61 } }],
+    ['a negative access lifetime', { github: { ...github, accessTtlSeconds: -1 } }],
+    ['an access lifetime over an hour', { github: { ...github, accessTtlSeconds: 3601 } }],
+    ['a fractional access lifetime', { github: { ...github, accessTtlSeconds: 1.5 } }],
+    ['an excerpt under 16 characters', { limits: { excerpt: 15 } }],
+    ['an excerpt over 65,536 characters', { limits: { excerpt: 65_537 } }],
+    ['a fractional excerpt', { limits: { excerpt: 100.5 } }],
+    ['a fan-out of zero', { limits: { fanout: 0 } }],
+    ['a fan-out over 100', { limits: { fanout: 101 } }],
+    ['a switch that is not a boolean', { enabled: 'yes' }],
+  ])('rejects %s', (_name, events) => {
+    expect(parse(events).success).toBe(false);
+  });
+
+  it.each([
+    ['the smallest bounds', { limits: { excerpt: 16, fanout: 1 } }],
+    ['the largest bounds', { limits: { excerpt: 65_536, fanout: 100 } }],
+    ['the longest request timeout', { github: { ...github, requestTimeoutSeconds: 60 } }],
+    ['no reuse of access answers', { github: { ...github, accessTtlSeconds: 0 } }],
+    ['the longest access lifetime', { github: { ...github, accessTtlSeconds: 3600 } }],
+  ])('accepts %s', (_name, events) => {
+    expect(parse(events).success).toBe(true);
+  });
+
+  it('is set in librechat.yaml only', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS['endpoints.agents.events']).toBe('operator');
+  });
+});
+
+describe('agent background completion batch config', () => {
+  it('defaults and bounds automatic completion coalescing', () => {
+    const defaults = configSchema.parse({
+      version: '1.0',
+      endpoints: { agents: { backgroundTasks: {} } },
+    });
+    expect(defaults.endpoints?.agents?.backgroundTasks?.completionResultBatchSize).toBe(8);
+    expect(defaults.endpoints?.agents?.backgroundTasks?.completionReceiptBatching).toBe(true);
+    expect(
+      configSchema.parse({
+        version: '1.0',
+        endpoints: { agents: { backgroundTasks: { completionReceiptBatching: false } } },
+      }).endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
+    ).toBe(false);
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: { agents: { backgroundTasks: { completionReceiptBatching: 'false' } } },
+      }).success,
+    ).toBe(false);
+
+    for (const completionResultBatchSize of [0, 17, 1.5]) {
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          endpoints: { agents: { backgroundTasks: { completionResultBatchSize } } },
+        }).success,
+      ).toBe(false);
+    }
+  });
+});
+
+describe('agent event runtime config', () => {
+  it('defaults and bounds durable-worker idle polling intervals', () => {
+    const parsed = configSchema.parse({
+      version: '1.0',
+      endpoints: { agents: { eventDriven: { idlePolling: {} } } },
+    });
+    expect(parsed.endpoints?.agents?.eventDriven?.idlePolling).toEqual({
+      deliveryMaxIntervalMs: 15_000,
+      queuedTurnMaxIntervalMs: 120_000,
+      maintenanceMaxIntervalMs: 120_000,
+      completionWaitMaxIntervalMs: 60_000,
+    });
+    for (const [key, value] of [
+      ['deliveryMaxIntervalMs', 0],
+      ['queuedTurnMaxIntervalMs', 29_999],
+      ['maintenanceMaxIntervalMs', 300_001],
+      ['maintenanceMaxIntervalMs', 30_000.5],
+      ['completionWaitMaxIntervalMs', 4_999],
+      ['completionWaitMaxIntervalMs', 300_001],
+    ] as const) {
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          endpoints: { agents: { eventDriven: { idlePolling: { [key]: value } } } },
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it('accepts the routing choice and ignores removed rollout fields', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          eventDriven: {
+            childTurns: true,
+            completionWakeups: false,
+            coalescing: true,
+            actorMailbox: true,
+            checkpointForks: true,
+            durableReceipts: true,
+            selfUrl: 'https://triggers.internal',
+          },
+        },
+      },
+      rateLimits: {
+        agentEvents: { userMax: 80, userWindowInMinutes: 2 },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      return;
+    }
+    expect(result.data.endpoints?.agents?.eventDriven).toEqual({
+      selfUrl: 'https://triggers.internal',
+    });
+    expect(result.data.rateLimits?.agentEvents).toEqual({
+      userMax: 80,
+      userWindowInMinutes: 2,
+    });
+  });
+
+  it('accepts a configured prompt resolve rate limit', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      rateLimits: {
+        promptResolve: { userMax: 30, userWindowInMinutes: 2 },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      return;
+    }
+    expect(result.data.rateLimits?.promptResolve).toEqual({
+      userMax: 30,
+      userWindowInMinutes: 2,
+    });
+  });
+
+  it('does not let removed checkpoint fields control memory-checkpointer validation', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: {
+        agents: {
+          eventDriven: { checkpointForks: true },
+          checkpointer: { type: 'memory' },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      return;
+    }
+    expect(result.data.endpoints?.agents?.eventDriven).toEqual({});
+    expect(result.data.endpoints?.agents?.checkpointer).toEqual({ type: 'memory' });
+  });
+});
+
+describe('agent background task config', () => {
+  it('enables completion wakeups by default when the policy block is present', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: { agents: { backgroundTasks: {} } },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      return;
+    }
+    expect(result.data.endpoints?.agents?.backgroundTasks).toEqual({
+      completionResultBatchSize: 8,
+      completionReceiptBatching: true,
+      completionWakeups: true,
+      completionResultMaxChars: 24 * 1024,
+      ordinaryToolCancellation: false,
+      shutdownInterruptGraceMs: 5_000,
+    });
+  });
+
+  it('accepts an administrator poll-only policy', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: { agents: { backgroundTasks: { completionWakeups: false } } },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      return;
+    }
+    expect(result.data.endpoints?.agents?.backgroundTasks).toEqual({
+      completionResultBatchSize: 8,
+      completionReceiptBatching: true,
+      completionWakeups: false,
+      completionResultMaxChars: 24 * 1024,
+      ordinaryToolCancellation: false,
+      shutdownInterruptGraceMs: 5_000,
+    });
+  });
+
+  it('accepts administrator-enabled ordinary tool cancellation', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: { agents: { backgroundTasks: { ordinaryToolCancellation: true } } },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      return;
+    }
+    expect(result.data.endpoints?.agents?.backgroundTasks).toEqual({
+      completionResultBatchSize: 8,
+      completionReceiptBatching: true,
+      completionWakeups: true,
+      completionResultMaxChars: 24 * 1024,
+      ordinaryToolCancellation: true,
+      shutdownInterruptGraceMs: 5_000,
+    });
+  });
+
+  it('accepts a bounded shutdown interrupt grace', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: { agents: { backgroundTasks: { shutdownInterruptGraceMs: 0 } } },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs).toBe(0);
+    }
+  });
+
+  it.each([-1, 60_001, 1.5])('rejects an unsafe shutdown interrupt grace: %s', (graceMs) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: { agents: { backgroundTasks: { shutdownInterruptGraceMs: graceMs } } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a bounded durable completion result limit', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: { agents: { backgroundTasks: { completionResultMaxChars: 4096 } } },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.endpoints?.agents?.backgroundTasks?.completionResultMaxChars).toBe(4096);
+    }
+  });
+
+  it.each([0, 64 * 1024 + 1])('rejects an unsafe completion result limit: %s', (limit) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        endpoints: { agents: { backgroundTasks: { completionResultMaxChars: limit } } },
+      }).success,
+    ).toBe(false);
   });
 });
 
@@ -403,6 +2160,23 @@ describe('any custom endpoint is document-supported regardless of name', () => {
   );
 });
 
+describe('endpoints.catalogModelsTtlMs', () => {
+  const parse = (catalogModelsTtlMs: unknown) =>
+    configSchema.safeParse({ version: '1.0', endpoints: { catalogModelsTtlMs } });
+
+  it('accepts zero up to one hour of whole milliseconds', () => {
+    for (const value of [0, 120_000, 3_600_000]) {
+      expect(parse(value).success).toBe(true);
+    }
+  });
+
+  it('rejects negative, fractional and longer lifetimes', () => {
+    for (const value of [-1, 1.5, 3_600_001, '120000']) {
+      expect(parse(value).success).toBe(false);
+    }
+  });
+});
+
 describe('allowedAddressesSchema', () => {
   describe('accepts valid entries', () => {
     it.each([
@@ -422,6 +2196,11 @@ describe('allowedAddressesSchema', () => {
       ['[fd00::1]:8080', 'IPv6 unique-local with port'],
       ['[fe80::1]:8080', 'IPv6 link-local with port'],
       ['[::ffff:10.0.0.5]:8080', 'IPv4-mapped IPv6 of a private address'],
+      ['[::ffff:0:10.0.0.1]:8080', 'IPv4-translated dotted private address'],
+      ['[::ffff:0:a00:1]:8080', 'IPv4-translated hex private address'],
+      ['[::ffff:0:a9fe:a9fe]:80', 'IPv4-translated metadata address'],
+      ['[0:0:0:0:ffff:0:10.0.0.1]:8080', 'expanded IPv4-translated address'],
+      ['[0000:0000:0000:0000:FFFF:0000:0A00:0001]:8080', 'padded translated address'],
       ['[64:ff9b::a00:1]:8080', 'NAT64 embedding private 10.0.0.1'],
       ['[2002:a00:1::]:8080', '6to4 embedding private 10.0.0.1'],
       ['[2001::ffff:f5ff:fffe]:8080', 'Teredo embedding a private address'],
@@ -447,6 +2226,9 @@ describe('allowedAddressesSchema', () => {
       ['ws://10.0.0.5', 'ws URL'],
       ['10.0.0.0/24', 'CIDR range'],
       ['[64:ff9b::808:808]:8080', 'NAT64 embedding public 8.8.8.8'],
+      ['[::ffff:0:808:808]:8080', 'translated public IPv4 in hex form'],
+      ['[::ffff:0:8.8.8.8]:8080', 'translated public IPv4 in dotted form'],
+      ['[::ffff:1:a00:1]:8080', 'address outside the translated prefix'],
       ['[2002:808:808::]:8080', '6to4 embedding public 8.8.8.8'],
       ['/path', 'leading slash / path'],
       ['10.0.0.5/api', 'embedded path'],
@@ -492,7 +2274,86 @@ describe('allowedAddressesSchema', () => {
     });
   });
 
+  describe('one issue per refused entry', () => {
+    it.each([
+      ['', 'empty'],
+      ['   ', 'empty'],
+      ['http://localhost:11434', 'format'],
+      ['10.0.0.0/24', 'format'],
+      ['10.0.0.5 ', 'format'],
+      ['localhost', 'missing_port'],
+      ['10.0.0.5', 'missing_port'],
+      ['localhost:0', 'missing_port'],
+      ['8.8.8.8:53', 'public_ip'],
+      ['[2001:4860:4860::8888]:443', 'public_ip'],
+    ])('reports "%s" once, as %s', (entry, reason) => {
+      expect(getAllowedAddressEntryIssue(entry)).toBe(reason);
+      const result = allowedAddressesSchema.safeParse([entry]);
+      expect(result.success).toBe(false);
+      if (result.success) {
+        return;
+      }
+      expect(result.error.issues).toHaveLength(1);
+      expect(result.error.issues[0]).toMatchObject({
+        code: 'custom',
+        path: [0],
+        params: { reason },
+      });
+    });
+
+    it.each([['localhost:11434'], ['10.0.0.5:11434'], ['[::1]:8080'], ['ollama.internal:443']])(
+      'accepts "%s" without an issue',
+      (entry) => {
+        expect(getAllowedAddressEntryIssue(entry)).toBeNull();
+      },
+    );
+
+    it('keeps the message of the rule an entry fails', () => {
+      const messages = ['', 'http://x', 'localhost', '8.8.8.8:53'].map((entry) => {
+        const result = allowedAddressesSchema.safeParse([entry]);
+        return result.success ? undefined : result.error.issues[0]?.message;
+      });
+      expect(messages).toEqual([
+        'allowedAddresses entries must be non-empty',
+        'allowedAddresses entries must be host:port pairs — no URLs, paths, CIDR ranges, or whitespace',
+        'allowedAddresses entries must include a port, for example localhost:11434 or [::1]:11434',
+        'allowedAddresses is scoped to private IP space — public IP literals are not permitted (use hostname:port if it resolves to a private IP)',
+      ]);
+    });
+
+    it('reports a bare host in a config section once', () => {
+      const result = configSchema.safeParse({
+        version: '1.0',
+        endpoints: { allowedAddresses: ['localhost'] },
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues).toEqual([
+          expect.objectContaining({
+            path: ['endpoints', 'allowedAddresses', 0],
+            params: { reason: 'missing_port' },
+          }),
+        ]);
+      }
+    });
+  });
+
   describe('integration with configSchema', () => {
+    it.each(['actions', 'mcpSettings'] as const)(
+      'accepts translated private-address exemptions on %s',
+      (section) => {
+        const allowedAddresses = ['[::ffff:0:10.0.0.1]:8080'];
+        const result = configSchema.safeParse({
+          version: '1.0',
+          [section]: { allowedAddresses },
+        });
+        expect(result.success).toBe(true);
+        if (result.success) {
+          expect(result.data[section]?.allowedAddresses).toEqual(allowedAddresses);
+        }
+      },
+    );
+
     it('accepts the field on endpoints', () => {
       const result = configSchema.safeParse({
         version: '1.0',
@@ -509,6 +2370,78 @@ describe('allowedAddressesSchema', () => {
         mcpSettings: { allowedAddresses: ['127.0.0.1:8080'] },
       });
       expect(result.success).toBe(true);
+    });
+
+    it('defaults and validates MCP catalog recovery controls', () => {
+      const defaults = configSchema.parse({ version: '1.0', mcpSettings: {} });
+      expect(defaults.mcpSettings?.catalogRecovery).toEqual({
+        discoveryBackoffMs: [300_000, 600_000, 1_200_000, 1_800_000],
+        discoveryTimeoutMs: 3_000,
+        discoverySettleGraceMs: 10_000,
+        reauthRetryMs: 1_800_000,
+        maxStateEntries: 10_000,
+        maxDetachedDiscoveries: 3,
+        generationReadTimeoutMs: 500,
+        authorizationFenceRetryMs: [0, 50, 200],
+        authorizationFenceTimeoutMs: 1_000,
+        authorizationFenceRetryIntervalMs: 30_000,
+        authorizationFenceRetryBatchSize: 100,
+      });
+
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { discoveryBackoffMs: [] } },
+        }).success,
+      ).toBe(false);
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { discoveryTimeoutMs: 0 } },
+        }).success,
+      ).toBe(false);
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { discoverySettleGraceMs: -1 } },
+        }).success,
+      ).toBe(false);
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { maxDetachedDiscoveries: 0 } },
+        }).success,
+      ).toBe(false);
+      expect(
+        configSchema.parse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { discoverySettleGraceMs: 0 } },
+        }).mcpSettings?.catalogRecovery.discoverySettleGraceMs,
+      ).toBe(0);
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { authorizationFenceRetryMs: [-1] } },
+        }).success,
+      ).toBe(false);
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { authorizationFenceTimeoutMs: 0 } },
+        }).success,
+      ).toBe(false);
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { authorizationFenceRetryIntervalMs: 0 } },
+        }).success,
+      ).toBe(false);
+      expect(
+        configSchema.safeParse({
+          version: '1.0',
+          mcpSettings: { catalogRecovery: { authorizationFenceRetryBatchSize: 0 } },
+        }).success,
+      ).toBe(false);
     });
 
     it('accepts the field on actions', () => {
@@ -666,6 +2599,66 @@ describe('webSearchSchema', () => {
     ).toThrow();
   });
 
+  it('accepts Keenable search options', () => {
+    const result = webSearchSchema.parse({
+      keenableSearchOptions: {
+        maxResults: 7,
+        site: 'example.com',
+        attributionTitle: 'LibreChat',
+        timeout: 15000,
+      },
+    });
+
+    expect(result.keenableSearchOptions?.maxResults).toBe(7);
+    expect(result.keenableSearchOptions?.site).toBe('example.com');
+    expect(result.keenableSearchOptions?.attributionTitle).toBe('LibreChat');
+    expect(result.keenableSearchOptions?.timeout).toBe(15000);
+  });
+
+  it('rejects invalid Keenable search options', () => {
+    expect(() =>
+      webSearchSchema.parse({
+        keenableSearchOptions: {
+          maxResults: 0,
+        },
+      }),
+    ).toThrow();
+
+    expect(() =>
+      webSearchSchema.parse({
+        keenableSearchOptions: {
+          timeout: 120001,
+        },
+      }),
+    ).toThrow();
+  });
+
+  it('accepts Keenable as a scraper provider with its options', () => {
+    const result = webSearchSchema.parse({
+      searchProvider: 'keenable',
+      scraperProvider: 'keenable',
+      rerankerType: 'none',
+      keenableScraperOptions: {
+        attributionTitle: 'LibreChat',
+        timeout: 15000,
+      },
+    });
+
+    expect(result.scraperProvider).toBe('keenable');
+    expect(result.keenableScraperOptions?.attributionTitle).toBe('LibreChat');
+    expect(result.keenableScraperOptions?.timeout).toBe(15000);
+  });
+
+  it('rejects invalid Keenable scraper options', () => {
+    expect(() =>
+      webSearchSchema.parse({
+        keenableScraperOptions: {
+          timeout: 120001,
+        },
+      }),
+    ).toThrow();
+  });
+
   it('accepts SearXNG search options', () => {
     const result = webSearchSchema.parse({
       searxngSearchOptions: {
@@ -786,5 +2779,1007 @@ describe('bedrockModels defaults', () => {
   it('keeps Opus 5 available as a global profile', () => {
     expect(bedrockModels).toContain('global.anthropic.claude-opus-5');
     expect(bedrockModels).not.toContain('anthropic.claude-opus-5');
+  });
+});
+
+describe('MCP Apps configuration', () => {
+  it.each([
+    [
+      undefined,
+      {
+        enabled: false,
+        legacyHtmlEnabled: true,
+        maxPersistedAppBytes: DEFAULT_MCP_APP_PERSISTED_BYTES,
+        maxAdmissionRequestsPerMinute: DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
+        maxActiveViews: DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
+        maxActionPreviewChars: DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
+      },
+    ],
+    [
+      true,
+      {
+        enabled: true,
+        legacyHtmlEnabled: true,
+        maxPersistedAppBytes: DEFAULT_MCP_APP_PERSISTED_BYTES,
+        maxAdmissionRequestsPerMinute: DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
+        maxActiveViews: DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
+        maxActionPreviewChars: DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
+      },
+    ],
+    [
+      false,
+      {
+        enabled: false,
+        legacyHtmlEnabled: false,
+        maxPersistedAppBytes: DEFAULT_MCP_APP_PERSISTED_BYTES,
+        maxAdmissionRequestsPerMinute: DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
+        maxActiveViews: DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
+        maxActionPreviewChars: DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
+      },
+    ],
+  ])('resolves raw apps value %s to the effective policy', (value, expected) => {
+    expect(resolveMCPAppsPolicy(value)).toEqual(expected);
+  });
+
+  it('defaults and validates deployment-owned sandbox limits', () => {
+    expect(configSchema.parse({ version: '1.2.1' }).mcpAppSandbox).toEqual({
+      ...DEFAULT_MCP_APP_CSP_LIMITS,
+      maxPersistedAppBytes: DEFAULT_MCP_APP_PERSISTED_BYTES,
+      maxPersistedMessageBytes: 12 * 1024 * 1024,
+      maxAdmissionRequestsPerMinute: DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
+      maxActiveViews: DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
+      maxActionPreviewChars: DEFAULT_MCP_APP_ACTION_PREVIEW_CHARS,
+      operationLimits: DEFAULT_MCP_APP_OPERATION_LIMITS,
+    });
+    expect(
+      configSchema.parse({
+        version: '1.2.1',
+        mcpAppSandbox: {
+          maxSourcesPerDirective: 64,
+          maxSerializedLength: 8192,
+          maxPersistedAppBytes: 2048,
+          maxPersistedMessageBytes: 1024 * 1024,
+          maxAdmissionRequestsPerMinute: 480,
+          maxActiveViews: 7,
+          maxActionPreviewChars: 32768,
+          operationLimits: { maxBytes: 6 * 1024 * 1024, timeoutMs: 45_000, maxActive: 8 },
+          url: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+        },
+      }).mcpAppSandbox,
+    ).toEqual({
+      maxSourcesPerDirective: 64,
+      maxSerializedLength: 8192,
+      maxPersistedAppBytes: 2048,
+      maxPersistedMessageBytes: 1024 * 1024,
+      maxAdmissionRequestsPerMinute: 480,
+      maxActiveViews: 7,
+      maxActionPreviewChars: 32768,
+      operationLimits: { maxBytes: 6 * 1024 * 1024, timeoutMs: 45_000, maxActive: 8 },
+      url: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+    });
+    for (const mcpAppSandbox of [
+      { maxSourcesPerDirective: 0 },
+      { maxSourcesPerDirective: 1.5 },
+      { maxSerializedLength: -1 },
+      { maxSerializedLength: 1.5 },
+      { maxSerializedLength: Number.MAX_SAFE_INTEGER + 1 },
+      { maxPersistedMessageBytes: 0 },
+      { maxPersistedMessageBytes: 1.5 },
+      { maxPersistedMessageBytes: 12 * 1024 * 1024 + 1 },
+      { maxPersistedAppBytes: 0 },
+      { maxPersistedAppBytes: 1.5 },
+      { maxPersistedAppBytes: MAX_MCP_APP_PERSISTED_BYTES + 1 },
+      { maxAdmissionRequestsPerMinute: 0 },
+      { maxAdmissionRequestsPerMinute: 1.5 },
+      { maxAdmissionRequestsPerMinute: Number.MAX_SAFE_INTEGER + 1 },
+      { maxActiveViews: 0 },
+      { maxActiveViews: 1.5 },
+      { maxActiveViews: MAX_MCP_APP_ACTIVE_VIEWS + 1 },
+      { maxActionPreviewChars: 0 },
+      { maxActionPreviewChars: 1.5 },
+      { maxActionPreviewChars: MAX_MCP_APP_ACTION_PREVIEW_CHARS + 1 },
+      { operationLimits: { maxBytes: 0 } },
+      { operationLimits: { maxBytes: 16 * 1024 * 1024 + 1 } },
+      { operationLimits: { timeoutMs: 10 * 60_000 + 1 } },
+      { operationLimits: { maxActive: 0 } },
+      { operationLimits: { maxActive: 257 } },
+      { url: '/api/mcp/sandbox' },
+      { url: 'ftp://mcp-sandbox.example.com/api/mcp/sandbox' },
+    ]) {
+      expect(configSchema.safeParse({ version: '1.2.1', mcpAppSandbox }).success).toBe(false);
+    }
+  });
+
+  it('carries the validated App operation limits to server-side policy consumers', () => {
+    const sandbox = configSchema.parse({
+      version: '1.2.1',
+      mcpAppSandbox: { operationLimits: { maxBytes: 2 * 1024 * 1024 } },
+    }).mcpAppSandbox;
+    expect(
+      resolveMCPAppsPolicy(
+        true,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        sandbox.operationLimits,
+      ).operationLimits,
+    ).toEqual({ ...DEFAULT_MCP_APP_OPERATION_LIMITS, maxBytes: 2 * 1024 * 1024 });
+  });
+
+  it('publishes optional runtime sandbox fields in the effective policy', () => {
+    expect(
+      resolveMCPAppsPolicy(
+        true,
+        undefined,
+        2048,
+        480,
+        'https://mcp-sandbox.example.com/api/mcp/sandbox',
+        7,
+        32768,
+      ),
+    ).toEqual({
+      enabled: true,
+      legacyHtmlEnabled: true,
+      maxPersistedAppBytes: 2048,
+      maxAdmissionRequestsPerMinute: 480,
+      maxActiveViews: 7,
+      maxActionPreviewChars: 32768,
+      sandboxUrl: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+    });
+  });
+
+  it('defaults App request limits without requiring the parent rateLimits section', () => {
+    expect(resolveMCPAppRateLimits()).toEqual({
+      resourcesPerMinute: 120,
+      toolCallsPerMinute: 60,
+    });
+  });
+
+  it('resolves configured App request limits', () => {
+    expect(
+      resolveMCPAppRateLimits({
+        mcpApps: { resourcesPerMinute: 2, toolCallsPerMinute: 3 },
+      }),
+    ).toEqual({ resourcesPerMinute: 2, toolCallsPerMinute: 3 });
+  });
+
+  it.each([0, -1, 1.5])('rejects invalid App resource request limits: %s', (value) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.3.5',
+        rateLimits: { mcpApps: { resourcesPerMinute: value } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each([0, -1, 1.5])('rejects invalid App tool-call limits: %s', (value) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.3.5',
+        rateLimits: { mcpApps: { toolCallsPerMinute: value } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('MCP UI refresh configuration', () => {
+  it('preserves configured intervals, including zero to disable polling', () => {
+    const result = configSchema.parse({
+      version: '1.3.5',
+      interface: { mcpServers: { toolsRefreshInterval: 0, statusRefreshInterval: 60_000 } },
+    });
+    expect(result.interface?.mcpServers).toMatchObject({
+      toolsRefreshInterval: 0,
+      statusRefreshInterval: 60_000,
+    });
+  });
+
+  it.each([-1, 1.5, 2_147_483_648])('rejects invalid timer intervals: %s', (interval) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.3.5',
+        interface: { mcpServers: { statusRefreshInterval: interval } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('interface theme config', () => {
+  const parseTheme = (theme: unknown) =>
+    configSchema.safeParse({ version: '1.3.0', interface: { theme } });
+
+  const inlineTheme = {
+    version: 1,
+    name: 'acme',
+    modes: {
+      light: {
+        colors: { 'rgb-surface-primary': '255 255 255', 'rgb-text-primary': '22 21 23' },
+        appearance: { controlRadius: '0.25rem' },
+      },
+      dark: { colors: { 'rgb-surface-primary': '31 31 28' } },
+    },
+    brands: { 'provider-openai': '#19C37D' },
+  };
+
+  it('is absent when not configured', () => {
+    const result = configSchema.safeParse({ version: '1.3.0', interface: {} });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.interface.theme).toBeUndefined();
+  });
+
+  it('accepts a bundled theme name', () => {
+    const result = parseTheme('clickhouse');
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.interface.theme).toBe('clickhouse');
+  });
+
+  it('rejects an empty theme name', () => {
+    expect(parseTheme('  ').success).toBe(false);
+  });
+
+  it('accepts a valid inline definition', () => {
+    const result = parseTheme(inlineTheme);
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.interface.theme).toEqual(inlineTheme);
+  });
+
+  it('rejects a malformed RGB triplet', () => {
+    expect(
+      parseTheme({
+        ...inlineTheme,
+        modes: { light: { colors: { 'rgb-surface-primary': '#ffffff' } } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an unsupported version', () => {
+    expect(parseTheme({ ...inlineTheme, version: 2 }).success).toBe(false);
+  });
+
+  it('rejects unknown keys and color names that are not plain tokens', () => {
+    expect(parseTheme({ ...inlineTheme, css: 'body {}' }).success).toBe(false);
+    expect(parseTheme({ ...inlineTheme, modes: { sepia: { colors: {} } } }).success).toBe(false);
+    expect(
+      parseTheme({
+        ...inlineTheme,
+        modes: { light: { colors: { 'Surface Primary': '255 255 255' } } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts an unknown color token name so the loader can ignore it', () => {
+    expect(
+      parseTheme({
+        ...inlineTheme,
+        modes: { light: { colors: { 'surface-primary': '255 255 255' } } },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('accepts the ceilings and rejects values above them', () => {
+    const atCeiling = { maxFiles: 500, maxInstructionsLength: 200000, maxDescriptionLength: 10000 };
+    expect(chatProjectsConfigSchema.parse(atCeiling)).toEqual(atCeiling);
+    expect(chatProjectsConfigSchema.safeParse({ maxFiles: 501 }).success).toBe(false);
+    expect(chatProjectsConfigSchema.safeParse({ maxInstructionsLength: 200001 }).success).toBe(
+      false,
+    );
+    expect(chatProjectsConfigSchema.safeParse({ maxDescriptionLength: 10001 }).success).toBe(false);
+  });
+});
+
+describe('policy link URLs', () => {
+  const scriptUrls = [
+    'javascript:alert(document.domain)',
+    'JavaScript:alert(1)',
+    ' javascript:alert(1)',
+    '\u0001javascript:alert(1)',
+    'java\tscript:alert(1)',
+    'java\nscript:alert(1)',
+    'data:text/html,<script>alert(1)</script>',
+    'vbscript:msgbox(1)',
+    'file:///etc/passwd',
+    'blob:https://example.com/0b1c',
+  ];
+  /** Unicode white space the URL parser keeps but `String.prototype.trim()` strips. */
+  const trimmedScriptUrls = ['\u00a0', '\ufeff', '\u2028', '\u3000'].map(
+    (space) => `${space}javascript:alert(document.domain)${space}`,
+  );
+  const linkUrls = [
+    'https://example.com/privacy',
+    'HTTP://example.com/terms',
+    'https://example.com/privacy policy',
+    '\u00a0https://example.com/privacy',
+    'mailto:privacy@example.com',
+    'tel:+15555550100',
+    '/privacy',
+    'legal/terms.html',
+    './privacy',
+    '//example.com/privacy',
+    '#privacy',
+    '?doc=privacy',
+    '',
+    '   ',
+    '\u3000',
+  ];
+  const linkProtocols = new Set(['http:', 'https:', 'mailto:', 'tel:']);
+  const parseInterface = (value: Record<string, unknown>) =>
+    configSchema.safeParse({ version: '1.3.0', interface: value });
+
+  it.each([...scriptUrls, ...trimmedScriptUrls])(
+    'refuses %j, which a browser would not open as a web page, mail or phone link',
+    (url) => {
+      expect(isSafeLinkUrl(url)).toBe(false);
+    },
+  );
+
+  it.each(linkUrls)('accepts %j, an http(s), mailto:, tel:, relative or blank link', (url) => {
+    expect(isSafeLinkUrl(url)).toBe(true);
+  });
+
+  it('keeps accepting a malformed http(s) link, which a browser does not open at all', () => {
+    expect(isSafeLinkUrl('https://exa mple.com')).toBe(true);
+    expect(isSafeLinkUrl('http://')).toBe(true);
+  });
+
+  it('reads the scheme the URL parser reads, before and after the trim a client applies', () => {
+    const base = 'https://chat.example.com/c/new';
+    for (const url of [...scriptUrls, ...trimmedScriptUrls, ...linkUrls]) {
+      const readable = [url, url.trim()].every((read) =>
+        linkProtocols.has(new URL(read, base).protocol),
+      );
+      expect([isSafeLinkUrl(url), url]).toEqual([readable, url]);
+    }
+  });
+
+  it('refuses a scheme behind any mix of control characters and Unicode white space', () => {
+    expect(isSafeLinkUrl('\u0001\u00a0javascript:alert(1)')).toBe(false);
+    expect(isSafeLinkUrl('\u00a0\t\u0001\ufeffJAVASCRIPT:alert(1)')).toBe(false);
+  });
+
+  it('judges a link with long white-space runs in time that grows linearly with its length', () => {
+    const run = 100_000;
+    const cases: [string, boolean][] = [
+      [`https://example.com/${' '.repeat(run)}x`, true],
+      [`https://example.com/${'\u00a0\t'.repeat(run / 2)}x`, true],
+      [`${' '.repeat(run)}x`, true],
+      [`${'\u3000'.repeat(run)}${'a'.repeat(run)}`, true],
+      [`${' \u00a0\u0001'.repeat(run / 3)}javascript:alert(1)${' '.repeat(run)}x`, false],
+      [`java${'\t'.repeat(run)}script:alert(1)`, false],
+    ];
+    for (const [url, safe] of cases) {
+      const started = performance.now();
+      const decision = isSafeLinkUrl(url);
+      const elapsed = performance.now() - started;
+      expect([decision, elapsed < 100]).toEqual([safe, true]);
+    }
+  });
+
+  it('rejects a script URL in either policy link and points at the field', () => {
+    for (const field of ['privacyPolicy', 'termsOfService']) {
+      const result = parseInterface({ [field]: { externalUrl: 'javascript:alert(1)' } });
+      expect(result.success).toBe(false);
+      expect(result.success ? [] : result.error.issues.map((issue) => issue.path)).toEqual([
+        ['interface', field, 'externalUrl'],
+      ]);
+    }
+  });
+
+  it('accepts http(s), mailto:, relative and blank policy links with their other settings', () => {
+    const result = parseInterface({
+      privacyPolicy: { externalUrl: 'https://example.com/privacy', openNewTab: true },
+      termsOfService: { externalUrl: '/terms', modalAcceptance: true, modalContent: '# Terms' },
+    });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.interface.privacyPolicy).toEqual({
+      externalUrl: 'https://example.com/privacy',
+      openNewTab: true,
+    });
+    expect(parseInterface({ privacyPolicy: { externalUrl: '' } }).success).toBe(true);
+    expect(
+      parseInterface({ privacyPolicy: { externalUrl: 'mailto:privacy@example.com' } }).success,
+    ).toBe(true);
+  });
+});
+
+describe('built-in endpoint model lists', () => {
+  const parse = (endpoints: Record<string, unknown>) =>
+    configSchema.safeParse({ version: '1.0', endpoints });
+
+  it.each([
+    EModelEndpoint.openAI,
+    EModelEndpoint.google,
+    EModelEndpoint.anthropic,
+    EModelEndpoint.bedrock,
+  ])('accepts a models list for %s', (endpoint) => {
+    const result = parse({ [endpoint]: { models: ['model-a'] } });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.endpoints?.[endpoint]).toMatchObject({
+      models: ['model-a'],
+    });
+  });
+
+  it.each([EModelEndpoint.openAI, EModelEndpoint.google])(
+    'rejects a non-array models value for %s',
+    (endpoint) => {
+      expect(parse({ [endpoint]: { models: 'model-a' } }).success).toBe(false);
+    },
+  );
+});
+
+describe('subagent activity policy', () => {
+  it('defaults operational controls through the config schema', () => {
+    const parsed = configSchema.parse({
+      version: '1.3.17',
+      endpoints: { agents: { subagentActivity: {} } },
+    });
+    expect(parsed.endpoints?.agents?.subagentActivity).toEqual({
+      generationJobs: true,
+      generationContentBytes: 4_194_304,
+      contentRecoveryEnabled: false,
+      contentPageBytes: 262_144,
+      contentFlushMs: 250,
+      contentSettlementTimeoutMs: 1000,
+      contentRecoveryGraceMs: 30_000,
+      contentBatchBytes: 65_536,
+      contentPendingBytes: 8_388_608,
+      replayTtlMs: 300_000,
+      publicationTimeoutMs: 1_000,
+      retryAttempts: 3,
+      retryBaseDelayMs: 100,
+      recoveryDelayMs: 1_000,
+      memoryMaxStreams: 1_000,
+      memoryMaxBytes: 16_777_216,
+    });
+  });
+  it('retains operator overrides and rejects unsafe budgets', () => {
+    const config = {
+      version: '1.3.17',
+      endpoints: {
+        agents: {
+          subagentActivity: {
+            contentRecoveryEnabled: true,
+            contentPageBytes: 524_288,
+            contentFlushMs: 500,
+            contentSettlementTimeoutMs: 5000,
+            contentRecoveryGraceMs: 60_000,
+            contentBatchBytes: 131_072,
+            contentPendingBytes: 16_777_216,
+            replayTtlMs: 3_600_000,
+            publicationTimeoutMs: 5_000,
+            retryAttempts: 2,
+            memoryMaxBytes: 65_536,
+          },
+        },
+      },
+    };
+    expect(configSchema.parse(config).endpoints?.agents?.subagentActivity).toMatchObject(
+      config.endpoints.agents.subagentActivity,
+    );
+    expect(
+      configSchema.safeParse({
+        ...config,
+        endpoints: { agents: { subagentActivity: { retryAttempts: 0 } } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+it.each([
+  { baseMs: 100, maxMs: 1000 },
+  { baseMs: 1000, maxMs: 600_000 },
+])('accepts bounded MCP receipt retry policy %j', (mcpReceiptRetry) => {
+  expect(
+    configSchema.safeParse({
+      version: '1.2.1',
+      interface: { schedules: { use: true, mcpReceiptRetry } },
+    }).success,
+  ).toBe(true);
+});
+it.each([{ baseMs: 1 }, { maxMs: 600001 }, { baseMs: 1000, maxMs: 500 }])(
+  'rejects invalid MCP receipt retry policy %j',
+  (mcpReceiptRetry) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, mcpReceiptRetry } },
+      }).success,
+    ).toBe(false);
+  },
+);
+
+describe('conversation title ownership rollout', () => {
+  it('defaults running rename on when the option is omitted', () => {
+    expect(interfaceSchema.parse({}).runningChatRename).toBe(true);
+  });
+  it('defaults running rename on when the whole interface block is omitted', () => {
+    expect(interfaceSchema.parse(undefined).runningChatRename).toBe(true);
+  });
+  it('lets a deployment opt out of running rename explicitly', () => {
+    expect(interfaceSchema.parse({ runningChatRename: false }).runningChatRename).toBe(false);
+  });
+  it('fails closed when an old replica omits the version or the operator leaves the fence off', () => {
+    expect(supportsConversationTitleOwnership(undefined)).toBe(false);
+    expect(supportsConversationTitleOwnership({ interface: { runningChatRename: true } })).toBe(
+      false,
+    );
+    expect(supportsConversationTitleOwnership({ conversationTitleOwnershipVersion: 1 })).toBe(
+      false,
+    );
+    expect(
+      supportsConversationTitleOwnership({
+        conversationTitleOwnershipVersion: 1,
+        interface: { runningChatRename: true },
+      }),
+    ).toBe(true);
+  });
+});
+
+describe('workspace admission configuration', () => {
+  it('preserves absent defaults and resolves an explicit admission policy', () => {
+    expect(codeEnvironmentUserConfigSchema.parse({})).toEqual({});
+    expect(codeEnvironmentUserConfigSchema.parse({ admission: {} }).admission).toEqual({
+      initialDelayMs: 1_000,
+      maxDelayMs: 30_000,
+      multiplier: 1,
+      jitterRatio: 0,
+    });
+    expect(
+      codeEnvironmentUserConfigSchema.parse({
+        admission: { queueWaitMs: 180_000, multiplier: 2, jitterRatio: 0.2 },
+        limits: { maxRequestTimeoutMs: 220_000, maxRunTimeoutMs: 400_000 },
+      }),
+    ).toMatchObject({
+      admission: { queueWaitMs: 180_000, multiplier: 2, jitterRatio: 0.2 },
+      limits: { maxRequestTimeoutMs: 220_000, maxRunTimeoutMs: 400_000 },
+    });
+  });
+
+  it.each([
+    { queueWaitMs: 0 },
+    { queueWaitMs: 300_001 },
+    { initialDelayMs: 99 },
+    { initialDelayMs: 2_000, maxDelayMs: 1_000 },
+    { multiplier: 0 },
+    { jitterRatio: -0.1 },
+    { jitterRatio: 1.1 },
+    { maxDelayMs: Infinity },
+    { queueWaitMs: 1.5 },
+    { resubmissionWindowMs: -1 },
+    { resubmissionWindowMs: 60_001 },
+    { resubmissionWindowMs: 1.5 },
+    { unexpected: true },
+  ])('rejects an invalid policy %j', (admission) => {
+    expect(codeEnvironmentUserConfigSchema.safeParse({ admission }).success).toBe(false);
+  });
+
+  it.each([0, 20_500, 60_000])('accepts a resubmission window of %i ms', (resubmissionWindowMs) => {
+    expect(
+      codeEnvironmentUserConfigSchema.parse({ admission: { resubmissionWindowMs } }).admission,
+    ).toMatchObject({ resubmissionWindowMs });
+  });
+
+  it.each([0, 1, -1, 1.5, 20_000, 610_001, Infinity])(
+    'rejects an invalid run deadline %s',
+    (maxRunTimeoutMs) => {
+      expect(
+        codeEnvironmentUserConfigSchema.safeParse({ limits: { maxRunTimeoutMs } }).success,
+      ).toBe(false);
+    },
+  );
+});
+
+describe('GitHub comparison configuration', () => {
+  it('keeps outbound comparison disabled unless explicitly enabled', () => {
+    expect(configSchema.parse({ version: '1.0' }).githubCompare).toBeUndefined();
+    expect(configSchema.parse({ version: '1.0', githubCompare: {} }).githubCompare).toEqual({
+      enabled: false,
+      timeoutMs: 10000,
+    });
+    expect(
+      configSchema.parse({ version: '1.0', githubCompare: { enabled: true, timeoutMs: 2000 } })
+        .githubCompare,
+    ).toEqual({
+      enabled: true,
+      timeoutMs: 2000,
+    });
+  });
+  it.each([0, -1, 30001, 1.5, '10000'])('rejects invalid timeout %p', (timeoutMs) => {
+    expect(configSchema.safeParse({ version: '1.0', githubCompare: { timeoutMs } }).success).toBe(
+      false,
+    );
+  });
+  it('rejects unknown comparison settings', () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        githubCompare: { enabled: true, baseURL: 'https://other.test' },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('agent recursion limits', () => {
+  it.each(['recursionLimit', 'maxRecursionLimit'])(
+    '%s takes a whole number of at least 1',
+    (field) => {
+      for (const value of [1, 50, 500]) {
+        expect(agentsEndpointSchema.safeParse({ [field]: value }).success).toBe(true);
+      }
+      for (const value of [0, -5, 2.5, 0.5]) {
+        expect(agentsEndpointSchema.safeParse({ [field]: value }).success).toBe(false);
+      }
+      expect(agentsEndpointSchema.parse({})[field as 'recursionLimit']).toBeUndefined();
+    },
+  );
+});
+
+describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
+  type Node = { _def: { typeName?: string; innerType?: Node; schema?: Node }; shape?: unknown };
+
+  /** The object schema beneath optional, default and refinement wrappers. */
+  function unwrap(node: Node): Node {
+    let current = node;
+    while (current._def.innerType ?? current._def.schema) {
+      current = (current._def.innerType ?? current._def.schema) as Node;
+    }
+    return current;
+  }
+
+  function hasSchemaPath(path: string): boolean {
+    let node: Node | undefined = configSchema as unknown as Node;
+    for (const segment of path.split('.')) {
+      const shape: Record<string, Node> | undefined = node
+        ? (unwrap(node).shape as Record<string, Node> | undefined)
+        : undefined;
+      node = shape?.[segment];
+      if (!node) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  it('names fields configSchema defines', () => {
+    const paths = Object.keys(DEPLOYMENT_ONLY_CONFIG_PATHS);
+    expect(paths.length).toBeGreaterThan(0);
+    expect(paths.filter((path) => !hasSchemaPath(path))).toEqual([]);
+  });
+
+  it('declares the tool filters deployment-only', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS).toMatchObject({
+      includedTools: 'operator',
+      filteredTools: 'operator',
+      'endpoints.agents.toolApproval.hooks': 'operator',
+      cache: 'unused',
+    });
+  });
+
+  it('keeps the process-wide stack limit deployment-only', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS['telemetry.stackTraceLimit']).toBe('operator');
+  });
+
+  it('declares the settings read from librechat.yaml itself or only at startup', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS).toMatchObject({
+      'telemetry.rum': 'operator',
+      clientLimits: 'operator',
+      conversationList: 'operator',
+      passwordHashing: 'startup',
+      'endpoints.agents.eventDriven': 'startup',
+      'interface.colorModeFromUrl': 'startup',
+      'fileConfig.skills.deletionCleanupConcurrency': 'operator',
+      'endpoints.agents.managementApi': 'operator',
+    });
+  });
+
+  it('overlaps neither the base-only sections nor the base-only paths', () => {
+    const baseOnly = new Set<string>([...BASE_ONLY_CONFIG_SECTIONS, ...BASE_ONLY_CONFIG_PATHS]);
+    for (const path of Object.keys(DEPLOYMENT_ONLY_CONFIG_PATHS)) {
+      const segments = path.split('.');
+      const prefixes = segments.map((_, index) => segments.slice(0, index + 1).join('.'));
+      expect(prefixes.filter((prefix) => baseOnly.has(prefix))).toEqual([]);
+    }
+  });
+});
+
+describe('idle polling configuration', () => {
+  const parse = (idlePolling: unknown) =>
+    configSchema.safeParse({
+      version: '1.3.19',
+      endpoints: { agents: { eventDriven: { idlePolling } } },
+    });
+
+  it('leaves the deployment-wide ceiling unset, and every loop on its own default, when absent', () => {
+    expect(
+      parse({}).data?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs,
+    ).toBeUndefined();
+    expect(configSchema.parse({ version: '1.3.19' }).endpoints?.agents).toBeUndefined();
+  });
+
+  it.each([1_000, 900_000, MAX_IDLE_POLLING_INTERVAL_MS])(
+    'accepts a deployment-wide ceiling of %s ms',
+    (maxIntervalMs) => {
+      expect(
+        parse({ maxIntervalMs }).data?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs,
+      ).toBe(maxIntervalMs);
+    },
+  );
+
+  it.each([
+    ['below one second', { maxIntervalMs: 999 }],
+    ['above one hour', { maxIntervalMs: MAX_IDLE_POLLING_INTERVAL_MS + 1 }],
+    ['fractional', { maxIntervalMs: 1500.5 }],
+    ['not a number', { maxIntervalMs: '15m' }],
+  ])('rejects a ceiling that is %s', (_name, idlePolling) => {
+    expect(parse(idlePolling).success).toBe(false);
+  });
+
+  it('allows up to about one hour, and keeps the per-feature caps on their own defaults', () => {
+    expect(MAX_IDLE_POLLING_INTERVAL_MS).toBe(3_600_000);
+    expect(
+      parse({ maxIntervalMs: 900_000 }).data?.endpoints?.agents?.eventDriven?.idlePolling,
+    ).toMatchObject({
+      maxIntervalMs: 900_000,
+      queuedTurnMaxIntervalMs: 120_000,
+      maintenanceMaxIntervalMs: 120_000,
+    });
+  });
+});
+
+describe('Permission principal concurrency', () => {
+  it('accepts bounded permission lookup concurrency', () => {
+    expect(
+      configSchema.parse({ version: '1.3.5', concurrency: { permissionPrincipalLookups: 2 } })
+        .concurrency?.permissionPrincipalLookups,
+    ).toBe(2);
+  });
+  it.each([0, 33, 1.5])(
+    'rejects invalid principal concurrency: %s',
+    (permissionPrincipalLookups) => {
+      expect(
+        configSchema.safeParse({ version: '1.3.5', concurrency: { permissionPrincipalLookups } })
+          .success,
+      ).toBe(false);
+    },
+  );
+});
+
+describe('directory verification deadline configuration', () => {
+  it('preserves an explicitly configured directory budget', () => {
+    expect(
+      configSchema.parse({ version: '1.3.5', timeouts: { directoryMs: 50 } }).timeouts?.directoryMs,
+    ).toBe(50);
+  });
+  it.each([0, -1, 1.5, 2147483648])('rejects unsafe directory budget %s', (directoryMs) => {
+    expect(configSchema.safeParse({ version: '1.3.5', timeouts: { directoryMs } }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('channel storage work limit', () => {
+  it('preserves the claim default and exposes an operator override through YAML config', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels?.claimBatchSize).toBe(25);
+    expect(
+      configSchema.parse({
+        version: '1.3.17',
+        endpoints: { agents: { channels: { claimBatchSize: 60 } } },
+      }).endpoints?.agents?.channels?.claimBatchSize,
+    ).toBe(60);
+  });
+  it.each([0, 101, 1.5, '25'])('rejects invalid claim batch %s', (claimBatchSize) => {
+    expect(agentsEndpointSchema.safeParse({ channels: { claimBatchSize } }).success).toBe(false);
+  });
+});
+
+describe('channel erasure configuration', () => {
+  it('defaults cleanup batches and exposes a deployment override', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels?.erasureBatchSize).toBe(250);
+    expect(
+      configSchema.parse({
+        version: '1.3.17',
+        endpoints: { agents: { channels: { erasureBatchSize: 12 } } },
+      }).endpoints?.agents?.channels?.erasureBatchSize,
+    ).toBe(12);
+  });
+  it.each([0, 1001, 1.5, '250'])('rejects invalid erasure batch %s', (erasureBatchSize) => {
+    expect(agentsEndpointSchema.safeParse({ channels: { erasureBatchSize } }).success).toBe(false);
+  });
+});
+
+describe('complete channel operator configuration', () => {
+  it('owns gateway feature and signature policy with behavior-preserving defaults', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels).toMatchObject({
+      transport: 'socket_mode',
+      nativeSessions: false,
+      lifecycleReactions: false,
+      signatureToleranceSeconds: 300,
+      socketReconnectDelayMs: 5000,
+    });
+    expect(
+      configSchema.parse({
+        version: '1.2.1',
+        endpoints: {
+          agents: {
+            channels: {
+              enabled: true,
+              transport: 'webhook',
+              nativeSessions: true,
+              lifecycleReactions: true,
+              signatureToleranceSeconds: 60,
+              socketReconnectDelayMs: 100,
+            },
+          },
+        },
+      }).endpoints?.agents?.channels,
+    ).toMatchObject({
+      transport: 'webhook',
+      nativeSessions: true,
+      lifecycleReactions: true,
+      signatureToleranceSeconds: 60,
+      socketReconnectDelayMs: 100,
+    });
+  });
+  it.each([
+    { socketReconnectDelayMs: 99 },
+    { socketReconnectDelayMs: 60001 },
+    { socketReconnectDelayMs: 100.5 },
+    { socketReconnectDelayMs: '5000' },
+    { nativeSessions: 'true' },
+    { lifecycleReactions: 'false' },
+    { signatureToleranceSeconds: 0 },
+    { signatureToleranceSeconds: 301 },
+    { signatureToleranceSeconds: 1.5 },
+  ])('rejects malformed shared gateway policy %p', (channels) => {
+    expect(agentsEndpointSchema.safeParse({ channels }).success).toBe(false);
+  });
+  it('keeps channel execution disabled by default and accepts explicit enablement with runtime limits', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels?.enabled).toBe(false);
+    const parsed = configSchema.parse({
+      version: '1.2.1',
+      endpoints: {
+        agents: {
+          channels: {
+            enabled: true,
+            transport: 'webhook',
+            gatewayUrl: 'https://gateway.example',
+            cleanup: { batchSize: 12 },
+            ticketLifetimeMs: 180000,
+            artifactAnswerFileThresholdBytes: 8192,
+          },
+        },
+      },
+    });
+    expect(parsed.endpoints?.agents?.channels).toMatchObject({
+      enabled: true,
+      transport: 'webhook',
+      gatewayUrl: 'https://gateway.example',
+      cleanup: { batchSize: 12 },
+      ticketLifetimeMs: 180000,
+      artifactAnswerFileThresholdBytes: 8192,
+    });
+  });
+  it.each([{ artifactMaxBytes: 50 * 1024 * 1024 + 1 }, { ticketLifetimeMs: 0 }, { batchSize: 12 }])(
+    'rejects invalid or unknown runtime configuration %p',
+    (channels) => {
+      expect(
+        agentsEndpointSchema.safeParse({ channels: { enabled: true, ...channels } }).success,
+      ).toBe(false);
+    },
+  );
+});
+
+describe('remote SDK runtime configuration', () => {
+  it('keeps native file reads opt-in and bounds process budgets', () => {
+    expect(agentsEndpointSchema.parse({}).sdkHostFiles).toBeUndefined();
+    const parsed = agentsEndpointSchema.parse({
+      sdkHostFiles: {},
+      sdkRuntimes: {
+        runtime: {
+          remote: { url: 'wss://runtime.example/sdk', secret: 'secret', hostFiles: true },
+        },
+      },
+    });
+    expect(parsed.sdkHostFiles?.maxChunkBytes).toBe(262144);
+    expect(parsed.sdkRuntimes?.runtime).toMatchObject({ remote: { hostFiles: true } });
+    for (const field of Object.keys(parsed.sdkHostFiles!)) {
+      for (const value of [0, -1, Number.MAX_SAFE_INTEGER])
+        expect(agentsEndpointSchema.safeParse({ sdkHostFiles: { [field]: value } }).success).toBe(
+          false,
+        );
+    }
+    expect(agentsEndpointSchema.safeParse({ sdkHostFiles: { unknown: true } }).success).toBe(false);
+  });
+  it('opts into builder models with bounded process-wide admission', () => {
+    expect(agentsEndpointSchema.parse({}).sdkHostModels).toBeUndefined();
+    const result = agentsEndpointSchema.parse({
+      sdkHostModels: {},
+      sdkRuntimes: {
+        runtime: {
+          remote: { url: 'wss://runtime.example/sdk', secret: 'secret', hostModel: true },
+        },
+      },
+    });
+    expect(result.sdkHostModels).toEqual({
+      maxConcurrentCalls: 32,
+      maxAdmissionEntries: 4096,
+      maxBufferedRequestBytes: 67108864,
+      timeoutMs: 60000,
+      maxRequestBytes: 4194304,
+      maxResponseBytes: 4194304,
+    });
+    expect(result.sdkRuntimes?.runtime).toMatchObject({ remote: { hostModel: true } });
+    for (const field of Object.keys(result.sdkHostModels!)) {
+      expect(agentsEndpointSchema.safeParse({ sdkHostModels: { [field]: 0 } }).success).toBe(false);
+      expect(
+        agentsEndpointSchema.safeParse({ sdkHostModels: { [field]: Number.MAX_SAFE_INTEGER } })
+          .success,
+      ).toBe(false);
+    }
+    expect(agentsEndpointSchema.safeParse({ sdkHostModels: { unknown: true } }).success).toBe(
+      false,
+    );
+  });
+  it('keeps module registrations and supplies remote transport defaults', () => {
+    const result = agentsEndpointSchema.parse({
+      sdkRuntimes: {
+        local: { module: './local.cjs' },
+        remote: { remote: { url: 'wss://runtime.example/sdk', secret: '${SDK_RUNTIME_SECRET}' } },
+      },
+    });
+    expect(result?.sdkRuntimes?.local).toEqual({ module: './local.cjs', roles: ['ADMIN'] });
+    expect(result?.sdkRuntimes?.remote).toEqual({
+      roles: ['ADMIN'],
+      remote: {
+        url: 'wss://runtime.example/sdk',
+        secret: '${SDK_RUNTIME_SECRET}',
+        connectTimeoutMs: 10000,
+        rpcTimeoutMs: 60000,
+        maxFrameBytes: 1048576,
+        maxBufferedBytes: 4194304,
+        maxRunMs: 600000,
+      },
+    });
+  });
+  it('enables recovery explicitly with bounded defaults', () => {
+    const remote = (recovery: unknown) => ({
+      sdkRuntimes: {
+        test: { remote: { url: 'wss://runtime.example/sdk', secret: 'secret', recovery } },
+      },
+    });
+    const registration = agentsEndpointSchema.parse(remote({}))?.sdkRuntimes?.test;
+    expect(
+      registration && 'remote' in registration ? registration.remote.recovery : undefined,
+    ).toEqual({
+      maxDisconnectMs: 15000,
+      retryDelayMs: 250,
+      maxJournalBytes: 67108864,
+    });
+    const routed = agentsEndpointSchema.parse(
+      remote({ routes: { 'worker-a': 'wss://worker-a.internal/sdk' } }),
+    )?.sdkRuntimes?.test;
+    expect(routed && 'remote' in routed ? routed.remote.recovery?.routes : undefined).toEqual({
+      'worker-a': 'wss://worker-a.internal/sdk',
+    });
+    for (const recovery of [
+      { routes: { 'worker-a': 'https://worker-a.internal/sdk' } },
+      { maxDisconnectMs: 0 },
+      { maxDisconnectMs: 60000 },
+      { retryDelayMs: -1 },
+      { maxJournalBytes: 0 },
+      { unknown: true },
+    ])
+      expect(agentsEndpointSchema.safeParse(remote(recovery)).success).toBe(false);
+  });
+  it.each([
+    { module: './local.cjs', remote: { url: 'wss://runtime.example/sdk', secret: 'secret' } },
+    { remote: { url: 'https://runtime.example/sdk', secret: 'secret' } },
+    { remote: { url: 'wss://runtime.example/sdk', secret: 'secret', maxFrameBytes: 0 } },
+  ])('rejects ambiguous or invalid transport registrations', (registration) => {
+    expect(agentsEndpointSchema.safeParse({ sdkRuntimes: { invalid: registration } }).success).toBe(
+      false,
+    );
   });
 });

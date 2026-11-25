@@ -281,6 +281,9 @@ export function createPluginHookPayload(
       return { ...payload, agent_type: input.agentType };
     case 'Stop':
       return { ...payload, stop_hook_active: input.stopHookActive };
+    /** Internal terminal-admission phase; plugin declarations cannot target it. */
+    case 'StopFinalize':
+      return payload;
     case 'StopFailure': {
       const lastAssistantMessage = getMessageText(input.lastAssistantMessage);
       return {

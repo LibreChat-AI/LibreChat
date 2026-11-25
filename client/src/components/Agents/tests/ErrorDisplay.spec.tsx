@@ -1,6 +1,12 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { ErrorDisplay } from '../ErrorDisplay';
+
+jest.mock('~/data-provider', () => ({
+  useGetStartupConfig: jest.fn(() => ({ data: undefined })),
+}));
+const mockUseGetStartupConfig = jest.requireMock('~/data-provider')
+  .useGetStartupConfig as jest.Mock;
 
 // Mock matchMedia
 Object.defineProperty(window, 'matchMedia', {
@@ -21,29 +27,28 @@ Object.defineProperty(window, 'matchMedia', {
 const mockLocalize = jest.fn((key: string, options?: any) => {
   const translations: Record<string, string> = {
     com_agents_error_title: 'Something went wrong',
-    com_agents_error_generic: 'We encountered an issue while loading the content.',
     com_agents_error_suggestion_generic: 'Please try refreshing the page or try again later.',
     com_agents_error_network_title: 'Connection Problem',
-    com_agents_error_network_message: 'Unable to connect to the server.',
     com_agents_error_network_suggestion: 'Check your internet connection and try again.',
     com_agents_error_not_found_title: 'Not Found',
     com_agents_error_not_found_message: 'The requested content could not be found.',
-    com_agents_error_not_found_suggestion:
-      'Try browsing other options or go back to the marketplace.',
     com_agents_error_invalid_request: 'Invalid Request',
-    com_agents_error_bad_request_message: 'The request could not be processed.',
     com_agents_error_bad_request_suggestion: 'Please check your input and try again.',
     com_agents_error_server_title: 'Server Error',
-    com_agents_error_server_message: 'The server is temporarily unavailable.',
     com_agents_error_server_suggestion: 'Please try again in a few moments.',
     com_agents_error_search_title: 'Search Error',
     com_agents_error_category_title: 'Category Error',
     com_agents_error_timeout_title: 'Connection Timeout',
-    com_agents_error_timeout_message: 'The request took too long to complete.',
     com_agents_error_timeout_suggestion: 'Please check your internet connection and try again.',
+    com_agents_error_rate_limit_title: 'Slow Down',
+    com_agents_error_rate_limit_suggestion:
+      'Too many requests were sent at once. Retrying shortly.',
     com_agents_search_no_results: `No agents found for "${options?.query}"`,
     com_agents_category_empty: `No agents found in the ${options?.category} category`,
     com_agents_error_retry: 'Try Again',
+    com_agents_error_retrying: 'Retrying',
+    com_agents_error_retry_countdown: `Retrying automatically in ${options?.seconds}s`,
+    com_ui_refresh_page: 'Refresh page',
   };
 
   return translations[key] || key;
@@ -54,6 +59,8 @@ jest.mock('~/hooks/useLocalize', () => () => mockLocalize);
 describe('ErrorDisplay', () => {
   beforeEach(() => {
     mockLocalize.mockClear();
+    mockUseGetStartupConfig.mockReset();
+    mockUseGetStartupConfig.mockReturnValue({ data: undefined });
   });
 
   describe('Backend error responses', () => {
@@ -74,8 +81,8 @@ describe('ErrorDisplay', () => {
         screen.getByText('Unable to load agents. Please try refreshing the page.'),
       ).toBeInTheDocument();
       expect(
-        screen.getByText('💡 Try refreshing the page or check your network connection'),
-      ).toBeInTheDocument();
+        screen.queryByText('Try refreshing the page or check your network connection'),
+      ).not.toBeInTheDocument();
     });
 
     it('handles search context with backend response', () => {
@@ -107,10 +114,7 @@ describe('ErrorDisplay', () => {
       render(<ErrorDisplay error={error} />);
 
       expect(screen.getByText('Connection Problem')).toBeInTheDocument();
-      expect(screen.getByText('Unable to connect to the server.')).toBeInTheDocument();
-      expect(
-        screen.getByText('💡 Check your internet connection and try again.'),
-      ).toBeInTheDocument();
+      expect(screen.getByText('Check your internet connection and try again.')).toBeInTheDocument();
     });
 
     it('handles timeout errors', () => {
@@ -122,7 +126,6 @@ describe('ErrorDisplay', () => {
       render(<ErrorDisplay error={error} />);
 
       expect(mockLocalize).toHaveBeenCalledWith('com_agents_error_timeout_title');
-      expect(mockLocalize).toHaveBeenCalledWith('com_agents_error_timeout_message');
       expect(mockLocalize).toHaveBeenCalledWith('com_agents_error_timeout_suggestion');
     });
   });
@@ -173,8 +176,8 @@ describe('ErrorDisplay', () => {
       expect(screen.getByText('Invalid Request')).toBeInTheDocument();
       expect(screen.getByText('Please enter a search term to find agents')).toBeInTheDocument();
       expect(
-        screen.getByText('💡 Enter a search term to find agents by name or description'),
-      ).toBeInTheDocument();
+        screen.queryByText('Enter a search term to find agents by name or description'),
+      ).not.toBeInTheDocument();
     });
 
     it('handles 500 server errors', () => {
@@ -188,8 +191,7 @@ describe('ErrorDisplay', () => {
       render(<ErrorDisplay error={error} />);
 
       expect(screen.getByText('Server Error')).toBeInTheDocument();
-      expect(screen.getByText('The server is temporarily unavailable.')).toBeInTheDocument();
-      expect(screen.getByText('💡 Please try again in a few moments.')).toBeInTheDocument();
+      expect(screen.getByText('Please try again in a few moments.')).toBeInTheDocument();
     });
   });
 
@@ -225,6 +227,197 @@ describe('ErrorDisplay', () => {
       render(<ErrorDisplay error={error} />);
 
       expect(screen.queryByText('Try Again')).not.toBeInTheDocument();
+    });
+
+    it('reports progress and blocks a second click while a retry runs', () => {
+      const mockRetry = jest.fn();
+      const error = { code: 'ERR_NETWORK', message: 'Network Error' };
+
+      render(<ErrorDisplay error={error} onRetry={mockRetry} isRetrying />);
+
+      /* Busy, not gone: a `disabled` control leaves focus navigation, and a reader who
+         pressed this one has to still be on it when the attempt fails. */
+      const retryButton = screen.getByRole('button', { name: 'Retrying' });
+      expect(retryButton).not.toBeDisabled();
+      expect(retryButton).toHaveAttribute('aria-disabled', 'true');
+      expect(retryButton).toHaveAttribute('aria-busy', 'true');
+
+      fireEvent.click(retryButton);
+      expect(mockRetry).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Automatic recovery', () => {
+    const networkError = { code: 'ERR_NETWORK', message: 'Network Error' };
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('retries a transient failure without user action', () => {
+      const mockRetry = jest.fn();
+
+      render(<ErrorDisplay error={networkError} onRetry={mockRetry} />);
+
+      expect(screen.getByText('Retrying automatically in 2s')).toBeInTheDocument();
+      expect(mockRetry).not.toHaveBeenCalled();
+
+      act(() => {
+        jest.advanceTimersByTime(2000);
+      });
+
+      expect(mockRetry).toHaveBeenCalledTimes(1);
+    });
+    it('uses configured retry delays for automatic recovery', () => {
+      const mockRetry = jest.fn();
+      mockUseGetStartupConfig.mockReturnValue({
+        data: { interface: { marketplace: { retryDelaysMs: [50] } } },
+      });
+
+      render(<ErrorDisplay error={networkError} onRetry={mockRetry} />);
+
+      expect(screen.getByText('Retrying automatically in 0s')).toBeInTheDocument();
+      act(() => {
+        jest.advanceTimersByTime(49);
+      });
+      expect(mockRetry).not.toHaveBeenCalled();
+
+      act(() => {
+        jest.advanceTimersByTime(1);
+      });
+      expect(mockRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves only manual retry when automatic delays are empty', () => {
+      const mockRetry = jest.fn();
+      mockUseGetStartupConfig.mockReturnValue({
+        data: { interface: { marketplace: { retryDelaysMs: [] } } },
+      });
+
+      render(<ErrorDisplay error={networkError} onRetry={mockRetry} />);
+
+      expect(screen.queryByText(/Retrying automatically/)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Refresh page' })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Try Again' }));
+      expect(mockRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses shipped retry delays when startup config is unavailable', () => {
+      const mockRetry = jest.fn();
+
+      render(<ErrorDisplay error={networkError} onRetry={mockRetry} />);
+
+      expect(screen.getByText('Retrying automatically in 2s')).toBeInTheDocument();
+      act(() => {
+        jest.advanceTimersByTime(2000);
+      });
+      expect(mockRetry).toHaveBeenCalledTimes(1);
+    });
+
+    /** Axios delivers failures as `Error` subclasses, which is how the
+     *  marketplace queries report them: classification has to read through the
+     *  instance rather than reducing it to its message. */
+    it('recovers from a server failure delivered as an Axios error instance', () => {
+      const mockRetry = jest.fn();
+      const error = Object.assign(new Error('Request failed with status code 500'), {
+        code: 'ERR_BAD_RESPONSE',
+        response: { status: 500, data: {} },
+      });
+
+      render(<ErrorDisplay error={error} onRetry={mockRetry} />);
+
+      expect(screen.getByText('Server Error')).toBeInTheDocument();
+      expect(screen.getByText('Retrying automatically in 2s')).toBeInTheDocument();
+
+      act(() => {
+        jest.advanceTimersByTime(2000);
+      });
+
+      expect(mockRetry).toHaveBeenCalledTimes(1);
+    });
+
+    /** The marketplace query retries a 408 and a 429 twice and then hands the failure
+     *  to this card, so classifying either as final would strand the recovery. */
+    it('keeps recovering from a request timeout', () => {
+      const mockRetry = jest.fn();
+      const error = { response: { status: 408, data: {} } };
+
+      render(<ErrorDisplay error={error} onRetry={mockRetry} />);
+
+      expect(screen.getByText('Connection Timeout')).toBeInTheDocument();
+
+      act(() => {
+        jest.advanceTimersByTime(2000);
+      });
+
+      expect(mockRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps recovering from a throttled request', () => {
+      const mockRetry = jest.fn();
+      const error = { response: { status: 429, data: {} } };
+
+      render(<ErrorDisplay error={error} onRetry={mockRetry} />);
+
+      expect(screen.getByText('Slow Down')).toBeInTheDocument();
+
+      act(() => {
+        jest.advanceTimersByTime(2000);
+      });
+
+      expect(mockRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries at once when the browser reconnects', () => {
+      const mockRetry = jest.fn();
+
+      render(<ErrorDisplay error={networkError} onRetry={mockRetry} />);
+
+      act(() => {
+        window.dispatchEvent(new Event('online'));
+      });
+
+      expect(mockRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves answered requests alone', () => {
+      const mockRetry = jest.fn();
+      const error = { response: { status: 404, data: {} } };
+
+      render(<ErrorDisplay error={error} onRetry={mockRetry} />);
+
+      act(() => {
+        window.dispatchEvent(new Event('online'));
+        jest.advanceTimersByTime(120000);
+      });
+
+      expect(mockRetry).not.toHaveBeenCalled();
+      expect(screen.queryByText(/Retrying automatically/)).not.toBeInTheDocument();
+    });
+
+    it('stops after the backoff is exhausted and offers a reload', () => {
+      const mockRetry = jest.fn();
+
+      render(<ErrorDisplay error={networkError} onRetry={mockRetry} />);
+
+      for (const delay of [2000, 5000, 10000, 20000]) {
+        act(() => {
+          jest.advanceTimersByTime(delay);
+        });
+      }
+
+      expect(mockRetry).toHaveBeenCalledTimes(4);
+      expect(screen.getByRole('button', { name: 'Refresh page' })).toBeInTheDocument();
+
+      act(() => {
+        jest.advanceTimersByTime(120000);
+      });
+
+      expect(mockRetry).toHaveBeenCalledTimes(4);
     });
   });
 
@@ -264,10 +457,7 @@ describe('ErrorDisplay', () => {
 
       expect(screen.getByText('Something went wrong')).toBeInTheDocument();
       expect(
-        screen.getByText('We encountered an issue while loading the content.'),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText('💡 Please try refreshing the page or try again later.'),
+        screen.getByText('Please try refreshing the page or try again later.'),
       ).toBeInTheDocument();
     });
 
@@ -276,21 +466,12 @@ describe('ErrorDisplay', () => {
 
       expect(screen.getByText('Something went wrong')).toBeInTheDocument();
       expect(
-        screen.getByText('We encountered an issue while loading the content.'),
+        screen.getByText('Please try refreshing the page or try again later.'),
       ).toBeInTheDocument();
     });
   });
 
   describe('Accessibility', () => {
-    it('renders error icon with proper accessibility', () => {
-      const error = { message: 'Test error' };
-
-      render(<ErrorDisplay error={error} />);
-
-      const errorIcon = screen.getByRole('img', { hidden: true });
-      expect(errorIcon).toBeInTheDocument();
-    });
-
     it('has proper heading structure', () => {
       const error = { message: 'Test error' };
 

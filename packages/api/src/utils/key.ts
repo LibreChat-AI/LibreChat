@@ -1,7 +1,9 @@
 import path from 'path';
 import axios from 'axios';
-import { ErrorTypes } from 'librechat-data-provider';
+import { stat } from 'fs/promises';
 import { logger } from '@librechat/data-schemas';
+import { ErrorTypes } from 'librechat-data-provider';
+import { SERVICE_REQUEST_TIMEOUT_MS } from './timeouts';
 import { readFileAsString } from './files';
 
 export interface GoogleServiceKey {
@@ -54,7 +56,10 @@ export async function loadServiceKey(keyPath: string): Promise<GoogleServiceKey 
   // Check if it's a URL
   else if (!serviceKey && /^https?:\/\//.test(keyPath)) {
     try {
-      const response = await axios.get(keyPath);
+      const response = await axios.get(keyPath, {
+        timeout: SERVICE_REQUEST_TIMEOUT_MS,
+        signal: AbortSignal.timeout(SERVICE_REQUEST_TIMEOUT_MS),
+      });
       serviceKey = response.data;
     } catch (error) {
       logger.error(`Failed to fetch the service key from URL: ${keyPath}`, error);
@@ -124,16 +129,58 @@ export async function loadServiceKey(keyPath: string): Promise<GoogleServiceKey 
  * @param expiresAt - The expiration date of the user key in a format that can be parsed by the Date constructor
  * @param endpoint - The endpoint associated with the user key to be checked
  * @throws Error if the user key has expired. The error message is a stringified JSON object
- * containing the type of error (`ErrorTypes.EXPIRED_USER_KEY`), the expiration date in the local string format, and the endpoint.
+ * containing the type of error (`ErrorTypes.EXPIRED_USER_KEY`), the expiration date as an ISO 8601
+ * timestamp the client formats in the reader's locale, and the endpoint.
  */
 export function checkUserKeyExpiry(expiresAt: string, endpoint: string): void {
   const expiresAtDate = new Date(expiresAt);
   if (expiresAtDate < new Date()) {
     const errorMessage = JSON.stringify({
       type: ErrorTypes.EXPIRED_USER_KEY,
-      expiredAt: expiresAtDate.toLocaleString(),
+      expiredAt: expiresAtDate.toISOString(),
       endpoint,
     });
     throw new Error(errorMessage);
   }
+}
+
+/** Key sources that loaded, by the signature of the file they loaded from. */
+const availableServiceKeys = new Map<string, string>();
+
+/**
+ * The file's identity, change and modification times and size (a chmod or replacement moves
+ * the change time), or `inline` when `keyPath` names no readable file
+ * (stringified or base64 JSON), so a replaced or removed key file is noticed without a read.
+ */
+async function getKeySourceSignature(keyPath: string): Promise<string> {
+  try {
+    const absolutePath = path.isAbsolute(keyPath) ? keyPath : path.resolve(keyPath);
+    const stats = await stat(absolutePath);
+    return `${stats.ino}:${stats.ctimeMs}:${stats.mtimeMs}:${stats.size}`;
+  } catch {
+    return 'inline';
+  }
+}
+
+/**
+ * Whether a Google service key loads from `keyPath`, for endpoint availability checks that run
+ * on every endpoints config read. A file or inline source that loaded is remembered while that
+ * signature is unchanged, so those reads stop re-reading and
+ * re-parsing the key; a changed, removed or failing source is loaded again. URL sources are
+ * fetched on every call, since nothing local says whether they changed.
+ */
+export async function isServiceKeyAvailable(keyPath: string): Promise<boolean> {
+  if (/^https?:\/\//.test(keyPath)) {
+    return (await loadServiceKey(keyPath)) != null;
+  }
+  const signature = await getKeySourceSignature(keyPath);
+  if (availableServiceKeys.get(keyPath) === signature) {
+    return true;
+  }
+  if ((await loadServiceKey(keyPath)) == null) {
+    availableServiceKeys.delete(keyPath);
+    return false;
+  }
+  availableServiceKeys.set(keyPath, signature);
+  return true;
 }

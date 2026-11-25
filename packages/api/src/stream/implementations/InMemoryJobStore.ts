@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { logger } from '@librechat/data-schemas';
 import type { StandardGraph } from '@librechat/agents';
 import type { Agents } from 'librechat-data-provider';
@@ -9,9 +10,12 @@ import type {
   SteerArmResult,
   SteerEnqueueReceiptResult,
   SteerEnqueueVersionedResult,
+  TerminalSteerAdmissionPolicy,
+  TerminalSteerAdmissionResult,
   SteerQueueItem,
   SteerReceipt,
   SteerReceiptInput,
+  SteerPromotionOutcome,
   UsageMetadata,
   IJobStoreV2,
   JobStatus,
@@ -20,9 +24,14 @@ import type {
   IdempotencyClaimValue,
   IdempotencyClaimResult,
   ParkedSteerClaim,
+  ScheduleCleanupScope,
+  ScheduleProviderOwner,
+  ActiveJobFilter,
 } from '~/stream/interfaces/IJobStore';
+import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { RecoveredSteerPayload } from '~/stream/SteerRecovery';
 import {
+  JobStatusTransitionDeadlineError,
   JobPredecessorMismatchError,
   STEER_ENQUEUE_NOT_RUNNING,
   STEER_ENQUEUE_QUEUE_FULL,
@@ -30,13 +39,18 @@ import {
   STEER_QUEUE_MAX_DEPTH,
   PAUSE_PERSISTENCE_TIMEOUT_ERROR,
   PAUSE_PERSISTENCE_TIMEOUT_MS,
+  PROVIDER_DRAIN_TIMEOUT_MS,
   isPendingActionStale,
+  toWireRunSteps,
 } from '~/stream/interfaces/IJobStore';
 import {
   isRecoveredSteerPayload,
   recoveredSteerPayloadMatches,
   RecoveredSteerPayloadMismatchError,
 } from '~/stream/SteerRecovery';
+import { retainedScheduleReceipt } from '~/stream/internal/scheduleReceipts';
+import { createCheckpointNamespace } from '~/stream/checkpoints';
+import { retainScheduleMCPFailure } from '../scheduleFailure';
 import { toPendingSteer } from '~/stream/SteeringLifecycle';
 
 /** Recovery window for parked steers (mirrors Redis's completed-job TTL). */
@@ -138,9 +152,21 @@ interface ContentState {
  * - No chunk persistence needed - same instance handles generation and reconnects
  */
 export class InMemoryJobStore implements IJobStoreV2 {
+  readonly providerGuardedStatusTransitions = true as const;
+  readonly providerStartOwnership = true as const;
+  readonly providerTerminalPersistence = true as const;
+  readonly durableScheduleReceipts = false;
+  readonly detachedAgentEventActionStoreMode = 'process_local' as const;
+
   private jobs = new Map<string, SerializableJobData>();
   private contentState = new Map<string, ContentState>();
   private cleanupInterval: NodeJS.Timeout | null = null;
+  private cleanupRunning = false;
+  private staleGenerationHandler?: (streamId: string, createdAt: number) => void;
+
+  setStaleGenerationHandler(handler?: (streamId: string, createdAt: number) => void): void {
+    this.staleGenerationHandler = handler;
+  }
 
   /** Maps userId -> Set of streamIds (conversationIds) for active jobs */
   private userJobMap = new Map<string, Set<string>>();
@@ -222,7 +248,17 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
 
     this.cleanupInterval = setInterval(() => {
-      this.cleanup();
+      if (this.cleanupRunning) {
+        return;
+      }
+      this.cleanupRunning = true;
+      this.cleanup()
+        .catch((err) => {
+          logger.error('[InMemoryJobStore] Cleanup error:', err);
+        })
+        .finally(() => {
+          this.cleanupRunning = false;
+        });
     }, 60000);
 
     if (this.cleanupInterval.unref) {
@@ -311,7 +347,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
           existingJob.userId !== userId ||
           (existingJob.tenantId != null && existingJob.tenantId !== tenantId))
       ) {
-        throw new Error('Generation job owner mismatch');
+        throw recoveredSteerId != null
+          ? new RecoveredSteerPayloadMismatchError('owner_mismatch')
+          : new Error('Generation job owner mismatch');
       }
 
       const parked = this.parkedSteers.get(streamId);
@@ -342,7 +380,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
         throw new Error('Generation recovery state is corrupt');
       }
       if (parsed.userId !== userId || (parsed.tenantId != null && parsed.tenantId !== tenantId)) {
-        throw new Error('Generation job owner mismatch');
+        throw recoveredSteerId != null
+          ? new RecoveredSteerPayloadMismatchError('owner_mismatch')
+          : new Error('Generation job owner mismatch');
       }
     };
 
@@ -350,17 +390,21 @@ export class InMemoryJobStore implements IJobStoreV2 {
       const current = this.jobs.get(streamId);
       const currentCreatedAt = current?.createdAt ?? this.getRetainedGenerationEpoch(streamId);
       if (
-        rejectActivePredecessor === true &&
-        (current?.status === 'running' ||
-          current?.status === 'requires_action' ||
-          current?.terminalPersistencePending === true)
+        current?.terminalHostActionPending === true ||
+        current?.preserveForScheduleReconcile === true ||
+        (rejectActivePredecessor === true &&
+          (current?.status === 'running' ||
+            current?.status === 'requires_action' ||
+            current?.terminalPersistencePending === true))
       ) {
         throw new JobPredecessorMismatchError({
           createdAt: current.createdAt,
           active: true,
           verified: true,
           status: current.status,
-          ...(current.conversationId !== undefined && { conversationId: current.conversationId }),
+          ...(current.conversationId !== undefined && {
+            conversationId: current.conversationId,
+          }),
         });
       }
       if (
@@ -374,7 +418,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
         active: current?.status === 'running' || current?.status === 'requires_action',
         verified: currentCreatedAt != null,
         ...(current !== undefined && { status: current.status }),
-        ...(current?.conversationId !== undefined && { conversationId: current.conversationId }),
+        ...(current?.conversationId !== undefined && {
+          conversationId: current.conversationId,
+        }),
       });
     };
 
@@ -384,15 +430,15 @@ export class InMemoryJobStore implements IJobStoreV2 {
     const assertRecoveryCompatible = (): void => {
       if (recoveredSteerId == null) {
         if (recoveredSteerPayload != null) {
-          throw new RecoveredSteerPayloadMismatchError();
+          throw new RecoveredSteerPayloadMismatchError('invalid_payload');
         }
         return;
       }
       if (!isRecoveredSteerPayload(recoveredSteerPayload)) {
-        throw new RecoveredSteerPayloadMismatchError();
+        throw new RecoveredSteerPayloadMismatchError('invalid_payload');
       }
       if (initialMetadata.generationProtocolVersion === 1) {
-        throw new RecoveredSteerPayloadMismatchError();
+        throw new RecoveredSteerPayloadMismatchError('protocol_mismatch');
       }
 
       let candidate: ReturnType<typeof toPendingSteer> | undefined;
@@ -423,11 +469,13 @@ export class InMemoryJobStore implements IJobStoreV2 {
         candidate = item == null ? undefined : toPendingSteer(item);
       }
 
-      if (
-        sourceProtocol !== 2 ||
-        candidate == null ||
-        !recoveredSteerPayloadMatches(candidate, recoveredSteerPayload)
-      ) {
+      if (candidate == null) {
+        throw new RecoveredSteerPayloadMismatchError('source_missing');
+      }
+      if (sourceProtocol !== 2) {
+        throw new RecoveredSteerPayloadMismatchError('protocol_mismatch');
+      }
+      if (!recoveredSteerPayloadMatches(candidate, recoveredSteerPayload)) {
         throw new RecoveredSteerPayloadMismatchError();
       }
     };
@@ -466,6 +514,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
       now,
       previousCreatedAt == null ? 0 : previousCreatedAt + 1,
       this.lastGenerationEpoch + 1,
+      // The Responses restart fence compares journaled epochs to process start.
+      safeInitialMetadata.endpoint === 'responses' &&
+        safeInitialMetadata.terminalPersistenceOwner === 'external'
+        ? Math.ceil(performance.timeOrigin)
+        : 0,
     );
     const replacedJobs: ReplacedGeneration[] = [];
     const replacedEpochs = new Set<number>();
@@ -510,6 +563,12 @@ export class InMemoryJobStore implements IJobStoreV2 {
           enumerable: false,
         });
       }
+      if (previousJob.completedAt != null) {
+        Object.defineProperty(replaced, 'completedAt', {
+          value: previousJob.completedAt,
+          enumerable: false,
+        });
+      }
       addReplacedJob(replaced);
     }
     this.lastGenerationEpoch = createdAt;
@@ -522,10 +581,12 @@ export class InMemoryJobStore implements IJobStoreV2 {
       createdAt,
       generationProtocolVersion: initialMetadata.generationProtocolVersion === 1 ? 1 : 2,
       ...(initialMetadata.generationProtocolVersion !== 1 && {
-        checkpointNamespace: String(createdAt),
+        checkpointNamespace: createCheckpointNamespace(userId, tenantId),
       }),
       ...(conversationId !== undefined && { conversationId }),
-      ...(idempotencyClientRequestId !== undefined && { idempotencyClientRequestId }),
+      ...(idempotencyClientRequestId !== undefined && {
+        idempotencyClientRequestId,
+      }),
       ...(recoveredSteerId !== undefined && { recoveredSteerId }),
       providerAbortReady: false,
       ...(providerExecutionId != null && { providerDrained: true }),
@@ -702,17 +763,47 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
     // Plain field writer. Membership-aware status transitions
     // (running ⇄ requires_action) go solely through transitionStatus.
-    Object.assign(job, updates);
+    const patch = retainScheduleMCPFailure(job, updates);
+    Object.assign(job, patch, retainedScheduleReceipt(job, updates));
+  }
+
+  async recoverScheduleProviderOwnerLoss(owner: ScheduleProviderOwner): Promise<boolean> {
+    const job = this.jobs.get(owner.streamId);
+    if (
+      !job ||
+      job.createdAt !== owner.createdAt ||
+      job.providerExecutionId !== owner.providerExecutionId ||
+      job.scheduleId !== owner.scheduleId ||
+      job.scheduledFor !== owner.scheduledFor ||
+      job.userId !== owner.userId ||
+      (job.tenantId ?? null) !== owner.tenantId ||
+      (job.lastActiveAt ?? job.createdAt) !== owner.lastActiveAt ||
+      job.status !== 'error' ||
+      job.error !== 'Scheduled generation owner became unavailable' ||
+      job.preserveForScheduleReconcile !== true ||
+      job.providerDrained !== false
+    )
+      return false;
+    job.providerDrained = true;
+    job.error = 'Scheduled provider owner termination confirmed';
+    return true;
   }
 
   async markProviderExecutionDrained(
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    terminalPersistencePending?: true,
   ): Promise<boolean> {
     const job = this.jobs.get(streamId);
     if (job?.createdAt !== expectedCreatedAt || job.providerExecutionId !== providerExecutionId) {
       return false;
+    }
+    if (terminalPersistencePending) {
+      if (!['complete', 'error', 'aborted'].includes(job.status)) return false;
+      job.terminalPersistencePending = true;
+      job.terminalPersistenceOwner = 'external';
+      job.terminalPersistenceStartedAt ??= Date.now();
     }
     job.providerDrained = true;
     return true;
@@ -722,6 +813,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    ownerId?: string,
   ): Promise<boolean> {
     const job = this.jobs.get(streamId);
     if (
@@ -733,6 +825,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
       return false;
     }
     job.providerDrained = false;
+    job.providerExecutionStartedId = providerExecutionId;
+    if (ownerId != null) job.providerExecutionOwnerId = ownerId;
+    else delete job.providerExecutionOwnerId;
     return true;
   }
 
@@ -767,6 +862,14 @@ export class InMemoryJobStore implements IJobStoreV2 {
     if (args.expectCreatedAt != null && job.createdAt !== args.expectCreatedAt) {
       return false;
     }
+    if (
+      args.expectProviderExecutionId != null &&
+      job.providerExecutionId !== args.expectProviderExecutionId
+    )
+      return false;
+    if (args.notAfterMs != null && Date.now() >= args.notAfterMs) {
+      throw new JobStatusTransitionDeadlineError(args.notAfterMs);
+    }
     if (['complete', 'error', 'aborted'].includes(args.to)) {
       if (!this.isParkedRecoveryCompatible(streamId, job)) {
         return false;
@@ -774,12 +877,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
       this.parkQueuedSteers(streamId, job, Date.now());
     }
     job.status = args.to;
-    if (args.patch) {
-      Object.assign(job, args.patch);
-    }
-    for (const field of args.clear ?? []) {
-      delete job[field];
-    }
+    const patch = retainScheduleMCPFailure(job, args.patch ?? {});
+    const receipt = retainedScheduleReceipt(job, args.patch ?? {}, args.clear ?? []);
+    Object.assign(job, patch);
+    for (const field of args.clear ?? []) delete job[field];
+    Object.assign(job, receipt);
     const receiptEntries = this.steerReceipts.get(streamId)?.values() ?? [];
     if (args.to === 'requires_action' && args.patch?.pendingAction?.expiresAt == null) {
       // Unlike Redis, this store has no paused-job backstop eviction. Preserve
@@ -844,7 +946,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
       !job ||
       job.status !== args.from ||
       (args.expectActionId != null && job.pendingActionId !== args.expectActionId) ||
-      (args.expectCreatedAt != null && job.createdAt !== args.expectCreatedAt)
+      (args.expectCreatedAt != null && job.createdAt !== args.expectCreatedAt) ||
+      (args.expectProviderExecutionId != null &&
+        job.providerExecutionId !== args.expectProviderExecutionId)
     ) {
       return null;
     }
@@ -878,8 +982,35 @@ export class InMemoryJobStore implements IJobStoreV2 {
     if (existing && existing.expiresAt > now) {
       return { claimed: false, existing: existing.value };
     }
-    this.idempotencyClaims.set(key, { value, expiresAt: now + ttlSeconds * 1000 });
+    this.idempotencyClaims.set(key, {
+      value,
+      expiresAt: now + ttlSeconds * 1000,
+    });
     return { claimed: true, existing: value };
+  }
+
+  async hasIdempotencyKey(key: string): Promise<boolean> {
+    const existing = this.idempotencyClaims.get(key);
+    if (existing == null) {
+      return false;
+    }
+    if (existing.expiresAt > Date.now()) {
+      return true;
+    }
+    this.idempotencyClaims.delete(key);
+    return false;
+  }
+
+  async getIdempotencyClaim(key: string): Promise<IdempotencyClaimValue | null> {
+    const existing = this.idempotencyClaims.get(key);
+    if (existing == null) {
+      return null;
+    }
+    if (existing.expiresAt <= Date.now()) {
+      this.idempotencyClaims.delete(key);
+      return null;
+    }
+    return { ...existing.value };
   }
 
   async takeoverIdempotencyKey(
@@ -1016,6 +1147,15 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
   }
 
+  async touchJob(streamId: string, expectedCreatedAt: number): Promise<boolean> {
+    const job = this.jobs.get(streamId);
+    if (job?.createdAt !== expectedCreatedAt || job.status !== 'running') {
+      return false;
+    }
+    this.recordActivity(streamId, expectedCreatedAt);
+    return true;
+  }
+
   async hasJob(streamId: string): Promise<boolean> {
     return this.jobs.has(streamId);
   }
@@ -1044,7 +1184,23 @@ export class InMemoryJobStore implements IJobStoreV2 {
     const pending: SerializableJobData[] = [];
     const now = Date.now();
     for (const job of this.jobs.values()) {
-      if (job.terminalHostActionPending === true) {
+      if (job.terminalHostActionPending !== true) {
+        continue;
+      }
+      if (
+        !job.scheduleId &&
+        job.preserveForScheduleReconcile !== true &&
+        job.providerDrained === false &&
+        job.completedAt != null &&
+        now - job.completedAt >= PROVIDER_DRAIN_TIMEOUT_MS
+      ) {
+        // No owner can renew this terminal segment. The pre-CAS snapshot is
+        // already retained; force the same bounded recovery used by callers
+        // waiting for a provider drain so one crashed process cannot hold the
+        // conversation lane forever.
+        job.providerDrained = true;
+      }
+      if (job.providerDrained !== false) {
         // Enumerating IS the retry attempt: refresh retention so evidence outlives a host
         // dependency that is unreachable for longer than the retention window.
         job.terminalHostActionRefreshedAt = now;
@@ -1052,6 +1208,39 @@ export class InMemoryJobStore implements IJobStoreV2 {
       }
     }
     return pending;
+  }
+
+  async hasScheduleCleanupObligation(scope: ScheduleCleanupScope): Promise<boolean> {
+    for (const job of this.jobs.values()) {
+      if (
+        !job.scheduleId ||
+        (scope.scheduleId && job.scheduleId !== scope.scheduleId) ||
+        (scope.userId && job.userId !== scope.userId)
+      )
+        continue;
+      if (
+        job.providerDrained === false ||
+        job.terminalPersistencePending === true ||
+        job.terminalHostActionPending === true
+      )
+        return true;
+    }
+    return false;
+  }
+
+  async getScheduleReconcileJobs(limit: number): Promise<SerializableJobData[]> {
+    const held: SerializableJobData[] = [];
+    let remaining = this.jobs.size;
+    for (const [stream, job] of this.jobs) {
+      if (remaining-- <= 0) break;
+      if (job.preserveForScheduleReconcile !== true) continue;
+      held.push(job);
+      // Rotate retry attempts so a failed first batch cannot starve later obligations.
+      this.jobs.delete(stream);
+      this.jobs.set(stream, job);
+      if (held.length >= limit) break;
+    }
+    return held;
   }
 
   async clearTerminalHostAction(streamId: string, expectedCreatedAt?: number): Promise<void> {
@@ -1068,6 +1257,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
     const now = Date.now();
     const toDelete: Array<{ streamId: string; createdAt: number }> = [];
     let staleRunning = 0;
+    let retainedRecovered = 0;
 
     // Expired parked steers are otherwise only purged by a claim.
     for (const [streamId, parked] of this.parkedSteers) {
@@ -1112,6 +1302,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
           patch: {
             completedAt: now,
             error: PAUSE_PERSISTENCE_TIMEOUT_ERROR,
+            ...(job.agentEventDeliveryKey != null && {
+              terminalHostActionPending: true,
+            }),
           },
           clear: [
             'pendingAction',
@@ -1197,7 +1390,15 @@ export class InMemoryJobStore implements IJobStoreV2 {
             continue;
           }
           this.parkQueuedSteers(streamId, job, now);
-          toDelete.push({ streamId, createdAt: job.createdAt });
+          if (job.preserveForScheduleReconcile === true) {
+            job.status = 'error';
+            job.completedAt = now;
+            job.error = 'Scheduled generation owner became unavailable';
+            job.steersClosed = true;
+            // Cancel the exact local owner before readers can observe retirement.
+            this.staleGenerationHandler?.(streamId, job.createdAt);
+            retainedRecovered++;
+          } else toDelete.push({ streamId, createdAt: job.createdAt });
           staleRunning++;
         }
       }
@@ -1231,19 +1432,37 @@ export class InMemoryJobStore implements IJobStoreV2 {
       logger.debug(`[InMemoryJobStore] Cleaned up ${toDelete.length} expired jobs`);
     }
 
-    return toDelete.length;
+    return toDelete.length + retainedRecovered;
   }
 
+  /** Makes room at capacity. A finished job goes before any live one: evicting a running
+   * or paused generation ends a run somebody is still waiting on. A terminal job that still
+   * owes persistence, a host action, a schedule reconciliation or a provider drain is not
+   * finished, since its owner comes back for the record. */
   private async evictOldest(): Promise<void> {
     let oldestId: string | null = null;
     let oldestTime = Infinity;
+    let oldestFinishedId: string | null = null;
+    let oldestFinishedTime = Infinity;
 
     for (const [streamId, job] of this.jobs) {
       if (job.createdAt < oldestTime) {
         oldestTime = job.createdAt;
         oldestId = streamId;
       }
+      const live =
+        job.status === 'running' ||
+        job.status === 'requires_action' ||
+        job.terminalPersistencePending === true ||
+        job.terminalHostActionPending === true ||
+        job.preserveForScheduleReconcile === true ||
+        job.providerDrained === false;
+      if (!live && job.createdAt < oldestFinishedTime) {
+        oldestFinishedTime = job.createdAt;
+        oldestFinishedId = streamId;
+      }
     }
+    oldestId = oldestFinishedId ?? oldestId;
 
     if (oldestId) {
       logger.warn(`[InMemoryJobStore] Evicting oldest job: ${oldestId}`);
@@ -1273,6 +1492,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
   }
 
   async destroy(): Promise<void> {
+    this.staleGenerationHandler = undefined;
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
@@ -1296,18 +1516,36 @@ export class InMemoryJobStore implements IJobStoreV2 {
    * Returns conversation IDs of running jobs belonging to the user.
    * Also performs self-healing cleanup: removes stale entries for jobs that no longer exist.
    */
-  async getActiveJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
-    return this.getJobIdsByUser(userId, tenantId, false);
+  async getActiveJobIdsByUser(
+    userId: string,
+    tenantId?: string,
+    accept?: ActiveJobFilter,
+  ): Promise<string[]> {
+    return this.getJobIdsByUser(userId, tenantId, false, accept);
   }
 
   async getCleanupBlockingJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
     return this.getJobIdsByUser(userId, tenantId, true);
   }
 
+  async getCleanupJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
+    return this.getJobIdsByUser(userId, tenantId, true);
+  }
+
+  async getRetainedJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
+    const ownerKeys = tenantId ? [`${tenantId}:${userId}`, userId] : [userId];
+    const streamIds = new Set(ownerKeys.flatMap((key) => [...(this.userJobMap.get(key) ?? [])]));
+    return [...streamIds].filter((streamId) => {
+      const job = this.jobs.get(streamId);
+      return job?.userId === userId && (job.tenantId == null || job.tenantId === tenantId);
+    });
+  }
+
   private getJobIdsByUser(
     userId: string,
     tenantId: string | undefined,
     includeUndrained: boolean,
+    accept?: ActiveJobFilter,
   ): string[] {
     const userKey = tenantId ? `${tenantId}:${userId}` : userId;
     const trackedIds = this.userJobMap.get(userKey);
@@ -1334,17 +1572,31 @@ export class InMemoryJobStore implements IJobStoreV2 {
       if (
         job.status === 'running' ||
         job.status === 'requires_action' ||
-        (includeUndrained && job.providerDrained === false)
+        (includeUndrained &&
+          (job.providerDrained === false ||
+            job.terminalPersistencePending === true ||
+            job.terminalHostActionPending === true))
       ) {
         if (
           job.status === 'requires_action' &&
           isPendingActionStale(job) &&
-          !(includeUndrained && job.providerDrained === false)
+          !(
+            includeUndrained &&
+            (job.providerDrained === false ||
+              job.terminalPersistencePending === true ||
+              job.terminalHostActionPending === true)
+          )
         ) {
           continue;
         }
-        activeIds.push(streamId);
-      } else if (job.providerDrained !== false) {
+        if (accept == null || accept(job)) {
+          activeIds.push(streamId);
+        }
+      } else if (
+        job.providerDrained !== false &&
+        job.terminalPersistencePending !== true &&
+        job.terminalHostActionPending !== true
+      ) {
         // Self-healing: job completed/deleted but mapping wasn't cleaned - fix it now
         trackedIds.delete(streamId);
       }
@@ -1395,7 +1647,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
     if (existing) {
       existing.contentParts = contentParts;
     } else {
-      this.contentState.set(streamId, { contentParts, graphRef: null, collectedUsage: [] });
+      this.contentState.set(streamId, {
+        contentParts,
+        graphRef: null,
+        collectedUsage: [],
+      });
     }
   }
 
@@ -1414,7 +1670,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
     if (existing) {
       existing.collectedUsage = collectedUsage;
     } else {
-      this.contentState.set(streamId, { contentParts: [], graphRef: null, collectedUsage });
+      this.contentState.set(streamId, {
+        contentParts: [],
+        graphRef: null,
+        collectedUsage,
+      });
     }
   }
 
@@ -1436,8 +1696,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
   async getContentParts(
     streamId: string,
     expectedCreatedAt?: number,
+    _options?: { durableOnly?: boolean },
   ): Promise<{
     content: Agents.MessageContentComplex[];
+    reconstructedEventCount?: number;
+    durableEventCount?: number;
   } | null> {
     if (expectedCreatedAt != null && this.jobs.get(streamId)?.createdAt !== expectedCreatedAt) {
       return null;
@@ -1448,7 +1711,105 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
     return {
       content: state.contentParts,
+      ...(_options?.durableOnly === true && {
+        reconstructedEventCount: state.contentParts.length,
+        durableEventCount: state.contentParts.length,
+      }),
     };
+  }
+
+  async settleEarlyBufferRecovery(
+    streamId: string,
+    expectedCreatedAt: number,
+    overflowId: string,
+    settlement: Pick<
+      EarlyBufferOverflowState,
+      'recoveryMethod' | 'recoveryOutcome' | 'recoveryCompletedAt' | 'recoveryFailureReason'
+    >,
+  ): Promise<boolean> {
+    const job = this.jobs.get(streamId);
+    const overflow = job?.earlyBufferOverflow;
+    if (
+      job?.createdAt !== expectedCreatedAt ||
+      overflow?.id !== overflowId ||
+      overflow.recoveryOutcome != null
+    ) {
+      return false;
+    }
+    job.earlyBufferOverflow = { ...overflow, ...settlement };
+    return true;
+  }
+
+  async finalizeEarlyBufferOverflow(
+    streamId: string,
+    expectedCreatedAt: number,
+    overflowId: string,
+    finalizedOverflow: EarlyBufferOverflowState,
+  ): Promise<boolean> {
+    const job = this.jobs.get(streamId);
+    const overflow = job?.earlyBufferOverflow;
+    if (
+      job?.createdAt !== expectedCreatedAt ||
+      overflow?.id !== overflowId ||
+      overflow.persistencePending !== true ||
+      overflow.recoveryOutcome != null
+    ) {
+      return false;
+    }
+    job.earlyBufferOverflow = finalizedOverflow;
+    return true;
+  }
+
+  async hasSubscriberAttached(streamId: string, expectedCreatedAt: number): Promise<boolean> {
+    const job = this.jobs.get(streamId);
+    return job?.createdAt === expectedCreatedAt && job.firstSubscriberAttachedAt != null;
+  }
+
+  async claimFirstSubscriber(
+    streamId: string,
+    expectedCreatedAt: number,
+    attachedAt: number,
+    subscriberId: string,
+    leaseExpiresAt: number,
+  ): Promise<boolean> {
+    const job = this.jobs.get(streamId);
+    if (job?.createdAt !== expectedCreatedAt) {
+      return false;
+    }
+    job.activeSubscriberLeases ??= {};
+    job.activeSubscriberLeases[subscriberId] = leaseExpiresAt;
+    const firstSubscriber = job.firstSubscriberAttachedAt == null;
+    job.firstSubscriberAttachedAt ??= attachedAt;
+    return firstSubscriber;
+  }
+
+  async detachSubscriber(
+    streamId: string,
+    expectedCreatedAt: number,
+    subscriberId: string,
+  ): Promise<void> {
+    const job = this.jobs.get(streamId);
+    if (job?.createdAt !== expectedCreatedAt) {
+      return;
+    }
+    delete job.activeSubscriberLeases?.[subscriberId];
+  }
+
+  async hasActiveSubscriber(
+    streamId: string,
+    expectedCreatedAt: number,
+    observedAt: number,
+  ): Promise<boolean> {
+    const job = this.jobs.get(streamId);
+    if (job?.createdAt !== expectedCreatedAt) {
+      return false;
+    }
+    for (const [subscriberId, expiresAt] of Object.entries(job.activeSubscriberLeases ?? {})) {
+      if (expiresAt <= observedAt) {
+        delete job.activeSubscriberLeases?.[subscriberId];
+      }
+    }
+    return Object.keys(job.activeSubscriberLeases ?? {}).length > 0;
   }
 
   /**
@@ -1466,7 +1827,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
 
     // Dereference WeakRef - may return undefined if GC'd
     const graph = state.graphRef.deref();
-    return graph?.contentData ?? [];
+    return toWireRunSteps(graph?.contentData ?? []);
   }
 
   /**
@@ -1584,6 +1945,12 @@ export class InMemoryJobStore implements IJobStoreV2 {
         ...(job.preemptCapable === true && { preempt: true }),
       }),
     };
+    if (
+      persisted.quotes != null &&
+      (job.steerQuotesExecutionId == null || job.steerQuotesExecutionId !== job.providerExecutionId)
+    ) {
+      delete persisted.quotes;
+    }
     queue.push(persisted);
     return { item: { ...persisted }, position: queue.length };
   }
@@ -1628,7 +1995,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
     ) {
       return [];
     }
-    return (this.claimedSteers.get(streamId) ?? []).map((item) => ({ ...item }));
+    return (this.claimedSteers.get(streamId) ?? []).map((item) => ({
+      ...item,
+    }));
   }
 
   async getSteerReceipt(streamId: string, clientSteerId: string): Promise<SteerReceipt | null> {
@@ -1656,7 +2025,10 @@ export class InMemoryJobStore implements IJobStoreV2 {
     const existingEntry = this.steerReceipts.get(streamId)?.get(receiptInput.clientSteerId);
     if (existingEntry != null && existingEntry.expiresAt > Date.now()) {
       this.normalizeSteerReceipt(streamId, existingEntry);
-      return { ...existingEntry.receipt, item: { ...existingEntry.receipt.item } };
+      return {
+        ...existingEntry.receipt,
+        item: { ...existingEntry.receipt.item },
+      };
     }
     if (existingEntry != null) {
       this.steerReceipts.get(streamId)?.delete(receiptInput.clientSteerId);
@@ -1702,6 +2074,12 @@ export class InMemoryJobStore implements IJobStoreV2 {
         ...(job.preemptCapable === true && { preempt: true }),
       }),
     };
+    if (
+      persisted.quotes != null &&
+      (job.steerQuotesExecutionId == null || job.steerQuotesExecutionId !== job.providerExecutionId)
+    ) {
+      delete persisted.quotes;
+    }
     queue.push(persisted);
     const receipt: SteerReceipt = {
       ...receiptInput,
@@ -1850,6 +2228,39 @@ export class InMemoryJobStore implements IJobStoreV2 {
       this.settleSteerReceipts(streamId, restored, 'queued');
     }
     return true;
+  }
+
+  async admitTerminalSteers(
+    streamId: string,
+    policy: TerminalSteerAdmissionPolicy,
+    expectedCreatedAt?: number,
+  ): Promise<TerminalSteerAdmissionResult> {
+    const job = this.jobs.get(streamId);
+    if (
+      job?.status !== 'running' ||
+      this.closedSteerQueues.has(streamId) ||
+      (expectedCreatedAt != null && job.createdAt !== expectedCreatedAt)
+    ) {
+      return { outcome: 'unavailable' };
+    }
+    const queue = this.steerQueues.get(streamId);
+    if (!policy.allowClaim || job.generationProtocolVersion !== 2) {
+      this.closedSteerQueues.add(streamId);
+      return { outcome: 'sealed' };
+    }
+    if (queue == null || queue.length === 0) {
+      if (policy.keepOpenWhenEmpty) {
+        return { outcome: 'open' };
+      }
+      this.closedSteerQueues.add(streamId);
+      return { outcome: 'sealed' };
+    }
+    const items = await this.drainSteers(streamId, expectedCreatedAt);
+    if (items.length === 0) {
+      this.closedSteerQueues.add(streamId);
+      return { outcome: 'sealed' };
+    }
+    return { outcome: 'claimed', items };
   }
 
   async closeAndDrainSteers(
@@ -2030,7 +2441,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
     if (receipt != null) {
       receipt.item = { ...item };
     }
-    return { outcome: 'armed', revision: item.preemptRevision, item: { ...item } };
+    return {
+      outcome: 'armed',
+      revision: item.preemptRevision,
+      item: { ...item },
+    };
   }
 
   async downgradeSteerPreempts(
@@ -2259,6 +2674,81 @@ export class InMemoryJobStore implements IJobStoreV2 {
     return true;
   }
 
+  async promoteSteerLeftover(
+    streamId: string,
+    steerId: string,
+    ownerUserId: string,
+    ownerTenantId: string | undefined,
+    generationCreatedAt: number,
+    queuedTurnId: string,
+  ): Promise<SteerPromotionOutcome> {
+    const now = Date.now();
+    let receipt: SteerReceipt | undefined;
+    for (const entry of this.steerReceipts.get(streamId)?.values() ?? []) {
+      if (entry.expiresAt > now && entry.receipt.item?.steerId === steerId) {
+        receipt = entry.receipt;
+        break;
+      }
+    }
+    if (receipt == null) {
+      return 'missing';
+    }
+    if (
+      receipt.generationCreatedAt !== generationCreatedAt ||
+      receipt.userId !== ownerUserId ||
+      (receipt.tenantId != null && receipt.tenantId !== ownerTenantId)
+    ) {
+      return 'refused';
+    }
+    if (receipt.state === 'recovered' && receipt.promotedTurnId === queuedTurnId) {
+      return 'promoted';
+    }
+    if (receipt.state !== 'leftover') {
+      return 'refused';
+    }
+    const activeJob = this.jobs.get(streamId);
+    if (
+      activeJob?.recoveredSteerId === steerId &&
+      (activeJob.status === 'running' || activeJob.status === 'requires_action')
+    ) {
+      return 'refused';
+    }
+    const parked = this.parkedSteers.get(streamId);
+    if (parked == null || parked.expiresAt <= now) {
+      return 'unparked';
+    }
+    try {
+      const parsed = JSON.parse(parked.payload) as {
+        userId?: string;
+        tenantId?: string;
+        steers?: Array<{ steerId?: string }>;
+      };
+      if (
+        parsed.userId !== ownerUserId ||
+        (parsed.tenantId != null && parsed.tenantId !== ownerTenantId) ||
+        !Array.isArray(parsed.steers) ||
+        !parsed.steers.every(isValidParkedSteer)
+      ) {
+        return 'refused';
+      }
+      const kept = parsed.steers.filter((item) => item.steerId !== steerId);
+      if (kept.length === parsed.steers.length) {
+        return 'unparked';
+      }
+      if (kept.length === 0) {
+        this.parkedSteers.delete(streamId);
+      } else {
+        parsed.steers = kept;
+        parked.payload = JSON.stringify(parsed);
+      }
+    } catch {
+      return 'refused';
+    }
+    receipt.state = 'recovered';
+    receipt.promotedTurnId = queuedTurnId;
+    return 'promoted';
+  }
+
   private parkLeftovers(
     streamId: string,
     items: SteerQueueItem[],
@@ -2346,7 +2836,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
       const parsed = JSON.parse(parked.payload) as {
         userId: string;
         tenantId?: string;
-        steers?: Array<{ steerId: string; clientSteerId?: string; recoveringCreatedAt?: number }>;
+        steers?: Array<{
+          steerId: string;
+          clientSteerId?: string;
+          recoveringCreatedAt?: number;
+        }>;
       };
       if (!Array.isArray(parsed.steers)) {
         return;
@@ -2396,7 +2890,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
     parsedPayload?: {
       userId: string;
       tenantId?: string;
-      steers?: Array<{ steerId: string; clientSteerId?: string; recoveringCreatedAt?: number }>;
+      steers?: Array<{
+        steerId: string;
+        clientSteerId?: string;
+        recoveringCreatedAt?: number;
+      }>;
     },
     parsedLeasedItem?: {
       steerId: string;

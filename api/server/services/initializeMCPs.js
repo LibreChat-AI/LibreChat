@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { logger } = require('@librechat/data-schemas');
+const { resolveMCPAppsPolicy } = require('librechat-data-provider');
 const {
   registerShutdownTask,
   setMCPToolsChangedHandler,
@@ -7,8 +8,12 @@ const {
   setMCPToolsChangedGenerationHandler,
   setMCPToolsChangedGenerationRenewalHandler,
   setMCPToolsChangedRevisionHandler,
+  createMCPAppBindingCodec,
+  createMCPPolicyResolver,
+  reportStoredMCPTombstones,
 } = require('@librechat/api');
-const { syncStaticTools, mergeAppTools, getAppConfig } = require('./Config');
+const { syncStaticTools, mergeAppTools, getAppConfig, invalidateCachedTools } = require('./Config');
+const { startMCPAuthorizationFenceRetryWorker } = require('./MCPAuthorizationFenceRetry');
 const {
   getMCPToolsCacheGeneration,
   renewMCPToolsCacheGeneration,
@@ -16,21 +21,7 @@ const {
   updateMCPServerTools,
 } = require('./Config/mcp');
 const { createMCPServersRegistry, createMCPManager } = require('~/config');
-
-/**
- * Resolves the current request's effective MCP allowlists from the merged (tenant-scoped)
- * config. The registry calls this per inspection/connection so admin-panel `mcpSettings`
- * overrides are honored without a restart. Tenant comes from the ALS context inside
- * `getAppConfig`; `userId`/`role` pick up user/role-scoped overrides when an actor exists.
- * @param {{ userId?: string, role?: string }} [ctx]
- */
-async function resolveMCPAllowlists(ctx) {
-  const appConfig = await getAppConfig({ role: ctx?.role, userId: ctx?.userId });
-  return {
-    allowedDomains: appConfig?.mcpSettings?.allowedDomains,
-    allowedAddresses: appConfig?.mcpSettings?.allowedAddresses,
-  };
-}
+const db = require('~/models');
 
 /**
  * Refreshes one server's tools after it reported `notifications/tools/list_changed`.
@@ -47,6 +38,7 @@ async function refreshChangedServerTools({
   serverConfig,
   publicationGeneration,
   publicationRevision,
+  capabilityProfile,
 }) {
   await updateMCPServerTools({
     userId,
@@ -55,6 +47,7 @@ async function refreshChangedServerTools({
     serverConfig,
     ...(publicationGeneration && { publicationGeneration }),
     ...(publicationRevision && { publicationRevision }),
+    capabilityProfile,
   });
   const toolCount = tools.length;
   logger.info(
@@ -105,15 +98,42 @@ async function initializeMCPs() {
       mongoose,
       appConfig?.mcpSettings?.allowedDomains,
       appConfig?.mcpSettings?.allowedAddresses,
-      resolveMCPAllowlists,
+      createMCPPolicyResolver(getAppConfig),
+      resolveMCPAppsPolicy(
+        appConfig?.mcpSettings?.apps,
+        undefined,
+        appConfig?.mcpAppSandbox?.maxPersistedAppBytes,
+        appConfig?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
+        appConfig?.mcpAppSandbox?.url,
+        appConfig?.mcpAppSandbox?.maxActiveViews,
+        appConfig?.mcpAppSandbox?.maxActionPreviewChars,
+        appConfig?.mcpAppSandbox?.operationLimits,
+      ),
     );
   } catch (error) {
     logger.error('[MCP] Failed to initialize MCPServersRegistry:', error);
     throw error;
   }
 
+  /** Runs alongside the connections below. It never rejects, so a failed start leaves no unhandled rejection. */
+  const tombstoneReport = reportStoredMCPTombstones(
+    (fieldPath) => db.listConfigTombstones(fieldPath),
+    appConfig?.mcpConfig,
+  );
+
   try {
-    const mcpManager = await createMCPManager(mcpServers || {});
+    const mcpManager = await createMCPManager(mcpServers || {}, {
+      catalogRecoveryMaxStateEntries: appConfig?.mcpSettings?.catalogRecovery?.maxStateEntries,
+      catalogRecoveryMaxDetachedDiscoveries:
+        appConfig?.mcpSettings?.catalogRecovery?.maxDetachedDiscoveries,
+      appBindingCodec: createMCPAppBindingCodec(process.env.JWT_SECRET),
+    });
+    startMCPAuthorizationFenceRetryWorker(invalidateCachedTools, {
+      intervalMs: appConfig?.mcpSettings?.catalogRecovery?.authorizationFenceRetryIntervalMs,
+      batchSize: appConfig?.mcpSettings?.catalogRecovery?.authorizationFenceRetryBatchSize,
+      attemptTimeoutMs: appConfig?.mcpSettings?.catalogRecovery?.authorizationFenceTimeoutMs,
+      idleCeilingMs: appConfig?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs,
+    });
     setMCPToolsChangedHandler(refreshChangedServerTools);
     setMCPToolsChangedGenerationHandler(getMCPToolsCacheGeneration);
     setMCPToolsChangedGenerationRenewalHandler(renewMCPToolsCacheGeneration);
@@ -142,6 +162,7 @@ async function initializeMCPs() {
     logger.error('[MCP] Failed to initialize MCPManager:', error);
     throw error;
   }
+  await tombstoneReport;
 }
 
 module.exports = initializeMCPs;

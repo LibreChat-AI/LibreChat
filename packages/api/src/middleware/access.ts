@@ -42,8 +42,60 @@ export type CheckAccessWithRequestCacheParams = Omit<
 >;
 
 type RequestPermissionCache = Map<string, Promise<boolean>>;
+type RequestRoleCache = Map<string, Promise<IRole | null>>;
 
 const requestPermissionCacheKey = '__librechatRequestPermissionCache';
+const requestRoleCacheKey = '__librechatRequestRoleCache';
+
+function getRequestRoleCache(req?: ServerRequest): RequestRoleCache | null {
+  if (!req) {
+    return null;
+  }
+
+  const reqWithCache = req as ServerRequest & {
+    [requestRoleCacheKey]?: RequestRoleCache;
+  };
+
+  if (!reqWithCache[requestRoleCacheKey]) {
+    Object.defineProperty(reqWithCache, requestRoleCacheKey, {
+      value: new Map<string, Promise<IRole | null>>(),
+      enumerable: false,
+    });
+  }
+
+  return reqWithCache[requestRoleCacheKey] ?? null;
+}
+
+async function getRoleForAccess({
+  req,
+  roleName,
+  getRoleByName,
+}: {
+  req?: ServerRequest;
+  roleName: string;
+  getRoleByName: CheckAccessParams['getRoleByName'];
+}): Promise<IRole | null> {
+  const cache = getRequestRoleCache(req);
+  if (!cache) {
+    return await getRoleByName(roleName);
+  }
+
+  let cachedRole = cache.get(roleName);
+  if (!cachedRole) {
+    try {
+      cachedRole = Promise.resolve(getRoleByName(roleName));
+    } catch (error) {
+      cachedRole = Promise.reject(error);
+    }
+    cachedRole = cachedRole.catch((error) => {
+      cache.delete(roleName);
+      throw error;
+    });
+    cache.set(roleName, cachedRole);
+  }
+
+  return await cachedRole;
+}
 
 function getRequestPermissionCache(req?: ServerRequest): RequestPermissionCache | null {
   if (!req) {
@@ -100,7 +152,7 @@ export const checkAccess = async ({
     return false;
   }
 
-  const role = await getRoleByName(user.role);
+  const role = await getRoleForAccess({ req, roleName: user.role, getRoleByName });
   const permissionValue = role?.permissions?.[permissionType as keyof typeof role.permissions];
   if (role && role.permissions && permissionValue) {
     const hasAnyPermission = permissions.every((permission) => {

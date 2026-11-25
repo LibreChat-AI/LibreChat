@@ -1,6 +1,17 @@
+const crypto = require('node:crypto');
 const client = require('openid-client');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
+const {
+  createOpenIDOboIdentityTuple,
+  getSkewedTokenCacheTtlMs,
+  getUserLogId,
+  getTokenExpiresAtMs,
+  hasUsableTokenExpiry,
+  normalizeExpiresIn,
+  serializeAuthIdentityTuple,
+  DEFAULT_OAUTH_TOKEN_TTL_SECONDS,
+} = require('@librechat/api');
 const { getOpenIdConfig } = require('~/strategies/openidStrategy');
 const getLogStores = require('~/cache/getLogStores');
 
@@ -9,7 +20,7 @@ const RETRYABLE_ERROR_CODES = new Set(['ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN', '
 const OBO_RETRY_DELAY_MS = 300;
 
 /**
- * In-flight OBO exchanges keyed by `${openidId}:${scopes}`.
+ * In-flight OBO exchanges keyed by identity tuple, scopes, and upstream assertion hash.
  *
  * Without coalescing, parallel tool calls that arrive on a cache miss each issue
  * their own jwt-bearer request to the IdP. Under fan-out, Entra intermittently
@@ -59,11 +70,32 @@ function tagOboExchangeError(error, retryable) {
   return error;
 }
 
+function createEmptyOboExchangeResponseError() {
+  const error = new Error('The identity provider returned no access token for the OBO exchange');
+  error.retryable = false;
+  error.oboFailureReason = 'empty_exchange_response';
+  return error;
+}
+
+function sha256(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function buildOboCacheKey({ user, accessToken, scopes, identityContext }) {
+  const tuple = createOpenIDOboIdentityTuple({ user, identityContext });
+  if (!tuple) {
+    return null;
+  }
+
+  return [serializeAuthIdentityTuple(tuple), scopes, sha256(accessToken)].join('\x1f');
+}
+
 async function delay(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function performOboExchange({ user, accessToken, scopes, config, tokensCache, cacheKey }) {
+  const userLogId = getUserLogId(user);
   const requestGrant = async () =>
     client.genericGrantRequest(config, 'urn:ietf:params:oauth:grant-type:jwt-bearer', {
       scope: scopes,
@@ -81,7 +113,7 @@ async function performOboExchange({ user, accessToken, scopes, config, tokensCac
     }
 
     logger.warn(
-      `[OboTokenService] Transient OBO exchange failure for user: ${user.openidId}, retrying once`,
+      `[OboTokenService] Transient OBO exchange failure for user: ${userLogId}, retrying once`,
       error,
     );
     await delay(OBO_RETRY_DELAY_MS);
@@ -93,17 +125,25 @@ async function performOboExchange({ user, accessToken, scopes, config, tokensCac
     }
   }
 
+  if (!grantResponse?.access_token) {
+    throw createEmptyOboExchangeResponseError();
+  }
+
+  const expiresIn = normalizeExpiresIn(grantResponse.expires_in) ?? DEFAULT_OAUTH_TOKEN_TTL_SECONDS;
+  const now = Date.now();
+  const expiresAt = getTokenExpiresAtMs({ expiresIn, now });
   const tokenResponse = {
     access_token: grantResponse.access_token,
     token_type: 'Bearer',
-    expires_in: grantResponse.expires_in || 3600,
+    expires_in: expiresIn,
+    expires_at: expiresAt,
     scope: scopes,
   };
 
-  await tokensCache.set(cacheKey, tokenResponse, (grantResponse.expires_in || 3600) * 1000);
+  await tokensCache.set(cacheKey, tokenResponse, getSkewedTokenCacheTtlMs(expiresAt, now));
 
   logger.debug(
-    `[OboTokenService] Successfully obtained and cached OBO token for user: ${user.openidId}`,
+    `[OboTokenService] Successfully obtained and cached OBO token for user: ${userLogId}`,
   );
   return tokenResponse;
 }
@@ -112,7 +152,7 @@ async function performOboExchange({ user, accessToken, scopes, config, tokensCac
  * Exchange a user's access token for a downstream-scoped token via the
  * OAuth 2.0 On-Behalf-Of (jwt-bearer) grant.
  *
- * Concurrent callers for the same `${openidId}:${scopes}` key share a single
+ * Concurrent callers for the same identity/scopes/assertion key share a single
  * upstream exchange (see `inFlightExchanges`) so a fan-out of tool calls right
  * after a cache miss does not produce N parallel requests to the IdP.
  *
@@ -121,17 +161,16 @@ async function performOboExchange({ user, accessToken, scopes, config, tokensCac
  * @param {string} scopes - Scopes to request for the downstream service
  * @param {boolean} [fromCache=true] - When true, read from cache and join any
  *   in-flight exchange. When false, bypass both and force a fresh exchange.
+ * @param {import('@librechat/api').AuthIdentityContext} [identityContext] - Real request identity
+ *   context used to scope OBO cache keys without exposing tenant/issuer placeholders.
  * @returns {Promise<Object>} Token response with access_token and expires_in
  */
-async function exchangeOboToken(user, accessToken, scopes, fromCache = true) {
-  if (!user.openidId) {
-    throw new Error('User must be authenticated via OpenID to perform OBO token exchange');
-  }
-
+async function exchangeOboToken(user, accessToken, scopes, fromCache = true, identityContext) {
   if (!accessToken) {
     throw new Error('Access token is required for OBO exchange');
   }
 
+  const userLogId = getUserLogId(user);
   if (!scopes) {
     throw new Error('Scopes are required for OBO exchange');
   }
@@ -141,25 +180,38 @@ async function exchangeOboToken(user, accessToken, scopes, fromCache = true) {
     throw new Error('OpenID configuration not available');
   }
 
-  const cacheKey = `${user.openidId}:${scopes}`;
+  const cacheKey = buildOboCacheKey({
+    user,
+    accessToken,
+    scopes,
+    identityContext,
+  });
+  if (!cacheKey) {
+    throw new Error('User must be authenticated via OpenID to perform OBO token exchange');
+  }
   const tokensCache = getLogStores(CacheKeys.OPENID_EXCHANGED_TOKENS);
 
   if (fromCache) {
     const cachedToken = await tokensCache.get(cacheKey);
     if (cachedToken) {
-      logger.debug(`[OboTokenService] Using cached token for user: ${user.openidId}`);
-      return cachedToken;
+      if (hasUsableTokenExpiry(cachedToken.expires_at)) {
+        logger.debug(`[OboTokenService] Using cached token for user: ${userLogId}`);
+        return cachedToken;
+      }
+      logger.debug(
+        `[OboTokenService] Ignoring cached OBO token without usable expiry for user: ${userLogId}`,
+      );
     }
 
     const inFlight = inFlightExchanges.get(cacheKey);
     if (inFlight) {
-      logger.debug(`[OboTokenService] Joining in-flight OBO exchange for user: ${user.openidId}`);
+      logger.debug(`[OboTokenService] Joining in-flight OBO exchange for user: ${userLogId}`);
       return inFlight;
     }
   }
 
   logger.debug(
-    `[OboTokenService] Requesting new OBO token for user: ${user.openidId}, scopes: ${scopes}`,
+    `[OboTokenService] Requesting new OBO token for user: ${userLogId}, scopes: ${scopes}`,
   );
 
   const exchangePromise = performOboExchange({
@@ -191,4 +243,7 @@ async function exchangeOboToken(user, accessToken, scopes, fromCache = true) {
 
 module.exports = {
   exchangeOboToken,
+  __internals: {
+    buildOboCacheKey,
+  },
 };

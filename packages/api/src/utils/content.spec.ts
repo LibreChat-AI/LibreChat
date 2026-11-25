@@ -45,6 +45,41 @@ describe('filterMalformedContentParts', () => {
       expect(result).toEqual(parts);
     });
 
+    it('filters empty summary parts before persistence', () => {
+      const parts = [
+        { type: ContentTypes.SUMMARY },
+        { type: ContentTypes.SUMMARY, content: [] },
+        { type: ContentTypes.SUMMARY, content: [{ type: ContentTypes.TEXT, text: '   ' }] },
+        { type: ContentTypes.SUMMARY, text: '\n\t' },
+        { type: ContentTypes.TEXT, text: 'Final answer' },
+      ] as TMessageContentParts[];
+
+      expect(filterMalformedContentParts(parts)).toEqual([
+        { type: ContentTypes.TEXT, text: 'Final answer' },
+      ]);
+    });
+
+    it('keeps current and legacy summary parts that contain text', () => {
+      const current = {
+        type: ContentTypes.SUMMARY,
+        content: [{ type: ContentTypes.TEXT, text: 'Current summary' }],
+      };
+      const legacyContent = {
+        type: ContentTypes.SUMMARY,
+        content: 'Legacy content summary',
+      };
+      const legacyText = {
+        type: ContentTypes.SUMMARY,
+        text: 'Legacy text summary',
+      };
+
+      expect(filterMalformedContentParts([current, legacyContent, legacyText])).toEqual([
+        current,
+        legacyContent,
+        legacyText,
+      ]);
+    });
+
     it('should filter out null or undefined parts', () => {
       const parts = [
         { type: ContentTypes.TEXT, text: 'Valid' },

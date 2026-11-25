@@ -1,10 +1,12 @@
 import { RecoilRoot, useRecoilValue } from 'recoil';
-import { QueryKeys } from 'librechat-data-provider';
+import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { render, screen, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, useLocation, useNavigate } from 'react-router-dom';
-import type { TConversation, TEndpointsConfig } from 'librechat-data-provider';
+import type { TConversation, TConversationDetail, TEndpointsConfig } from 'librechat-data-provider';
 import useNavigateToConvo, { supersedeNavigation } from '../useNavigateToConvo';
+import { useRunningConversationsQuery } from '~/data-provider/queries';
+import { updateConvoInAllQueries } from '~/utils';
 import { SetConvoProvider } from '~/Providers';
 import store from '~/store';
 
@@ -27,6 +29,7 @@ jest.mock('librechat-data-provider', () => ({
   dataService: {
     ...jest.requireActual('librechat-data-provider').dataService,
     getConversationById: (...args: unknown[]) => mockGetConversationById(...(args as [string])),
+    getSharedLink: jest.fn().mockResolvedValue({ shareId: null, success: true }),
   },
 }));
 
@@ -41,6 +44,14 @@ const rowB = {
   endpoint: 'openAI',
   model: 'gpt-4o-mini',
 } as TConversation;
+
+const retiredRow = {
+  ...rowB,
+  endpoint: EModelEndpoint.bedrock,
+  spec: 'hidden-research',
+  model: 'retired-model',
+  agent_id: 'bedrock__retired-model',
+};
 
 const rowC = {
   conversationId: C,
@@ -71,7 +82,8 @@ const endpointsConfig = { openAI: {} } as unknown as TEndpointsConfig;
 
 const notFound = () => ({ status: 404, message: 'not found' });
 
-function Harness() {
+function Harness({ runningIds = [] }: { runningIds?: string[] }) {
+  const runningRows = useRunningConversationsQuery(runningIds);
   const { navigateToConvo } = useNavigateToConvo();
   const conversation = useRecoilValue(store.conversationByIndex(0));
   const { setConversation } = store.useSetConversationAtom(0);
@@ -85,6 +97,11 @@ function Harness() {
         onClick={() => navigateToConvo(rowB, { currentConvoId: 'convo-a' })}
       />
       <button data-testid="go-c" onClick={() => navigateToConvo(rowC, { currentConvoId: B })} />
+      <button
+        data-testid="go-running-b"
+        disabled={runningRows.length === 0}
+        onClick={() => navigateToConvo(runningRows[0], { currentConvoId: 'convo-a' })}
+      />
       {/* Every other way out of a conversation — "New chat", a link, a
           redirect, the back button — moves the route without going through
           `navigateToConvo`, exactly like `useNewConvo` does. */}
@@ -117,6 +134,18 @@ function Harness() {
           navigate('/c/new');
         }}
       />
+      <button
+        data-testid="go-removed-endpoint"
+        onClick={() =>
+          navigateToConvo({
+            ...rowB,
+            conversationId: 'new',
+            endpoint: EModelEndpoint.azureOpenAI,
+            model: 'old-model',
+          })
+        }
+      />
+      <button data-testid="go-retired-spec" onClick={() => navigateToConvo(retiredRow)} />
       <div data-testid="path">{location.pathname}</div>
       <div data-testid="convo">{JSON.stringify(conversation ?? null)}</div>
     </div>
@@ -125,7 +154,7 @@ function Harness() {
 
 /** A real history, not `MemoryRouter`: the hook abandons superseded work by
  *  reading the browser's own location, so the test has to move it for real. */
-function renderHarness(cached: TConversation[] = []) {
+function renderHarness(cached: TConversation[] = [], runningIds: string[] = []) {
   window.history.pushState({}, '', '/c/convo-a');
 
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -143,7 +172,7 @@ function renderHarness(cached: TConversation[] = []) {
       <RecoilRoot>
         <QueryClientProvider client={queryClient}>
           <SetConvoProvider>
-            <Harness />
+            <Harness runningIds={runningIds} />
           </SetConvoProvider>
         </QueryClientProvider>
       </RecoilRoot>
@@ -168,7 +197,7 @@ const click = (testId: string) => {
   });
 };
 
-const settle = async (id: string, outcome: TConversation | { status: number }) => {
+const settle = async (id: string, outcome: TConversationDetail | { status: number }) => {
   const deferred = mockPending.get(id);
   if (!deferred) {
     throw new Error(`no in-flight request for ${id}`);
@@ -183,9 +212,184 @@ const settle = async (id: string, outcome: TConversation | { status: number }) =
 };
 
 describe('useNavigateToConvo', () => {
+  it('waits for the detail when the cached record has no recovered target', async () => {
+    const recovered = { ...recordB, spec: retiredRow.spec };
+    renderHarness([retiredRow]);
+
+    click('go-retired-spec');
+    expect(currentPath()).toBe('/c/convo-a');
+    await settle(B, recovered);
+
+    expect(currentPath()).toBe(`/c/${B}`);
+    expect(currentConvo()).toMatchObject(recovered);
+  });
+
+  it('keeps saved settings and messages when a retired target refresh fails before recovery', async () => {
+    const cached = { ...recordB, ...retiredRow };
+    const queryClient = renderHarness([cached]);
+    const messages = [{ messageId: 'existing-message' }];
+    queryClient.setQueryData([QueryKeys.messages, B], messages);
+
+    click('go-retired-spec');
+    await settle(B, { status: 500 });
+
+    expect(currentPath()).toBe(`/c/${B}`);
+    expect(currentConvo()).toMatchObject(cached);
+    expect(queryClient.getQueryData([QueryKeys.messages, B])).toEqual(messages);
+  });
+
+  it('opens a recovered chat immediately and keeps its transcript after a transient failure', async () => {
+    const recovered = { ...recordB, spec: retiredRow.spec };
+    const queryClient = renderHarness([recovered]);
+    const messages = [{ messageId: 'existing-message' }];
+    queryClient.setQueryData([QueryKeys.messages, B], messages);
+
+    click('go-retired-spec');
+    expect(currentPath()).toBe(`/c/${B}`);
+    expect(currentConvo()).toMatchObject({
+      ...recovered,
+      title: retiredRow.title,
+    });
+    expect(currentConvo()?.agent_id).toBeUndefined();
+
+    await settle(B, { status: 500 });
+
+    expect(currentConvo()?.endpoint).toBe(recovered.endpoint);
+    expect(queryClient.getQueryData([QueryKeys.messages, B])).toEqual(messages);
+  });
+
+  it('keeps a usable recovered target when the server returns the stored fallback', async () => {
+    const recovered = { ...recordB, spec: retiredRow.spec };
+    const queryClient = renderHarness([recovered]);
+
+    click('go-retired-spec');
+    await settle(B, {
+      ...retiredRow,
+      title: 'Updated remotely',
+      targetResolutionFailed: true,
+    });
+
+    const current = queryClient.getQueryData<TConversationDetail>([QueryKeys.conversation, B]);
+    expect(current).toMatchObject({
+      endpoint: recovered.endpoint,
+      model: recovered.model,
+      title: 'Updated remotely',
+    });
+    expect(current).not.toHaveProperty('targetResolutionFailed');
+    expect(current?.agent_id).toBeUndefined();
+    expect(sidebarRow(queryClient, B)).toMatchObject({
+      endpoint: recovered.endpoint,
+      model: recovered.model,
+    });
+    expect(sidebarRow(queryClient, B)?.agent_id).toBeUndefined();
+  });
+
+  it.each([
+    { spec: retiredRow.spec, failed: undefined },
+    { spec: 'different-spec', failed: true as const },
+  ])('accepts the server target when the response is %j', async ({ spec, failed }) => {
+    const recovered = { ...recordB, spec: retiredRow.spec };
+    const queryClient = renderHarness([recovered]);
+
+    click('go-retired-spec');
+    await settle(B, { ...retiredRow, spec, targetResolutionFailed: failed });
+
+    const expected = { endpoint: retiredRow.endpoint, spec, agent_id: retiredRow.agent_id };
+    expect(queryClient.getQueryData([QueryKeys.conversation, B])).toMatchObject(expected);
+    expect(sidebarRow(queryClient, B)).toMatchObject(expected);
+  });
+
+  it('refreshes the retired row and its provider-specific agent ID together', async () => {
+    const recovered = { ...recordB, spec: retiredRow.spec };
+    const queryClient = renderHarness([recovered]);
+    queryClient.setQueryData([QueryKeys.allConversations], {
+      pages: [{ conversations: [retiredRow], nextCursor: null }],
+      pageParams: [undefined],
+    });
+
+    click('go-retired-spec');
+    await settle(B, recovered);
+
+    expect(sidebarRow(queryClient, B)).toMatchObject({
+      endpoint: recovered.endpoint,
+      model: recovered.model,
+      spec: recovered.spec,
+      title: retiredRow.title,
+    });
+    expect(sidebarRow(queryClient, B)?.agent_id).toBeUndefined();
+  });
+
+  it('uses the destination-scoped cache when an endpoint was removed', () => {
+    localStorage.clear();
+    const client = renderHarness();
+    client.setQueryData([QueryKeys.models, 'openAI'], { openAI: ['scoped-model'] });
+    click('go-removed-endpoint');
+    expect(currentConvo()?.endpoint).toBe('openAI');
+    expect(currentConvo()?.model).toBe('scoped-model');
+    expect(client.getQueryData([QueryKeys.models])).toBeUndefined();
+  });
+
+  it('leaves the model unresolved if the fallback endpoint has not been discovered', () => {
+    localStorage.clear();
+    renderHarness();
+    click('go-removed-endpoint');
+    expect(currentConvo()?.endpoint).toBe('openAI');
+    expect(currentConvo()?.model).toBeUndefined();
+  });
+
   afterEach(() => {
     mockGetConversationById.mockClear();
     mockPending.clear();
+  });
+
+  describe('with a fetched Running row', () => {
+    it('keeps a newer approval choice when reopening a running project chat', async () => {
+      const queryClient = renderHarness([], [B]);
+      await waitFor(() =>
+        expect(mockGetConversationById).toHaveBeenCalledWith(B, expect.any(AbortSignal)),
+      );
+      await settle(B, { ...recordB, chatProjectId: 'project-1', codeApprovalMode: 'fullAccess' });
+      await waitFor(() => expect(screen.getByTestId('go-running-b')).not.toBeDisabled());
+
+      act(() =>
+        queryClient.setQueryData<TConversation>([QueryKeys.conversation, B], (record) => ({
+          ...record!,
+          codeApprovalMode: 'ask',
+        })),
+      );
+      click('go-running-b');
+
+      expect(currentPath()).toBe(`/c/${B}`);
+      expect(currentConvo()?.codeApprovalMode).toBe('ask');
+      expect(currentConvo()?.chatProjectId).toBe('project-1');
+    });
+
+    it('keeps chat-owned prompt, sampling and workspace choices while accepting fresh row metadata', async () => {
+      const queryClient = renderHarness([], [B]);
+      await waitFor(() => expect(mockGetConversationById).toHaveBeenCalled());
+      await settle(B, {
+        ...recordB,
+        title: 'Fresh running title',
+        codeEnvironmentMode: 'without_attached',
+      });
+      await waitFor(() => expect(screen.getByTestId('go-running-b')).not.toBeDisabled());
+      act(() =>
+        queryClient.setQueryData<TConversation>([QueryKeys.conversation, B], (record) => ({
+          ...record!,
+          promptPrefix: 'New local instructions',
+          temperature: 0.7,
+          codeEnvironmentMode: 'attached',
+        })),
+      );
+      click('go-running-b');
+
+      expect(currentConvo()).toMatchObject({
+        title: 'Fresh running title',
+        promptPrefix: 'New local instructions',
+        temperature: 0.7,
+        codeEnvironmentMode: 'attached',
+      });
+    });
   });
 
   describe('with the full record already cached', () => {
@@ -250,6 +454,30 @@ describe('useNavigateToConvo', () => {
       await settle(B, { ...recordB, model: 'gpt-4o-elsewhere' });
 
       await waitFor(() => expect(sidebarRow(queryClient, B)?.model).toBe('gpt-4o-elsewhere'));
+    });
+
+    it('keeps the agent committed by a new turn while the detail refresh was pending', async () => {
+      const previous = { ...recordB, agent_id: 'agent_old' };
+      const queryClient = renderHarness([previous]);
+      click('go-b');
+
+      act(() => {
+        updateConvoInAllQueries(
+          queryClient,
+          B,
+          (conversation) => ({
+            ...conversation,
+            endpoint: EModelEndpoint.agents,
+            agent_id: 'agent_new',
+          }),
+          true,
+        );
+      });
+      await settle(B, previous);
+
+      const committed = { endpoint: EModelEndpoint.agents, agent_id: 'agent_new' };
+      expect(queryClient.getQueryData([QueryKeys.conversation, B])).toMatchObject(committed);
+      expect(sidebarRow(queryClient, B)).toMatchObject(committed);
     });
 
     it('leaves list-owned row state alone when the refresh lands', async () => {

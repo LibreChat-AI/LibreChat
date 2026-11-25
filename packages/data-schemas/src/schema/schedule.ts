@@ -1,5 +1,20 @@
 import { Schema } from 'mongoose';
+import { SCHEDULE_CRON_MAX_LENGTH } from 'librechat-data-provider';
+import { runGrantFailureReasonSchema } from 'librechat-data-provider';
+import { scheduledMCPEnrollmentSchema } from 'librechat-data-provider';
 import type { IScheduleDocument } from '~/types/schedule';
+
+/** `cadence` is a nested path rather than a subdocument, so a validator on
+ *  `cadence.hour` is called with the DOCUMENT as `this`, not the cadence object.
+ *  Reading `this.frequency` there is always undefined, which made every cadence
+ *  look like a structured one and rejected every cron write. */
+interface CadenceValidatorDocument {
+  cadence?: { frequency?: string };
+}
+
+function isStructuredCadence(this: CadenceValidatorDocument): boolean {
+  return this.cadence?.frequency !== 'cron';
+}
 
 const scheduleSchema: Schema<IScheduleDocument> = new Schema(
   {
@@ -35,12 +50,40 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
     cadence: {
       frequency: {
         type: String,
-        enum: ['hourly', 'daily', 'weekdays', 'weekly'],
+        enum: ['hourly', 'daily', 'weekdays', 'weekly', 'cron'],
         required: true,
       },
-      hour: { type: Number, min: 0, max: 23, required: true },
-      minute: { type: Number, min: 0, max: 59, required: true },
+      /**
+       * Required for the structured cadences only. A cron row carries its hour and
+       * minute inside `expression`, so a blanket `required: true` here would reject
+       * every cron write; the function form keeps the guarantee for the four
+       * structured frequencies, where a missing hour would silently fire at 00:00.
+       */
+      hour: {
+        type: Number,
+        min: 0,
+        max: 23,
+        required: isStructuredCadence,
+      },
+      minute: {
+        type: Number,
+        min: 0,
+        max: 59,
+        required: isStructuredCadence,
+      },
       daysOfWeek: { type: [Number], default: undefined },
+      /** The mirror of the rule above: a cron row IS its expression, so persisting
+       *  one without it arms a schedule the engine cannot compile a next run from. */
+      expression: {
+        type: String,
+        default: undefined,
+        /** Mirrors the zod gate, so a methods-layer writer bypassing the handlers
+         *  cannot persist an expression the engine then refuses to compile. */
+        maxlength: SCHEDULE_CRON_MAX_LENGTH,
+        required: function (this: CadenceValidatorDocument) {
+          return !isStructuredCadence.call(this);
+        },
+      },
     },
     timezone: {
       type: String,
@@ -63,6 +106,16 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
       type: [String],
       default: undefined,
     },
+    mcpConsent: {
+      type: Schema.Types.Mixed,
+      default: undefined,
+      validate: (value: import('librechat-data-provider').ScheduledMCPEnrollment) =>
+        scheduledMCPEnrollmentSchema.safeParse(value).success,
+    },
+    mcpConsentRequired: {
+      type: Boolean,
+      default: undefined,
+    },
     cron: {
       type: String,
     },
@@ -71,9 +124,16 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
       default: true,
       required: true,
     },
+    /** Run only while every MCP server the agent uses is ready. Unset, one that is not is left out. */
+    mcpStrict: {
+      type: Boolean,
+    },
     disabledReason: {
       type: String,
       enum: [
+        'mcp_reauth_required',
+        'mcp_configuration_missing',
+        'mcp_permission_denied',
         'too_many_failures',
         'agent_deleted',
         'invalid_schedule',
@@ -182,6 +242,35 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
         conversationId: { type: String },
         status: { type: String, required: true },
         error: { type: String },
+        mcp: {
+          type: [
+            {
+              _id: false,
+              server: { type: String, required: true },
+              agentId: { type: String },
+              detail: { type: String, enum: ['unattended_auth_required'] },
+              reason: { type: String, enum: runGrantFailureReasonSchema.options },
+              recovery: {
+                type: String,
+                enum: ['authorize', 'configure', 'restore_permission', 'retry_later'],
+              },
+              automaticReplay: { type: Boolean, enum: [false] },
+              skipped: { type: Boolean, enum: [true] },
+              status: {
+                type: String,
+                required: true,
+                enum: [
+                  'ready',
+                  'mcp_reauth_required',
+                  'mcp_configuration_missing',
+                  'mcp_permission_denied',
+                  'mcp_unavailable',
+                ],
+              },
+            },
+          ],
+          default: undefined,
+        },
         firedAt: { type: Date, required: true },
         scheduledFor: { type: Date },
       },

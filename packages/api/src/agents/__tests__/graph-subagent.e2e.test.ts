@@ -139,7 +139,6 @@ liveDescribe('Graph subagent E2E (LibreChat)', () => {
         {
           configurable: { thread_id: runId },
           recursionLimit: 100,
-          streamMode: 'values',
           version: 'v2',
         },
       );

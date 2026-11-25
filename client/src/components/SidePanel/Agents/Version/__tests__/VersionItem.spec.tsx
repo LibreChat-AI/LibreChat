@@ -4,6 +4,7 @@ import type { VersionRecord } from '../types';
 import VersionItem from '../VersionItem';
 
 jest.mock('~/hooks', () => ({
+  useClockFormat: () => true,
   useLocalize: jest
     .fn()
     .mockImplementation(() => (key: string, params?: Record<string, unknown>) => {

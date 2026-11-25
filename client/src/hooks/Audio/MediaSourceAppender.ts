@@ -1,23 +1,57 @@
 export class MediaSourceAppender {
   private readonly mediaSource = new MediaSource();
   private readonly audioChunks: ArrayBuffer[] = [];
+  private readonly type: string;
 
+  private objectUrl?: string;
   private sourceBuffer?: SourceBuffer;
+  private isClosed = false;
+  private isDisposed = false;
 
   constructor(type: string) {
-    this.mediaSource.addEventListener('sourceopen', async () => {
-      this.sourceBuffer = this.mediaSource.addSourceBuffer(type);
+    this.type = type;
+    this.mediaSource.addEventListener('sourceopen', () => {
+      if (this.isDisposed || this.sourceBuffer != null) {
+        return;
+      }
 
+      this.sourceBuffer = this.mediaSource.addSourceBuffer(this.type);
       this.sourceBuffer.addEventListener('updateend', () => {
         this.tryAppendNextChunk();
       });
+
+      /** `sourceopen` only fires once a media element attaches the object URL, which
+       *  can land after the whole response was already read. Draining here is what
+       *  keeps short (fast) responses from stranding their chunks in the queue. */
+      this.tryAppendNextChunk();
     });
   }
 
   private tryAppendNextChunk() {
-    if (this.sourceBuffer != null && !this.sourceBuffer.updating && this.audioChunks.length > 0) {
-      this.sourceBuffer.appendBuffer(this.audioChunks.shift()!);
+    if (this.isDisposed || this.sourceBuffer == null || this.sourceBuffer.updating) {
+      return;
     }
+
+    const chunk = this.audioChunks.shift();
+    if (chunk == null) {
+      this.tryEndOfStream();
+      return;
+    }
+
+    this.sourceBuffer.appendBuffer(chunk);
+  }
+
+  private tryEndOfStream() {
+    /** `endOfStream()` only throws while the source is not open or a buffer is updating,
+     *  an empty response still has to end, or the element waits on it forever. */
+    if (!this.isClosed || this.mediaSource.readyState !== 'open') {
+      return;
+    }
+    if (this.audioChunks.length > 0 || this.sourceBuffer?.updating === true) {
+      return;
+    }
+
+    this.mediaSource.endOfStream();
   }
 
   public addBase64Data(base64Data: string) {
@@ -27,17 +61,30 @@ export class MediaSourceAppender {
   }
 
   public addData(data: ArrayBuffer) {
+    if (this.isDisposed) {
+      return;
+    }
     this.audioChunks.push(data);
     this.tryAppendNextChunk();
   }
 
+  /**
+   * Signals that no further data will arrive. The media source is only ended once every
+   * queued chunk has been appended, so the tail of the audio is never truncated.
+   */
   public close() {
-    if (this.mediaSource.readyState === 'open') {
-      this.mediaSource.endOfStream();
-    }
+    this.isClosed = true;
+    this.tryEndOfStream();
+  }
+
+  /** Stops queued appends before the owning audio element detaches. */
+  public dispose() {
+    this.isDisposed = true;
+    this.audioChunks.length = 0;
   }
 
   public get mediaSourceUrl() {
-    return URL.createObjectURL(this.mediaSource);
+    this.objectUrl ??= URL.createObjectURL(this.mediaSource);
+    return this.objectUrl;
   }
 }

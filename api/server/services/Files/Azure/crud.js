@@ -1,12 +1,15 @@
 const fs = require('fs');
 const path = require('path');
 const mime = require('mime');
-const axios = require('axios');
 const fetch = require('node-fetch');
 const { logger } = require('@librechat/data-schemas');
 const {
   deleteRagFile,
+  dispatchFileDeletion,
+  createOwnedBlobFileDeleter,
+  extractAzureBlobPath,
   assertRemoteFileURL,
+  getSafeErrorMetadata,
   getAzureContainerClient,
   getRemoteFileFetchMaxBytes,
   getRemoteFileFetchTimeoutMs,
@@ -120,26 +123,18 @@ async function getAzureURL({ fileName, basePath = defaultBasePath, userId, conta
  * @param {ServerRequest} params.req - The Express request object.
  * @param {MongoFile} params.file - The file object.
  */
-async function deleteFileFromAzure(req, file) {
-  await deleteRagFile({ userId: req.user.id, file });
-
-  try {
-    const containerClient = await getAzureContainerClient(AZURE_CONTAINER_NAME);
-    const blobPath = file.filepath.split(`${AZURE_CONTAINER_NAME}/`)[1];
-    if (!blobPath.includes(req.user.id)) {
-      throw new Error('User ID not found in blob path');
-    }
-    const blockBlobClient = containerClient.getBlockBlobClient(blobPath);
-    await blockBlobClient.delete();
-    logger.debug('[deleteFileFromAzure] Blob deleted successfully from Azure Blob Storage');
-  } catch (error) {
-    logger.error('[deleteFileFromAzure] Error deleting blob:', error);
-    if (error.statusCode === 404) {
-      return;
-    }
-    throw error;
-  }
-}
+const deleteFileFromAzure = (req, file, _client, onDelete) =>
+  createOwnedBlobFileDeleter({
+    extractPath: (filepath) => extractAzureBlobPath(filepath, AZURE_CONTAINER_NAME),
+    deleteBlob: async (blobPath) => {
+      const containerClient = await getAzureContainerClient(AZURE_CONTAINER_NAME);
+      const blockBlobClient = containerClient.getBlockBlobClient(blobPath);
+      await dispatchFileDeletion(onDelete, () => blockBlobClient.delete());
+      logger.debug('[deleteFileFromAzure] Blob deleted successfully from Azure Blob Storage');
+    },
+    isMissing: (error) => error?.statusCode === 404,
+    deleteRagFile,
+  })(req, file);
 
 /**
  * Streams a file from disk directly to Azure Blob Storage without loading
@@ -250,16 +245,45 @@ async function uploadFileToAzure({
  * @param {string} fileURL - The URL of the blob.
  * @returns {Promise<ReadableStream>} A readable stream of the blob.
  */
-async function getAzureFileStream(_req, fileURL) {
+async function getAzureFileStream(_req, fileURL, { signal } = {}) {
   try {
-    const response = await axios({
-      method: 'get',
-      url: fileURL,
-      responseType: 'stream',
+    const url = new URL(fileURL);
+    const configuredClient = await getAzureContainerClient();
+    const configuredURL = configuredClient.url ? new URL(configuredClient.url) : undefined;
+    const configuredPrefix = configuredURL?.pathname.replace(/\/$/, '');
+    let containerClient = configuredClient;
+    let blobPath;
+
+    if (
+      configuredURL &&
+      configuredPrefix &&
+      url.origin === configuredURL.origin &&
+      url.pathname.startsWith(`${configuredPrefix}/`)
+    ) {
+      /* Azurite puts the account name before the container in the path. The configured
+       * container URL already includes both, so resolve the blob relative to it. */
+      blobPath = url.pathname.slice(configuredPrefix.length + 1);
+    } else {
+      const pathSegments = url.pathname.split('/').filter(Boolean);
+      const containerName = pathSegments.shift();
+      blobPath = pathSegments.join('/');
+      if (containerName) {
+        containerClient = await getAzureContainerClient(decodeURIComponent(containerName));
+      }
+    }
+    blobPath = blobPath?.split('/').map(decodeURIComponent).join('/');
+    if (!blobPath) {
+      throw new Error('Invalid Azure Blob URL');
+    }
+    const response = await containerClient.getBlockBlobClient(blobPath).download(0, undefined, {
+      abortSignal: signal,
     });
-    return response.data;
+    if (!response.readableStreamBody) {
+      throw new Error('Azure Blob download returned no readable stream');
+    }
+    return response.readableStreamBody;
   } catch (error) {
-    logger.error('[getAzureFileStream] Error getting blob stream:', error);
+    logger.error('[getAzureFileStream] Error getting blob stream:', getSafeErrorMetadata(error));
     throw error;
   }
 }

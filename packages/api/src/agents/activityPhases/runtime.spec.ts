@@ -100,7 +100,7 @@ describe('createActivityPhaseWiring', () => {
             phase: 'final_answer',
           },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -112,7 +112,7 @@ describe('createActivityPhaseWiring', () => {
         delta: {
           content: { type: ContentTypes.TEXT, text: 'A'.repeat(SUBSTANTIAL_TEXT_CHARS + 1) },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -185,13 +185,13 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: id, content_type: 'text', ...(phase && { phase }) },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
       handlers?.[GraphEvents.ON_MESSAGE_DELTA]?.handle(
         GraphEvents.ON_MESSAGE_DELTA,
-        { id, delta: { content: { type: ContentTypes.TEXT, text } } },
+        { id, delta: { content: { type: ContentTypes.TEXT, text } } } as never,
         undefined,
         undefined,
       );
@@ -274,13 +274,16 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
     handlers?.[GraphEvents.ON_MESSAGE_DELTA]?.handle(
       GraphEvents.ON_MESSAGE_DELTA,
-      { id: 'interleaved-text', delta: { content: { type: ContentTypes.TEXT, text: 'prefix' } } },
+      {
+        id: 'interleaved-text',
+        delta: { content: { type: ContentTypes.TEXT, text: 'prefix' } },
+      } as never,
       undefined,
       undefined,
     );
@@ -291,7 +294,7 @@ describe('createActivityPhaseWiring', () => {
       {
         id: 'interleaved-text',
         delta: { content: { type: ContentTypes.TEXT, text: 'x'.repeat(SUBSTANTIAL_TEXT_CHARS) } },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -348,7 +351,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -360,7 +363,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'think' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -370,7 +373,7 @@ describe('createActivityPhaseWiring', () => {
       {
         id: 'later-reasoning',
         delta: { content: { type: ContentTypes.THINK, think: 'Investigating the later tool.' } },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -379,7 +382,7 @@ describe('createActivityPhaseWiring', () => {
       {
         id: 'boundary-text',
         delta: { content: { type: ContentTypes.TEXT, text: substantialText('Boundary result.') } },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -489,6 +492,80 @@ describe('createActivityPhaseWiring', () => {
     expect(payloads[1]).toMatchObject({ assistantContext: ['Context for the later work.'] });
   });
 
+  it('sends only readable reasoning excerpts to the phase summarizer', async () => {
+    const encoded = Buffer.from(Array.from({ length: 450 }, (_, i) => (i * 37 + 3) % 256)).toString(
+      'base64',
+    );
+    const parts: LooseContentPart[] = [
+      { type: ContentTypes.TOOL_CALL, tool_call: { id: 'tool-1' } },
+      { type: ContentTypes.TOOL_CALL, tool_call: { id: 'tool-2' } },
+      { type: ContentTypes.TOOL_CALL, tool_call: { id: 'tool-3' } },
+      { type: ContentTypes.TOOL_CALL, tool_call: { id: 'tool-4' } },
+    ];
+    const payloads: GenerateActivityPhasePayload[] = [];
+    const wiring = createActivityPhaseWiring({
+      initialSnapshot: {
+        version: 3,
+        generated: 0,
+        activityCount: 4,
+        failedActivityCount: 0,
+        partialActivityCount: 0,
+        agentIds: [],
+        activities: [
+          {
+            startIndex: 0,
+            status: 'success',
+            toolCallIds: ['tool-1'],
+            thinkingExcerpts: ['Checking the deploy manifest.'],
+          },
+          {
+            startIndex: 1,
+            status: 'success',
+            toolCallIds: ['tool-2'],
+            thinkingExcerpts: [encoded],
+          },
+          {
+            startIndex: 2,
+            status: 'success',
+            toolCallIds: ['tool-3'],
+            thinkingExcerpts: [`Rolling back.\n${encoded}`],
+          },
+          {
+            startIndex: 3,
+            status: 'success',
+            toolCallIds: ['tool-4'],
+            /** A window cut into a payload: only the streamed classification is evidence. */
+            thinkingExcerpts: [`${encoded.slice(-9)} Verified the rollback.`],
+            readableExcerpts: ['Verified the rollback.'],
+          },
+        ],
+        assistantContext: [],
+        pendingReasoning: [],
+      },
+      getContentParts: () => parts,
+      bumpIndexOffset: jest.fn(),
+      emitLabelEvent: jest.fn(async () => undefined),
+      trackPendingFill: jest.fn(),
+      generatePhase: jest.fn(async (payload: GenerateActivityPhasePayload) => {
+        payloads.push(payload);
+        return { label: 'Rolled back the deploy' };
+      }),
+    });
+
+    wiring.complete();
+    await flushDetached();
+
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0].activities.map((activity) => activity.thinkingExcerpts)).toEqual([
+      ['Checking the deploy manifest.'],
+      undefined,
+      ['Rolling back.'],
+      ['Verified the rollback.'],
+    ]);
+    expect(payloads[0].activities[1]).not.toHaveProperty('thinkingExcerpts');
+    expect(payloads[0].activities[3]).not.toHaveProperty('readableExcerpts');
+  });
+
   it('keeps a substantial boundary hard when too little preceding work earns a phase', async () => {
     const parts: LooseContentPart[] = [
       { type: ContentTypes.TOOL_CALL, tool_call: { id: 'tool-1' } },
@@ -547,14 +624,14 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
     const emitTextDelta = (id: string, text: string) =>
       handlers?.[GraphEvents.ON_MESSAGE_DELTA]?.handle(
         GraphEvents.ON_MESSAGE_DELTA,
-        { id, delta: { content: { type: ContentTypes.TEXT, text } } },
+        { id, delta: { content: { type: ContentTypes.TEXT, text } } } as never,
         undefined,
         undefined,
       );
@@ -572,7 +649,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text', phase: 'final_answer' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -626,7 +703,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text', phase: 'final_answer' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -678,7 +755,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text', phase: 'final_answer' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -736,7 +813,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'think' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -746,7 +823,7 @@ describe('createActivityPhaseWiring', () => {
       {
         id: 'missing-tool-reasoning',
         delta: { content: { type: ContentTypes.THINK, think: repeatedReasoning } },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -766,7 +843,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'think' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -776,7 +853,7 @@ describe('createActivityPhaseWiring', () => {
       {
         id: 'current-reasoning',
         delta: { content: { type: ContentTypes.THINK, think: repeatedReasoning } },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -789,7 +866,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text', phase: 'final_answer' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -826,13 +903,161 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text', phase: 'final_answer' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
     await flushDetached();
     expect(generatePhase).not.toHaveBeenCalled();
     expect(parts).toHaveLength(1);
+  });
+
+  it('replays a legacy pending-reasoning snapshot through the stream filter', async () => {
+    const encoded = Buffer.from(
+      Array.from({ length: 1_050 }, (_, i) => (i * 37 + 3) % 256),
+    ).toString('base64');
+    const parts: LooseContentPart[] = [];
+    const wiring = createActivityPhaseWiring({
+      initialSnapshot: {
+        version: 3,
+        generated: 0,
+        activityCount: 0,
+        failedActivityCount: 0,
+        partialActivityCount: 0,
+        agentIds: [],
+        activities: [],
+        assistantContext: [],
+        /** Written before snapshots carried a readable window or cursor. */
+        pendingReasoning: [{ key: 'root', text: `Checking. ${encoded.slice(0, 100)}` }],
+      },
+      getContentParts: () => parts,
+      bumpIndexOffset: jest.fn(),
+      emitLabelEvent: jest.fn(async () => undefined),
+      trackPendingFill: jest.fn(),
+      generatePhase: jest.fn(async () => ({ label: 'unused' })),
+    });
+    const handlers = wiring.handlers({
+      [GraphEvents.ON_RUN_STEP]: { handle: jest.fn() },
+      [GraphEvents.ON_REASONING_DELTA]: { handle: jest.fn() },
+    });
+    handlers?.[GraphEvents.ON_RUN_STEP]?.handle(
+      GraphEvents.ON_RUN_STEP,
+      {
+        id: 'reasoning-step',
+        stepDetails: {
+          type: StepTypes.MESSAGE_CREATION,
+          message_creation: { message_id: 'm', content_type: 'think' },
+        },
+      } as never,
+      undefined,
+      undefined,
+    );
+    for (const think of [encoded.slice(100), ' Rolling back.']) {
+      handlers?.[GraphEvents.ON_REASONING_DELTA]?.handle(
+        GraphEvents.ON_REASONING_DELTA,
+        { id: 'reasoning-step', delta: { content: { type: ContentTypes.THINK, think } } } as never,
+        undefined,
+        undefined,
+      );
+    }
+    parts.push({ type: ContentTypes.THINK, think: `Checking. ${encoded} Rolling back.` });
+    parts.push({ type: ContentTypes.TOOL_CALL, tool_call: { id: 'tool-1' } });
+    await wiring.hook(batch('tool-1'), new AbortController().signal);
+
+    const [activity] = wiring.snapshot().activities;
+    expect(activity.readableExcerpts).toEqual(['Checking.  Rolling back.']);
+  });
+
+  it('drops the cut leading run of a full legacy pending-reasoning window', async () => {
+    const encoded = Buffer.from(
+      Array.from({ length: 1_050 }, (_, i) => (i * 37 + 3) % 256),
+    ).toString('base64');
+    const readable = 'Checking the manifest before rolling back the deploy. '
+      .repeat(11)
+      .slice(0, 549);
+    const legacyWindow = `${encoded.slice(-50)} ${readable}`;
+    expect(legacyWindow).toHaveLength(600);
+    const parts: LooseContentPart[] = [];
+    const wiring = createActivityPhaseWiring({
+      initialSnapshot: {
+        version: 3,
+        generated: 0,
+        activityCount: 0,
+        failedActivityCount: 0,
+        partialActivityCount: 0,
+        agentIds: [],
+        activities: [],
+        assistantContext: [],
+        pendingReasoning: [{ key: 'root', text: legacyWindow }],
+      },
+      getContentParts: () => parts,
+      bumpIndexOffset: jest.fn(),
+      emitLabelEvent: jest.fn(async () => undefined),
+      trackPendingFill: jest.fn(),
+      generatePhase: jest.fn(async () => ({ label: 'unused' })),
+    });
+    parts.push({ type: ContentTypes.THINK, think: `${encoded} ${readable}` });
+    parts.push({ type: ContentTypes.TOOL_CALL, tool_call: { id: 'tool-1' } });
+    await wiring.hook(batch('tool-1'), new AbortController().signal);
+
+    const [activity] = wiring.snapshot().activities;
+    expect(activity.readableExcerpts).toEqual([readable.trim()]);
+  });
+
+  it('classifies streamed reasoning before bounding its prompt evidence', async () => {
+    const encoded = Buffer.from(
+      Array.from({ length: 1_050 }, (_, i) => (i * 37 + 3) % 256),
+    ).toString('base64');
+    const readable = 'Checking the manifest before rolling back the deploy. '
+      .repeat(11)
+      .slice(0, 590);
+    const parts: LooseContentPart[] = [];
+    const wiring = createActivityPhaseWiring({
+      getContentParts: () => parts,
+      bumpIndexOffset: jest.fn(),
+      emitLabelEvent: jest.fn(async () => undefined),
+      trackPendingFill: jest.fn(),
+      generatePhase: jest.fn(async () => ({ label: 'unused' })),
+    });
+    const handlers = wiring.handlers({
+      [GraphEvents.ON_RUN_STEP]: { handle: jest.fn() },
+      [GraphEvents.ON_REASONING_DELTA]: { handle: jest.fn() },
+    });
+    handlers?.[GraphEvents.ON_RUN_STEP]?.handle(
+      GraphEvents.ON_RUN_STEP,
+      {
+        id: 'reasoning-step',
+        stepDetails: {
+          type: StepTypes.MESSAGE_CREATION,
+          message_creation: { message_id: 'm', content_type: 'think' },
+        },
+      } as never,
+      undefined,
+      undefined,
+    );
+    /** A payload-only stream longer than the 600-char window, split so its
+     *  final 50-char fragment shares a delta with the readable reasoning. */
+    const deltas = [
+      ...Array.from({ length: 13 }, (_, i) => encoded.slice(i * 100, (i + 1) * 100)),
+      `${encoded.slice(1_300)}\n${readable}`,
+    ];
+    for (const think of deltas) {
+      handlers?.[GraphEvents.ON_REASONING_DELTA]?.handle(
+        GraphEvents.ON_REASONING_DELTA,
+        { id: 'reasoning-step', delta: { content: { type: ContentTypes.THINK, think } } } as never,
+        undefined,
+        undefined,
+      );
+    }
+    parts.push({ type: ContentTypes.THINK, think: deltas.join('') });
+    parts.push({ type: ContentTypes.TOOL_CALL, tool_call: { id: 'tool-1' } });
+    await wiring.hook(batch('tool-1'), new AbortController().signal);
+
+    const [activity] = wiring.snapshot().activities;
+    expect(activity.readableExcerpts).toEqual([readable.trim()]);
+    /** The raw anchor window still starts inside the payload: exactly the
+     *  fragment that must never be prompt evidence. */
+    expect(activity.thinkingExcerpts?.[0]?.startsWith(`${encoded.slice(-9)}\n`)).toBe(true);
   });
 
   it('keeps reasoning attached to a tool batch across commentary', async () => {
@@ -858,7 +1083,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'think' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -867,7 +1092,7 @@ describe('createActivityPhaseWiring', () => {
       {
         id: 'reasoning-step',
         delta: { content: { type: ContentTypes.THINK, think: 'Compared both auth paths.' } },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -880,7 +1105,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text', phase: 'commentary' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -907,7 +1132,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text', phase: 'final_answer' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -948,7 +1173,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text', phase: 'final_answer' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -985,7 +1210,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'think' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -994,7 +1219,7 @@ describe('createActivityPhaseWiring', () => {
       {
         id: 'lane-reasoning',
         delta: { content: { type: ContentTypes.THINK, think: 'Checked the lane input.' } },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -1009,7 +1234,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -1039,7 +1264,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -1083,7 +1308,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'think' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -1093,7 +1318,7 @@ describe('createActivityPhaseWiring', () => {
         {
           id,
           delta: { content: { type: ContentTypes.THINK, think: text } },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -1115,7 +1340,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text', phase: 'final_answer' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -1173,7 +1398,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text', phase: 'final_answer' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -1254,7 +1479,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'think' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -1266,7 +1491,7 @@ describe('createActivityPhaseWiring', () => {
         delta: {
           content: { type: ContentTypes.THINK, think: 'Verified one more edge case.' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -1823,7 +2048,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -1874,7 +2099,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -1924,7 +2149,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -1979,7 +2204,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -2035,7 +2260,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -2090,7 +2315,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -2147,7 +2372,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -2216,7 +2441,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -2332,7 +2557,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -2408,7 +2633,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -2448,7 +2673,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'think' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -2485,13 +2710,13 @@ describe('createActivityPhaseWiring', () => {
         message_creation: { message_id: 'm', content_type: 'text', phase: 'final_answer' },
       },
     };
-    handler?.handle(GraphEvents.ON_RUN_STEP, finalStep, undefined, undefined);
+    handler?.handle(GraphEvents.ON_RUN_STEP, finalStep as never, undefined, undefined);
     await flushDetached();
     expect(generatePhase).not.toHaveBeenCalled();
 
     handler?.handle(
       GraphEvents.ON_RUN_STEP,
-      { ...finalStep, id: 'root-final', groupId: undefined },
+      { ...finalStep, id: 'root-final', groupId: undefined } as never,
       undefined,
       undefined,
     );
@@ -2526,13 +2751,13 @@ describe('createActivityPhaseWiring', () => {
         message_creation: { message_id: 'm', content_type: 'text' },
       },
     };
-    handler?.handle(GraphEvents.ON_RUN_STEP, textStep, undefined, undefined);
+    handler?.handle(GraphEvents.ON_RUN_STEP, textStep as never, undefined, undefined);
     await flushDetached();
     expect(generatePhase).not.toHaveBeenCalled();
 
     handler?.handle(
       GraphEvents.ON_RUN_STEP,
-      { ...textStep, id: 'root-text', groupId: undefined },
+      { ...textStep, id: 'root-text', groupId: undefined } as never,
       undefined,
       undefined,
     );
@@ -2579,7 +2804,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text', phase: 'commentary' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -2624,7 +2849,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -2639,7 +2864,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text', phase: 'commentary' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -2760,7 +2985,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -2778,7 +3003,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -2826,7 +3051,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -2880,7 +3105,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -2934,7 +3159,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text', phase: 'final_answer' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -2972,7 +3197,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text', phase: 'final_answer' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -3018,7 +3243,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -3027,7 +3252,7 @@ describe('createActivityPhaseWiring', () => {
       {
         id: 'boundary',
         delta: { content: { type: ContentTypes.TEXT, text: substantialText('Boundary result.') } },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -3123,7 +3348,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text', phase: 'final_answer' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -3132,7 +3357,7 @@ describe('createActivityPhaseWiring', () => {
       {
         id: 'final-step',
         delta: { content: { type: ContentTypes.TEXT, text: 'Done.' } },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -3194,7 +3419,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -3203,7 +3428,7 @@ describe('createActivityPhaseWiring', () => {
       {
         id: 'early-text',
         delta: { content: { type: ContentTypes.TEXT, text: 'Context for the earlier work.' } },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -3305,7 +3530,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -3319,7 +3544,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -3328,7 +3553,7 @@ describe('createActivityPhaseWiring', () => {
       {
         id: 'parallel-text',
         delta: { content: { type: ContentTypes.TEXT, text: 'Context for the later work.' } },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -3337,7 +3562,7 @@ describe('createActivityPhaseWiring', () => {
       {
         id: 'boundary',
         delta: { content: { type: ContentTypes.TEXT, text: substantialText('Boundary result.') } },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -3402,7 +3627,7 @@ describe('createActivityPhaseWiring', () => {
             type: StepTypes.MESSAGE_CREATION,
             message_creation: { message_id: 'm', content_type: 'text' },
           },
-        },
+        } as never,
         undefined,
         undefined,
       );
@@ -3412,7 +3637,7 @@ describe('createActivityPhaseWiring', () => {
       {
         id: 'parallel-text',
         delta: { content: { type: ContentTypes.TEXT, text: 'Context for the later work.' } },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -3421,7 +3646,7 @@ describe('createActivityPhaseWiring', () => {
       {
         id: 'boundary',
         delta: { content: { type: ContentTypes.TEXT, text: substantialText('Boundary result.') } },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -3484,7 +3709,7 @@ describe('createActivityPhaseWiring', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', content_type: 'text' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -3493,7 +3718,7 @@ describe('createActivityPhaseWiring', () => {
       {
         id: 'boundary',
         delta: { content: { type: ContentTypes.TEXT, text: substantialText('Boundary result.') } },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -3528,7 +3753,7 @@ describe('createAssistantPhaseStampingHandlers', () => {
           type: StepTypes.MESSAGE_CREATION,
           message_creation: { message_id: 'm', phase: 'commentary' },
         },
-      },
+      } as never,
       undefined,
       undefined,
     );
@@ -3537,7 +3762,7 @@ describe('createAssistantPhaseStampingHandlers', () => {
       {
         id: 'commentary-step',
         delta: { content: { type: ContentTypes.TEXT, text: 'I will compare both paths.' } },
-      },
+      } as never,
       undefined,
       undefined,
     );

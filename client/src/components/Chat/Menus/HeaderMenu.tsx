@@ -3,14 +3,16 @@ import * as Ariakit from '@ariakit/react';
 import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import { DropdownPopup, TooltipAnchor, Button } from '@librechat/client';
 import { BookmarkFilledIcon, BookmarkIcon } from '@radix-ui/react-icons';
-import { Ellipsis, PlusCircle, MessageCircleDashed, Check } from 'lucide-react';
+import { Ellipsis, PlusCircle, HatGlasses, Check, ChartNoAxesGantt } from 'lucide-react';
 import type { TStartupConfig } from 'librechat-data-provider';
+import type { TraceControl } from '~/components/Chat/Trace';
 import type * as t from '~/common';
+import useTemporaryChat from '~/hooks/Conversations/useTemporaryChat';
+import { usePullRequestMenu } from '~/components/Chat/PullRequest';
+import useBookmarkItems from '~/hooks/Sharing/useBookmarkItems';
+import useMultiConvo from '~/hooks/Conversations/useMultiConvo';
 import { BookmarkContext } from '~/Providers/BookmarkContext';
-import useBookmarkItems from '~/hooks/Chat/useBookmarkItems';
-import useTemporaryChat from '~/hooks/Chat/useTemporaryChat';
-import useExportShare from '~/hooks/Chat/useExportShare';
-import useMultiConvo from '~/hooks/Chat/useMultiConvo';
+import useChatOptions from '~/hooks/Sharing/useChatOptions';
 import { useHasAccess, useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -22,9 +24,18 @@ import { cn } from '~/utils';
  */
 export default function HeaderMenu({
   startupConfig,
+  trace,
   className,
+  readOnly = false,
+  pullRequestConversationId,
 }: {
   startupConfig?: TStartupConfig;
+  /** A read-only subagent thread offers share and export but no edits to the chat. */
+  readOnly?: boolean;
+  /** Owned by the header, which also renders the desktop trace button from it. */
+  trace?: TraceControl;
+  /** The saved conversation whose pull request this menu offers; none for a new chat or a child thread. */
+  pullRequestConversationId?: string;
   className?: string;
 }) {
   const localize = useLocalize();
@@ -44,16 +55,21 @@ export default function HeaderMenu({
     permission: Permissions.USE,
   });
 
+  const pullRequest = usePullRequestMenu(pullRequestConversationId ?? '');
   const multiConvo = useMultiConvo();
   const temporary = useTemporaryChat();
   const bookmarks = useBookmarkItems({ enabled: hasAccessToBookmarks === true });
-  const exportShare = useExportShare({
+  const exportShare = useChatOptions({
     isSharedButtonEnabled: startupConfig?.sharedLinksEnabled ?? false,
+    readOnly,
+    isMenuOpen: isOpen,
+    closeMenu: () => setIsOpen(false),
   });
 
   const showBookmarks = hasAccessToBookmarks === true && bookmarks.show;
   const showCompare = hasAccessToMultiConvo === true && multiConvo.show;
-  const showTemporary = hasAccessToTemporaryChat === true && temporary.show;
+  const showTemporary =
+    (hasAccessToTemporaryChat === true || temporary.isEnforced) && temporary.show;
 
   const items: t.MenuItemProps[] = [];
 
@@ -70,9 +86,9 @@ export default function HeaderMenu({
       id: 'header-bookmarks',
       label: localize('com_ui_bookmarks'),
       icon: bookmarks.hasBookmarks ? (
-        <BookmarkFilledIcon className="size-4 text-text-secondary" />
+        <BookmarkFilledIcon className="text-text-secondary size-4" />
       ) : (
-        <BookmarkIcon className="size-4 text-text-secondary" />
+        <BookmarkIcon className="text-text-secondary size-4" />
       ),
       subItems: bookmarks.items,
     });
@@ -82,9 +98,22 @@ export default function HeaderMenu({
     items.push({
       id: 'header-compare',
       label: localize('com_ui_add_multi_conversation'),
-      icon: <PlusCircle className="size-4 text-text-secondary" />,
+      icon: <PlusCircle className="text-text-secondary size-4" />,
       onClick: multiConvo.addConversation,
     });
+  }
+
+  if (trace?.show === true) {
+    pushGroup({
+      id: 'header-trace',
+      label: localize('com_ui_trace_view'),
+      icon: <ChartNoAxesGantt className="text-text-secondary size-4" />,
+      onClick: trace.open,
+    });
+  }
+
+  if (pullRequest.item != null) {
+    pushGroup(pullRequest.item);
   }
 
   if (exportShare.show) {
@@ -94,13 +123,16 @@ export default function HeaderMenu({
   if (showTemporary) {
     pushGroup({
       id: 'header-temporary',
-      label: localize('com_ui_temporary'),
+      label: temporary.isEnforced
+        ? localize('com_ui_temporary_enforced')
+        : localize('com_ui_temporary'),
       ariaChecked: temporary.isTemporary,
+      disabled: temporary.isEnforced,
       className: temporary.isTemporary ? 'bg-surface-active' : undefined,
       icon: temporary.isTemporary ? (
-        <Check className="size-4 text-text-primary" />
+        <Check className="text-text-primary size-4" />
       ) : (
-        <MessageCircleDashed className="size-4 text-text-secondary" />
+        <HatGlasses className="text-text-secondary size-4" />
       ),
       onClick: temporary.toggle,
     });
@@ -112,7 +144,7 @@ export default function HeaderMenu({
 
   /** Mirrors the desktop share button, which surfaces an active link in its tooltip. */
   const triggerDescription = exportShare.hasSharedLink
-    ? localize('com_ui_export_share_link_active')
+    ? localize('com_ui_chat_options_link_active')
     : localize('com_ui_more_options');
 
   return (
@@ -137,18 +169,15 @@ export default function HeaderMenu({
                 render={
                   <Button
                     size="icon"
-                    variant="outline"
-                    className={cn(
-                      'relative size-9 flex-shrink-0 rounded-xl bg-presentation hover:bg-surface-active-alt',
-                      className,
-                    )}
+                    variant="header-action"
+                    className={cn('relative size-9 shrink-0', className)}
                   />
                 }
               >
                 <Ellipsis className="icon-md" aria-hidden="true" />
                 {exportShare.hasSharedLink && (
                   <span
-                    className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-status-info ring-2 ring-presentation"
+                    className="bg-status-info ring-presentation absolute -inset-e-0.5 -top-0.5 size-2 rounded-full ring-2"
                     data-testid="header-menu-shared-link-indicator"
                     aria-hidden="true"
                   />
@@ -160,6 +189,7 @@ export default function HeaderMenu({
       />
       {showBookmarks && bookmarks.dialog}
       {exportShare.dialogs}
+      {pullRequest.dialog}
     </BookmarkContext.Provider>
   );
 }

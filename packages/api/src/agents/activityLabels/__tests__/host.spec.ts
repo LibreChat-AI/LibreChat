@@ -11,13 +11,16 @@ import {
 const mockGetOptions = jest.fn(async (_params: unknown) => ({
   llmConfig: { model: 'resolved' },
 }));
+const mockResolveConfigHeaders = jest.fn();
 jest.mock('~/endpoints/config/providers', () => ({
   getProviderConfig: jest.fn(() => ({
     getOptions: (params: unknown) => mockGetOptions(params),
     customEndpointConfig: undefined,
   })),
 }));
-jest.mock('~/utils/headers', () => ({ resolveConfigHeaders: jest.fn() }));
+jest.mock('~/utils/headers', () => ({
+  resolveConfigHeaders: (...args: unknown[]) => mockResolveConfigHeaders(...args),
+}));
 
 const appConfig = (endpoints: Record<string, unknown>): AppConfig =>
   ({ endpoints }) as unknown as AppConfig;
@@ -233,6 +236,24 @@ describe('resolveActivityLabelModel model precedence', () => {
 
   beforeEach(() => {
     mockGetOptions.mockClear();
+    mockResolveConfigHeaders.mockClear();
+  });
+
+  it('uses the request tenant when resolving activity model headers', async () => {
+    await resolveActivityLabelModel({
+      req: {
+        tenantId: 'request-tenant',
+        user: { tenantId: 'stale-user-tenant' },
+        config: appConfig({ openAI: { activityLabel: true } }),
+      } as unknown as ServerRequest,
+      agent: { endpoint: 'openAI', model_parameters: { model: 'run-model' } },
+      ids: { conversationId: 'conversation-1' },
+      db,
+    });
+
+    expect(mockResolveConfigHeaders).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId: 'request-tenant' }),
+    );
   });
 
   /** An EXPLICIT `activityModel: current_model` names the run model — a

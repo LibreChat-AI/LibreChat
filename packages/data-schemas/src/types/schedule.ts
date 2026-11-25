@@ -3,6 +3,8 @@ import type {
   ScheduleDisabledReason,
   TScheduleCadence,
 } from 'librechat-data-provider';
+import type { ScheduledMCPEnrollment } from 'librechat-data-provider';
+import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { Document, Types } from 'mongoose';
 
 export interface ISchedule {
@@ -21,8 +23,13 @@ export interface ISchedule {
   chatProjectId?: string;
   file_ids?: string[];
   tools?: string[];
+  mcpConsent?: ScheduledMCPEnrollment;
+  /** Set when the owner edits a schedule they never authorized: its MCP tools then need a grant. */
+  mcpConsentRequired?: boolean;
   cron?: string;
   enabled: boolean;
+  /** Run only while every MCP server the agent uses is ready. Unset, one that is not is left out. */
+  mcpStrict?: boolean;
   disabledReason?: ScheduleDisabledReason;
   nextRunAt?: Date;
   leaseUntil?: Date;
@@ -57,6 +64,7 @@ export interface ISchedule {
     conversationId?: string;
     status: ScheduleRunStatus;
     error?: string;
+    mcp?: ScheduleMCPOutcome[];
     firedAt: Date;
     /** The OCCURRENCE this projection came from; orders the card against delayed
      *  outcomes (a resumed pause, a reconciler replay) arriving after a newer run. */
@@ -77,13 +85,21 @@ export interface IScheduleDocument extends Omit<ISchedule, 'id' | '_id'>, Docume
 }
 
 export interface IScheduleRun {
+  mcp?: ScheduleMCPOutcome[];
   _id?: Types.ObjectId;
+  /** The schedule's id. Every schedule row holds it; a row of another kind holds none, and
+   *  the schedule methods never read one (their queries name `kind: null`). */
   scheduleId: string;
+  /** Whose run the row records, where that is not a schedule. */
+  kind?: 'subscription';
+  /** That subject's id, on a row that holds a `kind`. */
+  subject?: string;
   user: Types.ObjectId;
   tenantId?: string;
   scheduledFor: Date;
   firedAt?: Date;
   conversationId?: string;
+  checkpointNamespace?: string;
   status: ScheduleRunStatus;
   error?: string;
   /** Deterministic durable-trigger delivery key for this occurrence, stamped at
@@ -107,6 +123,9 @@ export interface IScheduleRun {
   settledAt?: Date;
   /** Global concurrency slot held while `started`. */
   capacitySlot?: number;
+  /** A started row used only to durably settle admission failure bookkeeping. It
+   * never dispatched generation work and therefore does not consume capacity. */
+  admissionOnly?: boolean;
   /** When an abort was requested; capacity is held until settlement is confirmed. */
   abortRequestedAt?: Date;
   /** Who requested the abort: the interactive Stop route ('stop', which persists a
@@ -122,6 +141,8 @@ export interface IScheduleRun {
   /** When reconciliation last examined this row; rotates each bounded non-terminal
    *  window so no abandoned row can starve behind a full batch of live runs. */
   reconciledAt?: Date;
+  jobCreatedAt?: Date;
+  counted?: boolean;
   resumeClaimedAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;

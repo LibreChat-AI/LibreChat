@@ -1,7 +1,17 @@
-import type { TMessageContentParts } from './types/assistants';
+import type { TMessageContentParts } from './types/content';
 import type { TFile } from './types/files';
 import type { TMessage } from './types';
 import { ContentTypes } from './types/runs';
+
+/** File-library records enrich a message without overwriting its turn-specific display metadata. */
+export function mergeMessageFile(file: Partial<TFile>, stored?: TFile): Partial<TFile> {
+  if (!stored) return file;
+  const textPreview = file.textPreview ?? stored.textPreview;
+  const llmDeliveryPath = file.llmDeliveryPath ?? stored.llmDeliveryPath;
+  if (stored.textPreview === textPreview && stored.llmDeliveryPath === llmDeliveryPath)
+    return stored;
+  return { ...stored, textPreview, llmDeliveryPath };
+}
 
 /** A generated reasoning title describes the text as it existed at generation time.
  *  Any manual edit or merge into a different reasoning step invalidates the entire
@@ -93,7 +103,9 @@ export function buildTree({
     };
 
     if (message.files && fileMap) {
-      extendedMessage.files = message.files.map((file) => fileMap[file.file_id ?? ''] ?? file);
+      extendedMessage.files = message.files.map((file) =>
+        mergeMessageFile(file, fileMap[file.file_id ?? '']),
+      );
     }
 
     messageMap[message.messageId] = extendedMessage;
@@ -154,4 +166,179 @@ export function buildTree({
     treeCache.set(messages, entry);
   }
   return tree;
+}
+
+/**
+ * Memoizes a messages array's id index. Every row that needs to look another
+ * message up (the hover controls resolving the turn a rerun would replay) would
+ * otherwise scan the whole array, which is quadratic in the conversation. A
+ * cache write replaces the array, so the index dies with the array it indexes
+ * and can never answer from stale rows.
+ */
+const indexCache = new WeakMap<(TMessage | undefined)[], Map<string, TMessage>>();
+
+/** The message with this id, resolved through the array's memoized index. */
+export function findMessageById(
+  messages: (TMessage | undefined)[] | null | undefined,
+  messageId?: string | null,
+): TMessage | undefined {
+  if (messages == null || messageId == null) {
+    return undefined;
+  }
+  let index = indexCache.get(messages);
+  if (index == null) {
+    index = new Map<string, TMessage>();
+    for (const message of messages) {
+      if (message?.messageId != null && !index.has(message.messageId)) {
+        index.set(message.messageId, message);
+      }
+    }
+    indexCache.set(messages, index);
+  }
+  return index.get(messageId);
+}
+
+/**
+ * True when a turn carries the marker the server stamps on a manual compaction:
+ * `markCompactionOutcome` sets `initiatedBy: 'user'` on whichever part carries
+ * the outcome — the summary a Compact action produced, or the error part a run
+ * that produced none recorded instead — and nothing else writes it, so an
+ * automatic summary detour is not one. This is the compaction's own identity,
+ * independent of where it hangs: Compact runs on whatever leaf the branch ends
+ * with, so its response can parent onto a user message as easily as onto the
+ * answer it summarized. Redoing one is the context indicator's Compact action,
+ * never a rerun of the turn behind it.
+ *
+ * Compactions stored before the marker existed carry none, so callers keep
+ * their own ancestry test as the fallback.
+ */
+export function isUserInitiatedCompaction(message?: Pick<TMessage, 'content'> | null): boolean {
+  const content = message?.content;
+  if (!Array.isArray(content)) {
+    return false;
+  }
+  return content.some(
+    (part) =>
+      (part?.type === ContentTypes.SUMMARY || part?.type === ContentTypes.ERROR) &&
+      part.initiatedBy === 'user',
+  );
+}
+
+/**
+ * True when a message is a finished manual compaction: every content part is a
+ * summary and at least one of them carries text. A part that is still streaming
+ * or that failed contributes no text of its own, so an interrupted compaction
+ * can be retried.
+ */
+export function isCompactedLeaf(message?: Pick<TMessage, 'content'> | null): boolean {
+  const content = message?.content;
+  if (!Array.isArray(content) || content.length === 0) {
+    return false;
+  }
+  let usable = false;
+  for (const part of content) {
+    if (part?.type !== ContentTypes.SUMMARY) {
+      return false;
+    }
+    /** No `boundary` means the round never completed: only the final summary
+     *  block carries one, so a part holding streamed deltas alone lacks it. */
+    if (part.summarizing === true || part.failed === true || part.boundary == null) {
+      continue;
+    }
+    const hasText = (part.content ?? []).some(
+      (block) => typeof block?.text === 'string' && block.text.trim().length > 0,
+    );
+    usable = usable || hasText;
+  }
+  return usable;
+}
+
+/** The shapes a persisted content part references a stored file by, as historical replay reads
+ *  them: attached `files`, an `image_file` or `file` locator, or a direct `file_id`. */
+export type FileLocatorPart = {
+  files?: readonly object[] | null;
+  image_file?: { file_id?: unknown } | null;
+  file?: { file_id?: unknown } | null;
+  file_id?: unknown;
+};
+
+const isFileId = (value: unknown): boolean => typeof value === 'string' && value !== '';
+
+/** Whether a content part is itself a stored file (a generated image, a provider file block). */
+export function isFileContentPart(
+  part: TMessageContentParts | FileLocatorPart | null | undefined,
+): boolean {
+  if (part == null) {
+    return false;
+  }
+  const locator = part as FileLocatorPart;
+  return (
+    isFileId(locator.image_file?.file_id) ||
+    isFileId(locator.file?.file_id) ||
+    isFileId(locator.file_id)
+  );
+}
+
+/** Whether a content part carries attached files of its own, as a steer part can. */
+export function hasContentPartFiles(
+  part: TMessageContentParts | FileLocatorPart | null | undefined,
+): boolean {
+  const files = (part as FileLocatorPart | null | undefined)?.files;
+  return Array.isArray(files) && files.length > 0;
+}
+
+/** Whether an attachment is a stored file (a code output) rather than tool metadata such as
+ *  search sources, which carry no `file_id`. */
+export function isFileAttachment(
+  attachment: NonNullable<TMessage['attachments']>[number] | null | undefined,
+): boolean {
+  return attachment != null && 'file_id' in attachment && isFileId(attachment.file_id);
+}
+
+/**
+ * The ids of the stored files a message references, in every shape a later turn collects them
+ * from: uploads, file-backed attachments, and file references inside its content.
+ */
+export function messageFileIds(
+  message: Pick<TMessage, 'files' | 'attachments' | 'content'>,
+): string[] {
+  const ids: string[] = [];
+  const add = (value: unknown): void => {
+    if (typeof value === 'string' && value !== '') {
+      ids.push(value);
+    }
+  };
+  for (const file of message.files ?? []) {
+    add(file?.file_id);
+  }
+  for (const attachment of message.attachments ?? []) {
+    add((attachment as { file_id?: unknown } | null)?.file_id);
+  }
+  for (const part of message.content ?? []) {
+    const locator = part as FileLocatorPart | null | undefined;
+    if (locator == null) {
+      continue;
+    }
+    add(locator.image_file?.file_id);
+    add(locator.file?.file_id);
+    add(locator.file_id);
+    for (const file of locator.files ?? []) {
+      add((file as { file_id?: unknown } | null)?.file_id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Whether a message references any stored file a later turn would collect from history and send
+ * again: uploads, file-backed attachments, and file references inside its content.
+ */
+export function messageCarriesFiles(
+  message: Pick<TMessage, 'files' | 'attachments' | 'content'>,
+): boolean {
+  return (
+    (message.files?.length ?? 0) > 0 ||
+    (message.attachments?.some(isFileAttachment) ?? false) ||
+    (message.content?.some((part) => isFileContentPart(part) || hasContentPartFiles(part)) ?? false)
+  );
 }

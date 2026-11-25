@@ -1,8 +1,62 @@
-import type { TFeedbackRating, TFeedbackTag } from 'librechat-data-provider';
+import type {
+  TFeedbackRating,
+  TFeedbackTag,
+  TReasoningOverride,
+  UserSubmittedMessageFieldPath,
+} from 'librechat-data-provider';
 import type { Document } from 'mongoose';
+import type { IAgentEventActorContextMeta } from './convo';
+
+export type SubagentTaskControlAction =
+  | 'steer'
+  | 'queue'
+  | 'interrupt'
+  | 'cancel'
+  | 'cancel_message';
+
+export type SubagentTaskControlReceiptStatus =
+  | 'reserved'
+  | 'accepted'
+  | 'applied'
+  | 'rejected'
+  | 'failed';
+
+export type SubagentTriggerProjection = {
+  version: 1;
+  eventType: string;
+  sourceType: string;
+  occurredAt: Date;
+  expectedActionToolName?: string;
+};
+
+type MessageTriggerEvent = { type: string; occurredAt: Date };
+
+/** What started a turn no person sent. See `tMessageTriggerSchema` for the form a client reads. */
+export type MessageTrigger = {
+  event: MessageTriggerEvent;
+  subject?: { kind: string; id: string };
+  origin?: { event: MessageTriggerEvent };
+};
+
+/** Server-private durable receipt for one parent-to-child control invocation. */
+export interface ISubagentTaskControlReceipt {
+  invocationId: string;
+  fingerprint: string;
+  controlId?: string;
+  action: SubagentTaskControlAction;
+  status: SubagentTaskControlReceiptStatus;
+  createdAt: Date;
+  updatedAt: Date;
+  boundary?: 'preempt' | 'tool' | 'turn';
+  reason?: string;
+  message?: string;
+  messageTruncated?: boolean;
+}
 
 // @ts-ignore
 export interface IMessage extends Document {
+  /** Public content capture version and expected terminal watermark; never a transcript. */
+  subagentContent?: { version: 1; throughSequence?: number; deleted?: boolean };
   messageId: string;
   conversationId: string;
   user: string;
@@ -17,7 +71,17 @@ export interface IMessage extends Document {
   sender?: string;
   text?: string;
   summary?: string;
+  /** Authenticated ciphertext, available only through the owner-view read. */
+  privateText?: string;
+  privacyRevision?: string;
+  privateTextTokens?: string[];
   isCreatedByUser: boolean;
+  /** True when the complete stored row came from outside the model. */
+  isUserSubmitted?: boolean;
+  /** JSON pointers to caller-authored fields in an otherwise mixed model response. */
+  userSubmittedPaths?: string[];
+  /** Exact HITL message fields stored at caller-authored paths in a mixed response. */
+  userSubmittedMessageFieldPaths?: UserSubmittedMessageFieldPath[];
   isTemporary?: boolean;
   unfinished?: boolean;
   error?: boolean;
@@ -27,8 +91,11 @@ export interface IMessage extends Document {
     tag: TFeedbackTag | undefined;
     text?: string;
   };
+  langfuseCentralTraceExportEnabled?: boolean;
   langfuseSampled?: boolean;
   langfuseDestinationIds?: string[];
+  /** The run whose trace this response reports, when that run's id is not the message's own (a failed turn's error row). */
+  langfuseRunId?: string;
   _meiliIndex?: boolean;
   files?: unknown[];
   plugin?: {
@@ -48,6 +115,13 @@ export interface IMessage extends Document {
     mode: 'append' | 'replace';
     messagesJson: string;
   };
+  /** Server-private bounded rendering projection derived once at child settlement. */
+  subagentActivityProjection?: {
+    taskId: string;
+    version: 1 | 2;
+    activityJson: string;
+    truncated: boolean;
+  };
   /** Server-private durable idempotency marker for one detached subagent turn. */
   subagentTask?: {
     attemptKey: string;
@@ -59,12 +133,14 @@ export interface IMessage extends Document {
       kind: 'manual' | 'wakeup';
       claimId: string;
       claimedAt: Date;
+      /** Response generation that owns a manual delivery claim. */
+      generationId?: string;
     };
+    controlReceipts?: ISubagentTaskControlReceipt[];
   };
-  contextMeta?: {
-    calibrationRatio?: number;
-    encoding?: string;
-  };
+  subagentTriggerProjection?: SubagentTriggerProjection;
+  trigger?: MessageTrigger;
+  contextMeta?: Partial<IAgentEventActorContextMeta>;
   attachments?: unknown[];
   /** Skills the user invoked manually via the `$` popover on this turn. UI-only metadata for `SkillPills`. */
   manualSkills?: string[];
@@ -77,6 +153,8 @@ export interface IMessage extends Document {
   alwaysAppliedSkills?: string[];
   /** Verbatim excerpts the user quoted to reference on this turn. UI-only metadata for `MessageQuotes`. */
   quotes?: string[];
+  /** Request-scoped reasoning selection that produced this user turn. */
+  reasoningOverride?: TReasoningOverride;
   expiredAt?: Date | null;
   createdAt?: Date;
   updatedAt?: Date;

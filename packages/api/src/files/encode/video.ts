@@ -1,8 +1,17 @@
 import { Providers } from '@librechat/agents';
-import { isDocumentSupportedProvider } from 'librechat-data-provider';
+import { logger } from '@librechat/data-schemas';
+import { isDocumentSupportedProvider, isOpenAILikeProvider } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { ServerRequest, StrategyFunctions, VideoResult } from '~/types';
-import { getFileStream, getConfiguredFileSizeLimit } from './utils';
+import type { MissingAttachmentHandler } from './utils';
+import {
+  getFileStream,
+  getConfiguredFileSizeLimit,
+  skipMissingAttachment,
+  isConfiguredProviderMediaType,
+} from './utils';
+import { configuredRequestBudget } from '~/utils/timeouts';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { validateVideo } from '~/files/validation';
 import { runGuardedEncode } from './memoryGuard';
 
@@ -19,10 +28,10 @@ import { runGuardedEncode } from './memoryGuard';
 export async function encodeAndFormatVideos(
   req: ServerRequest,
   files: IMongoFile[],
-  params: { provider: Providers; endpoint?: string },
+  params: { provider: Providers; endpoint?: string; onMissingFile?: MissingAttachmentHandler },
   getStrategyFunctions: (source: string) => StrategyFunctions,
 ): Promise<VideoResult> {
-  const { provider, endpoint } = params;
+  const { provider, endpoint, onMissingFile } = params;
   if (!files?.length) {
     return { videos: [], files: [] };
   }
@@ -33,14 +42,23 @@ export async function encodeAndFormatVideos(
   const results = await Promise.allSettled(
     files.map((file) =>
       runGuardedEncode(file.bytes ?? 0, () =>
-        getFileStream(req, file, encodingMethods, getStrategyFunctions),
+        getFileStream(
+          req,
+          file,
+          encodingMethods,
+          getStrategyFunctions,
+          configuredRequestBudget(req.config, 'fileFetchMs'),
+        ),
       ),
     ),
   );
 
-  for (const settledResult of results) {
+  for (const [index, settledResult] of results.entries()) {
     if (settledResult.status === 'rejected') {
-      console.error('Video processing failed:', settledResult.reason);
+      if (skipMissingAttachment(settledResult.reason, files[index], onMissingFile)) {
+        continue;
+      }
+      logger.error('Video processing failed:', getSafeErrorMetadata(settledResult.reason));
       continue;
     }
 
@@ -84,7 +102,14 @@ export async function encodeAndFormatVideos(
         mimeType: file.type,
         data: content,
       });
-    } else if (provider === Providers.OPENROUTER) {
+    } else if (
+      provider === Providers.OPENROUTER ||
+      (isOpenAILikeProvider(provider) &&
+        isConfiguredProviderMediaType(req, { provider, endpoint }, file.type))
+    ) {
+      /** OpenAI-compatible `video_url` part (OpenRouter, vLLM, and other gateways).
+       * Custom endpoints only get here when the admin listed video types in the
+       * endpoint's `supportedMimeTypes`, since not every gateway accepts video. */
       result.videos.push({
         type: 'video_url',
         video_url: {

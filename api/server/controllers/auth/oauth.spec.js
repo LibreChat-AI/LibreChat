@@ -4,7 +4,7 @@ const mockIsAdminPanelRedirect = jest.fn();
 const mockGenerateAdminExchangeCode = jest.fn();
 const mockSyncUserEntraGroupMemberships = jest.fn();
 const mockSetAuthTokens = jest.fn();
-const mockSetOpenIDAuthTokens = jest.fn();
+const mockSendOpenIDAuthResponse = jest.fn();
 const mockGetLogStores = jest.fn();
 const mockCheckBan = jest.fn();
 const mockGenerateToken = jest.fn();
@@ -32,7 +32,10 @@ jest.mock('~/server/services/PermissionService', () => ({
 
 jest.mock('~/server/services/AuthService', () => ({
   setAuthTokens: (...args) => mockSetAuthTokens(...args),
-  setOpenIDAuthTokens: (...args) => mockSetOpenIDAuthTokens(...args),
+}));
+
+jest.mock('~/server/services/OpenIDRefreshRecovery', () => ({
+  sendOpenIDAuthResponse: (...args) => mockSendOpenIDAuthResponse(...args),
 }));
 
 jest.mock(
@@ -92,6 +95,7 @@ describe('createOAuthHandler', () => {
     mockCheckBan.mockResolvedValue(undefined);
     mockGenerateToken.mockResolvedValue('jwt-token');
     mockGenerateAdminExchangeCode.mockResolvedValue('exchange-code');
+    mockSendOpenIDAuthResponse.mockResolvedValue('app-token');
   });
 
   afterAll(() => {
@@ -118,7 +122,7 @@ describe('createOAuthHandler', () => {
     expect(res.redirect).toHaveBeenCalledWith(
       'http://admin.example.com/auth/openid/callback?code=exchange-code',
     );
-    expect(mockSetOpenIDAuthTokens).not.toHaveBeenCalled();
+    expect(mockSendOpenIDAuthResponse).not.toHaveBeenCalled();
     expect(mockSetAuthTokens).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
   });
@@ -144,9 +148,32 @@ describe('createOAuthHandler', () => {
     expect(res.redirect).toHaveBeenCalledWith(
       'http://admin.example.com/auth/openid/callback?code=exchange-code',
     );
-    expect(mockSetOpenIDAuthTokens).not.toHaveBeenCalled();
+    expect(mockSendOpenIDAuthResponse).not.toHaveBeenCalled();
     expect(mockSetAuthTokens).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it('publishes the standard OpenID login through the durable generation service', async () => {
+    process.env.OPENID_REUSE_TOKENS = 'true';
+    mockIsAdminPanelRedirect.mockReturnValue(false);
+    const handler = createOAuthHandler('http://localhost:3080');
+    const req = buildReq();
+    const res = buildRes();
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(mockSendOpenIDAuthResponse).toHaveBeenCalledWith({
+      tokenset: req.user.tokenset,
+      user: req.user,
+      existingRefreshToken: 'openid-refresh-token',
+      openidSubject: undefined,
+      openidIssuer: undefined,
+      discardSessionTokens: true,
+      req,
+      res,
+    });
+    expect(res.redirect).toHaveBeenCalledWith('http://localhost:3080');
   });
 
   it('forwards the refresh token from req.authInfo for non-openid admin providers', async () => {

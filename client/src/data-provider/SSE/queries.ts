@@ -1,31 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
+import { ACTIVE_JOBS_SUCCESSOR_GRACE_MS } from '@librechat/chat/react';
 import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
 import { apiBaseUrl, QueryKeys, request, dataService } from 'librechat-data-provider';
-import type { Agents, TConversation, TPendingSteer } from 'librechat-data-provider';
-import { isNotFoundError, updateConvoInAllQueries, setDocumentTitle } from '~/utils';
+import type { TConversation } from 'librechat-data-provider';
+import type { StreamStatusResponse } from '@librechat/chat';
+import {
+  isNotFoundError,
+  updateConvoInAllQueries,
+  setDocumentTitle,
+  findManualConvoTitleInAllQueries,
+} from '~/utils';
 import { generationProtocolHeaders, withGenerationProtocolQuery } from './protocol';
 import { useGetStartupConfig } from '../Endpoints';
 
-export interface StreamStatusResponse {
-  /** Exact protocol selected by the job. Missing/1 is always legacy. */
-  generationProtocolVersion?: number;
-  active: boolean;
-  /** Client-local cache marker used to force useResumeOnLoad to replace a
-   * stale generation attachment with the newer epoch occupying this stream. */
-  generationHandoff?: boolean;
-  streamId?: string;
-  status?: 'running' | 'complete' | 'error' | 'aborted' | 'requires_action';
-  aggregatedContent?: Array<{ type: string; text?: string }>;
-  createdAt?: number;
-  resumeState?: Agents.ResumeState;
-  /** Live pending approval when `status === 'requires_action'`; mirrors
-   *  `resumeState.pendingAction`, surfaced top-level for the resume-on-load path. */
-  pendingAction?: Agents.PendingAction;
-  /** Acknowledged steers a terminal drain parked because no subscriber was
-   *  live for the final/abort event. Reads are replayable until an exact
-   *  recovery turn persists or the user discards the item. */
-  unrecoveredSteers?: TPendingSteer[];
-}
+export type { StreamStatusResponse } from '@librechat/chat';
 
 export const streamStatusQueryKey = (conversationId: string) => ['streamStatus', conversationId];
 
@@ -71,10 +59,22 @@ const queueListeners = new Set<() => void>();
 
 /** Queue a conversation for title generation (call when starting new conversation) */
 export function queueTitleGeneration(conversationId: string) {
-  if (!processedTitles.has(conversationId)) {
+  if (!isTitleGenerationProcessed(conversationId)) {
     titleQueue.add(conversationId);
     queueListeners.forEach((listener) => listener());
   }
+}
+
+/** Drops all module-level title state; called when a session ends so the next account starts clean. */
+export function clearTitleGenerationState() {
+  titleQueue.clear();
+  processedTitles.clear();
+  deferredTitles.clear();
+  queueListeners.forEach((listener) => listener());
+}
+
+export function isTitleGenerationProcessed(conversationId: string): boolean {
+  return processedTitles.has(conversationId);
 }
 
 export function markTitleGenerationProcessed(conversationId: string) {
@@ -171,12 +171,18 @@ export function useTitleGeneration(enabled = true) {
       }
 
       if (titleQuery.isSuccess && titleQuery.data) {
-        const { title } = titleQuery.data;
-        queryClient.setQueryData(
+        const incoming = titleQuery.data;
+        const titleState =
+          findManualConvoTitleInAllQueries(queryClient, conversationId, incoming) ?? incoming;
+        const applyTitle = (convo: TConversation): TConversation => ({ ...convo, ...titleState });
+        queryClient.setQueryData<TConversation>(
           [QueryKeys.conversation, conversationId],
-          (convo: TConversation | undefined) => (convo ? { ...convo, title } : convo),
+          (convo) => (convo ? applyTitle(convo) : convo),
         );
-        updateConvoInAllQueries(queryClient, conversationId, (c) => ({ ...c, title }));
+        updateConvoInAllQueries(queryClient, conversationId, applyTitle);
+        const title =
+          queryClient.getQueryData<TConversation>([QueryKeys.conversation, conversationId])
+            ?.title ?? incoming.title;
         // Only update document title if this conversation is currently active
         if (window.location.pathname.includes(conversationId)) {
           setDocumentTitle(title);
@@ -216,7 +222,70 @@ export function useTitleGeneration(enabled = true) {
  * - Polls while jobs are active
  * - Shows generation indicators in conversation list
  */
-export function useActiveJobs(enabled = true) {
+export const ACTIVE_JOBS_POLL_MS = 5_000;
+/**
+ * How long to keep asking after the last job this client knew about ended.
+ *
+ * Fallback only, for a successor nothing local predicts — a background-tool
+ * continuation, say. A queued turn is known in advance and reports itself
+ * through `expectsSuccessor`, which needs no window at all.
+ *
+ * A successor the server admits for itself starts as part of terminalizing the
+ * run before it. But finishing a run also empties this list, partly because
+ * the client removes its own job optimistically the moment `FINAL` lands.
+ * Stopping the poll on an empty list therefore goes quiet at exactly the
+ * moment a successor appears, and with the tab already focused there is no
+ * focus refetch to recover: the pane waits for a reload.
+ */
+export { ACTIVE_JOBS_SUCCESSOR_GRACE_MS };
+
+/** Module-scoped rather than per-observer: this is one shared query, and a
+ *  component mounting mid-handover should inherit the grace, not restart it. */
+let lastListedActiveJobsAt = 0;
+
+/** @internal Test seam — the grace window is wall-clock state. */
+export function resetActiveJobsGrace(): void {
+  lastListedActiveJobsAt = 0;
+}
+
+/**
+ * A generation was just observed live by some other means — a pane attached to
+ * the run a queued turn produced — without the list ever reporting it, because
+ * the run started and finished between two polls. The list's own notion of
+ * "recently active" is therefore stale, and an unpredicted successor after
+ * that run (a background-tool continuation) would find no poll left to notice
+ * it. Restart the handover window from this observation instead.
+ */
+export function extendActiveJobsGrace(): void {
+  lastListedActiveJobsAt = Date.now();
+}
+
+export function getActiveJobsRefetchInterval(
+  data?: ActiveJobsResponse,
+  expectsSuccessor = false,
+): number | false {
+  if ((data?.activeJobIds?.length ?? 0) > 0) {
+    lastListedActiveJobsAt = Date.now();
+    return ACTIVE_JOBS_POLL_MS;
+  }
+  /** A caller that knows the backend owes it a run says so outright, and keeps
+   *  listening for as long as that stays true — no guess at how long admission
+   *  takes. The window below is only for successors nothing local predicts. */
+  if (expectsSuccessor) {
+    return ACTIVE_JOBS_POLL_MS;
+  }
+  return Date.now() - lastListedActiveJobsAt < ACTIVE_JOBS_SUCCESSOR_GRACE_MS
+    ? ACTIVE_JOBS_POLL_MS
+    : false;
+}
+
+/**
+ * @param expectsSuccessor Set by a caller holding positive evidence that the
+ * backend owes this client a run it will start itself — a queued turn admitted
+ * server-side, say. Observers each keep their own interval, so declaring it
+ * affects only the caller that knows.
+ */
+export function useActiveJobs(enabled = true, expectsSuccessor = false) {
   return useQuery({
     queryKey: [QueryKeys.activeJobs],
     queryFn: () => dataService.getActiveJobs(),
@@ -228,7 +297,8 @@ export function useActiveJobs(enabled = true) {
      *  invisible until some unrelated refetch, and returning to the tab is
      *  exactly when a pane needs to know whether its history has moved. */
     refetchOnWindowFocus: 'always',
-    refetchInterval: (data) => ((data?.activeJobIds?.length ?? 0) > 0 ? 5_000 : false),
+    refetchInterval: (data?: ActiveJobsResponse) =>
+      getActiveJobsRefetchInterval(data, expectsSuccessor),
     retry: false,
   });
 }

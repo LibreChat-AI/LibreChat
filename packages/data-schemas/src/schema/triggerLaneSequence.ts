@@ -9,6 +9,7 @@ const triggerLaneSequenceSchema: Schema<IAgentTriggerLaneSequenceDocument> = new
     tenantId: { type: String, index: true },
     tailDeliveryId: { type: Schema.Types.ObjectId, ref: 'AgentTriggerDelivery' },
     publisherDeliveryId: { type: Schema.Types.ObjectId, ref: 'AgentTriggerDelivery' },
+    publisherRequeueCount: { type: Number, min: 0 },
     publisherStartedAt: { type: Date },
     cleanupRequestedAt: { type: Date, index: true },
   },

@@ -260,13 +260,27 @@ Useful gateway metrics include:
 
 - `langfuse_fanout_http_requests_total`
 - `langfuse_fanout_upstream_requests_total`
-- `langfuse_fanout_trace_exports_total`
+- `langfuse_fanout_trace_exports_total` (`destination`, `result`, and `tenant_id` labels)
 - `langfuse_fanout_media_upload_plans_created_total`
 - `langfuse_fanout_media_upload_plans_completed_total`
 - `langfuse_fanout_media_upload_plan_misses_total`
 - `langfuse_fanout_media_upload_plan_store_errors_total`
 - `langfuse_fanout_media_upload_bytes`
 - `langfuse_fanout_media_divergence_total`
+
+LibreChat stamps `librechat.tenant.id`, `librechat.langfuse.export_plan`, and
+`librechat.langfuse.export_reason` on Langfuse run spans. The gateway reads the
+tenant ID from each OTLP batch for the trace export counter. Batches without a
+tenant ID use `<unknown>`; batches containing more than one tenant use `<multiple>`.
+Invalid tenant IDs use `<invalid>`. The gateway retains up to 1,000 valid tenant
+labels and aggregates additional IDs under `<overflow>`, bounding the trace
+counter's cardinality. Angle brackets keep these synthetic values outside
+LibreChat's accepted tenant-ID grammar.
+
+Successful admin connection updates emit the structured log event
+`librechat.langfuse.connection.changed`. It includes the tenant, configuration
+state, destination, verification result, a primary `change`, and all `changes`.
+It does not include the Langfuse public or secret key.
 
 `langfuse_fanout_media_divergence_total{kind="media_id"}` is the correctness
 signal for trace/media token fanout. `kind="upload_url_presence"` records that

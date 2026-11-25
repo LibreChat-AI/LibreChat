@@ -1,10 +1,14 @@
 import { createHash } from 'node:crypto';
 import type { AgentRunPrincipal, AgentRunPrincipalInput } from '../envelope';
+import type { AgentTriggerExpectedAction } from './types';
 import type { JsonValue } from '../json';
 import { cloneJsonValue } from '../json';
 
+export type { AgentTriggerExpectedAction } from './types';
+
 export const AGENT_TRIGGER_ENVELOPE_VERSION = 1 as const;
 export const AGENT_TRIGGER_IDEMPOTENCY_PREFIX = 'trigger_';
+const MAX_EXPECTED_ACTION_TOOL_NAME_LENGTH = 256;
 
 export type AgentTriggerMode = 'continue' | 'fire' | 'steer';
 
@@ -58,6 +62,10 @@ export interface AgentContinueTarget extends AgentTriggerTarget {
   conversationId: string;
   /** Persisted branch leaf below which the new turn is appended. */
   parentMessageId: string;
+  /** Present only after an authenticated source binding resolved the target. */
+  bindingId?: string;
+  /** API-key identity captured by the ingress adapter and rechecked at dispatch. */
+  sourceKeyId?: string;
 }
 
 export interface AgentSteerTarget extends AgentTriggerTarget {
@@ -80,6 +88,7 @@ interface AgentTriggerEnvelopeBase {
   event: AgentTriggerEvent;
   /** Host-rendered agent input; source payload remains available in `event.payload`. */
   input: string;
+  expectedAction?: AgentTriggerExpectedAction;
 }
 
 export interface AgentFireTriggerEnvelope extends AgentTriggerEnvelopeBase {
@@ -110,6 +119,7 @@ interface CreateAgentTriggerEnvelopeBase {
   principal: AgentRunPrincipalInput | null | undefined;
   event: AgentTriggerEvent;
   input: string;
+  expectedAction?: AgentTriggerExpectedAction;
 }
 
 export type CreateAgentTriggerEnvelopeInput =
@@ -187,6 +197,33 @@ function createEvent(input: AgentTriggerEvent | null | undefined): AgentTriggerE
   };
 }
 
+function createExpectedAction(
+  input: AgentTriggerExpectedAction | null | undefined,
+): AgentTriggerExpectedAction | undefined {
+  if (input == null) {
+    return undefined;
+  }
+  const action = requireRecord(input, 'expectedAction');
+  const argumentSubset =
+    action.argumentSubset == null
+      ? undefined
+      : (cloneJsonValue(
+          requireRecord(action.argumentSubset, 'expectedAction.argumentSubset'),
+          'expectedAction.argumentSubset',
+          error,
+        ) as Record<string, JsonValue>);
+  const toolName = requireString(action.toolName, 'expectedAction.toolName');
+  if (toolName.length > MAX_EXPECTED_ACTION_TOOL_NAME_LENGTH) {
+    throw error(
+      `expectedAction.toolName must not exceed ${MAX_EXPECTED_ACTION_TOOL_NAME_LENGTH} characters`,
+    );
+  }
+  return {
+    toolName,
+    ...(argumentSubset != null && { argumentSubset }),
+  };
+}
+
 function createFireRunContext(
   input: AgentFireRunContext | null | undefined,
 ): AgentFireRunContext | undefined {
@@ -220,6 +257,7 @@ export function createAgentTriggerEnvelope(
   input: CreateAgentTriggerEnvelopeInput,
 ): AgentTriggerEnvelope {
   const receivedMode: string = input.mode;
+  const expectedAction = createExpectedAction(input.expectedAction);
   const base: AgentTriggerEnvelopeBase = {
     version: AGENT_TRIGGER_ENVELOPE_VERSION,
     requestId: requireString(input.requestId, 'requestId'),
@@ -228,6 +266,7 @@ export function createAgentTriggerEnvelope(
     principal: createPrincipal(input.principal),
     event: createEvent(input.event),
     input: requireString(input.input, 'input'),
+    ...(expectedAction != null && { expectedAction }),
   };
 
   if (input.mode === 'fire') {
@@ -261,6 +300,11 @@ export function createAgentTriggerEnvelope(
   }
 
   if (input.mode === 'continue') {
+    const bindingId = input.target?.bindingId;
+    const sourceKeyId = input.target?.sourceKeyId;
+    if ((bindingId == null) !== (sourceKeyId == null)) {
+      throw error('target.bindingId and target.sourceKeyId must be provided together');
+    }
     return {
       ...base,
       mode: input.mode,
@@ -268,6 +312,12 @@ export function createAgentTriggerEnvelope(
         agentId: requireString(input.target?.agentId, 'target.agentId'),
         conversationId: requireString(input.target?.conversationId, 'target.conversationId'),
         parentMessageId: requireString(input.target?.parentMessageId, 'target.parentMessageId'),
+        ...(bindingId == null
+          ? {}
+          : {
+              bindingId: requireString(bindingId, 'target.bindingId'),
+              sourceKeyId: requireString(sourceKeyId, 'target.sourceKeyId'),
+            }),
       },
     };
   }
@@ -314,6 +364,10 @@ export function parseAgentTriggerEnvelope(input: unknown): AgentTriggerEnvelope 
     ...(eventInput.payload !== undefined && { payload: eventInput.payload as JsonValue }),
   };
 
+  const expectedAction = createExpectedAction(
+    envelope.expectedAction as AgentTriggerExpectedAction | null | undefined,
+  );
+
   const base: AgentTriggerEnvelopeBase = {
     version: AGENT_TRIGGER_ENVELOPE_VERSION,
     requestId: requireString(envelope.requestId, 'requestId'),
@@ -322,6 +376,7 @@ export function parseAgentTriggerEnvelope(input: unknown): AgentTriggerEnvelope 
     principal,
     event,
     input: requireString(envelope.input, 'input'),
+    ...(expectedAction != null && { expectedAction }),
   };
   const target = requireRecord(envelope.target, 'target');
 
@@ -338,6 +393,9 @@ export function parseAgentTriggerEnvelope(input: unknown): AgentTriggerEnvelope 
   }
 
   if (mode === 'continue') {
+    if ((target.bindingId == null) !== (target.sourceKeyId == null)) {
+      throw error('target.bindingId and target.sourceKeyId must be provided together');
+    }
     return {
       ...base,
       mode,
@@ -345,6 +403,12 @@ export function parseAgentTriggerEnvelope(input: unknown): AgentTriggerEnvelope 
         agentId: requireString(target.agentId, 'target.agentId'),
         conversationId: requireString(target.conversationId, 'target.conversationId'),
         parentMessageId: requireString(target.parentMessageId, 'target.parentMessageId'),
+        ...(target.bindingId == null
+          ? {}
+          : {
+              bindingId: requireString(target.bindingId, 'target.bindingId'),
+              sourceKeyId: requireString(target.sourceKeyId, 'target.sourceKeyId'),
+            }),
       },
     };
   }
@@ -387,6 +451,8 @@ export function getAgentTriggerIdempotencyKey(envelope: AgentTriggerEnvelope): s
         envelope.target.agentId,
         envelope.mode === 'fire' ? '' : envelope.target.conversationId,
         envelope.mode === 'continue' ? envelope.target.parentMessageId : '',
+        envelope.mode === 'continue' ? (envelope.target.bindingId ?? '') : '',
+        envelope.mode === 'continue' ? (envelope.target.sourceKeyId ?? '') : '',
       ]),
     )
     .digest('hex');

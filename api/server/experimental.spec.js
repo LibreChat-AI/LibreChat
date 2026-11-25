@@ -13,6 +13,21 @@ describe('Experimental server configuration', () => {
     expect(listenIndex).toBeLessThan(timeoutConfigIndex);
   });
 
+  it.each([
+    ['File', 'Files'],
+    ['Model', 'Models'],
+  ])('installs the SDK %s host from base config before serving requests', (host, setting) => {
+    const configIndex = source.indexOf('await getAppConfig({ baseOnly: true });');
+    const binding = `app.locals.sdk${host}Host = createSdk${host}Host(appConfig?.endpoints?.agents?.sdkHost${setting});`;
+    const bindingIndex = source.indexOf(binding);
+    const listenIndex = source.indexOf('const server = app.listen');
+
+    expect(configIndex).toBeGreaterThan(-1);
+    expect(bindingIndex).toBeGreaterThan(configIndex);
+    expect(listenIndex).toBeGreaterThan(bindingIndex);
+    expect(source.indexOf(binding, bindingIndex + 1)).toBe(-1);
+  });
+
   it('lets each worker drain registered services before cluster shutdown', () => {
     const listenIndex = source.indexOf('const server = app.listen');
     const gracefulShutdownIndex = source.indexOf('setupGracefulShutdown(server);');
@@ -21,6 +36,18 @@ describe('Experimental server configuration', () => {
     expect(listenIndex).toBeLessThan(gracefulShutdownIndex);
     expect(source).toContain('if (shuttingDown) {');
     expect(source).toMatch(/if \(shuttingDown\) \{[\s\S]*?return;[\s\S]*?Starting a new worker/);
+  });
+
+  it("drains background tasks within the primary's cluster shutdown deadline", () => {
+    expect(source).toMatch(
+      /registerBackgroundTaskShutdown\(\{[\s\S]*?getBudgetMs: clusterShutdownBudgetMs,[\s\S]*?\}\);/,
+    );
+    expect(source).toMatch(
+      /const clusterShutdownBudgetMs = \(\) =>\s*getClusterShutdownBudgetMs\(\{\s*deadlineAt: clusterShutdownDeadlineAt,\s*forceExitMs: CLUSTER_FORCE_EXIT_MS,\s*\}\);/,
+    );
+    expect(source).toMatch(
+      /const destroyGenerationJobManager = \(\) => \{\s*const budgetMs = clusterShutdownBudgetMs\(\);/,
+    );
   });
 
   it('starts approval expiry after installing the scheduled-run callback', () => {
@@ -35,14 +62,45 @@ describe('Experimental server configuration', () => {
 
   it('starts erasure-only schedule maintenance after connecting to Mongo, once per worker', () => {
     const connectIndex = source.indexOf('await connectDb();');
-    const sweepIndex = source.indexOf('initializeScheduleErasureSweep();');
+    const sweepIndex = source.indexOf('initializeScheduleErasureSweep({ idleCeilingMs });');
 
     expect(connectIndex).toBeGreaterThan(-1);
     expect(sweepIndex).toBeGreaterThan(-1);
     // Mongo must be up before the sweep reads soft-deleted rows.
     expect(sweepIndex).toBeGreaterThan(connectIndex);
     // Idempotent guard lives in the service; started exactly once from this entrypoint.
-    expect(source.match(/initializeScheduleErasureSweep\(\);/g)).toHaveLength(1);
+    expect(source.match(/initializeScheduleErasureSweep\(\{ idleCeilingMs \}\);/g)).toHaveLength(1);
+  });
+
+  it('starts code-environment lifecycle reconciliation after Mongo connects in each worker', () => {
+    const connectIndex = source.indexOf('await connectDb();');
+    const reconcileIndex = source.indexOf(
+      'startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });',
+    );
+    const listenIndex = source.indexOf('const server = app.listen');
+
+    expect(connectIndex).toBeGreaterThan(-1);
+    expect(reconcileIndex).toBeGreaterThan(connectIndex);
+    expect(listenIndex).toBeGreaterThan(reconcileIndex);
+    expect(
+      source.match(/startCodeEnvironmentLifecycleReconciler\(\{ mongoose, idleCeilingMs \}\);/g),
+    ).toHaveLength(1);
+  });
+
+  it('reads the deployment-wide idle ceiling from the base config before it starts an idle loop', () => {
+    const configIndex = source.indexOf('const appConfig = await getAppConfig({ baseOnly: true });');
+    const ceilingIndex = source.indexOf(
+      'const idleCeilingMs = appConfig?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs;',
+    );
+    const reconcileIndex = source.indexOf(
+      'startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });',
+    );
+    const sweepIndex = source.indexOf('initializeScheduleErasureSweep({ idleCeilingMs });');
+
+    expect(configIndex).toBeGreaterThan(-1);
+    expect(ceilingIndex).toBeGreaterThan(configIndex);
+    expect(reconcileIndex).toBeGreaterThan(ceilingIndex);
+    expect(sweepIndex).toBeGreaterThan(ceilingIndex);
   });
 
   it('never arms the full schedule engine in a clustered worker', () => {
@@ -60,12 +118,67 @@ describe('Experimental server configuration', () => {
 
   it('configures routed subagent controls before a worker accepts requests', () => {
     const redisReadyIndex = source.indexOf('await waitForKeyvRedisClient();');
-    const routingIndex = source.indexOf('await configureSubagentTaskRouting();');
+    const routingIndex = source.indexOf(
+      'await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);',
+    );
     const listenIndex = source.indexOf('const server = app.listen');
 
     expect(redisReadyIndex).toBeGreaterThan(-1);
     expect(routingIndex).toBeGreaterThan(redisReadyIndex);
     expect(listenIndex).toBeGreaterThan(routingIndex);
+  });
+
+  it('projects base-only event rollout barriers before accepting requests', () => {
+    const baseConfigIndex = source.indexOf(
+      'const appConfig = await getAppConfig({ baseOnly: true });',
+    );
+    const eventRuntimeIndex = source.indexOf(
+      'configureAgentEventRuntime(appConfig?.endpoints?.agents?.eventDriven);',
+    );
+    const listenIndex = source.indexOf('const server = app.listen');
+
+    expect(baseConfigIndex).toBeGreaterThan(-1);
+    expect(eventRuntimeIndex).toBeGreaterThan(baseConfigIndex);
+    expect(listenIndex).toBeGreaterThan(eventRuntimeIndex);
+  });
+
+  it('passes the same idle recovery policy to both server startup paths', () => {
+    const standard = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+    for (const entrypoint of [source, standard]) {
+      const start = entrypoint.indexOf('await initializeAgentTriggerService({');
+      expect(start).toBeGreaterThan(-1);
+      const call = entrypoint.slice(start, entrypoint.indexOf('});', start));
+      expect(call).toContain('idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling');
+      expect(call).toContain('idleCeilingMs,');
+      expect(call.replace(/\s+/g, ' ')).toContain(
+        'deadLetterRetentionDays: appConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays',
+      );
+    }
+  });
+
+  it('boots from librechat.yaml only, like the standard entry, so `__base__` overrides never reach worker-wide state', () => {
+    const standard = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+    for (const entrypoint of [source, standard]) {
+      const reads = entrypoint.match(/await getAppConfig\([^)]*\)/g);
+      expect(reads).toEqual(['await getAppConfig({ baseOnly: true })']);
+      const readIndex = entrypoint.indexOf(
+        'const appConfig = await getAppConfig({ baseOnly: true });',
+      );
+      expect(readIndex).toBeGreaterThan(-1);
+      for (const consumer of [
+        'initializeFileStorage(appConfig);',
+        'initializeGitHubSkillSync(appConfig);',
+        'startSkillDeletionSweep(appConfig.skillDeletion);',
+        'await performStartupChecks(appConfig);',
+        'await configureSocialLogins(app, appConfig);',
+      ]) {
+        expect(entrypoint.indexOf(consumer)).toBeGreaterThan(readIndex);
+      }
+    }
+    expect(source).toContain(
+      'expiredFileSweep.configure({ appConfig, loadAppConfig: getAppConfig });',
+    );
+    expect(source).not.toContain('baseAppConfig');
   });
 
   it('matches the standard server pre-authentication tenant routes', () => {

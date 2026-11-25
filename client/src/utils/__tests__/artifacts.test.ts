@@ -1,21 +1,110 @@
 import { FileSources } from 'librechat-data-provider';
 import type { ToolArtifactType } from '../artifacts';
 import {
+  artifactRowKind,
   buildSandpackOptions,
+  getArtifactDownloadFilename,
+  getArtifactFilename,
+  getDependencies,
+  getSvgFiles,
+  getTemplate,
   detectArtifactTypeFromFile,
   fileToArtifact,
   isCodeOnlyArtifact,
   isPreviewOnlyArtifact,
+  isSvgArtifactType,
   languageForFilename,
+  normalizeArtifactType,
   TOOL_ARTIFACT_TYPES,
+  TAILWIND_ORDER,
 } from '../artifacts';
 
 const TAILWIND_CDN = 'https://cdn.tailwindcss.com/3.4.17#tailwind.js';
 
+describe('SVG artifact template mapping (#16087)', () => {
+  /* Bare `<svg>` handed to the static template as `index.html` renders
+   * blank. These types must map to a dedicated SVG file (and empty
+   * Sandpack deps) instead of riding `artifactFilename.default`. */
+  it.each(['image/svg+xml', 'image/svg'])(
+    'maps %s to index.svg on the static template, not default index.html',
+    (type) => {
+      expect(getArtifactFilename(type)).toBe('index.svg');
+      expect(getTemplate(type)).toBe('static');
+      expect(getDependencies(type)).toEqual({});
+    },
+  );
+
+  it('wraps a bare SVG in an HTML document for the static preview entry', () => {
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600"><rect width="800" height="600" fill="#0f172a"/></svg>';
+    const files = getSvgFiles(svg);
+    expect(files['index.svg']).toBe(svg);
+    expect(files['index.html']).toMatch(/<!DOCTYPE html>/i);
+    expect(files['index.html']).toContain('<body');
+    expect(files['index.html']).toContain(svg);
+  });
+
+  it('strips an XML declaration so the HTML shell stays a valid HTML document', () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"></svg>';
+    const files = getSvgFiles(`<?xml version="1.0" encoding="UTF-8"?>\n${svg}`);
+    expect(files['index.html']).not.toMatch(/<\?xml/i);
+    expect(files['index.html']).toContain(svg);
+  });
+
+  it('sizes only the root SVG so a nested viewport keeps its own geometry', () => {
+    const originalHead = document.head.innerHTML;
+    const originalBody = document.body.innerHTML;
+    try {
+      const html = getSvgFiles(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">' +
+          '<svg id="sprite" width="20" height="20" x="5" y="5"><rect width="20" height="20"/></svg>' +
+          '</svg>',
+      )['index.html'];
+      /* Mount the shell's own generated style and body. CSS overrides SVG
+       * presentation attributes, so an unscoped `svg` rule would stretch the
+       * nested viewport to the panel and corrupt the drawing's layout. */
+      const css = html.match(/<style>([\s\S]*?)<\/style>/i)?.[1] ?? '';
+      const markup = html.match(/<body>([\s\S]*?)<\/body>/i)?.[1] ?? '';
+      document.head.innerHTML = `<style>${css}</style>`;
+      document.body.innerHTML = markup;
+
+      const root = document.body.querySelector('svg');
+      const nested = document.getElementById('sprite');
+      if (root == null || nested == null) {
+        throw new Error('expected the mounted shell to hold both SVG viewports');
+      }
+      expect(getComputedStyle(root).width).toBe('100%');
+      expect(getComputedStyle(root).height).toBe('100%');
+      expect(getComputedStyle(nested).width).not.toBe('100%');
+      expect(getComputedStyle(nested).height).not.toBe('100%');
+    } finally {
+      document.head.innerHTML = originalHead;
+      document.body.innerHTML = originalBody;
+    }
+  });
+
+  it('recognizes both SVG artifact types and nothing else', () => {
+    expect(isSvgArtifactType('image/svg+xml')).toBe(true);
+    expect(isSvgArtifactType('image/svg')).toBe(true);
+    expect(isSvgArtifactType('image/png')).toBe(false);
+    expect(isSvgArtifactType('text/html')).toBe(false);
+    expect(isSvgArtifactType('')).toBe(false);
+  });
+
+  it('rebuilds both entries so no original source survives an edit', () => {
+    const edited = '<svg xmlns="http://www.w3.org/2000/svg"><circle cx="5" cy="5" r="4"/></svg>';
+    const files = getSvgFiles(edited);
+    expect(files['index.svg']).toBe(edited);
+    expect(files['index.html']).toContain(edited);
+    expect(files['index.html']).not.toContain('<rect');
+  });
+});
+
 describe('buildSandpackOptions', () => {
   it('includes externalResources with .js fragment hint for static template', () => {
     const options = buildSandpackOptions('static');
-    expect(options?.externalResources).toEqual([TAILWIND_CDN]);
+    expect(options?.externalResources).toEqual([TAILWIND_CDN, TAILWIND_ORDER]);
+    expect(TAILWIND_ORDER).toMatch(/^data:text\/javascript,[^#]*#tailwind-order\.js$/);
   });
 
   it('includes externalResources for react-ts template', () => {
@@ -29,7 +118,7 @@ describe('buildSandpackOptions', () => {
     >[1];
     const options = buildSandpackOptions('static', config);
     expect(options?.bundlerURL).toBe('https://static.example.com');
-    expect(options?.externalResources).toEqual([TAILWIND_CDN]);
+    expect(options?.externalResources).toEqual([TAILWIND_CDN, TAILWIND_ORDER]);
   });
 
   it('uses bundlerURL when template is react-ts and config is provided', () => {
@@ -44,6 +133,78 @@ describe('buildSandpackOptions', () => {
   it('returns base options without bundlerURL when no config is provided', () => {
     const options = buildSandpackOptions('react-ts');
     expect(options?.bundlerURL).toBeUndefined();
+  });
+
+  it.each([
+    ['static', [TAILWIND_CDN, TAILWIND_ORDER]],
+    ['react-ts', [TAILWIND_CDN]],
+  ] as const)('treats an empty bundler URL as unset for the %s template', (template, resources) => {
+    const options = buildSandpackOptions(template, { bundlerURL: '', staticBundlerURL: '' });
+    expect(options?.bundlerURL).toBeUndefined();
+    expect(options?.externalResources).toEqual(resources);
+  });
+});
+
+describe('Tailwind style order in static previews (#16841)', () => {
+  const prefix = 'data:text/javascript,';
+  const script = decodeURIComponent(
+    TAILWIND_ORDER.slice(prefix.length, TAILWIND_ORDER.lastIndexOf('#')),
+  );
+
+  /** Mirrors the Play CDN: an attribute-less `<style>` appended to the end of `<head>`. */
+  const appendTailwind = (doc: Document) => {
+    const style = doc.createElement('style');
+    doc.head.append(style);
+    style.textContent = '*, ::before, ::after{--tw-ring-inset: }/* ! tailwindcss v3.4.17 */h1{}';
+    return style;
+  };
+
+  const setup = (head: string) => {
+    const doc = document.implementation.createHTMLDocument('preview');
+    doc.head.innerHTML = `<script src="${TAILWIND_CDN}"></script><script src="${TAILWIND_ORDER}"></script>${head}`;
+    new Function('document', script)(doc);
+    return doc;
+  };
+
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('moves the generated Tailwind style in front of the page stylesheets', async () => {
+    const doc = setup('<title>Test</title><style id="page">h1{font-size:64px}</style>');
+    const tailwind = appendTailwind(doc);
+    await flush();
+    expect(tailwind.nextElementSibling).toBe(doc.getElementById('page'));
+  });
+
+  it('treats a page stylesheet link as the first page stylesheet', async () => {
+    const doc = setup('<link id="sheet" rel="stylesheet" href="page.css"><style>h1{}</style>');
+    const tailwind = appendTailwind(doc);
+    await flush();
+    expect(tailwind.nextElementSibling).toBe(doc.getElementById('sheet'));
+  });
+
+  it('skips text/tailwindcss source blocks, which the browser does not apply', async () => {
+    const doc = setup('<style type="text/tailwindcss">@apply x;</style><style id="page"></style>');
+    const tailwind = appendTailwind(doc);
+    await flush();
+    expect(tailwind.nextElementSibling).toBe(doc.getElementById('page'));
+  });
+
+  it('leaves the order alone when the page loads the Tailwind CDN itself', async () => {
+    const doc = setup('<script src="https://cdn.tailwindcss.com"></script><style></style>');
+    const tailwind = appendTailwind(doc);
+    await flush();
+    expect(doc.head.lastElementChild).toBe(tailwind);
+  });
+
+  it('only moves the attribute-less style the CDN generates', async () => {
+    const doc = setup('<style id="a"></style>');
+    const page = doc.createElement('style');
+    page.id = 'b';
+    page.textContent = '/* ! tailwindcss v3.4.17 */';
+    page.setAttribute('data-page', '');
+    doc.head.append(page);
+    await flush();
+    expect(doc.head.lastElementChild).toBe(page);
   });
 });
 
@@ -715,6 +876,8 @@ describe('fileToArtifact', () => {
     expect(artifact).not.toBeNull();
     expect(artifact!.type).toBe(TOOL_ARTIFACT_TYPES.PRESENTATION);
     expect(artifact!.download).toEqual({
+      filename: 'deck.pptx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
       filepath: '/api/files/code/output/deck.pptx',
       file_id: 'fid-1',
       source: FileSources.execute_code,
@@ -973,4 +1136,304 @@ describe('isCodeOnlyArtifact', () => {
       expect(isCodeOnlyArtifact(type)).toBe(false);
     },
   );
+});
+
+describe('getArtifactDownloadFilename', () => {
+  it.each([
+    ['# Migration Plan', 'Migration Plan.md'],
+    ['# ~~Deprecated~~ Plan', 'Deprecated Plan.md'],
+    ['# migrate_users.py', 'migrate_users.py.md'],
+    ['# The **Q3** [report](https://example.com)', 'The Q3 report.md'],
+    ['# Hello &amp; goodbye', 'Hello & goodbye.md'],
+    ['```bash\n# comment\n```\n# Actual heading', 'Actual heading.md'],
+    ['````\n```bash\n# Still code\n```\n````\n# Actual heading', 'Actual heading.md'],
+    ['~~~\n```\n# Still code\n~~~\n# Actual heading', 'Actual heading.md'],
+    ['---\n# Metadata comment\n---\n# Actual heading', 'Actual heading.md'],
+    ['<div>\n# Hidden heading\n</div>\n\n# Actual heading', 'Actual heading.md'],
+    ['A real setext heading\n===', 'A real setext heading.md'],
+    ['No heading', 'content.md'],
+  ])('derives a Markdown filename from %s', (content, expected) => {
+    expect(
+      getArtifactDownloadFilename(
+        { id: 'a', lastUpdateTime: 0, type: 'text/markdown', content },
+        'content.md',
+      ),
+    ).toBe(expected);
+  });
+
+  it.each([
+    ['Component.jsx', 'App.tsx'],
+    ['Component.tsx', 'App.tsx'],
+    ['index.htm', 'index.html'],
+    ['index.html', 'index.html'],
+    ['README.markdown', 'content.md'],
+    ['README.mdx', 'content.md'],
+    ['README.md', 'content.md'],
+    ['script.pyi', 'content.md'],
+    ['Dockerfile', 'content.md'],
+    ['Makefile', 'content.md'],
+    ['notes.TXT', 'content.md'],
+  ])('preserves raw file extensions in preview exports: %s', (filename, fileKey) => {
+    const artifact = fileToArtifact({ file_id: 'file', filename, text: 'Raw content' });
+    expect(artifact).not.toBeNull();
+    const dot = filename.lastIndexOf('.');
+    const expected =
+      dot > 0 ? `${filename.slice(0, dot)}.preview${filename.slice(dot)}` : `${filename}.preview`;
+    expect(getArtifactDownloadFilename(artifact!, fileKey)).toBe(expected);
+  });
+
+  it.each(['flow.mermaid', 'flow.mmd'])(
+    'marks a file-backed mermaid blob as a preview of its stored file: %s',
+    (filename) => {
+      /* The blob is the cached extraction, which the backend truncates past
+       * 512 KB — only the original-file route delivers the stored `.mmd`,
+       * so these bytes must not take the stored file's name. */
+      const artifact = fileToArtifact({ file_id: 'file', filename, text: 'graph TD\nA-->B' });
+      expect(artifact?.type).toBe(TOOL_ARTIFACT_TYPES.MERMAID);
+      const dot = filename.lastIndexOf('.');
+      expect(getArtifactDownloadFilename(artifact!, 'diagram.mmd')).toBe(
+        `${filename.slice(0, dot)}.preview${filename.slice(dot)}`,
+      );
+    },
+  );
+
+  it('keeps a model-authored mermaid diagram under its own name', () => {
+    /* No stored file exists for an authored diagram, so its content is the
+     * only artifact there is and nothing is being previewed. */
+    expect(
+      getArtifactDownloadFilename(
+        {
+          id: 'artifact-1',
+          lastUpdateTime: 0,
+          type: TOOL_ARTIFACT_TYPES.MERMAID,
+          title: 'Flow',
+          content: 'graph TD\nA-->B',
+        },
+        'diagram.mmd',
+      ),
+    ).toBe('Flow.mmd');
+  });
+
+  it.each(['untitled', 'Generated artifact'])(
+    'preserves the real attachment filename %s',
+    (filename) => {
+      const artifact = fileToArtifact({
+        file_id: 'file',
+        filename,
+        type: 'text/markdown',
+        text: '# Heading',
+      });
+      expect(getArtifactDownloadFilename(artifact!, 'content.md')).toBe(`${filename}.preview`);
+    },
+  );
+
+  it('uses the heading when an attachment supplied no filename', () => {
+    const artifact = fileToArtifact({ file_id: 'file', type: 'text/markdown', text: '# Heading' });
+    expect(getArtifactDownloadFilename(artifact!, 'content.md')).toBe('Heading.preview.md');
+  });
+
+  it('preserves sentinel filenames in older artifact metadata', () => {
+    expect(
+      getArtifactDownloadFilename(
+        {
+          id: 'a',
+          lastUpdateTime: 0,
+          type: 'text/markdown',
+          title: 'untitled',
+          content: '# Heading',
+          download: { file_id: 'file' },
+        },
+        'content.md',
+      ),
+    ).toBe('untitled.preview');
+  });
+
+  it.each(['script.py', 'notes.txt', 'README.md', 'Dockerfile'])(
+    'distinguishes cached preview exports of %s',
+    (filename) => {
+      const artifact = fileToArtifact({
+        file_id: 'file',
+        filename,
+        text: 'Prefix\n\n…[truncated]',
+      });
+      const expected = filename.includes('.')
+        ? filename.replace(/(\.[^.]+)$/, '.preview$1')
+        : `${filename}.preview`;
+      expect(getArtifactDownloadFilename(artifact!, 'content.md')).toBe(expected);
+      expect(getArtifactDownloadFilename(artifact!, 'content.md', 'Edited prefix')).toBe(expected);
+    },
+  );
+
+  it.each(['odt', 'docx', 'pptx'])('names extracted %s bytes as text after file routing', (ext) => {
+    const artifact = fileToArtifact({
+      file_id: 'file',
+      filename: `report.${ext}`,
+      text: 'Extracted text',
+    });
+    expect(artifact?.type).toBe(TOOL_ARTIFACT_TYPES.PLAIN_TEXT);
+    expect(getArtifactDownloadFilename(artifact!, 'content.md')).toBe(`report.${ext}.preview.txt`);
+  });
+
+  it.each(['Complete file', 'Complete file\n\n…[truncated]'])(
+    'does not infer truncation from cached file text: %s',
+    (content) => {
+      const artifact = fileToArtifact({ file_id: 'file', filename: 'notes.txt', text: content });
+      expect(getArtifactDownloadFilename(artifact!, 'content.md')).toBe('notes.preview.txt');
+    },
+  );
+
+  it('does not read source comments as document headings', () => {
+    expect(
+      getArtifactDownloadFilename(
+        {
+          id: 'a',
+          lastUpdateTime: 0,
+          type: TOOL_ARTIFACT_TYPES.CODE,
+          language: 'python',
+          content: '# Copyright',
+        },
+        'content.md',
+      ),
+    ).toBe('code.py');
+  });
+
+  it('preserves a long file-backed source extension during sanitization', () => {
+    const filename = `${'a'.repeat(200)}.py`;
+    expect(
+      getArtifactDownloadFilename(
+        {
+          id: 'a',
+          lastUpdateTime: 0,
+          type: TOOL_ARTIFACT_TYPES.CODE,
+          title: filename,
+          download: { file_id: 'file' },
+        },
+        'content.md',
+      ),
+    ).toBe(`${'a'.repeat(97)}.preview.py`);
+  });
+});
+
+describe('artifactRowKind', () => {
+  it('marks the rendered buckets as previews and code as source', () => {
+    expect(artifactRowKind({ type: TOOL_ARTIFACT_TYPES.HTML }).rendersPreview).toBe(true);
+    expect(artifactRowKind({ type: TOOL_ARTIFACT_TYPES.REACT }).rendersPreview).toBe(true);
+    expect(artifactRowKind({ type: TOOL_ARTIFACT_TYPES.MARKDOWN }).rendersPreview).toBe(true);
+    expect(artifactRowKind({ type: TOOL_ARTIFACT_TYPES.SPREADSHEET }).rendersPreview).toBe(true);
+    expect(artifactRowKind({ type: TOOL_ARTIFACT_TYPES.CODE, title: 'a.py' }).rendersPreview).toBe(
+      false,
+    );
+    /* Plain text opens on the panel's rendered markdown preview
+     * (`useArtifactProps` -> `getMarkdownFiles`), so the row announces a
+     * preview rather than source. */
+    expect(artifactRowKind({ type: TOOL_ARTIFACT_TYPES.PLAIN_TEXT }).rendersPreview).toBe(true);
+  });
+
+  it('names each rendered format with its own label', () => {
+    expect(artifactRowKind({ type: TOOL_ARTIFACT_TYPES.HTML }).label).toEqual({
+      key: 'com_ui_artifact_format_html',
+    });
+    expect(artifactRowKind({ type: TOOL_ARTIFACT_TYPES.PRESENTATION }).label).toEqual({
+      key: 'com_ui_artifact_format_presentation',
+    });
+  });
+
+  it('resolves the model-authored type spellings to the same buckets', () => {
+    /* The markdown `:::artifact` path passes the authored attribute
+     * through verbatim, so these aliases reach the row alongside the
+     * canonical MIMEs. */
+    expect(artifactRowKind({ type: 'application/vnd.ant.react' })).toEqual(
+      artifactRowKind({ type: TOOL_ARTIFACT_TYPES.REACT }),
+    );
+    expect(artifactRowKind({ type: 'application/vnd.code-html' })).toEqual(
+      artifactRowKind({ type: TOOL_ARTIFACT_TYPES.HTML }),
+    );
+    expect(artifactRowKind({ type: 'text/md' })).toEqual(
+      artifactRowKind({ type: TOOL_ARTIFACT_TYPES.MARKDOWN }),
+    );
+  });
+
+  it('labels a code artifact with its language, preferring the stored hint', () => {
+    expect(artifactRowKind({ type: TOOL_ARTIFACT_TYPES.CODE, language: 'python' })).toMatchObject({
+      lang: 'python',
+      label: { text: 'python' },
+    });
+    /* No stored hint (older records, markdown path) — derive it from the
+     * title the way the panel derives its fence hint. */
+    expect(artifactRowKind({ type: TOOL_ARTIFACT_TYPES.CODE, title: 'main.rs' })).toMatchObject({
+      lang: 'rust',
+      label: { text: 'rust' },
+    });
+    /* Neither: an extensionless, unrecognized name still needs a label. */
+    expect(artifactRowKind({ type: TOOL_ARTIFACT_TYPES.CODE, title: 'script' })).toMatchObject({
+      lang: '',
+      label: { key: 'com_ui_code' },
+    });
+  });
+
+  it('treats an unknown type as a rendered artifact, matching the static template fallback', () => {
+    expect(artifactRowKind({ type: 'application/x-unheard-of' })).toMatchObject({
+      rendersPreview: true,
+      fallbackGlyph: 'preview',
+    });
+    expect(artifactRowKind({})).toMatchObject({ rendersPreview: true });
+  });
+});
+
+describe('normalizeArtifactType', () => {
+  const SVG = 'image/svg+xml';
+  /** Every spelling a model or an older prompt writes, with the bucket it renders in. */
+  const spellings: Array<[string, string]> = [
+    ['react', TOOL_ARTIFACT_TYPES.REACT],
+    ['application/vnd.ant.react', TOOL_ARTIFACT_TYPES.REACT],
+    ['html', TOOL_ARTIFACT_TYPES.HTML],
+    ['application/vnd.code-html', TOOL_ARTIFACT_TYPES.HTML],
+    ['markdown', TOOL_ARTIFACT_TYPES.MARKDOWN],
+    ['md', TOOL_ARTIFACT_TYPES.MARKDOWN],
+    ['text/md', TOOL_ARTIFACT_TYPES.MARKDOWN],
+    ['mermaid', TOOL_ARTIFACT_TYPES.MERMAID],
+    ['svg', SVG],
+    ['image/svg', SVG],
+  ];
+
+  it.each(spellings)('maps %s to %s', (spelling, canonical) => {
+    expect(normalizeArtifactType(spelling)).toBe(canonical);
+  });
+
+  it('ignores case and surrounding whitespace in an authored spelling', () => {
+    expect(normalizeArtifactType(' React ')).toBe(TOOL_ARTIFACT_TYPES.REACT);
+    expect(normalizeArtifactType('HTML')).toBe(TOOL_ARTIFACT_TYPES.HTML);
+    expect(normalizeArtifactType('APPLICATION/VND.REACT')).toBe(TOOL_ARTIFACT_TYPES.REACT);
+    expect(normalizeArtifactType(' text/html ')).toBe(TOOL_ARTIFACT_TYPES.HTML);
+    expect(getTemplate('Application/Vnd.React')).toBe('react-ts');
+  });
+
+  it('leaves canonical and unknown types as written', () => {
+    Object.values(TOOL_ARTIFACT_TYPES).forEach((type) => {
+      expect(normalizeArtifactType(type)).toBe(type);
+    });
+    expect(normalizeArtifactType('code')).toBe('code');
+    expect(normalizeArtifactType('application/x-unheard-of')).toBe('application/x-unheard-of');
+    expect(normalizeArtifactType('constructor')).toBe('constructor');
+  });
+
+  it.each(spellings)(
+    'drives every lookup for %s the way its canonical type does',
+    (spelling, canonical) => {
+      expect(getTemplate(spelling)).toBe(getTemplate(canonical));
+      expect(getArtifactFilename(spelling)).toBe(getArtifactFilename(canonical));
+      expect(getDependencies(spelling)).toEqual(getDependencies(canonical));
+      expect(artifactRowKind({ type: spelling })).toEqual(artifactRowKind({ type: canonical }));
+      expect(isSvgArtifactType(spelling)).toBe(isSvgArtifactType(canonical));
+    },
+  );
+
+  it('sends a short react spelling down the React path', () => {
+    expect(getTemplate('react')).toBe('react-ts');
+    expect(getArtifactFilename('react')).toBe('App.tsx');
+    expect(getDependencies('react')).toEqual(getDependencies(TOOL_ARTIFACT_TYPES.REACT));
+    expect(artifactRowKind({ type: 'react' }).label).toEqual({
+      key: 'com_ui_artifact_format_react',
+    });
+  });
 });

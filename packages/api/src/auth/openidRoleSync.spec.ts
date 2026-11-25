@@ -4,6 +4,8 @@ import {
   getOpenIdRolesForOpenIdSync,
   getLibreChatRolesForOpenIdSync,
   selectOpenIdRole,
+  writeIdpRoleChange,
+  recordIdpRoleChange,
 } from './openidRoleSync';
 
 describe('getOpenIdRoleSyncOptions', () => {
@@ -394,5 +396,112 @@ describe('selectOpenIdRole', () => {
       selectedRole: 'BASIC-USER',
       reason: 'matched_priority',
     });
+  });
+});
+
+describe('recordIdpRoleChange', () => {
+  it('records an IdP admin grant as a critical user.role_changed entry', async () => {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+
+    await recordIdpRoleChange({
+      recordAuditEntry,
+      userId: 'u1',
+      previousRole: SystemRoles.USER,
+      role: SystemRoles.ADMIN,
+      source: 'openid_login',
+      tenantId: 't1',
+    });
+
+    expect(recordAuditEntry).toHaveBeenCalledWith({
+      action: 'user.role_changed',
+      severity: 'critical',
+      actor: { type: 'system', name: 'OpenID role sync' },
+      target: { type: 'user', id: 'u1' },
+      metadata: { previousRole: SystemRoles.USER, role: SystemRoles.ADMIN, source: 'openid_login' },
+      tenantId: 't1',
+    });
+  });
+
+  it('records a non-admin change at warning severity', async () => {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+
+    await recordIdpRoleChange({
+      recordAuditEntry,
+      userId: 'u1',
+      previousRole: SystemRoles.USER,
+      role: 'STAFF',
+      source: 'openid_login',
+    });
+
+    expect(recordAuditEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        severity: 'warning',
+        metadata: expect.objectContaining({ role: 'STAFF' }),
+      }),
+    );
+  });
+
+  it('records nothing when the role did not change', async () => {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+
+    await recordIdpRoleChange({
+      recordAuditEntry,
+      userId: 'u1',
+      previousRole: SystemRoles.ADMIN,
+      role: SystemRoles.ADMIN,
+      source: 'openid_login',
+    });
+
+    expect(recordAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('does not throw when the audit write fails', async () => {
+    const recordAuditEntry = jest.fn().mockRejectedValue(new Error('audit down'));
+
+    await expect(
+      recordIdpRoleChange({
+        recordAuditEntry,
+        userId: 'u1',
+        previousRole: SystemRoles.ADMIN,
+        role: SystemRoles.USER,
+        source: 'openid_login',
+      }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('writeIdpRoleChange', () => {
+  it('throws instead of writing when the stored role changes before every attempt', async () => {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+    let reads = 0;
+    const updateUser = jest.fn().mockResolvedValue(null);
+    const findUser = jest.fn(async () => ({ role: `ROLE-${++reads}` }));
+
+    await expect(
+      writeIdpRoleChange({
+        userId: 'u1',
+        update: { role: SystemRoles.ADMIN },
+        observedRole: SystemRoles.USER,
+        updateUser,
+        findUser,
+        recordAuditEntry,
+        source: 'openid_login',
+      }),
+    ).rejects.toThrow('kept changing');
+
+    expect(updateUser).toHaveBeenCalledTimes(3);
+    expect(updateUser).toHaveBeenNthCalledWith(
+      1,
+      'u1',
+      { role: SystemRoles.ADMIN },
+      { role: 'USER' },
+    );
+    expect(updateUser).toHaveBeenNthCalledWith(
+      3,
+      'u1',
+      { role: SystemRoles.ADMIN },
+      { role: 'ROLE-2' },
+    );
+    expect(recordAuditEntry).not.toHaveBeenCalled();
   });
 });

@@ -11,6 +11,9 @@ import type {
   SteerQueueItem,
   SteerReceipt,
   SteerReceiptInput,
+  SteerPromotionOutcome,
+  TerminalSteerAdmissionPolicy,
+  TerminalSteerAdmissionResult,
 } from '~/stream/interfaces/IJobStore';
 import type { ServerSentEvent } from '~/types';
 
@@ -22,6 +25,7 @@ export function toPendingSteer(item: SteerQueueItem): TPendingSteer {
     text: item.text,
     createdAt: item.createdAt,
     ...(item.files && item.files.length > 0 && { files: item.files }),
+    ...(item.quotes && item.quotes.length > 0 && { quotes: item.quotes }),
     ...(item.preempt === true && { preempt: true }),
     ...(item.preemptRevision != null && { preemptRevision: item.preemptRevision }),
   };
@@ -174,6 +178,14 @@ export class SteeringLifecycle {
     return this.store.restoreClaimedSteers(streamId, items, expectedCreatedAt);
   }
 
+  admitTerminal(
+    streamId: string,
+    policy: TerminalSteerAdmissionPolicy,
+    expectedCreatedAt?: number,
+  ): Promise<TerminalSteerAdmissionResult> {
+    return this.store.admitTerminalSteers(streamId, policy, expectedCreatedAt);
+  }
+
   /**
    * Terminal drain: atomically CLOSE the queue to new steers, then take all
    * queued items. Finalization paths use this so a steer POST racing the
@@ -216,6 +228,24 @@ export class SteeringLifecycle {
       owner.userId,
       owner.tenantId,
       expectedGenerationCreatedAt,
+    );
+  }
+
+  /** Hand a terminal leftover to the durable queued turn that now carries it. */
+  promoteLeftover(
+    streamId: string,
+    steerId: string,
+    owner: SteerOwner,
+    generationCreatedAt: number,
+    queuedTurnId: string,
+  ): Promise<SteerPromotionOutcome> {
+    return this.store.promoteSteerLeftover(
+      streamId,
+      steerId,
+      owner.userId,
+      owner.tenantId,
+      generationCreatedAt,
+      queuedTurnId,
     );
   }
 

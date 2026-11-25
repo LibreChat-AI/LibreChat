@@ -1,14 +1,15 @@
 import { Types } from 'mongoose';
 import { TokenExchangeMethodEnum } from 'librechat-data-provider';
-import type { MCPOptions } from 'librechat-data-provider';
+import type { Agent, MCPOptions } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import {
-  resolveNestedObject,
-  encodeHeaderValue,
-  resolveHeaders,
   createSafeUser,
+  createSafeAgent,
+  resolveHeaders,
   processMCPEnv,
+  encodeHeaderValue,
 } from './env';
+import { applyRequestHeaders } from '~/mcp/utils';
 
 function isStdioOptions(options: MCPOptions): options is Extract<MCPOptions, { type?: 'stdio' }> {
   return !options.type || options.type === 'stdio';
@@ -472,6 +473,27 @@ describe('resolveHeaders', () => {
     expect(result['X-User-TermsAccepted']).toBe('true');
   });
 
+  it('should not expose tenant or issuer fields through safe user placeholders', () => {
+    const user = createTestUser({
+      tenantId: 'tenant-secret',
+      openidIssuer: 'https://issuer.example.com',
+    });
+    const safeUser = createSafeUser(user);
+    const headers = {
+      'X-Tenant': '{{LIBRECHAT_USER_TENANTID}}',
+      'X-Issuer': '{{LIBRECHAT_USER_OPENIDISSUER}}',
+    };
+
+    expect(safeUser).not.toHaveProperty('tenantId');
+    expect(safeUser).not.toHaveProperty('openidIssuer');
+    expect(resolveHeaders({ headers, user: safeUser })['X-Tenant']).toBe(
+      '{{LIBRECHAT_USER_TENANTID}}',
+    );
+    expect(resolveHeaders({ headers, user: safeUser })['X-Issuer']).toBe(
+      '{{LIBRECHAT_USER_OPENIDISSUER}}',
+    );
+  });
+
   it('should handle multiple placeholders in one value', () => {
     const user = { id: 'abc', email: 'me@example.com' };
     const headers = {
@@ -694,301 +716,6 @@ describe('resolveHeaders', () => {
   });
 });
 
-describe('resolveNestedObject', () => {
-  beforeEach(() => {
-    process.env.TEST_API_KEY = 'test-api-key-value';
-    process.env.ANOTHER_VALUE = 'another-test-value';
-  });
-
-  afterEach(() => {
-    delete process.env.TEST_API_KEY;
-    delete process.env.ANOTHER_VALUE;
-  });
-
-  it('should preserve nested object structure', () => {
-    const obj = {
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 2000,
-      },
-      anthropic_beta: ['output-128k-2025-02-19'],
-      max_tokens: 4096,
-      temperature: 0.7,
-    };
-
-    const result = resolveNestedObject({ obj });
-
-    expect(result).toEqual({
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 2000,
-      },
-      anthropic_beta: ['output-128k-2025-02-19'],
-      max_tokens: 4096,
-      temperature: 0.7,
-    });
-  });
-
-  it('should process placeholders in string values while preserving structure', () => {
-    const user = { id: 'user-123', email: 'test@example.com' };
-    const obj = {
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 2000,
-        user_context: '{{LIBRECHAT_USER_ID}}',
-      },
-      anthropic_beta: ['output-128k-2025-02-19'],
-      api_key: '${TEST_API_KEY}',
-      max_tokens: 4096,
-    };
-
-    const result = resolveNestedObject({ obj, user });
-
-    expect(result).toEqual({
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 2000,
-        user_context: 'user-123',
-      },
-      anthropic_beta: ['output-128k-2025-02-19'],
-      api_key: 'test-api-key-value',
-      max_tokens: 4096,
-    });
-  });
-
-  it('should process strings in arrays', () => {
-    const user = { id: 'user-123' };
-    const obj = {
-      headers: ['Authorization: Bearer ${TEST_API_KEY}', 'X-User-Id: {{LIBRECHAT_USER_ID}}'],
-      values: [1, 2, 3],
-      mixed: ['string', 42, true, '{{LIBRECHAT_USER_ID}}'],
-    };
-
-    const result = resolveNestedObject({ obj, user });
-
-    expect(result).toEqual({
-      headers: ['Authorization: Bearer test-api-key-value', 'X-User-Id: user-123'],
-      values: [1, 2, 3],
-      mixed: ['string', 42, true, 'user-123'],
-    });
-  });
-
-  it('should handle deeply nested structures', () => {
-    const user = { id: 'user-123' };
-    const obj = {
-      level1: {
-        level2: {
-          level3: {
-            user_id: '{{LIBRECHAT_USER_ID}}',
-            settings: {
-              api_key: '${TEST_API_KEY}',
-              enabled: true,
-            },
-          },
-        },
-      },
-    };
-
-    const result = resolveNestedObject({ obj, user });
-
-    expect(result).toEqual({
-      level1: {
-        level2: {
-          level3: {
-            user_id: 'user-123',
-            settings: {
-              api_key: 'test-api-key-value',
-              enabled: true,
-            },
-          },
-        },
-      },
-    });
-  });
-
-  it('should preserve all primitive types', () => {
-    const obj = {
-      string: 'text',
-      number: 42,
-      float: 3.14,
-      boolean_true: true,
-      boolean_false: false,
-      null_value: null,
-      undefined_value: undefined,
-    };
-
-    const result = resolveNestedObject({ obj });
-
-    expect(result).toEqual(obj);
-  });
-
-  it('should handle empty objects and arrays', () => {
-    const obj = {
-      empty_object: {},
-      empty_array: [],
-      nested: {
-        also_empty: {},
-      },
-    };
-
-    const result = resolveNestedObject({ obj });
-
-    expect(result).toEqual(obj);
-  });
-
-  it('should handle body placeholders in nested objects', () => {
-    const body = {
-      conversationId: 'conv-123',
-      parentMessageId: 'parent-456',
-      messageId: 'msg-789',
-    };
-    const obj = {
-      metadata: {
-        conversation: '{{LIBRECHAT_BODY_CONVERSATIONID}}',
-        parent: '{{LIBRECHAT_BODY_PARENTMESSAGEID}}',
-        count: 5,
-      },
-    };
-
-    const result = resolveNestedObject({ obj, body });
-
-    expect(result).toEqual({
-      metadata: {
-        conversation: 'conv-123',
-        parent: 'parent-456',
-        count: 5,
-      },
-    });
-  });
-
-  it('should handle custom user variables in nested objects', () => {
-    const customUserVars = {
-      CUSTOM_TOKEN: 'secret-token',
-      REGION: 'us-west-1',
-    };
-    const obj = {
-      auth: {
-        token: '{{CUSTOM_TOKEN}}',
-        region: '{{REGION}}',
-        timeout: 3000,
-      },
-    };
-
-    const result = resolveNestedObject({ obj, customUserVars });
-
-    expect(result).toEqual({
-      auth: {
-        token: 'secret-token',
-        region: 'us-west-1',
-        timeout: 3000,
-      },
-    });
-  });
-
-  it('should handle mixed placeholders in nested objects', () => {
-    const user = { id: 'user-123', email: 'test@example.com' };
-    const customUserVars = { CUSTOM_VAR: 'custom-value' };
-    const body = { conversationId: 'conv-456' };
-
-    const obj = {
-      config: {
-        user_id: '{{LIBRECHAT_USER_ID}}',
-        custom: '{{CUSTOM_VAR}}',
-        api_key: '${TEST_API_KEY}',
-        conversation: '{{LIBRECHAT_BODY_CONVERSATIONID}}',
-        nested: {
-          email: '{{LIBRECHAT_USER_EMAIL}}',
-          port: 8080,
-        },
-      },
-    };
-
-    const result = resolveNestedObject({ obj, user, customUserVars, body });
-
-    expect(result).toEqual({
-      config: {
-        user_id: 'user-123',
-        custom: 'custom-value',
-        api_key: 'test-api-key-value',
-        conversation: 'conv-456',
-        nested: {
-          email: 'test@example.com',
-          port: 8080,
-        },
-      },
-    });
-  });
-
-  it('should handle Bedrock additionalModelRequestFields example', () => {
-    const obj = {
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 2000,
-      },
-      anthropic_beta: ['output-128k-2025-02-19'],
-    };
-
-    const result = resolveNestedObject({ obj });
-
-    expect(result).toEqual({
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 2000,
-      },
-      anthropic_beta: ['output-128k-2025-02-19'],
-    });
-
-    expect(typeof result.thinking).toBe('object');
-    expect(Array.isArray(result.anthropic_beta)).toBe(true);
-    expect(result.thinking).not.toBe('[object Object]');
-  });
-
-  it('should return undefined when obj is undefined', () => {
-    const result = resolveNestedObject({ obj: undefined });
-    expect(result).toBeUndefined();
-  });
-
-  it('should return null when obj is null', () => {
-    const result = resolveNestedObject({ obj: null });
-    expect(result).toBeNull();
-  });
-
-  it('should handle arrays of objects', () => {
-    const user = { id: 'user-123' };
-    const obj = {
-      items: [
-        { name: 'item1', user: '{{LIBRECHAT_USER_ID}}', count: 1 },
-        { name: 'item2', user: '{{LIBRECHAT_USER_ID}}', count: 2 },
-      ],
-    };
-
-    const result = resolveNestedObject({ obj, user });
-
-    expect(result).toEqual({
-      items: [
-        { name: 'item1', user: 'user-123', count: 1 },
-        { name: 'item2', user: 'user-123', count: 2 },
-      ],
-    });
-  });
-
-  it('should not modify the original object', () => {
-    const user = { id: 'user-123' };
-    const originalObj = {
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 2000,
-        user_id: '{{LIBRECHAT_USER_ID}}',
-      },
-    };
-
-    const result = resolveNestedObject({ obj: originalObj, user });
-
-    expect(result.thinking.user_id).toBe('user-123');
-    expect(originalObj.thinking.user_id).toBe('{{LIBRECHAT_USER_ID}}');
-  });
-});
-
 describe('processMCPEnv', () => {
   beforeEach(() => {
     process.env.TEST_API_KEY = 'test-api-key-value';
@@ -1165,6 +892,77 @@ describe('processMCPEnv', () => {
 
     expect('oauth_headers' in result! && result.oauth_headers).toEqual({
       'X-User-Id': '{{LIBRECHAT_USER_ID}}',
+    });
+  });
+
+  /**
+   * `applyRequestHeaders` runs at each pipeline entry, ahead of `processMCPEnv`,
+   * so the merged map is what env resolution sees. These exercise that order
+   * rather than either half alone.
+   */
+  it('should resolve merged requestHeaders like any other header', () => {
+    const user = createTestUser({ id: 'user-123' });
+    const options: MCPOptions = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/api',
+      headers: { 'X-User-Id': '{{LIBRECHAT_USER_ID}}' },
+      requestHeaders: {
+        'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+        'X-Static': 'static-value',
+      },
+    };
+
+    const result = processMCPEnv({
+      options: applyRequestHeaders(options),
+      user,
+      body: { conversationId: 'conv-1' },
+    });
+
+    expect('headers' in result! && result.headers).toEqual({
+      'X-User-Id': 'user-123',
+      'X-Conversation-Id': 'conv-1',
+      'X-Static': 'static-value',
+    });
+    expect(result).not.toHaveProperty('requestHeaders');
+  });
+
+  it('should NOT resolve merged requestHeaders when dbSourced', () => {
+    const user = createTestUser({ id: 'user-123' });
+    const options: MCPOptions = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/api',
+      requestHeaders: {
+        'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+      },
+    };
+
+    const result = processMCPEnv({
+      options: applyRequestHeaders(options),
+      user,
+      body: { conversationId: 'conv-1' },
+      dbSourced: true,
+    });
+
+    expect('headers' in result! && result.headers).toEqual({
+      'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+    });
+  });
+
+  it('should keep plugin-sourced requestHeaders verbatim', () => {
+    const user = createTestUser({ id: 'user-123' });
+    const options = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/api',
+      source: 'plugin',
+      headers: { 'X-Keep': 'kept' },
+      requestHeaders: { 'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}' },
+    } as MCPOptions & { source: string };
+
+    const result = processMCPEnv({ options, user, body: { conversationId: 'conv-1' } });
+
+    expect('headers' in result! && result.headers).toEqual({ 'X-Keep': 'kept' });
+    expect((result as { requestHeaders?: Record<string, string> }).requestHeaders).toEqual({
+      'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
     });
   });
 
@@ -1707,6 +1505,7 @@ describe('processMCPEnv', () => {
           source: 'user',
           authorization_type: 'bearer',
         },
+        customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Per-user key' } },
         headers: {
           Authorization: 'Bearer {{MCP_API_KEY}}',
         },
@@ -1784,6 +1583,7 @@ describe('processMCPEnv', () => {
       const options: MCPOptions = {
         type: 'streamable-http',
         url: 'https://api.example.com',
+        customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Per-user key' } },
         headers: {
           Authorization: 'Bearer {{MCP_API_KEY}}',
         },
@@ -1900,6 +1700,7 @@ describe('processMCPEnv', () => {
       const options: MCPOptions = {
         type: 'streamable-http',
         url: '${DATABASE_URL}',
+        customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Per-user key' } },
         headers: {
           Authorization: 'Bearer {{MCP_API_KEY}}',
           'X-Env-Leak': '${TEST_API_KEY}',
@@ -1932,6 +1733,7 @@ describe('processMCPEnv', () => {
       const options: MCPOptions = {
         type: 'streamable-http',
         url: 'https://api.example.com',
+        customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Per-user key' } },
         headers: {
           Authorization: 'Bearer {{MCP_API_KEY}}',
           'X-Env': '${TEST_API_KEY}',
@@ -1959,6 +1761,7 @@ describe('processMCPEnv', () => {
       const options: MCPOptions = {
         type: 'stdio',
         command: 'mcp-server',
+        customUserVars: { MY_VAR: { title: 'Custom', description: 'Per-user variable' } },
         args: ['--key', '${TEST_API_KEY}', '--custom', '{{MY_VAR}}'],
         env: {
           SECRET: '${DATABASE_URL}',
@@ -2025,6 +1828,10 @@ describe('processMCPEnv', () => {
       const options: MCPOptions = {
         type: 'streamable-http',
         url: 'https://api.example.com',
+        customUserVars: {
+          MY_CLIENT_ID: { title: 'Client ID', description: 'Per-user client' },
+          MY_CLIENT_SECRET: { title: 'Client secret', description: 'Per-user secret' },
+        },
         oauth: {
           client_id: '{{MY_CLIENT_ID}}',
           client_secret: '{{MY_CLIENT_SECRET}}',
@@ -2048,6 +1855,7 @@ describe('processMCPEnv', () => {
       const options: MCPOptions = {
         type: 'streamable-http',
         url: 'https://api.example.com',
+        customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Per-user key' } },
         headers: {
           Authorization: 'Bearer {{MCP_API_KEY}}',
         },
@@ -2067,6 +1875,7 @@ describe('processMCPEnv', () => {
       const options: MCPOptions = {
         type: 'streamable-http',
         url: '${DATABASE_URL}',
+        customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Per-user key' } },
         headers: {
           Authorization: 'Bearer {{MCP_API_KEY}}',
           'X-Env': '${TEST_API_KEY}',
@@ -2431,7 +2240,7 @@ describe('processMCPEnv OpenID re-authentication signalling', () => {
     }
   });
 
-  it('should raise re-auth from resolveHeaders when the token set is expired', () => {
+  it('should raise re-auth from resolveHeaders when the ID token is expired', () => {
     expect(() =>
       resolveHeaders({
         headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ID_TOKEN}}' },
@@ -2439,8 +2248,55 @@ describe('processMCPEnv OpenID re-authentication signalling', () => {
         stripUnresolved: true,
       }),
     ).toThrow(
-      'OpenID token is expired or unavailable; re-authentication is required to resolve {{LIBRECHAT_OPENID_ID_TOKEN}}',
+      'OpenID ID token is expired or unavailable; re-authentication is required to resolve {{LIBRECHAT_OPENID_ID_TOKEN}}',
     );
+  });
+
+  /** The OpenID JWT strategy leaves `access_token` unset when it cannot identify the request bearer as one */
+  function accessTokenlessOpenIDUser(idTokenExp: number): { user: IUser; idToken: string } {
+    const idToken = `header.${Buffer.from(
+      JSON.stringify({ sub: 'oidc-sub-456', exp: idTokenExp }),
+    ).toString('base64')}.signature`;
+    const user = {
+      ...createTestUser({ id: 'user-123', provider: 'openid' }),
+      openidId: 'oidc-sub-456',
+      federatedTokens: { id_token: idToken, refresh_token: 'stored-refresh-token' },
+    } as IUser;
+    return { user, idToken };
+  }
+
+  it('should resolve an ID token placeholder while no access token is stored', () => {
+    const { user, idToken } = accessTokenlessOpenIDUser(validSeconds);
+
+    const resolved = resolveHeaders({
+      headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ID_TOKEN}}' },
+      user,
+      stripUnresolved: true,
+    });
+
+    expect(resolved.Authorization).toBe(`Bearer ${idToken}`);
+  });
+
+  it('should keep identity metadata literal while no access token is stored', () => {
+    const { user } = accessTokenlessOpenIDUser(validSeconds);
+
+    const resolved = resolveHeaders({
+      headers: { 'X-User-Id': '{{LIBRECHAT_OPENID_USER_ID}}' },
+      user,
+    });
+
+    expect(resolved['X-User-Id']).toBe('{{LIBRECHAT_OPENID_USER_ID}}');
+  });
+
+  it('should still raise re-auth for an access token placeholder while no access token is stored', () => {
+    const { user } = accessTokenlessOpenIDUser(validSeconds);
+
+    expect(() =>
+      resolveHeaders({
+        headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+        user,
+      }),
+    ).toThrow('re-authentication is required to resolve {{LIBRECHAT_OPENID_ACCESS_TOKEN}}');
   });
 
   it('should leave identity metadata placeholders literal for an OpenID user with no stored tokens', () => {
@@ -2503,5 +2359,207 @@ describe('processMCPEnv OpenID re-authentication signalling', () => {
     } else {
       throw new Error('Expected streamable-http options');
     }
+  });
+});
+
+describe('createSafeAgent', () => {
+  it('returns an empty object for null/undefined agents', () => {
+    expect(createSafeAgent(null)).toEqual({});
+    expect(createSafeAgent(undefined)).toEqual({});
+  });
+
+  it('projects only allowlisted fields, dropping everything else', () => {
+    const safeAgent = createSafeAgent({
+      id: 'agent_HTbJ5rDW0kOOK1a5MPBSt',
+      name: 'Support Bot',
+      instructions: 'internal system prompt',
+      author: 'user-123',
+    } as Partial<Agent>);
+
+    expect(safeAgent).toEqual({ id: 'agent_HTbJ5rDW0kOOK1a5MPBSt' });
+  });
+
+  it('omits an absent or null id rather than emitting a null value', () => {
+    expect(createSafeAgent({})).toEqual({});
+    expect(createSafeAgent({ id: null })).toEqual({});
+  });
+
+  it('passes an ephemeral id through — the gate belongs to resolution, not projection', () => {
+    expect(createSafeAgent({ id: 'openAI__gpt-4o___My Preset' })).toEqual({
+      id: 'openAI__gpt-4o___My Preset',
+    });
+  });
+});
+
+describe('resolveHeaders agent placeholders', () => {
+  const agentHeaders = { 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' };
+  const persistedAgent = { id: 'agent_HTbJ5rDW0kOOK1a5MPBSt' };
+
+  it('preserves the template until the provider agent context is available', () => {
+    const pending = resolveHeaders({ headers: agentHeaders });
+    expect(pending).toEqual(agentHeaders);
+    expect(
+      resolveHeaders({ headers: pending, agent: persistedAgent, stripUnresolved: true }),
+    ).toEqual({ 'X-Agent-Id': persistedAgent.id });
+  });
+
+  it('uses the provider agent ahead of body fields and custom variables', () => {
+    expect(
+      resolveHeaders({
+        headers: agentHeaders,
+        agent: persistedAgent,
+        body: { agentId: 'agent_spoofed' },
+        customUserVars: { LIBRECHAT_AGENT_ID: 'agent_spoofed' },
+        stripUnresolved: true,
+      }),
+    ).toEqual({ 'X-Agent-Id': persistedAgent.id });
+  });
+
+  it('resolves the agent id for a persisted agent', () => {
+    const result = resolveHeaders({
+      headers: { ...agentHeaders },
+      agent: persistedAgent,
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Agent-Id']).toBe('agent_HTbJ5rDW0kOOK1a5MPBSt');
+  });
+
+  it.each(['1', '12'])(
+    'emits the persisted id for parallel runtime node %s without mutating its identity',
+    (index) => {
+      const agent = { id: `${persistedAgent.id}____${index}` };
+      expect(
+        resolveHeaders({
+          headers: { 'X-Meta': 'agent={{LIBRECHAT_AGENT_ID}};ref={{LIBRECHAT_AGENT_ID}}' },
+          agent,
+          stripUnresolved: true,
+        }),
+      ).toEqual({ 'X-Meta': `agent=${persistedAgent.id};ref=${persistedAgent.id}` });
+      expect(agent.id).toBe(`${persistedAgent.id}____${index}`);
+    },
+  );
+
+  it.each(['agent_with_underscores', 'agent_with____text', 'agent_with___1'])(
+    'preserves non-runtime suffixes in persisted id %s',
+    (id) => {
+      expect(resolveHeaders({ headers: agentHeaders, agent: { id } })).toEqual({
+        'X-Agent-Id': id,
+      });
+    },
+  );
+
+  it('resolves alongside user and body placeholders without interfering', () => {
+    const result = resolveHeaders({
+      headers: {
+        'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}',
+        'X-User-Id': '{{LIBRECHAT_USER_ID}}',
+        'X-Convo': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+        'Content-Type': 'application/json',
+      },
+      user: { id: 'user-123' },
+      body: { conversationId: 'convo-abc' },
+      agent: persistedAgent,
+      stripUnresolved: true,
+    });
+
+    expect(result).toEqual({
+      'X-Agent-Id': 'agent_HTbJ5rDW0kOOK1a5MPBSt',
+      'X-User-Id': 'user-123',
+      'X-Convo': 'convo-abc',
+      'Content-Type': 'application/json',
+    });
+  });
+
+  it('replaces every occurrence within a composite value', () => {
+    const result = resolveHeaders({
+      headers: { 'X-Meta': 'agent={{LIBRECHAT_AGENT_ID}};ref={{LIBRECHAT_AGENT_ID}}' },
+      agent: persistedAgent,
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Meta']).toBe(
+      'agent=agent_HTbJ5rDW0kOOK1a5MPBSt;ref=agent_HTbJ5rDW0kOOK1a5MPBSt',
+    );
+  });
+
+  it('strips the placeholder when no agent context is available', () => {
+    const result = resolveHeaders({
+      headers: { ...agentHeaders },
+      user: { id: 'user-123' },
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Agent-Id']).toBe('');
+  });
+
+  it('strips the placeholder for an ephemeral agent id', () => {
+    const result = resolveHeaders({
+      headers: { ...agentHeaders },
+      agent: { id: 'openAI__gpt-4o___My Preset' },
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Agent-Id']).toBe('');
+  });
+
+  it('never forwards user-authored preset text from an ephemeral id', () => {
+    const result = resolveHeaders({
+      headers: { ...agentHeaders },
+      agent: { id: 'openAI__gpt-4o___Marić\r\nX-Injected: 1' },
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Agent-Id']).toBe('');
+  });
+
+  it('strips the placeholder when the agent id is empty', () => {
+    const result = resolveHeaders({
+      headers: { ...agentHeaders },
+      agent: { id: '' },
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Agent-Id']).toBe('');
+  });
+
+  it('preserves the placeholder by default so staged flows can resolve later', () => {
+    const result = resolveHeaders({ headers: { ...agentHeaders } });
+
+    expect(result['X-Agent-Id']).toBe('{{LIBRECHAT_AGENT_ID}}');
+  });
+
+  it('leaves headers without the placeholder untouched', () => {
+    const result = resolveHeaders({
+      headers: { 'Content-Type': 'application/json', 'X-Static': 'value' },
+      agent: persistedAgent,
+      stripUnresolved: true,
+    });
+
+    expect(result).toEqual({ 'Content-Type': 'application/json', 'X-Static': 'value' });
+  });
+
+  it('resolves from a full agent projected through createSafeAgent', () => {
+    const result = resolveHeaders({
+      headers: { ...agentHeaders },
+      agent: createSafeAgent({
+        id: 'agent_HTbJ5rDW0kOOK1a5MPBSt',
+        name: 'Support Bot',
+        instructions: 'internal system prompt',
+      } as Partial<Agent>),
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Agent-Id']).toBe('agent_HTbJ5rDW0kOOK1a5MPBSt');
+  });
+
+  it('does not resolve an unknown agent field', () => {
+    const result = resolveHeaders({
+      headers: { 'X-Agent-Name': '{{LIBRECHAT_AGENT_NAME}}' },
+      agent: persistedAgent,
+      stripUnresolved: true,
+    });
+
+    expect(result['X-Agent-Name']).toBe('{{LIBRECHAT_AGENT_NAME}}');
   });
 });

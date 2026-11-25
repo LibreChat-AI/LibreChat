@@ -1,7 +1,7 @@
 const { ATTACHMENT_ONLY_TEXT } = require('@librechat/api');
 const { Constants } = require('librechat-data-provider');
 const { HumanMessage, AIMessage, SystemMessage } = require('@librechat/agents/langchain/messages');
-const { formatMessage, formatLangChainMessages, formatFromLangChain } = require('./formatMessages');
+const { formatMessage } = require('./formatMessages');
 
 describe('formatMessage', () => {
   it('formats user message', () => {
@@ -78,6 +78,21 @@ describe('formatMessage', () => {
       content: 'hi',
       name: 'John',
     });
+  });
+
+  it('keeps what started a triggered turn out of what the model reads', () => {
+    const trigger = {
+      event: { type: 'subagent.completion', occurredAt: '2026-11-20T10:00:00.000Z' },
+      subject: { kind: 'schedule', id: 'schedule-1' },
+      origin: { event: { type: 'schedule.occurrence', occurredAt: '2026-11-20T09:00:00.000Z' } },
+    };
+    const message = { sender: 'User', text: 'wake', isCreatedByUser: true, trigger };
+
+    for (const langChain of [false, true]) {
+      const formatted = formatMessage({ message, userName: 'John', langChain });
+      expect(formatted).not.toHaveProperty('trigger');
+      expect(JSON.stringify(formatted)).not.toMatch(/schedule|subagent\.completion/);
+    }
   });
 
   it('formats assistant message', () => {
@@ -241,94 +256,5 @@ describe('formatMessage', () => {
       endpoint: 'anthropic',
     });
     expect(result.content).toBe('');
-  });
-});
-
-describe('formatLangChainMessages', () => {
-  it('formats an array of messages for LangChain', () => {
-    const messages = [
-      {
-        role: 'system',
-        content: 'This is a system message',
-      },
-      {
-        sender: 'user',
-        text: 'Hello',
-      },
-      {
-        sender: 'assistant',
-        text: 'Hi there',
-      },
-    ];
-    const formatOptions = {
-      userName: 'John',
-      assistantName: 'Assistant',
-    };
-    const result = formatLangChainMessages(messages, formatOptions);
-    expect(result).toHaveLength(3);
-    expect(result[0]).toBeInstanceOf(SystemMessage);
-    expect(result[1]).toBeInstanceOf(HumanMessage);
-    expect(result[2]).toBeInstanceOf(AIMessage);
-
-    expect(result[0].lc_kwargs.content).toEqual(messages[0].content);
-    expect(result[1].lc_kwargs.content).toEqual(messages[1].text);
-    expect(result[2].lc_kwargs.content).toEqual(messages[2].text);
-
-    expect(result[1].lc_kwargs.name).toEqual(formatOptions.userName);
-    expect(result[2].lc_kwargs.name).toEqual(formatOptions.assistantName);
-  });
-
-  describe('formatFromLangChain', () => {
-    it('should merge kwargs and additional_kwargs', () => {
-      const message = {
-        kwargs: {
-          content: 'some content',
-          name: 'dan',
-          additional_kwargs: {
-            function_call: {
-              name: 'dall-e',
-              arguments: '{\n  "input": "Subject: hedgehog, Style: cute"\n}',
-            },
-          },
-        },
-      };
-
-      const expected = {
-        content: 'some content',
-        name: 'dan',
-        function_call: {
-          name: 'dall-e',
-          arguments: '{\n  "input": "Subject: hedgehog, Style: cute"\n}',
-        },
-      };
-
-      expect(formatFromLangChain(message)).toEqual(expected);
-    });
-
-    it('should handle messages without additional_kwargs', () => {
-      const message = {
-        kwargs: {
-          content: 'some content',
-          name: 'dan',
-        },
-      };
-
-      const expected = {
-        content: 'some content',
-        name: 'dan',
-      };
-
-      expect(formatFromLangChain(message)).toEqual(expected);
-    });
-
-    it('should handle empty messages', () => {
-      const message = {
-        kwargs: {},
-      };
-
-      const expected = {};
-
-      expect(formatFromLangChain(message)).toEqual(expected);
-    });
   });
 });

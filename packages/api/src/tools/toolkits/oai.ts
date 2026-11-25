@@ -67,6 +67,28 @@ const getImageEditPromptDescription = () => {
   return process.env.IMAGE_EDIT_OAI_PROMPT_DESCRIPTION || DEFAULT_IMAGE_EDIT_PROMPT_DESCRIPTION;
 };
 
+/** `auto` or `WIDTHxHEIGHT`; the image API enforces which dimensions the configured model supports. */
+export const IMAGE_SIZE_PATTERN = '^(auto|[1-9][0-9]*x[1-9][0-9]*)$';
+
+const supportsExtendedQuality = [
+  'gpt-image-2.5-flare',
+  'gpt-image-2.5-flare-2026-09-08',
+  'gpt-image-2.5-sunburst',
+  'gpt-image-2.5-sunburst-2026-09-08',
+  'gpt-image-2.6-sunburst',
+  'gpt-image-2.6-flare',
+].includes(process.env.IMAGE_GEN_OAI_MODEL || 'gpt-image-2.5-flare');
+
+const imageQualitySchema: ExtendedJsonSchema = {
+  type: 'string',
+  enum: supportsExtendedQuality
+    ? ['auto', 'high', 'medium', 'low', 'xhigh', 'max']
+    : ['auto', 'high', 'medium', 'low'],
+  description: supportsExtendedQuality
+    ? 'The quality of the image. One of auto (default), high, medium, low, xhigh, or max.'
+    : 'The quality of the image. One of auto (default), high, medium, or low.',
+};
+
 const imageGenOaiJsonSchema: ExtendedJsonSchema = {
   type: 'object',
   properties: {
@@ -81,16 +103,12 @@ const imageGenOaiJsonSchema: ExtendedJsonSchema = {
       description:
         'Sets transparency for the background. Must be one of transparent, opaque or auto (default). When transparent, the output format should be png or webp.',
     },
-    quality: {
-      type: 'string',
-      enum: ['auto', 'high', 'medium', 'low'],
-      description: 'The quality of the image. One of auto (default), high, medium, or low.',
-    },
+    quality: imageQualitySchema,
     size: {
       type: 'string',
-      enum: ['auto', '1024x1024', '1536x1024', '1024x1536'],
+      pattern: IMAGE_SIZE_PATTERN,
       description:
-        'The size of the generated image. One of 1024x1024, 1536x1024 (landscape), 1024x1536 (portrait), or auto (default).',
+        'The size of the generated image as WIDTHxHEIGHT in pixels, or auto (default). Common sizes: 1024x1024, 1536x1024 (landscape), 1024x1536 (portrait). Models that support custom dimensions accept others, e.g. 2048x2048 or 3840x2160; the image API rejects sizes the configured model does not support.',
     },
   },
   required: ['prompt'],
@@ -115,17 +133,12 @@ Guidelines:
       maxLength: 32000,
       description: getImageEditPromptDescription(),
     },
-    quality: {
-      type: 'string',
-      enum: ['auto', 'high', 'medium', 'low'],
-      description:
-        'The quality of the image. One of auto (default), high, medium, or low. High/medium/low only supported for gpt-image-1.',
-    },
+    quality: imageQualitySchema,
     size: {
       type: 'string',
-      enum: ['auto', '1024x1024', '1536x1024', '1024x1536', '256x256', '512x512'],
+      pattern: IMAGE_SIZE_PATTERN,
       description:
-        'The size of the generated images. For gpt-image-1: auto (default), 1024x1024, 1536x1024, 1024x1536. For dall-e-2: 256x256, 512x512, 1024x1024.',
+        'The size of the generated images as WIDTHxHEIGHT in pixels, or auto (default). Common sizes: 1024x1024, 1536x1024, 1024x1536; dall-e-2 uses 256x256, 512x512 or 1024x1024. Models that support custom dimensions accept others, e.g. 3840x2160.',
     },
   },
   required: ['image_ids', 'prompt'],
@@ -158,3 +171,18 @@ export const oaiToolkit: {
     responseFormat: 'content_and_artifact' as const,
   },
 } as const;
+
+/** Text the model receives when an image API answers without image data. */
+export const EMPTY_IMAGE_MESSAGE =
+  'No image was returned by the image API. The provider may have declined this prompt, so ask the user to rephrase it; if this keeps happening, check the image API configuration.';
+
+/**
+ * The first base64 image of an OpenAI-compatible images response, or `undefined`
+ * when the provider answered without one: a proxy can return HTTP 200 with an
+ * empty `data` array after a provider filter declines the prompt.
+ */
+export function getImageData(
+  response?: { data?: Array<{ b64_json?: string | null }> | null } | null,
+): string | undefined {
+  return response?.data?.[0]?.b64_json ?? undefined;
+}

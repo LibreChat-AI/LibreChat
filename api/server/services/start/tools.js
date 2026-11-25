@@ -2,21 +2,23 @@ const fs = require('fs');
 const path = require('path');
 const { Calculator } = require('@librechat/agents');
 const { logger } = require('@librechat/data-schemas');
-const { zodToJsonSchema } = require('zod-to-json-schema');
 const { Tool } = require('@librechat/agents/langchain/tools');
 const { Tools, ImageVisionTool } = require('librechat-data-provider');
 const {
   getToolkitKey,
+  getGitHubCompareCatalogTools,
+  isToolModuleFile,
   oaiToolkit,
   geminiToolkit,
   createAskUserQuestionTool,
+  toToolParameters,
 } = require('@librechat/api');
 const { toolkits } = require('~/app/clients/tools/manifest');
 
 /**
  * Loads and formats tools from the specified tool directory.
  *
- * The directory is scanned for JavaScript files, excluding any files in the filter set.
+ * The directory is scanned for JavaScript files, excluding test files and any files in the filter set.
  * For each file, it attempts to load the file as a module and instantiate a class, if it's a subclass of `StructuredTool`.
  * Each tool instance is then formatted to be compatible with the OpenAI Assistant.
  * Additionally, instances of LangChain Tools are included in the result.
@@ -42,7 +44,7 @@ function loadAndFormatTools({ directory, adminFilter = [], adminIncluded = [] })
 
   for (const file of files) {
     const filePath = path.join(directory, file);
-    if (!file.endsWith('.js') || (filter.has(file) && included.size === 0)) {
+    if (!isToolModuleFile(file) || (filter.has(file) && included.size === 0)) {
       continue;
     }
 
@@ -105,7 +107,7 @@ function loadAndFormatTools({ directory, adminFilter = [], adminIncluded = [] })
     tools.push(formattedTool);
   }
 
-  tools.push(ImageVisionTool);
+  tools.push(ImageVisionTool, ...getGitHubCompareCatalogTools(adminIncluded, adminFilter));
 
   return tools.reduce((map, tool) => {
     map[tool.function.name] = tool;
@@ -114,26 +116,15 @@ function loadAndFormatTools({ directory, adminFilter = [], adminIncluded = [] })
 }
 
 /**
- * Checks if a schema is a Zod schema by looking for the _def property
- * @param {unknown} schema - The schema to check
- * @returns {boolean} True if it's a Zod schema
- */
-function isZodSchema(schema) {
-  return schema && typeof schema === 'object' && '_def' in schema;
-}
-
-/**
  * Formats a `StructuredTool` instance into a format that is compatible
- * with OpenAI's ChatCompletionFunctions. It uses the `zodToJsonSchema`
- * function to convert the schema of the `StructuredTool` into a JSON
- * schema, which is then used as the parameters for the OpenAI function.
- * If the schema is already a JSON schema, it is used directly.
+ * with OpenAI's ChatCompletionFunctions, converting the schema of the
+ * `StructuredTool` into the JSON schema used as the function parameters.
  *
  * @param {StructuredTool} tool - The StructuredTool to format.
  * @returns {FunctionTool} The OpenAI Assistant Tool.
  */
 function formatToOpenAIAssistantTool(tool) {
-  const parameters = isZodSchema(tool.schema) ? zodToJsonSchema(tool.schema) : tool.schema;
+  const parameters = toToolParameters(tool.schema);
   return {
     type: Tools.function,
     [Tools.function]: {

@@ -68,7 +68,7 @@ describe('duplicateAgent', () => {
     await duplicateAgent(req, res);
 
     expect(getAgent).toHaveBeenCalledWith({ id: 'agent_123' });
-    expect(getActions).toHaveBeenCalledWith({ agent_id: 'agent_123' }, true);
+    expect(getActions).toHaveBeenCalledWith({ agentId: 'agent_123' }, true);
     expect(createAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         id: 'agent_new_123',

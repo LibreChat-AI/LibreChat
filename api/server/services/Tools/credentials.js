@@ -8,9 +8,16 @@ const { getUserPluginAuthValue } = require('~/server/services/PluginService');
  * @param {string[]} params.authFields
  * @param {Set<string>} [params.optional]
  * @param {boolean} [params.throwError]
+ * @param {boolean} [params.failOnOptionalError]
  * @returns
  */
-const loadAuthValues = async ({ userId, authFields, optional, throwError = true }) => {
+const loadAuthValues = async ({
+  userId,
+  authFields,
+  optional,
+  throwError = true,
+  failOnOptionalError = false,
+}) => {
   let authValues = {};
 
   /**
@@ -28,7 +35,9 @@ const loadAuthValues = async ({ userId, authFields, optional, throwError = true 
       try {
         value = await getUserPluginAuthValue(userId, field, throwError);
       } catch (err) {
-        if (optional && optional.has(field)) {
+        const isOptional = optional && optional.has(field);
+        const isMissingOptional = isOptional && err?.code === 'PLUGIN_AUTH_NOT_FOUND';
+        if (isOptional && (!failOnOptionalError || isMissingOptional)) {
           return { authField: field, authValue: undefined };
         }
         if (field === fields[fields.length - 1]) {
@@ -42,9 +51,11 @@ const loadAuthValues = async ({ userId, authFields, optional, throwError = true 
     return null;
   };
 
-  for (let authField of authFields) {
-    const fields = authField.split('||');
-    const result = await findAuthValue(fields);
+  const results = await Promise.all(
+    authFields.map((authField) => findAuthValue(authField.split('||'))),
+  );
+
+  for (const result of results) {
     if (result) {
       authValues[result.authField] = result.authValue;
     }

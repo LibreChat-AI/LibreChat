@@ -11,7 +11,7 @@ import { useActivePanel, resolveActivePanel } from '~/Providers';
  * These hidden buttons keep that contract intact without reviving the rail.
  * Routing the shortcuts through `useActivePanel` instead would mean hoisting
  * `ActivePanelProvider` above `SidebarChatProvider`, which exists specifically
- * to keep panel changes from re-running `useChatHelpers`.
+ * to keep panel changes from rebuilding the chat contract in `ChatProvider`.
  *
  * Only available links render, so a shortcut for a panel this endpoint does not
  * offer still correctly does nothing.
@@ -38,6 +38,7 @@ function ShortcutTargets({
           tabIndex={-1}
           data-testid={`nav-panel-${link.id}`}
           aria-pressed={link.id === activeId}
+          disabled={link.disabled}
           onClick={() => {
             if (link.onClick) {
               link.onClick();

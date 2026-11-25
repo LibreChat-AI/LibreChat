@@ -1,8 +1,10 @@
 import { Socket } from 'node:net';
 import { IncomingMessage } from 'node:http';
 import { Agent as HttpsAgent } from 'node:https';
+import type { NodeSDKConfiguration } from '@opentelemetry/sdk-node';
 import type { RequestOptions } from 'node:http';
 import type { Span } from '@opentelemetry/api';
+import { attachLogsTransport, detachLogsTransport } from './logs';
 
 interface HttpInstrumentationOptions {
   requestHook?: (span: Span, request: object) => void;
@@ -16,7 +18,7 @@ interface UndiciInstrumentationOptions {
 
 const mockStart = jest.fn();
 const mockShutdown = jest.fn();
-const mockNodeSDK = jest.fn(() => ({
+const mockNodeSDK = jest.fn((_configuration?: Partial<NodeSDKConfiguration>) => ({
   start: mockStart,
   shutdown: mockShutdown,
 }));
@@ -34,82 +36,66 @@ const mockUndiciInstrumentation = jest.fn((options?: UndiciInstrumentationOption
 }));
 const mockResourceFromAttributes = jest.fn((attributes: object) => ({ attributes }));
 
-jest.mock(
-  '@opentelemetry/sdk-node',
-  () => ({
-    NodeSDK: mockNodeSDK,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/sdk-node', () => ({
+  NodeSDK: mockNodeSDK,
+}));
 
-jest.mock(
-  '@opentelemetry/instrumentation-express',
-  () => ({
-    ExpressInstrumentation: mockExpressInstrumentation,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/instrumentation-express', () => ({
+  ExpressInstrumentation: mockExpressInstrumentation,
+}));
 
-jest.mock(
-  '@opentelemetry/instrumentation-http',
-  () => ({
-    HttpInstrumentation: mockHttpInstrumentation,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/instrumentation-http', () => ({
+  HttpInstrumentation: mockHttpInstrumentation,
+}));
 
-jest.mock(
-  '@opentelemetry/instrumentation-ioredis',
-  () => ({
-    IORedisInstrumentation: mockIORedisInstrumentation,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/instrumentation-ioredis', () => ({
+  IORedisInstrumentation: mockIORedisInstrumentation,
+}));
 
-jest.mock(
-  '@opentelemetry/instrumentation-mongodb',
-  () => ({
-    MongoDBInstrumentation: mockMongoDBInstrumentation,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/instrumentation-mongodb', () => ({
+  MongoDBInstrumentation: mockMongoDBInstrumentation,
+}));
 
-jest.mock(
-  '@opentelemetry/instrumentation-mongoose',
-  () => ({
-    MongooseInstrumentation: mockMongooseInstrumentation,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/instrumentation-mongoose', () => ({
+  MongooseInstrumentation: mockMongooseInstrumentation,
+}));
 
-jest.mock(
-  '@opentelemetry/instrumentation-undici',
-  () => ({
-    UndiciInstrumentation: mockUndiciInstrumentation,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/instrumentation-undici', () => ({
+  UndiciInstrumentation: mockUndiciInstrumentation,
+}));
 
-jest.mock(
-  '@opentelemetry/resources',
-  () => ({
-    resourceFromAttributes: mockResourceFromAttributes,
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/resources', () => ({
+  resourceFromAttributes: mockResourceFromAttributes,
+}));
 
-jest.mock(
-  '@opentelemetry/semantic-conventions',
-  () => ({
-    ATTR_SERVICE_NAME: 'service.name',
-    ATTR_SERVICE_VERSION: 'service.version',
-  }),
-  { virtual: true },
-);
+jest.mock('@opentelemetry/semantic-conventions', () => ({
+  ATTR_SERVICE_NAME: 'service.name',
+  ATTR_SERVICE_VERSION: 'service.version',
+}));
 
 jest.mock('../app/shutdown', () => ({
   registerShutdownTask: jest.fn(),
 }));
+
+jest.mock('./logs', () => ({
+  attachLogsTransport: jest.fn(),
+  detachLogsTransport: jest.fn(),
+}));
+
+const mockAttachLogsTransport = attachLogsTransport as jest.MockedFunction<
+  typeof attachLogsTransport
+>;
+const mockDetachLogsTransport = detachLogsTransport as jest.MockedFunction<
+  typeof detachLogsTransport
+>;
+
+function getSdkConfiguration(): Partial<NodeSDKConfiguration> {
+  const configuration = mockNodeSDK.mock.calls[0]?.[0];
+  if (!configuration) {
+    throw new Error('NodeSDK was not constructed');
+  }
+  return configuration;
+}
 
 describe('telemetry SDK lifecycle', () => {
   let emitWarningSpy: jest.SpyInstance;
@@ -193,6 +179,84 @@ describe('telemetry SDK lifecycle', () => {
     expect(mockMongooseInstrumentation).toHaveBeenCalledTimes(1);
     expect(mockIORedisInstrumentation).not.toHaveBeenCalled();
     expect(mockUndiciInstrumentation).toHaveBeenCalledTimes(1);
+
+    const configuration = getSdkConfiguration();
+    expect(configuration.instrumentations).toHaveLength(5);
+    expect(configuration.logRecordProcessors).toEqual([]);
+    expect(configuration).not.toHaveProperty('spanProcessors');
+    expect(configuration).not.toHaveProperty('metricReaders');
+    expect(mockAttachLogsTransport).not.toHaveBeenCalled();
+  });
+
+  it('starts logs without instrumentations or trace export when only logs are enabled', () => {
+    const controller = initializeTelemetry({
+      OTEL_LOGS_ENABLED: 'true',
+      OTEL_LOGS_LEVEL: 'warn',
+    });
+
+    expect(controller.enabled).toBe(true);
+    expect(controller.status).toBe('started');
+    expect(mockHttpInstrumentation).not.toHaveBeenCalled();
+    expect(mockExpressInstrumentation).not.toHaveBeenCalled();
+    expect(mockMongoDBInstrumentation).not.toHaveBeenCalled();
+    expect(mockMongooseInstrumentation).not.toHaveBeenCalled();
+    expect(mockUndiciInstrumentation).not.toHaveBeenCalled();
+
+    const configuration = getSdkConfiguration();
+    expect(configuration.instrumentations).toEqual([]);
+    expect(configuration.spanProcessors).toEqual([]);
+    expect(configuration.metricReaders).toEqual([]);
+    expect(configuration).not.toHaveProperty('logRecordProcessors');
+    expect(mockAttachLogsTransport).toHaveBeenCalledTimes(1);
+    expect(mockAttachLogsTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ logsEnabled: true, logsLevel: 'warn', tracingEnabled: false }),
+    );
+  });
+
+  it('keeps instrumentations and leaves log export to the SDK when both signals are enabled', () => {
+    initializeTelemetry({
+      OTEL_LOGS_ENABLED: 'true',
+      OTEL_TRACING_ENABLED: 'true',
+    });
+
+    const configuration = getSdkConfiguration();
+    expect(configuration.instrumentations).toHaveLength(5);
+    expect(configuration).not.toHaveProperty('spanProcessors');
+    expect(configuration).not.toHaveProperty('metricReaders');
+    expect(configuration).not.toHaveProperty('logRecordProcessors');
+    expect(mockAttachLogsTransport).toHaveBeenCalledTimes(1);
+  });
+
+  it('attaches the logs transport only after an async SDK start succeeds', async () => {
+    let resolveStart: () => void = () => undefined;
+    mockStart.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveStart = resolve;
+      }),
+    );
+
+    const controller = initializeTelemetry({ OTEL_LOGS_ENABLED: 'true' });
+
+    expect(controller.status).toBe('starting');
+    expect(mockAttachLogsTransport).not.toHaveBeenCalled();
+
+    resolveStart();
+    await controller.shutdown();
+
+    expect(mockAttachLogsTransport).toHaveBeenCalledTimes(1);
+    expect(mockDetachLogsTransport).toHaveBeenCalled();
+  });
+
+  it('detaches the logs transport only once the SDK shuts down', async () => {
+    mockShutdown.mockRejectedValueOnce(new Error('shutdown failed'));
+    initializeTelemetry({ OTEL_LOGS_ENABLED: 'true' });
+    mockDetachLogsTransport.mockClear();
+
+    await expect(shutdownTelemetry()).rejects.toThrow('shutdown failed');
+    expect(mockDetachLogsTransport).not.toHaveBeenCalled();
+
+    await shutdownTelemetry();
+    expect(mockDetachLogsTransport).toHaveBeenCalledTimes(1);
   });
 
   it('enables ioredis instrumentation when explicitly configured', () => {

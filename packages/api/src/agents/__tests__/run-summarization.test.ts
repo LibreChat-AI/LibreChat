@@ -1,15 +1,34 @@
-import { encryptV3, logger } from '@librechat/data-schemas';
+import { z } from 'zod';
+import { DynamicStructuredTool } from '@langchain/core/tools';
+import { HumanMessage, AIMessage } from '@langchain/core/messages';
+import { CallbackManager } from '@langchain/core/callbacks/manager';
+import { encryptV3, logger, mergeConfigOverrides } from '@librechat/data-schemas';
 import {
   EModelEndpoint,
+  ReasoningEffort,
   FileSources,
+  PrincipalType,
   MAX_SUBAGENT_DEPTH,
   MAX_SUBAGENT_RUN_CONFIGS,
 } from 'librechat-data-provider';
+import type {
+  CompactionSemanticIndex,
+  SubagentTaskConfig,
+  SubagentConfig,
+  AgentInputs,
+} from '@librechat/agents';
+import type { AppConfig, ConfigOverrideLayer, IUser } from '@librechat/data-schemas';
 import type { SummarizationConfig, TEndpoint } from 'librechat-data-provider';
 import type { BaseMessage } from '@langchain/core/messages';
-import type { SubagentTaskConfig } from '@librechat/agents';
-import type { AppConfig } from '@librechat/data-schemas';
-import { createRun } from '~/agents/run';
+import type { OpenAI } from 'openai';
+import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
+import type { OpenAIConfiguration, AzureOptions } from '~/types';
+import { clearToolApprovalHooks, registerToolApprovalHook } from '~/agents/hitl/hooks';
+import { createRun, isAskUserQuestionAdminDisabled } from '~/agents/run';
+import { executionFixture } from '~/agents/authority/execution.helper';
+import { initializeOpenAI } from '~/endpoints/openai/initialize';
+import { createSecretRebindingGuard } from '~/app/rebinding';
+import { getOpenAIConfig } from '~/endpoints/openai/config';
 
 // Mock winston logger — `format` must be callable so @librechat/data-schemas
 // dist module-load completes cleanly; see api/test/__mocks__/logger.js.
@@ -84,7 +103,20 @@ jest.mock('~/agents/checkpointer', () => ({
   getAgentCheckpointer: jest.fn().mockResolvedValue({}),
 }));
 
-import { Run, buildChildInputs, InMemorySubagentTaskStore } from '@librechat/agents';
+import { ChatOpenAI } from '@librechat/agents/llm/openai';
+import { ChatOpenRouter } from '@librechat/agents/llm/openrouter';
+import {
+  Run,
+  Providers,
+  HookRegistry,
+  ToolNode,
+  Constants,
+  buildChildInputs,
+  createPruneMessages,
+  InMemorySubagentTaskStore,
+  buildSubagentToolParams,
+  executeHooks,
+} from '@librechat/agents';
 
 /** Minimal RunAgent factory */
 function makeAgent(
@@ -103,9 +135,26 @@ function makeAgent(
   };
 }
 
+describe('isAskUserQuestionAdminDisabled', () => {
+  it('applies includedTools precedence and the filteredTools fallback', () => {
+    expect(isAskUserQuestionAdminDisabled(undefined)).toBe(false);
+    expect(isAskUserQuestionAdminDisabled({ includedTools: ['calculator'] } as AppConfig)).toBe(
+      true,
+    );
+    expect(
+      isAskUserQuestionAdminDisabled({ includedTools: ['ask_user_question'] } as AppConfig),
+    ).toBe(false);
+    expect(
+      isAskUserQuestionAdminDisabled({ filteredTools: ['ask_user_question'] } as AppConfig),
+    ).toBe(true);
+  });
+});
+
 type TestRunAgent = ReturnType<typeof makeAgent> & {
   subagentAgentConfigs?: TestRunAgent[];
 };
+
+type BuildChildInput = Parameters<typeof buildChildInputs>[0];
 
 function makeSubagentChain(hops: number): TestRunAgent {
   const agents = Array.from({ length: hops + 1 }, (_, index) =>
@@ -159,11 +208,19 @@ async function callAndCapture(
   opts: {
     agents?: ReturnType<typeof makeAgent>[];
     summarizationConfig?: SummarizationConfig;
+    summarizeOnly?: boolean;
     initialSummary?: { text: string; tokenCount: number };
     appConfig?: AppConfig;
     messages?: BaseMessage[];
     discoveredToolNames?: string[];
+    compactionSemanticIndex?: CompactionSemanticIndex;
     subagentTasks?: SubagentTaskConfig;
+    modelCallbacks?: readonly ModelBoundChatModelCallback[];
+    user?: IUser;
+    tenantId?: string;
+    requestBody?: Parameters<typeof createRun>[0]['requestBody'];
+    steering?: Parameters<typeof createRun>[0]['steering'];
+    customHandlers?: Parameters<typeof createRun>[0]['customHandlers'];
   } = {},
 ) {
   const agents = opts.agents ?? [makeAgent()];
@@ -173,11 +230,19 @@ async function callAndCapture(
     agents: agents as never,
     signal,
     summarizationConfig: opts.summarizationConfig,
+    summarizeOnly: opts.summarizeOnly,
     initialSummary: opts.initialSummary,
     appConfig: opts.appConfig,
     messages: opts.messages,
     discoveredToolNames: opts.discoveredToolNames,
+    compactionSemanticIndex: opts.compactionSemanticIndex,
     subagentTasks: opts.subagentTasks,
+    modelCallbacks: opts.modelCallbacks,
+    user: opts.user,
+    tenantId: opts.tenantId,
+    requestBody: opts.requestBody,
+    steering: opts.steering,
+    customHandlers: opts.customHandlers,
     streaming: true,
     streamUsage: true,
   });
@@ -239,8 +304,88 @@ beforeEach(() => {
   process.env.TENANT_ISOLATION_STRICT = 'true';
 });
 
+describe('compaction semantic index forwarding', () => {
+  it('forwards one host-derived snapshot to every top-level agent input', async () => {
+    const compactionSemanticIndex = [
+      {
+        type: 'activity_phase',
+        sourceMessageId: 'message-1',
+        sourceContentIndex: 3,
+        revision: 2,
+        status: 'committed',
+        text: 'Verified the release state',
+      },
+    ] satisfies CompactionSemanticIndex;
+
+    const agents = await callAndCapture({
+      agents: [makeAgent({ id: 'agent_1' }), makeAgent({ id: 'agent_2' })],
+      compactionSemanticIndex,
+    });
+
+    expect(agents).toHaveLength(2);
+    expect(agents[0].compactionSemanticIndex).toBe(compactionSemanticIndex);
+    expect(agents[1].compactionSemanticIndex).toBe(compactionSemanticIndex);
+  });
+
+  it('does not leak the parent history index into an isolated subagent', async () => {
+    const compactionSemanticIndex = [
+      {
+        type: 'activity_phase',
+        sourceMessageId: 'message-1',
+        sourceContentIndex: 3,
+        revision: 2,
+        status: 'committed',
+        text: 'Verified the release state',
+      },
+    ] satisfies CompactionSemanticIndex;
+    const child = makeAgent({ id: 'agent_child' });
+    const [root] = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: false, agent_ids: ['agent_child'] },
+          subagentAgentConfigs: [child],
+        }),
+      ],
+      compactionSemanticIndex,
+    });
+    const [childConfig] = root.subagentConfigs as Array<Record<string, unknown>>;
+
+    expect(root.compactionSemanticIndex).toBe(compactionSemanticIndex);
+    expect(childConfig.agentInputs).not.toHaveProperty('compactionSemanticIndex');
+  });
+});
+
 afterAll(() => {
   delete process.env.TENANT_ISOLATION_STRICT;
+});
+
+// ---------------------------------------------------------------------------
+// Suite: agent endpoint projection
+// ---------------------------------------------------------------------------
+describe('agent endpoint projection', () => {
+  it('preserves each logical endpoint independently from its resolved provider', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({ id: 'sales-copilot', provider: 'bedrock', endpoint: 'bedrock' }),
+        makeAgent({ id: 'dwaine', provider: 'openAI', endpoint: 'DWAINE' }),
+      ],
+    });
+
+    expect(agents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          agentId: 'sales-copilot',
+          endpoint: 'bedrock',
+          provider: 'bedrock',
+        }),
+        expect.objectContaining({
+          agentId: 'dwaine',
+          endpoint: 'DWAINE',
+          provider: 'openAI',
+        }),
+      ]),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -276,68 +421,186 @@ describe('custom endpoint stream usage defaults', () => {
   });
 });
 
+describe('model-level callbacks', () => {
+  it('propagates guards through root, fallback, summary, eager, lazy, and graph clients', async () => {
+    const modelCallback: ModelBoundChatModelCallback = {
+      name: 'librechat-model-bound-content-filter',
+      raiseError: true,
+      awaitHandlers: true,
+      handleChatModelStart: jest.fn(),
+    };
+    const eagerChild = makeAgent({ id: 'agent_eager', name: 'Eager child' });
+    const lazyResolve = jest
+      .fn()
+      .mockResolvedValue(makeAgent({ id: 'agent_lazy', name: 'Lazy child' }));
+    const graphMember = makeAgent({ id: 'agent_graph', name: 'Graph member' });
+    const graphDefinition = {
+      type: 'guarded_team',
+      name: 'Guarded team',
+      description: 'Exercises graph member client options',
+      agent_ids: [graphMember.id],
+      edges: [],
+      entry_agent_id: graphMember.id,
+      result_agent_id: graphMember.id,
+    };
+    const agents = await callAndCapture({
+      modelCallbacks: [modelCallback],
+      summarizationConfig: {
+        provider: 'anthropic',
+        model: 'claude-test',
+        parameters: {
+          fallbacks: [{ provider: 'openAI', clientOptions: { temperature: 0 } }],
+        } as unknown as SummarizationConfig['parameters'],
+      },
+      agents: [
+        makeAgent({
+          model_parameters: {
+            model: 'gpt-4o',
+            fallbacks: [{ provider: 'anthropic', clientOptions: { temperature: 0 } }],
+          },
+          subagents: {
+            enabled: true,
+            allowSelf: false,
+            agent_ids: [eagerChild.id, 'agent_lazy'],
+            graphs: [graphDefinition],
+          },
+          subagentAgentConfigs: [eagerChild],
+          lazySubagentConfigs: [
+            {
+              id: 'agent_lazy',
+              name: 'Lazy child',
+              description: 'Resolves only when selected',
+              configId: 'agent_lazy:1:fingerprint',
+              resolve: lazyResolve,
+            },
+          ],
+          subagentGraphConfigs: [{ definition: graphDefinition, memberConfigs: [graphMember] }],
+        }),
+      ],
+    });
+
+    const root = agents[0];
+    const rootOptions = root.clientOptions as Record<string, unknown>;
+    expect(rootOptions.callbacks).toEqual([modelCallback]);
+    expect(
+      (
+        (rootOptions.fallbacks as Array<Record<string, unknown>>)[0].clientOptions as Record<
+          string,
+          unknown
+        >
+      ).callbacks,
+    ).toEqual([modelCallback]);
+
+    const summary = root.summarizationConfig as Record<string, unknown>;
+    const summaryParameters = summary.parameters as Record<string, unknown>;
+    expect(summaryParameters.callbacks).toEqual([modelCallback]);
+    expect(
+      (
+        (summaryParameters.fallbacks as Array<Record<string, unknown>>)[0].clientOptions as Record<
+          string,
+          unknown
+        >
+      ).callbacks,
+    ).toEqual([modelCallback]);
+
+    const configs = root.subagentConfigs as Array<Record<string, unknown>>;
+    const eager = configs.find((config) => config.type === 'agent_eager');
+    expect(
+      ((eager?.agentInputs as Record<string, unknown>).clientOptions as Record<string, unknown>)
+        .callbacks,
+    ).toEqual([modelCallback]);
+
+    const lazy = configs.find((config) => config.type === 'agent_lazy');
+    const lazyInputs = await (
+      lazy?.resolveAgentInputs as (context: never) => Promise<Record<string, unknown>>
+    )({ signal: new AbortController().signal } as never);
+    expect((lazyInputs.clientOptions as Record<string, unknown>).callbacks).toEqual([
+      modelCallback,
+    ]);
+
+    const graph = configs.find((config) => config.type === 'guarded_team');
+    const [member] = graph?.agents as Array<Record<string, unknown>>;
+    expect((member.clientOptions as Record<string, unknown>).callbacks).toEqual([modelCallback]);
+  });
+
+  it('preserves a pre-existing callback manager when installing model guards', async () => {
+    const existingLLMStart = jest.fn();
+    const existingManager = CallbackManager.fromHandlers({ handleLLMStart: existingLLMStart });
+    const modelCallback: ModelBoundChatModelCallback = {
+      name: 'librechat-model-bound-content-filter',
+      raiseError: true,
+      awaitHandlers: true,
+      handleChatModelStart: jest.fn(),
+    };
+    const agents = await callAndCapture({
+      modelCallbacks: [modelCallback],
+      agents: [
+        makeAgent({
+          model_parameters: {
+            model: 'gpt-4o',
+            callbacks: existingManager,
+          },
+        }),
+      ],
+    });
+
+    const callbacks = (agents[0].clientOptions as { callbacks: CallbackManager }).callbacks;
+    expect(callbacks).toBeInstanceOf(CallbackManager);
+    expect(callbacks).not.toBe(existingManager);
+    expect(callbacks.handlers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ handleLLMStart: existingLLMStart }),
+        modelCallback,
+      ]),
+    );
+    expect(existingManager.handlers).toHaveLength(1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Suite 1: reserveRatio
 // ---------------------------------------------------------------------------
 describe('reserveRatio', () => {
-  it('applies ratio from config using baseContextTokens, capped at maxContextTokens', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ baseContextTokens: 200_000, maxContextTokens: 200_000 })],
-      summarizationConfig: { reserveRatio: 0.03, provider: 'anthropic', model: 'claude' },
-    });
-    // Math.round(200000 * 0.97) = 194000, min(200000, 194000) = 194000
-    expect(agents[0].maxContextTokens).toBe(194_000);
-  });
+  it.each`
+    scenario                             | reserveRatio | baseContextTokens   | maxContextTokens | sent       | budget     | viable
+    ${'200k window minus 36,512 output'} | ${0.1}       | ${200_000 - 36_512} | ${200_000}       | ${163_488} | ${147_139} | ${true}
+    ${'no implicit default reserve'}     | ${0.1}       | ${163_488}          | ${155_314}       | ${163_488} | ${147_139} | ${true}
+    ${'smaller explicit cap'}            | ${0.1}       | ${50_000}           | ${50_000}        | ${50_000}  | ${45_000}  | ${true}
+    ${'unset ratio uses legacy budget'}  | ${undefined} | ${163_488}          | ${155_314}       | ${155_314} | ${147_548} | ${true}
+    ${'zero skips both reserves'}        | ${0}         | ${163_488}          | ${155_314}       | ${163_488} | ${163_488} | ${true}
+    ${'one follows SDK no-op semantics'} | ${1}         | ${163_488}          | ${155_314}       | ${163_488} | ${163_488} | ${true}
+    ${'no raw budget falls back'}        | ${0.05}      | ${undefined}        | ${100_000}       | ${100_000} | ${95_000}  | ${true}
+    ${'low budget is not floored'}       | ${0.99}      | ${500}              | ${1024}          | ${500}     | ${5}       | ${false}
+    ${'zero input is not raised'}        | ${0.1}       | ${0}                | ${1024}          | ${0}       | ${0}       | ${false}
+    ${'rounds the reserved tokens'}      | ${0.5}       | ${2047}             | ${2047}          | ${2047}    | ${1023}    | ${false}
+    ${'exactly the viable minimum'}      | ${0.5}       | ${2048}             | ${2048}          | ${2048}    | ${1024}    | ${true}
+  `(
+    '$scenario',
+    async ({ reserveRatio, baseContextTokens, maxContextTokens, sent, budget, viable }) => {
+      const [agent] = (await callAndCapture({
+        agents: [makeAgent({ baseContextTokens, maxContextTokens })],
+        summarizationConfig: { reserveRatio, provider: 'anthropic', model: 'claude' },
+      })) as Pick<
+        AgentInputs,
+        'maxContextTokens' | 'summarizationConfig' | 'summarizationEnabled'
+      >[];
+      expect(agent.maxContextTokens).toBe(sent);
+      expect(agent.summarizationEnabled).toBe(viable);
+      if (agent.maxContextTokens == null) {
+        throw new Error('Expected a context budget in the SDK input');
+      }
 
-  it('never exceeds user-configured maxContextTokens even when ratio computes higher', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ baseContextTokens: 200_000, maxContextTokens: 50_000 })],
-      summarizationConfig: { reserveRatio: 0.03, provider: 'anthropic', model: 'claude' },
-    });
-    // Math.round(200000 * 0.97) = 194000, but min(50000, 194000) = 50000
-    expect(agents[0].maxContextTokens).toBe(50_000);
-  });
-
-  it('falls back to maxContextTokens when ratio is not set', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000, baseContextTokens: 200_000 })],
-      summarizationConfig: { provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('falls back to maxContextTokens when ratio is 0', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000, baseContextTokens: 200_000 })],
-      summarizationConfig: { reserveRatio: 0, provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('falls back to maxContextTokens when ratio is 1', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000, baseContextTokens: 200_000 })],
-      summarizationConfig: { reserveRatio: 1, provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('falls back to maxContextTokens when baseContextTokens is undefined', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000 })],
-      summarizationConfig: { reserveRatio: 0.05, provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('clamps to 1024 minimum but still capped at maxContextTokens', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ baseContextTokens: 500, maxContextTokens: 2000 })],
-      summarizationConfig: { reserveRatio: 0.99, provider: 'anthropic', model: 'claude' },
-    });
-    // Math.round(500 * 0.01) = 5 → clamped to 1024, min(2000, 1024) = 1024
-    expect(agents[0].maxContextTokens).toBe(1024);
-  });
+      const prune = createPruneMessages({
+        maxTokens: agent.maxContextTokens,
+        reserveRatio: agent.summarizationConfig?.reserveRatio,
+        summarizationEnabled: agent.summarizationEnabled,
+        startIndex: 0,
+        tokenCounter: () => 1,
+        indexTokenCountMap: {},
+      });
+      expect(prune({ messages: [new HumanMessage('Hello')] }).contextBudget).toBe(budget);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -402,6 +665,35 @@ describe('summarizationEnabled resolution', () => {
     const config = agents[0].summarizationConfig as Record<string, unknown>;
     expect(config.provider).toBe('openAI');
     expect(config.model).toBe('gpt-4o');
+  });
+
+  it('false when the effective context budget is below the viable minimum', async () => {
+    /**
+     * A tiny user-set maxContextTokens re-triggers summarization on every
+     * graph step until the recursion limit aborts the run; the guard falls
+     * back to plain pruning instead.
+     */
+    const agents = await callAndCapture({
+      agents: [makeAgent({ maxContextTokens: 10 })],
+      summarizationConfig: {
+        enabled: true,
+        provider: 'anthropic',
+        model: 'claude-3-haiku',
+      },
+    });
+    expect(agents[0].summarizationEnabled).toBe(false);
+  });
+
+  it('true at exactly the 1024-token viable minimum', async () => {
+    const agents = await callAndCapture({
+      agents: [makeAgent({ maxContextTokens: 1024 })],
+      summarizationConfig: {
+        enabled: true,
+        provider: 'anthropic',
+        model: 'claude-3-haiku',
+      },
+    });
+    expect(agents[0].summarizationEnabled).toBe(true);
   });
 });
 
@@ -479,6 +771,2118 @@ describe('summarizationConfig field passthrough', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Suite: reasoning effort translation
+// ---------------------------------------------------------------------------
+const OPENROUTER_MODEL = 'openai/gpt-5.6';
+const ADAPTIVE_CLAUDE_MODEL = 'anthropic/claude-sonnet-4.6';
+
+/** Agent whose resolved client options already carry a reasoning configuration. */
+function makeReasoningAgent(overrides: {
+  azureOptions?: AzureOptions;
+  provider: string;
+  endpoint: string;
+  model: string;
+  model_parameters: Record<string, unknown>;
+}) {
+  return makeAgent({
+    ...overrides,
+    provider: overrides.provider as never,
+    endpoint: overrides.endpoint,
+    model: overrides.model,
+    model_parameters: overrides.model_parameters as never,
+  });
+}
+
+describe('summarization reasoning effort', () => {
+  it.each(['medium', 'low'])(
+    'overrides an inherited OpenRouter reasoning object with %s, leaving the agent untouched',
+    async (reasoningEffort) => {
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: Providers.OPENROUTER,
+            endpoint: 'OpenRouter',
+            model: OPENROUTER_MODEL,
+            model_parameters: {
+              model: OPENROUTER_MODEL,
+              modelKwargs: { reasoning: { effort: 'max' } },
+            },
+          }),
+        ],
+        summarizationConfig: {
+          provider: 'OpenRouter',
+          model: OPENROUTER_MODEL,
+          parameters: { reasoning_effort: reasoningEffort },
+        },
+      });
+
+      const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+      const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+
+      expect(mainClientOptions.modelKwargs).toEqual({ reasoning: { effort: 'max' } });
+      expect(summaryConfig.parameters).toEqual({ reasoning: { effort: reasoningEffort } });
+
+      /** The SDK spreads `parameters` onto the agent's own client options. */
+      const summaryModel = new ChatOpenRouter({
+        ...mainClientOptions,
+        ...(summaryConfig.parameters as Record<string, unknown>),
+        apiKey: 'test-key',
+        model: summaryConfig.model as string,
+      });
+      const request = summaryModel.invocationParams();
+
+      expect(request.reasoning).toEqual({ effort: reasoningEffort });
+      expect(request.reasoning_effort).toBeUndefined();
+    },
+  );
+
+  it('overrides an inherited OpenAI reasoning object', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: EModelEndpoint.openAI,
+          endpoint: EModelEndpoint.openAI,
+          model: 'gpt-5.6',
+          model_parameters: { model: 'gpt-5.6', reasoning: { effort: 'high' } },
+        }),
+      ],
+      summarizationConfig: {
+        provider: EModelEndpoint.openAI,
+        model: 'gpt-5.6',
+        parameters: { reasoning_effort: 'low' },
+      },
+    });
+
+    const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+
+    expect(mainClientOptions.reasoning).toEqual({ effort: 'high' });
+    expect(summaryConfig.parameters).toEqual({ reasoning: { effort: 'low' } });
+
+    const summaryModel = new ChatOpenAI({
+      ...mainClientOptions,
+      ...(summaryConfig.parameters as Record<string, unknown>),
+      apiKey: 'test-key',
+      model: summaryConfig.model as string,
+    } as never);
+    const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+    /** Chat Completions re-emits the object as the scalar the API expects. */
+    expect(request.reasoning_effort).toBe('low');
+  });
+
+  it('maps effort to verbosity for OpenRouter adaptive Anthropic models', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: Providers.OPENROUTER,
+          endpoint: 'OpenRouter',
+          model: ADAPTIVE_CLAUDE_MODEL,
+          model_parameters: {
+            model: ADAPTIVE_CLAUDE_MODEL,
+            verbosity: 'max',
+            modelKwargs: { reasoning: { enabled: true } },
+          },
+        }),
+      ],
+      summarizationConfig: {
+        provider: 'OpenRouter',
+        model: ADAPTIVE_CLAUDE_MODEL,
+        parameters: { reasoning_effort: 'low' },
+      },
+    });
+
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    expect(summaryConfig.parameters).toEqual({
+      verbosity: 'low',
+      reasoning: { enabled: true },
+    });
+  });
+
+  it('turns adaptive thinking off for reasoning_effort "none"', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: Providers.OPENROUTER,
+          endpoint: 'OpenRouter',
+          model: ADAPTIVE_CLAUDE_MODEL,
+          model_parameters: {
+            model: ADAPTIVE_CLAUDE_MODEL,
+            modelKwargs: { reasoning: { enabled: true } },
+          },
+        }),
+      ],
+      summarizationConfig: {
+        provider: 'OpenRouter',
+        model: ADAPTIVE_CLAUDE_MODEL,
+        parameters: { reasoning_effort: 'none' },
+      },
+    });
+
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    expect(summaryConfig.parameters).toEqual({ reasoning: { enabled: false } });
+
+    const summaryModel = new ChatOpenRouter({
+      ...(agents[0].clientOptions as Record<string, unknown>),
+      ...(summaryConfig.parameters as Record<string, unknown>),
+      apiKey: 'test-key',
+      model: ADAPTIVE_CLAUDE_MODEL,
+    });
+    expect(summaryModel.invocationParams().reasoning).toEqual({ enabled: false });
+  });
+
+  it('translates for a custom endpoint that resolves to OpenRouter by baseURL', async () => {
+    const appConfig = makeAppConfig([
+      { name: 'Router', baseURL: 'https://openrouter.ai/api/v1', apiKey: 'router-key' },
+    ]);
+    const agents = await callAndCapture({
+      summarizationConfig: {
+        provider: 'Router',
+        model: OPENROUTER_MODEL,
+        parameters: { reasoning_effort: 'low' },
+      },
+      appConfig,
+    });
+
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    expect(summaryConfig.provider).toBe(Providers.OPENROUTER);
+    expect(summaryConfig.parameters).toMatchObject({ reasoning: { effort: 'low' } });
+    expect(summaryConfig.parameters).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('leaves parameters untouched for providers with no reasoning_effort concept', async () => {
+    const agents = await callAndCapture({
+      summarizationConfig: {
+        provider: EModelEndpoint.anthropic,
+        model: 'claude-3-haiku',
+        parameters: { reasoning_effort: 'low' },
+      },
+    });
+
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    expect(summaryConfig.parameters).toEqual({ reasoning_effort: 'low' });
+  });
+
+  it('leaves unrelated parameters and an unset effort untouched', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: Providers.OPENROUTER,
+          endpoint: 'OpenRouter',
+          model: OPENROUTER_MODEL,
+          model_parameters: { model: OPENROUTER_MODEL },
+        }),
+      ],
+      summarizationConfig: {
+        provider: 'OpenRouter',
+        model: OPENROUTER_MODEL,
+        parameters: { temperature: 0.2, streaming: false, reasoning_effort: '' },
+      },
+    });
+
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    expect(summaryConfig.parameters).toEqual({
+      temperature: 0.2,
+      streaming: false,
+      reasoning_effort: '',
+    });
+  });
+});
+
+type CapturedRequest = {
+  url: URL;
+  headers: Headers;
+  body: OpenAI.ChatCompletionCreateParams & OpenAI.Responses.ResponseCreateParams;
+};
+
+async function compactSummary(
+  agents: Array<Record<string, unknown>>,
+  requests: CapturedRequest[] = [],
+  messages: BaseMessage[] = [
+    new HumanMessage('Compute 1 + 1.'),
+    new AIMessage('2'),
+    new HumanMessage('Compute 2 + 2.'),
+    new AIMessage('4'),
+    new HumanMessage('Compute 3 + 3.'),
+    new AIMessage('6'),
+  ],
+) {
+  const summaryConfig = agents[0].summarizationConfig as NonNullable<
+    AgentInputs['summarizationConfig']
+  >;
+  const clientOptions = agents[0].clientOptions as { configuration?: OpenAIConfiguration };
+  const configuration = {
+    ...((summaryConfig.parameters?.configuration ??
+      clientOptions.configuration) as OpenAIConfiguration),
+  };
+  summaryConfig.parameters = { ...summaryConfig.parameters, configuration };
+  configuration.fetch = async (url, init) => {
+    requests.push({
+      url: new URL(String(url)),
+      headers: new Headers(init?.headers),
+      body: JSON.parse(String(init?.body)),
+    });
+    const text = 'The user asked for arithmetic and the assistant calculated four.';
+    return Response.json({
+      id: 'summary-response',
+      model: 'summary-production',
+      object: 'response',
+      status: 'completed',
+      choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }],
+      output: [
+        {
+          type: 'message',
+          id: 'msg_summary',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text, annotations: [] }],
+        },
+      ],
+      usage: {
+        prompt_tokens: 20,
+        completion_tokens: 10,
+        input_tokens: 20,
+        output_tokens: 10,
+        total_tokens: 30,
+      },
+    });
+  };
+  const actual = jest.requireActual<typeof import('@librechat/agents')>('@librechat/agents');
+  const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as Parameters<typeof Run.create>[0];
+  const run = await actual.Run.create({
+    ...runConfig,
+    graphConfig: { ...runConfig.graphConfig, agents: agents as unknown as AgentInputs[] },
+    tokenCounter: (message) => String(message.content).length,
+  });
+  await run.processStream(
+    { messages },
+    { version: 'v2', configurable: { thread_id: 'azure-summary-test' } },
+  );
+
+  return { requests };
+}
+
+describe('final Cyber summary configuration', () => {
+  it.each([
+    { sourceModel: 'claude-sonnet-4.6', sourceProvider: Providers.ANTHROPIC, carrier: 'baseURL' },
+    {
+      sourceModel: 'claude-sonnet-4.6',
+      sourceProvider: Providers.ANTHROPIC,
+      carrier: 'configuration',
+    },
+    { sourceModel: 'claude-sonnet-4.6', sourceProvider: Providers.ANTHROPIC, carrier: 'default' },
+    { sourceModel: 'gpt-6-cyber', sourceProvider: Providers.OPENAI, carrier: 'baseURL' },
+    { sourceModel: 'gpt-6-cyber', sourceProvider: Providers.OPENAI, carrier: 'configuration' },
+    { sourceModel: 'gpt-6-cyber', sourceProvider: Providers.OPENAI, carrier: 'default' },
+  ])(
+    'enforces native identity after final parameter merge: %j',
+    async ({ sourceModel, sourceProvider, carrier }) => {
+      const nativeSource = sourceProvider === Providers.OPENAI;
+      const identity = { userId: 'final-summary-user', tenantId: 'request-tenant' };
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        'resolved-user-key',
+        {
+          requestIdentity: identity,
+          modelOptions: { model: sourceModel },
+          headers: { 'X-Final-Transport': 'inherited' },
+        },
+        EModelEndpoint.openAI,
+      );
+      const mainOptions = nativeSource
+        ? { ...llmConfig, configuration: configOptions }
+        : {
+            model: sourceModel,
+            apiKey: 'anthropic-key',
+            modelKwargs: { source_only: 'do not inherit' },
+          };
+      const snapshot = { ...mainOptions, modelKwargs: { ...mainOptions.modelKwargs } };
+      const summaryParameters: TestSummarizationParameters = {
+        streaming: false,
+        apiKey: 'summary-key',
+        user: 'spoofed-user',
+        safety_identifier: 'shared-literal',
+        ...(carrier === 'baseURL' && { baseURL: 'https://api.openai.com/v1' }),
+        ...(carrier === 'configuration' && {
+          configuration: {
+            baseURL: 'https://api.openai.com/v1',
+            defaultHeaders: { 'X-Final-Transport': 'override' },
+            defaultQuery: { scope: 'summary' },
+          },
+        }),
+      };
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: sourceProvider,
+            endpoint: nativeSource ? EModelEndpoint.openAI : EModelEndpoint.anthropic,
+            model: sourceModel,
+            model_parameters: mainOptions,
+          }),
+        ],
+        user: { id: identity.userId, tenantId: 'stale-user-tenant' } as IUser,
+        tenantId: identity.tenantId,
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          provider: EModelEndpoint.openAI,
+          model: 'gpt-6-cyber',
+          parameters: summaryParameters as SummarizationConfig['parameters'],
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].url.origin + requests[0].url.pathname).toBe(
+        'https://api.openai.com/v1/responses',
+      );
+      expect(requests[0].body).toMatchObject({
+        model: 'gpt-6-cyber',
+        access_programs: { cyber: 'daybreak_red' },
+        safety_identifier:
+          llmConfig.modelKwargs?.safety_identifier ??
+          getOpenAIConfig(
+            '',
+            { requestIdentity: identity, modelOptions: { model: 'gpt-6-cyber' } },
+            EModelEndpoint.openAI,
+          ).llmConfig.modelKwargs?.safety_identifier,
+      });
+      expect(requests[0].body).not.toHaveProperty('user');
+      expect(requests[0].body).not.toHaveProperty('source_only');
+      if (carrier === 'configuration') {
+        expect(requests[0].headers.get('X-Final-Transport')).toBe('override');
+        expect(requests[0].url.searchParams.get('scope')).toBe('summary');
+      } else if (nativeSource) {
+        expect(requests[0].headers.get('X-Final-Transport')).toBe('inherited');
+      }
+      expect(mainOptions).toEqual(snapshot);
+      expect(summaryParameters.safety_identifier).toBe('shared-literal');
+    },
+  );
+});
+
+describe('Cyber summary final transport boundaries', () => {
+  it.each([false, true])(
+    'preserves self-summary API selection while replacing shared identity (%s)',
+    async (useResponsesApi) => {
+      const identity = { userId: 'self-summary-user', tenantId: 'self-summary-tenant' };
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        'resolved-user-key',
+        {
+          requestIdentity: identity,
+          modelOptions: { model: 'gpt-6-cyber' },
+          addParams: { useResponsesApi, access_programs: { cyber: 'standard' } },
+        },
+        EModelEndpoint.openAI,
+      );
+      const summaryParameters: TestSummarizationParameters = {
+        streaming: false,
+        modelKwargs: {
+          model: 'gpt-6-sol',
+          safety_identifier: 'nested-shared-literal',
+          access_programs: { cyber: 'standard' },
+        },
+        safety_identifier: 'scalar-shared-literal',
+      };
+      const before = { ...llmConfig.modelKwargs };
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: Providers.OPENAI,
+            endpoint: EModelEndpoint.openAI,
+            model: 'gpt-6-cyber',
+            model_parameters: { ...llmConfig, configuration: configOptions },
+          }),
+        ],
+        user: { id: identity.userId, tenantId: identity.tenantId } as IUser,
+        tenantId: identity.tenantId,
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          model: 'gpt-6-cyber',
+          parameters: summaryParameters as SummarizationConfig['parameters'],
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests[0].url.pathname).toBe(
+        useResponsesApi ? '/v1/responses' : '/v1/chat/completions',
+      );
+      expect(requests[0].body).toMatchObject({
+        model: 'gpt-6-cyber',
+        access_programs: { cyber: 'standard' },
+        safety_identifier: llmConfig.modelKwargs?.safety_identifier,
+      });
+      expect(llmConfig.modelKwargs).toEqual(before);
+      expect(summaryParameters.safety_identifier).toBe('scalar-shared-literal');
+    },
+  );
+
+  it.each(['baseURL', 'configuration', 'sdk-default'])(
+    'does not apply the native contract to a cross-provider gateway (%s)',
+    async (carrier) => {
+      if (carrier === 'sdk-default')
+        jest.replaceProperty(process, 'env', {
+          ...process.env,
+          OPENAI_BASE_URL: 'https://summary-gateway.example/v1',
+        });
+      const summaryParameters: TestSummarizationParameters = {
+        streaming: false,
+        apiKey: 'gateway-key',
+        safety_identifier: 'gateway-owned-identity',
+        ...(carrier === 'baseURL' && { baseURL: 'https://summary-gateway.example/v1' }),
+        ...(carrier === 'configuration' && {
+          configuration: { baseURL: 'https://summary-gateway.example/v1' },
+        }),
+      };
+      try {
+        const agents = await callAndCapture({
+          agents: [
+            makeAgent({
+              provider: Providers.ANTHROPIC,
+              endpoint: EModelEndpoint.anthropic,
+              model: 'claude-sonnet-4.6',
+              model_parameters: { model: 'claude-sonnet-4.6' },
+            }),
+          ],
+          user: { id: 'gateway-summary-user', tenantId: 'gateway-summary-tenant' } as IUser,
+          tenantId: 'gateway-summary-tenant',
+          appConfig: makeAppConfig([]),
+          summarizeOnly: true,
+          summarizationConfig: {
+            provider: EModelEndpoint.openAI,
+            model: 'gpt-6-cyber',
+            parameters: summaryParameters as SummarizationConfig['parameters'],
+          },
+        });
+        const { requests } = await compactSummary(agents);
+        expect(requests[0].url.origin).toBe('https://summary-gateway.example');
+        expect(requests[0].body).not.toHaveProperty('access_programs');
+        expect(requests[0].body.safety_identifier).toBe('gateway-owned-identity');
+      } finally {
+        if (carrier === 'sdk-default') jest.restoreAllMocks();
+      }
+    },
+  );
+});
+
+describe('Cyber summary SDK URL defaults', () => {
+  beforeEach(() => {
+    const env: NodeJS.ProcessEnv = { ...process.env, OPENAI_API_KEY: 'summary-key' };
+    for (const key of [
+      'OPENAI_API_BASE',
+      'OPENAI_BASE_URL',
+      'OPENAI_REVERSE_PROXY',
+      'LANGSMITH_GATEWAY',
+    ]) {
+      delete env[key];
+    }
+    jest.replaceProperty(process, 'env', env);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it.each([
+    {
+      apiBase: 'https://summary-api-base.example/v1',
+      sdkURL: 'https://api.openai.com/v1',
+      explicitURL: undefined,
+      gateway: undefined,
+      origin: 'https://summary-api-base.example',
+      native: false,
+    },
+    {
+      apiBase: '',
+      sdkURL: 'https://summary-sdk-url.example/v1',
+      explicitURL: undefined,
+      gateway: undefined,
+      origin: 'https://summary-sdk-url.example',
+      native: false,
+    },
+    {
+      apiBase: 'https://api.openai.com/v1',
+      sdkURL: 'https://summary-sdk-url.example/v1',
+      explicitURL: undefined,
+      gateway: undefined,
+      origin: 'https://api.openai.com',
+      native: true,
+    },
+    {
+      apiBase: 'https://summary-api-base.example/v1',
+      sdkURL: undefined,
+      explicitURL: 'https://api.openai.com/v1',
+      gateway: undefined,
+      origin: 'https://api.openai.com',
+      native: true,
+    },
+    {
+      apiBase: 'https://api.openai.com/v1',
+      sdkURL: undefined,
+      explicitURL: 'https://summary-explicit.example/v1',
+      gateway: undefined,
+      origin: 'https://summary-explicit.example',
+      native: false,
+    },
+    {
+      apiBase: undefined,
+      sdkURL: undefined,
+      explicitURL: undefined,
+      gateway: 'true',
+      origin: 'https://gateway.smith.langchain.com',
+      native: false,
+    },
+    {
+      apiBase: undefined,
+      sdkURL: undefined,
+      explicitURL: undefined,
+      gateway: 'false',
+      origin: 'https://api.openai.com',
+      native: true,
+    },
+  ])(
+    'shapes cross-provider summaries for the actual SDK destination: %j',
+    async ({ apiBase, sdkURL, explicitURL, gateway, origin, native }) => {
+      for (const [key, value] of Object.entries({
+        OPENAI_API_BASE: apiBase,
+        OPENAI_BASE_URL: sdkURL,
+        LANGSMITH_GATEWAY: gateway,
+      })) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      const parameters: TestSummarizationParameters = {
+        streaming: false,
+        apiKey: 'summary-key',
+        ...(explicitURL && { configuration: { baseURL: explicitURL } }),
+      };
+      const agents = await callAndCapture({
+        agents: [
+          makeAgent({
+            provider: Providers.ANTHROPIC,
+            endpoint: EModelEndpoint.anthropic,
+            model: 'claude-sonnet-4.6',
+            model_parameters: { model: 'claude-sonnet-4.6' },
+          }),
+        ],
+        user: { id: 'summary-url-user', tenantId: 'summary-url-tenant' } as IUser,
+        tenantId: 'summary-url-tenant',
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          provider: EModelEndpoint.openAI,
+          model: 'gpt-6-cyber',
+          parameters: parameters as SummarizationConfig['parameters'],
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].url.origin).toBe(origin);
+      expect(requests[0].url.pathname.endsWith(native ? '/responses' : '/chat/completions')).toBe(
+        true,
+      );
+      if (native) {
+        expect(requests[0].body).toMatchObject({
+          access_programs: { cyber: 'daybreak_red' },
+          safety_identifier: expect.stringMatching(/^[a-f0-9]{64}$/),
+        });
+      } else {
+        expect(requests[0].body).not.toHaveProperty('access_programs');
+        expect(requests[0].body).not.toHaveProperty('safety_identifier');
+      }
+    },
+  );
+});
+
+describe.each([false, true])(
+  'Cyber same-endpoint routing policy (explicit provider=%s)',
+  (explicitProvider) => {
+    it.each([
+      { sourceModel: 'gpt-6-sol', policy: false, summary: undefined, expected: false },
+      { sourceModel: 'gpt-4.1-mini', policy: false, summary: undefined, expected: false },
+      { sourceModel: 'gpt-6-cyber', policy: false, summary: undefined, expected: false },
+      { sourceModel: 'gpt-6-sol', policy: true, summary: undefined, expected: true },
+      { sourceModel: 'gpt-6-sol', policy: false, summary: true, expected: true },
+      { sourceModel: 'gpt-6-sol', policy: true, summary: false, expected: false },
+      { sourceModel: 'gpt-4.1-mini', policy: undefined, summary: undefined, expected: true },
+      { sourceModel: 'gpt-6-sol', policy: 'default', summary: undefined, expected: false },
+      { sourceModel: 'gpt-6-sol', policy: 'drop', summary: undefined, expected: false },
+      { sourceModel: 'gpt-6-sol', policy: 'drop', summary: true, expected: true },
+    ])(
+      'preserves the target endpoint policy without changing the agent: %j',
+      async ({ sourceModel, policy, summary, expected }) => {
+        const endpoint: TestCustomEndpoint = {
+          name: 'Daybreak',
+          apiKey: 'endpoint-key',
+          baseURL: 'https://api.openai.com/v1',
+          addParams: {
+            ...(typeof policy === 'boolean' && { useResponsesApi: policy }),
+            ...(policy === 'drop' && { useResponsesApi: true }),
+          },
+          dropParams: policy === 'drop' ? ['useResponsesApi'] : undefined,
+          customParams:
+            policy === 'default'
+              ? {
+                  defaultParamsEndpoint: 'custom',
+                  paramDefinitions: [{ key: 'useResponsesApi', default: false }],
+                }
+              : undefined,
+        };
+        const endpointParams = { ...endpoint.addParams };
+        const user = { id: 'route-user', tenantId: 'route-tenant' } as IUser;
+        const { llmConfig, configOptions } = getOpenAIConfig(
+          endpoint.apiKey,
+          {
+            requestIdentity: { userId: user.id, tenantId: user.tenantId },
+            modelOptions: { model: sourceModel },
+            reverseProxyUrl: endpoint.baseURL,
+            addParams: endpoint.addParams,
+            dropParams: endpoint.dropParams,
+            customParams: endpoint.customParams,
+            headers: { 'X-Route-Transport': 'preserved' },
+          },
+          endpoint.name,
+        );
+        const agents = await callAndCapture({
+          agents: [
+            makeReasoningAgent({
+              provider: Providers.OPENAI,
+              endpoint: endpoint.name,
+              model: sourceModel,
+              model_parameters: { ...llmConfig, configuration: configOptions },
+            }),
+          ],
+          user,
+          tenantId: user.tenantId,
+          appConfig: makeAppConfig([endpoint]),
+          summarizeOnly: true,
+          summarizationConfig: {
+            ...(explicitProvider && { provider: endpoint.name }),
+            model: 'gpt-6-cyber',
+            parameters: {
+              streaming: false,
+              ...(summary !== undefined && { useResponsesApi: summary }),
+            },
+          },
+        });
+        const sourceApiMode = llmConfig.useResponsesApi;
+        const { requests } = await compactSummary(agents);
+        expect(requests).toHaveLength(1);
+        expect(requests[0].url.origin + requests[0].url.pathname).toBe(
+          `https://api.openai.com/v1/${expected ? 'responses' : 'chat/completions'}`,
+        );
+        expect(requests[0].headers.get('X-Route-Transport')).toBe('preserved');
+        expect(requests[0].body).toMatchObject({
+          model: 'gpt-6-cyber',
+          access_programs: { cyber: 'daybreak_red' },
+          safety_identifier: expect.stringMatching(/^[a-f0-9]{64}$/),
+        });
+        expect((agents[0].clientOptions as Record<string, unknown>).useResponsesApi).toBe(
+          sourceApiMode,
+        );
+        expect(endpoint.addParams).toEqual(endpointParams);
+      },
+    );
+  },
+);
+
+describe('Cyber direct endpoint summary routing', () => {
+  it.each([
+    { sourceModel: 'gpt-6-cyber', path: 'chat/completions', responses: false },
+    { sourceModel: 'gpt-4.1-mini', path: 'chat/completions', responses: false },
+    { sourceModel: 'gpt-6-cyber', path: 'responses', responses: true },
+    { sourceModel: 'gpt-4.1-mini', path: 'responses', responses: true },
+    { sourceModel: 'gpt-6-cyber', path: 'chat/completions', summary: true, responses: true },
+    { sourceModel: 'gpt-6-cyber', path: 'responses', summary: false, responses: false },
+    {
+      sourceModel: 'gpt-4.1-mini',
+      path: 'chat/completions',
+      crossEndpoint: true,
+      responses: false,
+    },
+    { sourceModel: 'gpt-4.1-mini', path: 'responses', crossEndpoint: true, responses: true },
+  ])(
+    'matches the exact endpoint API: %j',
+    async ({ sourceModel, path, summary, crossEndpoint, responses }) => {
+      const endpoint: TestCustomEndpoint = {
+        name: 'Daybreak',
+        apiKey: 'test-key',
+        baseURL: `https://api.openai.com/v1/${path}`,
+        directEndpoint: true,
+      };
+      const user = { id: 'direct-user', tenantId: 'direct-tenant' } as IUser;
+      const sourceEndpoint = crossEndpoint ? EModelEndpoint.openAI : endpoint.name;
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        endpoint.apiKey,
+        {
+          reverseProxyUrl: crossEndpoint ? undefined : endpoint.baseURL,
+          directEndpoint: !crossEndpoint,
+          modelOptions: { model: sourceModel },
+          requestIdentity: { userId: user.id, tenantId: user.tenantId },
+        },
+        sourceEndpoint,
+      );
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: Providers.OPENAI,
+            endpoint: sourceEndpoint,
+            model: sourceModel,
+            model_parameters: { ...llmConfig, configuration: configOptions },
+          }),
+        ],
+        user,
+        tenantId: user.tenantId,
+        appConfig: makeAppConfig([endpoint]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          provider: endpoint.name,
+          model: 'gpt-6-cyber',
+          parameters: {
+            streaming: false,
+            ...(typeof summary === 'boolean' ? { useResponsesApi: summary } : {}),
+          },
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].body).toHaveProperty(responses ? 'input' : 'messages');
+      expect(requests[0].body).not.toHaveProperty(responses ? 'messages' : 'input');
+      expect(requests[0].body).toMatchObject({
+        model: 'gpt-6-cyber',
+        access_programs: { cyber: 'daybreak_red' },
+        safety_identifier: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+    },
+  );
+
+  it.each([
+    { agent: 'anthropic', path: '/chat/completions', responses: false },
+    { agent: 'anthropic', path: '/responses', responses: true },
+    { agent: 'anthropic', path: '/chat/completions', drop: true, responses: false },
+    { agent: 'anthropic', path: '/responses', drop: true, responses: false },
+    { agent: 'anthropic', path: '', drop: true, responses: false },
+    { agent: 'openAI', path: '/chat/completions', drop: true, responses: false },
+    { agent: 'endpoint', path: '/chat/completions', drop: true, responses: false },
+    { agent: 'endpoint', path: '/chat/completions', inferred: true, responses: false },
+    { agent: 'endpoint', path: '/responses', inferred: true, responses: true },
+  ])(
+    'keeps the target endpoint API decision: %j',
+    async ({ agent, path, drop, inferred, responses }) => {
+      const endpoint: TestCustomEndpoint = {
+        name: 'Daybreak',
+        apiKey: 'test-key',
+        baseURL: `https://api.openai.com/v1${path}`,
+        directEndpoint: path !== '',
+        dropParams: drop ? ['useResponsesApi'] : undefined,
+      };
+      const user = { id: 'direct-user', tenantId: 'direct-tenant' } as IUser;
+      const onEndpoint = agent === 'endpoint';
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        endpoint.apiKey,
+        {
+          reverseProxyUrl: onEndpoint ? endpoint.baseURL : undefined,
+          directEndpoint: onEndpoint && endpoint.directEndpoint,
+          dropParams: onEndpoint ? endpoint.dropParams : undefined,
+          modelOptions: { model: 'gpt-4.1-mini' },
+          requestIdentity: { userId: user.id, tenantId: user.tenantId },
+        },
+        onEndpoint ? endpoint.name : EModelEndpoint.openAI,
+      );
+      const source =
+        agent === 'anthropic'
+          ? makeReasoningAgent({
+              provider: Providers.ANTHROPIC,
+              endpoint: EModelEndpoint.anthropic,
+              model: 'claude-sonnet-4.6',
+              model_parameters: { model: 'claude-sonnet-4.6', apiKey: 'anthropic-key' },
+            })
+          : makeReasoningAgent({
+              provider: Providers.OPENAI,
+              endpoint: onEndpoint ? endpoint.name : EModelEndpoint.openAI,
+              model: 'gpt-4.1-mini',
+              model_parameters: { ...llmConfig, configuration: configOptions },
+            });
+      const agents = await callAndCapture({
+        agents: [source],
+        user,
+        tenantId: user.tenantId,
+        appConfig: makeAppConfig([endpoint]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          ...(inferred ? {} : { provider: endpoint.name }),
+          model: 'gpt-6-cyber',
+          parameters: { streaming: false },
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].body).toHaveProperty(responses ? 'input' : 'messages');
+      expect(requests[0].body).not.toHaveProperty(responses ? 'messages' : 'input');
+      expect(requests[0].body).toMatchObject({
+        model: 'gpt-6-cyber',
+        access_programs: { cyber: 'daybreak_red' },
+        safety_identifier: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+    },
+  );
+});
+
+describe('Cyber summary target shaping', () => {
+  it.each([
+    { sourceModel: 'gpt-6-sol', baseURL: undefined, endpoint: EModelEndpoint.openAI },
+    { sourceModel: 'gpt-4.1-mini', baseURL: undefined, endpoint: EModelEndpoint.openAI },
+    { sourceModel: 'gpt-6-sol', baseURL: 'https://api.openai.com/v1', endpoint: 'Daybreak' },
+  ])(
+    'shapes a Cyber summary while preserving $sourceModel transport',
+    async ({ sourceModel, baseURL, endpoint }) => {
+      const user = { id: 'summary-user', tenantId: 'summary-tenant' } as IUser;
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        'resolved-user-key',
+        {
+          modelOptions: { model: sourceModel, reasoning_effort: ReasoningEffort.high },
+          reverseProxyUrl: baseURL,
+          headers: { 'X-Summary-Transport': 'kept' },
+          defaultQuery: { 'request-scope': 'kept' },
+          addParams: { prompt_cache_options: { ttl: '12h' } },
+        },
+        endpoint,
+      );
+      const before = { ...llmConfig.modelKwargs };
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: Providers.OPENAI,
+            endpoint,
+            model: sourceModel,
+            model_parameters: { ...llmConfig, configuration: configOptions },
+          }),
+        ],
+        user,
+        tenantId: user.tenantId,
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          provider: endpoint,
+          model: 'gpt-6-cyber',
+          parameters: { streaming: false },
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].url.pathname).toBe('/v1/responses');
+      expect(requests[0].url.searchParams.get('request-scope')).toBe('kept');
+      expect(requests[0].headers.get('X-Summary-Transport')).toBe('kept');
+      expect(requests[0].body).toMatchObject({
+        model: 'gpt-6-cyber',
+        access_programs: { cyber: 'daybreak_red' },
+        safety_identifier: expect.stringMatching(/^[a-f0-9]{64}$/),
+        prompt_cache_options: { ttl: '12h' },
+      });
+      expect(requests[0].body).not.toHaveProperty('reasoning');
+      expect(llmConfig.modelKwargs).toEqual(before);
+      expect((agents[0].clientOptions as Record<string, unknown>).modelKwargs).toEqual(before);
+    },
+  );
+
+  it('preserves an explicit summary API selection and server-owned identity', async () => {
+    const { llmConfig, configOptions } = getOpenAIConfig(
+      'resolved-user-key',
+      {
+        modelOptions: { model: 'gpt-6-sol' },
+        headers: { 'X-Summary-Transport': 'kept' },
+      },
+      EModelEndpoint.openAI,
+    );
+    const summaryKwargs = {
+      access_programs: { cyber: 'standard' },
+      safety_identifier: 'shared-spoof',
+    };
+    const summaryParameters: TestSummarizationParameters = {
+      streaming: false,
+      useResponsesApi: false,
+      modelKwargs: summaryKwargs,
+    };
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: Providers.OPENAI,
+          endpoint: EModelEndpoint.openAI,
+          model: 'gpt-6-sol',
+          model_parameters: { ...llmConfig, configuration: configOptions },
+        }),
+      ],
+      user: { id: 'summary-user', tenantId: 'stale-user-tenant' } as IUser,
+      tenantId: 'request-tenant',
+      appConfig: makeAppConfig([]),
+      summarizeOnly: true,
+      summarizationConfig: {
+        model: 'gpt-6-cyber',
+        parameters: summaryParameters as SummarizationConfig['parameters'],
+      },
+    });
+    const expected = getOpenAIConfig(
+      'unused',
+      {
+        requestIdentity: { userId: 'summary-user', tenantId: 'request-tenant' },
+        modelOptions: { model: 'gpt-6-cyber' },
+      },
+      EModelEndpoint.openAI,
+    );
+    const { requests } = await compactSummary(agents);
+    expect(requests[0].url.pathname).toBe('/v1/chat/completions');
+    expect(requests[0].headers.get('X-Summary-Transport')).toBe('kept');
+    expect(requests[0].body).toMatchObject({
+      access_programs: { cyber: 'standard' },
+      safety_identifier: expected.llmConfig.modelKwargs?.safety_identifier,
+    });
+    expect(summaryKwargs).toEqual({
+      access_programs: { cyber: 'standard' },
+      safety_identifier: 'shared-spoof',
+    });
+  });
+
+  it('rejects a native Cyber summary without authenticated identity before calling the SDK', async () => {
+    await expect(
+      callAndCapture({
+        agents: [makeAgent({ model: 'gpt-6-sol', model_parameters: { model: 'gpt-6-sol' } })],
+        appConfig: makeAppConfig([]),
+        summarizationConfig: { model: 'gpt-6-cyber' },
+      }),
+    ).rejects.toThrow('GPT-6 Cyber requires an authenticated user.');
+    expect(Run.create).not.toHaveBeenCalled();
+  });
+
+  it('leaves a disabled Cyber summary inert without an authenticated identity', async () => {
+    const agents = await callAndCapture({
+      agents: [makeAgent({ model: 'gpt-6-sol', model_parameters: { model: 'gpt-6-sol' } })],
+      appConfig: makeAppConfig([]),
+      summarizationConfig: { enabled: false, model: 'gpt-6-cyber' },
+    });
+    expect(agents[0].summarizationEnabled).toBe(false);
+  });
+
+  it.each(['Gateway', EModelEndpoint.openAI])(
+    'keeps gateway transport outside native Cyber shaping (%s)',
+    async (endpoint) => {
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        'gateway-key',
+        {
+          modelOptions: { model: 'gpt-4.1-mini' },
+          reverseProxyUrl: endpoint === 'Gateway' ? 'https://gateway.example/v1' : undefined,
+        },
+        endpoint,
+      );
+      const summaryParameters: TestSummarizationParameters = {
+        streaming: false,
+        ...(endpoint === EModelEndpoint.openAI && {
+          configuration: { baseURL: 'https://gateway.example/v1' },
+        }),
+      };
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: Providers.OPENAI,
+            endpoint,
+            model: 'gpt-4.1-mini',
+            model_parameters: { ...llmConfig, configuration: configOptions },
+          }),
+        ],
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          provider: endpoint,
+          model: 'gpt-6-cyber',
+          parameters: summaryParameters as SummarizationConfig['parameters'],
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests[0].url.origin).toBe('https://gateway.example');
+      expect(requests[0].url.pathname).toBe('/v1/chat/completions');
+      expect(requests[0].body).not.toHaveProperty('access_programs');
+      expect(requests[0].body).not.toHaveProperty('safety_identifier');
+    },
+  );
+});
+
+describe('Cyber summary model isolation', () => {
+  it.each(['gpt-6-sol', 'gpt-4.1-mini', 'gpt-6-cyber'])(
+    'scopes Cyber access to the matching summary model, %s',
+    async (model) => {
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        'test-cyber-key',
+        {
+          requestIdentity: { userId: 'test-user', tenantId: 'test-tenant' },
+          modelOptions: { model: 'gpt-6-cyber' },
+          headers: { 'X-Test-Transport': 'preserved' },
+        },
+        EModelEndpoint.openAI,
+      );
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: Providers.OPENAI,
+            endpoint: EModelEndpoint.openAI,
+            model: 'gpt-6-cyber',
+            model_parameters: { ...llmConfig, configuration: configOptions },
+          }),
+        ],
+        user: { id: 'test-user', tenantId: 'test-tenant' } as IUser,
+        tenantId: 'test-tenant',
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: { model, parameters: { streaming: false } },
+      });
+
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].body.model).toBe(model);
+      expect(requests[0].url.origin).toBe('https://api.openai.com');
+      expect(requests[0].headers.get('X-Test-Transport')).toBe('preserved');
+      if (model === 'gpt-6-cyber') {
+        expect(requests[0].body).toHaveProperty('access_programs.cyber', 'daybreak_red');
+      } else {
+        expect(requests[0].body).not.toHaveProperty('access_programs');
+      }
+      expect((agents[0].clientOptions as Record<string, unknown>).modelKwargs).toMatchObject({
+        access_programs: { cyber: 'daybreak_red' },
+      });
+    },
+  );
+});
+
+describe('manual compaction recency', () => {
+  it('skips a fully retained conversation without calling the summarizer', async () => {
+    const agents = await callAndCapture({
+      summarizeOnly: true,
+      summarizationConfig: { model: 'gpt-4o', parameters: { streaming: false } },
+    });
+    const requests: CapturedRequest[] = [];
+    await expect(
+      compactSummary(agents, requests, [
+        new HumanMessage('Compute 1 + 1.'),
+        new AIMessage('2'),
+        new HumanMessage('Compute 2 + 2.'),
+        new AIMessage('4'),
+      ]),
+    ).rejects.toMatchObject({
+      name: 'ManualSummarizationSkippedError',
+      reason: 'nothing_to_summarize',
+    });
+    expect(requests).toHaveLength(0);
+  });
+});
+
+describe('Azure deployment alias', () => {
+  /** `initializeAgent` maps an Azure Responses agent to the OpenAI provider. */
+  const azureAstraAgent = () => {
+    const { llmConfig, configOptions } = getOpenAIConfig(
+      'test-azure-key',
+      {
+        azure: {
+          azureOpenAIApiInstanceName: 'test-instance',
+          azureOpenAIApiDeploymentName: 'production-deployment',
+          azureOpenAIApiVersion: '2025-04-01-preview',
+          azureOpenAIApiKey: 'test-azure-key',
+        },
+        modelOptions: { model: 'gpt-6-astra', max_tokens: 2048 },
+      },
+      EModelEndpoint.azureOpenAI,
+    );
+    return makeReasoningAgent({
+      provider: EModelEndpoint.openAI,
+      endpoint: EModelEndpoint.azureOpenAI,
+      model: 'gpt-6-astra',
+      model_parameters: { ...llmConfig, configuration: configOptions },
+    });
+  };
+
+  /** The SDK spreads `parameters` onto the agent's client options, then sets `model`. */
+  const summaryRequestModel = (
+    clientOptions: Record<string, unknown>,
+    summaryConfig: Record<string, unknown>,
+  ) => {
+    const summaryModel = new ChatOpenAI({
+      ...clientOptions,
+      ...((summaryConfig.parameters as Record<string, unknown> | undefined) ?? {}),
+      apiKey: 'test-key',
+      model: summaryConfig.model as string,
+    } as never);
+    return (summaryModel.invocationParams() as Record<string, unknown>).model;
+  };
+
+  it("keeps the Astra agent's API mode and deployment alias out of a custom-endpoint summarizer", async () => {
+    const agents = await callAndCapture({
+      agents: [azureAstraAgent()],
+      appConfig: makeAppConfig([
+        {
+          name: 'Gateway',
+          apiKey: 'gateway-key',
+          baseURL: 'https://gateway.example/v1',
+          models: { default: ['gpt-4.1-mini'] },
+        },
+      ]),
+      summarizeOnly: true,
+      summarizationConfig: {
+        provider: 'Gateway',
+        model: 'gpt-4.1-mini',
+        parameters: { streaming: false },
+      },
+    });
+
+    expect((agents[0].clientOptions as Record<string, unknown>).modelKwargs).toEqual({
+      model: 'production-deployment',
+      max_output_tokens: 2048,
+    });
+    const { requests } = await compactSummary(agents);
+    expect(requests).toHaveLength(1);
+    const { url, headers, body } = requests[0];
+    expect(url.origin + url.pathname).toBe('https://gateway.example/v1/chat/completions');
+    expect(headers.get('api-key')).toBeNull();
+    expect(body.model).toBe('gpt-4.1-mini');
+    expect(body).not.toHaveProperty('include');
+  });
+
+  it.each([
+    { useModelAsDeploymentName: undefined, deployment: 'env-deployment' },
+    { useModelAsDeploymentName: 'true', deployment: 'gpt-41-mini' },
+  ])(
+    'resolves a different summary model through the legacy Azure environment to $deployment',
+    async ({ useModelAsDeploymentName, deployment }) => {
+      jest.replaceProperty(process, 'env', {
+        ...process.env,
+        AZURE_API_KEY: 'env-key',
+        AZURE_OPENAI_API_INSTANCE_NAME: 'env-instance',
+        AZURE_OPENAI_API_DEPLOYMENT_NAME: 'env-deployment',
+        AZURE_OPENAI_API_VERSION: '2024-10-21',
+        AZURE_USE_MODEL_AS_DEPLOYMENT_NAME: useModelAsDeploymentName,
+      });
+      const agents = await callAndCapture({
+        agents: [azureAstraAgent()],
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: { model: 'gpt-4.1-mini', parameters: { streaming: false } },
+      });
+
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      const { url, headers, body } = requests[0];
+      expect(url.origin + url.pathname).toBe(
+        `https://env-instance.openai.azure.com/openai/deployments/${deployment}/chat/completions`,
+      );
+      expect(headers.get('api-key')).toBe('env-key');
+      expect(body.model).toBe(deployment);
+    },
+  );
+
+  it('applies summarization base URL and API key overrides to an Azure summary deployment', async () => {
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints![EModelEndpoint.azureOpenAI] = {
+      isValid: true,
+      errors: [],
+      modelNames: ['gpt-6-astra', 'gpt-4.1-mini'],
+      modelGroupMap: { 'gpt-6-astra': { group: 'main' }, 'gpt-4.1-mini': { group: 'summary' } },
+      groupMap: {
+        main: {
+          apiKey: 'test-azure-key',
+          instanceName: 'test-instance',
+          version: '2025-04-01-preview',
+          models: { 'gpt-6-astra': { deploymentName: 'production-deployment' } },
+        },
+        summary: {
+          apiKey: 'summary-key',
+          instanceName: 'summary-instance',
+          version: '2024-10-21',
+          models: { 'gpt-4.1-mini': { deploymentName: 'summary-production' } },
+        },
+      },
+    };
+    const agents = await callAndCapture({
+      agents: [azureAstraAgent()],
+      appConfig,
+      summarizeOnly: true,
+      summarizationConfig: {
+        model: 'gpt-4.1-mini',
+        parameters: {
+          streaming: false,
+          apiKey: 'gateway-key',
+          baseURL: 'https://summary-gateway.example/openai/deployments/${DEPLOYMENT_NAME}',
+        },
+      },
+    });
+
+    const { requests } = await compactSummary(agents);
+    expect(requests).toHaveLength(1);
+    const { url, headers } = requests[0];
+    expect(url.origin + url.pathname).toBe(
+      'https://summary-gateway.example/openai/deployments/summary-production/chat/completions',
+    );
+    expect(headers.get('api-key')).toBe('gateway-key');
+  });
+
+  it.each([
+    { model: 'gpt-6-astra', initialResponses: true, useResponsesApi: true },
+    { model: 'gpt-4.1', initialResponses: false, useResponsesApi: false },
+    { model: 'gpt-6-astra', initialResponses: true, useResponsesApi: false },
+    { model: 'gpt-4.1', initialResponses: false, useResponsesApi: true },
+  ])(
+    'uses same-model Azure transport overrides for $model',
+    async ({ model, initialResponses, useResponsesApi }) => {
+      const { llmConfig, configOptions } = getOpenAIConfig(
+        'resolved-user-key',
+        {
+          azure: {
+            azureOpenAIApiKey: 'resolved-user-key',
+            azureOpenAIApiInstanceName: 'user-instance',
+            azureOpenAIApiDeploymentName: 'user-deployment',
+            azureOpenAIApiVersion: '2024-10-21',
+          },
+          modelOptions: { model, max_tokens: 1536 },
+          headers: { 'X-Request': 'resolved-user-header' },
+        },
+        EModelEndpoint.azureOpenAI,
+      );
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            endpoint: EModelEndpoint.azureOpenAI,
+            provider: initialResponses ? Providers.OPENAI : Providers.AZURE,
+            model,
+            model_parameters: { ...llmConfig, configuration: configOptions },
+          }),
+        ],
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          model,
+          parameters: {
+            streaming: false,
+            apiKey: 'override-key',
+            useResponsesApi,
+            baseURL:
+              'https://summary-instance.openai.azure.com/openai/deployments/${DEPLOYMENT_NAME}',
+          },
+        },
+      });
+      expect(agents[0].summarizationEnabled).toBe(true);
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].url.origin + requests[0].url.pathname).toBe(
+        useResponsesApi
+          ? 'https://summary-instance.openai.azure.com/openai/v1/responses'
+          : 'https://summary-instance.openai.azure.com/openai/deployments/user-deployment/chat/completions',
+      );
+      expect(requests[0].headers.get('api-key')).toBe('override-key');
+      expect(requests[0].headers.get('X-Request')).toBe('resolved-user-header');
+      expect(requests[0].body.model).toBe('user-deployment');
+      const chatTokenKey = model === 'gpt-6-astra' ? 'max_completion_tokens' : 'max_tokens';
+      expect(requests[0].body[useResponsesApi ? 'max_output_tokens' : chatTokenKey]).toBe(1536);
+      expect((agents[0].clientOptions as Record<string, unknown>).configuration).toEqual(
+        configOptions,
+      );
+    },
+  );
+
+  it.each(['root', 'lazy'])(
+    'retains Azure identity and resolved headers for a %s self-summary',
+    async (kind) => {
+      jest.replaceProperty(process, 'env', {
+        ...process.env,
+        AZURE_API_KEY: 'user_provided',
+        SUMMARY_HEADER_SECRET: 'must-not-leak',
+      });
+      const user = { id: 'user-1', username: '${SUMMARY_HEADER_SECRET}' };
+      const appConfig = makeAppConfig([]);
+      appConfig.endpoints!.all = {
+        headers: {
+          'X-Conversation': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+          'X-Tenant': '{{LIBRECHAT_USER_TENANTID}}',
+          'X-User': '{{LIBRECHAT_USER_USERNAME}}',
+        },
+      };
+      const getUserKeyValues = jest.fn().mockResolvedValue({
+        apiKey: JSON.stringify({
+          azureOpenAIApiKey: 'user-key',
+          azureOpenAIApiInstanceName: 'user-instance',
+          azureOpenAIApiDeploymentName: 'user-deployment',
+          azureOpenAIApiVersion: '2024-10-21',
+        }),
+      });
+      const options = await initializeOpenAI({
+        endpoint: EModelEndpoint.azureOpenAI,
+        model_parameters: { model: 'gpt-6-astra' },
+        runtime: { appConfig, user, requestBody: {} },
+        db: { getUserKeyValues },
+      } as unknown as Parameters<typeof initializeOpenAI>[0]);
+      const azureAgent = {
+        ...makeReasoningAgent({
+          endpoint: EModelEndpoint.azureOpenAI,
+          provider: Providers.OPENAI,
+          model: 'gpt-6-astra',
+          azureOptions: options.azureOptions,
+          model_parameters: { ...options.llmConfig, configuration: options.configOptions },
+        }),
+        id: 'azure-child',
+      };
+      const lazyParent = makeAgent({
+        id: 'parent',
+        summarization: { enabled: false },
+        subagents: { enabled: true, allowSelf: false },
+        lazySubagentConfigs: [
+          {
+            id: azureAgent.id,
+            name: 'Azure child',
+            description: 'Lazy Azure child',
+            configId: 'azure-child:1:test',
+            resolve: jest.fn().mockResolvedValue(azureAgent),
+          },
+        ],
+      });
+      const captured = await callAndCapture({
+        agents: kind === 'lazy' ? [lazyParent] : [azureAgent],
+        appConfig,
+        user: user as IUser,
+        tenantId: 'tenant-1',
+        requestBody: { conversationId: 'conversation-1' },
+        summarizeOnly: true,
+        summarizationConfig: {
+          parameters: {
+            streaming: false,
+            baseURL:
+              'https://${INSTANCE_NAME}.openai.azure.com/openai/deployments/${DEPLOYMENT_NAME}',
+          },
+        },
+      });
+      let selected = captured[0];
+      if (kind === 'lazy') {
+        const [child] = captured[0].subagentConfigs as Array<Record<string, unknown>>;
+        selected = await (
+          child.resolveAgentInputs as (context: never) => Promise<Record<string, unknown>>
+        )({ signal: new AbortController().signal } as never);
+        selected.summarizeOnly = true;
+      }
+      const agents = [selected];
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].url.origin + requests[0].url.pathname).toBe(
+        'https://user-instance.openai.azure.com/openai/v1/responses',
+      );
+      expect(requests[0].body.model).toBe('user-deployment');
+      expect(requests[0].headers.get('api-key')).toBe('user-key');
+      expect(requests[0].headers.get('X-Conversation')).toBe('conversation-1');
+      expect(requests[0].headers.get('X-Tenant')).toBe('tenant-1');
+      expect(requests[0].headers.get('X-User')).toBe('${SUMMARY_HEADER_SECRET}');
+      const mainConfiguration = (agents[0].clientOptions as Record<string, unknown>)
+        .configuration as OpenAIConfiguration;
+      expect(new Headers(mainConfiguration?.defaultHeaders as HeadersInit).get('X-User')).toBe(
+        '${SUMMARY_HEADER_SECRET}',
+      );
+      expect(getUserKeyValues).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    { parameterCap: undefined, expected: 512 },
+    { parameterCap: '128', expected: 512 },
+    { parameterCap: 0, expected: 512 },
+    { parameterCap: 256, expected: 256 },
+  ])(
+    'honors the summary token cap with parameter cap $parameterCap',
+    async ({ parameterCap, expected }) => {
+      const agents = await callAndCapture({
+        agents: [azureAstraAgent()],
+        summarizeOnly: true,
+        summarizationConfig: {
+          maxSummaryTokens: 512,
+          parameters: {
+            streaming: false,
+            ...(parameterCap !== undefined ? { maxSummaryTokens: parameterCap } : {}),
+          },
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].body.max_output_tokens).toBe(expected);
+      expect(requests[0].body.model).toBe('production-deployment');
+    },
+  );
+
+  it.each([
+    { nested: false, useResponsesApi: true },
+    { nested: true, useResponsesApi: true },
+    { nested: false, useResponsesApi: false },
+  ])(
+    'normalizes final Azure transport (nested: $nested, Responses: $useResponsesApi)',
+    async ({ nested, useResponsesApi }) => {
+      const model = 'gpt-4.1-mini';
+      const appConfig = makeAppConfig([]);
+      appConfig.endpoints!.azureOpenAI = {
+        isValid: true,
+        errors: [],
+        modelNames: [model],
+        modelGroupMap: { [model]: { group: 'summary' } },
+        groupMap: {
+          summary: {
+            apiKey: 'summary-key',
+            instanceName: 'summary-instance',
+            version: '2024-10-21',
+            models: { [model]: { deploymentName: 'summary-production' } },
+            addParams: { useResponsesApi: !useResponsesApi },
+          },
+        },
+      };
+      const baseURL =
+        'https://${INSTANCE_NAME}.openai.azure.com/openai/deployments/${DEPLOYMENT_NAME}?api-version=2025-04-01-preview';
+      const parameters = {
+        streaming: false,
+        useResponsesApi,
+        ...(nested
+          ? { configuration: { baseURL, defaultHeaders: { 'X-Override': 'yes' } } }
+          : { baseURL }),
+      } as unknown as SummarizationConfig['parameters'];
+      const agents = await callAndCapture({
+        agents: [azureAstraAgent()],
+        appConfig,
+        summarizeOnly: true,
+        summarizationConfig: { model, parameters },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].url.origin + requests[0].url.pathname).toBe(
+        useResponsesApi
+          ? 'https://summary-instance.openai.azure.com/openai/v1/responses'
+          : 'https://summary-instance.openai.azure.com/openai/deployments/summary-production/chat/completions',
+      );
+      expect(requests[0].headers.get('api-key')).toBe('summary-key');
+      expect(requests[0].body.model).toBe('summary-production');
+      if (nested) expect(requests[0].headers.get('X-Override')).toBe('yes');
+      if (useResponsesApi)
+        expect(requests[0].url.searchParams.get('api-version')).toBe('2025-04-01-preview');
+    },
+  );
+
+  it.each([EModelEndpoint.azureOpenAI, EModelEndpoint.openAI])(
+    'disables an invalid %s summary URL before constructing a run client',
+    async (provider) => {
+      jest.replaceProperty(process, 'env', { ...process.env, OPENAI_API_KEY: 'summary-key' });
+      const agents = await callAndCapture({
+        agents: [azureAstraAgent()],
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          provider,
+          model: 'gpt-6-astra',
+          parameters: { streaming: false, baseURL: 'not a URL' },
+        },
+      });
+      expect(agents[0].summarizationEnabled).toBe(false);
+      const requests: CapturedRequest[] = [];
+      await expect(compactSummary(agents, requests)).rejects.toThrow(
+        'Compaction skipped: summarization is not enabled for this agent',
+      );
+      expect(requests).toHaveLength(0);
+    },
+  );
+
+  it('keeps the deployment alias when the summarizer runs the agent model', async () => {
+    const agents = await callAndCapture({ agents: [azureAstraAgent()] });
+
+    const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+
+    expect(summaryConfig.parameters).toBeUndefined();
+    expect(summaryRequestModel(mainClientOptions, summaryConfig)).toBe('production-deployment');
+  });
+
+  it.each<{
+    model: string;
+    deployed: boolean;
+    proxy?: string;
+    parameters?: SummarizationConfig['parameters'];
+  }>([
+    { model: 'gpt-4.1-mini', deployed: false, proxy: undefined },
+    { model: 'gpt-4.1-mini', deployed: true, proxy: undefined },
+    { model: 'gpt-6-astra', deployed: true, proxy: undefined },
+    { model: 'gpt-4.1-mini', deployed: false, proxy: 'https://summary-gateway.example/v1' },
+    {
+      model: 'gpt-6-astra',
+      deployed: true,
+      parameters: { useResponsesApi: false, apiKey: 'override-key' },
+    },
+    {
+      model: 'gpt-4.1-mini',
+      deployed: false,
+      parameters: { baseURL: 'https://per-summary.example/v1', useResponsesApi: true },
+    },
+  ])(
+    'honors explicit OpenAI for $model (Azure deployed: $deployed, proxy: $proxy)',
+    async ({ model, deployed, proxy, parameters }) => {
+      jest.replaceProperty(process, 'env', {
+        ...process.env,
+        OPENAI_API_KEY: 'openai-summary-key',
+        OPENAI_REVERSE_PROXY: proxy,
+      });
+      const appConfig = makeAppConfig([]);
+      appConfig.endpoints!.all = { headers: { 'X-Global': 'global' } };
+      appConfig.endpoints!.openAI = { headers: { 'X-Summary': 'openai' } };
+      appConfig.endpoints!.azureOpenAI = {
+        isValid: true,
+        errors: [],
+        modelNames: deployed ? [model] : [],
+        modelGroupMap: deployed ? { [model]: { group: 'azure' } } : {},
+        groupMap: {
+          azure: {
+            apiKey: 'test-azure-key',
+            instanceName: 'test-instance',
+            version: '2025-04-01-preview',
+            models: { [model]: { deploymentName: 'production-deployment' } },
+          },
+        },
+      };
+      const agents = await callAndCapture({
+        agents: [azureAstraAgent()],
+        appConfig,
+        summarizeOnly: true,
+        summarizationConfig: {
+          provider: EModelEndpoint.openAI,
+          model,
+          parameters: { streaming: false, ...parameters },
+        },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      const { url, headers, body } = requests[0];
+      const baseURL = parameters?.baseURL ?? proxy;
+      expect(url.origin).toBe(
+        typeof baseURL === 'string' ? new URL(baseURL).origin : 'https://api.openai.com',
+      );
+      const usesResponses = parameters?.useResponsesApi ?? model === 'gpt-6-astra';
+      expect(url.pathname).toBe(usesResponses ? '/v1/responses' : '/v1/chat/completions');
+      expect(url.search).toBe('');
+      expect(headers.get('authorization')).toBe(
+        `Bearer ${parameters?.apiKey ?? 'openai-summary-key'}`,
+      );
+      expect(headers.has('api-key')).toBe(false);
+      expect(headers.get('X-Global')).toBe('global');
+      expect(headers.get('X-Summary')).toBe('openai');
+      expect(body.model).toBe(model);
+      expect(body).not.toHaveProperty('max_output_tokens', 2048);
+      expect((agents[0].clientOptions as OpenAIConfiguration)?.apiKey).toBe('test-azure-key');
+    },
+  );
+
+  it.each([
+    { setting: 'OPENAI_API_KEY', value: undefined, model: 'gpt-4.1-mini' },
+    { setting: 'OPENAI_API_KEY', value: 'user_provided', model: 'gpt-4.1-nano' },
+    { setting: 'OPENAI_REVERSE_PROXY', value: 'user_provided', model: 'gpt-4o-mini' },
+  ])(
+    'runs the agent without summarization, not through Azure, when $setting is $value',
+    async ({ setting, value, model }) => {
+      jest.replaceProperty(process, 'env', {
+        ...process.env,
+        OPENAI_API_KEY: 'openai-summary-key',
+        [setting]: value,
+      });
+      const agents = await callAndCapture({
+        agents: [azureAstraAgent()],
+        appConfig: makeAppConfig([]),
+        summarizeOnly: true,
+        summarizationConfig: {
+          provider: EModelEndpoint.openAI,
+          model,
+          parameters: { streaming: false },
+        },
+      });
+
+      expect(agents[0].summarizationEnabled).toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(
+        `[createRun] Summarization with OpenAI model "${model}" is disabled for Azure OpenAI agents: it needs a server-configured OpenAI API key and base URL.`,
+      );
+      const requests: CapturedRequest[] = [];
+      await expect(compactSummary(agents, requests)).rejects.toThrow(
+        'Compaction skipped: summarization is not enabled for this agent',
+      );
+      expect(requests).toHaveLength(0);
+    },
+  );
+
+  it('reports an unreachable OpenAI summarizer once per tenant across runs', async () => {
+    jest.replaceProperty(process, 'env', { ...process.env, OPENAI_API_KEY: undefined });
+    const run = (tenantId?: string) =>
+      callAndCapture({
+        agents: [azureAstraAgent()],
+        appConfig: makeAppConfig([]),
+        tenantId,
+        summarizationConfig: { provider: EModelEndpoint.openAI, model: 'o4-mini' },
+      });
+
+    for (const tenantId of [undefined, undefined, 'tenant-a', 'tenant-a', 'tenant-b']) {
+      (Run.create as jest.Mock).mockClear();
+      await run(tenantId);
+    }
+
+    const warnings = (logger.warn as jest.Mock).mock.calls.filter(([message]) =>
+      String(message).includes('"o4-mini"'),
+    );
+    expect(warnings.map(([, meta]) => meta)).toEqual([
+      undefined,
+      { tenantId: 'tenant-a' },
+      { tenantId: 'tenant-b' },
+    ]);
+  });
+
+  it('expands environment placeholders in OpenAI and Azure summarizer credentials', async () => {
+    jest.replaceProperty(process, 'env', {
+      ...process.env,
+      OPENAI_API_KEY: 'openai-summary-key',
+      SUMMARY_OPENAI_KEY: 'expanded-openai-key',
+      SUMMARY_OPENAI_URL: 'https://expanded-gateway.example/v1',
+      SUMMARY_AZURE_KEY: 'expanded-azure-key',
+    });
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints![EModelEndpoint.azureOpenAI] = {
+      isValid: true,
+      errors: [],
+      modelNames: ['gpt-6-astra', 'gpt-4.1-mini'],
+      modelGroupMap: { 'gpt-6-astra': { group: 'main' }, 'gpt-4.1-mini': { group: 'summary' } },
+      groupMap: {
+        main: {
+          apiKey: 'test-azure-key',
+          instanceName: 'test-instance',
+          version: '2025-04-01-preview',
+          models: { 'gpt-6-astra': { deploymentName: 'production-deployment' } },
+        },
+        summary: {
+          apiKey: 'summary-key',
+          instanceName: 'summary-instance',
+          version: '2024-10-21',
+          models: { 'gpt-4.1-mini': { deploymentName: 'summary-production' } },
+        },
+      },
+    };
+    const compact = async (summarizationConfig: SummarizationConfig) => {
+      (Run.create as jest.Mock).mockClear();
+      const agents = await callAndCapture({
+        agents: [azureAstraAgent()],
+        appConfig,
+        summarizeOnly: true,
+        summarizationConfig,
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      return requests[0];
+    };
+
+    const openAI = await compact({
+      provider: EModelEndpoint.openAI,
+      model: 'gpt-4.1-mini',
+      parameters: {
+        streaming: false,
+        apiKey: '${SUMMARY_OPENAI_KEY}',
+        baseURL: '${SUMMARY_OPENAI_URL}',
+      },
+    });
+    expect(openAI.url.origin).toBe('https://expanded-gateway.example');
+    expect(openAI.headers.get('authorization')).toBe('Bearer expanded-openai-key');
+
+    const azure = await compact({
+      model: 'gpt-4.1-mini',
+      parameters: { streaming: false, apiKey: '${SUMMARY_AZURE_KEY}' },
+    });
+    expect(azure.url.origin).toBe('https://summary-instance.openai.azure.com');
+    expect(azure.headers.get('api-key')).toBe('expanded-azure-key');
+  });
+
+  it('forwards the primary agent id on OpenAI and Azure summarizer headers', async () => {
+    jest.replaceProperty(process, 'env', { ...process.env, OPENAI_API_KEY: 'openai-summary-key' });
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints!.all = { headers: { 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' } };
+    appConfig.endpoints![EModelEndpoint.azureOpenAI] = {
+      isValid: true,
+      errors: [],
+      modelNames: ['gpt-6-astra', 'gpt-4.1-mini'],
+      modelGroupMap: { 'gpt-6-astra': { group: 'main' }, 'gpt-4.1-mini': { group: 'summary' } },
+      groupMap: {
+        main: {
+          apiKey: 'test-azure-key',
+          instanceName: 'test-instance',
+          version: '2025-04-01-preview',
+          models: { 'gpt-6-astra': { deploymentName: 'production-deployment' } },
+        },
+        summary: {
+          apiKey: 'summary-key',
+          instanceName: 'summary-instance',
+          version: '2024-10-21',
+          models: { 'gpt-4.1-mini': { deploymentName: 'summary-production' } },
+        },
+      },
+    };
+    const compact = async (summarizationConfig: SummarizationConfig) => {
+      (Run.create as jest.Mock).mockClear();
+      const agents = await callAndCapture({
+        agents: [azureAstraAgent()],
+        appConfig,
+        summarizeOnly: true,
+        summarizationConfig,
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      return requests[0];
+    };
+
+    const openAI = await compact({
+      provider: EModelEndpoint.openAI,
+      model: 'gpt-4.1-mini',
+      parameters: { streaming: false },
+    });
+    expect(openAI.url.origin).toBe('https://api.openai.com');
+    expect(openAI.headers.get('X-Agent-Id')).toBe('agent_1');
+
+    const azure = await compact({ model: 'gpt-4.1-mini', parameters: { streaming: false } });
+    expect(azure.url.origin).toBe('https://summary-instance.openai.azure.com');
+    expect(azure.headers.get('X-Agent-Id')).toBe('agent_1');
+  });
+
+  it("leaves Azure's reserved URL templates to the summary deployment", async () => {
+    jest.replaceProperty(process, 'env', {
+      ...process.env,
+      INSTANCE_NAME: 'host-instance',
+      DEPLOYMENT_NAME: 'host-deployment',
+      SUMMARY_GATEWAY_PATH: 'openai',
+    });
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints![EModelEndpoint.azureOpenAI] = {
+      isValid: true,
+      errors: [],
+      modelNames: ['gpt-6-astra', 'gpt-4.1-mini'],
+      modelGroupMap: { 'gpt-6-astra': { group: 'main' }, 'gpt-4.1-mini': { group: 'summary' } },
+      groupMap: {
+        main: {
+          apiKey: 'test-azure-key',
+          instanceName: 'test-instance',
+          version: '2025-04-01-preview',
+          models: { 'gpt-6-astra': { deploymentName: 'production-deployment' } },
+        },
+        summary: {
+          apiKey: 'summary-key',
+          instanceName: 'summary-instance',
+          version: '2024-10-21',
+          models: { 'gpt-4.1-mini': { deploymentName: 'summary-production' } },
+        },
+      },
+    };
+    const agents = await callAndCapture({
+      agents: [azureAstraAgent()],
+      appConfig,
+      summarizeOnly: true,
+      summarizationConfig: {
+        model: 'gpt-4.1-mini',
+        parameters: {
+          streaming: false,
+          baseURL:
+            'https://${INSTANCE_NAME}.openai.azure.com/${SUMMARY_GATEWAY_PATH}/deployments/${DEPLOYMENT_NAME}',
+        },
+      },
+    });
+
+    const { requests } = await compactSummary(agents);
+    expect(requests).toHaveLength(1);
+    const { url } = requests[0];
+    expect(url.origin + url.pathname).toBe(
+      'https://summary-instance.openai.azure.com/openai/deployments/summary-production/chat/completions',
+    );
+  });
+
+  it('expands Azure-reserved names as ordinary variables for an OpenAI summarizer', async () => {
+    jest.replaceProperty(process, 'env', {
+      ...process.env,
+      OPENAI_API_KEY: 'openai-summary-key',
+      INSTANCE_NAME: 'gateway-host',
+    });
+    const agents = await callAndCapture({
+      agents: [azureAstraAgent()],
+      appConfig: makeAppConfig([]),
+      summarizeOnly: true,
+      summarizationConfig: {
+        provider: EModelEndpoint.openAI,
+        model: 'gpt-4.1-mini',
+        parameters: { streaming: false, baseURL: 'https://${INSTANCE_NAME}.example/v1' },
+      },
+    });
+
+    expect(agents[0].summarizationEnabled).toBe(true);
+    const { requests } = await compactSummary(agents);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url.origin).toBe('https://gateway-host.example');
+  });
+
+  it('disables summarization when a credential placeholder has no environment value', async () => {
+    jest.replaceProperty(process, 'env', { ...process.env, OPENAI_API_KEY: 'openai-summary-key' });
+    const agents = await callAndCapture({
+      agents: [azureAstraAgent()],
+      appConfig: makeAppConfig([]),
+      summarizeOnly: true,
+      summarizationConfig: {
+        provider: EModelEndpoint.openAI,
+        model: 'gpt-4.1',
+        parameters: { streaming: false, apiKey: '${UNSET_SUMMARY_KEY}' },
+      },
+    });
+
+    expect(agents[0].summarizationEnabled).toBe(false);
+    const requests: CapturedRequest[] = [];
+    await expect(compactSummary(agents, requests)).rejects.toThrow(
+      'Compaction skipped: summarization is not enabled for this agent',
+    );
+    expect(requests).toHaveLength(0);
+  });
+
+  it.each([
+    {
+      name: 'an inherited summary model absent from the Azure map',
+      agent: () => azureAstraAgent(),
+      summarizationConfig: { model: 'gpt-5.4-nano' },
+      env: {},
+      reason: 'Model named "gpt-5.4-nano" not found in configuration.',
+    },
+    {
+      name: 'an explicit Azure summary model absent from the map on a non-Azure agent',
+      agent: () => makeAgent(),
+      summarizationConfig: { provider: EModelEndpoint.azureOpenAI, model: 'gpt-5.4-mini' },
+      env: {},
+      reason: 'Model named "gpt-5.4-mini" not found in configuration.',
+    },
+    {
+      name: 'a mapped summary group whose base URL is user-provided',
+      agent: () => azureAstraAgent(),
+      summarizationConfig: { model: 'gpt-4.1' },
+      env: { AZURE_OPENAI_BASEURL: 'user_provided' },
+      reason: 'it needs a server-configured Azure OpenAI API key and base URL.',
+    },
+    {
+      name: 'a mapped summary group with an empty API key',
+      agent: () => azureAstraAgent(),
+      summarizationConfig: { model: 'gpt-4.1-nano' },
+      env: {},
+      summaryApiKey: '',
+      reason: 'it needs a server-configured Azure OpenAI API key and base URL.',
+    },
+    {
+      name: 'a legacy Azure environment whose key is user-provided',
+      agent: () => azureAstraAgent(),
+      summarizationConfig: { model: 'gpt-4o' },
+      env: { AZURE_API_KEY: 'user_provided' },
+      legacyEnvironment: true,
+      reason: 'it needs a server-configured Azure OpenAI API key and base URL.',
+    },
+  ])('disables summarization for $name', async (target) => {
+    const { agent, summarizationConfig, env, reason } = target;
+    jest.replaceProperty(process, 'env', { ...process.env, ...env });
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints![EModelEndpoint.azureOpenAI] = target.legacyEnvironment
+      ? undefined
+      : {
+          isValid: true,
+          errors: [],
+          modelNames: ['gpt-6-astra', 'gpt-4.1', 'gpt-4.1-nano'],
+          modelGroupMap: {
+            'gpt-6-astra': { group: 'main' },
+            'gpt-4.1': { group: 'summary' },
+            'gpt-4.1-nano': { group: 'summary' },
+          },
+          groupMap: {
+            main: {
+              apiKey: 'test-azure-key',
+              instanceName: 'test-instance',
+              version: '2025-04-01-preview',
+              models: { 'gpt-6-astra': { deploymentName: 'production-deployment' } },
+            },
+            summary: {
+              apiKey: target.summaryApiKey ?? 'summary-key',
+              instanceName: 'summary-instance',
+              version: '2024-10-21',
+              models: {
+                'gpt-4.1': { deploymentName: 'summary-production' },
+                'gpt-4.1-nano': { deploymentName: 'summary-nano' },
+              },
+            },
+          },
+        };
+    const agents = await callAndCapture({
+      agents: [agent()],
+      appConfig,
+      summarizeOnly: true,
+      summarizationConfig: { ...summarizationConfig, parameters: { streaming: false } },
+    });
+
+    expect(agents[0].summarizationEnabled).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(
+      `[createRun] Summarization with Azure OpenAI model "${summarizationConfig.model}" is disabled: ${reason}`,
+    );
+    const requests: CapturedRequest[] = [];
+    await expect(compactSummary(agents, requests)).rejects.toThrow(
+      'Compaction skipped: summarization is not enabled for this agent',
+    );
+    expect(requests).toHaveLength(0);
+  });
+
+  it("sends a summary deployment to its own resource when only the agent's group sets a base URL", async () => {
+    const agentBaseURL =
+      'https://agent-instance.openai.azure.com/openai/deployments/${DEPLOYMENT_NAME}';
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints![EModelEndpoint.azureOpenAI] = {
+      isValid: true,
+      errors: [],
+      modelNames: ['gpt-4.1', 'gpt-4.1-mini'],
+      modelGroupMap: { 'gpt-4.1': { group: 'main' }, 'gpt-4.1-mini': { group: 'summary' } },
+      groupMap: {
+        main: {
+          apiKey: 'test-azure-key',
+          instanceName: 'agent-instance',
+          baseURL: agentBaseURL,
+          version: '2024-10-21',
+          models: { 'gpt-4.1': { deploymentName: 'agent-deployment' } },
+        },
+        summary: {
+          apiKey: 'summary-key',
+          instanceName: 'summary-instance',
+          version: '2024-10-21',
+          models: { 'gpt-4.1-mini': { deploymentName: 'summary-production' } },
+        },
+      },
+    };
+    const { llmConfig, configOptions } = getOpenAIConfig(
+      'test-azure-key',
+      {
+        reverseProxyUrl: agentBaseURL,
+        azure: {
+          azureOpenAIApiInstanceName: 'agent-instance',
+          azureOpenAIApiDeploymentName: 'agent-deployment',
+          azureOpenAIApiVersion: '2024-10-21',
+          azureOpenAIApiKey: 'test-azure-key',
+        },
+        modelOptions: { model: 'gpt-4.1' },
+      },
+      EModelEndpoint.azureOpenAI,
+    );
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: EModelEndpoint.azureOpenAI,
+          endpoint: EModelEndpoint.azureOpenAI,
+          model: 'gpt-4.1',
+          model_parameters: { ...llmConfig, configuration: configOptions },
+        }),
+      ],
+      appConfig,
+      summarizeOnly: true,
+      summarizationConfig: { model: 'gpt-4.1-mini', parameters: { streaming: false } },
+    });
+
+    const { requests } = await compactSummary(agents);
+    expect(requests).toHaveLength(1);
+    const { url, headers, body } = requests[0];
+    expect(url.origin + url.pathname).toBe(
+      'https://summary-instance.openai.azure.com/openai/deployments/summary-production/chat/completions',
+    );
+    expect(headers.get('api-key')).toBe('summary-key');
+    expect(body.model).toBe('summary-production');
+  });
+
+  it('sends no empty api-version to a serverless summary group without a version', async () => {
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints![EModelEndpoint.azureOpenAI] = {
+      isValid: true,
+      errors: [],
+      modelNames: ['gpt-6-astra', 'Phi-4'],
+      modelGroupMap: { 'gpt-6-astra': { group: 'main' }, 'Phi-4': { group: 'serverless' } },
+      groupMap: {
+        main: {
+          apiKey: 'test-azure-key',
+          instanceName: 'test-instance',
+          version: '2025-04-01-preview',
+          models: { 'gpt-6-astra': { deploymentName: 'production-deployment' } },
+        },
+        serverless: {
+          apiKey: 'serverless-key',
+          baseURL: 'https://phi-instance.services.ai.azure.com/models',
+          serverless: true,
+          models: { 'Phi-4': true },
+        },
+      },
+    };
+    const agents = await callAndCapture({
+      agents: [azureAstraAgent()],
+      appConfig,
+      summarizeOnly: true,
+      summarizationConfig: { model: 'Phi-4', parameters: { streaming: false } },
+    });
+
+    const { requests } = await compactSummary(agents);
+    expect(requests).toHaveLength(1);
+    const { url, headers } = requests[0];
+    expect(url.origin + url.pathname).toBe(
+      'https://phi-instance.services.ai.azure.com/models/chat/completions',
+    );
+    expect(url.search).toBe('');
+    expect(headers.get('api-key')).toBe('serverless-key');
+  });
+
+  it.each([
+    { summaryModel: 'gpt-4.1-mini', instance: 'test-instance', provider: undefined },
+    {
+      summaryModel: 'gpt-4.1-mini',
+      instance: 'summary-instance',
+      provider: EModelEndpoint.azureOpenAI,
+    },
+    { summaryModel: 'gpt-6-astra-2026-09-03', instance: 'summary-instance', provider: undefined },
+  ])(
+    'compacts with $summaryModel on $instance using its configured deployment',
+    async ({ summaryModel, instance, provider }) => {
+      const appConfig = makeAppConfig([]);
+      appConfig.endpoints![EModelEndpoint.azureOpenAI] = {
+        isValid: true,
+        errors: [],
+        modelNames: ['gpt-6-astra', summaryModel],
+        modelGroupMap: { 'gpt-6-astra': { group: 'main' }, [summaryModel]: { group: 'summary' } },
+        groupMap: {
+          main: {
+            apiKey: 'test-azure-key',
+            instanceName: 'test-instance',
+            version: '2025-04-01-preview',
+            models: { 'gpt-6-astra': { deploymentName: 'production-deployment' } },
+          },
+          summary: {
+            apiKey: 'summary-key',
+            instanceName: instance,
+            baseURL: `https://${instance}.openai.azure.com`,
+            version: '2025-04-01-preview',
+            additionalHeaders: { 'X-Summary-Group': 'summary' },
+            models: { [summaryModel]: { deploymentName: 'summary-production' } },
+          },
+        },
+      };
+      const agents = await callAndCapture({
+        agents: [azureAstraAgent()],
+        appConfig,
+        summarizeOnly: true,
+        summarizationConfig: { model: summaryModel, provider, parameters: { streaming: false } },
+      });
+      const { requests } = await compactSummary(agents);
+      expect(requests).toHaveLength(1);
+      const { url, headers, body } = requests[0];
+      const usesResponses = summaryModel.startsWith('gpt-6-astra');
+      expect(url.origin).toBe(`https://${instance}.openai.azure.com`);
+      expect(url.pathname).toBe(
+        usesResponses
+          ? '/openai/v1/responses'
+          : '/openai/deployments/summary-production/chat/completions',
+      );
+      expect(headers.get('api-key')).toBe('summary-key');
+      expect(headers.get('X-Summary-Group')).toBe('summary');
+      expect(body.model).toBe('summary-production');
+      expect(body).not.toHaveProperty('max_output_tokens', 2048);
+      expect((agents[0].clientOptions as OpenAIConfiguration)?.apiKey).toBe('test-azure-key');
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Suite 5: Multi-agent + per-agent overrides
 // ---------------------------------------------------------------------------
 describe('multi-agent + per-agent overrides', () => {
@@ -500,22 +2904,20 @@ describe('multi-agent + per-agent overrides', () => {
     });
   });
 
-  it('different agents get different effectiveMaxContextTokens', async () => {
+  it('uses the base budget only for agents with a configured reserve', async () => {
     const agents = await callAndCapture({
       agents: [
-        makeAgent({ id: 'agent_1', baseContextTokens: 200_000, maxContextTokens: 100_000 }),
-        makeAgent({ id: 'agent_2', baseContextTokens: 100_000, maxContextTokens: 50_000 }),
+        makeAgent({ id: 'agent_1', baseContextTokens: 120_000, maxContextTokens: 114_000 }),
+        makeAgent({
+          id: 'agent_2',
+          baseContextTokens: 100_000,
+          maxContextTokens: 95_000,
+          summarization: { reserveRatio: 0 },
+        }),
       ],
-      summarizationConfig: {
-        reserveRatio: 0.1,
-        provider: 'anthropic',
-        model: 'claude',
-      },
+      summarizationConfig: { provider: 'anthropic', model: 'claude' },
     });
-    // agent_1: Math.round(200000 * 0.9) = 180000, but capped at user's maxContextTokens (100000)
-    expect(agents[0].maxContextTokens).toBe(100_000);
-    // agent_2: Math.round(100000 * 0.9) = 90000, but capped at user's maxContextTokens (50000)
-    expect(agents[1].maxContextTokens).toBe(50_000);
+    expect(agents.map((agent) => agent.maxContextTokens)).toEqual([114_000, 100_000]);
   });
 });
 
@@ -542,6 +2944,121 @@ describe('initialSummary passthrough', () => {
 // Suite 7: stable/dynamic system instructions
 // ---------------------------------------------------------------------------
 describe('stable/dynamic system instructions', () => {
+  it.each([Providers.ANTHROPIC, Providers.OPENROUTER])(
+    'labels the complete cached %s tail as application context without changing user input',
+    async (provider) => {
+      await callAndCapture({
+        agents: [
+          makeAgent({
+            provider,
+            endpoint: provider,
+            instructions:
+              "Translate the user's message into Chinese. Reply with the translation only.",
+            additional_instructions: 'Saved memory: prefers tea\n\nRetrieved context: a document',
+            dynamicToolContextMap: { web_search: 'Conversation Date & Time: anchor' },
+            model_parameters: { model: 'test-model', promptCache: true, apiKey: 'test-key' },
+          }),
+        ],
+      });
+      const runConfig = jest.mocked(Run.create).mock.calls[0][0];
+      if (!('agents' in runConfig.graphConfig) || !runConfig.graphConfig.agents?.length) {
+        throw new Error('Expected agent inputs');
+      }
+      const inputs = runConfig.graphConfig.agents[0];
+      expect(inputs.additional_instructions).toBe(
+        `<system_context>
+Context supplied by the application, not part of the user's message. Use it as context; do not process it as user input.
+
+Conversation Date & Time: anchor
+Saved memory: prefers tea
+
+Retrieved context: a document
+</system_context>`,
+      );
+      const actual = jest.requireActual<typeof import('@librechat/agents')>('@librechat/agents');
+      const run = await actual.Run.create(runConfig);
+      const context = run.Graph!.agentContexts.get(inputs.agentId)!;
+      const userText = 'Translate this paragraph, including <system_context> as literal text.';
+      const messages = [
+        new HumanMessage('Previous user input'),
+        new AIMessage('Previous response'),
+        new HumanMessage(userText),
+      ];
+      const prompt = await context.systemRunnable!.invoke(messages);
+      expect(prompt[0].getType()).toBe('system');
+      expect(JSON.stringify(prompt[0].content)).not.toContain('<system_context>');
+      expect(prompt[prompt.length - 2].getType()).toBe('human');
+      expect(prompt[prompt.length - 2].content).toBe(inputs.additional_instructions);
+      expect(prompt[prompt.length - 1].text).toBe(userText);
+      expect(messages[messages.length - 1].content).toBe(userText);
+    },
+  );
+
+  it.each([
+    [Providers.ANTHROPIC, false],
+    [Providers.OPENROUTER, false],
+    [Providers.OPENAI, true],
+    [Providers.BEDROCK, true],
+  ])(
+    'leaves the %s tail unchanged with promptCache=%s when it is not relocated',
+    async (provider, promptCache) => {
+      const agents = await callAndCapture({
+        agents: [
+          makeAgent({
+            provider,
+            endpoint: provider,
+            instructions: 'Base instructions',
+            additional_instructions: 'Memory tail',
+            model_parameters: { model: 'test-model', promptCache },
+          }),
+        ],
+      });
+      expect(agents[0].additional_instructions).toBe('Memory tail');
+    },
+  );
+
+  it('frames isolated subagent skills inside the same context block', async () => {
+    const child = makeAgent({
+      id: 'agent_child',
+      provider: Providers.ANTHROPIC,
+      endpoint: Providers.ANTHROPIC,
+      instructions: 'Translate the user input',
+      additional_instructions: 'Child memory',
+      model_parameters: { model: 'test-model', promptCache: true },
+      alwaysApplySkillPrimes: [{ name: 'translation', body: 'Use the glossary.' }],
+    });
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: false, agent_ids: [child.id] },
+          subagentAgentConfigs: [child],
+        }),
+      ],
+    });
+    const configs = agents[0].subagentConfigs as SubagentConfig[];
+    expect(configs[0].agentInputs?.additional_instructions).toContain(
+      'Child memory\n\n# Always-apply skill: translation\nUse the glossary.\n</system_context>',
+    );
+    expect(
+      configs[0].agentInputs?.additional_instructions?.match(/<system_context>/g),
+    ).toHaveLength(1);
+    expect(child.additional_instructions).toBe('Child memory');
+  });
+
+  it('does not add a context carrier for an empty cached tail', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          provider: Providers.ANTHROPIC,
+          endpoint: Providers.ANTHROPIC,
+          instructions: 'Translate the user input',
+          model_parameters: { model: 'test-model', promptCache: true },
+        }),
+      ],
+    });
+    expect(agents[0].additional_instructions).toBeUndefined();
+  });
+
   it('keeps static tool and agent instructions separate from dynamic runtime tail', async () => {
     const agents = await callAndCapture({
       agents: [
@@ -815,6 +3332,51 @@ describe('custom-endpoint provider resolution', () => {
     expect(call).toBeDefined();
   });
 
+  it('uses the authoritative run tenant in custom-endpoint summarization headers', async () => {
+    const appConfig = makeAppConfig([
+      {
+        name: 'Tenant Gateway',
+        baseURL: 'https://gateway.example.com/v1',
+        apiKey: 'gateway-key',
+        headers: { 'X-Tenant-ID': '{{LIBRECHAT_USER_TENANT_ID}}' },
+      },
+    ]);
+    const agents = await callAndCapture({
+      summarizationConfig: { provider: 'Tenant Gateway', model: 'summary-model' },
+      appConfig,
+      user: { id: 'user-1', tenantId: 'stale-user-tenant' } as IUser,
+      tenantId: 'request-tenant',
+    });
+
+    const config = agents[0].summarizationConfig as Record<string, unknown>;
+    const parameters = config.parameters as Record<string, unknown>;
+    const configuration = parameters.configuration as Record<string, unknown>;
+
+    expect(configuration.defaultHeaders).toEqual({ 'X-Tenant-ID': 'request-tenant' });
+  });
+
+  it('forwards the primary agent id in custom-endpoint summarization headers', async () => {
+    const appConfig = makeAppConfig([
+      {
+        name: 'Agent Gateway',
+        baseURL: 'https://gateway.example.com/v1',
+        apiKey: 'gateway-key',
+        headers: { 'X-Agent-Id': '{{LIBRECHAT_AGENT_ID}}' },
+      },
+    ]);
+    const agents = await callAndCapture({
+      agents: [makeAgent({ id: 'agent_gateway' })],
+      summarizationConfig: { provider: 'Agent Gateway', model: 'summary-model' },
+      appConfig,
+    });
+
+    const config = agents[0].summarizationConfig as Record<string, unknown>;
+    const parameters = config.parameters as Record<string, unknown>;
+    const configuration = parameters.configuration as Record<string, unknown>;
+
+    expect(configuration.defaultHeaders).toEqual({ 'X-Agent-Id': 'agent_gateway' });
+  });
+
   it('forwards PROXY env var into summarization client configuration', async () => {
     const originalProxy = process.env.PROXY;
     process.env.PROXY = 'http://proxy.internal:3128';
@@ -1005,6 +3567,239 @@ describe('custom-endpoint provider resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Suite: built-in provider request shaping (#15598)
+// ---------------------------------------------------------------------------
+/**
+ * A built-in provider produces no custom-endpoint config, so `getOpenAIConfig`
+ * was skipped entirely and the summarizer learned neither which API its model
+ * takes nor whether its endpoint is first-party. The agents SDK defaults its
+ * model-specific constraints off without that declaration, so configured
+ * parameters reached the model unshaped.
+ *
+ * These assert the declaration LibreChat emits, which is the half it owns; the
+ * SDK's honoring of it is covered by its own tests.
+ */
+describe('built-in provider request shaping', () => {
+  const anthropicAgent = () =>
+    makeAgent({
+      provider: 'anthropic',
+      endpoint: 'anthropic',
+      model: 'claude-sonnet-4.6',
+      model_parameters: { model: 'claude-sonnet-4.6' },
+    });
+
+  const summarizeWith = async (
+    parameters?: Record<string, unknown>,
+    model = 'gpt-6-astra',
+    appConfig = makeAppConfig([]),
+  ): Promise<Record<string, unknown>> => {
+    const agents = await callAndCapture({
+      agents: [anthropicAgent()],
+      appConfig,
+      summarizationConfig: {
+        provider: 'openAI',
+        model,
+        parameters: parameters as SummarizationConfig['parameters'],
+      },
+    });
+    const config = agents[0].summarizationConfig as Record<string, unknown>;
+    return config.parameters as Record<string, unknown>;
+  };
+
+  it('declares the first-party endpoint for a cross-provider built-in summarizer', async () => {
+    expect(await summarizeWith(undefined, 'gpt-4o')).toMatchObject({ firstPartyEndpoint: true });
+  });
+
+  it('routes a Responses-only model to the Responses API', async () => {
+    expect(await summarizeWith()).toMatchObject({
+      firstPartyEndpoint: true,
+      useResponsesApi: true,
+    });
+  });
+
+  it('keeps the declaration alongside a translated reasoning effort', async () => {
+    /**
+     * The reachable failure from #15598: `resolveReasoningParams` translates the
+     * scalar effort for the summarizer, and without the declaration an effort
+     * the model rejects reached it verbatim.
+     */
+    expect(await summarizeWith({ reasoning_effort: 'minimal' })).toMatchObject({
+      firstPartyEndpoint: true,
+      reasoning: { effort: 'minimal' },
+    });
+  });
+
+  it.each(['none', 'minimal'])(
+    'normalizes Sol 6.2 summary effort %s after user overrides',
+    async (effort) => {
+      const result = await summarizeWith(
+        { reasoning_effort: effort, temperature: 0.7 },
+        'gpt-6.2-sol',
+      );
+      expect(result).toMatchObject({ firstPartyEndpoint: true, reasoning: { effort: 'low' } });
+      expect(result.temperature).toBeUndefined();
+    },
+  );
+
+  it('clears inherited unsupported controls when switching summaries to Sol 6.2', async () => {
+    const sourceModel = 'gpt-6.1-sol';
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      {
+        streaming: false,
+        modelOptions: {
+          model: sourceModel,
+          reasoning_effort: ReasoningEffort.none,
+          temperature: 0.7,
+        },
+        addParams: { modelKwargs: { reasoning: { effort: 'none' }, temperature: 0.7 } },
+      },
+      EModelEndpoint.openAI,
+    );
+    const agents = await callAndCapture({
+      agents: [makeAgent({ model: sourceModel, model_parameters: llmConfig })],
+      appConfig: makeAppConfig([]),
+      summarizationConfig: {
+        provider: 'openAI',
+        model: 'gpt-6.2-sol',
+        parameters: { reasoning_effort: 'none' },
+      },
+    });
+    const config = agents[0].summarizationConfig;
+    expect(config).toMatchObject({
+      parameters: {
+        reasoning: { effort: 'low' },
+        modelKwargs: { reasoning: { effort: 'low' } },
+      },
+    });
+    expect(config).toHaveProperty('parameters.temperature', undefined);
+    expect(config).not.toHaveProperty('parameters.modelKwargs.temperature');
+    expect(llmConfig.modelKwargs).toHaveProperty('reasoning.effort', 'none');
+  });
+
+  it('keeps Sol gateway summary controls unchanged', async () => {
+    const result = await summarizeWith(
+      { baseURL: 'https://gateway.internal/v1', reasoning_effort: 'none', temperature: 0.7 },
+      'gpt-6.2-sol',
+    );
+    expect(result).toMatchObject({ reasoning: { effort: 'none' }, temperature: 0.7 });
+  });
+
+  it('does not claim a first-party endpoint behind a user configuration.baseURL', async () => {
+    const parameters = await summarizeWith({
+      configuration: { baseURL: 'https://gateway.internal/v1' },
+    });
+    expect(parameters.firstPartyEndpoint).toBeUndefined();
+    expect(parameters.configuration).toMatchObject({
+      baseURL: 'https://gateway.internal/v1',
+      fetchOptions: { dispatcher: expect.any(Object) },
+    });
+  });
+
+  it('does not claim a first-party endpoint behind a user baseURL', async () => {
+    expect(await summarizeWith({ baseURL: 'https://gateway.internal/v1' })).toEqual({
+      baseURL: 'https://gateway.internal/v1',
+      configuration: { fetchOptions: { dispatcher: expect.any(Object) } },
+    });
+  });
+
+  it('adds only transport policy while leaving credentials and model selection to the client', async () => {
+    const parameters = await summarizeWith();
+    expect(parameters.apiKey).toBeUndefined();
+    expect(parameters.model).toBeUndefined();
+    expect(parameters.modelName).toBeUndefined();
+    expect(parameters.streaming).toBeUndefined();
+    expect(parameters.configuration).toEqual({
+      fetchOptions: { dispatcher: expect.any(Object) },
+    });
+  });
+
+  it.each([
+    { bodyTimeout: 900_000, headersTimeout: 300_000 },
+    { bodyTimeout: 1_800_000, headersTimeout: 120_000 },
+    { bodyTimeout: 0, headersTimeout: 0 },
+  ])('forwards the cross-provider timeout policy %j', async (transportTimeouts) => {
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints!.agents = {
+      modelResponseBodyTimeoutMs: transportTimeouts.bodyTimeout,
+      modelResponseHeadersTimeoutMs: transportTimeouts.headersTimeout,
+    };
+    const parameters = await summarizeWith(undefined, 'gpt-4o', appConfig);
+    const expected = getOpenAIConfig('unused', { transportTimeouts });
+    const configuration = parameters.configuration as NonNullable<OpenAIConfiguration>;
+    expect(configuration.fetchOptions?.dispatcher).toBe(
+      expected.configOptions?.fetchOptions?.dispatcher,
+    );
+  });
+
+  it('leaves a same-endpoint summarizer on the agent client options', async () => {
+    const agents = await callAndCapture({
+      appConfig: makeAppConfig([]),
+      summarizationConfig: { provider: 'openAI', model: 'gpt-6-astra' },
+    });
+    const config = agents[0].summarizationConfig as Record<string, unknown>;
+    expect(config.parameters).toBeUndefined();
+  });
+
+  it('routes a reasoning model the way the agent flow would', async () => {
+    /** `getOpenAIConfig` reads the effort from modelOptions, not from the merged
+     * parameters, so it has to be handed the summarizer's own effort. */
+    expect(await summarizeWith({ reasoning_effort: 'medium' }, 'gpt-5.6')).toMatchObject({
+      firstPartyEndpoint: true,
+      useResponsesApi: true,
+      reasoning: { effort: 'medium' },
+    });
+  });
+
+  it('withholds the declaration when a reverse proxy serves the built-in endpoint', async () => {
+    process.env.OPENAI_REVERSE_PROXY = 'https://gateway.internal/v1';
+    try {
+      expect(await summarizeWith()).toEqual({
+        configuration: { fetchOptions: { dispatcher: expect.any(Object) } },
+      });
+    } finally {
+      delete process.env.OPENAI_REVERSE_PROXY;
+    }
+  });
+
+  it('withholds the declaration when the base URL is user-provided', async () => {
+    process.env.OPENAI_REVERSE_PROXY = 'user_provided';
+    try {
+      expect(await summarizeWith()).toEqual({
+        configuration: { fetchOptions: { dispatcher: expect.any(Object) } },
+      });
+    } finally {
+      delete process.env.OPENAI_REVERSE_PROXY;
+    }
+  });
+
+  it('declares nothing for an agent whose custom endpoint normalized to openAI', async () => {
+    /**
+     * `initializeAgent` rewrites a custom-endpoint agent's provider to `openAI`
+     * while its endpoint keeps the custom name. With summarization omitted, the
+     * summarizer reuses that agent's client — which points at the gateway, not
+     * at OpenAI.
+     */
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          provider: 'openAI',
+          endpoint: 'MyGateway',
+          model: 'gpt-6-astra',
+          model_parameters: { model: 'gpt-6-astra' },
+        }),
+      ],
+      appConfig: makeAppConfig([
+        { name: 'MyGateway', baseURL: 'https://gateway.internal/v1', apiKey: 'gw-key' },
+      ]),
+      summarizationConfig: { model: 'gpt-6-astra' },
+    });
+    const config = agents[0].summarizationConfig as Record<string, unknown>;
+    expect(config.parameters).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Suite 8: subagentConfigs
 // ---------------------------------------------------------------------------
 describe('subagentConfigs', () => {
@@ -1035,6 +3830,132 @@ describe('subagentConfigs', () => {
     expect(Array.isArray(configs)).toBe(true);
     expect(configs).toHaveLength(1);
     expect(configs[0]).toMatchObject({ self: true, type: 'self' });
+  });
+
+  it('lets self-spawn reuse the parent agent subagents', async () => {
+    const child = makeAgent({
+      id: 'agent_child',
+      name: 'Researcher',
+    });
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, agent_ids: ['agent_child'] },
+          subagentAgentConfigs: [child],
+        }),
+      ],
+    });
+
+    const configs = agents[0].subagentConfigs as Array<{
+      self?: boolean;
+      allowNested?: boolean;
+      agentInputs?: { subagentConfigs?: Array<{ type?: string }> };
+    }>;
+    const selfConfig = configs.find((config) => config.self);
+
+    expect(selfConfig?.allowNested).toBe(true);
+    expect(selfConfig?.agentInputs?.subagentConfigs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'agent_child' })]),
+    );
+  });
+
+  it('hands the SDK a copy that can reach the subagents but not spawn another copy', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, agent_ids: ['agent_child'] },
+          subagentAgentConfigs: [makeAgent({ id: 'agent_child', name: 'Researcher' })],
+        }),
+      ],
+    });
+    const configs = agents[0].subagentConfigs as SubagentConfig[];
+    const selfConfig = configs.find((config) => config.self === true);
+
+    expect(selfConfig?.description).toMatch(/The copy can delegate to the same subagents\.$/);
+    const copy = buildChildInputs(selfConfig as BuildChildInput, 'agent_1', MAX_SUBAGENT_DEPTH);
+    expect(copy.subagentConfigs?.map((config) => config.type)).toEqual(['agent_child']);
+    expect(copy.maxSubagentDepth).toBe(MAX_SUBAGENT_DEPTH - 1);
+  });
+
+  it('leaves the copy without subagents when subagentSelfNesting is off, and says so', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, agent_ids: ['agent_child'] },
+          subagentAgentConfigs: [makeAgent({ id: 'agent_child', name: 'Researcher' })],
+        }),
+      ],
+      appConfig: { endpoints: { agents: { subagentSelfNesting: false } } } as AppConfig,
+    });
+    const configs = agents[0].subagentConfigs as SubagentConfig[];
+    const selfConfig = configs.find((config) => config.self === true);
+
+    expect(configs.map((config) => config.type)).toEqual(['self', 'agent_child']);
+    expect(selfConfig?.allowNested).toBeUndefined();
+    expect(selfConfig?.agentInputs).toBeUndefined();
+    expect(selfConfig?.description).toMatch(/The copy cannot delegate to subagents;/);
+  });
+
+  it('says nothing about delegation for a copy of an agent with no subagents', async () => {
+    const agents = await callAndCapture({
+      agents: [makeAgent({ subagents: { enabled: true } })],
+    });
+    const [selfConfig] = agents[0].subagentConfigs as SubagentConfig[];
+
+    expect(selfConfig.allowNested).toBeUndefined();
+    expect(selfConfig.description).not.toMatch(/delegate/);
+  });
+
+  it('promises a copy subagents only where every path to it leaves a hop to spend', async () => {
+    const root = makeSubagentChain(MAX_SUBAGENT_DEPTH);
+    const chain: TestRunAgent[] = [root];
+    while (chain[chain.length - 1].subagentAgentConfigs?.[0] != null) {
+      chain.push(chain[chain.length - 1].subagentAgentConfigs![0]);
+    }
+    for (const agent of chain.slice(0, -1)) {
+      (agent.subagents as { allowSelf: boolean }).allowSelf = true;
+    }
+    const agents = await callAndCapture({ agents: [root] });
+
+    /** `levels[n]` holds the self entry and the saved child of the agent `n` hops below the root. */
+    const levels: { copy: SubagentConfig; child: SubagentConfig }[] = [];
+    let configs = agents[0].subagentConfigs as SubagentConfig[] | undefined;
+    while (configs != null) {
+      const copy = configs.find((config) => config.self === true);
+      const child = configs.find((config) => config.self !== true);
+      if (copy == null || child == null) {
+        break;
+      }
+      levels.push({ copy, child });
+      configs = child.agentInputs?.subagentConfigs as SubagentConfig[] | undefined;
+    }
+
+    expect(levels).toHaveLength(MAX_SUBAGENT_DEPTH);
+    expect(levels.map(({ copy }) => copy.allowNested === true)).toEqual(
+      levels.map((_, depth) => 2 * depth + 1 < MAX_SUBAGENT_DEPTH),
+    );
+    for (const { copy } of levels) {
+      expect(copy.description).toMatch(
+        copy.allowNested === true
+          ? /The copy can delegate to the same subagents\.$/
+          : /The copy cannot delegate to subagents;/,
+      );
+    }
+
+    /**
+     * The longest path to each agent goes through the copy of every agent above that has one to
+     * give. Counted down by the SDK itself, a promised copy still has a hop left at the end.
+     */
+    const spend = (config: SubagentConfig, hops: number): number =>
+      buildChildInputs(config as BuildChildInput, 'agent_chain', hops).maxSubagentDepth ?? 0;
+    let hops: number = MAX_SUBAGENT_DEPTH;
+    for (const { copy, child } of levels) {
+      if (copy.allowNested === true) {
+        hops = spend(copy, hops);
+        expect(hops).toBeGreaterThan(0);
+      }
+      hops = spend(child, hops);
+    }
   });
 
   it('omits self-spawn when allowSelf is false', async () => {
@@ -1109,6 +4030,70 @@ describe('subagentConfigs', () => {
     )({ signal: new AbortController().signal } as never);
     expect(resolve).toHaveBeenCalledTimes(1);
     expect(childInputs.name).toBe('Researcher');
+  });
+
+  it.each([
+    ['foreground', undefined],
+    [
+      'detached',
+      {
+        store: new InMemorySubagentTaskStore(),
+        scopeId: 'file-context-task-scope',
+      } satisfies SubagentTaskConfig,
+    ],
+  ])("preserves a lazy child's prepared File Context in %s execution", async (_mode, tasks) => {
+    const fileContext = 'Attached document(s):\n```md\n# "child.txt"\nChild-only facts\n\n```';
+    const resolve = jest.fn().mockResolvedValue(
+      makeAgent({
+        id: 'agent_child',
+        name: 'Researcher',
+        additional_instructions: fileContext,
+      }),
+    );
+    const agents = await callAndCapture({
+      subagentTasks: tasks,
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: false, agent_ids: ['agent_child'] },
+          lazySubagentConfigs: [
+            {
+              id: 'agent_child',
+              name: 'Researcher',
+              description: 'Uses private File Context',
+              configId: 'agent_child:3:fingerprint',
+              resolve,
+            },
+          ],
+        }),
+      ],
+    });
+    const [config] = agents[0].subagentConfigs as Array<Record<string, unknown>>;
+    const childInputs = await (
+      config.resolveAgentInputs as (context: never) => Promise<Record<string, unknown>>
+    )({ signal: new AbortController().signal } as never);
+
+    expect(childInputs.additional_instructions).toBe(fileContext);
+  });
+
+  it('preserves prepared File Context for an eager legacy subagent', async () => {
+    const fileContext = 'Attached document(s):\n```md\n# "child.txt"\nLegacy child facts\n\n```';
+    const child = makeAgent({
+      id: 'agent_child',
+      name: 'Researcher',
+      additional_instructions: fileContext,
+    });
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: false, agent_ids: ['agent_child'] },
+          subagentAgentConfigs: [child],
+        }),
+      ],
+    });
+    const [config] = agents[0].subagentConfigs as Array<Record<string, unknown>>;
+    const childInputs = config.agentInputs as Record<string, unknown>;
+
+    expect(childInputs.additional_instructions).toBe(fileContext);
   });
 
   it('uses a fresh expansion budget for each lazy descriptor resolution', async () => {
@@ -1206,6 +4191,37 @@ describe('subagentConfigs', () => {
     ).toMatchObject({ defer_loading: false });
     expect(memberRegistry.get('deep_tool')).toMatchObject({ defer_loading: true });
     expect(memberInput.toolDefinitions).toEqual([{ name: 'tool_search' }]);
+  });
+
+  it('advertises graph teams without enabling ordinary self-spawn or explicit agents', async () => {
+    const member = makeAgent({ id: 'graph_only_member' });
+    const definition = {
+      type: 'graph_only',
+      name: 'Graph only',
+      description: 'Delegate a team',
+      agent_ids: [member.id],
+      edges: [],
+      entry_agent_id: member.id,
+      result_agent_id: member.id,
+    };
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          id: 'parent',
+          subagents: {
+            enabled: false,
+            graphsEnabled: true,
+            allowSelf: true,
+            agent_ids: ['unused'],
+            graphs: [definition],
+          },
+          subagentGraphConfigs: [{ definition, memberConfigs: [member] }],
+        }),
+      ],
+    });
+    expect(agents[0].subagentConfigs).toHaveLength(1);
+    const configs = agents[0].subagentConfigs as Array<Record<string, unknown>>;
+    expect(configs[0]).toMatchObject({ kind: 'graph', type: 'graph_only' });
   });
 
   it('builds lazy graph inputs from initialized members instead of capability metadata', async () => {
@@ -1519,7 +4535,7 @@ describe('subagentConfigs', () => {
     });
 
     expect(agents[0].maxSubagentDepth).toBe(MAX_SUBAGENT_DEPTH);
-    const childConfig = (agents[0].subagentConfigs as Parameters<typeof buildChildInputs>[0][])[0];
+    const childConfig = (agents[0].subagentConfigs as BuildChildInput[])[0];
     expect(childConfig.allowNested).toBe(true);
 
     const childInputs = buildChildInputs(childConfig, 'agent_child', MAX_SUBAGENT_DEPTH);
@@ -1529,6 +4545,74 @@ describe('subagentConfigs', () => {
       type: 'agent_grandchild',
       allowNested: true,
     });
+  });
+
+  it('prunes shared-agent cycles per traversal path without dropping valid edges', async () => {
+    const left = makeAgent({
+      id: 'agent_left',
+      name: 'Left',
+      subagents: { enabled: true, allowSelf: false, agent_ids: ['agent_shared'] },
+    }) as TestRunAgent;
+    const right = makeAgent({
+      id: 'agent_right',
+      name: 'Right',
+      subagents: { enabled: true, allowSelf: false, agent_ids: ['agent_shared'] },
+    }) as TestRunAgent;
+    const shared = makeAgent({
+      id: 'agent_shared',
+      name: 'Shared',
+      subagents: { enabled: true, allowSelf: false, agent_ids: ['agent_left'] },
+    }) as TestRunAgent;
+    left.subagentAgentConfigs = [shared];
+    right.subagentAgentConfigs = [shared];
+    shared.subagentAgentConfigs = [left];
+
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: {
+            enabled: true,
+            allowSelf: false,
+            agent_ids: ['agent_left', 'agent_right'],
+          },
+          subagentAgentConfigs: [left, right],
+        }),
+      ],
+    });
+
+    const rootConfigs = agents[0].subagentConfigs as BuildChildInput[];
+    const rootConfigsByType = new Map(rootConfigs.map((config) => [config.type, config]));
+    const leftConfig = rootConfigsByType.get('agent_left');
+    const rightConfig = rootConfigsByType.get('agent_right');
+    if (!leftConfig || !rightConfig) {
+      throw new Error('Expected both root subagent configs');
+    }
+    const leftInputs = buildChildInputs(leftConfig, 'agent_left', MAX_SUBAGENT_DEPTH);
+    const rightInputs = buildChildInputs(rightConfig, 'agent_right', MAX_SUBAGENT_DEPTH);
+    const leftShared = leftInputs.subagentConfigs?.[0] as BuildChildInput | undefined;
+    const rightShared = rightInputs.subagentConfigs?.[0] as BuildChildInput | undefined;
+    if (
+      !leftShared ||
+      !rightShared ||
+      leftInputs.maxSubagentDepth == null ||
+      rightInputs.maxSubagentDepth == null
+    ) {
+      throw new Error('Expected both shared subagent configs');
+    }
+    const leftSharedInputs = buildChildInputs(
+      leftShared,
+      'agent_shared',
+      leftInputs.maxSubagentDepth,
+    );
+    const rightSharedInputs = buildChildInputs(
+      rightShared,
+      'agent_shared',
+      rightInputs.maxSubagentDepth,
+    );
+
+    expect(leftSharedInputs.subagentConfigs).toBeUndefined();
+    expect(rightSharedInputs.subagentConfigs).toHaveLength(1);
+    expect(rightSharedInputs.subagentConfigs?.[0]).toMatchObject({ type: 'agent_left' });
   });
 
   it('combines self-spawn and explicit subagents when both enabled', async () => {
@@ -1673,10 +4757,19 @@ async function callAndCaptureRunConfig({
 // ---------------------------------------------------------------------------
 // Suite: Langfuse run config
 // ---------------------------------------------------------------------------
+const exportTelemetry = (plan: string, reason: string, tenantId?: string) => ({
+  ...(tenantId ? { 'librechat.tenant.id': tenantId } : {}),
+  'librechat.langfuse.export_plan': plan,
+  'librechat.langfuse.export_reason': reason,
+});
+
 describe('Langfuse run config', () => {
   it('passes deterministic Langfuse trace config without tenant metadata by default', async () => {
     const callArgs = await callAndCaptureRunConfig();
-    expect(callArgs.langfuse).toEqual({ deterministicTraceId: true });
+    expect(callArgs.langfuse).toEqual({
+      deterministicTraceId: true,
+      librechatTraceAttributes: exportTelemetry('central_only', 'fanout_disabled'),
+    });
   });
 
   it('adds the explicit request tenant id to Langfuse trace metadata and tags', async () => {
@@ -1688,6 +4781,7 @@ describe('Langfuse run config', () => {
     });
     expect(callArgs.langfuse).toEqual({
       deterministicTraceId: true,
+      librechatTraceAttributes: exportTelemetry('central_only', 'fanout_disabled', 'tenant-1'),
       metadata: { 'librechat.tenant.id': 'tenant-1' },
       tags: ['tenant:tenant-1'],
     });
@@ -1701,8 +4795,48 @@ describe('Langfuse run config', () => {
     });
     expect(callArgs.langfuse).toEqual({
       deterministicTraceId: true,
+      librechatTraceAttributes: exportTelemetry('central_only', 'fanout_disabled', 'tenant-2'),
       metadata: { 'librechat.tenant.id': 'tenant-2' },
       tags: ['tenant:tenant-2'],
+    });
+  });
+
+  it('forwards the requesting user and trace context into the Langfuse run config', async () => {
+    await createRun({
+      agents: [makeAgent()] as never,
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+      user: { id: 'user-1', email: 'alice@example.com', role: 'ADMIN' } as never,
+      conversationId: 'convo-1',
+      requestBody: { conversationId: 'convo-stale' },
+      traceContext: { endpoint: 'agents', spec: 'support-bot' },
+      appConfig: {
+        langfuse: {
+          trace: {
+            userIdField: 'email',
+            userMetadataFields: ['role'],
+            conversationMetadataFields: ['conversationId', 'endpoint', 'provider', 'model', 'spec'],
+          },
+        },
+      } as unknown as AppConfig,
+    });
+
+    const createMock = Run.create as jest.Mock;
+    expect(createMock).toHaveBeenCalledTimes(1);
+    const callArgs = createMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArgs.langfuse).toEqual({
+      deterministicTraceId: true,
+      userId: 'alice@example.com',
+      metadata: {
+        'librechat.user.role': 'ADMIN',
+        'librechat.conversation.id': 'convo-1',
+        'librechat.endpoint': 'agents',
+        'librechat.provider': 'openAI',
+        'librechat.model': 'gpt-4o',
+        'librechat.spec': 'support-bot',
+      },
+      librechatTraceAttributes: exportTelemetry('central_only', 'fanout_disabled'),
     });
   });
 
@@ -1729,6 +4863,7 @@ describe('Langfuse run config', () => {
       baseUrl: 'http://langfuse-fanout-collector:4318/tenant/eu',
       metadata: { 'librechat.tenant.id': 'tenant-1' },
       librechatTraceAttributes: {
+        ...exportTelemetry('tenant_fanout', 'configured', 'tenant-1'),
         'librechat.langfuse.tenant_export.enabled': 'true',
         'librechat.langfuse.destination': 'eu',
       },
@@ -1758,6 +4893,7 @@ describe('Langfuse run config', () => {
       publicKey: 'pk-central',
       secretKey: 'sk-central',
       baseUrl: 'https://central.langfuse.example',
+      librechatTraceAttributes: exportTelemetry('central_only', 'fanout_disabled', 'tenant-1'),
       metadata: { 'librechat.tenant.id': 'tenant-1' },
       tags: ['tenant:tenant-1'],
     });
@@ -1784,6 +4920,11 @@ describe('Langfuse run config', () => {
     expect(callArgs.langfuse).toEqual({
       deterministicTraceId: true,
       baseUrl: 'http://collector-from-env:4318',
+      librechatTraceAttributes: exportTelemetry(
+        'central_only',
+        'destination_unconfigured',
+        'tenant-1',
+      ),
       metadata: { 'librechat.tenant.id': 'tenant-1' },
       tags: ['tenant:tenant-1'],
     });
@@ -1811,6 +4952,7 @@ describe('Langfuse run config', () => {
       baseUrl: 'http://collector-from-env:4318/tenant/us',
       metadata: { 'librechat.tenant.id': 'tenant-1' },
       librechatTraceAttributes: {
+        ...exportTelemetry('tenant_fanout', 'configured', 'tenant-1'),
         'librechat.langfuse.tenant_export.enabled': 'true',
         'librechat.langfuse.destination': 'us',
       },
@@ -1861,6 +5003,7 @@ describe('Langfuse run config', () => {
         secretKey: 'sk-tenant-1',
         baseUrl: 'http://collector-from-env:4318/tenant/us',
         librechatTraceAttributes: {
+          ...exportTelemetry('tenant_fanout', 'configured', 'tenant-1'),
           'librechat.langfuse.tenant_export.enabled': 'true',
           'librechat.langfuse.destination': 'us',
         },
@@ -1894,6 +5037,7 @@ describe('Langfuse run config', () => {
         publicKey: 'pk-central',
         secretKey: 'sk-central',
         baseUrl: 'https://central.langfuse.example',
+        librechatTraceAttributes: exportTelemetry('central_only', 'fanout_disabled', 'tenant-1'),
         metadata: { 'librechat.tenant.id': 'tenant-1' },
         tags: ['tenant:tenant-1'],
       });
@@ -1923,10 +5067,10 @@ describe('Langfuse run config', () => {
       publicKey: 'pk-central',
       secretKey: 'sk-central',
       baseUrl: 'https://central.langfuse.example',
+      librechatTraceAttributes: exportTelemetry('central_only', 'fanout_disabled', 'tenant-1'),
     });
     expect(callArgs.langfuse).not.toMatchObject({
       baseUrl: 'http://collector-from-env:4318/tenant/eu',
-      librechatTraceAttributes: expect.any(Object),
     });
   });
 
@@ -1953,6 +5097,11 @@ describe('Langfuse run config', () => {
       publicKey: 'pk-central',
       secretKey: 'sk-central',
       baseUrl: 'https://central.langfuse.example',
+      librechatTraceAttributes: exportTelemetry(
+        'central_only',
+        'collector_unconfigured',
+        'tenant-1',
+      ),
       metadata: { 'librechat.tenant.id': 'tenant-1' },
       tags: ['tenant:tenant-1'],
     });
@@ -1981,6 +5130,11 @@ describe('Langfuse run config', () => {
     expect(callArgs.langfuse).toEqual({
       deterministicTraceId: true,
       baseUrl: 'http://collector-from-env:4318',
+      librechatTraceAttributes: exportTelemetry(
+        'central_only',
+        'destination_unconfigured',
+        'tenant-1',
+      ),
       metadata: { 'librechat.tenant.id': 'tenant-1' },
       tags: ['tenant:tenant-1'],
     });
@@ -2003,6 +5157,7 @@ describe('Langfuse run config', () => {
     expect(callArgs.langfuse).toEqual({
       deterministicTraceId: true,
       baseUrl: 'http://collector-from-env:4318',
+      librechatTraceAttributes: exportTelemetry('central_only', 'missing_credentials', 'tenant-1'),
       metadata: { 'librechat.tenant.id': 'tenant-1' },
       tags: ['tenant:tenant-1'],
     });
@@ -2022,6 +5177,7 @@ describe('Langfuse run config', () => {
     expect(callArgs.langfuse).toEqual({
       deterministicTraceId: true,
       baseUrl: 'http://collector-from-env:4318',
+      librechatTraceAttributes: exportTelemetry('central_only', 'tenant_disabled', 'tenant-1'),
       metadata: { 'librechat.tenant.id': 'tenant-1' },
       tags: ['tenant:tenant-1'],
     });
@@ -2049,6 +5205,7 @@ describe('Langfuse run config', () => {
     expect(callArgs.langfuse).toEqual({
       deterministicTraceId: true,
       baseUrl: 'http://collector-from-env:4318',
+      librechatTraceAttributes: exportTelemetry('central_only', 'emergency_disabled', 'tenant-1'),
       metadata: { 'librechat.tenant.id': 'tenant-1' },
       tags: ['tenant:tenant-1'],
     });
@@ -2081,6 +5238,7 @@ describe('Langfuse run config', () => {
       secretKey: 'sk-tenant-1',
       tags: ['tenant:tenant-1'],
       librechatTraceAttributes: {
+        ...exportTelemetry('tenant_fanout', 'configured', 'tenant-1'),
         'librechat.langfuse.tenant_export.enabled': 'true',
         'librechat.langfuse.destination': 'eu',
       },
@@ -2111,6 +5269,7 @@ describe('Langfuse run config', () => {
       expect(callArgs.langfuse).toEqual({
         deterministicTraceId: true,
         baseUrl: 'http://collector-from-env:4318',
+        librechatTraceAttributes: exportTelemetry('central_only', 'emergency_disabled', 'tenant-1'),
         metadata: { 'librechat.tenant.id': 'tenant-1' },
         tags: ['tenant:tenant-1'],
       });
@@ -2146,6 +5305,7 @@ describe('Langfuse run config', () => {
         secretKey: 'sk-tenant-1',
         tags: ['tenant:tenant-1'],
         librechatTraceAttributes: {
+          ...exportTelemetry('tenant_fanout', 'configured', 'tenant-1'),
           'librechat.langfuse.tenant_export.enabled': 'true',
           'librechat.langfuse.destination': 'eu',
         },
@@ -2171,6 +5331,7 @@ describe('Langfuse run config', () => {
     expect(callArgs.langfuse).toEqual({
       deterministicTraceId: true,
       baseUrl: 'http://collector-from-env:4318',
+      librechatTraceAttributes: exportTelemetry('central_only', 'tenant_disabled', 'tenant-1'),
       metadata: { 'librechat.tenant.id': 'tenant-1' },
       tags: ['tenant:tenant-1'],
     });
@@ -2194,6 +5355,7 @@ describe('Langfuse run config', () => {
     expect(callArgs.langfuse).toEqual({
       deterministicTraceId: true,
       baseUrl: 'http://collector-from-env:4318',
+      librechatTraceAttributes: exportTelemetry('central_only', 'tenant_disabled', 'tenant-1'),
       metadata: { 'librechat.tenant.id': 'tenant-1' },
       tags: ['tenant:tenant-1'],
     });
@@ -2466,10 +5628,8 @@ describe('createRun deferred-tool replay (HITL resume)', () => {
 // ---------------------------------------------------------------------------
 // Suite: HITL wiring gated to resumable callers (Codex J3)
 //
-// The tool-approval wiring (humanInTheLoop switch + PreToolUse hook) must engage ONLY for
-// callers that implement the pause/resume lifecycle. AgentClient passes hitlCapable: true;
-// the OpenAI-compatible + Responses controllers don't, so an approval-gated tool can't
-// pause on a route with no approval surface or resume endpoint.
+// Tool-approval policy must apply to every caller, while only an interactive
+// caller may pause for an 'ask' decision. API-key endpoints have no resume surface.
 // ---------------------------------------------------------------------------
 describe('HITL wiring is gated on hitlCapable', () => {
   const hitlAppConfig = {
@@ -2500,21 +5660,385 @@ describe('HITL wiring is gated on hitlCapable', () => {
     expect(config.hooks).toBeDefined();
   });
 
-  it('does NOT attach HITL for a non-resumable caller even when approval is enabled', async () => {
-    const config = await runAndGetConfig({ hitlCapable: false });
+  it.each([
+    [
+      { enabled: true, mode: 'bypass', deny: ['delete_*'], allow: ['delete_file'] },
+      'delete_file',
+      'deny',
+    ],
+    [{ enabled: true, mode: 'dontAsk', allow: ['read_*'] }, 'read_file', 'allow'],
+    [{ enabled: true, mode: 'dontAsk', allow: ['read_*'] }, 'write_file', 'deny'],
+    [{ enabled: true, mode: 'default' }, 'write_file', 'ask'],
+  ] as const)('evaluates headless tool policy for %s on %s', async (policy, toolName, decision) => {
+    const appConfig = {
+      ...hitlAppConfig,
+      endpoints: { [EModelEndpoint.agents]: { toolApproval: policy } },
+    } as unknown as AppConfig;
+    const config = await runAndGetConfig({ hitlCapable: false, appConfig });
     expect(config).not.toHaveProperty('humanInTheLoop');
-    expect(config.graphConfig).toBeDefined();
-    // No checkpointer either — the run is identical to the no-HITL path.
     expect(
       (config.graphConfig as { compileOptions?: { checkpointer?: unknown } }).compileOptions
         ?.checkpointer,
     ).toBeUndefined();
+    const result = await executeHooks({
+      registry: config.hooks as HookRegistry,
+      input: {
+        hook_event_name: 'PreToolUse',
+        runId: 'headless-test',
+        toolName,
+        toolInput: {},
+        toolUseId: 'call-1',
+      },
+      matchQuery: toolName,
+    });
+    expect(result.decision).toBe(decision);
+  });
+
+  it.each([
+    { policy: { enabled: true, mode: 'bypass', deny: ['delete_record'] }, name: 'delete_record' },
+    { policy: { enabled: true, mode: 'default' }, name: 'read_record' },
+  ] as const)(
+    'blocks a real SDK direct tool before execution for $name',
+    async ({ policy, name }) => {
+      const config = await runAndGetConfig({
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: { [EModelEndpoint.agents]: { toolApproval: policy } },
+        } as unknown as AppConfig,
+      });
+      const body = jest.fn(async () => 'executed');
+      const tool = new DynamicStructuredTool({
+        name,
+        description: 'A test-only tool',
+        schema: z.object({}),
+        func: body,
+      });
+      const node = new ToolNode({
+        tools: [tool],
+        agentId: 'agent_1',
+        hookRegistry: config.hooks as HookRegistry,
+      });
+      const result = await node.invoke(
+        {
+          messages: [
+            new AIMessage({ content: '', tool_calls: [{ id: 'call-1', name, args: {} }] }),
+          ],
+        },
+        { configurable: { run_id: 'headless-test', thread_id: 'thread-1' } },
+      );
+      expect(body).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).toContain('Blocked:');
+    },
+  );
+
+  it.each([false, true])(
+    'enforces the enrolled ceiling in a real SDK ToolNode with approval enabled=%s',
+    async (enabled) => {
+      const f = await executionFixture();
+      const agent = makeAgent({
+        id: 'root',
+        toolRegistry: new Map([
+          [
+            'query_mcp_warehouse',
+            { name: 'query_mcp_warehouse', toolType: 'mcp', serverName: 'warehouse' },
+          ],
+        ]),
+      });
+      await createRun({
+        agents: [agent] as never,
+        signal: new AbortController().signal,
+        grantExecution: f.execution,
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: {
+            agents: { toolApproval: { enabled, mode: 'bypass', deny: ['query_mcp_warehouse'] } },
+          },
+        } as unknown as AppConfig,
+      });
+      const config = (Run.create as jest.Mock).mock.calls[0][0];
+      expect(config).not.toHaveProperty('humanInTheLoop');
+      for (const name of ['action_write', 'execute_code', 'query_mcp_warehouse']) {
+        const body = jest.fn(async () => 'executed');
+        const tool = new DynamicStructuredTool({
+          name,
+          description: 'Boundary regression',
+          schema: z.object({}),
+          func: body,
+        });
+        const node = new ToolNode({ tools: [tool], agentId: 'root', hookRegistry: config.hooks });
+        const result = await node.invoke(
+          {
+            messages: [
+              new AIMessage({ content: '', tool_calls: [{ id: 'call-1', name, args: {} }] }),
+            ],
+          },
+          { configurable: { run_id: 'scheduled', thread_id: 'thread' } },
+        );
+        if (name === 'query_mcp_warehouse' && !enabled) expect(body).toHaveBeenCalledTimes(1);
+        else {
+          expect(body).not.toHaveBeenCalled();
+          expect(JSON.stringify(result)).toContain('Blocked:');
+        }
+      }
+    },
+  );
+
+  // A schedule's completion turn finds its grant again, so its runs keep these capabilities
+  // with or without a grant. A grant that cannot be found again keeps its runs foreground.
+  it.each([
+    ['a schedule grant', true, true],
+    ['no grant', false, true],
+    ['a grant its completion turn could not find again', true, false],
+  ] as const)(
+    'withholds detached task/wakeup capabilities only under such a grant: %s',
+    async (_name, enrolled, detaches) => {
+      const withheld = enrolled && !detaches;
+      const f = await executionFixture('invoke', undefined, undefined, { detaches });
+      if (!enrolled) f.snapshot.enrollment = null;
+      const execution = (await f.factory.resolve(f.identity, 'invoke'))!;
+      const tasks = {
+        store: new InMemorySubagentTaskStore(),
+        scopeId: 'scheduled-tasks',
+        completionDelivery: 'wakeup' as const,
+      };
+      const root = makeAgent({
+        id: 'root',
+        subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+        subagentAgentConfigs: [makeAgent({ id: 'child' })],
+      });
+      await createRun({
+        agents: [root] as never,
+        signal: new AbortController().signal,
+        grantExecution: execution,
+        subagentTasks: tasks,
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: { agents: { toolApproval: { enabled: false } } },
+        } as unknown as AppConfig,
+      });
+      const config = (Run.create as jest.Mock).mock.calls[0][0];
+      expect(config.subagentTasks).toBe(withheld ? undefined : tasks);
+      const params = buildSubagentToolParams(config.graphConfig.agents[0].subagentConfigs, {
+        background: config.subagentTasks != null,
+        threadContinuation: true,
+      });
+      expect(
+        Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'run_in_background'),
+      ).toBe(!withheld);
+      expect(
+        Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'subagent_thread_id'),
+      ).toBe(!withheld);
+      const agent = config.graphConfig.agents[0];
+      expect(agent.subagentConfigs).toEqual([
+        expect.objectContaining({ type: 'child', allowNested: true }),
+      ]);
+      const names = (agent.toolDefinitions ?? []).map((tool: { name: string }) => tool.name);
+      expect(names.includes('check_background_task')).toBe(!withheld);
+    },
+  );
+
+  it.each([false, true])(
+    'retains mandatory denial receipts with remembered conversation approval=%s',
+    async (remembered) => {
+      const f = await executionFixture();
+      const recorder = jest.fn(async () => true);
+      await createRun({
+        agents: [makeAgent({ id: 'root' })] as never,
+        signal: new AbortController().signal,
+        grantExecution: f.execution,
+        recordGrantDenial: recorder,
+        toolApprovalAllows: remembered ? ['write_action_api'] : undefined,
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: {
+            agents: {
+              toolApproval: { enabled: remembered, mode: 'default', allowAlways: remembered },
+            },
+          },
+        } as unknown as AppConfig,
+      });
+      const config = (Run.create as jest.Mock).mock.calls[0][0];
+      const body = jest.fn(async () => 'side effect');
+      const action = new DynamicStructuredTool({
+        name: 'write_action_api',
+        description: 'Late action',
+        schema: z.object({}),
+        func: body,
+      });
+      const node = new ToolNode({ tools: [action], agentId: 'root', hookRegistry: config.hooks });
+      await node.invoke(
+        {
+          messages: [
+            new AIMessage({
+              content: '',
+              tool_calls: [{ id: 'call', name: action.name, args: {} }],
+            }),
+          ],
+        },
+        { configurable: { run_id: 'scheduled', thread_id: 'thread' } },
+      );
+      expect(body).not.toHaveBeenCalled();
+      expect(recorder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          failure: {
+            reason: 'tool_policy_denied',
+            status: 'mcp_permission_denied',
+            recovery: 'configure',
+            automaticReplay: false,
+          },
+        }),
+      );
+    },
+  );
+
+  it('passes only admitted root graph handoffs into the mandatory scheduled hook', async () => {
+    const f = await executionFixture();
+    const agents = [
+      makeAgent({ id: 'root', edges: [{ from: 'root', to: 'child', edgeType: 'handoff' }] }),
+      makeAgent({ id: 'child' }),
+      makeAgent({ id: 'peer' }),
+    ];
+    await createRun({
+      agents: agents as never,
+      signal: new AbortController().signal,
+      grantExecution: f.execution,
+      appConfig: {
+        ...hitlAppConfig,
+        endpoints: { agents: { toolApproval: { enabled: false } } },
+      } as unknown as AppConfig,
+    });
+    const config = (Run.create as jest.Mock).mock.calls[0][0];
+    for (const [toolName, expected] of [
+      [`${Constants.LC_TRANSFER_TO_}child`, undefined],
+      [`${Constants.LC_TRANSFER_TO_}peer`, 'deny'],
+    ]) {
+      const result = await executeHooks({
+        registry: config.hooks,
+        input: {
+          hook_event_name: 'PreToolUse',
+          runId: 'run',
+          toolName: toolName!,
+          toolInput: {},
+          toolUseId: 'transfer',
+          executingAgentId: 'root',
+        },
+        matchQuery: toolName!,
+      });
+      expect(result.decision).toBe(expected);
+    }
+  });
+
+  it('registers trusted per-run hooks on headless calls without prompting', async () => {
+    const factory = jest.fn(() => async () => ({ decision: 'deny' as const }));
+    const unregister = registerToolApprovalHook(factory, { matcher: '^write_file$' });
+    try {
+      const config = await runAndGetConfig({
+        user: { id: 'user-1' },
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: {
+            [EModelEndpoint.agents]: { toolApproval: { enabled: true, mode: 'bypass' } },
+          },
+        } as AppConfig,
+      });
+      expect(factory).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-1' }));
+      expect(config).not.toHaveProperty('humanInTheLoop');
+      const result = await executeHooks({
+        registry: config.hooks as HookRegistry,
+        input: {
+          hook_event_name: 'PreToolUse',
+          runId: 'headless-test',
+          toolName: 'write_file',
+          toolInput: {},
+          toolUseId: 'call-1',
+        },
+        matchQuery: 'write_file',
+      });
+      expect(result.decision).toBe('deny');
+    } finally {
+      unregister();
+      clearToolApprovalHooks();
+    }
+  });
+
+  it('keeps approval fully off when the endpoint disables it', async () => {
+    const config = await runAndGetConfig({
+      appConfig: {
+        ...hitlAppConfig,
+        endpoints: { [EModelEndpoint.agents]: { toolApproval: { enabled: false, deny: ['*'] } } },
+      } as AppConfig,
+    });
+    expect((config.hooks as HookRegistry).hasHookFor('PreToolUse')).toBe(false);
+    expect(config).not.toHaveProperty('humanInTheLoop');
   });
 
   it('defaults to non-HITL when hitlCapable is omitted', async () => {
     const config = await runAndGetConfig({});
     expect(config).not.toHaveProperty('humanInTheLoop');
   });
+
+  it.each([true, false])(
+    'heals aliases discovered in lazy subagents (HITL=%s)',
+    async (hitlCapable) => {
+      const alias = { name: 'delete_mcp_acme', aliasName: 'acme_delete_mcp_acme' };
+      const resolvedChild = makeAgent({ id: 'lazy-child', mcpToolAliases: [alias] });
+      const lazyChild = {
+        ...makeAgent({ id: 'lazy-child' }),
+        configId: 'lazy-child:v1',
+        resolve: jest.fn().mockResolvedValue(resolvedChild),
+      };
+      const parent = makeAgent({
+        subagents: { enabled: true, allowSelf: false },
+        lazySubagentConfigs: [lazyChild],
+      });
+      const appConfig = {
+        ...hitlAppConfig,
+        endpoints: {
+          [EModelEndpoint.agents]: {
+            toolApproval: { enabled: true, mode: 'bypass', deny: [alias.aliasName] },
+          },
+        },
+      } as unknown as AppConfig;
+
+      await createRun({
+        agents: [parent] as never,
+        signal: new AbortController().signal,
+        appConfig,
+        streaming: true,
+        streamUsage: true,
+        hitlCapable,
+      });
+      const config = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+      const hooks = config.hooks as { getMatchers: (event: string) => unknown[] };
+      const lazyConfig = (
+        (config.graphConfig as { agents: Array<Record<string, unknown>> }).agents[0]
+          .subagentConfigs as Array<Record<string, unknown>>
+      ).find((entry) => entry.configId === lazyChild.configId);
+
+      const decisionForAlias = async () =>
+        (
+          await executeHooks({
+            registry: config.hooks as HookRegistry,
+            input: {
+              hook_event_name: 'PreToolUse',
+              runId: 'alias-test',
+              toolName: alias.name,
+              toolInput: {},
+              toolUseId: 'call-1',
+            },
+            matchQuery: alias.name,
+          })
+        ).decision;
+      const initialMatcherCount = hooks.getMatchers('PreToolUse').length;
+      expect(initialMatcherCount).toBeGreaterThan(0);
+      expect(await decisionForAlias()).toBe('allow');
+      await (lazyConfig?.resolveAgentInputs as (context: never) => Promise<unknown>)({
+        signal: new AbortController().signal,
+      } as never);
+      expect(hooks.getMatchers('PreToolUse')).toHaveLength(initialMatcherCount);
+      expect(await decisionForAlias()).toBe('deny');
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -2559,12 +6083,24 @@ describe('ask_user_question run wiring', () => {
   const firstAgent = (config: Record<string, unknown>) =>
     (config.graphConfig as { agents: Array<Record<string, unknown>> }).agents[0];
 
+  /**
+   * Every run now carries a `PostToolBatch`-only registry for step-budget
+   * awareness, so registry presence no longer proves HITL wiring. What still
+   * distinguishes an approval-gated run is the `PreToolUse` policy hook, and
+   * `PostToolBatch` is deliberately outside the SDK's
+   * `RESULT_ALTERING_HOOK_EVENTS`, so it cannot disable eager tool prestart.
+   */
+  const hasToolApprovalPolicyHook = (config: Record<string, unknown>) =>
+    (config.hooks as { hasHookFor?: (event: string) => boolean } | undefined)?.hasHookFor?.(
+      'PreToolUse',
+    ) === true;
+
   it('attaches the checkpointer WITHOUT humanInTheLoop when hitlCapable and the ask tool is present (approval disabled)', async () => {
     const config = await runAndGetConfig(makeAgent({ tools: [askToolInstance] }), {
       hitlCapable: true,
     });
     expect(config).not.toHaveProperty('humanInTheLoop');
-    expect(config).not.toHaveProperty('hooks');
+    expect(hasToolApprovalPolicyHook(config)).toBe(false);
     expect(getCheckpointer(config)).toBeDefined();
     const agent = firstAgent(config);
     // The tool rides the in-graph direct path (graphTools) — never the
@@ -2745,5 +6281,202 @@ describe('ask_user_question run wiring', () => {
     const config = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
     expect(config.humanInTheLoop).toBeDefined();
     expect(getCheckpointer(config)).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// summarizeOnly resolution (manual compaction)
+// ---------------------------------------------------------------------------
+describe('summarizeOnly resolution', () => {
+  it('is absent on an ordinary run', async () => {
+    const agents = await callAndCapture();
+    expect(agents[0].summarizeOnly).toBeUndefined();
+  });
+
+  it('marks only the primary agent of a compaction run', async () => {
+    const agents = await callAndCapture({
+      agents: [makeAgent({ id: 'agent_primary' }), makeAgent({ id: 'agent_next' })],
+      summarizeOnly: true,
+    });
+    expect(agents[0].summarizeOnly).toBe(true);
+    expect(agents[1].summarizeOnly).toBeUndefined();
+  });
+});
+
+describe('steering provider capabilities', () => {
+  it.each([
+    ['Anthropic search', { type: 'web_search_20250305', name: 'web_search' }],
+    ['Google search', { googleSearch: {} }],
+    ['OpenAI search', { type: 'web_search' }],
+    ['Google URL context', { urlContext: {} }],
+  ])('disables interruption before constructing a run with %s', async (_name, tool) => {
+    const disable = jest.fn(async () => undefined);
+    const handler = { handle: jest.fn() };
+    await callAndCapture({
+      agents: [makeAgent({ tools: [tool] })],
+      customHandlers: { on_tool_execute: handler },
+      steering: { hook: async () => ({}), preemption: { shouldPreempt: () => true, disable } },
+    });
+    expect(disable).toHaveBeenCalledTimes(1);
+    const config = jest.mocked(Run.create).mock.calls[0]?.[0];
+    expect(config?.preemption).toBeUndefined();
+    expect(config?.customHandlers?.on_tool_execute).toBe(handler);
+  });
+
+  it('keeps interruption for host-executed tools', async () => {
+    const disable = jest.fn(async () => undefined);
+    const tool = new DynamicStructuredTool({
+      name: 'web_search',
+      description: 'Host search',
+      schema: z.object({}),
+      func: async () => 'found it',
+    });
+    await callAndCapture({
+      agents: [makeAgent({ tools: [tool] })],
+      steering: { hook: async () => ({}), preemption: { shouldPreempt: () => true, disable } },
+    });
+    expect(disable).not.toHaveBeenCalled();
+    expect(jest.mocked(Run.create).mock.calls[0]?.[0].preemption).toBeDefined();
+  });
+});
+
+/**
+ * The override pipeline's rebinding guard, end to end: what a profile writes to
+ * `summarization` is merged as `getAppConfig` merges it, and the run's real summarizer makes the
+ * request.
+ */
+describe('summarization destinations an override profile sets', () => {
+  const ATTACKER = 'https://attacker.example/openai/deployments/summary-production';
+  const GROUP_RESOURCE = 'https://summary-instance.openai.azure.com/';
+
+  function azureAppConfig(summarization?: SummarizationConfig): AppConfig {
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints![EModelEndpoint.azureOpenAI] = {
+      modelNames: ['gpt-4.1-mini'],
+      modelGroupMap: { 'gpt-4.1-mini': { group: 'summary' } },
+      groupMap: {
+        summary: {
+          apiKey: 'deployment-group-secret',
+          instanceName: 'summary-instance',
+          version: '2024-10-21',
+          models: { 'gpt-4.1-mini': { deploymentName: 'summary-production' } },
+        },
+      },
+    } as unknown as NonNullable<AppConfig['endpoints']>[EModelEndpoint.azureOpenAI];
+    if (summarization != null) {
+      appConfig.config.summarization = structuredClone(summarization);
+      appConfig.summarization = structuredClone(summarization);
+    }
+    return appConfig;
+  }
+
+  function mergeProfile(base: AppConfig, profile: Partial<ConfigOverrideLayer>) {
+    const ignored: string[] = [];
+    const layer = {
+      principalType: PrincipalType.ROLE,
+      principalId: 'editors',
+      priority: 10,
+      overrides: {},
+      ...profile,
+    } as ConfigOverrideLayer;
+    const merged = mergeConfigOverrides(base, [layer], {
+      afterLayer: createSecretRebindingGuard(({ path }) => ignored.push(path)),
+    });
+    return { merged, ignored };
+  }
+
+  async function summarize(appConfig: AppConfig) {
+    const agents = await callAndCapture({
+      agents: [makeAgent()],
+      appConfig,
+      summarizeOnly: true,
+      summarizationConfig: appConfig.summarization,
+    });
+    const { requests } = await compactSummary(agents);
+    return requests.map(({ url, headers }) => ({
+      url: url.href,
+      apiKey: headers.get('api-key'),
+    }));
+  }
+
+  it.each([1, 0, true, false])(
+    'keeps the Azure group key on its own resource under a profile key of %p',
+    async (apiKey) => {
+      const { merged, ignored } = mergeProfile(azureAppConfig(), {
+        overrides: {
+          summarization: {
+            provider: 'azureOpenAI',
+            model: 'gpt-4.1-mini',
+            parameters: { baseURL: ATTACKER, apiKey },
+          },
+        },
+      });
+
+      expect(ignored).toEqual(['summarization.parameters.baseURL']);
+      const requests = await summarize(merged);
+      expect(requests).toEqual([
+        { url: expect.stringMatching(`^${GROUP_RESOURCE}`), apiKey: 'deployment-group-secret' },
+      ]);
+    },
+  );
+
+  it('sends a key the profile enters, and only that key, to the destination it sets', async () => {
+    const { merged, ignored } = mergeProfile(azureAppConfig(), {
+      overrides: {
+        summarization: {
+          provider: 'azureOpenAI',
+          model: 'gpt-4.1-mini',
+          parameters: { baseURL: ATTACKER, apiKey: 'profile-own-key' },
+        },
+      },
+    });
+
+    expect(ignored).toEqual([]);
+    expect(await summarize(merged)).toEqual([
+      { url: expect.stringMatching(/^https:\/\/attacker\.example\//), apiKey: 'profile-own-key' },
+    ]);
+  });
+
+  it("keeps the Azure group key off librechat.yaml's gateway once a profile removes the gateway's key", async () => {
+    const yaml = azureAppConfig({
+      provider: 'azureOpenAI',
+      model: 'gpt-4.1-mini',
+      parameters: {
+        baseURL: 'https://yaml-gateway.example/openai/deployments/summary-production',
+        apiKey: 'yaml-gateway-key',
+      },
+    });
+    expect(await summarize(yaml)).toEqual([
+      {
+        url: expect.stringMatching(/^https:\/\/yaml-gateway\.example\//),
+        apiKey: 'yaml-gateway-key',
+      },
+    ]);
+    jest.mocked(Run.create).mockClear();
+
+    const { merged, ignored } = mergeProfile(yaml, {
+      tombstones: ['summarization.parameters.apiKey'],
+    });
+
+    expect(ignored).toEqual(['summarization.parameters.baseURL']);
+    expect(await summarize(merged)).toEqual([
+      { url: expect.stringMatching(`^${GROUP_RESOURCE}`), apiKey: 'deployment-group-secret' },
+    ]);
+  });
+
+  it("keeps the Azure group key off librechat.yaml's unkeyed gateway for another provider", async () => {
+    const { merged, ignored } = mergeProfile(
+      azureAppConfig({
+        provider: 'openAI',
+        model: 'gpt-4.1-mini',
+        parameters: { baseURL: 'https://yaml-gateway.example/openai/deployments/x' },
+      }),
+      { overrides: { summarization: { provider: 'azureOpenAI' } } },
+    );
+
+    expect(ignored).toEqual(['summarization.parameters.baseURL']);
+    expect(await summarize(merged)).toEqual([
+      { url: expect.stringMatching(`^${GROUP_RESOURCE}`), apiKey: 'deployment-group-secret' },
+    ]);
   });
 });

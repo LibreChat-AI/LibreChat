@@ -1,13 +1,11 @@
-import { escapeRegExp } from '@librechat/data-schemas';
 import { SystemCategories } from 'librechat-data-provider';
-import type { IPromptGroupDocument as IPromptGroup } from '@librechat/data-schemas';
-import type { Types } from 'mongoose';
 import type { PromptGroupsListResponse } from '~/types';
+import type { StoredId } from './types';
 
 /**
  * Formats prompt groups for the paginated /groups endpoint response
  */
-export function formatPromptGroupsResponse({
+export function formatPromptGroupsResponse<T>({
   promptGroups = [],
   pageNumber,
   pageSize,
@@ -15,13 +13,13 @@ export function formatPromptGroupsResponse({
   hasMore = false,
   after = null,
 }: {
-  promptGroups: IPromptGroup[];
+  promptGroups: T[];
   pageNumber?: string;
   pageSize?: string;
   actualLimit?: string | number;
   hasMore?: boolean;
   after?: string | null;
-}): PromptGroupsListResponse {
+}): PromptGroupsListResponse<T> {
   const currentPage = parseInt(pageNumber || '1');
 
   // Calculate total pages based on whether there are more results
@@ -40,73 +38,52 @@ export function formatPromptGroupsResponse({
 }
 
 /**
- * Creates an empty response for the paginated /groups endpoint
- */
-export function createEmptyPromptGroupsResponse({
-  pageNumber,
-  pageSize,
-  actualLimit,
-}: {
-  pageNumber?: string;
-  pageSize?: string;
-  actualLimit?: string | number;
-}): PromptGroupsListResponse {
-  return {
-    promptGroups: [],
-    pageNumber: pageNumber || '1',
-    pageSize: pageSize || String(actualLimit) || '10',
-    pages: '0',
-    has_more: false,
-    after: null,
-  };
-}
-
-/**
  * Marks prompt groups as public based on the publicly accessible IDs
  */
-export function markPublicPromptGroups(
-  promptGroups: IPromptGroup[],
-  publiclyAccessibleIds: Types.ObjectId[],
-): IPromptGroup[] {
+export function markPublicPromptGroups<T extends { readonly _id?: StoredId }>(
+  promptGroups: readonly T[],
+  publiclyAccessibleIds: readonly StoredId[],
+): T[] {
   if (!promptGroups.length) {
     return [];
   }
 
-  return promptGroups.map((group) => {
-    const isPublic = publiclyAccessibleIds.some((id) => id.equals(group._id?.toString()));
-    return isPublic ? ({ ...group, isPublic: true } as IPromptGroup) : group;
-  });
+  const publicIds = new Set(publiclyAccessibleIds.map(String));
+  return promptGroups.map((group) =>
+    group._id != null && publicIds.has(String(group._id)) ? { ...group, isPublic: true } : group,
+  );
 }
 
 /**
- * Builds filter object for prompt group queries
+ * Converts the listing name and category, including system categories, to plain
+ * listing inputs and shared-search flags.
  */
 export function buildPromptGroupFilter({ name, category }: { name?: string; category?: string }): {
-  filter: Record<string, string | number | boolean | RegExp | undefined>;
+  name?: string;
+  category?: string;
   searchShared: boolean;
   searchSharedOnly: boolean;
 } {
-  const filter: Record<string, string | number | boolean | RegExp | undefined> = {};
   let searchShared = true;
   let searchSharedOnly = false;
+  let categoryFilter: string | undefined;
 
-  // Handle name filter - convert to regex for case-insensitive search
-  if (name) {
-    filter.name = new RegExp(escapeRegExp(name), 'i');
-  }
-
-  // Handle category filters with special system categories
   if (category === SystemCategories.MY_PROMPTS) {
     searchShared = false;
   } else if (category === SystemCategories.NO_CATEGORY) {
-    filter.category = '';
+    categoryFilter = '';
   } else if (category === SystemCategories.SHARED_PROMPTS) {
     searchSharedOnly = true;
   } else if (category) {
-    filter.category = category;
+    categoryFilter = category;
   }
 
-  return { filter, searchShared, searchSharedOnly };
+  return {
+    name: name || undefined,
+    category: categoryFilter,
+    searchShared,
+    searchSharedOnly,
+  };
 }
 
 /**
@@ -116,19 +93,19 @@ export function buildPromptGroupFilter({ name, category }: { name?: string; cate
  *   Required for correct MY_PROMPTS and SHARED_PROMPTS filtering. When omitted the
  *   function falls back to the legacy behaviour (public-only filtering).
  */
-export async function filterAccessibleIdsBySharedLogic({
+export async function filterAccessibleIdsBySharedLogic<T extends StoredId>({
   accessibleIds,
   searchShared,
   searchSharedOnly,
   publicPromptGroupIds,
   ownedPromptGroupIds,
 }: {
-  accessibleIds: Types.ObjectId[];
+  accessibleIds: readonly T[];
   searchShared: boolean;
   searchSharedOnly: boolean;
-  publicPromptGroupIds?: Types.ObjectId[];
-  ownedPromptGroupIds?: Types.ObjectId[];
-}): Promise<Types.ObjectId[]> {
+  publicPromptGroupIds?: readonly T[];
+  ownedPromptGroupIds?: readonly T[];
+}): Promise<T[]> {
   const ownedIdStrings = new Set((ownedPromptGroupIds || []).map((id) => id.toString()));
 
   if (!searchShared) {

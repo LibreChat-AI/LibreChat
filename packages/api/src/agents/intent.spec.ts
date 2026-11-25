@@ -5,7 +5,6 @@ import {
   NATIVE_INTENT_TOOL_NAMES,
   isIntentEligibleToolName,
   hasIntentArg,
-  readIntentArg,
   stripIntentArg,
   injectIntentParam,
   stripIntentFromToolDefinitions,
@@ -71,17 +70,11 @@ describe('isIntentEligibleToolName', () => {
   });
 });
 
-describe('hasIntentArg / readIntentArg / stripIntentArg', () => {
-  it('detects and reads the arg on object and stringified args', () => {
+describe('hasIntentArg / stripIntentArg', () => {
+  it('detects the arg on object and stringified args', () => {
     expect(hasIntentArg({ [INTENT_ARG]: 'Searching for OAuth handling' })).toBe(true);
     expect(hasIntentArg({})).toBe(false);
     expect(hasIntentArg('{"intent":"Searching"}')).toBe(true);
-    expect(readIntentArg({ [INTENT_ARG]: 'Searching for OAuth handling' })).toBe(
-      'Searching for OAuth handling',
-    );
-    expect(readIntentArg({ [INTENT_ARG]: '   ' })).toBeUndefined();
-    expect(readIntentArg({ [INTENT_ARG]: 42 })).toBeUndefined();
-    expect(readIntentArg('not json')).toBeUndefined();
   });
 
   it('strips the arg without mutating the original', () => {
@@ -525,13 +518,53 @@ describe('sanitizeIntentLabels', () => {
   it('leaves defs untouched when the capability is on and nothing opted out', () => {
     const skill = sdkNativeDef('skill');
     const defs = [skill];
-    const { toolDefinitions } = sanitizeIntentLabels({
+    const { toolDefinitions, semanticIntentToolNames } = sanitizeIntentLabels({
       toolDefinitions: defs,
       toolRegistry: undefined,
       toolOptions: undefined,
       capabilityEnabled: true,
     });
     expect(toolDefinitions).toBe(defs);
+    expect(semanticIntentToolNames).toEqual(['skill']);
+  });
+
+  it('projects only surviving marker-verified intent schemas for compaction', () => {
+    const skill = sdkNativeDef('skill');
+    const hostInjected = injectIntentParam(mcpDef('web_search'));
+    const optedOut = sdkNativeDef('read_file');
+    const businessIntent = {
+      name: 'create_record',
+      parameters: {
+        type: 'object',
+        properties: {
+          intent: { type: 'string', description: 'CRM intent category for the record' },
+        },
+      },
+    } as unknown as LCTool;
+    const registryOnly = sdkNativeDef('tool_search');
+    const toolRegistry: LCToolRegistry = new Map([['tool_search', registryOnly]]);
+
+    const { semanticIntentToolNames, semanticIntentBlockedToolNames } = sanitizeIntentLabels({
+      toolDefinitions: [skill, hostInjected, optedOut, businessIntent],
+      toolRegistry,
+      toolOptions: { read_file: { describe_intent: false } },
+      capabilityEnabled: true,
+    });
+
+    expect(semanticIntentToolNames).toEqual(['skill', 'web_search', 'tool_search']);
+    expect(semanticIntentBlockedToolNames).toEqual(['read_file', 'create_record']);
+  });
+
+  it('projects no semantic intent names when the capability is disabled', () => {
+    const { semanticIntentToolNames, semanticIntentBlockedToolNames } = sanitizeIntentLabels({
+      toolDefinitions: [sdkNativeDef('skill')],
+      toolRegistry: undefined,
+      toolOptions: undefined,
+      capabilityEnabled: false,
+    });
+
+    expect(semanticIntentToolNames).toEqual([]);
+    expect(semanticIntentBlockedToolNames).toEqual(['skill']);
   });
 
   it('enforces explicit opt-outs on late-registered defs when the capability is on', () => {

@@ -15,14 +15,28 @@ export const codeEnvRefSchema: Schema = new Schema(
       type: String,
       enum: ['default', 'stateful'],
     },
+    executionRouteKey: { type: String },
+    provisionedAt: { type: Number },
+    sandboxFilename: { type: String },
+    content: {
+      type: new Schema(
+        {
+          sha256: { type: String, required: true },
+          bytes: { type: Number, required: true },
+          md5: { type: String },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
   },
   { _id: false },
 );
 
-export const codeEnvRefMapSchema: Schema = new Schema(
-  {
-    default: { type: codeEnvRefSchema, default: undefined },
-    stateful: { type: codeEnvRefSchema, default: undefined },
-  },
-  { _id: false },
-);
+/** Route keys are `default`, `stateful`, or `stateful:<deployment hash>`.
+ * Mixed preserves dot-addressed dynamic keys as a plain object; a Mongoose
+ * Map would require every existing hydrated-document reader to switch from
+ * bracket access to `.get()`. Values are produced through the typed
+ * CodeEnvRef write paths and the singular compatibility field remains fully
+ * schema-validated. */
+export const codeEnvRefMapSchema: typeof Schema.Types.Mixed = Schema.Types.Mixed;

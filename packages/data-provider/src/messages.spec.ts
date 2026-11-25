@@ -1,7 +1,20 @@
+import type { SummaryContentPart } from './types/content';
 import type { ParentMessage } from './messages';
 import type { TFile } from './types/files';
 import type { TMessage } from './types';
-import { buildTree } from './messages';
+import {
+  buildTree,
+  mergeMessageFile,
+  findMessageById,
+  isCompactedLeaf,
+  isFileAttachment,
+  isFileContentPart,
+  messageFileIds,
+  messageCarriesFiles,
+  hasContentPartFiles,
+  isUserInitiatedCompaction,
+} from './messages';
+import { ContentTypes } from './types/runs';
 
 const msg = (messageId: string, parentMessageId: string, over: Partial<TMessage> = {}): TMessage =>
   ({
@@ -194,5 +207,205 @@ describe('buildTree', () => {
       expect(buildTree({ messages, fileMap: fileMapA })).not.toBe(treeA);
       expect(buildTree({ messages })).toBe(bare);
     });
+  });
+});
+
+describe('isCompactedLeaf', () => {
+  const summary = (overrides: Record<string, unknown> = {}) => ({
+    type: ContentTypes.SUMMARY,
+    content: [{ type: ContentTypes.TEXT, text: 'checkpoint' }],
+    boundary: { messageId: 'step_summary', contentIndex: 0 },
+    ...overrides,
+  });
+
+  it('is true for a bare, finished summary', () => {
+    expect(isCompactedLeaf({ content: [summary()] } as TMessage)).toBe(true);
+  });
+
+  it.each([
+    ['no content', undefined],
+    ['empty content', []],
+    ['a summary next to text', [summary(), { type: ContentTypes.TEXT, text: 'reply' }]],
+    ['a summary still streaming', [summary({ summarizing: true })]],
+    ['a failed summary', [summary({ failed: true })]],
+    ['a streamed summary that never recorded a boundary', [summary({ boundary: undefined })]],
+    ['an empty summary', [summary({ content: [] })]],
+  ])('is false for %s', (_label, content) => {
+    expect(isCompactedLeaf({ content } as TMessage)).toBe(false);
+  });
+});
+
+describe('findMessageById', () => {
+  const thread = () => [
+    msg('u1', '00000000-0000-0000-0000-000000000000', { isCreatedByUser: true }),
+    msg('a1', 'u1'),
+  ];
+
+  it('resolves a message by id and reports a missing one', () => {
+    const messages = thread();
+    expect(findMessageById(messages, 'a1')).toBe(messages[1]);
+    expect(findMessageById(messages, 'absent')).toBeUndefined();
+    expect(findMessageById(messages, null)).toBeUndefined();
+    expect(findMessageById(null, 'a1')).toBeUndefined();
+  });
+
+  /** The index is memoized per array identity, and a cache write replaces the
+   *  array. Answering a later lookup from the previous array's rows would hand
+   *  the caller a message the thread no longer holds. */
+  it('answers from the array it was given, not from a previous one', () => {
+    const before = thread();
+    expect(findMessageById(before, 'a1')).toBe(before[1]);
+
+    const edited = { ...before[1], text: 'edited' };
+    const after = [before[0], edited];
+
+    expect(findMessageById(after, 'a1')).toBe(edited);
+    expect(findMessageById(before, 'a1')).toBe(before[1]);
+  });
+});
+
+describe('isUserInitiatedCompaction', () => {
+  const summary = (overrides: Partial<SummaryContentPart> = {}): SummaryContentPart => ({
+    type: ContentTypes.SUMMARY,
+    content: [{ type: ContentTypes.TEXT, text: 'checkpoint' }],
+    ...overrides,
+  });
+
+  it('is true for the summary a Compact action produced', () => {
+    expect(
+      isUserInitiatedCompaction({ content: [summary({ initiatedBy: 'user' })] } as TMessage),
+    ).toBe(true);
+  });
+
+  /** A compaction that produced no summary marks its error part instead: that
+   *  turn is still a compaction, whatever it hangs off. */
+  it('is true for the failure a compaction recorded instead of a summary', () => {
+    expect(
+      isUserInitiatedCompaction({
+        content: [{ type: ContentTypes.ERROR, error: 'failed', initiatedBy: 'user' }],
+      } as TMessage),
+    ).toBe(true);
+  });
+
+  /** An automatic summary detour carries no marker: that turn answers a user
+   *  message and stays rerunnable. */
+  it.each([
+    ['an unmarked summary', [summary()]],
+    ['an unmarked error part', [{ type: ContentTypes.ERROR, error: 'failed' }]],
+    ['a plain answer', [{ type: ContentTypes.TEXT, text: 'reply' }]],
+    ['no content', undefined],
+  ])('is false for %s', (_label, content) => {
+    expect(isUserInitiatedCompaction({ content } as TMessage)).toBe(false);
+  });
+});
+
+type Content = NonNullable<TMessage['content']>;
+
+describe('messageFileIds', () => {
+  it('names the files in every shape a later turn collects them from', () => {
+    expect(
+      messageFileIds({
+        files: [{ file_id: 'upload' }],
+        attachments: [{ file_id: 'chart', toolCallId: 't' }, { type: 'web_search' }] as never,
+        content: [
+          { type: ContentTypes.TEXT, text: 'Here:' },
+          { type: ContentTypes.IMAGE_FILE, image_file: { file_id: 'img' } },
+          { type: 'file', file: { file_id: 'doc' } },
+          { type: 'file', file_id: 'direct' },
+          { type: ContentTypes.STEER, steer: 'use this', files: [{ file_id: 'steered' }] },
+        ] as Content,
+      }),
+    ).toEqual(['upload', 'chart', 'img', 'doc', 'direct', 'steered']);
+  });
+
+  it('names none for a message without files', () => {
+    expect(messageFileIds({})).toEqual([]);
+    expect(messageFileIds({ files: [], content: [] as Content })).toEqual([]);
+  });
+});
+
+describe('messageCarriesFiles', () => {
+  it('finds uploads, file-backed attachments and file references in content', () => {
+    expect(messageCarriesFiles({ files: [{ file_id: 'upload' }] })).toBe(true);
+    expect(
+      messageCarriesFiles({
+        attachments: [{ file_id: 'chart', toolCallId: 't' }] as TMessage['attachments'],
+      }),
+    ).toBe(true);
+    expect(
+      messageCarriesFiles({
+        content: [
+          { type: ContentTypes.STEER, steer: 'use this', files: [{ file_id: 'steered' }] },
+        ] as Content,
+      }),
+    ).toBe(true);
+    expect(
+      messageCarriesFiles({
+        content: [{ type: ContentTypes.IMAGE_FILE, image_file: { file_id: 'img' } }] as Content,
+      }),
+    ).toBe(true);
+  });
+
+  it('ignores empty lists, search sources and plain content', () => {
+    expect(messageCarriesFiles({ files: [] })).toBe(false);
+    expect(
+      messageCarriesFiles({
+        attachments: [{ type: 'web_search', toolCallId: 't' }] as TMessage['attachments'],
+      }),
+    ).toBe(false);
+    expect(
+      messageCarriesFiles({
+        content: [
+          { type: ContentTypes.TEXT, text: 'hello' },
+          { type: ContentTypes.STEER, steer: 'and this', files: [] },
+        ] as Content,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('file reference predicates', () => {
+  it('recognizes each locator shape replay reads', () => {
+    /** Provider-native locators that persisted rows carry outside the typed content union. */
+    expect(isFileContentPart({ file: { file_id: 'f' } })).toBe(true);
+    expect(isFileContentPart({ file_id: 'f' })).toBe(true);
+    expect(isFileContentPart({ type: ContentTypes.TEXT, text: 'x' } as Content[number])).toBe(
+      false,
+    );
+    expect(isFileContentPart(undefined)).toBe(false);
+    expect(hasContentPartFiles(null)).toBe(false);
+    expect(isFileAttachment(undefined)).toBe(false);
+  });
+});
+
+describe('mergeMessageFile', () => {
+  it('preserves persisted display metadata when the library omits it', () => {
+    const file = {
+      file_id: 'paste',
+      textPreview: 'persisted excerpt',
+      llmDeliveryPath: 'text' as const,
+    };
+    const stored = {
+      file_id: 'paste',
+      filename: 'pasted-text.txt',
+      type: 'text/plain',
+      llmDeliveryPath: 'none',
+    } as TFile;
+    expect(mergeMessageFile(file, stored)).toMatchObject({
+      filename: 'pasted-text.txt',
+      textPreview: 'persisted excerpt',
+      llmDeliveryPath: 'text',
+    });
+    expect(stored).not.toHaveProperty('textPreview');
+  });
+
+  it('reuses the stored object when the message adds no display metadata', () => {
+    const stored = { file_id: 'paste', textPreview: 'stored excerpt' } as TFile;
+    expect(mergeMessageFile({ file_id: 'paste' }, stored)).toBe(stored);
+  });
+
+  it('keeps the message ref when no owner record exists', () => {
+    const file = { file_id: 'paste', textPreview: 'persisted excerpt' };
+    expect(mergeMessageFile(file)).toBe(file);
   });
 });

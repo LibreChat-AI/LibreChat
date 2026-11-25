@@ -18,6 +18,42 @@ describe('filterAttachmentsForPart', () => {
     expect(filterAttachmentsForPart(attachments, undefined)).toHaveLength(2);
   });
 
+  it('routes repeated same-agent provider ids by host run-step identity', () => {
+    const attachments = [
+      att({ agentId: 'agent_a', stepId: 'step-1' }),
+      att({ agentId: 'agent_a', stepId: 'step-2', file_id: 'f2' }),
+      att({ agentId: 'agent_a', file_id: 'legacy' }),
+    ];
+    const filtered = filterAttachmentsForPart(attachments, 'agent_a', 'step-2');
+    expect(filtered?.map((attachment) => (attachment as { file_id?: string }).file_id)).toEqual([
+      'f2',
+      'legacy',
+    ]);
+  });
+
+  it('still scopes by step when a legacy part has no agent identity', () => {
+    const attachments = [att({ stepId: 'step-1' }), att({ stepId: 'step-2', file_id: 'f2' })];
+    expect(filterAttachmentsForPart(attachments, undefined, 'step-1')).toHaveLength(1);
+  });
+
+  it('keeps earlier owned steps off a live repeated call', () => {
+    const attachments = [
+      att({ agentId: 'agent_a', stepId: 'step-1' }),
+      att({ agentId: 'agent_a', stepId: 'step-live', file_id: 'live' }),
+      att({ agentId: 'agent_a', file_id: 'legacy' }),
+    ];
+    const filtered = filterAttachmentsForPart(
+      attachments,
+      'agent_a',
+      undefined,
+      new Set(['step-1']),
+    );
+    expect(filtered?.map((attachment) => (attachment as { file_id?: string }).file_id)).toEqual([
+      'live',
+      'legacy',
+    ]);
+  });
+
   it('returns the same reference when nothing is filtered (render stability)', () => {
     const attachments = [att({ agentId: 'agent_a' })];
     expect(filterAttachmentsForPart(attachments, 'agent_a')).toBe(attachments);

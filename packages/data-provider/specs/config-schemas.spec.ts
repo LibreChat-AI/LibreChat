@@ -1,13 +1,23 @@
+import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import {
   paramDefinitionSchema,
   agentsEndpointSchema,
   azureEndpointSchema,
   endpointSchema,
   RetentionMode,
+  isAllDataRetention,
+  isForcedTemporaryRetention,
   configSchema,
+  balanceSchema,
   interfaceSchema,
   fileStorageSchema,
   fileStrategiesSchema,
+  normalizeAgentSelectorLimit,
+  getConfigDefaults,
+  MAX_CODE_HIGHLIGHT_THROTTLE_MS,
+  normalizeCodeHighlightThrottleMs,
+  DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS,
   SKILL_SYNC_MAX_INTERVAL_MINUTES,
   summarizationTriggerSchema,
   summarizationConfigSchema,
@@ -15,6 +25,9 @@ import {
   MAX_SUBAGENTS,
   MAX_SUBAGENTS_CEILING,
   setMaxSubagents,
+  traceViewerDefaults,
+  resolveTraceViewerConfig,
+  outboundTimeoutsSchema,
 } from '../src/config';
 import {
   tModelSpecPresetSchema,
@@ -45,6 +58,40 @@ describe('paramDefinitionSchema', () => {
       descriptionSide: 'right',
     });
     expect(result.success).toBe(true);
+  });
+
+  /**
+   * The shared `SettingRange` exposes it, so a configured sentinel range would
+   * otherwise reach the UI with its positive floor silently dropped.
+   */
+  it('preserves a configured positiveMin on the range', () => {
+    const result = paramDefinitionSchema.safeParse({
+      key: 'thinkingBudget',
+      type: 'number',
+      component: 'slider',
+      range: { min: -1, max: 32768, step: 1, positiveMin: 128 },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.range).toEqual({
+      min: -1,
+      max: 32768,
+      step: 1,
+      positiveMin: 128,
+    });
+  });
+
+  /** The floor would admit nothing but the sentinel while the clamp maps every
+   *  non-negative input onto a maximum the generated schema then rejects. */
+  it('rejects a positiveMin above the range maximum', () => {
+    const result = paramDefinitionSchema.safeParse({
+      key: 'thinkingBudget',
+      type: 'number',
+      component: 'slider',
+      range: { min: -1, max: 100, positiveMin: 200 },
+    });
+
+    expect(result.success).toBe(false);
   });
 
   it('rejects columns > 4', () => {
@@ -343,6 +390,84 @@ describe('endpointSchema addParams validation', () => {
     expect(result.success).toBe(false);
   });
 
+  it('accepts a reasoning catalog timeout within bounds', () => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogTimeoutMs: 8000 },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.customParams?.reasoningCatalogTimeoutMs).toBe(8000);
+    }
+  });
+
+  it.each([0, 100, 60000, 1.5])('rejects reasoning catalog timeout %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogTimeoutMs: value },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a reasoning catalog page limit within bounds', () => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogMaxPages: 50 },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.customParams?.reasoningCatalogMaxPages).toBe(50);
+    }
+  });
+
+  it.each([0, 201, 1.5])('rejects reasoning catalog page limit %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogMaxPages: value },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it.each([0, 30000, 600000])('accepts a reasoning catalog failure window of %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogFailureTtlMs: value },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it.each([-1, 600001, 1.5])('rejects reasoning catalog failure window %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogFailureTtlMs: value },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it.each([60000, 3600000, 86400000])('accepts a reasoning catalog lifetime of %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogTtlMs: value },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it.each([0, 59999, 86400001, 1.5])('rejects reasoning catalog lifetime %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogTtlMs: value },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it('accepts custom reasoning response key config', () => {
     const result = endpointSchema.safeParse({
       ...validEndpoint,
@@ -407,12 +532,376 @@ describe('endpointSchema addParams validation', () => {
 });
 
 describe('agentsEndpointSchema', () => {
+  it('defaults and bounds Code API upload recovery controls', () => {
+    expect(agentsEndpointSchema.parse({}).codeApiUploadConcurrency).toBe(3);
+    expect(
+      agentsEndpointSchema.parse({ codeApiUploadConcurrency: 8 }).codeApiUploadConcurrency,
+    ).toBe(8);
+    expect(agentsEndpointSchema.safeParse({ codeApiUploadConcurrency: 0 }).success).toBe(false);
+    expect(agentsEndpointSchema.safeParse({ codeApiUploadConcurrency: 101 }).success).toBe(false);
+    expect(agentsEndpointSchema.parse({}).codeApiMaxRetryWaitMs).toBe(20_000);
+    expect(
+      agentsEndpointSchema.parse({ codeApiMaxRetryWaitMs: 60_000 }).codeApiMaxRetryWaitMs,
+    ).toBe(60_000);
+    expect(agentsEndpointSchema.safeParse({ codeApiMaxRetryWaitMs: -1 }).success).toBe(false);
+    expect(agentsEndpointSchema.safeParse({ codeApiMaxRetryWaitMs: 300_001 }).success).toBe(false);
+  });
+
   it('accepts a non-empty stateful code environment allowlist', () => {
     const result = agentsEndpointSchema.safeParse({
       statefulCodeSessions: { allowedEnvironments: ['user', 'agent-user'] },
     });
 
     expect(result.success).toBe(true);
+  });
+
+  it.each([0, 5, 1000])('accepts a personal worker ceiling of %i', (maxPerUser) => {
+    const principalWorkers = { enabled: true, maxPerUser };
+    const result = agentsEndpointSchema.parse({
+      statefulCodeSessions: { allowedEnvironments: ['user'], principalWorkers },
+    });
+    expect(result.statefulCodeSessions?.principalWorkers).toEqual(principalWorkers);
+  });
+
+  it.each([-1, 0.5, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid personal worker ceiling %s',
+    (maxPerUser) => {
+      expect(
+        agentsEndpointSchema.safeParse({
+          statefulCodeSessions: {
+            allowedEnvironments: ['user'],
+            principalWorkers: { maxPerUser },
+          },
+        }).success,
+      ).toBe(false);
+    },
+  );
+
+  it('accepts uniquely named execution environments with exactly one default', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['conversation'],
+        environments: [
+          {
+            id: 'managed',
+            name: 'Managed',
+            type: 'managed',
+            baseURL: 'https://code.example.com/v1',
+            default: true,
+          },
+          {
+            id: 'attached-vm',
+            name: 'Attached VM',
+            type: 'attached',
+            baseURL: 'https://bridge.example.com/v1',
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it.each([
+    'ftp://code.example.com/v1',
+    'https://code.example.com/v1?',
+    'https://code.example.com/v1?token=secret',
+    'https://code.example.com/v1#',
+    'https://code.example.com/v1#fragment',
+  ])('rejects a non-base execution environment URL: %s', (baseURL) => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['conversation'],
+        environments: [
+          {
+            id: 'attached-vm',
+            name: 'Attached VM',
+            type: 'attached',
+            baseURL,
+            default: true,
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('normalizes surrounding whitespace in an execution environment URL', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['conversation'],
+        environments: [
+          {
+            id: 'attached-vm',
+            name: 'Attached VM',
+            type: 'attached',
+            baseURL: '  https://bridge.example.com/v1/  ',
+            default: true,
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.statefulCodeSessions?.environments?.[0]?.baseURL).toBe(
+        'https://bridge.example.com/v1/',
+      );
+    }
+  });
+
+  it('accepts deployment-owned pairing configuration for an attached environment', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['conversation'],
+        environments: [
+          {
+            id: 'attached-vm',
+            name: 'Attached VM',
+            type: 'attached',
+            baseURL: 'https://bridge.example.com/v1',
+            default: true,
+            owner: 'deployment',
+            pairing: {
+              workerId: 'vm-1',
+              tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN',
+            },
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.statefulCodeSessions?.environments?.[0]).toMatchObject({
+        owner: 'deployment',
+        pairing: {
+          workerId: 'vm-1',
+          tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN',
+        },
+      });
+    }
+  });
+
+  it('accepts a principal-owned environment without deployment pairing metadata', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['user'],
+        environments: [
+          {
+            id: 'personal-vm',
+            name: 'Personal VM',
+            type: 'attached',
+            baseURL: 'https://bridge.example.com/v1',
+            owner: 'principal',
+            default: true,
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a principal-worker control plane without a singleton worker', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['user'],
+        environments: [
+          {
+            id: 'personal-code-control-plane',
+            name: 'Personal Code',
+            type: 'attached',
+            baseURL: 'https://bridge.example.com/v1',
+            pairing: {
+              allowPrincipalWorkers: true,
+              tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN',
+            },
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a pairing-only control plane as the execution default', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['user'],
+        environments: [
+          {
+            id: 'personal-code-control-plane',
+            name: 'Personal Code',
+            type: 'attached',
+            baseURL: 'https://bridge.example.com/v1',
+            default: true,
+            pairing: {
+              allowPrincipalWorkers: true,
+              tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN',
+            },
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects conflicting direct and pairing worker routes', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['user'],
+        environments: [
+          {
+            id: 'attached-vm',
+            name: 'Attached VM',
+            type: 'attached',
+            baseURL: 'https://bridge.example.com/v1',
+            default: true,
+            workerId: 'direct-worker',
+            pairing: {
+              workerId: 'paired-worker',
+              tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN',
+            },
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects pairing metadata on a principal-owned environment', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['user'],
+        environments: [
+          {
+            id: 'personal-vm',
+            name: 'Personal VM',
+            type: 'attached',
+            baseURL: 'https://bridge.example.com/v1',
+            owner: 'principal',
+            pairing: {
+              workerId: 'vm-1',
+              tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN',
+            },
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects pairing configuration without a singleton or principal workers', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['user'],
+        environments: [
+          {
+            id: 'invalid-control-plane',
+            name: 'Invalid',
+            type: 'attached',
+            baseURL: 'https://bridge.example.com/v1',
+            default: true,
+            pairing: { tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN' },
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects pairing configuration for a managed environment', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['conversation'],
+        environments: [
+          {
+            id: 'managed',
+            name: 'Managed',
+            type: 'managed',
+            baseURL: 'https://code.example.com/v1',
+            default: true,
+            pairing: {
+              workerId: 'vm-1',
+              tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN',
+            },
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects pairing over insecure non-loopback transport', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['conversation'],
+        environments: [
+          {
+            id: 'attached-vm',
+            name: 'Attached VM',
+            type: 'attached',
+            baseURL: 'http://bridge.example.com/v1',
+            default: true,
+            pairing: {
+              workerId: 'vm-1',
+              tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN',
+            },
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('allows loopback HTTP pairing for local development', () => {
+    const result = agentsEndpointSchema.safeParse({
+      statefulCodeSessions: {
+        allowedEnvironments: ['conversation'],
+        environments: [
+          {
+            id: 'attached-vm',
+            name: 'Attached VM',
+            type: 'attached',
+            baseURL: 'http://127.0.0.1:23112/v1',
+            default: true,
+            pairing: {
+              workerId: 'vm-1',
+              tokenEnv: 'CODE_BRIDGE_ADMIN_TOKEN',
+            },
+          },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects ambiguous execution environment routing', () => {
+    const environment = {
+      id: 'attached-vm',
+      name: 'Attached VM',
+      type: 'attached',
+      baseURL: 'https://bridge.example.com/v1',
+    } as const;
+    const parse = (environments: unknown[]) =>
+      agentsEndpointSchema.safeParse({
+        statefulCodeSessions: {
+          allowedEnvironments: ['conversation'],
+          environments,
+        },
+      });
+
+    expect(parse([environment]).success).toBe(false);
+    expect(parse([{ ...environment, default: true }, { ...environment }]).success).toBe(false);
   });
 
   it('defaults maxSubagents to MAX_SUBAGENTS and validates its bounds', () => {
@@ -433,6 +922,16 @@ describe('agentsEndpointSchema', () => {
     expect(
       agentsEndpointSchema.safeParse({ maxSubagents: MAX_SUBAGENTS_CEILING + 1 }).success,
     ).toBe(false);
+  });
+
+  it('leaves subagentSelfNesting on unless it is turned off', () => {
+    const omitted = agentsEndpointSchema.safeParse({});
+    expect(omitted.success && omitted.data.subagentSelfNesting).toBe(true);
+
+    const off = agentsEndpointSchema.safeParse({ subagentSelfNesting: false });
+    expect(off.success && off.data.subagentSelfNesting).toBe(false);
+
+    expect(agentsEndpointSchema.safeParse({ subagentSelfNesting: 'no' }).success).toBe(false);
   });
 
   it('rejects empty or unknown stateful code environment allowlists', () => {
@@ -726,6 +1225,25 @@ describe('configSchema fileStrategy', () => {
   });
 });
 
+describe('configSchema fileListLimit', () => {
+  it('defaults fileListLimit to 100 for existing configurations', () => {
+    const result = configSchema.parse({ version: '1.3.7' });
+    expect(result.fileListLimit).toBe(100);
+  });
+
+  it('accepts a positive integer override', () => {
+    const result = configSchema.safeParse({ version: '1.3.7', fileListLimit: 250 });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.fileListLimit).toBe(250);
+    }
+  });
+
+  it.each([0, -1, 1.5])('rejects invalid fileListLimit %p', (fileListLimit) => {
+    expect(configSchema.safeParse({ version: '1.3.7', fileListLimit }).success).toBe(false);
+  });
+});
+
 describe('configSchema skillSync', () => {
   it('accepts a GitHub skill sync source with explicit paths and credential key', () => {
     const result = configSchema.safeParse({
@@ -1014,7 +1532,84 @@ describe('configSchema skillSync', () => {
   });
 });
 
+describe('codeHighlightThrottleMs', () => {
+  it('defaults to the one cadence the schema, the config defaults and the client fallback share', () => {
+    expect(DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS).toBe(300);
+    expect(interfaceSchema.parse({}).codeHighlightThrottleMs).toBe(
+      DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS,
+    );
+    expect(getConfigDefaults().interface?.codeHighlightThrottleMs).toBe(
+      DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS,
+    );
+    expect(normalizeCodeHighlightThrottleMs(undefined)).toBe(DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS);
+  });
+
+  it('accepts and normalizes the same range', () => {
+    for (const value of [0, 1, 300, MAX_CODE_HIGHLIGHT_THROTTLE_MS]) {
+      expect(
+        interfaceSchema.parse({ codeHighlightThrottleMs: value }).codeHighlightThrottleMs,
+      ).toBe(value);
+      expect(normalizeCodeHighlightThrottleMs(value)).toBe(value);
+    }
+    for (const value of [-1, 1.5, MAX_CODE_HIGHLIGHT_THROTTLE_MS + 1, Number.NaN, '300']) {
+      expect(interfaceSchema.safeParse({ codeHighlightThrottleMs: value }).success).toBe(false);
+      expect(normalizeCodeHighlightThrottleMs(value)).toBe(DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS);
+    }
+  });
+
+  it('documents the same default in librechat.example.yaml', () => {
+    const example = readFileSync(join(__dirname, '../../../librechat.example.yaml'), 'utf8');
+    expect(example).toContain(`(default: ${DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS} ms)`);
+    expect(example).toContain(`# codeHighlightThrottleMs: ${DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS}\n`);
+  });
+});
+
 describe('interfaceSchema', () => {
+  it('accepts independent retention periods', () => {
+    expect(
+      interfaceSchema.parse({
+        retentionMode: RetentionMode.ALL,
+        temporaryChatRetention: 1,
+        generalChatRetention: 2160,
+      }),
+    ).toMatchObject({
+      temporaryChatRetention: 1,
+      generalChatRetention: 2160,
+    });
+    expect(interfaceSchema.parse({})).not.toHaveProperty('generalChatRetention');
+  });
+
+  it.each([0, 8761, '2160', null])(
+    'rejects invalid general retention: %s',
+    (generalChatRetention) => {
+      expect(interfaceSchema.safeParse({ generalChatRetention }).success).toBe(false);
+    },
+  );
+
+  it('accepts the welcome screen heading and footer settings', () => {
+    expect(
+      interfaceSchema.parse({ landingHeading: 'greeting', landingFooter: false }),
+    ).toMatchObject({ landingHeading: 'greeting', landingFooter: false });
+    expect(interfaceSchema.parse({})).not.toHaveProperty('landingHeading');
+    expect(interfaceSchema.safeParse({ landingHeading: 'name' }).success).toBe(false);
+    expect(interfaceSchema.safeParse({ landingFooter: 'false' }).success).toBe(false);
+    expect(interfaceSchema.parse({ landingFooter: 'composer' }).landingFooter).toBe('composer');
+  });
+
+  it('accepts the conversation icons setting', () => {
+    expect(interfaceSchema.parse({ conversationIcons: false }).conversationIcons).toBe(false);
+    expect(interfaceSchema.parse({})).not.toHaveProperty('conversationIcons');
+    expect(interfaceSchema.safeParse({ conversationIcons: 'false' }).success).toBe(false);
+  });
+
+  it('accepts the message author setting', () => {
+    expect(interfaceSchema.parse({ messageAuthor: 'whenDifferent' }).messageAuthor).toBe(
+      'whenDifferent',
+    );
+    expect(interfaceSchema.parse({})).not.toHaveProperty('messageAuthor');
+    expect(interfaceSchema.safeParse({ messageAuthor: 'never' }).success).toBe(false);
+  });
+
   it('silently strips removed legacy fields', () => {
     const result = interfaceSchema.parse({
       endpointsMenu: true,
@@ -1048,6 +1643,24 @@ describe('interfaceSchema', () => {
     const result = interfaceSchema.parse({ modelSelect: true });
 
     expect(result.defaultPinnedTools).toBeUndefined();
+  });
+
+  it('accepts the ephemeral retention mode', () => {
+    const result = interfaceSchema.parse({ retentionMode: RetentionMode.EPHEMERAL });
+    expect(result.retentionMode).toBe(RetentionMode.EPHEMERAL);
+    expect(RetentionMode.EPHEMERAL).toBe('ephemeral');
+  });
+
+  it('classifies ephemeral as forced-temporary, all-data retention', () => {
+    expect(isAllDataRetention(RetentionMode.EPHEMERAL)).toBe(true);
+    expect(isAllDataRetention(RetentionMode.ALL)).toBe(true);
+    expect(isAllDataRetention(RetentionMode.TEMPORARY)).toBe(false);
+    expect(isAllDataRetention(undefined)).toBe(false);
+
+    expect(isForcedTemporaryRetention(RetentionMode.EPHEMERAL)).toBe(true);
+    expect(isForcedTemporaryRetention(RetentionMode.ALL)).toBe(false);
+    expect(isForcedTemporaryRetention(RetentionMode.TEMPORARY)).toBe(false);
+    expect(isForcedTemporaryRetention(undefined)).toBe(false);
   });
 });
 
@@ -1404,6 +2017,42 @@ describe('configSchema langfuse', () => {
     expect(result.success).toBe(true);
   });
 
+  it('accepts trace identity and metadata allowlists', () => {
+    const result = configSchema.safeParse({
+      version: '1.3.7',
+      langfuse: {
+        trace: {
+          userIdField: 'email',
+          userMetadataFields: ['email', 'username', 'role', 'provider'],
+          conversationMetadataFields: ['conversationId', 'endpoint', 'model', 'spec'],
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects trace fields outside the allowlists', () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.3.7',
+        langfuse: { trace: { userIdField: 'password' } },
+      }).success,
+    ).toBe(false);
+    expect(
+      configSchema.safeParse({
+        version: '1.3.7',
+        langfuse: { trace: { userMetadataFields: ['totpSecret'] } },
+      }).success,
+    ).toBe(false);
+    expect(
+      configSchema.safeParse({
+        version: '1.3.7',
+        langfuse: { trace: { conversationMetadataFields: ['text'] } },
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects non-string Langfuse header values', () => {
     const result = configSchema.safeParse({
       version: '1.3.7',
@@ -1413,5 +2062,177 @@ describe('configSchema langfuse', () => {
     });
 
     expect(result.success).toBe(false);
+  });
+});
+
+describe('interface.traceViewer', () => {
+  it('accepts the documented fields and rejects out-of-range limits', () => {
+    const parse = (traceViewer: Record<string, unknown>) =>
+      interfaceSchema.safeParse({ traceViewer }).success;
+
+    expect(
+      parse({
+        enabled: true,
+        showInputOutput: true,
+        showToolNames: true,
+        maxRecords: 500,
+        maxContentLength: 2000,
+        requestsPerMinute: 10,
+        requestTimeoutMs: 30_000,
+      }),
+    ).toBe(true);
+    expect(parse({ showToolNames: 'yes' })).toBe(false);
+    expect(parse({ requestTimeoutMs: 999 })).toBe(false);
+    expect(parse({ requestTimeoutMs: 300_001 })).toBe(false);
+    expect(parse({ maxRecords: 0 })).toBe(false);
+    expect(parse({ maxRecords: 10_001 })).toBe(false);
+    expect(parse({ maxContentLength: 1.5 })).toBe(false);
+    expect(parse({ requestsPerMinute: 1001 })).toBe(false);
+  });
+
+  it('keeps the viewer off with the documented defaults when unset', () => {
+    expect(resolveTraceViewerConfig(undefined)).toEqual(traceViewerDefaults);
+    expect(interfaceSchema.parse({}).traceViewer).toBeUndefined();
+  });
+
+  it('names tool rounds from the tracing backend only when asked to', () => {
+    expect(resolveTraceViewerConfig({ enabled: true }).showToolNames).toBe(false);
+    expect(resolveTraceViewerConfig({ enabled: true, showToolNames: true }).showToolNames).toBe(
+      true,
+    );
+  });
+
+  it('re-validates overrides that bypassed the schema', () => {
+    expect(
+      resolveTraceViewerConfig({
+        enabled: 'true',
+        showInputOutput: 1,
+        showToolNames: 'true',
+        maxRecords: 50_000,
+        maxContentLength: -5,
+        requestsPerMinute: Number.NaN,
+        requestTimeoutMs: 50,
+      }),
+    ).toEqual({
+      enabled: false,
+      showInputOutput: false,
+      showToolNames: false,
+      maxRecords: 10_000,
+      maxContentLength: traceViewerDefaults.maxContentLength,
+      requestsPerMinute: traceViewerDefaults.requestsPerMinute,
+      requestTimeoutMs: traceViewerDefaults.requestTimeoutMs,
+    });
+  });
+});
+
+describe('interfaceSchema agentSelectorLimit', () => {
+  it('defaults the unsearched agents selector list to ten entries', () => {
+    const result = interfaceSchema.parse({});
+    expect(result.agentSelectorLimit).toBe(10);
+  });
+
+  it('honors a deployment override and rejects out-of-bounds values', () => {
+    expect(interfaceSchema.parse({ agentSelectorLimit: 25 }).agentSelectorLimit).toBe(25);
+    expect(interfaceSchema.safeParse({ agentSelectorLimit: 0 }).success).toBe(false);
+    expect(interfaceSchema.safeParse({ agentSelectorLimit: 101 }).success).toBe(false);
+  });
+
+  it('normalizes runtime values that bypassed the schema back into bounds', () => {
+    expect(normalizeAgentSelectorLimit(25)).toBe(25);
+    expect(normalizeAgentSelectorLimit(undefined)).toBe(10);
+    expect(normalizeAgentSelectorLimit(0)).toBe(10);
+    expect(normalizeAgentSelectorLimit(101)).toBe(10);
+    expect(normalizeAgentSelectorLimit('10')).toBe(10);
+  });
+});
+
+describe('balance refill mode', () => {
+  test('keeps additive refill as the default for existing configurations', () => {
+    expect(balanceSchema.parse({ autoRefillEnabled: true }).refillMode).toBe('add');
+  });
+  test('accepts weekly non-accumulating reset with percentage display', () => {
+    expect(
+      balanceSchema.parse({
+        enabled: true,
+        startBalance: 300000000,
+        autoRefillEnabled: true,
+        refillIntervalValue: 1,
+        refillIntervalUnit: 'weeks',
+        refillAmount: 300000000,
+        refillMode: 'reset',
+        display: 'percent',
+      }),
+    ).toMatchObject({ refillMode: 'reset', display: 'percent' });
+  });
+  test('rejects unsupported refill modes', () => {
+    expect(balanceSchema.safeParse({ refillMode: 'rollover' }).success).toBe(false);
+  });
+});
+
+describe('balance refill anchor', () => {
+  test('is optional and keeps rolling periods by default', () => {
+    expect(balanceSchema.parse({ autoRefillEnabled: true }).refillAnchor).toBeUndefined();
+  });
+  test('accepts an ISO timestamp with an explicit offset', () => {
+    expect(
+      balanceSchema.parse({
+        refillMode: 'reset',
+        refillIntervalValue: 1,
+        refillIntervalUnit: 'weeks',
+        refillAnchor: '2026-01-05T00:00:00-05:00',
+      }).refillAnchor,
+    ).toBe('2026-01-05T00:00:00-05:00');
+  });
+  test.each(['2026-01-05T00:00:00', 'monday', '2026-02-30T00:00:00Z'])(
+    'rejects anchor %s',
+    (refillAnchor) => {
+      expect(balanceSchema.safeParse({ refillAnchor }).success).toBe(false);
+    },
+  );
+  test.each([0, 1.5])('rejects anchored interval %s even for additive refill', (value) => {
+    expect(
+      balanceSchema.safeParse({
+        refillMode: 'add',
+        refillIntervalValue: value,
+        refillAnchor: '2026-01-05T00:00:00Z',
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('reset interval validation', () => {
+  test.each([0, -1, 0.5, 1.5])(
+    'rejects reset interval %s while preserving additive settings',
+    (refillIntervalValue) => {
+      expect(balanceSchema.safeParse({ refillMode: 'reset', refillIntervalValue }).success).toBe(
+        false,
+      );
+      expect(balanceSchema.safeParse({ refillMode: 'add', refillIntervalValue }).success).toBe(
+        true,
+      );
+    },
+  );
+});
+
+describe('passwordHashing config', () => {
+  it.each([1, 4, 32])('accepts %s hash workers', (maxWorkers) => {
+    expect(configSchema.shape.passwordHashing.parse({ maxWorkers })).toEqual({ maxWorkers });
+  });
+
+  it.each([0, 33, 1.5])('rejects %s hash workers', (maxWorkers) => {
+    expect(configSchema.shape.passwordHashing.safeParse({ maxWorkers }).success).toBe(false);
+  });
+});
+
+describe('outboundTimeoutsSchema', () => {
+  it('accepts budgets within the Node timer range', () => {
+    expect(outboundTimeoutsSchema.parse({ ragMs: 3_000, ocrMs: 2_147_483_647 })).toEqual({
+      ragMs: 3_000,
+      ocrMs: 2_147_483_647,
+    });
+  });
+
+  it.each([0, -1, 1.5, 2_147_483_648])('rejects %s, which no timer could honor', (value) => {
+    expect(outboundTimeoutsSchema.safeParse({ actionsMs: value }).success).toBe(false);
   });
 });

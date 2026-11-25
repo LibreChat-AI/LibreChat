@@ -1,6 +1,10 @@
 import { EToolResources } from 'librechat-data-provider';
 import type { AgentToolResources } from 'librechat-data-provider';
-import { collectToolResourceFileIds, stripFileIdsFromToolResources } from './orphans';
+import {
+  collectToolResourceFileIds,
+  normalizeToolResourceFiles,
+  stripFileIdsFromToolResources,
+} from './orphans';
 
 const makeResources = (): AgentToolResources => ({
   [EToolResources.file_search]: { file_ids: ['a', 'b', 'c'] },
@@ -49,5 +53,30 @@ describe('stripFileIdsFromToolResources', () => {
   it('handles nullish tool_resources safely', () => {
     const { removedCount } = stripFileIdsFromToolResources(undefined, ['a']);
     expect(removedCount).toBe(0);
+  });
+});
+
+describe('normalizeToolResourceFiles', () => {
+  it('retains only identifiers from client-hydrated file objects', () => {
+    const resources = {
+      [EToolResources.execute_code]: {
+        file_ids: ['existing'],
+        files: [
+          {
+            file_id: 'hydrated',
+            filename: 'PRIVATE-SENTINEL',
+            metadata: { codeEnvRef: { file_id: 'untrusted' } },
+          },
+        ],
+      },
+    } as AgentToolResources;
+
+    normalizeToolResourceFiles(resources);
+
+    expect(resources[EToolResources.execute_code]).toEqual({
+      file_ids: ['existing', 'hydrated'],
+    });
+    expect(JSON.stringify(resources)).not.toContain('PRIVATE-SENTINEL');
+    expect(JSON.stringify(resources)).not.toContain('untrusted');
   });
 });

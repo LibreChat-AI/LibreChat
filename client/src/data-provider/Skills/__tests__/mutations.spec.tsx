@@ -4,11 +4,20 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TSkill, TSkillListResponse } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import { useCreateSkillMutation } from '../mutations';
-import { useSkillsInfiniteQuery } from '../queries';
+import {
+  useCreateSkillMutation,
+  useDeleteSkillMutation,
+  useImportSkillMutation,
+  useUploadSkillFileMutation,
+} from '../mutations';
+import { useSkillsInfiniteQuery, useListSkillFilesQuery } from '../queries';
 
 const mockCreateSkill = jest.fn();
+const mockDeleteSkill = jest.fn();
+const mockImportSkill = jest.fn();
 const mockListSkills = jest.fn();
+const mockUploadSkillFile = jest.fn();
+const mockListSkillFiles = jest.fn();
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -17,7 +26,11 @@ jest.mock('librechat-data-provider', () => {
     dataService: {
       ...actual.dataService,
       createSkill: (...args: unknown[]) => mockCreateSkill(...args),
+      deleteSkill: (...args: unknown[]) => mockDeleteSkill(...args),
+      importSkill: (...args: unknown[]) => mockImportSkill(...args),
       listSkills: (...args: unknown[]) => mockListSkills(...args),
+      uploadSkillFile: (...args: unknown[]) => mockUploadSkillFile(...args),
+      listSkillFiles: (...args: unknown[]) => mockListSkillFiles(...args),
     },
   };
 });
@@ -137,6 +150,146 @@ describe('skill creation cache updates', () => {
         .map((skill) => skill._id),
     ).toContain(createdSkill._id);
 
+    queryClient.clear();
+  });
+
+  it.each([
+    'skill_import_incomplete',
+    'skill_import_rollback_failed',
+    'skill_import_cleanup_incomplete',
+  ])('invalidates skill lists after %s', async (errorCode) => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateQueries = jest.spyOn(queryClient, 'invalidateQueries');
+    const staleListKey = [QueryKeys.skills, 'infinite', '', '', 100];
+    queryClient.setQueryData(staleListKey, {
+      pages: [{ skills: [makeSkill('leftover-skill', 'leftover')], has_more: false, after: null }],
+      pageParams: [undefined],
+    });
+    mockImportSkill.mockRejectedValue({
+      response: {
+        data: {
+          error: errorCode,
+          skillId: 'leftover-skill',
+          failedFiles: [{ path: 'queries.sql', reason: 'persistence_failed' }],
+        },
+      },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useImportSkillMutation(), { wrapper });
+
+    await act(async () => {
+      await expect(result.current.mutateAsync(new FormData())).rejects.toBeDefined();
+    });
+
+    expect(invalidateQueries).toHaveBeenCalledWith([QueryKeys.skills]);
+    expect(queryClient.getQueryData(staleListKey)).toBeUndefined();
+    queryClient.clear();
+  });
+
+  it('evicts a deleted skill when dependent server cleanup is incomplete', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    const skill = makeSkill('deleted-id', 'deleted-skill');
+    const queryKey = [QueryKeys.skills, 'infinite', '', '', 100];
+    queryClient.setQueryData([QueryKeys.skill, skill._id], skill);
+    queryClient.setQueryData(queryKey, {
+      pages: [{ skills: [skill], has_more: false, after: null }],
+      pageParams: [undefined],
+    });
+    mockDeleteSkill.mockResolvedValue({
+      id: skill._id,
+      deleted: true,
+      cleanupComplete: false,
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useDeleteSkillMutation(), { wrapper });
+
+    await act(async () => {
+      await result.current.mutateAsync({ id: skill._id });
+    });
+
+    expect(queryClient.getQueryData([QueryKeys.skill, skill._id])).toBeUndefined();
+    expect(
+      queryClient
+        .getQueryData<{ pages: TSkillListResponse[] }>(queryKey)
+        ?.pages.flatMap((page) => page.skills),
+    ).toEqual([]);
+    queryClient.clear();
+  });
+});
+
+describe('skill file replacement cache', () => {
+  it('fetches the complete list when a direct-file save had no list cache', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const saved = { relativePath: 'references/edited.md' };
+    const sibling = { relativePath: 'scripts/run.sh' };
+    mockUploadSkillFile.mockResolvedValue(saved);
+    mockListSkillFiles.mockResolvedValue({ files: [saved, sibling] });
+    const { result, rerender } = renderHook(
+      ({ enabled }) => ({
+        upload: useUploadSkillFileMutation(),
+        files: useListSkillFilesQuery('skill-id', { enabled }),
+      }),
+      { wrapper, initialProps: { enabled: false } },
+    );
+    await act(async () => {
+      await result.current.upload.mutateAsync({ skillId: 'skill-id', formData: new FormData() });
+    });
+    expect(queryClient.getQueryData([QueryKeys.skillFiles, 'skill-id'])).toBeUndefined();
+    rerender({ enabled: true });
+    await waitFor(() => expect(result.current.files.data?.files).toEqual([saved, sibling]));
+    queryClient.clear();
+  });
+
+  it('cancels stale in-flight list reads and refreshes a complete list after replacement', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const key = [QueryKeys.skillFiles, 'skill-id'];
+    const original = { relativePath: 'references/edited.md', file_id: 'old' };
+    const saved = { ...original, file_id: 'saved' };
+    const sibling = { relativePath: 'scripts/run.sh' };
+    queryClient.setQueryData(key, { files: [original, sibling] });
+    const stale = deferred<{ files: (typeof original)[] }>();
+    mockListSkillFiles
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValue({ files: [saved, sibling] });
+    mockUploadSkillFile.mockResolvedValue(saved);
+    const { result } = renderHook(
+      () => ({
+        upload: useUploadSkillFileMutation(),
+        files: useListSkillFilesQuery('skill-id'),
+      }),
+      { wrapper },
+    );
+    act(() => {
+      void result.current.files.refetch();
+    });
+    await act(async () => {
+      await result.current.upload.mutateAsync({ skillId: 'skill-id', formData: new FormData() });
+    });
+    await waitFor(() => expect(result.current.files.data?.files).toEqual([saved, sibling]));
+    await act(async () => {
+      stale.resolve({ files: [original] });
+    });
+    expect(result.current.files.data?.files).toEqual([saved, sibling]);
     queryClient.clear();
   });
 });

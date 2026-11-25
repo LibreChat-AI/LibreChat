@@ -3,7 +3,9 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { RecordAuditEntryInput } from '~/types';
 import type * as t from '~/types';
 import auditLogSchema, { GENESIS_HASH, PLATFORM_CHAIN_KEY } from '~/schema/auditLog';
+import { AUDIT_ACTIONS, AUDIT_ACTION_CATEGORY } from '~/types/admin';
 import { auditChainKey, createAuditLogMethods } from './auditLog';
+import logger from '~/config/winston';
 
 jest.mock('~/config/winston', () => ({
   error: jest.fn(),
@@ -47,7 +49,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(async () => {
@@ -77,6 +79,17 @@ describe('auditLog methods', () => {
       });
       expect(persisted?.hash).toMatch(/^[a-f0-9]{64}$/);
       expect(persisted?.createdAt).toBeInstanceOf(Date);
+    });
+
+    it('accepts every registered action and derives its category', async () => {
+      for (const action of AUDIT_ACTIONS) {
+        await methods.recordAuditEntry(baseInput({ action }), { failClosed: true });
+      }
+      const persisted = await AuditLog.find({ chainKey: CK_A }).sort({ seq: 1 }).lean();
+      expect(persisted.map((entry) => entry.action)).toEqual([...AUDIT_ACTIONS]);
+      for (const entry of persisted) {
+        expect(entry.category).toBe(AUDIT_ACTION_CATEGORY[entry.action]);
+      }
     });
 
     it('derives a warning severity for non-success outcomes', async () => {
@@ -152,6 +165,23 @@ describe('auditLog methods', () => {
       );
 
       spy.mockRestore();
+    });
+  });
+
+  describe('write failure logging', () => {
+    it('logs the error name and code, never the message', async () => {
+      const create = jest
+        .spyOn(AuditLog, 'create')
+        .mockRejectedValueOnce(new Error('connect mongodb://user:secret@host failed'));
+      const logSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+
+      await methods.recordAuditEntry(baseInput());
+
+      const logged = JSON.stringify(logSpy.mock.calls);
+      expect(logged).toContain('errName');
+      expect(logged).not.toContain('secret');
+      create.mockRestore();
+      logSpy.mockRestore();
     });
   });
 
@@ -493,6 +523,202 @@ describe('auditLog methods', () => {
       expect(remaining.map((r) => r.seq)).toEqual([1, 2, 3, 4]);
     });
 
+    it('records audit.purged after a purge that removed rows, and not after a no-op', async () => {
+      for (let i = 0; i < 4; i++) {
+        await methods.recordAuditEntry(baseInput());
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const third = await AuditLog.findOne({ chainKey: CK_A, seq: 3 }).lean();
+
+      await methods.purgeAuditLogEntries('tenant-a', {
+        before: new Date(Date.now() - 60_000),
+        confirm: true,
+      });
+      expect(await AuditLog.countDocuments({ chainKey: CK_A, action: 'audit.purged' })).toBe(0);
+
+      const result = await methods.purgeAuditLogEntries('tenant-a', {
+        before: third!.createdAt,
+        confirm: true,
+      });
+
+      const entry = await AuditLog.findOne({ chainKey: CK_A, action: 'audit.purged' }).lean();
+      expect(entry).toMatchObject({
+        category: 'audit',
+        severity: 'critical',
+        actor: { type: 'system', name: 'audit-retention' },
+        target: { type: 'audit_log' },
+        metadata: { deletedCount: result.deletedCount, throughSeq: result.checkpoint?.throughSeq },
+      });
+      const verified = await methods.verifyAuditChain('tenant-a', {
+        trustedCheckpoint: result.checkpoint,
+      });
+      expect(verified.ok).toBe(true);
+    });
+
+    it('still returns the purge result when the audit write rejects', async () => {
+      for (let i = 0; i < 4; i++) {
+        await methods.recordAuditEntry(baseInput());
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const third = await AuditLog.findOne({ chainKey: CK_A, seq: 3 }).lean();
+      const spy = jest.spyOn(AuditLog, 'create').mockRejectedValue(new Error('audit store down'));
+
+      try {
+        const result = await methods.purgeAuditLogEntries('tenant-a', {
+          before: third!.createdAt,
+          confirm: true,
+        });
+        expect(result.deletedCount).toBeGreaterThanOrEqual(1);
+        expect(result.checkpoint).toBeDefined();
+      } finally {
+        spy.mockRestore();
+      }
+      expect(await AuditLog.countDocuments({ chainKey: CK_A, action: 'audit.purged' })).toBe(0);
+    });
+
+    it('chains the purge record to the deleted history when a purge empties the chain', async () => {
+      await seed(3);
+      const tail = await AuditLog.findOne({ chainKey: CK_A, seq: 3 }).lean();
+
+      const result = await methods.purgeAuditLogEntries('tenant-a', {
+        before: new Date(Date.now() + 60_000),
+        confirm: true,
+      });
+      expect(result).toEqual({
+        deletedCount: 3,
+        checkpoint: { throughSeq: 3, prevHash: tail!.hash },
+      });
+
+      const remaining = await AuditLog.find({ chainKey: CK_A }).sort({ seq: 1 }).lean();
+      expect(remaining).toHaveLength(2);
+      expect(remaining[0]).toMatchObject({
+        action: 'audit.purged',
+        seq: 4,
+        prevHash: tail!.hash,
+        metadata: { pendingCount: 3, throughSeq: 3 },
+      });
+      expect(remaining[1]).toMatchObject({
+        action: 'audit.purged',
+        outcome: 'success',
+        seq: 5,
+        metadata: { deletedCount: 3, throughSeq: 3 },
+      });
+
+      const unverified = await methods.verifyAuditChain('tenant-a');
+      expect(unverified.ok).toBe(false);
+      expect(unverified.reason).toMatch(/non-genesis/);
+
+      const verified = await methods.verifyAuditChain('tenant-a', {
+        trustedCheckpoint: result.checkpoint,
+      });
+      expect(verified).toMatchObject({ ok: true, checked: 2, range: { firstSeq: 4, lastSeq: 5 } });
+    });
+
+    it('keeps an entry appended while a full purge runs', async () => {
+      await seed(2);
+      const count = AuditLog.countDocuments.bind(AuditLog);
+      const spy = jest.spyOn(AuditLog, 'countDocuments').mockImplementationOnce(((
+        ...args: Parameters<typeof AuditLog.countDocuments>
+      ) => {
+        return methods.recordAuditEntry(baseInput()).then(() => count(...args));
+      }) as unknown as typeof AuditLog.countDocuments);
+
+      try {
+        const result = await methods.purgeAuditLogEntries('tenant-a', {
+          before: new Date(Date.now() + 60_000),
+          confirm: true,
+        });
+        expect(result.deletedCount).toBe(2);
+        expect(result.checkpoint?.throughSeq).toBe(2);
+        const verified = await methods.verifyAuditChain('tenant-a', {
+          trustedCheckpoint: result.checkpoint,
+        });
+        expect(verified).toMatchObject({ ok: true, range: { firstSeq: 3, lastSeq: 5 } });
+      } finally {
+        spy.mockRestore();
+      }
+      const remaining = await AuditLog.find({ chainKey: CK_A })
+        .sort({ seq: 1 })
+        .select('seq action')
+        .lean<{ seq: number; action: string }[]>();
+      expect(remaining.map((r) => [r.seq, r.action])).toEqual([
+        [3, baseInput().action],
+        [4, 'audit.purged'],
+        [5, 'audit.purged'],
+      ]);
+    });
+
+    it('deletes nothing when a purge that would empty the chain cannot be audited', async () => {
+      await seed(3);
+      const spy = jest.spyOn(AuditLog, 'create').mockRejectedValue(new Error('audit store down'));
+
+      try {
+        await expect(
+          methods.purgeAuditLogEntries('tenant-a', {
+            before: new Date(Date.now() + 60_000),
+            confirm: true,
+          }),
+        ).rejects.toThrow('audit store down');
+      } finally {
+        spy.mockRestore();
+      }
+      expect(await AuditLog.countDocuments({ chainKey: CK_A })).toBe(3);
+      expect((await methods.verifyAuditChain('tenant-a')).ok).toBe(true);
+    });
+
+    it('records a failed full purge when the delete rejects after the purge was audited', async () => {
+      await seed(2);
+      const spy = jest
+        .spyOn(AuditLog.collection, 'deleteMany')
+        .mockRejectedValueOnce(new Error('delete failed'));
+
+      try {
+        await expect(
+          methods.purgeAuditLogEntries('tenant-a', {
+            before: new Date(Date.now() + 60_000),
+            confirm: true,
+          }),
+        ).rejects.toThrow('delete failed');
+      } finally {
+        spy.mockRestore();
+      }
+      const rows = await AuditLog.find({ chainKey: CK_A })
+        .sort({ seq: 1 })
+        .select('seq action outcome')
+        .lean<{ seq: number; action: string; outcome: string }[]>();
+      expect(rows.map((r) => [r.seq, r.action, r.outcome])).toEqual([
+        [1, baseInput().action, 'success'],
+        [2, baseInput().action, 'success'],
+        [3, 'audit.purged', 'success'],
+        [4, 'audit.purged', 'failure'],
+      ]);
+      expect((await methods.verifyAuditChain('tenant-a')).ok).toBe(true);
+    });
+
+    it('records a full purge that an overlapping purge already emptied as removing nothing', async () => {
+      await seed(2);
+      const spy = jest
+        .spyOn(AuditLog.collection, 'deleteMany')
+        .mockResolvedValueOnce({ acknowledged: true, deletedCount: 0 });
+
+      try {
+        const result = await methods.purgeAuditLogEntries('tenant-a', {
+          before: new Date(Date.now() + 60_000),
+          confirm: true,
+        });
+        expect(result).toEqual({ deletedCount: 0 });
+      } finally {
+        spy.mockRestore();
+      }
+      const records = await AuditLog.find({ chainKey: CK_A, action: 'audit.purged' })
+        .sort({ seq: 1 })
+        .lean();
+      expect(records.map((r) => [r.outcome, r.metadata])).toEqual([
+        ['success', expect.objectContaining({ pendingCount: 2, throughSeq: 2 })],
+        ['failure', expect.objectContaining({ deletedCount: 0, throughSeq: 2 })],
+      ]);
+    });
+
     it('does not mint a checkpoint when a confirmed purge removed nothing', async () => {
       await seed(2);
       const result = await methods.purgeAuditLogEntries('tenant-a', {
@@ -506,6 +732,32 @@ describe('auditLog methods', () => {
   });
 
   describe('append index safety', () => {
+    it('fails open within the index-build deadline while a peer holds the collection', async () => {
+      const prototype = mongoose.mongo.Collection.prototype;
+      const createIndex = prototype.createIndex;
+      const collectionName = AuditLog.collection.name;
+      prototype.createIndex = async function (this: mongoose.mongo.Collection, spec, options) {
+        if (this.collectionName !== collectionName) {
+          return createIndex.call(this, spec, options);
+        }
+        throw new mongoose.mongo.MongoServerError({
+          ok: 0,
+          code: 40333,
+          errmsg:
+            'Existing index build in progress on the same collection. Collection is limited to a single index build at a time.',
+        });
+      };
+      try {
+        const freshMethods = createAuditLogMethods(mongoose, {
+          indexBuild: { peerBuildPollMs: 1, peerBuildDeadlineMs: 20 },
+        });
+
+        await expect(freshMethods.recordAuditEntry(baseInput())).resolves.toBeNull();
+      } finally {
+        prototype.createIndex = createIndex;
+      }
+    });
+
     it('builds the unique seq index before appending (independent of autoIndex)', async () => {
       const spy = jest.spyOn(AuditLog, 'createIndexes');
       // a fresh methods instance has not yet memoized the index build

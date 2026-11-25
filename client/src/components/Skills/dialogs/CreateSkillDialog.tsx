@@ -1,11 +1,6 @@
 import { useForm } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
 import {
-  SKILL_NAME_PATTERN,
-  SKILL_NAME_MAX_LENGTH,
-  SKILL_DESCRIPTION_MAX_LENGTH,
-} from 'librechat-data-provider';
-import {
   Input,
   Label,
   Button,
@@ -14,11 +9,16 @@ import {
   TextareaAutosize,
   useToastContext,
 } from '@librechat/client';
+import {
+  SKILL_NAME_PATTERN,
+  SKILL_NAME_MAX_LENGTH,
+  SKILL_BODY_MAX_LENGTH,
+  SKILL_DESCRIPTION_MAX_LENGTH,
+} from 'librechat-data-provider';
 import type { TSkill } from 'librechat-data-provider';
 import type { FormEvent } from 'react';
 import { useCreateSkillMutation } from '~/data-provider';
 import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
 
 interface CreateSkillDialogProps {
   isOpen: boolean;
@@ -38,6 +38,11 @@ interface FormValues {
   name: string;
   description: string;
   body: string;
+}
+
+interface SkillValidationIssue {
+  field: string;
+  code: string;
 }
 
 /**
@@ -78,9 +83,48 @@ export default function CreateSkillDialog({
       navigate(`/skills/${skill._id}`);
     },
     onError: (error: unknown) => {
-      const message =
-        (error as { response?: { data?: { message?: string } } })?.response?.data?.message ??
-        localize('com_ui_skill_create_error');
+      const response = (
+        error as {
+          response?: {
+            status?: number;
+            data?: { error?: string; message?: string; issues?: SkillValidationIssue[] };
+          };
+        }
+      )?.response;
+      const getIssueMessage = ({ field, code }: SkillValidationIssue) => {
+        if (field === 'name' && code === 'REQUIRED') {
+          return localize('com_ui_skill_name_required');
+        }
+        if (field === 'name' && code === 'TOO_LONG') {
+          return localize('com_ui_skill_name_too_long', { 0: SKILL_NAME_MAX_LENGTH });
+        }
+        if (field === 'name' && code === 'INVALID_FORMAT') {
+          return localize('com_ui_skill_name_invalid');
+        }
+        if (field === 'name' && (code === 'RESERVED_PREFIX' || code === 'RESERVED_WORD')) {
+          return localize('com_ui_skill_name_reserved');
+        }
+        if (field === 'description' && code === 'REQUIRED') {
+          return localize('com_ui_skill_description_required');
+        }
+        if (field === 'description' && code === 'TOO_LONG') {
+          return localize('com_ui_skill_description_too_long', {
+            0: SKILL_DESCRIPTION_MAX_LENGTH,
+          });
+        }
+        if (field === 'body' && code === 'TOO_LONG') {
+          return localize('com_ui_skill_instructions_too_long', { 0: SKILL_BODY_MAX_LENGTH });
+        }
+        return localize('com_ui_skill_validation_error');
+      };
+      const data = response?.data;
+      let message = data?.message || localize('com_ui_skill_create_error');
+      if (response?.status === 409) {
+        message = localize('com_ui_skill_name_exists');
+      }
+      if (data?.issues?.length) {
+        message = data.issues.map(getIssueMessage).join('; ');
+      }
       showToast({ status: 'error', message });
     },
   });
@@ -118,15 +162,15 @@ export default function CreateSkillDialog({
       <OGDialogContent className="w-11/12 max-w-5xl overflow-hidden" showCloseButton={false}>
         <form
           onSubmit={handleFormSubmit}
-          className="flex max-h-[80vh] min-w-0 flex-col gap-3 overflow-hidden p-1 sm:gap-4 sm:p-2"
+          className="flex max-h-[85vh] min-w-0 flex-col gap-3 overflow-y-auto p-1 sm:gap-4 sm:p-2"
         >
-          <h2 className="text-lg font-bold text-text-primary">
+          <h2 className="text-text-primary text-lg font-bold">
             {localize('com_ui_skill_write_instructions')}
           </h2>
 
           {/* Skill name */}
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="create-skill-name" className="text-sm font-medium text-text-secondary">
+            <Label htmlFor="create-skill-name" variant="secondary" className="text-sm font-medium">
               {localize('com_ui_name')}
             </Label>
             <Input
@@ -134,7 +178,7 @@ export default function CreateSkillDialog({
               placeholder={localize('com_ui_skill_name_placeholder')}
               aria-invalid={errors.name ? 'true' : 'false'}
               autoComplete="off"
-              className="flex h-10 w-full rounded-xl border border-border-medium bg-transparent px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary disabled:cursor-not-allowed disabled:opacity-50"
+              className="text-text-primary focus-visible:ring-ring-primary flex h-10 w-full rounded-xl"
               {...register('name', {
                 required: localize('com_ui_skill_name_required'),
                 pattern: {
@@ -149,24 +193,28 @@ export default function CreateSkillDialog({
                 },
               })}
             />
-            {errors.name && <p className="text-xs text-text-destructive">{errors.name.message}</p>}
+            {errors.name && <p className="text-text-destructive text-xs">{errors.name.message}</p>}
           </div>
 
           {/* Description */}
           <div className="flex flex-col gap-1.5">
             <label
               htmlFor="create-skill-description"
-              className="text-sm font-medium text-text-secondary"
+              className="text-text-secondary text-sm font-medium"
             >
               {localize('com_ui_description')}
             </label>
             <TextareaAutosize
+              variant="framed"
+              focusOutline="hidden"
               id="create-skill-description"
               minRows={2}
               maxRows={4}
               placeholder={localize('com_ui_skill_description_placeholder')}
               aria-label={localize('com_ui_description')}
-              className="w-full resize-none rounded-xl border border-border-medium bg-transparent px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+              aria-invalid={errors.description ? 'true' : 'false'}
+              aria-describedby={errors.description ? 'create-skill-description-error' : undefined}
+              className="w-full resize-none px-3 py-2 text-sm"
               {...register('description', {
                 required: localize('com_ui_skill_description_required'),
                 maxLength: {
@@ -177,26 +225,37 @@ export default function CreateSkillDialog({
                 },
               })}
             />
+            {errors.description && (
+              <p
+                id="create-skill-description-error"
+                className="text-text-destructive mt-1 text-sm"
+                role="alert"
+              >
+                {errors.description.message}
+              </p>
+            )}
           </div>
 
           {/* Instructions (body) */}
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="create-skill-body" className="text-sm font-medium text-text-secondary">
+            <label htmlFor="create-skill-body" className="text-text-secondary text-sm font-medium">
               {localize('com_ui_skill_instructions')}
             </label>
             <TextareaAutosize
+              variant="framed"
+              focusOutline="hidden"
               id="create-skill-body"
               minRows={6}
               maxRows={12}
               placeholder={localize('com_ui_skill_instructions_placeholder')}
               aria-label={localize('com_ui_skill_instructions')}
-              className="w-full resize-none rounded-xl border border-border-medium bg-transparent px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+              className="w-full resize-none px-3 py-2 text-sm"
               {...register('body')}
             />
           </div>
 
           {/* Actions */}
-          <div className="flex items-center justify-end gap-2 pt-2">
+          <div className="flex shrink-0 items-center justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={handleClose}>
               {localize('com_ui_cancel')}
             </Button>
@@ -204,9 +263,9 @@ export default function CreateSkillDialog({
               type="submit"
               variant="submit"
               disabled={submitDisabled}
-              className={cn(submitDisabled && 'opacity-50')}
+              aria-busy={createSkill.isLoading}
             >
-              {localize('com_ui_create')}
+              {localize(createSkill.isLoading ? 'com_ui_creating' : 'com_ui_create')}
             </Button>
           </div>
         </form>

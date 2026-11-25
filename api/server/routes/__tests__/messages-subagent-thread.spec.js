@@ -6,11 +6,25 @@ const mockIsSubagentThreadWriteBlocked = jest.fn();
 jest.mock('@librechat/agents', () => ({ sleep: jest.fn() }));
 
 jest.mock('@librechat/api', () => ({
+  prepareToolCallPreviews: jest.fn(() => (messages) => Promise.resolve(messages)),
+  createToolCallPartHandler: jest.fn(() => (_req, res) => res.status(404).end()),
+  createSubagentAttachmentCallsHandler: jest.fn(() => (_req, res) => res.status(404).end()),
+  rejectToolCallPreviewWrites: (_req, _res, next) => next(),
+  withMessageToolCallPreviews: (_req, message) => message,
+  withoutServerRecords: jest.fn((message) => message),
+  createPrivateTextView: jest.fn(() => (_req, _res, next) => next()),
+  createContentFilter: jest.fn(() => (_req, _res, next) => next()),
   unescapeLaTeX: jest.fn((value) => value),
   countTokens: jest.fn().mockResolvedValue(1),
   sendFeedbackScore: jest.fn().mockResolvedValue(undefined),
   traceIdForMessage: jest.fn((messageId) => `trace-${messageId}`),
   mergeQuotedTextForCount: jest.fn((text) => text),
+  assertStoredMessageMutationAllowed: jest.fn(),
+  assertChatMutationAllowed: jest.fn(),
+  assertStoredMessageBranchAllowed: jest.fn(),
+  mergeUserSubmittedPaths: (...lists) => [...new Set(lists.flat().filter(Boolean))],
+  mergeUserSubmittedMessageFieldPaths: (...lists) => lists.flat().filter(Boolean),
+  isContentFilterError: jest.fn(() => false),
   CHILD_THREAD_READ_ONLY_ERROR: 'This subagent thread is view-only.',
   isSubagentThreadWriteBlocked: (...args) => mockIsSubagentThreadWriteBlocked(...args),
   requireFeedbackEnabled: (req, res, next) => next(),
@@ -42,6 +56,8 @@ jest.mock('~/models', () => ({
   searchMessages: jest.fn(),
   getMessagesByCursor: jest.fn(),
 }));
+
+jest.mock('~/server/services/Config', () => ({ getAppConfig: jest.fn() }));
 
 jest.mock('~/server/services/Endpoints/agents/subagentThreadStore', () => ({
   isThreadActiveForOwner: jest.fn(),
@@ -120,7 +136,7 @@ describe('message mutation policy for durable subagent threads', () => {
     }
     expect(mockIsSubagentThreadWriteBlocked).toHaveBeenCalledTimes(5);
     expect(mockIsSubagentThreadWriteBlocked).toHaveBeenCalledWith(
-      expect.objectContaining({ getConvo: db.getConvo }),
+      expect.objectContaining({ getConvo: expect.any(Function) }),
       {
         userId: 'owner-user',
         conversationId: 'child-conversation',

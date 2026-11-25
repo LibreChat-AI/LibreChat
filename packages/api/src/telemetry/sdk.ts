@@ -12,6 +12,8 @@ import type { NodeSDKConfiguration } from '@opentelemetry/sdk-node';
 import type { Span, Attributes } from '@opentelemetry/api';
 import type { RequestOptions } from 'node:http';
 import type { TelemetryConfig, TelemetryStatus } from './config';
+import { emitTelemetryWarning, getErrorMessage } from './warnings';
+import { attachLogsTransport, detachLogsTransport } from './logs';
 import { registerShutdownTask } from '../app/shutdown';
 import { getTelemetryConfig } from './config';
 
@@ -21,7 +23,6 @@ export interface TelemetryController {
   shutdown: () => Promise<void>;
 }
 
-const WARNING_CODE = 'LIBRECHAT_OTEL';
 const REDACTED_QUERY_VALUE = '[REDACTED]';
 const SIGNAL_SHUTDOWN_TIMEOUT_MS = 5_000;
 
@@ -296,7 +297,7 @@ function getResourceAttributes(config: TelemetryConfig): Attributes {
   return attributes;
 }
 
-function createSdk(config: TelemetryConfig): NodeSDK {
+function createInstrumentations(config: TelemetryConfig): NodeSDKConfiguration['instrumentations'] {
   const instrumentations: NodeSDKConfiguration['instrumentations'] = [
     new HttpInstrumentation({
       headersToSpanAttributes: {
@@ -327,10 +328,30 @@ function createSdk(config: TelemetryConfig): NodeSDK {
     instrumentations.push(new IORedisInstrumentation());
   }
 
+  return instrumentations;
+}
+
+/**
+ * Each signal is gated explicitly: an empty processor or reader list keeps the
+ * Node SDK from falling back to its environment defaults, which would otherwise
+ * stand up an OTLP exporter for a signal that was never enabled. Enabled signals
+ * keep the standard `OTEL_*_EXPORTER` / `OTEL_EXPORTER_OTLP_*` resolution, so
+ * `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` selects the gRPC exporter for every signal.
+ */
+function createSdk(config: TelemetryConfig): NodeSDK {
   const sdkConfig: Partial<NodeSDKConfiguration> = {
     resource: resourceFromAttributes(getResourceAttributes(config)),
-    instrumentations,
+    instrumentations: config.tracingEnabled ? createInstrumentations(config) : [],
   };
+
+  if (!config.tracingEnabled) {
+    sdkConfig.spanProcessors = [];
+    sdkConfig.metricReaders = [];
+  }
+
+  if (!config.logsEnabled) {
+    sdkConfig.logRecordProcessors = [];
+  }
 
   return new NodeSDK(sdkConfig);
 }
@@ -345,14 +366,6 @@ export function getTelemetryRequestSpan(request: IncomingMessage): Span | undefi
  */
 function startSdk(sdk: NodeSDK): void | Promise<void> {
   return (sdk as NodeSDK & { start: () => void | Promise<void> }).start();
-}
-
-function emitWarning(message: string): void {
-  process.emitWarning(message, { code: WARNING_CODE });
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function isControllerEnabled(): boolean {
@@ -386,7 +399,7 @@ function ensureShutdownTaskRegistered(): void {
     'telemetry',
     () =>
       withTimeout(shutdownTelemetry(), SIGNAL_SHUTDOWN_TIMEOUT_MS).catch((error) => {
-        emitWarning(`OpenTelemetry shutdown failed: ${getErrorMessage(error)}`);
+        emitTelemetryWarning(`OpenTelemetry shutdown failed: ${getErrorMessage(error)}`);
       }),
     // Exporters close after instrumented modules have emitted their final shutdown spans.
     { priority: -100 },
@@ -407,6 +420,15 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
       clearTimeout(timeout);
     }
   });
+}
+
+function markStarted(sdk: NodeSDK, config: TelemetryConfig): void {
+  activeSdk = sdk;
+  status = 'started';
+  ensureShutdownTaskRegistered();
+  if (config.logsEnabled) {
+    attachLogsTransport(config);
+  }
 }
 
 export function initializeTelemetry(env: NodeJS.ProcessEnv = process.env): TelemetryController {
@@ -430,16 +452,14 @@ export function initializeTelemetry(env: NodeJS.ProcessEnv = process.env): Telem
         .then(() => {
           if (pendingSdk === sdk) {
             pendingSdk = undefined;
-            activeSdk = sdk;
-            status = 'started';
-            ensureShutdownTaskRegistered();
+            markStarted(sdk, config);
           }
         })
         .catch((error) => {
           if (pendingSdk === sdk) {
             pendingSdk = undefined;
             status = 'failed';
-            emitWarning(`OpenTelemetry initialization failed: ${getErrorMessage(error)}`);
+            emitTelemetryWarning(`OpenTelemetry initialization failed: ${getErrorMessage(error)}`);
           }
         });
       startPromise = pendingStart;
@@ -451,13 +471,11 @@ export function initializeTelemetry(env: NodeJS.ProcessEnv = process.env): Telem
       return makeController();
     }
 
-    activeSdk = sdk;
-    status = 'started';
-    ensureShutdownTaskRegistered();
+    markStarted(sdk, config);
     return makeController();
   } catch (error) {
     status = 'failed';
-    emitWarning(`OpenTelemetry initialization failed: ${getErrorMessage(error)}`);
+    emitTelemetryWarning(`OpenTelemetry initialization failed: ${getErrorMessage(error)}`);
     return makeController();
   }
 }
@@ -475,6 +493,7 @@ async function performShutdownTelemetry(): Promise<void> {
   const sdk = activeSdk;
   try {
     await sdk.shutdown();
+    detachLogsTransport();
     activeSdk = undefined;
     status = 'stopped';
   } catch (error) {
@@ -505,6 +524,7 @@ export async function resetTelemetryForTests(): Promise<void> {
       await Promise.resolve(activeSdk.shutdown()).catch(() => undefined);
     }
   } finally {
+    detachLogsTransport();
     activeSdk = undefined;
     pendingSdk = undefined;
     startPromise = undefined;

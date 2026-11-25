@@ -1,6 +1,10 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { dropSupersededTenantIndexes, SUPERSEDED_INDEXES } from './tenantIndexes';
+import {
+  dropSupersededTenantIndexes,
+  migrateTenantIndexes,
+  SUPERSEDED_INDEXES,
+} from './tenantIndexes';
 
 jest.mock('~/config/winston', () => ({
   error: jest.fn(),
@@ -18,7 +22,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 describe('dropSupersededTenantIndexes', () => {
@@ -93,6 +97,8 @@ describe('dropSupersededTenantIndexes', () => {
         .collection('conversationtags')
         .createIndex({ tag: 1, user: 1 }, { unique: true, name: 'tag_1_user_1' });
 
+      await db.createCollection('mcpnames');
+      await db.collection('mcpnames').createIndex({ name: 1 }, { unique: true });
       await db.createCollection('mcpservers');
       await db
         .collection('mcpservers')
@@ -242,8 +248,8 @@ describe('dropSupersededTenantIndexes', () => {
     });
 
     afterAll(async () => {
-      await freshConnection.close();
-      await freshServer.stop();
+      await freshConnection?.close();
+      await freshServer?.stop();
     });
 
     it('skips all indexes gracefully (no errors)', async () => {
@@ -270,8 +276,8 @@ describe('dropSupersededTenantIndexes', () => {
     });
 
     afterAll(async () => {
-      await partialConnection.close();
-      await partialServer.stop();
+      await partialConnection?.close();
+      await partialServer?.stop();
     });
 
     it('drops existing indexes and skips missing ones', async () => {
@@ -297,6 +303,7 @@ describe('dropSupersededTenantIndexes', () => {
         'accessroles',
         'conversationtags',
         'mcpservers',
+        'mcpnames',
         'files',
         'groups',
         'skillsyncstatuses',
@@ -315,5 +322,81 @@ describe('dropSupersededTenantIndexes', () => {
       expect(SUPERSEDED_INDEXES.users).toContain('openidId_1');
       expect(SUPERSEDED_INDEXES.users).toContain('openidId_1_tenantId_1');
     });
+  });
+});
+
+describe('operator migration', () => {
+  let instance: mongoose.Mongoose;
+
+  beforeEach(async () => {
+    instance = new mongoose.Mongoose();
+    await instance.connect(mongoServer.getUri(), {
+      dbName: 'operator',
+      autoIndex: false,
+      autoCreate: false,
+    });
+    await instance.connection.dropDatabase();
+  });
+
+  afterEach(async () => {
+    await instance.disconnect();
+  });
+
+  it('previews without changing indexes or creating collections', async () => {
+    const roles = instance.connection.db!.collection('roles');
+    await roles.createIndex({ name: 1 }, { unique: true });
+    const before = await roles.indexes();
+    const result = await migrateTenantIndexes(instance.connection, { dryRun: true });
+    expect(result.planned).toEqual(['roles.name_1']);
+    expect(result.dropped).toEqual([]);
+    expect(await roles.indexes()).toEqual(before);
+    expect(await instance.connection.db!.listCollections().toArray()).toHaveLength(1);
+  });
+
+  it('upgrades legacy indexes, preserves custom indexes, and can be rerun', async () => {
+    const roles = instance.connection.db!.collection('roles');
+    await roles.insertOne({ name: 'USER' });
+    await roles.createIndex({ name: 1 }, { unique: true });
+    await roles.createIndex({ custom: 1 }, { name: 'operator_custom' });
+    for (const [name, indexNames] of Object.entries(SUPERSEDED_INDEXES)) {
+      for (const indexName of indexNames) {
+        const fields = indexName.split('_').filter((field) => field !== '1');
+        const keys = Object.fromEntries(fields.map((field) => [field, 1 as const]));
+        await instance.connection.db!.collection(name).createIndex(keys, { unique: true });
+      }
+    }
+    const result = await migrateTenantIndexes(instance.connection);
+    expect(result.errors).toEqual([]);
+    expect(result.dropped).toHaveLength(Object.values(SUPERSEDED_INDEXES).flat().length);
+    const indexes = await roles.indexes();
+    expect(indexes.find((index) => index.name === 'name_1')?.unique).toBeUndefined();
+    expect(indexes.find((index) => index.name === 'name_1_tenantId_1')?.unique).toBe(true);
+    expect(indexes.some((index) => index.name === 'operator_custom')).toBe(true);
+    await expect(roles.insertOne({ name: 'USER' })).rejects.toThrow(/E11000/);
+    await roles.insertOne({ name: 'USER', tenantId: 'another-tenant' });
+    const rerun = await migrateTenantIndexes(instance.connection);
+    expect(rerun.errors).toEqual([]);
+    expect(rerun.dropped).toEqual([]);
+    expect(await roles.indexes()).toEqual(indexes);
+  });
+
+  it('retains legacy constraints when replacement creation fails', async () => {
+    const users = instance.connection.db!.collection('users');
+    await users.insertMany([{ email: 'a@example.com' }, { email: 'a@example.com' }]);
+    const roles = instance.connection.db!.collection('roles');
+    await roles.createIndex({ name: 1 }, { unique: true });
+    await expect(migrateTenantIndexes(instance.connection)).rejects.toThrow(/E11000/);
+    expect((await roles.indexes()).find((index) => index.name === 'name_1')?.unique).toBe(true);
+  });
+
+  it('reports index-listing failures instead of treating them as missing collections', async () => {
+    const roles = instance.connection.db!.collection('roles');
+    const collection = jest.spyOn(instance.connection.db!, 'collection');
+    collection.mockReturnValue(roles);
+    jest.spyOn(roles, 'indexes').mockRejectedValue(new Error('not authorized'));
+    const result = await dropSupersededTenantIndexes(instance.connection);
+    expect(result.errors).toHaveLength(Object.keys(SUPERSEDED_INDEXES).length);
+    expect(result.skipped).toEqual([]);
+    expect(result.dropped).toEqual([]);
   });
 });

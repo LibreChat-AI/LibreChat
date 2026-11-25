@@ -1,8 +1,18 @@
 import { Providers } from '@librechat/agents';
-import { isDocumentSupportedProvider } from 'librechat-data-provider';
+import { logger } from '@librechat/data-schemas';
+import { isDocumentSupportedProvider, isOpenAILikeProvider } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { ServerRequest, StrategyFunctions, AudioResult } from '~/types';
-import { getFileStream, getConfiguredFileSizeLimit } from './utils';
+import type { MissingAttachmentHandler } from './utils';
+import {
+  getFileStream,
+  getAudioFormat,
+  getConfiguredFileSizeLimit,
+  skipMissingAttachment,
+  isConfiguredProviderMediaType,
+} from './utils';
+import { configuredRequestBudget } from '~/utils/timeouts';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { validateAudio } from '~/files/validation';
 import { runGuardedEncode } from './memoryGuard';
 
@@ -11,7 +21,7 @@ import { runGuardedEncode } from './memoryGuard';
  * @param req - The request object
  * @param files - Array of audio files
  * @param params - Object containing provider and optional endpoint
- * @param params.provider - The provider to format for (currently only google is supported)
+ * @param params.provider - The provider to format for
  * @param params.endpoint - Optional endpoint name for file config lookup
  * @param getStrategyFunctions - Function to get strategy functions
  * @returns Promise that resolves to audio and file metadata
@@ -19,10 +29,10 @@ import { runGuardedEncode } from './memoryGuard';
 export async function encodeAndFormatAudios(
   req: ServerRequest,
   files: IMongoFile[],
-  params: { provider: Providers; endpoint?: string },
+  params: { provider: Providers; endpoint?: string; onMissingFile?: MissingAttachmentHandler },
   getStrategyFunctions: (source: string) => StrategyFunctions,
 ): Promise<AudioResult> {
-  const { provider, endpoint } = params;
+  const { provider, endpoint, onMissingFile } = params;
   if (!files?.length) {
     return { audios: [], files: [] };
   }
@@ -33,14 +43,23 @@ export async function encodeAndFormatAudios(
   const results = await Promise.allSettled(
     files.map((file) =>
       runGuardedEncode(file.bytes ?? 0, () =>
-        getFileStream(req, file, encodingMethods, getStrategyFunctions),
+        getFileStream(
+          req,
+          file,
+          encodingMethods,
+          getStrategyFunctions,
+          configuredRequestBudget(req.config, 'fileFetchMs'),
+        ),
       ),
     ),
   );
 
-  for (const settledResult of results) {
+  for (const [index, settledResult] of results.entries()) {
     if (settledResult.status === 'rejected') {
-      console.error('Audio processing failed:', settledResult.reason);
+      if (skipMissingAttachment(settledResult.reason, files[index], onMissingFile)) {
+        continue;
+      }
+      logger.error('Audio processing failed:', getSafeErrorMetadata(settledResult.reason));
       continue;
     }
 
@@ -84,13 +103,22 @@ export async function encodeAndFormatAudios(
         mimeType: file.type,
         data: content,
       });
-    } else if (provider === Providers.OPENROUTER) {
-      // Extract format from filename extension (e.g., 'audio.mp3' -> 'mp3')
-      // OpenRouter expects format values like: wav, mp3, aiff, aac, ogg, flac, m4a, pcm16, pcm24
-      // Note: MIME types don't always match (e.g., 'audio/mpeg' is mp3, not mpeg), so that is why we are using the file extension instead
-      const format = file.filename.split('.').pop()?.toLowerCase();
+    } else if (
+      provider === Providers.OPENROUTER ||
+      (isOpenAILikeProvider(provider) &&
+        isConfiguredProviderMediaType(req, { provider, endpoint }, file.type))
+    ) {
+      /** OpenAI-compatible `input_audio` part (OpenRouter, vLLM, and other gateways).
+       * Custom endpoints only get here when the admin listed audio types in the
+       * endpoint's `supportedMimeTypes`, since not every gateway accepts audio. */
+      /** Canonicalized from the MIME type: the accepted MIME list contains aliases
+       * (`audio/wave`, `audio/mpeg`) that are not valid format values, and the filename
+       * may carry no extension at all. */
+      const format = getAudioFormat(file.type, file.filename);
       if (!format) {
-        throw new Error(`Could not extract audio format from filename: ${file.filename}`);
+        throw new Error(
+          `Could not determine a supported audio format for "${file.filename}" (${file.type})`,
+        );
       }
       result.audios.push({
         type: 'input_audio',

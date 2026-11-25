@@ -1,49 +1,20 @@
 import React from 'react';
-import { RecoilRoot } from 'recoil';
+import { getDefaultStore } from 'jotai';
 import '@testing-library/jest-dom/extend-expect';
 import { MemoryRouter } from 'react-router-dom';
 import { MessagesSquare, NotebookPen } from 'lucide-react';
-import { render, fireEvent, screen } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { MutableSnapshot } from 'recoil';
+import { cleanup, render, fireEvent, screen, within } from '@testing-library/react';
 import type { NavLink } from '~/common';
-import { ActivePanelProvider, DEFAULT_PANEL } from '~/Providers';
+import { ActivePanelProvider, DEFAULT_PANEL, activePanelAtom } from '~/Providers';
+import { createBalanceTestHarness } from 'test/balance';
 
 const mockNewConversation = jest.fn();
 const mockClearMessagesCache = jest.fn();
 
-jest.mock('~/store', () => {
-  const { atom } = jest.requireActual('recoil');
-  let counter = 0;
-  const switchAtom = atom({
-    key: 'mock-newChatSwitchToHistory',
-    default: true,
-  });
-  const customShortcutsAtom = atom({
-    key: 'mock-customShortcuts',
-    default: {},
-  });
-  const shortcutsEnabledAtom = atom({
-    key: 'mock-shortcutsEnabled',
-    default: true,
-  });
-  return {
-    __esModule: true,
-    default: {
-      conversationByIndex: () =>
-        atom({ key: `mock-conversationByIndex-${counter++}`, default: null }),
-      conversationIdByIndex: () =>
-        atom({ key: `mock-conversationIdByIndex-${counter++}`, default: null }),
-      newChatSwitchToHistory: switchAtom,
-      customShortcuts: customShortcutsAtom,
-      shortcutsEnabled: shortcutsEnabledAtom,
-    },
-  };
-});
-
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
   useNewConvo: () => ({ newConversation: mockNewConversation }),
+  useShowMarketplace: () => false,
 }));
 
 /**
@@ -51,7 +22,7 @@ jest.mock('~/hooks', () => ({
  * escapes the `~/hooks` mock above. Mirrors its contract closely enough that
  * the panel-switch assertions still exercise the `onNewChat` wiring.
  */
-jest.mock('~/hooks/Chat/useNewChat', () => ({
+jest.mock('~/hooks/Conversations/useNewChat', () => ({
   __esModule: true,
   default: ({ onNewChat }: { onNewChat?: () => void } = {}) => ({
     newConversation: mockNewConversation,
@@ -71,11 +42,6 @@ jest.mock('~/hooks/Chat/useNewChat', () => ({
   }),
 }));
 
-jest.mock('~/utils', () => ({
-  clearMessagesCache: (...args: unknown[]) => mockClearMessagesCache(...args),
-  cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
-}));
-
 jest.mock('~/components/Chat/Menus/OpenSidebar', () => ({
   CLOSE_SIDEBAR_ID: 'close-sidebar',
 }));
@@ -86,7 +52,6 @@ jest.mock('~/components/Nav/AccountSettings', () => ({
 }));
 
 import ExpandedPanel from '../ExpandedPanel';
-import store from '~/store';
 
 const createLinks = (): NavLink[] => [
   {
@@ -101,7 +66,7 @@ const createLinks = (): NavLink[] => [
   },
 ];
 
-const createQueryClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+let harness: ReturnType<typeof createBalanceTestHarness>;
 
 function renderPanel({
   expanded = true,
@@ -110,7 +75,7 @@ function renderPanel({
   onExpand = jest.fn(),
   onNavigate,
   initialPanel = DEFAULT_PANEL,
-  initializeState,
+  switchToHistory = true,
 }: {
   expanded?: boolean;
   links?: NavLink[];
@@ -118,27 +83,24 @@ function renderPanel({
   onExpand?: jest.Mock;
   onNavigate?: jest.Mock;
   initialPanel?: string;
-  initializeState?: (snapshot: MutableSnapshot) => void;
+  switchToHistory?: boolean;
 } = {}) {
-  if (initialPanel !== DEFAULT_PANEL) {
-    localStorage.setItem('side:active-panel', initialPanel);
-  }
+  getDefaultStore().set(activePanelAtom, initialPanel);
 
   const result = render(
     <MemoryRouter>
-      <QueryClientProvider client={createQueryClient()}>
-        <RecoilRoot initializeState={initializeState}>
-          <ActivePanelProvider>
-            <ExpandedPanel
-              links={links}
-              expanded={expanded}
-              onCollapse={onCollapse}
-              onExpand={onExpand}
-              onNavigate={onNavigate}
-            />
-          </ActivePanelProvider>
-        </RecoilRoot>
-      </QueryClientProvider>
+      <harness.Wrapper>
+        <ActivePanelProvider>
+          <ExpandedPanel
+            links={links}
+            expanded={expanded}
+            onCollapse={onCollapse}
+            onExpand={onExpand}
+            onNavigate={onNavigate}
+            switchToHistory={switchToHistory}
+          />
+        </ActivePanelProvider>
+      </harness.Wrapper>
     </MemoryRouter>,
   );
 
@@ -149,6 +111,35 @@ describe('ExpandedPanel', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     localStorage.clear();
+    harness = createBalanceTestHarness({ jotaiStore: getDefaultStore() });
+  });
+  afterEach(() => {
+    cleanup();
+    harness.client.clear();
+  });
+
+  it.each([true, false])('renders account usage when expanded=%s', async (expanded) => {
+    renderPanel({ expanded });
+    fireEvent.click(await screen.findByRole('button', { name: 'Account usage' }));
+    const card = await screen.findByRole('dialog', { name: 'Account usage' });
+    expect(await within(card).findByTestId('balance-value')).toHaveTextContent('3,100,000 credits');
+    expect(harness.getBalance).toHaveBeenCalledTimes(1);
+  });
+
+  describe('sidebar toggle button', () => {
+    it('collapses without forwarding the click event as an afterSlide callback', () => {
+      const { onCollapse } = renderPanel({ expanded: true });
+      fireEvent.click(screen.getByTestId('close-sidebar-button'));
+      expect(onCollapse).toHaveBeenCalledTimes(1);
+      expect(onCollapse).toHaveBeenCalledWith();
+    });
+
+    it('expands without forwarding the click event', () => {
+      const { onExpand } = renderPanel({ expanded: false });
+      fireEvent.click(screen.getByTestId('open-sidebar-button'));
+      expect(onExpand).toHaveBeenCalledTimes(1);
+      expect(onExpand).toHaveBeenCalledWith();
+    });
   });
 
   describe('NavIconButton collapse toggle', () => {
@@ -164,7 +155,7 @@ describe('ExpandedPanel', () => {
       const inactiveButton = screen.getByRole('button', { name: 'com_ui_prompts' });
       fireEvent.click(inactiveButton);
       expect(onCollapse).not.toHaveBeenCalled();
-      expect(localStorage.getItem('side:active-panel')).toBe('prompts');
+      expect(getDefaultStore().get(activePanelAtom)).toBe('prompts');
     });
 
     it('expands sidebar when clicking any icon while collapsed', () => {
@@ -179,7 +170,7 @@ describe('ExpandedPanel', () => {
       const inactiveButton = screen.getByRole('button', { name: 'com_ui_prompts' });
       fireEvent.click(inactiveButton);
       expect(onExpand).toHaveBeenCalledTimes(1);
-      expect(localStorage.getItem('side:active-panel')).toBe('prompts');
+      expect(getDefaultStore().get(activePanelAtom)).toBe('prompts');
     });
 
     it('notifies mobile navigation after a route link is selected', () => {
@@ -201,6 +192,34 @@ describe('ExpandedPanel', () => {
       expect(onClick).toHaveBeenCalledTimes(1);
       expect(onNavigate).toHaveBeenCalledTimes(1);
     });
+
+    it('marks only the current panel pressed and paints it with the navigation roles', () => {
+      renderPanel({ expanded: true });
+      const active = screen.getByRole('button', { name: 'com_ui_chat_history' });
+      const idle = screen.getByRole('button', { name: 'com_ui_prompts' });
+
+      expect(active).toHaveAttribute('aria-pressed', 'true');
+      expect(idle).toHaveAttribute('aria-pressed', 'false');
+      for (const button of [active, idle]) {
+        expect(button).toHaveClass(
+          'hover:bg-surface-nav-hover',
+          'aria-pressed:bg-surface-nav-selected',
+        );
+        expect(button).not.toHaveClass('bg-surface-active-alt');
+      }
+
+      fireEvent.click(idle);
+      expect(idle).toHaveAttribute('aria-pressed', 'true');
+      expect(active).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    it('hovers the sidebar toggle and new chat link in the navigation role', () => {
+      renderPanel({ expanded: true });
+
+      expect(screen.getByTestId('close-sidebar-button')).toHaveClass('hover:bg-surface-nav-hover');
+      expect(screen.getByTestId('new-chat-button')).toHaveClass('hover:bg-surface-nav-hover');
+      expect(screen.getByTestId('new-chat-button')).not.toHaveClass('hover:bg-surface-hover');
+    });
   });
 
   describe('NewChatButton panel switch', () => {
@@ -211,23 +230,21 @@ describe('ExpandedPanel', () => {
       fireEvent.click(newChatLink);
 
       expect(mockNewConversation).toHaveBeenCalledTimes(1);
-      expect(localStorage.getItem('side:active-panel')).toBe(DEFAULT_PANEL);
+      expect(getDefaultStore().get(activePanelAtom)).toBe(DEFAULT_PANEL);
     });
 
     it('does not switch panel on new chat click when setting is disabled', () => {
       renderPanel({
         expanded: true,
         initialPanel: 'prompts',
-        initializeState: ({ set }: MutableSnapshot) => {
-          set(store.newChatSwitchToHistory, false);
-        },
+        switchToHistory: false,
       });
 
       const newChatLink = screen.getByTestId('new-chat-button');
       fireEvent.click(newChatLink);
 
       expect(mockNewConversation).toHaveBeenCalledTimes(1);
-      expect(localStorage.getItem('side:active-panel')).toBe('prompts');
+      expect(getDefaultStore().get(activePanelAtom)).toBe('prompts');
     });
   });
 });

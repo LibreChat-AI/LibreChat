@@ -6,7 +6,7 @@ import type {
   UseMutationOptions,
   QueryObserverResult,
 } from '@tanstack/react-query';
-import type { TUserMemory, MemoriesResponse } from 'librechat-data-provider';
+import type { TUserMemory, MemoriesResponse, UpdateMemoryResponse } from 'librechat-data-provider';
 
 export const useMemoriesQuery = (
   config?: UseQueryOptions<MemoriesResponse>,
@@ -19,11 +19,19 @@ export const useMemoriesQuery = (
   });
 };
 
-export type DeleteMemoryParams = { key: string; agentId?: string };
+export type DeleteMemoryParams = { key?: string; id?: string; agentId?: string };
 export const useDeleteMemoryMutation = () => {
   const queryClient = useQueryClient();
   return useMutation(
-    ({ key, agentId }: DeleteMemoryParams) => dataService.deleteMemory(key, agentId),
+    ({ key, id, agentId }: DeleteMemoryParams) => {
+      if (id) {
+        return dataService.deleteMemoryById(id, agentId);
+      }
+      if (key) {
+        return dataService.deleteMemory(key, agentId);
+      }
+      throw new Error('Memory address is required.');
+    },
     {
       onSuccess: () => {
         queryClient.invalidateQueries([QueryKeys.memories]);
@@ -33,18 +41,26 @@ export const useDeleteMemoryMutation = () => {
 };
 
 export type UpdateMemoryParams = {
-  key: string;
+  key?: string;
+  id?: string;
   value: string;
   originalKey?: string;
   agentId?: string;
 };
 export const useUpdateMemoryMutation = (
-  options?: UseMutationOptions<TUserMemory, Error, UpdateMemoryParams>,
+  options?: UseMutationOptions<UpdateMemoryResponse, Error, UpdateMemoryParams>,
 ) => {
   const queryClient = useQueryClient();
   return useMutation(
-    ({ key, value, originalKey, agentId }: UpdateMemoryParams) =>
-      dataService.updateMemory(key, value, originalKey, agentId),
+    ({ key, id, value, originalKey, agentId }: UpdateMemoryParams) => {
+      if (id) {
+        return dataService.updateMemoryById(id, value, key, agentId);
+      }
+      if (key) {
+        return dataService.updateMemory(key, value, originalKey, agentId);
+      }
+      throw new Error('Memory address is required.');
+    },
     {
       ...options,
       onSuccess: (...params) => {

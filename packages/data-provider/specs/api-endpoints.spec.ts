@@ -1,7 +1,21 @@
 /**
  * @jest-environment jsdom
  */
-import { buildLoginRedirectUrl, getSharedLinks } from '../src/api-endpoints';
+import {
+  agentQueuedTurn,
+  buildLoginRedirectUrl,
+  getSharedLinks,
+  agentQueuedTurnsByConversation,
+  enableTwoFactorSetup,
+  confirmTwoFactorSetup,
+  acknowledgeTwoFactorSetup,
+  finalizeTwoFactorSetup,
+  cancelTwoFactorSetup,
+  messageToolCallPart,
+  subagentThreadMessages,
+  subagentThreadMessagesPage,
+  subagentThreadToolCallPart,
+} from '../src/api-endpoints';
 
 describe('buildLoginRedirectUrl', () => {
   afterEach(() => {
@@ -86,5 +100,88 @@ describe('getSharedLinks', () => {
     expect(result).toBe(
       '/api/share?pageSize=25&sortBy=createdAt&sortDirection=desc&search=100%25%20ready%20%26%20waiting&cursor=2030-01-01T00%3A00%3A00.000Z',
     );
+  });
+});
+
+describe('agent queued turns', () => {
+  it('encodes conversation identity exactly once', () => {
+    expect(agentQueuedTurnsByConversation('conversation/a b')).toBe(
+      '/api/agents/chat/queued-turns?conversationId=conversation%2Fa%20b',
+    );
+  });
+
+  it('encodes deduplicated known request identities as repeated bounded query values', () => {
+    expect(
+      agentQueuedTurnsByConversation('conversation/one', [
+        'request/one',
+        'request,two',
+        'request/one',
+      ]),
+    ).toBe(
+      '/api/agents/chat/queued-turns?conversationId=conversation%2Fone&clientRequestIds=request%2Fone&clientRequestIds=request%2Ctwo',
+    );
+  });
+
+  it('encodes queued-turn identity as one path segment', () => {
+    expect(agentQueuedTurn('turn/a b')).toBe('/api/agents/chat/queued-turns/turn%2Fa%20b');
+  });
+});
+
+describe('required two-factor setup endpoints', () => {
+  it('uses the purpose-specific setup paths', () => {
+    expect(enableTwoFactorSetup()).toBe('/api/auth/2fa/setup');
+    expect(confirmTwoFactorSetup()).toBe('/api/auth/2fa/setup/confirm');
+    expect(acknowledgeTwoFactorSetup()).toBe('/api/auth/2fa/setup/acknowledge');
+    expect(finalizeTwoFactorSetup()).toBe('/api/auth/2fa/setup/finalize');
+    expect(cancelTwoFactorSetup()).toBe('/api/auth/2fa/setup/cancel');
+  });
+});
+
+describe('child thread read endpoints', () => {
+  it('reads a child thread through its parent, encoding both ids', () => {
+    expect(subagentThreadMessages('parent/1', 'thread 2')).toBe(
+      '/api/convos/parent%2F1/subagents/thread%202/messages',
+    );
+  });
+
+  it('asks for one page of a thread, and for the page before a cursor', () => {
+    expect(subagentThreadMessagesPage('parent/1', 'thread 2', { limit: 50 })).toBe(
+      '/api/convos/parent%2F1/subagents/thread%202/messages?limit=50',
+    );
+    expect(
+      subagentThreadMessagesPage('parent/1', 'thread 2', {
+        limit: 50,
+        cursor: '2026-11-15T10:00:00.000Z|64d4f005d73ef522e1f48818',
+      }),
+    ).toBe(
+      '/api/convos/parent%2F1/subagents/thread%202/messages?limit=50&cursor=2026-11-15T10%3A00%3A00.000Z%7C64d4f005d73ef522e1f48818',
+    );
+  });
+
+  it('addresses a tool-call part under the thread, with the same identity query as a chat', () => {
+    const params = {
+      conversationId: 'thread 2',
+      messageId: 'task:assistant',
+      partIndex: 3,
+      toolCallId: 'call/1',
+      stepId: 'step 1',
+    };
+
+    expect(subagentThreadToolCallPart('parent/1', params)).toBe(
+      '/api/convos/parent%2F1/subagents/thread%202/messages/task%3Aassistant/parts/3?toolCallId=call%2F1&stepId=step%201',
+    );
+    expect(messageToolCallPart(params)).toBe(
+      '/api/messages/thread%202/task%3Aassistant/parts/3?toolCallId=call%2F1&stepId=step%201',
+    );
+  });
+
+  it('omits the query when the part has no identity', () => {
+    expect(
+      subagentThreadToolCallPart('parent', {
+        conversationId: 'thread',
+        messageId: 'm',
+        partIndex: 0,
+      }),
+    ).toBe('/api/convos/parent/subagents/thread/messages/m/parts/0');
   });
 });

@@ -1,11 +1,11 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { getAccessToken, requestJson, replyPrompt, replyText } from './helpers';
+import { withMongo } from './db';
 
 const uniqueName = (prefix: string) => `${prefix} ${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
 
 type AgentSummary = { id: string; name?: string };
-type AgentList = { data?: AgentSummary[] };
 type Schedule = {
   id: string;
   name: string;
@@ -19,18 +19,16 @@ type ScheduleList = { schedules: Schedule[] };
 type RunNowResult = { scheduleId: string; conversationId?: string; status?: string };
 
 async function ensureAgent(page: Page, token: string): Promise<AgentSummary> {
-  const list = await requestJson<AgentList>(page, { path: '/api/agents?limit=1', token }).catch(
-    () => ({}) as AgentList,
-  );
-  const existing = list.data?.[0];
-  if (existing?.id) {
-    return existing;
-  }
   const agent = await requestJson<AgentSummary>(page, {
     path: '/api/agents',
     token,
     method: 'POST',
-    body: { name: uniqueName('E2E Agent'), provider: 'Mock Provider A', model: 'mock-model-a' },
+    body: {
+      name: uniqueName('Schedule E2E Agent'),
+      provider: 'Mock Provider A',
+      model: 'mock-model-a',
+      tools: [],
+    },
   });
   expect(agent.id).toBeTruthy();
   return agent;
@@ -85,7 +83,9 @@ test.describe('scheduled chat execution', () => {
    * where a broken loopback URL, a rejected fire token, or a lost schedule identity
    * surfaces. The smoke spec only proves the card renders.
    */
-  test('Run Now generates a conversation and records it on the schedule', async ({ page }) => {
+  test('Run Now generates a conversation and records it on the schedule @scenario:schedule-run-now', async ({
+    page,
+  }) => {
     test.setTimeout(120000);
     await page.goto('/c/new', { timeout: 15000 });
     const token = await getAccessToken(page);
@@ -127,48 +127,95 @@ test.describe('scheduled chat execution', () => {
   });
 
   /**
-   * A due schedule must fire on the engine's own tick — no user action — exactly once,
-   * and then advance past the occurrence. TICK_MS is 30s, so budget for one tick.
+   * A failed model call does not fail the request: the turn ends with an error part and its
+   * job completes. The run must still settle as an error, or a schedule whose model fails
+   * every time shows as healthy and never reaches its auto-disable threshold.
    */
-  test('a due schedule fires automatically, once, and advances', async ({ page }) => {
-    test.setTimeout(600000);
+  test('a run whose model call fails settles as an error and counts the failure', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await page.goto('/c/new', { timeout: 15000 });
+    const token = await getAccessToken(page);
+    const agent = await ensureAgent(page, token);
+    const schedule = await createSchedule(
+      page,
+      token,
+      scheduleBody(agent.id, { prompt: `E2E_FORCED_ERROR:sched-${Date.now()}` }),
+    );
+
+    const result = await requestJson<RunNowResult>(page, {
+      path: `/api/schedules/${schedule.id}/run`,
+      token,
+      method: 'POST',
+    });
+    expect(result.status).toBe('started');
+
+    await expect
+      .poll(async () => (await readSchedule(page, token, schedule.id))?.lastRun?.status, {
+        timeout: 60000,
+        intervals: [1000],
+      })
+      .toBe('error');
+
+    const stored = await withMongo((db) =>
+      db.collection('schedules').findOne({ id: schedule.id }, { projection: { failureCount: 1 } }),
+    );
+    expect(stored?.failureCount).toBe(1);
+  });
+
+  /**
+   * A due schedule must fire on the engine's own tick, with no user action, exactly once, and
+   * then advance past the occurrence. TICK_MS is 30s, so budget for one tick.
+   *
+   * The schedule is made due in the database rather than by the clock. Waiting for its own
+   * first occurrence meant the next minute boundary plus this schedule's jitter (up to
+   * SCHEDULE_JITTER_WINDOW_MS, 120s) before the tick under test even mattered: about 109s
+   * in CI, and anywhere up to three and a half minutes. Creation still has to arm a future
+   * occurrence, which is checked before the row is touched.
+   */
+  test('a due schedule fires automatically, once, and advances @scenario:due-schedule-fires-once-on-the-engine-tick', async ({
+    page,
+  }) => {
+    test.setTimeout(180000);
     await page.goto('/c/new', { timeout: 15000 });
     const token = await getAccessToken(page);
     const agent = await ensureAgent(page, token);
     const label = `auto-${Date.now()}`;
-    // Hourly ignores `hour` (cron `m * * * *`) but the payload schema still requires it.
+    // Hourly ignores `hour` (cron `m * * * *`) but the payload schema still requires it. Half
+    // an hour out keeps the schedule's own next occurrence clear of this test.
     const schedule = await createSchedule(
       page,
       token,
       scheduleBody(agent.id, {
         prompt: replyPrompt(label),
-        cadence: { frequency: 'hourly', hour: 0, minute: (new Date().getUTCMinutes() + 1) % 60 },
+        cadence: { frequency: 'hourly', hour: 0, minute: (new Date().getUTCMinutes() + 30) % 60 },
         timezone: 'UTC',
       }),
     );
-    const before = await readSchedule(page, token, schedule.id);
-    expect(before?.nextRunAt).toBeTruthy();
+    const armed = await readSchedule(page, token, schedule.id);
+    expect(armed?.nextRunAt).toBeTruthy();
+    expect(new Date(armed!.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
 
-    // Budget from the server's OWN nextRunAt rather than a guessed constant: it already
-    // includes this schedule's deterministic jitter (up to SCHEDULE_JITTER_WINDOW_MS,
-    // 120s), which no fixed timeout can safely assume away. Add the engine tick
-    // (30s + 2s jitter) plus room for the generation.
-    const dueIn = Math.max(new Date(before!.nextRunAt!).getTime() - Date.now(), 0);
-    const budget = dueIn + 120000;
+    const due = await withMongo((db) =>
+      db
+        .collection('schedules')
+        .updateOne({ id: schedule.id }, { $set: { nextRunAt: new Date(Date.now() - 1000) } }),
+    );
+    expect(due.matchedCount).toBe(1);
 
+    // One engine tick (30s + 2s jitter) plus room for the generation.
     await expect
       .poll(async () => (await readSchedule(page, token, schedule.id))?.lastRun?.status, {
-        timeout: budget,
+        timeout: 120000,
         intervals: [2000],
       })
       .toBe('success');
 
     const after = await readSchedule(page, token, schedule.id);
-    // Exactly one run, and the occurrence was advanced rather than re-fired.
+    // Exactly one run, and the occurrence was advanced to a future one rather than left due.
     expect(after?.runCount).toBe(1);
-    expect(new Date(after!.nextRunAt!).getTime()).toBeGreaterThan(
-      new Date(before!.nextRunAt!).getTime(),
-    );
+    expect(new Date(after!.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
   });
 
   test('rejects an invalid timezone before persisting anything', async ({ page }) => {
@@ -204,6 +251,7 @@ test.describe('scheduled chat execution', () => {
    */
   test('edits a schedule through the UI with the cadence persisted', async ({ page }) => {
     test.setTimeout(120000);
+    await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto('/c/new', { timeout: 15000 });
     const token = await getAccessToken(page);
     const agent = await ensureAgent(page, token);
@@ -218,27 +266,34 @@ test.describe('scheduled chat execution', () => {
     const persisted = page.getByTestId('schedule-card').filter({ hasText: name });
     await expect(persisted).toContainText(/Runs weekly/i, { timeout: 15000 });
 
-    // EDIT through the dialog: rename and move the cadence to daily. The dialog
+    // EDIT through the dialog: rename and move the cadence to Custom. The dialog
     // pre-populates the agent from the schedule, so no picker interaction is needed.
     await persisted.getByRole('button', { name: 'Schedule options' }).click();
     await page.getByRole('menuitem', { name: 'Edit' }).click();
     const editDialog = page.getByRole('dialog');
     const renamed = `${name} edited`;
     await editDialog.locator('#schedule-name').fill(renamed);
-    await editDialog.getByRole('radio', { name: 'Daily' }).click();
-    // The dialog does not scroll at `md` and up, so its content has to fit the
-    // viewport: a field that adds a ROW pushes Save out of a 720px-tall window with
-    // no way to scroll it back. Asserted explicitly because the bare click below
-    // reports that as a 2-minute timeout on a visible, enabled button.
+    await editDialog.getByRole('radio', { name: 'Custom' }).click();
+    await editDialog.getByTestId('schedule-cron-input').fill('0 9 * * *');
+
+    // Custom adds a hint and validation message. On a 720px viewport, the dialog
+    // itself must scroll so the footer remains reachable.
     const save = editDialog.getByRole('button', { name: 'Save' });
+    await save.scrollIntoViewIfNeeded();
     await expect(save).toBeInViewport();
+    /** The reload discards a request still in flight, so the save has to land before it. */
+    const saved = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'PATCH' && response.url().includes('/api/schedules/'),
+    );
     await save.click();
+    expect((await saved).ok()).toBeTruthy();
 
     await page.reload();
     await openSchedulesPanel(page);
     const edited = page.getByTestId('schedule-card').filter({ hasText: renamed });
     await expect(edited).toBeVisible({ timeout: 15000 });
-    await expect(edited).toContainText(/Runs daily/i);
+    await expect(edited).toContainText(/Runs on cron 0 9 \* \* \*/i);
   });
 
   /**

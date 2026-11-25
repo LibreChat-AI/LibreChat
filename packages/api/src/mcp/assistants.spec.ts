@@ -1,7 +1,7 @@
 import { Constants } from 'librechat-data-provider';
 import type { LCAvailableTools, ParsedServerConfig } from './types';
 import type { AssistantToolDefinitionsDeps } from './assistants';
-import { getAssistantToolDefinitions } from './assistants';
+import { getAssistantToolDefinitions, toProviderToolDefinition } from './assistants';
 
 const serverConfig: ParsedServerConfig = {
   type: 'streamable-http',
@@ -48,10 +48,45 @@ describe('getAssistantToolDefinitions', () => {
     const deps = createDeps();
 
     await expect(getAssistantToolDefinitions(params, deps)).resolves.toEqual({
-      ...params.staticTools,
-      ...catalog,
+      toolDefinitions: { ...params.staticTools, ...catalog },
+      accessibleServerNames: ['app-server'],
     });
     expect(deps.getMCPServerTools).toHaveBeenCalledWith('user-1', 'app-server', serverConfig);
+  });
+
+  it('retains serverToolName for the heal; toProviderToolDefinition strips it at submission', async () => {
+    /** The heal verifies legacy rewrites against the recorded upstream
+     *  identity, so the loader keeps the field; assistant writers submit
+     *  entries verbatim, so the controllers sanitize each entry through
+     *  toProviderToolDefinition before the provider sees it. */
+    const strippedKey = `search${Constants.mcp_delimiter}app-server`;
+    const strippedCatalog: LCAvailableTools = {
+      [strippedKey]: {
+        type: 'function',
+        serverToolName: 'app-server_search',
+        ['function']: {
+          name: strippedKey,
+          description: '',
+          parameters: { type: 'object', properties: {} },
+        },
+      },
+    };
+    const deps = createDeps({ getMCPServerTools: jest.fn().mockResolvedValue(strippedCatalog) });
+
+    const { toolDefinitions } = await getAssistantToolDefinitions(params, deps);
+
+    expect(toolDefinitions[strippedKey]?.serverToolName).toBe('app-server_search');
+
+    const sanitized = toProviderToolDefinition(toolDefinitions[strippedKey]);
+    expect(sanitized).toEqual({
+      type: 'function',
+      ['function']: strippedCatalog[strippedKey]['function'],
+    });
+    expect(sanitized).not.toHaveProperty('serverToolName');
+    expect(toProviderToolDefinition('code_interpreter')).toBe('code_interpreter');
+    expect(toProviderToolDefinition(params.staticTools.code_interpreter)).toBe(
+      params.staticTools.code_interpreter,
+    );
   });
 
   it('reconnects a user server when neither cache nor local snapshot has a catalog', async () => {
@@ -64,8 +99,8 @@ describe('getAssistantToolDefinitions', () => {
     });
 
     await expect(getAssistantToolDefinitions(params, deps)).resolves.toEqual({
-      ...params.staticTools,
-      ...recoveredCatalog,
+      toolDefinitions: { ...params.staticTools, ...recoveredCatalog },
+      accessibleServerNames: ['app-server'],
     });
     expect(recoverServerTools).toHaveBeenCalledWith('app-server', serverConfig);
   });
@@ -118,7 +153,10 @@ describe('getAssistantToolDefinitions', () => {
       cacheMCPServerTools,
     });
 
-    await expect(getAssistantToolDefinitions(params, deps)).resolves.toEqual(params.staticTools);
+    await expect(getAssistantToolDefinitions(params, deps)).resolves.toEqual({
+      toolDefinitions: params.staticTools,
+      accessibleServerNames: ['app-server'],
+    });
     expect(cacheMCPServerTools).toHaveBeenCalledWith({
       userId: 'user-1',
       serverName: 'app-server',
@@ -192,7 +230,7 @@ describe('getAssistantToolDefinitions', () => {
         },
         deps,
       ),
-    ).resolves.toBe(staticTools);
+    ).resolves.toEqual({ toolDefinitions: staticTools });
     expect(deps.ensureConfigServers).not.toHaveBeenCalled();
     expect(deps.getMCPServerTools).not.toHaveBeenCalled();
   });

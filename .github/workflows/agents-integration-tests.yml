@@ -1,9 +1,12 @@
-name: Agents Integration Tests
+name: Integration Tests
 
-# Runs the packages/api `src/agents/**` integration specs (e.g. the durable HITL
-# checkpointer and cross-replica subagent delivery against real MongoDB and Redis). These
-# are `*.integration.spec.ts`, which `test:ci` deliberately excludes — without this
-# job they run nowhere and their regressions guard nothing.
+# Runs every packages/api `*.integration.spec.ts` / `*.integration.test.ts` suite (e.g. the
+# durable HITL checkpointer and cross-replica subagent delivery against real MongoDB and
+# Redis, the admin config secret registry against a real Config collection, MCP flows
+# against in-process servers). `test:ci` deliberately excludes them, and the Redis-backed
+# `*.cache_integration` / `*.stream_integration` suites run in cache-integration-tests.yml —
+# without this job they run nowhere and their regressions guard nothing. Selection is by
+# suffix, not folder, so a suite added anywhere under src is picked up.
 on:
   pull_request:
     branches:
@@ -11,9 +14,9 @@ on:
       - dev
       - dev-staging
       - release/*
-    # The suite builds and consumes data-provider and data-schemas and imports
+    # The suites build and consume data-provider and data-schemas and import
     # across packages/api (the build-cache keys below hash all three src trees),
-    # so it must re-run on any of them — not just src/agents.
+    # so they must re-run on any of them.
     paths:
       - 'packages/api/src/**'
       - 'packages/api/package.json'
@@ -22,7 +25,12 @@ on:
       - 'packages/data-schemas/src/**'
       - 'packages/data-schemas/package.json'
       - '.github/workflows/agents-integration-tests.yml'
+      - '.github/actions/mongodb-binary/**'
       - '!**.md'
+  # The merge queue tests the commit about to land on dev. It has no path filter and no
+  # selection: every job below runs in full.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -52,10 +60,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Use Node.js 24.16.0
+      - name: Use Node.js 24.22.3
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.3'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -67,7 +75,7 @@ jobs:
             packages/api/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
-          key: node-modules-backend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+          key: node-modules-backend-${{ runner.os }}-24.22.3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -106,9 +114,65 @@ jobs:
         if: steps.cache-api.outputs.cache-hit != 'true'
         run: npm run build:api
 
-      - name: Run agents integration tests
+      - name: Test MongoDB binary provisioning
+        run: node --test .github/actions/mongodb-binary/prewarm.test.mjs
+
+      # Every suite here runs in one Jest process with 15s hooks. A cold download of the
+      # ~122MB mongod inside the first hook timed it out on a slow mirror day, and the suites
+      # after it then spawned the half-written file (`spawn ETXTBSY`).
+      - name: Provision MongoDB memory-server binary
+        uses: ./.github/actions/mongodb-binary
+
+      - name: Run integration tests
         working-directory: packages/api
         env:
           NODE_ENV: test
           REDIS_URI: redis://127.0.0.1:6379
-        run: npm run test:agents-integration
+        run: npm run test:integration
+
+      - name: Checkout merged browser enrollment compatibility fixture
+        uses: actions/checkout@v5
+        with:
+          repository: LibreChat-AI/code-interpreter
+          ref: a3207a75c8327ba1c9526eff8b06f3588f3739ed
+          path: .verification/browser-enrollment-upstream
+          persist-credentials: false
+          sparse-checkout: |
+            packages/code
+            service/src/bridge
+            service/src/logger.ts
+          sparse-checkout-cone-mode: false
+
+      - name: Build the pinned merged CLI
+        working-directory: .verification/browser-enrollment-upstream/packages/code
+        run: npm ci --no-audit --no-fund && npm run build
+
+      - name: Verify merged CLI enrollment and profile persistence
+        working-directory: packages/api
+        env:
+          NODE_ENV: test
+          CODE_SETUP_UPSTREAM: ${{ github.workspace }}/.verification/browser-enrollment-upstream
+          CODE_SETUP_REDIS_URI: redis://127.0.0.1:6379/15
+        run: >-
+          npx jest src/code/setup/compatibility.integration.spec.ts
+          --runInBand --coverage=false --forceExit
+
+  # dev's merge queue requires this job by name (see merge-gate.yml). It depends on every
+  # other job here, so a new job has to be added to `needs`; merge-gate.test.mjs fails
+  # until it is. No job here may be skipped.
+  gate:
+    name: integration
+    needs: [agents_integration_tests]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Verify every integration job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node .github/scripts/merge-gate.mjs verify

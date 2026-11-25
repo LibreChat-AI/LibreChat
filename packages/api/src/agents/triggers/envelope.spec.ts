@@ -125,6 +125,63 @@ describe('createAgentTriggerEnvelope', () => {
     expect(parseAgentTriggerEnvelope(JSON.parse(JSON.stringify(envelope)))).toEqual(envelope);
   });
 
+  it('preserves only complete authenticated binding metadata on continuations', () => {
+    const envelope = createAgentTriggerEnvelope({
+      ...createFireInput(),
+      mode: 'continue',
+      target: {
+        agentId: 'agent-1',
+        conversationId: 'conversation-1',
+        parentMessageId: 'response-1',
+        bindingId: `evtbind_${'a'.repeat(48)}`,
+        sourceKeyId: 'source-key',
+      },
+    });
+
+    expect(parseAgentTriggerEnvelope(JSON.parse(JSON.stringify(envelope)))).toEqual(envelope);
+    expect(() =>
+      createAgentTriggerEnvelope({
+        ...createFireInput(),
+        mode: 'continue',
+        target: {
+          agentId: 'agent-1',
+          conversationId: 'conversation-1',
+          parentMessageId: 'response-1',
+          bindingId: `evtbind_${'a'.repeat(48)}`,
+        },
+      }),
+    ).toThrow('target.bindingId and target.sourceKeyId must be provided together');
+  });
+
+  it('validates and detaches an expected tool-action fence', () => {
+    const expectedAction = {
+      toolName: 'submit_move',
+      argumentSubset: { gameId: 'game-1', expectedPly: 7 },
+    };
+    const envelope = createAgentTriggerEnvelope({
+      ...createFireInput(),
+      expectedAction,
+    });
+    expectedAction.argumentSubset = { gameId: 'mutated', expectedPly: 8 };
+
+    expect(envelope.expectedAction).toEqual({
+      toolName: 'submit_move',
+      argumentSubset: { gameId: 'game-1', expectedPly: 7 },
+    });
+    expect(() =>
+      createAgentTriggerEnvelope({
+        ...createFireInput(),
+        expectedAction: { toolName: 'submit_move', argumentSubset: [] as never },
+      }),
+    ).toThrow('expectedAction.argumentSubset must be an object');
+    expect(() =>
+      createAgentTriggerEnvelope({
+        ...createFireInput(),
+        expectedAction: { toolName: 'x'.repeat(257) },
+      }),
+    ).toThrow('expectedAction.toolName must not exceed 256 characters');
+  });
+
   it('builds a stable generation-compatible idempotency key per delivery target', () => {
     const first = createAgentTriggerEnvelope(createFireInput());
     const retry = createAgentTriggerEnvelope({

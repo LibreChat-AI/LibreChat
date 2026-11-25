@@ -10,6 +10,7 @@ interface ExportProps {
   dimensions?: ProcessedMermaidSvg['dimensions'];
   filename: string;
   buttonClassName?: string;
+  onDownloadSource?: (event: React.MouseEvent<HTMLElement>) => void | Promise<void>;
 }
 
 const mockExport = jest.fn((_props: ExportProps) => null);
@@ -24,6 +25,13 @@ jest.mock('~/hooks', () => ({
     () =>
     (key: string): string =>
       key,
+}));
+
+const mockArtifactDownload = jest.fn();
+
+jest.mock('~/hooks/Artifacts/useArtifactDownload', () => ({
+  __esModule: true,
+  default: () => ({ isDownloaded: false, handleDownload: mockArtifactDownload }),
 }));
 
 const artifact: Artifact = {
@@ -54,12 +62,17 @@ describe('Artifact Mermaid export', () => {
         filename: 'flow.mmd',
       }),
     );
-    expect(mockExport.mock.calls[0][0]).not.toHaveProperty('source');
   });
 
-  it('does not offer export before the preview SVG is ready', () => {
+  /* The panel renders no separate download button for mermaid, so this menu
+   * has to carry the source download — including before any preview has
+   * rendered, when SVG and PNG have nothing to work from. */
+  it('offers the source download even before the preview SVG is ready', () => {
     render(<MermaidExport artifact={artifact} />);
 
-    expect(mockExport).not.toHaveBeenCalled();
+    expect(mockExport).toHaveBeenCalledTimes(1);
+    const props = mockExport.mock.calls[0][0];
+    expect(props.svg).toBeUndefined();
+    expect(props.onDownloadSource).toBe(mockArtifactDownload);
   });
 });

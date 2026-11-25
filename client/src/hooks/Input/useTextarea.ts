@@ -3,7 +3,8 @@ import { v4 } from 'uuid';
 import debounce from 'lodash/debounce';
 import { useToastContext } from '@librechat/client';
 import { useRecoilValue, useRecoilState } from 'recoil';
-import { EToolResources, isAssistantsEndpoint } from 'librechat-data-provider';
+import { resolveComposerKeyDown } from '@librechat/chat';
+import { Constants, EToolResources, isAssistantsEndpoint } from 'librechat-data-provider';
 import type { TEndpointOption } from 'librechat-data-provider';
 import type { KeyboardEvent } from 'react';
 import type { UploadLifecycleCallbacks } from '~/hooks/Files/useFileHandling';
@@ -15,22 +16,27 @@ import {
   getComposerDraftId,
   setPendingTextAttachmentDraft,
   removePendingTextAttachmentDraft,
+  resolvePendingPasteInsertStart,
+  addPastedTextDraftFile,
+  isFilesDraftOwnedByThisTab,
+  getFilesDraft,
   setDraft,
+  markPastedTextFile,
   getEntityName,
   getEntity,
   checkIfScrollable,
 } from '~/utils';
 import { useAssistantsMapContext } from '~/Providers/AssistantsMapContext';
 import { useLatestMessageMeta } from '~/hooks/Messages/useLatestMessage';
+import { useChatFormContext, useUploadModalContext } from '~/Providers';
 import useComposerBindings from '~/hooks/Input/useComposerBindings';
 import useFileUploadRouter from '~/hooks/Files/useFileUploadRouter';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useGetSender from '~/hooks/Conversations/useGetSender';
 import useUploadOptions from '~/hooks/Files/useUploadOptions';
 import { useInteractionHealthCheck } from '~/data-provider';
-import { resolveComposerKeyDown } from '~/utils/shortcuts';
 import { useChatContext } from '~/Providers/ChatContext';
-import { useUploadModalContext } from '~/Providers';
 import { globalAudioId } from '~/common';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
@@ -46,6 +52,7 @@ export default function useTextarea({
   allowSubmitWhileGenerating = false,
   onDuringRunModifier,
   answerModeActive = false,
+  enterToSend,
 }: {
   textAreaRef: React.RefObject<HTMLTextAreaElement>;
   submitButtonRef: React.RefObject<HTMLButtonElement>;
@@ -59,9 +66,12 @@ export default function useTextarea({
   onDuringRunModifier?: (kind: 'other' | 'interrupt' | 'preempt') => void;
   /** Keeps pasted text inline while the composer is answering a paused question. */
   answerModeActive?: boolean;
+  /** Host-owned: whether Enter sends. The hint advertises the same value. */
+  enterToSend: boolean;
 }) {
   const localize = useLocalize();
   const getSender = useGetSender();
+  const { setValue } = useChatFormContext();
   const isComposing = useRef(false);
   const agentsMap = useAgentsMapContext();
   const { showToast } = useToastContext();
@@ -69,13 +79,14 @@ export default function useTextarea({
     getOptions: getUploadOptions,
     uploadsDisabled,
     isConfigPending: isUploadConfigPending,
+    isConfigResolved: isUploadConfigResolved,
+    isUnifiedMode,
   } = useUploadOptions();
   const routeFiles = useFileUploadRouter();
   const { openModal } = useUploadModalContext();
   const assistantMap = useAssistantsMapContext();
   const checkHealth = useInteractionHealthCheck();
-  const enterToSend = useRecoilValue(store.enterToSend);
-  const saveDrafts = useRecoilValue(store.saveDrafts);
+  const { saveDrafts } = useChatSettings();
   const pasteLongTextAsFile = useRecoilValue(store.pasteLongTextAsFile);
   const { shortcutsEnabled, submitOverride, yieldedChords } = useComposerBindings();
 
@@ -91,6 +102,9 @@ export default function useTextarea({
   const reservedPasteFilenames = useRef<Set<string>>(new Set());
   const latestMessage = useLatestMessageMeta(index);
   const [activePrompt, setActivePrompt] = useRecoilState(store.activePromptByIndex(index));
+  const [pendingComposerText, setPendingComposerText] = useRecoilState(
+    store.pendingComposerTextByConvoId(conversation?.conversationId ?? Constants.NEW_CONVO),
+  );
 
   const { endpoint = '' } = conversation || {};
   const { entity, isAgent, isAssistant } = getEntity({
@@ -106,14 +120,63 @@ export default function useTextarea({
     latestMessage?.error === true && latestMessage.isCreatedByUser === true && !isAssistant;
   // && (conversationId?.length ?? 0) > 6; // also ensures that we don't show the wrong placeholder
 
+  const insertComposerText = useCallback(
+    (text: string) => {
+      const textarea = textAreaRef.current;
+      if (!textarea) {
+        return false;
+      }
+
+      const { value, selectionStart, selectionEnd } = textarea;
+      const nextCursor = selectionStart + text.length;
+      setValue('text', `${value.slice(0, selectionStart)}${text}${value.slice(selectionEnd)}`, {
+        shouldDirty: true,
+        shouldValidate: true,
+      });
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      forceResize(textarea);
+      textarea.focus();
+      textarea.setSelectionRange(nextCursor, nextCursor);
+      return true;
+    },
+    [setValue, textAreaRef],
+  );
+
   useEffect(() => {
     const prompt = activePrompt ?? '';
-    if (prompt && textAreaRef.current) {
-      insertTextAtCursor(textAreaRef.current, prompt);
-      forceResize(textAreaRef.current);
-      setActivePrompt(undefined);
+    if (!prompt || !insertComposerText(prompt)) {
+      return;
     }
-  }, [activePrompt, setActivePrompt, textAreaRef]);
+
+    setActivePrompt(undefined);
+  }, [activePrompt, insertComposerText, setActivePrompt]);
+
+  /** Text a surface the user was leaving handed to THIS conversation (see
+   *  `pendingComposerTextByConvoId`). It is drained once, on the first render
+   *  where that conversation's composer exists, which is what lets it survive a
+   *  navigation that resolves its record before moving the route. */
+  useEffect(() => {
+    const text = pendingComposerText ?? '';
+    if (text === '') {
+      return;
+    }
+    /* A reclaimed steer must not overwrite a draft the user typed while the
+     * cancel request was in flight. Keep both messages distinct when the
+     * composer already owns text; an empty composer receives the exact steer. */
+    const currentText = textAreaRef.current?.value ?? '';
+    /* The words can reach this composer twice: handed over, and restored from the draft saved
+     * for the conversation. When it already holds exactly them, there is nothing to add. */
+    if (currentText === text) {
+      setPendingComposerText(undefined);
+      return;
+    }
+    const handoffText = currentText.length > 0 ? `\n${text}` : text;
+    if (!insertComposerText(handoffText)) {
+      return;
+    }
+
+    setPendingComposerText(undefined);
+  }, [insertComposerText, pendingComposerText, setPendingComposerText, textAreaRef]);
 
   useEffect(() => {
     const currentValue = textAreaRef.current?.value ?? '';
@@ -145,10 +208,12 @@ export default function useTextarea({
         return placeholder;
       }
 
-      const sender =
-        isAssistant || isAgent
-          ? getEntityName({ name: entityName, isAgent, localize })
-          : getSender(conversation as TEndpointOption);
+      let sender: string | undefined;
+      if (isAssistant || isAgent) {
+        sender = getEntityName({ name: entityName, isAgent, localize });
+      } else if (conversation) {
+        sender = getSender(conversation as TEndpointOption);
+      }
 
       return `${localize('com_endpoint_message_new', {
         0: sender ? sender : localize('com_endpoint_ai'),
@@ -278,7 +343,11 @@ export default function useTextarea({
         /** Held until the upload is accepted so a rejected file (a duplicate, an oversized one)
          * reports only its own error instead of pairing it with a success message. */
         const accepted = await routeFiles(clipboardFiles, destination, uploadLifecycle);
-        if (accepted && destination === EToolResources.context) {
+        if (
+          accepted &&
+          destination === EToolResources.context &&
+          uploadLifecycle?.pastedText == null
+        ) {
           showToast({ message: localize('com_ui_file_attached_as_text'), status: 'info' });
         }
         return accepted;
@@ -288,6 +357,21 @@ export default function useTextarea({
         /** Assistants use their own upload path; bypass option resolution like drag-and-drop does */
         if (isAssistantsEndpoint(conversation?.endpoint)) {
           return await upload();
+        }
+
+        /* Unified mode decides the destination from the file itself, matching the drop
+         * handler. A caller that already knows where the file belongs, as the long-text
+         * paste does, still passes that through. */
+        if (isUnifiedMode && preferred == null) {
+          return await upload();
+        }
+
+        /* Before the config lands neither answer is safe, so the paste says so rather than
+         * falling through to the chooser a unified deployment no longer shows. */
+        if (preferred == null && !isUploadConfigResolved) {
+          showToast({ message: localize('com_ui_attach_error_pending'), status: 'warning' });
+          setFilesLoading(false);
+          return false;
         }
 
         /** Resolving options reads the file config, so until that lands the list is empty for
@@ -328,6 +412,8 @@ export default function useTextarea({
       setFilesLoading,
       getUploadOptions,
       isUploadConfigPending,
+      isUploadConfigResolved,
+      isUnifiedMode,
     ],
   );
 
@@ -400,9 +486,15 @@ export default function useTextarea({
       }
       const composerValue = textArea.value;
       const pendingFileId = v4();
-      if (saveDrafts) {
+      markPastedTextFile(pendingFileId);
+      /** Another open tab can hold this shared key against files it still has attached, and
+       * `setFilesDraft` keeps that owner rather than rejecting the write: recording this paste
+       * there would hand it to a composer that never made it, which could then restore the
+       * upload and delete it through New Chat while this tab still shows the chip. */
+      if (saveDrafts && isFilesDraftOwnedByThisTab(getFilesDraft(draftId))) {
+        addPastedTextDraftFile({ id: draftId, fileId: pendingFileId });
         try {
-          setDraft({ id: draftId, value: composerValue, persistExact: true });
+          setDraft({ id: draftId, value: composerValue });
           setPendingTextAttachmentDraft({
             id: draftId,
             fileId: pendingFileId,
@@ -418,8 +510,8 @@ export default function useTextarea({
           // Persistence must not prevent the generated attachment from uploading.
         }
       }
-      const restorePaste = (target: HTMLTextAreaElement) => {
-        target.setSelectionRange(selectionStart, selectionStart);
+      const restorePaste = (target: HTMLTextAreaElement, insertStart: number) => {
+        target.setSelectionRange(insertStart, insertStart);
         insertTextAtCursor(target, pastedText);
         forceResize(target);
       };
@@ -427,18 +519,49 @@ export default function useTextarea({
       const isOriginatingComposer = (): boolean =>
         conversationIdRef.current === conversationId &&
         getNewConversationDraftToken(index) === draftToken;
-      const restorePasteAfterUploadFailure = (): boolean => {
+      /** Whether a durable copy of this paste exists. When one does, a composer the user has
+       * since typed into is deliberately left alone: the record recovers at an anchored offset on
+       * the next restore, and inserting here as well would fight that. */
+      const hasPersistedPasteRecovery = (fileId: string): boolean => {
+        if (!saveDrafts) {
+          return false;
+        }
+        const { pendingPastes } = getFilesDraft(draftId);
+        return pendingPastes[fileId] != null || pendingPastes[pendingFileId] != null;
+      };
+      let canceled = false;
+      const restorePasteAfterUploadFailure = (fileId: string): boolean => {
         const currentTextArea = textAreaRef.current;
         if (
+          canceled ||
           !currentTextArea ||
           answerModeActiveRef.current ||
-          !isOriginatingComposer() ||
-          currentTextArea.value !== composerValue
+          !isOriginatingComposer()
         ) {
           return false;
         }
-
-        restorePaste(currentTextArea);
+        const composerUnchanged = currentTextArea.value === composerValue;
+        if (!composerUnchanged && hasPersistedPasteRecovery(fileId)) {
+          return false;
+        }
+        /** Nothing durable to fall back on: the shared draft key belongs to another tab, or drafts
+         * are off, so this callback holds the only copy of the paste left. Dropping it because the
+         * composer moved on would lose it outright, so it goes back in at the offset its anchors
+         * resolve to, which is where a restore from a record would have put it. */
+        restorePaste(
+          currentTextArea,
+          composerUnchanged
+            ? selectionStart
+            : resolvePendingPasteInsertStart(currentTextArea.value, {
+                text: pastedText,
+                selectionStart,
+                selectionEnd,
+                replacedText,
+                replacedApplied: true,
+                anchorBefore: composerValue.slice(0, selectionStart),
+                anchorAfter: composerValue.slice(selectionStart),
+              }),
+        );
         if (saveDrafts) {
           setDraft({
             id: getComposerDraftId(index, conversationIdRef.current, isSubmittingRef.current),
@@ -463,12 +586,22 @@ export default function useTextarea({
       };
       const uploadLifecycle: UploadLifecycleCallbacks = {
         fileId: pendingFileId,
+        pastedText,
+        onRecoveryTransferred: () => {
+          canceled = true;
+        },
         shouldCommit: isOriginatingComposer,
         onStart: (fileId) => {
-          if (!saveDrafts || fileId === pendingFileId) {
+          markPastedTextFile(fileId);
+          if (
+            !saveDrafts ||
+            fileId === pendingFileId ||
+            !isFilesDraftOwnedByThisTab(getFilesDraft(draftId))
+          ) {
             return;
           }
           try {
+            addPastedTextDraftFile({ id: draftId, fileId });
             removePendingTextAttachmentDraft({
               id: draftId,
               fileId: pendingFileId,
@@ -493,12 +626,13 @@ export default function useTextarea({
           clearPendingPasteDraft(fileId);
         },
         onError: (fileId) => {
-          const restored = restorePasteAfterUploadFailure();
+          const restored = restorePasteAfterUploadFailure(fileId);
           if (restored || getNewConversationDraftToken(index) !== draftToken) {
             clearPendingPasteDraft(fileId, true);
           }
         },
         onAbort: (fileId) => {
+          canceled = true;
           clearPendingPasteDraft(fileId, true);
         },
       };
@@ -506,8 +640,8 @@ export default function useTextarea({
         (accepted) => {
           /** The name is either attached now or was never taken, so stop reserving it. */
           reservedPasteFilenames.current.delete(pastedFilename);
-          if (!accepted) {
-            const restored = restorePasteAfterUploadFailure();
+          if (!accepted && !canceled) {
+            const restored = restorePasteAfterUploadFailure(pendingFileId);
             if (restored || getNewConversationDraftToken(index) !== draftToken) {
               clearPendingPasteDraft(pendingFileId, true);
             }

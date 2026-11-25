@@ -29,10 +29,10 @@ describe('MCP tool cache', () => {
 
   it('uses collision-safe configuration-addressed keys', () => {
     expect(ToolCacheKeys.MCP_APP_SERVER('server:name', 'config/a')).toBe(
-      'tools:mcp:app:server%3Aname:config%2Fa',
+      'tools:mcp:app:v2:server%3Aname:config%2Fa',
     );
     expect(ToolCacheKeys.MCP_SERVER('tenant:user', 'server:name', 'config/a')).toBe(
-      'tools:mcp:user:{tenant%3Auser:server%3Aname}:config%2Fa',
+      'tools:mcp:user:{tenant%3Auser:server%3Aname}:v2:config%2Fa',
     );
     expect(ToolCacheKeys.MCP_SERVER('tenant:user', 'server:name', 'config/a')).not.toBe(
       ToolCacheKeys.MCP_SERVER('tenant', 'user:server:name', 'config/a'),
@@ -49,7 +49,7 @@ describe('MCP tool cache', () => {
   });
 
   it('keeps the legacy user key available for non-generation callers', () => {
-    expect(ToolCacheKeys.MCP_SERVER('user123', 'github')).toBe('tools:mcp:user123:github');
+    expect(ToolCacheKeys.MCP_SERVER('user123', 'github')).toBe('tools:mcp:v2:user123:github');
   });
 
   it('gets and sets static global tools without touching MCP slices', async () => {
@@ -431,10 +431,25 @@ describe('MCP tool cache', () => {
     );
   });
 
+  it('reports the rotated generation so its caller can tell its own fence from a foreign one', async () => {
+    mockCache.set.mockResolvedValue(true);
+    mockCache.delete.mockResolvedValue(true);
+
+    const published = await invalidateCachedTools({ userId: 'user1', serverName: 'github' });
+
+    expect(published).toEqual(expect.any(String));
+    expect(mockCache.set).toHaveBeenNthCalledWith(
+      2,
+      ToolCacheKeys.MCP_SERVER_GENERATION('user1', 'github'),
+      published,
+      expect.any(Number),
+    );
+  });
+
   it('invalidates only the static global key for broad config changes', async () => {
     mockCache.delete.mockResolvedValue(true);
 
-    await invalidateCachedTools({ invalidateGlobal: true });
+    await expect(invalidateCachedTools({ invalidateGlobal: true })).resolves.toBeUndefined();
 
     expect(mockCache.delete).toHaveBeenCalledTimes(1);
     expect(mockCache.delete).toHaveBeenCalledWith(ToolCacheKeys.GLOBAL);

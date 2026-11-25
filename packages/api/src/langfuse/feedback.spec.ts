@@ -259,6 +259,41 @@ describe('Langfuse feedback scores', () => {
     expect(getFetchMock()).not.toHaveBeenCalled();
   });
 
+  it('does not score a temporary chat unless the deployment opts in', async () => {
+    const { sendFeedbackScore } = await loadFeedback();
+    const score = { traceId: 'trace-id', feedback: { rating: 'thumbsUp' as const } };
+
+    await sendFeedbackScore({ ...score, isTemporary: true });
+    expect(getFetchMock()).not.toHaveBeenCalled();
+
+    await sendFeedbackScore({
+      ...score,
+      isTemporary: true,
+      appConfig: { langfuse: { trace: { temporaryChats: true } } } as AppConfig,
+    });
+    expect(getFetchMock()).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not score a stored permanent row once retention forces chats temporary', async () => {
+    const { sendFeedbackScore } = await loadFeedback();
+    const score = { traceId: 'trace-id', feedback: { rating: 'thumbsUp' as const } };
+    const interfaceConfig = { retentionMode: 'ephemeral' };
+
+    await sendFeedbackScore({
+      ...score,
+      isTemporary: false,
+      appConfig: { interfaceConfig } as AppConfig,
+    });
+    expect(getFetchMock()).not.toHaveBeenCalled();
+
+    await sendFeedbackScore({
+      ...score,
+      isTemporary: false,
+      appConfig: { interfaceConfig, langfuse: { trace: { temporaryChats: true } } } as AppConfig,
+    });
+    expect(getFetchMock()).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves a sampled trace when the sample rate decreases', async () => {
     process.env.LANGFUSE_SAMPLE_RATE = '0.1';
     const { sendFeedbackScore } = await loadFeedback();
@@ -391,6 +426,81 @@ describe('Langfuse feedback scores', () => {
 
     expect(destinationIds).toHaveLength(1);
     expect(getFetchMock()).toHaveBeenCalledTimes(1);
+  });
+
+  it('records the sampling decision of the run a failed turn stands for', async () => {
+    process.env.LANGFUSE_SAMPLE_RATE = '0.5';
+    await loadFeedback();
+    const { getLangfuseTraceMessageFields } = await import('./destinations');
+    const { isLangfuseTraceSampled } = await import('./policy');
+    const { traceIdForMessage } = await import('./trace');
+    const ids = Array.from({ length: 64 }, (_, index) => `id-${index}`);
+    const sampled = (id: string) => isLangfuseTraceSampled(traceIdForMessage(id));
+    const runId = ids.find(sampled) as string;
+    const rowId = ids.find((id) => !sampled(id)) as string;
+
+    await expect(getLangfuseTraceMessageFields(undefined, rowId, { runId })).resolves.toEqual({
+      langfuseCentralTraceExportEnabled: true,
+      langfuseSampled: true,
+      langfuseDestinationIds: [expect.any(String)],
+      langfuseRunId: runId,
+    });
+    await expect(getLangfuseTraceMessageFields(undefined, runId)).resolves.not.toHaveProperty(
+      'langfuseRunId',
+    );
+    await expect(getLangfuseTraceMessageFields(undefined, rowId)).resolves.toMatchObject({
+      langfuseSampled: false,
+    });
+  });
+
+  it('names the run of a failed turn only when that run was created', async () => {
+    await loadFeedback();
+    const { getFailedTurnTraceFields } = await import('./destinations');
+
+    await expect(
+      getFailedTurnTraceFields(undefined, {
+        messageId: 'user-1_',
+        runId: 'run-1',
+        runCreated: false,
+      }),
+    ).resolves.toEqual({});
+    await expect(
+      getFailedTurnTraceFields(undefined, { messageId: 'user-1_', runId: null, runCreated: true }),
+    ).resolves.toEqual({});
+    await expect(
+      getFailedTurnTraceFields(undefined, {
+        messageId: 'user-1_',
+        runId: 'run-1',
+        runCreated: true,
+      }),
+    ).resolves.toMatchObject({ langfuseSampled: true, langfuseRunId: 'run-1' });
+  });
+
+  it('records a temporary turn as untraced unless the deployment opts in', async () => {
+    await loadFeedback();
+    const { getFailedTurnTraceFields, getLangfuseTraceMessageFields } = await import(
+      './destinations'
+    );
+    const optIn = { langfuse: { trace: { temporaryChats: true } } } as AppConfig;
+
+    await expect(
+      getLangfuseTraceMessageFields(undefined, 'message-1', { isTemporary: true }),
+    ).resolves.toEqual({
+      langfuseCentralTraceExportEnabled: true,
+      langfuseSampled: false,
+      langfuseDestinationIds: [],
+    });
+    await expect(
+      getFailedTurnTraceFields(undefined, {
+        messageId: 'user-1_',
+        runId: 'run-1',
+        runCreated: true,
+        isTemporary: true,
+      }),
+    ).resolves.toMatchObject({ langfuseSampled: false, langfuseRunId: 'run-1' });
+    await expect(
+      getLangfuseTraceMessageFields(optIn, 'message-1', { isTemporary: true }),
+    ).resolves.toMatchObject({ langfuseSampled: true });
   });
 
   it('keeps the central destination identity stable when credentials rotate', async () => {

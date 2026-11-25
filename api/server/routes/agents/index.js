@@ -1,22 +1,36 @@
 const express = require('express');
 const {
+  reportLocatorTraversalFailure,
   isEnabled,
   GenerationJobManager,
+  createBackgroundChildAbortGuard,
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
   hasPersistableAbortContent,
+  announceStoppedReply,
+  resolveAbortedTurnPersistence,
   buildAbortedResponseMetadata,
   isPendingActionStale,
   toClientPendingAction,
+  getGenerationElapsedMs,
   isHITLEnabled,
   captureAgentCheckpointGeneration,
   deleteAgentCheckpoint,
   attachAskUserQuestionAnswers,
   attachAskUserQuestionArgs,
   createMessageFilterPii,
+  createPrivateTextIngress,
+  isPrivateTextChatSubmission,
+  isPreDenialTextSubmission,
+  saveAbortedUserMessage,
   isAgentTriggerRequest,
   exemptAgentTriggerFromIpLimiter,
   captureScheduleFireContext,
-  exemptFromUserLimiter: exemptScheduleFromUserLimiter,
+  exemptTriggerFromUserLimiter,
+  detectGenerationRetry,
+  isConfirmedGenerationRetry,
+  generationRetryProbeLimiter,
+  generationRetryLimiter,
+  startSseKeepalive,
 } = require('@librechat/api');
 const { createSseStreamTelemetry } = require('@librechat/api/telemetry');
 const { logger } = require('@librechat/data-schemas');
@@ -25,11 +39,19 @@ const {
   checkBan,
   moderateText,
   requireJwtAuth,
+  requireTermsAcceptance,
   messageIpLimiter,
-  configMiddleware,
+  strictConfigMiddleware,
   messageUserLimiter,
+  loadStreamKeepaliveMs,
 } = require('~/server/middleware');
 const SteerController = require('~/server/controllers/agents/steer');
+const {
+  AgentQueuedTurnEnqueueController,
+  AgentQueuedTurnEnqueueV2Controller,
+  AgentQueuedTurnListController,
+  AgentQueuedTurnCancelController,
+} = require('~/server/controllers/agents/queuedTurns');
 const {
   GENERATION_PROTOCOL_HEADER,
   GENERATION_PROTOCOL_V2,
@@ -37,13 +59,28 @@ const {
   getServerGenerationProtocol,
   negotiateExistingGenerationProtocol,
 } = require('~/server/controllers/agents/protocol');
-const { saveMessage } = require('~/models');
+const {
+  getFiles,
+  getMessages,
+  saveMessage,
+  saveConvo,
+  getPersistedPrivateTextId,
+  getPrivateMessageTexts,
+} = require('~/models');
 const {
   recordScheduleOutcome,
   beginScheduledStop,
   acknowledgeScheduledStopPersistence,
 } = require('~/server/services/Schedules');
 const responses = require('./responses');
+const {
+  reviewBackgroundResponse,
+  submitBackgroundResponseReview,
+  cancelOwnerBackgroundResponse,
+} = require('~/server/services/Responses');
+const management = require('./management');
+const conversations = require('./conversations');
+const skills = require('./skills');
 const openai = require('./openai');
 const { v1 } = require('./v1');
 const chat = require('./chat');
@@ -63,10 +100,7 @@ function hasTenantMismatch(job, user) {
  * validation, not-found, and authorization envelopes; it never leaks an
  * existing job's marker to an unauthorized caller. */
 function negotiateRequestGenerationProtocol(req) {
-  return Math.min(
-    getRequestedGenerationProtocol(req),
-    getServerGenerationProtocol(GenerationJobManager),
-  );
+  return Math.min(getRequestedGenerationProtocol(req), getServerGenerationProtocol());
 }
 
 /** Every generation-control JSON envelope carries the exact numeric protocol
@@ -93,9 +127,7 @@ async function sendJoblessStatus(req, res, conversationId) {
   );
   const generationProtocolVersion = Math.min(
     requestedProtocolVersion,
-    claimed.steers.length > 0
-      ? claimed.generationProtocolVersion
-      : getServerGenerationProtocol(GenerationJobManager),
+    claimed.steers.length > 0 ? claimed.generationProtocolVersion : getServerGenerationProtocol(),
   );
   res.set(GENERATION_PROTOCOL_HEADER, String(generationProtocolVersion));
   return res.json({
@@ -116,6 +148,15 @@ const router = express.Router();
 router.use('/v1/responses', responses);
 
 /**
+ * Machine-authenticated Agent Management routes.
+ * Mounted before the catch-all execution router so management requests cannot
+ * inherit execution authentication or API-key fallback behavior.
+ */
+router.use('/v1/agents', management);
+router.use('/v1/skills', skills);
+router.use('/v1/conversations', conversations);
+
+/**
  * OpenAI-compatible API routes (API key authentication handled in route file)
  * Mounted at /agents/v1 (full path: /api/agents/v1/chat/completions)
  */
@@ -129,8 +170,38 @@ router.use((req, _res, next) => {
   captureScheduleFireContext(req);
   next();
 });
+// Denials may persist submitted text on chat control routes too. Load policy before
+// any such denial; transformation remains limited to fresh interactive turns.
+const privateTextIngress = createPrivateTextIngress({
+  getFilters: (req) => req.config?.filters,
+  getLegacyPii: (req) => req.config?.messageFilter?.pii,
+  getKey: () => process.env.CREDS_KEY ?? '',
+});
+const chatConfigMiddleware = strictConfigMiddleware;
+router.use(
+  '/chat',
+  unless((req) => !isPreDenialTextSubmission(req), strictConfigMiddleware),
+  unless((req) => !isPrivateTextChatSubmission(req), privateTextIngress),
+);
 router.use(checkBan);
 router.use(uaParser);
+router.get('/responses/:id/review', requireTermsAcceptance, reviewBackgroundResponse);
+router.post(
+  '/responses/:id/review',
+  requireTermsAcceptance,
+  chatConfigMiddleware,
+  ...(isEnabled(LIMIT_MESSAGE_IP) ? [messageIpLimiter] : []),
+  ...(isEnabled(LIMIT_MESSAGE_USER) ? [messageUserLimiter] : []),
+  submitBackgroundResponseReview,
+);
+router.post(
+  '/responses/:id/cancel',
+  requireTermsAcceptance,
+  chatConfigMiddleware,
+  ...(isEnabled(LIMIT_MESSAGE_IP) ? [messageIpLimiter] : []),
+  ...(isEnabled(LIMIT_MESSAGE_USER) ? [messageUserLimiter] : []),
+  cancelOwnerBackgroundResponse,
+);
 
 /**
  * Stream endpoints - mounted before chatRouter to bypass rate limiters
@@ -228,7 +299,12 @@ router.get('/chat/stream/:streamId', async (req, res) => {
     logger.warn(`[AgentStream] Refusing stream with invalid generation identity: ${streamId}`);
     return sendGenerationJson(res, 403, { error: 'Unauthorized' }, requestProtocolVersion);
   }
-  const streamTelemetry = createSseStreamTelemetry({ req, res, streamId, isResume });
+  const streamTelemetry = createSseStreamTelemetry({
+    req,
+    res,
+    streamId,
+    isResume,
+  });
 
   res.setHeader('Content-Encoding', 'identity');
   res.setHeader('Content-Type', 'text/event-stream');
@@ -238,6 +314,9 @@ router.get('/chat/stream/:streamId', async (req, res) => {
   res.setHeader(GENERATION_PROTOCOL_HEADER, String(generationProtocolVersion));
   res.flushHeaders();
   streamTelemetry.recordHeadersFlushed();
+  /** Started only for an authorized attachment, and never awaited: the keepalive runs at
+   * the default interval until the narrow config read resolves. */
+  startSseKeepalive(res, loadStreamKeepaliveMs(req));
 
   logger.debug(`[AgentStream] Client subscribed to ${streamId}, resume: ${isResume}`);
 
@@ -383,7 +462,9 @@ router.get('/chat/stream/:streamId', async (req, res) => {
           final: true,
           reconcile: true,
           reconcileReason: generationReplaced ? 'generation_replaced' : 'terminal_payload_missing',
-          ...(expectedGenerationTerminal && { terminalStatus: currentJob.status }),
+          ...(expectedGenerationTerminal && {
+            terminalStatus: currentJob.status,
+          }),
           generationCreatedAt: authorizedGenerationCreatedAt,
           conversation: {
             conversationId: currentJob?.conversationId ?? job.conversationId ?? streamId,
@@ -524,6 +605,8 @@ router.get('/chat/status/:conversationId', async (req, res) => {
     status: job.status,
     aggregatedContent: resumeState?.aggregatedContent ?? [],
     createdAt: job.createdAt,
+    elapsedMs: getGenerationElapsedMs(job),
+    isTemporary: job.metadata?.isTemporary === true,
     resumeState,
     // Surface the live pending approval so a client rebuilding from /chat/status
     // (reload / cross-replica) has the action id + payload to render and submit
@@ -542,10 +625,15 @@ router.get('/chat/status/:conversationId', async (req, res) => {
  * @access Private
  * @description Mounted before chatRouter to bypass buildEndpointOption middleware
  */
-router.post('/chat/abort', configMiddleware, async (req, res, next) => {
+router.post(
+  '/chat/abort',
+  createBackgroundChildAbortGuard({
+    getJob: (streamId) => GenerationJobManager.getJob(streamId),
+  }),
+);
+router.post('/chat/abort', chatConfigMiddleware, async (req, res, next) => {
   logger.debug(`[AgentStream] ========== ABORT ENDPOINT HIT ==========`);
   logger.debug(`[AgentStream] Method: ${req.method}, Path: ${req.path}`);
-  logger.debug(`[AgentStream] Body:`, req.body);
 
   const requestProtocolVersion = negotiateRequestGenerationProtocol(req);
   let responseProtocolVersion = requestProtocolVersion;
@@ -554,6 +642,11 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
       return sendGenerationJson(res, 400, { code: 'INVALID_ABORT_TARGET' }, requestProtocolVersion);
     }
     const { streamId, conversationId, abortKey, generationCreatedAt } = req.body;
+    logger.debug(`[AgentStream] Abort request`, {
+      conversationId,
+      hasStreamId: typeof streamId === 'string' && streamId.length > 0,
+      hasAbortKey: typeof abortKey === 'string' && abortKey.length > 0,
+    });
     for (const value of [streamId, conversationId, abortKey]) {
       if (
         value != null &&
@@ -735,17 +828,30 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
            * its parent and the preliminary-parent fence correctly rejects it. */
           const shouldPersistAbortedTurn =
             hasPersistableAbortContent(content) || jobData?.createdEventEmitted === true;
+          /** The stopped turn's persistence plan (which rows to write, and
+           *  whether the normal FINAL must be withheld for a reconciliation
+           *  frame instead) comes from @librechat/api, decided from the
+           *  compaction anchor this route reads. */
+          const abortPersistencePlan = await resolveAbortedTurnPersistence(
+            jobData,
+            shouldPersistAbortedTurn,
+            { userId: req?.user?.id, getMessages },
+          );
+          persistenceErrors.push(...abortPersistencePlan.persistenceErrors);
 
           if (
             jobData?.userMessage?.messageId &&
             jobData?.responseMessageId &&
-            shouldPersistAbortedTurn
+            abortPersistencePlan.writeResponseRow
           ) {
             const messageContext = {
               userId: req?.user?.id,
               // Source from the job: the stop request does not carry the
               // original temporary-chat flag.
               isTemporary: jobData?.isTemporary ?? req?.body?.isTemporary,
+              expiredAt: jobData?.retentionExpiresAt
+                ? new Date(jobData.retentionExpiresAt)
+                : undefined,
               interfaceConfig: req?.config?.interfaceConfig,
             };
             const requestMessage = {
@@ -766,9 +872,22 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
               endpoint: jobData.endpoint,
               iconURL: jobData.iconURL,
               model: jobData.model,
-              unfinished: true,
+              unfinished: abortPersistencePlan.responseUnfinished,
               error: false,
               isCreatedByUser: false,
+              ...(Array.isArray(jobData.userSubmittedPaths) &&
+                jobData.userSubmittedPaths.length > 0 && {
+                  userSubmittedPaths: jobData.userSubmittedPaths,
+                }),
+              ...(Array.isArray(jobData.userSubmittedMessageFieldPaths) &&
+                jobData.userSubmittedMessageFieldPaths.length > 0 && {
+                  userSubmittedMessageFieldPaths: jobData.userSubmittedMessageFieldPaths,
+                }),
+              /** The run published its compact context meta onto the job ahead
+               * of each model call; the stopped response must carry it so the
+               * next turn seeds the same tiers. A job with none unsets what an
+               * earlier pause stored on this row, since omission would keep it. */
+              contextMeta: jobData.contextMeta ?? null,
               user: userId,
             };
 
@@ -782,16 +901,26 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
              * with neither row stored. Both writes are idempotent upserts;
              * await the user prerequisite first, but still attempt the child
              * write and checkpoint cleanup so every independently useful
-             * operation gets a chance to succeed. */
-            try {
-              const persistedRequest = await saveMessage(messageContext, requestMessage, {
-                context: 'api/server/routes/agents/index.js - abort user prerequisite',
-              });
-              if (!persistedRequest) {
-                throw new Error('Abort user prerequisite was not persisted');
+             * operation gets a chance to succeed. A compaction skips the
+             * prerequisite: its anchor is the persisted leaf itself. */
+            let persistedRequestId;
+            if (abortPersistencePlan.writeUserRow) {
+              try {
+                const persistedRequest = await saveAbortedUserMessage(
+                  { saveMessage, getPersistedPrivateTextId, getPrivateMessageTexts },
+                  messageContext,
+                  requestMessage,
+                  { context: 'api/server/routes/agents/index.js - abort user prerequisite' },
+                  req.user?.tenantId,
+                  pendingAbortResult.finalEvent,
+                );
+                if (!persistedRequest) {
+                  throw new Error('Abort user prerequisite was not persisted');
+                }
+                persistedRequestId = persistedRequest._id;
+              } catch (error) {
+                persistenceErrors.push(error);
               }
-            } catch (error) {
-              persistenceErrors.push(error);
             }
 
             try {
@@ -802,6 +931,28 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
                 throw new Error('Abort response was not persisted');
               }
               logger.debug(`[AgentStream] Saved partial response for: ${jobStreamId}`);
+              /* When Stop wins the terminal claim the request controller returns before its
+                 own stamp, so this is the only place a stopped turn's reply reaches the
+                 unseen-reply indicator.
+                 The two rows this barrier just wrote are handed over directly: without them
+                 the conversation write reloads the entire message list to rebuild `messages`,
+                 and that serial read sits between Stop and the FINAL event. */
+              await announceStoppedReply(
+                { saveConvo },
+                {
+                  ctx: messageContext,
+                  conversationId: jobData.conversationId,
+                  endpoint: jobData.endpoint,
+                  model: jobData.model,
+                  reply: {
+                    messageId: persistedResponse.messageId,
+                    content,
+                    attachments: responseMessage.attachments,
+                  },
+                  appendMessageIds: [persistedRequestId, persistedResponse._id],
+                  context: 'api/server/routes/agents/index.js - abort reply stamp',
+                },
+              );
             } catch (error) {
               persistenceErrors.push(error);
             }
@@ -962,7 +1113,9 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
         // Steers that never reached an injection boundary — restored client-side
         // as queued chips so the user's words aren't dropped with the abort.
         ...(!abortResult.persistenceFailed &&
-          abortResult.pendingSteers?.length > 0 && { pendingSteers: abortResult.pendingSteers }),
+          abortResult.pendingSteers?.length > 0 && {
+            pendingSteers: abortResult.pendingSteers,
+          }),
       });
     }
 
@@ -1006,9 +1159,14 @@ if (isEnabled(LIMIT_MESSAGE_USER)) {
 }
 router.post(
   '/chat/steer',
-  configMiddleware,
+  chatConfigMiddleware,
   ...steerLimiters,
-  createMessageFilterPii({ getConfig: (req) => req.config?.messageFilter?.pii }),
+  createMessageFilterPii({
+    onTraversalFailure: reportLocatorTraversalFailure,
+    getConfig: (req) => req.config?.messageFilter?.pii,
+    getFilters: (req) => req.config?.filters,
+    getFiles,
+  }),
   moderateText,
   SteerController,
 );
@@ -1022,9 +1180,14 @@ router.post(
  */
 router.post(
   '/chat/steer/deliver',
-  configMiddleware,
+  chatConfigMiddleware,
   ...steerLimiters,
-  createMessageFilterPii({ getConfig: (req) => req.config?.messageFilter?.pii }),
+  createMessageFilterPii({
+    onTraversalFailure: reportLocatorTraversalFailure,
+    getConfig: (req) => req.config?.messageFilter?.pii,
+    getFilters: (req) => req.config?.filters,
+    getFiles,
+  }),
   moderateText,
   SteerController.SteerDeliveryController,
 );
@@ -1037,7 +1200,7 @@ router.post(
  */
 router.post(
   '/chat/steer/cancel',
-  configMiddleware,
+  chatConfigMiddleware,
   ...steerLimiters,
   SteerController.SteerCancelController,
 );
@@ -1050,22 +1213,80 @@ router.post(
  */
 router.post(
   '/chat/steer/arm',
-  configMiddleware,
+  chatConfigMiddleware,
   ...steerLimiters,
   SteerController.SteerArmController,
+);
+
+router.post(
+  '/chat/queued-turns',
+  chatConfigMiddleware,
+  ...steerLimiters,
+  createMessageFilterPii({
+    onTraversalFailure: reportLocatorTraversalFailure,
+    getConfig: (req) => req.config?.messageFilter?.pii,
+    getFilters: (req) => req.config?.filters,
+    getFiles,
+  }),
+  moderateText,
+  AgentQueuedTurnEnqueueController,
+);
+router.post(
+  '/chat/queued-turns/v2',
+  chatConfigMiddleware,
+  ...steerLimiters,
+  createMessageFilterPii({
+    onTraversalFailure: reportLocatorTraversalFailure,
+    getConfig: (req) => req.config?.messageFilter?.pii,
+    getFilters: (req) => req.config?.filters,
+    getFiles,
+  }),
+  moderateText,
+  AgentQueuedTurnEnqueueV2Controller,
+);
+/** Synchronizing durable queue state is read-only and polled while work is
+ * pending. It must not consume the model-submission admission budget. */
+router.get('/chat/queued-turns', chatConfigMiddleware, AgentQueuedTurnListController);
+router.delete(
+  '/chat/queued-turns/:queuedTurnId',
+  chatConfigMiddleware,
+  ...steerLimiters,
+  AgentQueuedTurnCancelController,
 );
 
 router.use('/', v1);
 
 const chatRouter = express.Router();
-chatRouter.use(configMiddleware);
+const useMessageIpLimiter = isEnabled(LIMIT_MESSAGE_IP);
+const useMessageUserLimiter = isEnabled(LIMIT_MESSAGE_USER);
+chatRouter.use(chatConfigMiddleware);
+if (useMessageIpLimiter || useMessageUserLimiter) {
+  chatRouter.use(
+    unless(
+      (req) => exemptAgentTriggerFromIpLimiter(req) || exemptTriggerFromUserLimiter(req),
+      generationRetryProbeLimiter,
+    ),
+  );
+  chatRouter.use(detectGenerationRetry);
+  chatRouter.use(
+    unless(
+      (req) => exemptAgentTriggerFromIpLimiter(req) || exemptTriggerFromUserLimiter(req),
+      generationRetryLimiter,
+    ),
+  );
+}
 
-if (isEnabled(LIMIT_MESSAGE_IP)) {
+if (useMessageIpLimiter) {
   chatRouter.use(unless(exemptAgentTriggerFromIpLimiter, messageIpLimiter));
 }
 
-if (isEnabled(LIMIT_MESSAGE_USER)) {
-  chatRouter.use(unless(exemptScheduleFromUserLimiter, messageUserLimiter));
+if (useMessageUserLimiter) {
+  chatRouter.use(
+    unless(
+      (req) => exemptTriggerFromUserLimiter(req) || isConfirmedGenerationRetry(req),
+      messageUserLimiter,
+    ),
+  );
 }
 
 chatRouter.use('/', chat);

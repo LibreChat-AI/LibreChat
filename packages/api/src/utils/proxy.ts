@@ -1,5 +1,5 @@
 import { HttpsProxyAgent } from 'https-proxy-agent';
-import { EnvHttpProxyAgent, ProxyAgent } from 'undici';
+import { Agent, EnvHttpProxyAgent, ProxyAgent } from 'undici';
 import type { AxiosRequestConfig, AxiosProxyConfig } from 'axios';
 import type { Dispatcher } from 'undici';
 
@@ -15,8 +15,8 @@ type ProxyResolution = {
   bypassed: boolean;
 };
 
-let envProxyDispatcher: EnvHttpProxyAgent | undefined;
-let envProxyDispatcherKey: string | undefined;
+const directDispatchers = new Map<string, Agent>();
+const envProxyDispatchers = new Map<string, EnvHttpProxyAgent>();
 const explicitDispatchers = new Map<string, ProxyAgent>();
 const httpsProxyAgents = new Map<string, HttpsProxyAgentInstance>();
 
@@ -47,38 +47,83 @@ function getProxyConfigKey(config: ProxyEnvConfig): string {
   return [config.httpProxy ?? '', config.httpsProxy ?? '', config.noProxy ?? ''].join('|');
 }
 
-export function getEnvProxyDispatcher(): Dispatcher | undefined {
-  const proxyConfig = getProxyEnvConfig();
-  if (!proxyConfig) return undefined;
-
-  const key = getProxyConfigKey(proxyConfig);
-  if (!envProxyDispatcher || envProxyDispatcherKey !== key) {
-    envProxyDispatcher = new EnvHttpProxyAgent(proxyConfig);
-    envProxyDispatcherKey = key;
-  }
-
-  return envProxyDispatcher;
+export interface DispatcherTimeoutOptions {
+  bodyTimeout?: number;
+  headersTimeout?: number;
 }
 
-function getExplicitProxyDispatcher(proxyUrl: string): Dispatcher {
-  const cached = explicitDispatchers.get(proxyUrl);
+/** Discard extra runtime properties too: TypeScript cannot prevent structurally wider callers. */
+function pickDispatcherTimeouts({
+  bodyTimeout,
+  headersTimeout,
+}: DispatcherTimeoutOptions): DispatcherTimeoutOptions {
+  return {
+    ...(bodyTimeout != null ? { bodyTimeout } : {}),
+    ...(headersTimeout != null ? { headersTimeout } : {}),
+  };
+}
+
+function getDispatcherOptionsKey(options: DispatcherTimeoutOptions): string {
+  return `${options.bodyTimeout ?? ''}|${options.headersTimeout ?? ''}`;
+}
+
+export function getDirectDispatcher(options: DispatcherTimeoutOptions = {}): Dispatcher {
+  options = pickDispatcherTimeouts(options);
+  const key = getDispatcherOptionsKey(options);
+  const cached = directDispatchers.get(key);
   if (cached) return cached;
 
-  const dispatcher = new ProxyAgent(proxyUrl);
-  explicitDispatchers.set(proxyUrl, dispatcher);
+  const dispatcher = new Agent(options);
+  directDispatchers.set(key, dispatcher);
   return dispatcher;
 }
 
-export function getProxyDispatcher(proxyUrl?: string | null): Dispatcher | undefined {
+export function getEnvProxyDispatcher(
+  options: DispatcherTimeoutOptions = {},
+): Dispatcher | undefined {
+  options = pickDispatcherTimeouts(options);
+  const proxyConfig = getProxyEnvConfig();
+  if (!proxyConfig) return undefined;
+
+  const key = `${getProxyConfigKey(proxyConfig)}|${getDispatcherOptionsKey(options)}`;
+  const cached = envProxyDispatchers.get(key);
+  if (cached) return cached;
+
+  const dispatcher = new EnvHttpProxyAgent({ ...proxyConfig, ...options });
+  envProxyDispatchers.set(key, dispatcher);
+  return dispatcher;
+}
+
+function getExplicitProxyDispatcher(
+  proxyUrl: string,
+  options: DispatcherTimeoutOptions,
+): Dispatcher {
+  options = pickDispatcherTimeouts(options);
+  const key = `${proxyUrl}|${getDispatcherOptionsKey(options)}`;
+  const cached = explicitDispatchers.get(key);
+  if (cached) return cached;
+
+  const dispatcher =
+    Object.keys(options).length === 0
+      ? new ProxyAgent(proxyUrl)
+      : new ProxyAgent({ uri: proxyUrl, ...options });
+  explicitDispatchers.set(key, dispatcher);
+  return dispatcher;
+}
+
+export function getProxyDispatcher(
+  proxyUrl?: string | null,
+  options: DispatcherTimeoutOptions = {},
+): Dispatcher | undefined {
   const trimmedProxy = proxyUrl?.trim();
-  if (!trimmedProxy) return getEnvProxyDispatcher();
+  if (!trimmedProxy) return getEnvProxyDispatcher(options);
 
   const proxyConfig = getProxyEnvConfig();
   if (proxyConfig?.httpProxy === trimmedProxy && proxyConfig?.httpsProxy === trimmedProxy) {
-    return getEnvProxyDispatcher();
+    return getEnvProxyDispatcher(options);
   }
 
-  return getExplicitProxyDispatcher(trimmedProxy);
+  return getExplicitProxyDispatcher(trimmedProxy, options);
 }
 
 function parseUrl(value: string | URL | undefined): URL | undefined {

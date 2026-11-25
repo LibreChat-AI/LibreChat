@@ -2,6 +2,21 @@ const { logger } = require('@librechat/data-schemas');
 const { Tool } = require('@librechat/agents/langchain/tools');
 const { SearchClient, AzureKeyCredential } = require('@azure/search-documents');
 
+const azureSearchHostSuffixes = ['.search.windows.net', '.search.azure.us', '.search.azure.cn'];
+
+const isAzureSearchEndpoint = (endpoint) => {
+  try {
+    const parsed = new URL(endpoint);
+    const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
+    return (
+      parsed.protocol === 'https:' &&
+      azureSearchHostSuffixes.some((suffix) => hostname.endsWith(suffix))
+    );
+  } catch {
+    return false;
+  }
+};
+
 const azureAISearchJsonSchema = {
   type: 'object',
   properties: {
@@ -43,6 +58,8 @@ class AzureAISearch extends Tool {
       fields.AZURE_AI_SEARCH_SERVICE_ENDPOINT,
       'AZURE_AI_SEARCH_SERVICE_ENDPOINT',
     );
+    this.isUserProvidedEndpoint =
+      fields.userProvidedAuthFields?.has('AZURE_AI_SEARCH_SERVICE_ENDPOINT') === true;
     this.indexName = this._initializeField(
       fields.AZURE_AI_SEARCH_INDEX_NAME,
       'AZURE_AI_SEARCH_INDEX_NAME',
@@ -72,6 +89,12 @@ class AzureAISearch extends Tool {
     if (!this.override && (!this.serviceEndpoint || !this.indexName || !this.apiKey)) {
       throw new Error(
         'Missing AZURE_AI_SEARCH_SERVICE_ENDPOINT, AZURE_AI_SEARCH_INDEX_NAME, or AZURE_AI_SEARCH_API_KEY environment variable.',
+      );
+    }
+
+    if (this.isUserProvidedEndpoint && !isAzureSearchEndpoint(this.serviceEndpoint)) {
+      throw new Error(
+        'User-provided Azure AI Search endpoints must use a trusted Azure Search host.',
       );
     }
 

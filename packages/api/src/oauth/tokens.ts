@@ -1,11 +1,12 @@
 import axios from 'axios';
+import { logger, encryptV2 } from '@librechat/data-schemas';
 import { TokenExchangeMethodEnum } from 'librechat-data-provider';
-import { logger, encryptV2, decryptV2 } from '@librechat/data-schemas';
 import type { IToken, TokenMethods } from '@librechat/data-schemas';
-import type { AxiosError } from 'axios';
+import { getSafeErrorMetadata, outboundRequestBudget, DEFAULT_OUTBOUND_TIMEOUTS_MS } from '~/utils';
+import { DEFAULT_OAUTH_TOKEN_TTL_SECONDS, normalizeExpiresIn } from './expiry';
 import { validateActionOAuthEndpoint } from './validation';
+import { decryptSensitiveValue } from '~/actions/crypto';
 import { createSSRFSafeAgents } from '~/auth';
-import { logAxiosError } from '~/utils';
 
 const actionOAuthAgents = createSSRFSafeAgents();
 const actionOAuthAgentsByAddress = new Map<string, ReturnType<typeof createSSRFSafeAgents>>();
@@ -61,12 +62,7 @@ export function createHandleOAuthToken({
     type?: string;
   }): Promise<IToken | null> {
     const encrypedToken = await encryptV2(token);
-    let expiresInNumber = 3600;
-    if (typeof expiresIn === 'number') {
-      expiresInNumber = expiresIn;
-    } else if (expiresIn != null) {
-      expiresInNumber = parseInt(expiresIn, 10) || 3600;
-    }
+    const expiresInNumber = normalizeExpiresIn(expiresIn) ?? DEFAULT_OAUTH_TOKEN_TTL_SECONDS;
     const tokenData = {
       type,
       userId,
@@ -116,7 +112,7 @@ async function processAccessTokens(
 ) {
   const { access_token, expires_in = 3600, refresh_token, refresh_token_expires_in } = tokenData;
   if (!access_token) {
-    logger.error('Access token not found: ', tokenData);
+    logger.error('Access token not found');
     throw new Error('Access token not found');
   }
   const handleOAuthToken = createHandleOAuthToken({
@@ -165,6 +161,7 @@ export async function refreshAccessToken(
     encrypted_oauth_client_id,
     encrypted_oauth_client_secret,
     allowedAddresses,
+    timeout = DEFAULT_OUTBOUND_TIMEOUTS_MS.actionsMs,
   }: {
     userId: string;
     client_url: string;
@@ -174,6 +171,8 @@ export async function refreshAccessToken(
     encrypted_oauth_client_id: string;
     encrypted_oauth_client_secret: string;
     allowedAddresses?: string[] | null;
+    /** Milliseconds before the token request is abandoned. */
+    timeout?: number;
   },
   {
     findToken,
@@ -193,8 +192,8 @@ export async function refreshAccessToken(
   await validateActionOAuthEndpoint(client_url, 'client_url', allowedAddresses);
 
   try {
-    const oauth_client_id = await decryptV2(encrypted_oauth_client_id);
-    const oauth_client_secret = await decryptV2(encrypted_oauth_client_secret);
+    const oauth_client_id = await decryptSensitiveValue(encrypted_oauth_client_id);
+    const oauth_client_secret = await decryptSensitiveValue(encrypted_oauth_client_secret);
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -221,6 +220,7 @@ export async function refreshAccessToken(
       maxRedirects: 0,
       httpsAgent: getActionOAuthAgents(allowedAddresses).httpsAgent,
       data: params.toString(),
+      ...outboundRequestBudget(timeout, 'actionsMs'),
     });
     await processAccessTokens(
       response.data,
@@ -238,12 +238,8 @@ export async function refreshAccessToken(
     return response.data;
   } catch (error) {
     const message = 'Error refreshing OAuth tokens';
-    throw new Error(
-      logAxiosError({
-        message,
-        error: error as AxiosError,
-      }),
-    );
+    logger.error(message, getSafeErrorMetadata(error));
+    throw new Error(message);
   }
 }
 
@@ -270,6 +266,7 @@ export async function getAccessToken(
     encrypted_oauth_client_id,
     encrypted_oauth_client_secret,
     allowedAddresses,
+    timeout = DEFAULT_OUTBOUND_TIMEOUTS_MS.actionsMs,
   }: {
     code: string;
     userId: string;
@@ -280,6 +277,8 @@ export async function getAccessToken(
     encrypted_oauth_client_id: string;
     encrypted_oauth_client_secret: string;
     allowedAddresses?: string[] | null;
+    /** Milliseconds before the token request is abandoned. */
+    timeout?: number;
   },
   {
     findToken,
@@ -298,8 +297,8 @@ export async function getAccessToken(
 }> {
   await validateActionOAuthEndpoint(client_url, 'client_url', allowedAddresses);
 
-  const oauth_client_id = await decryptV2(encrypted_oauth_client_id);
-  const oauth_client_secret = await decryptV2(encrypted_oauth_client_secret);
+  const oauth_client_id = await decryptSensitiveValue(encrypted_oauth_client_id);
+  const oauth_client_secret = await decryptSensitiveValue(encrypted_oauth_client_secret);
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/x-www-form-urlencoded',
@@ -328,6 +327,7 @@ export async function getAccessToken(
       maxRedirects: 0,
       httpsAgent: getActionOAuthAgents(allowedAddresses).httpsAgent,
       data: params.toString(),
+      ...outboundRequestBudget(timeout, 'actionsMs'),
     });
 
     await processAccessTokens(
@@ -346,11 +346,7 @@ export async function getAccessToken(
     return response.data;
   } catch (error) {
     const message = 'Error exchanging OAuth code';
-    throw new Error(
-      logAxiosError({
-        message,
-        error: error as AxiosError,
-      }),
-    );
+    logger.error(message, getSafeErrorMetadata(error));
+    throw new Error(message);
   }
 }

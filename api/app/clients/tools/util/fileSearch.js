@@ -1,7 +1,12 @@
 const axios = require('axios');
 const { logger } = require('@librechat/data-schemas');
 const { tool } = require('@librechat/agents/langchain/tools');
-const { generateShortLivedToken, logAxiosError } = require('@librechat/api');
+const {
+  logAxiosError,
+  selectFileCitationSources,
+  generateShortLivedToken,
+  executeFileSearchQuery,
+} = require('@librechat/api');
 const { Tools, EToolResources } = require('librechat-data-provider');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { getFiles } = require('~/models');
@@ -82,113 +87,36 @@ const primeFiles = async (options) => {
 /**
  *
  * @param {Object} options
+ * @param {AppConfig} [options.appConfig]
  * @param {string} options.userId
  * @param {Array<{ file_id: string; filename: string; fromAgent?: boolean }>} options.files
  * @param {string} [options.entity_id]
  * @param {boolean} [options.fileCitations=false] - Whether to include citation instructions
  * @returns
  */
-const createFileSearchTool = async ({ userId, files, entity_id, fileCitations = false }) => {
+const createFileSearchTool = async ({
+  userId,
+  files,
+  entity_id,
+  fileCitations = false,
+  appConfig,
+}) => {
   return tool(
-    async ({ query }) => {
-      if (files.length === 0) {
-        return ['No files to search. Instruct the user to add files for the search.', undefined];
-      }
-      const jwtToken = generateShortLivedToken(userId);
-      if (!jwtToken) {
-        return ['There was an error authenticating the file search request.', undefined];
-      }
-
-      /**
-       * @param {import('librechat-data-provider').TFile & { fromAgent?: boolean }} file
-       * @returns {{ file_id: string, query: string, k: number, entity_id?: string }}
-       */
-      const createQueryBody = (file) => {
-        const body = {
-          file_id: file.file_id,
-          query,
-          k: 5,
-        };
-        // User-attached files are embedded under the user id (no entity);
-        // only agent knowledge-base files carry the agent's entity_id.
-        // Sending entity_id for user attachments makes the RAG API's entity
-        // filter return no results for them. When files are provided by
-        // primeFiles, fromAgent is always set; for callers that pass files
-        // directly without the flag, the safe default is unscoped (no
-        // entity_id).
-        if (!entity_id || file.fromAgent !== true) {
-          return body;
-        }
-        body.entity_id = entity_id;
-        logger.debug(`[${Tools.file_search}] RAG API /query body`, body);
-        return body;
-      };
-
-      const queryPromises = files.map((file) =>
-        axios
-          .post(`${process.env.RAG_API_URL}/query`, createQueryBody(file), {
-            headers: {
-              Authorization: `Bearer ${jwtToken}`,
-              'Content-Type': 'application/json',
-            },
-          })
-          .catch((error) => {
-            logAxiosError({
-              message: 'Error encountered in `file_search` while querying file',
-              error,
-            });
-            return null;
-          }),
-      );
-
-      const results = await Promise.all(queryPromises);
-      const validResults = results.filter((result) => result !== null);
-
-      if (validResults.length === 0) {
-        return ['No results found or errors occurred while searching the files.', undefined];
-      }
-
-      const formattedResults = validResults
-        .flatMap((result, fileIndex) =>
-          result.data.map(([docInfo, distance]) => ({
-            filename: docInfo.metadata.source.split('/').pop(),
-            content: docInfo.page_content,
-            distance,
-            file_id: files[fileIndex]?.file_id,
-            page: docInfo.metadata.page || null,
-          })),
-        )
-        .sort((a, b) => a.distance - b.distance)
-        .slice(0, 10);
-
-      if (formattedResults.length === 0) {
-        return [
-          'No content found in the files. The files may not have been processed correctly or you may need to refine your query.',
-          undefined,
-        ];
-      }
-
-      const formattedString = formattedResults
-        .map(
-          (result, index) =>
-            `File: ${result.filename}${
-              fileCitations ? `\nAnchor: \\ue202turn0file${index} (${result.filename})` : ''
-            }\nRelevance: ${(1.0 - result.distance).toFixed(4)}\nContent: ${result.content}\n`,
-        )
-        .join('\n---\n');
-
-      const sources = formattedResults.map((result) => ({
-        type: 'file',
-        fileId: result.file_id,
-        content: result.content,
-        fileName: result.filename,
-        relevance: 1.0 - result.distance,
-        pages: result.page ? [result.page] : [],
-        pageRelevance: result.page ? { [result.page]: 1.0 - result.distance } : {},
-      }));
-
-      return [formattedString, { [Tools.file_search]: { sources, fileCitations } }];
-    },
+    ({ query }) =>
+      executeFileSearchQuery({
+        query,
+        userId,
+        files,
+        entity_id,
+        fileCitations,
+        appConfig,
+        ragApiUrl: process.env.RAG_API_URL,
+        httpClient: axios,
+        generateShortLivedToken,
+        logAxiosError,
+        selectFileCitationSources,
+        logger,
+      }),
     {
       name: Tools.file_search,
       responseFormat: 'content_and_artifact',

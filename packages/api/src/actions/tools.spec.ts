@@ -2,6 +2,7 @@ jest.mock(
   'librechat-data-provider',
   () => ({
     actionDelimiter: '_action_',
+    normalizeActionToolName: (toolName: string) => toolName,
     validateAndParseOpenAPISpec: (specString: string) => {
       const spec = JSON.parse(specString) as { paths?: Record<string, unknown> };
       return {

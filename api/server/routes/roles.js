@@ -11,10 +11,12 @@ const {
   marketplacePermissionsSchema,
   peoplePickerPermissionsSchema,
   remoteAgentsPermissionsSchema,
+  agentEventsPermissionsSchema,
   skillPermissionsSchema,
 } = require('librechat-data-provider');
+const { createRolePermissionsUpdateHandler } = require('@librechat/api');
 const { hasCapability, requireCapability } = require('~/server/middleware/roles/capabilities');
-const { updateRoleByName, getRoleByName } = require('~/models');
+const { setRolePermissions, getRoleByName, recordAuditEntry } = require('~/models');
 const { requireJwtAuth } = require('~/server/middleware');
 
 const router = express.Router();
@@ -66,6 +68,11 @@ const permissionConfigs = {
     permissionType: PermissionTypes.SKILLS,
     errorMessage: 'Invalid skill permissions.',
   },
+  'agent-events': {
+    schema: agentEventsPermissionsSchema,
+    permissionType: PermissionTypes.AGENT_EVENTS,
+    errorMessage: 'Invalid agent event permissions.',
+  },
 };
 
 /**
@@ -73,41 +80,16 @@ const permissionConfigs = {
  * @param {string} permissionKey - The key from permissionConfigs
  * @returns {Function} Express route handler
  */
-const createPermissionUpdateHandler = (permissionKey) => {
-  const config = permissionConfigs[permissionKey];
-
-  return async (req, res) => {
-    const { roleName } = req.params;
-    const updates = req.body;
-
-    try {
-      const parsedUpdates = config.schema.partial().parse(updates);
-
-      const role = await getRoleByName(roleName);
-      if (!role) {
-        return res.status(404).send({ message: 'Role not found' });
-      }
-
-      const currentPermissions =
-        role.permissions?.[config.permissionType] || role[config.permissionType] || {};
-
-      const mergedUpdates = {
-        permissions: {
-          ...role.permissions,
-          [config.permissionType]: {
-            ...currentPermissions,
-            ...parsedUpdates,
-          },
-        },
-      };
-
-      const updatedRole = await updateRoleByName(roleName, mergedUpdates);
-      res.status(200).send(updatedRole);
-    } catch (error) {
-      return res.status(400).send({ message: config.errorMessage, error: error.errors });
-    }
-  };
-};
+const createPermissionUpdateHandler = (permissionKey) =>
+  createRolePermissionsUpdateHandler(
+    {
+      getRoleByName,
+      setRolePermissions,
+      recordAuditEntry,
+      auditFailClosed: process.env.AUDIT_LOG_FAIL_CLOSED === 'true',
+    },
+    permissionConfigs[permissionKey],
+  );
 
 /**
  * GET /api/roles/:roleName
@@ -200,5 +182,11 @@ router.put('/:roleName/remote-agents', manageRoles, createPermissionUpdateHandle
  * Update skill permissions for a specific role
  */
 router.put('/:roleName/skills', manageRoles, createPermissionUpdateHandler('skills'));
+
+/**
+ * PUT /api/roles/:roleName/agent-events
+ * Update agent event subscription permissions for a specific role
+ */
+router.put('/:roleName/agent-events', manageRoles, createPermissionUpdateHandler('agent-events'));
 
 module.exports = router;

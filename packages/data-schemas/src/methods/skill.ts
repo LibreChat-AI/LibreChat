@@ -1,5 +1,6 @@
 import {
   ResourceType,
+  SkillsScope,
   SKILL_NAME_MAX_LENGTH,
   SKILL_DESCRIPTION_MAX_LENGTH,
   SKILL_DESCRIPTION_SHORT_THRESHOLD as SKILL_DESCRIPTION_SHORT_THRESHOLD_SHARED,
@@ -16,7 +17,9 @@ import type {
   ISkillFileDocument,
   ISkillSummary,
 } from '~/types/skill';
+import type { ISkillUploadIntentDocument } from '~/types/skillDeletion';
 import type { IAgent } from '~/types/agent';
+import { createSkillLifecycleMethods } from './skillLifecycle';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { stripYamlTrailingComment } from '~/utils/yaml';
@@ -28,7 +31,7 @@ import logger from '~/config/winston';
 /**
  * A single validation issue emitted by a skill validator. Most issues are
  * errors and block the mutation; some are warnings (e.g. "description is
- * awfully short, Claude may undertrigger the skill") that surface inline
+ * awfully short, the agent may undertrigger the skill") that surface inline
  * coaching without rejecting the request.
  */
 export type ValidationIssue = {
@@ -41,6 +44,22 @@ export type ValidationIssue = {
    * are surfaced on successful responses so the UI can show inline feedback.
    */
   severity?: 'error' | 'warning';
+};
+
+export type DeleteSkillCleanupStep =
+  | 'agent_allowlists'
+  | 'skill_files'
+  | 'permissions'
+  | 'upload_intents';
+
+export type DeleteSkillResult = {
+  /** Whether this call removed the Skill row. */
+  deleted: boolean;
+  /** Whether the Skill row is absent after this call, including an idempotent retry. */
+  skillAbsent: boolean;
+  /** Whether every dependent database cleanup step completed. */
+  cleanupComplete: boolean;
+  failedCleanupSteps: DeleteSkillCleanupStep[];
 };
 
 type SkillFileUpsertResult = {
@@ -162,7 +181,7 @@ export function validateSkillDescription(description: unknown): ValidationIssue[
       code: 'TOO_SHORT',
       severity: 'warning',
       message:
-        'Short descriptions may cause Claude to miss triggering opportunities — aim for a concrete "when to use this skill" sentence.',
+        'Short descriptions may cause the agent to miss triggering opportunities — aim for a concrete "when to use this skill" sentence.',
     });
   }
   return issues;
@@ -589,7 +608,8 @@ export type CreateSkillInput = {
   body?: string;
   frontmatter?: Record<string, unknown>;
   category?: string;
-  author: Types.ObjectId;
+  /** A 24-hex string is accepted and converted to an ObjectId here. */
+  author: Types.ObjectId | string;
   authorName: string;
   source?: 'inline' | 'github' | 'notion';
   sourceMetadata?: Record<string, unknown>;
@@ -733,6 +753,12 @@ function getAlwaysApplyFrontmatterValue(
 }
 
 export type UpsertSkillFileInput = {
+  /** When supplied, replace only this stored revision; never recreate a deleted file. */
+  expectedFileId?: string;
+  /** Insert only when the path is absent, even if another writer creates it first. */
+  createOnly?: boolean;
+  /** Keep the superseded blob until a multi-step writer commits or restores this file. */
+  cleanupHoldOwner?: string;
   skillId: Types.ObjectId | string;
   relativePath: string;
   file_id: string;
@@ -745,11 +771,13 @@ export type UpsertSkillFileInput = {
   mimeType: string;
   bytes: number;
   isExecutable?: boolean;
-  author: Types.ObjectId;
+  author: Types.ObjectId | string;
   tenantId?: string;
 };
 
 export type ListSkillsByAccessParams = {
+  /** Trusted capability-authorized tenant scope; never accept directly from client input. */
+  manageTenantId?: string;
   accessibleIds: Types.ObjectId[];
   category?: string;
   search?: string;
@@ -787,7 +815,9 @@ export type ListAlwaysApplySkillsResult = {
     name: string;
     body: string;
     author: Types.ObjectId;
+    frontmatter?: Record<string, unknown>;
     allowedTools?: string[];
+    version: number;
   }>;
   /** `true` when another page exists beyond this one. */
   has_more: boolean;
@@ -975,35 +1005,14 @@ export async function filterExistingSkillIds(
   }
   const Skill = mongoose.models.Skill as Model<ISkillDocument>;
   const docs = await Skill.find(
-    { _id: { $in: candidates.map((id) => new mongoose.Types.ObjectId(id)) } },
+    {
+      _id: { $in: candidates.map((id) => new mongoose.Types.ObjectId(id)) },
+      deletingAt: { $exists: false },
+    },
     { _id: 1 },
   ).lean<Array<{ _id: Types.ObjectId }>>();
   const existing = new Set(docs.map((doc) => doc._id.toString()));
   return candidates.filter((id) => existing.has(id) || isExternalSkillId?.(id) === true);
-}
-
-/**
- * Validate the `always-apply` value that would be derived from the
- * SKILL.md body's inline frontmatter. Only reports an issue when the
- * key is present with an unparseable value — absent / valid / empty
- * all pass silently so mid-edit saves that haven't touched the flag
- * yet don't get rejected. Wired into both `createSkill` and
- * `updateSkill` so a body PATCH carrying `always-apply: tru` (typo)
- * surfaces as 400 instead of drifting the indexed column.
- */
-export function validateAlwaysApplyInBody(body: string | undefined): ValidationIssue[] {
-  const result = extractAlwaysApplyFromBody(body);
-  if (result.status === 'invalid') {
-    return [
-      {
-        field: 'body.frontmatter.alwaysApply',
-        code: 'INVALID_TYPE',
-        message:
-          '"always-apply" or "alwaysApply" in SKILL.md frontmatter must be a boolean (true or false)',
-      },
-    ];
-  }
-  return [];
 }
 
 export function createSkillMethods(
@@ -1051,7 +1060,9 @@ export function createSkillMethods(
     expectedVersion: number;
     update: UpdateSkillInput;
   }) => Promise<UpdateSkillResult>;
-  deleteSkill: (id: string) => Promise<{ deleted: boolean }>;
+  deleteSkill: (id: string) => Promise<DeleteSkillResult>;
+  deleteSkillFileAfterBlob: (skillId: string, fileId: string) => Promise<boolean>;
+  finalizeSkillDeletion: (id: string) => Promise<DeleteSkillResult>;
   deleteUserSkills: (userId: Types.ObjectId | string) => Promise<number>;
   findSkillBySourceIdentity: (params: {
     source: 'github' | 'notion';
@@ -1069,6 +1080,7 @@ export function createSkillMethods(
   deleteSkillFile: (
     skillId: Types.ObjectId | string,
     relativePath: string,
+    expectedFileId?: string,
   ) => Promise<{ deleted: boolean }>;
   getSkillFileByPath: (
     skillId: Types.ObjectId | string,
@@ -1078,6 +1090,7 @@ export function createSkillMethods(
     skillId: Types.ObjectId | string,
     relativePath: string,
     update: { content?: string; isBinary?: boolean },
+    expectedFileId?: string,
   ) => Promise<void>;
   updateSkillFileCodeEnvIds: (
     updates: Array<{
@@ -1090,11 +1103,14 @@ export function createSkillMethods(
   const { ObjectId } = mongoose.Types;
 
   function buildSkillFilter(
-    params: Pick<ListSkillsByAccessParams, 'accessibleIds' | 'category' | 'search'>,
+    params: Pick<
+      ListSkillsByAccessParams,
+      'accessibleIds' | 'category' | 'search' | 'manageTenantId'
+    >,
   ): FilterQuery<ISkillDocument> {
-    const filter: FilterQuery<ISkillDocument> = {
-      _id: { $in: params.accessibleIds },
-    };
+    const filter: FilterQuery<ISkillDocument> = params.manageTenantId
+      ? { tenantId: params.manageTenantId, deletingAt: { $exists: false } }
+      : { _id: { $in: params.accessibleIds }, deletingAt: { $exists: false } };
     if (params.category && params.category.length > 0) {
       filter.category = params.category;
     }
@@ -1145,19 +1161,29 @@ export function createSkillMethods(
       normalizedFrontmatter && 'frontmatter' in normalizedFrontmatter
         ? normalizedFrontmatter.frontmatter
         : data.frontmatter;
+    const bodyIssues = validateSkillBody(data.body);
     /* Parse body's always-apply status once — reused for validation
        (below) and derivation in `resolveAlwaysApplyFromInput`. Avoids
        parsing the same YAML frontmatter block twice per create. */
     const bodyAlwaysApply =
-      data.body !== undefined ? extractAlwaysApplyFromBody(data.body) : undefined;
+      bodyIssues.length === 0 && data.body !== undefined
+        ? extractAlwaysApplyFromBody(data.body)
+        : undefined;
     const issues: ValidationIssue[] = [
       ...validateSkillName(data.name),
       ...validateSkillDescription(data.description),
-      ...validateSkillBody(data.body),
+      ...bodyIssues,
       ...validateSkillDisplayTitle(data.displayTitle),
       ...validateSkillFrontmatter(frontmatter),
       ...validateAlwaysApply(data.alwaysApply),
     ];
+    if (typeof data.author === 'string' && !isValidObjectIdString(data.author)) {
+      issues.push({
+        field: 'author',
+        code: 'INVALID_FORMAT',
+        message: 'Author must be a 24-character hex string',
+      });
+    }
     /* Body-level `always-apply:` only needs to be well-formed when a
        higher-precedence source won't override it (see
        `resolveAlwaysApplyFromInput` for the cascade). A caller sending
@@ -1186,6 +1212,7 @@ export function createSkillMethods(
     }
 
     const Skill = mongoose.models.Skill as Model<ISkillDocument>;
+    const author = new mongoose.Types.ObjectId(data.author);
 
     // Application-level uniqueness check on (name, author, tenantId).
     // The unique index in the schema is the persistent guarantee, but Mongoose
@@ -1193,7 +1220,7 @@ export function createSkillMethods(
     // so we also enforce it here for deterministic behavior and a clean error.
     const existing = await Skill.findOne({
       name: data.name,
-      author: data.author,
+      author,
       tenantId: data.tenantId ?? null,
     })
       .select('_id')
@@ -1212,7 +1239,7 @@ export function createSkillMethods(
       body: data.body ?? '',
       frontmatter: frontmatter ?? {},
       category: data.category ?? '',
-      author: data.author,
+      author,
       authorName: data.authorName,
       version: 1,
       source: data.source ?? 'inline',
@@ -1241,7 +1268,7 @@ export function createSkillMethods(
       return null;
     }
     const Skill = mongoose.models.Skill as Model<ISkillDocument>;
-    const doc = await Skill.findById(id).lean();
+    const doc = await Skill.findOne({ _id: id, deletingAt: { $exists: false } }).lean();
     return (doc as unknown as (ISkill & { _id: Types.ObjectId }) | null) ?? null;
   }
 
@@ -1279,7 +1306,11 @@ export function createSkillMethods(
        the previous performance characteristics for callers that just
        want "newest match". */
     if (!preferUserInvocable && !preferModelInvocable) {
-      const doc = await Skill.findOne({ name, _id: { $in: accessibleIds } })
+      const doc = await Skill.findOne({
+        name,
+        _id: { $in: accessibleIds },
+        deletingAt: { $exists: false },
+      })
         .sort({ updatedAt: -1 })
         .lean();
       return backfillDerivedFromFrontmatter(
@@ -1289,7 +1320,11 @@ export function createSkillMethods(
     /* Multi-doc path: fetch all matching docs (typically 1, rarely 2+
        across same-name duplicates) and pick the first satisfying the
        caller's preference; fall back to newest. */
-    const docs = (await Skill.find({ name, _id: { $in: accessibleIds } })
+    const docs = (await Skill.find({
+      name,
+      _id: { $in: accessibleIds },
+      deletingAt: { $exists: false },
+    })
       .sort({ updatedAt: -1 })
       .lean()) as unknown as Array<ISkill & { _id: Types.ObjectId }>;
     if (docs.length === 0) {
@@ -1318,6 +1353,7 @@ export function createSkillMethods(
       name: params.name,
       author: params.author,
       tenantId: params.tenantId ?? null,
+      deletingAt: { $exists: false },
     })
       .sort({ updatedAt: -1 })
       .lean();
@@ -1401,6 +1437,7 @@ export function createSkillMethods(
     const baseFilter: FilterQuery<ISkillDocument> = {
       _id: { $in: params.accessibleIds },
       alwaysApply: true,
+      deletingAt: { $exists: false },
     };
     const cursor = decodeCursor(params.cursor);
 
@@ -1418,7 +1455,7 @@ export function createSkillMethods(
     const rows = await Skill.find(filter)
       .sort({ updatedAt: -1, _id: 1 })
       .limit(limit + 1)
-      .select('name body author updatedAt allowedTools')
+      .select('name body author frontmatter updatedAt allowedTools version')
       .lean();
 
     const has_more = rows.length > limit;
@@ -1447,6 +1484,8 @@ export function createSkillMethods(
         name: row.name,
         body: row.body ?? '',
         author: row.author as Types.ObjectId,
+        version: row.version,
+        frontmatter: row.frontmatter,
       };
       if (row.allowedTools !== undefined) {
         result.allowedTools = row.allowedTools;
@@ -1474,17 +1513,20 @@ export function createSkillMethods(
         ? normalizedFrontmatter.frontmatter
         : update.frontmatter;
 
+    const bodyIssues = update.body !== undefined ? validateSkillBody(update.body) : [];
     /* Parse body's always-apply status once — reused for validation
        (precedence-aware, below) and the derivation cascade further
        down. Avoids parsing the same YAML frontmatter block twice per
        update. */
     const bodyAlwaysApply =
-      update.body !== undefined ? extractAlwaysApplyFromBody(update.body) : undefined;
+      bodyIssues.length === 0 && update.body !== undefined
+        ? extractAlwaysApplyFromBody(update.body)
+        : undefined;
     const issues: ValidationIssue[] = [];
     if (update.name !== undefined) issues.push(...validateSkillName(update.name));
     if (update.description !== undefined)
       issues.push(...validateSkillDescription(update.description));
-    if (update.body !== undefined) issues.push(...validateSkillBody(update.body));
+    issues.push(...bodyIssues);
     if (update.displayTitle !== undefined)
       issues.push(...validateSkillDisplayTitle(update.displayTitle));
     if (update.frontmatter !== undefined) issues.push(...validateSkillFrontmatter(frontmatter));
@@ -1590,7 +1632,7 @@ export function createSkillMethods(
            `alwaysApply: true` would keep auto-priming after the user
            removed the declaration from SKILL.md — a persistent,
            invisible mismatch between the file and runtime behavior.
-           `invalid` is rejected upstream by `validateAlwaysApplyInBody`
+           `invalid` is rejected by the inline check above
            so this branch only handles the legitimate absence case. */
         derivedAlwaysApply = false;
       }
@@ -1607,7 +1649,7 @@ export function createSkillMethods(
       updateOps.$unset = unsetPayload;
     }
     const result = await Skill.findOneAndUpdate(
-      { _id: new ObjectId(id), version: expectedVersion },
+      { _id: new ObjectId(id), version: expectedVersion, deletingAt: { $exists: false } },
       updateOps,
       { new: true },
     ).lean();
@@ -1620,7 +1662,7 @@ export function createSkillMethods(
       };
     }
 
-    const current = await Skill.findById(id).lean();
+    const current = await Skill.findOne({ _id: id, deletingAt: { $exists: false } }).lean();
     if (!current) {
       return { status: 'not_found' };
     }
@@ -1646,16 +1688,31 @@ export function createSkillMethods(
    * accessible catalog at runtime, so a plain `$pull` would silently widen
    * a deliberately restricted agent. Disabling skills preserves the
    * restriction until an author makes a new explicit choice.
+   *
+   * That inference only applies to agents with no explicit `skills_scope`.
+   * With a scope persisted, the field already says what an empty allowlist
+   * means -- `selected` resolves to no skills on its own, and `all` means the
+   * full catalog on purpose -- so disabling them would turn skills off behind
+   * the author's back.
    */
-  async function removeSkillsFromAgentAllowlists(skillIds: string[]): Promise<void> {
+  async function removeSkillsFromAgentAllowlists(skillIds: string[]): Promise<boolean> {
     if (skillIds.length === 0) {
-      return;
+      return true;
     }
     const ids = skillIds.map((id) => id.toLowerCase());
     const Agent = mongoose.models.Agent as Model<IAgent>;
     try {
       await Agent.updateMany(
-        { skills: { $in: ids, $not: { $elemMatch: { $nin: ids } } } },
+        {
+          skills: { $in: ids, $not: { $elemMatch: { $nin: ids } } },
+          /** Only `all` and `selected` opt out: each already defines what an
+           *  empty allowlist means. A missing field (matched here because
+           *  `$nin` also matches absent) is the legacy shape, and an explicit
+           *  `none` with the master flag still true is a contradictory shape
+           *  the API accepts, which `skillDeps` would otherwise keep reading
+           *  as permission to expose the skill-authoring tools. */
+          skills_scope: { $nin: [SkillsScope.all, SkillsScope.selected] },
+        },
         { $set: { skills: [], skills_enabled: false } },
         { timestamps: false },
       );
@@ -1664,62 +1721,125 @@ export function createSkillMethods(
         { $pull: { skills: { $in: ids } } },
         { timestamps: false },
       );
+      return true;
     } catch (error) {
       logger.error(
         '[removeSkillsFromAgentAllowlists] Error pruning agent skill allowlists:',
         error,
       );
+      return false;
     }
   }
 
-  async function deleteSkill(id: string): Promise<{ deleted: boolean }> {
+  async function deleteSkill(id: string): Promise<DeleteSkillResult> {
     if (!isValidObjectIdString(id)) {
-      return { deleted: false };
+      return {
+        deleted: false,
+        skillAbsent: false,
+        cleanupComplete: false,
+        failedCleanupSteps: [],
+      };
     }
+    // Legacy callers may still reach this data-only method. It must never
+    // discard the last reference to an external blob. The storage-aware API
+    // reconciler owns provider deletion and finalization.
+    const lifecycle = createSkillLifecycleMethods(mongoose);
+    const journal = await lifecycle.beginSkillDeletion(id);
+    return {
+      deleted: false,
+      skillAbsent: !journal,
+      cleanupComplete: !journal,
+      failedCleanupSteps: journal ? ['skill_files'] : [],
+    };
+  }
+
+  /** Blob deletion is idempotent; the file row remains the retry manifest until it succeeds. */
+  async function deleteSkillFileAfterBlob(skillId: string, fileId: string): Promise<boolean> {
+    const SkillFile = mongoose.models.SkillFile as Model<ISkillFileDocument>;
+    const result = await SkillFile.deleteOne({
+      skillId: new ObjectId(skillId),
+      file_id: fileId,
+    });
+    return result.deletedCount === 1;
+  }
+
+  /** Finalize only after blob rows are drained; never remove late rows without deleting blobs. */
+  async function finalizeSkillDeletion(id: string): Promise<DeleteSkillResult> {
     const Skill = mongoose.models.Skill as Model<ISkillDocument>;
     const SkillFile = mongoose.models.SkillFile as Model<ISkillFileDocument>;
     const objectId = new ObjectId(id);
-    const res = await Skill.deleteOne({ _id: objectId });
-    if (!res.deletedCount) {
-      return { deleted: false };
+    const skill = await Skill.findById(objectId).select('_id deletingAt').lean();
+    if (skill && !skill.deletingAt) {
+      return {
+        deleted: false,
+        skillAbsent: false,
+        cleanupComplete: false,
+        failedCleanupSteps: ['skill_files'],
+      };
     }
-    /** Prune allowlists immediately after the Skill row is gone: if the
-     *  SkillFile cleanup below throws, a retry exits early on
-     *  `deletedCount === 0` and would never reach a later prune. */
-    await removeSkillsFromAgentAllowlists([id]);
-    await SkillFile.deleteMany({ skillId: objectId });
+    if (await SkillFile.exists({ skillId: objectId })) {
+      return {
+        deleted: false,
+        skillAbsent: false,
+        cleanupComplete: false,
+        failedCleanupSteps: ['skill_files'],
+      };
+    }
+    const failedCleanupSteps: DeleteSkillCleanupStep[] = [];
+    if (!(await removeSkillsFromAgentAllowlists([id]))) {
+      failedCleanupSteps.push('agent_allowlists');
+    }
     try {
       await deps.removeAllPermissions({ resourceType: ResourceType.SKILL, resourceId: id });
-    } catch (error) {
-      logger.error(`[deleteSkill] Error removing permissions for ${id}:`, error);
+    } catch {
+      failedCleanupSteps.push('permissions');
+      logger.error(`[finalizeSkillDeletion] Error removing permissions for ${id}`);
     }
-    return { deleted: true };
+    if (failedCleanupSteps.length > 0) {
+      return {
+        deleted: false,
+        skillAbsent: false,
+        cleanupComplete: false,
+        failedCleanupSteps,
+      };
+    }
+    const result = await Skill.deleteOne({ _id: objectId, deletingAt: { $exists: true } });
+    return {
+      deleted: result.deletedCount === 1,
+      skillAbsent: true,
+      cleanupComplete: true,
+      failedCleanupSteps: [],
+    };
   }
 
   async function deleteUserSkills(userId: Types.ObjectId | string): Promise<number> {
     const userObjectId = typeof userId === 'string' ? new ObjectId(userId) : userId;
-    const Skill = mongoose.models.Skill as Model<ISkillDocument>;
     const soleOwned = await deps.getSoleOwnedResourceIds(userObjectId, ResourceType.SKILL);
     if (soleOwned.length === 0) {
       return 0;
     }
-    const SkillFile = mongoose.models.SkillFile as Model<ISkillFileDocument>;
-    await SkillFile.deleteMany({ skillId: { $in: soleOwned } });
-    const res = await Skill.deleteMany({ _id: { $in: soleOwned } });
-    await removeSkillsFromAgentAllowlists(soleOwned.map((rid) => rid.toString()));
-    await Promise.allSettled(
-      soleOwned.map((rid) =>
-        deps
-          .removeAllPermissions({
-            resourceType: ResourceType.SKILL,
-            resourceId: rid.toString(),
-          })
-          .catch((error) =>
-            logger.error(`[deleteUserSkills] Error removing permissions for ${rid}:`, error),
-          ),
-      ),
+    // Mark each Skill and release its public name in the same document write.
+    // The reconciler repairs the mark-to-journal gap and backfills file
+    // references outside this request.
+    const Skill = mongoose.models.Skill as Model<ISkillDocument>;
+    const deletingAt = new Date();
+    const result = await tenantSafeBulkWrite(
+      Skill,
+      soleOwned.map((id) => ({
+        updateOne: {
+          filter: { _id: id, deletingAt: { $exists: false } },
+          update: {
+            $set: {
+              name: `__deleted__${id.toString()}`,
+              deletingAt,
+              deletionNeedsJournal: true,
+            },
+          },
+        },
+      })),
+      { ordered: false },
     );
-    return res.deletedCount ?? 0;
+    return result.modifiedCount;
   }
 
   async function findSkillBySourceIdentity(params: {
@@ -1734,6 +1854,7 @@ export function createSkillMethods(
     const doc = await Skill.findOne({
       source: params.source,
       'sourceMetadata.upstreamId': params.upstreamId,
+      deletingAt: { $exists: false },
       ...tenantFilter,
     }).lean();
     return (doc as unknown as (ISkill & { _id: Types.ObjectId }) | null) ?? null;
@@ -1747,6 +1868,7 @@ export function createSkillMethods(
     const rows = await Skill.find({
       source: params.source,
       'sourceMetadata.sourceId': params.sourceId,
+      deletingAt: { $exists: false },
     }).lean();
     return rows as unknown as Array<ISkill & { _id: Types.ObjectId }>;
   }
@@ -1798,6 +1920,16 @@ export function createSkillMethods(
   async function upsertSkillFile(
     row: UpsertSkillFileInput,
   ): Promise<ISkillFile & { _id: Types.ObjectId }> {
+    const Skill = mongoose.models.Skill as Model<ISkillDocument>;
+    const parent = await Skill.findOne({
+      _id: row.skillId,
+      deletingAt: { $exists: false },
+    })
+      .select('_id')
+      .lean();
+    if (!parent) {
+      throw Object.assign(new Error('Skill is being deleted'), { code: 'SKILL_DELETING' });
+    }
     const issues = validateRelativePath(row.relativePath);
     if (issues.length > 0) {
       const error = new Error('Skill file validation failed');
@@ -1806,32 +1938,131 @@ export function createSkillMethods(
       throw error;
     }
     const SkillFile = mongoose.models.SkillFile as Model<ISkillFileDocument>;
-    const category = inferSkillFileCategory(row.relativePath);
+    if (!row.createOnly) {
+      const previous = await SkillFile.findOne({
+        skillId: row.skillId,
+        relativePath: row.relativePath,
+        ...(row.expectedFileId != null ? { file_id: row.expectedFileId } : {}),
+      })
+        .select('-content')
+        .lean();
+      if (
+        previous &&
+        previous.file_id === row.file_id &&
+        (previous.filepath !== row.filepath ||
+          previous.source !== row.source ||
+          (previous.storageKey ?? null) !== (row.storageKey ?? null) ||
+          (previous.storageRegion ?? null) !== (row.storageRegion ?? null))
+      ) {
+        throw Object.assign(new Error('Skill file identity cannot change storage location'), {
+          code: 'SKILL_FILE_CONFLICT',
+        });
+      }
+      if (previous && previous.file_id !== row.file_id) {
+        // Queue the old blob before changing its only live file row. A failed
+        // CAS leaves the row in place, so the sweeper will retain its blob.
+        const SkillUploadIntent = mongoose.models
+          .SkillUploadIntent as Model<ISkillUploadIntentDocument>;
+        // A multi-step writer may roll this replacement back. Its hold and the
+        // sweeper's claim must contend on the same intent before the file CAS;
+        // an already-claimed blob is not a safe rollback candidate.
+        const intentFilter = row.cleanupHoldOwner
+          ? {
+              fileId: previous.file_id,
+              state: 'committed',
+              cleanedAt: { $exists: false },
+              claimOwner: { $exists: false },
+              $or: [
+                { cleanupHoldOwner: { $exists: false } },
+                { cleanupHoldOwner: row.cleanupHoldOwner },
+              ],
+            }
+          : { fileId: previous.file_id };
+        const intentUpdate = {
+          $setOnInsert: {
+            skillId: row.skillId,
+            fileId: previous.file_id,
+            source: previous.source,
+            storageKey: previous.storageKey ?? previous.filepath,
+            author: previous.author,
+            tenantId: previous.tenantId,
+            writerId: 'legacy-replacement',
+            state: 'committed',
+          },
+          $set: {
+            cleanupRequestedAt: new Date(),
+            ...(row.cleanupHoldOwner ? { cleanupHoldOwner: row.cleanupHoldOwner } : {}),
+          },
+          $unset: { cleanedAt: '', nextCheckAt: '' },
+        };
+        try {
+          await SkillUploadIntent.updateOne(intentFilter, intentUpdate, { upsert: true });
+        } catch (error) {
+          // Concurrent replacements can both attempt the legacy upsert.
+          // The winner has already published the same cleanup reference.
+          if (!(error instanceof Error && 'code' in error && error.code === 11000)) throw error;
+          const result = await SkillUploadIntent.updateOne(intentFilter, intentUpdate);
+          if (row.cleanupHoldOwner && result.matchedCount !== 1) {
+            throw Object.assign(new Error('Skill blob cleanup is already claimed'), {
+              code: 'SKILL_FILE_CONFLICT',
+            });
+          }
+        }
+      }
+    }
+    const fields = {
+      skillId: row.skillId,
+      relativePath: row.relativePath,
+      file_id: row.file_id,
+      filename: row.filename,
+      filepath: row.filepath,
+      storageKey: row.storageKey,
+      storageRegion: row.storageRegion,
+      source: row.source,
+      sourceMetadata: row.sourceMetadata,
+      mimeType: row.mimeType,
+      bytes: row.bytes,
+      category: inferSkillFileCategory(row.relativePath),
+      isExecutable: row.isExecutable ?? false,
+      author: row.author,
+      tenantId: row.tenantId,
+    };
+    if (row.createOnly) {
+      if (row.expectedFileId != null) {
+        throw new Error('A file cannot require both an absent path and an existing revision');
+      }
+      let created: ISkillFileDocument;
+      try {
+        created = await SkillFile.create(fields);
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 11000) {
+          throw Object.assign(new Error('Skill file was created by another writer'), {
+            code: 'SKILL_FILE_CONFLICT',
+          });
+        }
+        throw error;
+      }
+      await bumpSkillVersionAndAdjustFileCount(row.skillId, 1);
+      return created.toObject() as unknown as ISkillFile & { _id: Types.ObjectId };
+    }
     const result = (await SkillFile.findOneAndUpdate(
-      { skillId: row.skillId, relativePath: row.relativePath },
       {
-        $set: {
-          skillId: row.skillId,
-          relativePath: row.relativePath,
-          file_id: row.file_id,
-          filename: row.filename,
-          filepath: row.filepath,
-          storageKey: row.storageKey,
-          storageRegion: row.storageRegion,
-          source: row.source,
-          sourceMetadata: row.sourceMetadata,
-          mimeType: row.mimeType,
-          bytes: row.bytes,
-          category,
-          isExecutable: row.isExecutable ?? false,
-          author: row.author,
-          tenantId: row.tenantId,
-        },
+        skillId: row.skillId,
+        relativePath: row.relativePath,
+        ...(row.expectedFileId != null ? { file_id: row.expectedFileId } : {}),
+      },
+      {
+        $set: fields,
         $unset: { content: '', isBinary: '', codeEnvRef: '', codeEnvRefs: '' },
       },
-      { new: true, upsert: true, includeResultMetadata: true },
+      { new: true, upsert: row.expectedFileId == null, includeResultMetadata: true },
     ).lean()) as unknown as SkillFileUpsertResult;
     const current = result.value;
+    if (!current && row.expectedFileId != null) {
+      throw Object.assign(new Error('Skill file changed since it was read'), {
+        code: 'SKILL_FILE_CONFLICT',
+      });
+    }
     if (!current) {
       const error = new Error('Skill file upsert failed to read the saved file row');
       (error as Error & { code?: string }).code = 'SKILL_FILE_UPSERT_NOT_FOUND';
@@ -1845,9 +2076,24 @@ export function createSkillMethods(
   async function deleteSkillFile(
     skillId: Types.ObjectId | string,
     relativePath: string,
+    expectedFileId?: string,
   ): Promise<{ deleted: boolean }> {
+    const Skill = mongoose.models.Skill as Model<ISkillDocument>;
+    const parent = await Skill.findOne({
+      _id: skillId,
+      deletingAt: { $exists: false },
+    })
+      .select('_id')
+      .lean();
+    if (!parent) {
+      throw Object.assign(new Error('Skill is being deleted'), { code: 'SKILL_DELETING' });
+    }
     const SkillFile = mongoose.models.SkillFile as Model<ISkillFileDocument>;
-    const res = await SkillFile.deleteOne({ skillId, relativePath });
+    const res = await SkillFile.deleteOne({
+      skillId,
+      relativePath,
+      ...(expectedFileId != null ? { file_id: expectedFileId } : {}),
+    });
     if (!res.deletedCount) {
       return { deleted: false };
     }
@@ -1869,9 +2115,13 @@ export function createSkillMethods(
     skillId: Types.ObjectId | string,
     relativePath: string,
     update: { content?: string; isBinary?: boolean },
+    expectedFileId?: string,
   ): Promise<void> {
     const SkillFile = mongoose.models.SkillFile as Model<ISkillFileDocument>;
-    await SkillFile.updateOne({ skillId, relativePath }, { $set: update });
+    await SkillFile.updateOne(
+      { skillId, relativePath, ...(expectedFileId != null ? { file_id: expectedFileId } : {}) },
+      { $set: update },
+    );
   }
 
   async function updateSkillFileCodeEnvIds(
@@ -1884,14 +2134,14 @@ export function createSkillMethods(
     if (updates.length === 0) return { matchedCount: 0, modifiedCount: 0 };
     const SkillFile = mongoose.models.SkillFile as Model<ISkillFileDocument>;
     const ops = updates.map((u) => {
-      const profile = u.codeEnvRef.executionProfile ?? 'default';
+      const routeKey = u.codeEnvRef.executionRouteKey ?? u.codeEnvRef.executionProfile ?? 'default';
       return {
         updateOne: {
           filter: { skillId: u.skillId, relativePath: u.relativePath },
           update: {
             $set: {
               codeEnvRef: u.codeEnvRef,
-              [`codeEnvRefs.${profile}`]: u.codeEnvRef,
+              [`codeEnvRefs.${routeKey}`]: u.codeEnvRef,
             },
           },
         },
@@ -1923,6 +2173,8 @@ export function createSkillMethods(
     listAlwaysApplySkills,
     updateSkill,
     deleteSkill,
+    deleteSkillFileAfterBlob,
+    finalizeSkillDeletion,
     deleteUserSkills,
     findSkillBySourceIdentity,
     listSkillsBySource,

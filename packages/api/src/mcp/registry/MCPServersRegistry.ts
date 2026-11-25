@@ -1,23 +1,77 @@
-import { Keyv } from 'keyv';
 import { createHash } from 'crypto';
-import { logger } from '@librechat/data-schemas';
-import { isProcessMCPServerConfig } from 'librechat-data-provider';
+import { logger, encryptV2, decryptV2, scopedCacheKey } from '@librechat/data-schemas';
+import {
+  DEFAULT_MCP_APPS_POLICY,
+  isProcessMCPServerConfig,
+  resolveMCPAppsPolicy,
+} from 'librechat-data-provider';
+import type { TMCPAppsPolicy } from 'librechat-data-provider';
 import type { IServerConfigsRepositoryInterface } from './ServerConfigsRepositoryInterface';
+import type { ReadThroughTransforms, FillToken } from './cache/ReadThroughAllCache';
 import type * as t from '~/mcp/types';
 import {
   ServerConfigsCacheFactory,
   APP_CACHE_NAMESPACE,
   CONFIG_CACHE_NAMESPACE,
 } from './cache/ServerConfigsCacheFactory';
-import { MCPInspectionFailedError, isMCPDomainNotAllowedError } from '~/mcp/errors';
+import {
+  MCPCommittedWriteError,
+  MCPInspectionFailedError,
+  isMCPDomainNotAllowedError,
+} from '~/mcp/errors';
+import { normalizeLegacyHeaderMaps, normalizeLegacyHeaderMapsIn } from './compat';
+import { canBackfillSharedServerInstructions, isUserSourced } from '~/mcp/utils';
+import { ReadThroughAllCache } from './cache/ReadThroughAllCache';
 import { isPluginSourced, MCP_PLUGIN_SOURCE } from '~/utils/env';
+import { requireApiKeyReentryForRebinding } from './reentry';
+import { ReadThroughCache } from './cache/ReadThroughCache';
 import { MCPServerInspector } from './MCPServerInspector';
 import { ServerConfigsDB } from './db/ServerConfigsDB';
-import { cacheConfig } from '~/cache/cacheConfig';
+import { getSafeErrorMetadata } from '~/utils/errors';
+import { HiddenServers } from './hidden';
+import { cacheConfig } from '~/cache';
 import { withTimeout } from '~/utils';
+
+const NO_HIDDEN_SERVERS: ReadonlySet<string> = new Set();
 
 /** How long a failure stub is considered fresh before re-attempting inspection (5 minutes). */
 const CONFIG_STUB_RETRY_MS = 5 * 60 * 1000;
+
+/** A request stopped while its config initialization was still queued. Healthy
+ * joiners retry ownership instead of inheriting that request-local cancellation. */
+export class MCPConfigInitializationCanceledError extends Error {}
+
+/** Cached configs carry decrypted oauth/apiKey credentials, so the shared
+ *  stores only ever see ciphertext; plaintext stays in process memory,
+ *  exactly where it lived before these caches became shared.
+ *
+ *  Decoding also normalizes legacy header maps, because a replica running older
+ *  code fills these stores from its own database reads: without it, a rolling
+ *  deployment would keep serving a config the runtime schemas reject, from a
+ *  cache hit that never reaches the repository's own normalization. */
+function serverMapStoreTransforms(): ReadThroughTransforms<Record<string, t.ParsedServerConfig>> {
+  return {
+    encode: async (value) => encryptV2(JSON.stringify(value)),
+    decode: async (raw) =>
+      normalizeLegacyHeaderMapsIn(
+        JSON.parse(await decryptV2(raw)) as Record<string, t.ParsedServerConfig>,
+      ),
+  };
+}
+
+/** The per-server cache also negative-caches lookups, so its envelope keeps a
+ *  stored "absent" (null) distinguishable from "not cached". */
+function perServerStoreTransforms(): ReadThroughTransforms<t.ParsedServerConfig | undefined> {
+  return {
+    encode: async (value) => encryptV2(JSON.stringify({ config: value ?? null })),
+    decode: async (raw) => {
+      const decoded = JSON.parse(await decryptV2(raw)) as {
+        config: t.ParsedServerConfig | null;
+      };
+      return decoded.config == null ? undefined : normalizeLegacyHeaderMaps(decoded.config);
+    },
+  };
+}
 
 /**
  * Provenance to persist for a config being stored in `tier`.
@@ -75,11 +129,15 @@ const ADMIN_CONFIGURABLE_FIELDS = [
   'stderr',
   'url',
   'headers',
+  'requestHeaders',
   'proxy',
   'requiresOAuth',
+  'oauthPrompt',
+  'oauthToolCatalog',
   'apiKey',
   'oauth',
   'oauth_headers',
+  'obo',
   'title',
   'description',
   'iconPath',
@@ -89,6 +147,9 @@ const ADMIN_CONFIGURABLE_FIELDS = [
   'customUserVars',
   'timeout',
   'sseReadTimeout',
+  'oauthRefreshWaitTimeout',
+  'oauthRefreshCoordination',
+  'oauthPersistenceWaitTimeout',
   'initTimeout',
 ] as const;
 
@@ -117,6 +178,52 @@ function deepEqual(a: unknown, b: unknown): boolean {
   return true;
 }
 
+/**
+ * True when `candidate` matches `yamlEntry` on every admin-configurable field.
+ * Field-wise comparison rather than whole-object equality: inspector-derived
+ * fields (`tools`, `updatedAt`, `resolvedInstructions`, ...) may legitimately
+ * differ between a stored entry and the effective config a connection used.
+ */
+function matchesAdminConfigurableFields(
+  yamlEntry: t.ParsedServerConfig,
+  candidate: t.ParsedServerConfig,
+): boolean {
+  const yamlRecord = yamlEntry as unknown as Record<string, unknown>;
+  const candidateRecord = candidate as unknown as Record<string, unknown>;
+  return ADMIN_CONFIGURABLE_FIELDS.every((field) =>
+    deepEqual(yamlRecord[field], candidateRecord[field]),
+  );
+}
+
+function isPlainObject(value: unknown): value is object {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A value librechat.yaml set that the candidate lacks: the whole field, or one of its keys. */
+function dropsValue(yamlValue: unknown, value: unknown): boolean {
+  if (yamlValue === undefined) return false;
+  if (value === undefined) return true;
+  if (!isPlainObject(yamlValue) || !isPlainObject(value)) return false;
+  return Object.keys(yamlValue).some((key) => !Object.prototype.hasOwnProperty.call(value, key));
+}
+
+/**
+ * Whether a config-tier candidate takes away something its librechat.yaml options set: an
+ * admin-configurable field, or one key of a record such as `headers` (a tombstone, or an
+ * inherited secret the merge dropped). A candidate without a transport (`url` or `command`) is
+ * not a server definition, only fields written over a hidden server, and takes nothing away.
+ */
+function dropsYamlValues(yamlOptions: t.MCPOptions, candidate: t.ParsedServerConfig): boolean {
+  const yamlRecord = yamlOptions as unknown as Record<string, unknown>;
+  const candidateRecord = candidate as unknown as Record<string, unknown>;
+  if (candidateRecord.url == null && candidateRecord.command == null) {
+    return false;
+  }
+  return ADMIN_CONFIGURABLE_FIELDS.some((field) =>
+    dropsValue(yamlRecord[field], candidateRecord[field]),
+  );
+}
+
 const CONFIG_SERVER_INIT_TIMEOUT_MS = (() => {
   const raw = process.env.MCP_INIT_TIMEOUT_MS;
   if (raw == null) {
@@ -127,25 +234,49 @@ const CONFIG_SERVER_INIT_TIMEOUT_MS = (() => {
 })();
 
 /** Request context for resolving the effective MCP allowlists. */
-export interface MCPAllowlistContext {
-  userId?: string;
-  role?: string;
-}
+export type MCPAllowlistContext = Partial<t.MCPPrincipal>;
 
 /**
- * Resolves the effective `mcpSettings` allowlists for a request. Injected from the app
- * layer (where the merged, tenant-scoped config lives) so the registry keeps no app-config
- * dependency. Reads the ALS tenant context internally; pass the acting user to also pick up
- * user/role-scoped overrides.
+ * Resolves the effective MCP policy for a request: the `mcpSettings` allowlists and apps
+ * policy, plus the servers the principal's config keeps. Injected from the app layer (where
+ * the merged, tenant-scoped config lives) so the registry keeps no app-config dependency.
+ * Reads the ALS tenant context internally; pass the acting user to also pick up user/role-
+ * scoped overrides. Must reject, not fall back to the base config, when the principal's
+ * config cannot be resolved.
  */
-export type MCPAllowlistResolver = (
-  ctx?: MCPAllowlistContext,
-) => Promise<{ allowedDomains?: string[] | null; allowedAddresses?: string[] | null }>;
+export type MCPAllowlistResolver = (ctx?: MCPAllowlistContext) => Promise<{
+  allowedDomains?: string[] | null;
+  allowedAddresses?: string[] | null;
+  mcpApps: TMCPAppsPolicy;
+  /**
+   * Server names in the principal's resolved `mcpConfig`; a librechat.yaml server missing
+   * from it is hidden for that principal. A resolver that omits it hides nothing.
+   */
+  serverNames?: string[];
+}>;
+
+/** Drops hidden servers from a lookup result. A user-tier entry is the user's own and stays. */
+function omitHiddenServers(
+  configs: Record<string, t.ParsedServerConfig>,
+  hidden: ReadonlySet<string>,
+): Record<string, t.ParsedServerConfig> {
+  return Object.fromEntries(
+    Object.entries(configs).filter(([name, config]) => !hidden.has(name) || isUserSourced(config)),
+  );
+}
 
 /** Effective allowlists resolved for a request. */
 interface ResolvedMCPAllowlists {
   allowedDomains?: string[] | null;
   allowedAddresses?: string[] | null;
+}
+
+/** The stored entry a reinspection reads and writes back to. */
+interface ReinspectionTarget {
+  configRepo: IServerConfigsRepositoryInterface;
+  serverName: string;
+  storageLocation: 'CACHE' | 'DB';
+  userId?: string;
 }
 
 /**
@@ -168,13 +299,17 @@ export class MCPServersRegistry {
   /** YAML-derived base allowlists; used at boot and as the fallback when no resolver is set. */
   private readonly allowedDomains?: string[] | null;
   private readonly allowedAddresses?: string[] | null;
+  private readonly mcpApps: TMCPAppsPolicy;
   /** Resolves the per-request (tenant-scoped) merged allowlists; falls back to the base above. */
   private readonly allowlistResolver?: MCPAllowlistResolver;
-  private readonly readThroughCache: Keyv<t.ParsedServerConfig>;
-  private readonly readThroughCacheAll: Keyv<Record<string, t.ParsedServerConfig>>;
+  private readonly readThroughCache: ReadThroughCache<t.ParsedServerConfig | undefined>;
+  private readonly readThroughCacheAll: ReadThroughAllCache<Record<string, t.ParsedServerConfig>>;
   private readonly pendingGetAllPromises = new Map<
     string,
-    Promise<Record<string, t.ParsedServerConfig>>
+    {
+      generation: string;
+      promise: Promise<Record<string, t.ParsedServerConfig>>;
+    }
   >();
 
   /** Tracks in-flight config server initializations to prevent duplicate work. */
@@ -183,15 +318,32 @@ export class MCPServersRegistry {
     Promise<t.ParsedServerConfig | undefined>
   >();
 
+  /** In-flight reinspections, shared by callers that would inspect the same stored entry
+   *  under the same allowlists. */
+  private readonly pendingReinspections = new Map<string, Promise<t.AddServerResult>>();
+
+  /** The in-flight reinspection each settling flight waits on, by key, so waits never form a cycle. */
+  private readonly reinspectionWaits = new Map<string, string>();
+
   /** Memoized YAML server names — set once after boot-time init, never changes. */
   private yamlServerNames: Set<string> | null = null;
   private yamlServerNamesPromise: Promise<Set<string>> | null = null;
+
+  /**
+   * librechat.yaml server options as configured, before inspection adds derived fields.
+   * Every process sets it at MCP init, including followers that reuse a shared YAML cache,
+   * and it survives `reset()`, which runs right after it is set.
+   */
+  private yamlServerOptions: ReadonlyMap<string, t.MCPOptions> = new Map();
+  /** The librechat.yaml servers each principal's config hides. */
+  private readonly hiddenServers: HiddenServers;
 
   constructor(
     mongoose: typeof import('mongoose'),
     allowedDomains?: string[] | null,
     allowedAddresses?: string[] | null,
     allowlistResolver?: MCPAllowlistResolver,
+    mcpApps: TMCPAppsPolicy = resolveMCPAppsPolicy(),
   ) {
     this.dbConfigsRepo = new ServerConfigsDB(mongoose);
     this.cacheConfigsRepo = ServerConfigsCacheFactory.create(APP_CACHE_NAMESPACE, false);
@@ -199,18 +351,27 @@ export class MCPServersRegistry {
     this.allowedDomains = allowedDomains;
     this.allowedAddresses = allowedAddresses;
     this.allowlistResolver = allowlistResolver;
+    this.mcpApps = mcpApps;
 
     const ttl = cacheConfig.MCP_REGISTRY_CACHE_TTL;
 
-    this.readThroughCache = new Keyv<t.ParsedServerConfig>({
-      namespace: 'mcp-registry-read-through',
+    /** Per-server entries are invalidated by targeted deletes. */
+    this.readThroughCache = new ReadThroughCache<t.ParsedServerConfig | undefined>(
+      'mcp-registry-read-through',
       ttl,
-    });
+      perServerStoreTransforms(),
+    );
 
-    this.readThroughCacheAll = new Keyv<Record<string, t.ParsedServerConfig>>({
-      namespace: 'mcp-registry-read-through-all',
+    this.readThroughCacheAll = new ReadThroughAllCache<Record<string, t.ParsedServerConfig>>(
+      'mcp-registry-read-through-all',
       ttl,
-    });
+      serverMapStoreTransforms(),
+    );
+
+    this.hiddenServers = new HiddenServers(
+      ttl,
+      allowlistResolver && (async (principal) => (await allowlistResolver(principal)).serverNames),
+    );
   }
 
   /** Creates and initializes the singleton MCPServersRegistry instance */
@@ -219,6 +380,7 @@ export class MCPServersRegistry {
     allowedDomains?: string[] | null,
     allowedAddresses?: string[] | null,
     allowlistResolver?: MCPAllowlistResolver,
+    mcpApps?: TMCPAppsPolicy,
   ): MCPServersRegistry {
     if (!mongoose) {
       throw new Error(
@@ -236,6 +398,7 @@ export class MCPServersRegistry {
       allowedDomains,
       allowedAddresses,
       allowlistResolver,
+      mcpApps,
     );
     return MCPServersRegistry.instance;
   }
@@ -258,6 +421,98 @@ export class MCPServersRegistry {
     return this.allowedAddresses;
   }
 
+  /** YAML base executable-UI policy used when no request resolver is available. */
+  public getMCPAppsPolicy(): TMCPAppsPolicy {
+    return this.mcpApps;
+  }
+
+  /**
+   * Records the librechat.yaml server options this process was configured with, before
+   * inspection. They decide which servers a principal can hide and whether a resolved entry
+   * differs from librechat.yaml when a field was removed.
+   */
+  public setYamlServerOptions(rawConfigs: t.MCPServers): void {
+    this.yamlServerOptions = new Map(Object.entries(rawConfigs ?? {}));
+    this.hiddenServers.setYamlServers(rawConfigs);
+  }
+
+  /**
+   * librechat.yaml servers a resolved `mcpConfig` hides: hideable servers the merge removed
+   * (a `mcpServers.<name>` tombstone). Plugin, user-tier and process-backed servers are never
+   * hidden, and a missing `mcpConfig` hides every hideable server. A config that fell back to
+   * librechat.yaml on a failed read hides nothing, so access decisions come from
+   * {@link resolveHiddenServerNames}; this can only narrow them.
+   */
+  public getHiddenServerNames(
+    mcpConfig?: Readonly<Record<string, t.MCPOptions>> | null,
+  ): ReadonlySet<string> {
+    return this.hiddenServers.hiddenIn(mcpConfig);
+  }
+
+  /**
+   * Resolves the servers hidden for a principal from a strict read of the principal's config,
+   * memoized in process for `MCP_REGISTRY_CACHE_TTL` and cleared with the config cache. When
+   * that config cannot be read, every hideable server is hidden: hiding is an access boundary,
+   * and the base config is broader than the scope that decides it.
+   */
+  public resolveHiddenServerNames(principal: t.MCPPrincipal): Promise<ReadonlySet<string>> {
+    return this.hiddenServers.forPrincipal(principal);
+  }
+
+  /**
+   * Whether checkout must refuse a config a caller resolved earlier: a hideable librechat.yaml
+   * server the principal's config now hides. A user-tier config is the user's own and an
+   * app-level checkout (no user) has no principal to hide it from.
+   */
+  public async isHiddenFromPrincipal(
+    serverName: string,
+    config: t.ParsedServerConfig,
+    principal?: t.MCPLookupUser,
+  ): Promise<boolean> {
+    const userId = principal?.id;
+    if (!userId || !this.hiddenServers.isHideable(serverName) || isUserSourced(config)) {
+      return false;
+    }
+    const hidden = await this.resolveHiddenServerNames({
+      userId,
+      role: principal?.role,
+      idOnTheSource: principal?.idOnTheSource,
+    });
+    return hidden.has(serverName);
+  }
+
+  /**
+   * The librechat.yaml servers hidden from the acting user, for a caller that reads the
+   * user-less catalog on that user's behalf (such as server instructions bound for the model).
+   * A caller with no user hides nothing.
+   */
+  public async getUserHiddenServerNames(user?: t.MCPLookupUser): Promise<ReadonlySet<string>> {
+    const hidden = await this.getLookupHiddenServerNames(user?.id, user?.role, {
+      idOnTheSource: user?.idOnTheSource,
+    });
+    return hidden ?? NO_HIDDEN_SERVERS;
+  }
+
+  /**
+   * The hidden set a lookup must apply, or undefined when hiding cannot change its result:
+   * an opt-out, an app-level lookup with no user, no hideable server, or a single-server
+   * lookup for a name no principal can hide.
+   */
+  private async getLookupHiddenServerNames(
+    userId: string | undefined,
+    role: string | undefined,
+    options: t.MCPServerLookupOptions | undefined,
+    serverName?: string,
+  ): Promise<ReadonlySet<string> | undefined> {
+    if (!userId || options?.includeHidden || this.hiddenServers.getHideable().size === 0) {
+      return undefined;
+    }
+    if (serverName != null && !this.hiddenServers.isHideable(serverName)) {
+      return undefined;
+    }
+    return this.resolveHiddenServerNames({ userId, role, idOnTheSource: options?.idOnTheSource });
+  }
+
   /** Returns true when no explicit allowedDomains allowlist is configured, enabling SSRF TOCTOU protection */
   public shouldEnableSSRFProtection(): boolean {
     return !Array.isArray(this.allowedDomains) || this.allowedDomains.length === 0;
@@ -278,25 +533,90 @@ export class MCPServersRegistry {
     allowedDomains?: string[] | null;
     allowedAddresses?: string[] | null;
     useSSRFProtection: boolean;
+    mcpApps: TMCPAppsPolicy;
   }> {
     let allowedDomains = this.allowedDomains;
     let allowedAddresses = this.allowedAddresses;
+    let mcpApps = this.getMCPAppsPolicy();
     if (this.allowlistResolver) {
       try {
         const resolved = await this.allowlistResolver(ctx);
         allowedDomains = resolved.allowedDomains;
         allowedAddresses = resolved.allowedAddresses;
-      } catch (error) {
+        mcpApps = resolved.mcpApps;
+      } catch {
         logger.warn(
-          '[MCPServersRegistry] Allowlist resolver failed; falling back to YAML base allowlists',
-          error,
+          '[MCPServersRegistry] Allowlist resolver failed; falling back to YAML base allowlists and disabling apps',
         );
+        // Allowlists fall back to the operator baseline, but apps fail CLOSED: a scope that disabled
+        // them would otherwise get inline app HTML persisted and rendered, and the gated endpoints
+        // cannot retract HTML that already reached the transcript.
+        mcpApps = DEFAULT_MCP_APPS_POLICY;
       }
     }
     return {
       allowedDomains,
       allowedAddresses,
       useSSRFProtection: !Array.isArray(allowedDomains) || allowedDomains.length === 0,
+      mcpApps,
+    };
+  }
+
+  /**
+   * Resolves an App validation target from configuration already admitted and cached by the host.
+   * This path never initializes, reinspects, recovers, or connects to an MCP server. A config-tier
+   * entry that is absent or failed therefore stays unavailable instead of silently rebinding a
+   * persisted App to a same-name base server.
+   */
+  public async resolveCachedAppServerConfig({
+    serverName,
+    userId,
+    role,
+    mcpConfig,
+    allowedDomains,
+    allowedAddresses,
+  }: {
+    serverName: string;
+    userId: string;
+    role?: string;
+    mcpConfig: Record<string, t.MCPOptions>;
+    allowedDomains?: string[] | null;
+    allowedAddresses?: string[] | null;
+  }): Promise<t.MCPConnectionTarget | undefined> {
+    // Validation concerns exactly one persisted binding. Avoid the all-server path here: besides
+    // doing unrelated ACL/decryption work, one slow or malformed server can otherwise prevent an
+    // independent inline App from ever reaching its sandbox. getServerConfig applies the same
+    // YAML-over-user precedence with an ACL-aware, per-server DB fallback, and withholds a server
+    // the principal's own resolution hides.
+    const base = await this.getServerConfig(serverName, userId, undefined, role);
+    /** The admitted config may have been read leniently, so it can only narrow, never widen. */
+    if (base && !isUserSourced(base) && this.getHiddenServerNames(mcpConfig).has(serverName)) {
+      return undefined;
+    }
+    const rawConfig = mcpConfig[serverName];
+    let selectedConfig = base;
+
+    if (rawConfig && base?.source !== 'user' && !isProcessMCPServerConfig(base)) {
+      const yamlSnapshot = await this.cacheConfigsRepo.getAll();
+      if (!this.isUnmodifiedYamlServer(yamlSnapshot, serverName, rawConfig)) {
+        const cached = await this.configCacheRepo.get(
+          this.configCacheKey(serverName, rawConfig, { allowedDomains, allowedAddresses }),
+        );
+        if (!cached || cached.inspectionFailed) {
+          return undefined;
+        }
+        selectedConfig = base ? { ...cached, source: overlaySource(base, cached) } : cached;
+      }
+    }
+
+    if (!selectedConfig || selectedConfig.inspectionFailed) {
+      return undefined;
+    }
+    return {
+      serverConfig: selectedConfig,
+      connectionOwner: (await this.isAppServerConfig(serverName, selectedConfig))
+        ? 'operator'
+        : 'principal',
     };
   }
 
@@ -306,7 +626,8 @@ export class MCPServersRegistry {
    * the same name:
    *   1. user-tier base entry wins absolutely over a config-tier candidate
    *   2. process-backed base entries win absolutely over a config-tier candidate
-   *   3. healthy YAML/DB base wins over a failed (inspectionFailed) candidate
+   *   3. healthy YAML/DB base wins over a failed (inspectionFailed) candidate,
+   *      unless the candidate takes away a librechat.yaml value; then it stands
    *   4. healthy candidate overlays its fields onto the base, preserving the
    *      base entry's source tag so downstream recovery routes correctly
    *   5. with no base, the candidate is returned as-is (config-only server)
@@ -315,33 +636,48 @@ export class MCPServersRegistry {
    * configServers candidate is tenant-scoped and is never cached, so a
    * failed stub from one tenant can never satisfy a no-userId lookup from
    * another.
+   *
+   * A principal-scoped lookup (with `userId`) returns nothing for a librechat.yaml
+   * server that principal's config hides; see {@link t.MCPServerLookupOptions}. The
+   * hidden set is applied after the read cache, which is keyed by user and role only,
+   * never by group.
    */
   public async getServerConfig(
     serverName: string,
     userId?: string,
     configServers?: Record<string, t.ParsedServerConfig>,
+    role?: string,
+    options?: t.MCPServerLookupOptions,
   ): Promise<t.ParsedServerConfig | undefined> {
     const candidate = configServers?.[serverName];
+    const [base, hidden] = await Promise.all([
+      this.readBaseServerConfig(serverName, userId, role),
+      this.getLookupHiddenServerNames(userId, role, options, serverName),
+    ]);
 
-    const cacheKey = this.getReadThroughCacheKey(serverName, userId);
-    let base: t.ParsedServerConfig | undefined;
-    if (await this.readThroughCache.has(cacheKey)) {
-      base = await this.readThroughCache.get(cacheKey);
-    } else {
-      const configFromYaml = await this.cacheConfigsRepo.get(serverName);
-      if (configFromYaml) {
-        base = configFromYaml;
-      } else {
-        base = await this.dbConfigsRepo.get(serverName, userId);
-      }
-      await this.readThroughCache.set(cacheKey, base);
-    }
-
+    if (hidden?.has(serverName) && !(base && isUserSourced(base))) return undefined;
     if (!candidate) return base;
     if (base?.source === 'user') return base;
     if (isProcessMCPServerConfig(base)) return base;
-    if (candidate.inspectionFailed) return base ?? candidate;
-    return base ? { ...candidate, source: overlaySource(base, candidate) } : candidate;
+    return base ? this.overlayCandidate(serverName, base, candidate) : candidate;
+  }
+
+  /** The YAML entry for a name, else the principal's DB entry, through the per-server read cache. */
+  private async readBaseServerConfig(
+    serverName: string,
+    userId?: string,
+    role?: string,
+  ): Promise<t.ParsedServerConfig | undefined> {
+    const cacheKey = this.getReadThroughCacheKey(serverName, userId, role);
+    const cached = await this.readThroughCache.getEntry(cacheKey);
+    if (cached.hit) {
+      return cached.value;
+    }
+    const base =
+      (await this.cacheConfigsRepo.get(serverName)) ??
+      (await this.dbConfigsRepo.get(serverName, userId, role));
+    await this.readThroughCache.set(cacheKey, base, cached.fill);
+    return base;
   }
 
   /** Returns whether an effective config exactly matches the operator-owned base config. */
@@ -360,15 +696,35 @@ export class MCPServersRegistry {
    * Precedence (lowest to highest): YAML cache > Config-tier overrides (success only) > User DB.
    * Three guards keep the merge safe:
    *   1. Config-tier entries carrying `inspectionFailed: true` never overlay an existing
-   *      base entry; the healthy base is preserved for the duration of the retry window.
+   *      base entry; the healthy base is preserved for the duration of the retry window. A
+   *      failed entry that takes away a librechat.yaml value replaces the base instead, so a
+   *      principal never falls back to what a profile removed (see `overlayCandidate`).
    *   2. User-DB entries (`source: 'user'`) are never replaced by Config-tier overlays.
    *   3. Process-backed base entries are never replaced by Config-tier overlays.
    * On a successful overlay the base entry's `source` field is preserved so downstream
    * recovery logic routes to the correct storage location — except a `'plugin'` base,
    * whose no-resolve provenance must not transfer to the operator override (see
    * `overlaySource`).
+   *
+   * A principal-scoped call (with `userId`) then drops the librechat.yaml servers
+   * that principal's config hides. The filtered map is built
+   * per call and never cached: the read caches are keyed by user and role, while
+   * hiding also follows group membership.
    */
   public async getAllServerConfigs(
+    userId?: string,
+    configServers?: Record<string, t.ParsedServerConfig>,
+    role?: string,
+    options?: t.MCPServerLookupOptions,
+  ): Promise<Record<string, t.ParsedServerConfig>> {
+    const [configs, hidden] = await Promise.all([
+      this.mergeServerConfigs(userId, configServers, role),
+      this.getLookupHiddenServerNames(userId, role, options),
+    ]);
+    return hidden?.size ? omitHiddenServers(configs, hidden) : configs;
+  }
+
+  private async mergeServerConfigs(
     userId?: string,
     configServers?: Record<string, t.ParsedServerConfig>,
     role?: string,
@@ -380,20 +736,36 @@ export class MCPServersRegistry {
     const result: Record<string, t.ParsedServerConfig> = { ...base };
     for (const [name, override] of Object.entries(configServers)) {
       if (result[name]?.source === 'user') {
-        logger.debug(`[MCP][config][${name}] Admin override shadowed by user-tier entry`);
+        logger.debug('[MCP][config] Admin override shadowed by user-tier entry');
         continue;
       }
       if (isProcessMCPServerConfig(result[name])) {
         logger.debug(`[MCP][config][${name}] Admin override shadowed by process-backed entry`);
         continue;
       }
-      if (override.inspectionFailed && result[name]) continue;
       const baseEntry = result[name];
-      result[name] = baseEntry
-        ? { ...override, source: overlaySource(baseEntry, override) }
-        : override;
+      result[name] = baseEntry ? this.overlayCandidate(name, baseEntry, override) : override;
     }
     return result;
+  }
+
+  /**
+   * The entry a config-tier candidate leaves for a name that has a base entry. A healthy
+   * candidate overlays the base and takes its source tag. A failed one leaves the healthy base in
+   * place for the retry window, unless it takes away a value librechat.yaml set: the base still
+   * carries what a profile removed, such as a credential header, so the failed candidate stands
+   * as a config-only server's would, and recovery waits for the config tier's retry.
+   */
+  private overlayCandidate(
+    serverName: string,
+    base: t.ParsedServerConfig,
+    candidate: t.ParsedServerConfig,
+  ): t.ParsedServerConfig {
+    if (!candidate.inspectionFailed) {
+      return { ...candidate, source: overlaySource(base, candidate) };
+    }
+    const yamlOptions = base.source === 'yaml' ? this.yamlServerOptions.get(serverName) : undefined;
+    return yamlOptions && dropsYamlValues(yamlOptions, candidate) ? candidate : base;
   }
 
   /**
@@ -406,24 +778,38 @@ export class MCPServersRegistry {
     userId?: string,
     role?: string,
   ): Promise<Record<string, t.ParsedServerConfig>> {
-    const cacheKey = userId ?? '__no_user__';
+    /** Tenant-scoped (also covering the single-flight map): the DB read behind
+     *  a miss is filtered by the active tenant, so entries and in-flight
+     *  builds must partition the same way. */
+    // DB visibility depends on both user and role. Keep the role in the cache and
+    // single-flight identity so a role change cannot reuse the previous ACL result.
+    const cacheKey = scopedCacheKey(`${userId ?? '__no_user__'}::role:${role ?? '__no_role__'}`);
 
-    if (await this.readThroughCacheAll.has(cacheKey)) {
-      return (await this.readThroughCacheAll.get(cacheKey)) ?? {};
+    const cached = await this.readThroughCacheAll.get(cacheKey);
+    if (cached.hit) {
+      return cached.value ?? {};
+    }
+
+    const fill = cached.fill;
+    if (fill?.generation == null) {
+      return this.fetchBaseServerConfigs(cacheKey, userId, role, fill);
     }
 
     const pending = this.pendingGetAllPromises.get(cacheKey);
-    if (pending) {
-      return pending;
+    if (pending?.generation === fill.generation) {
+      return pending.promise;
     }
 
-    const fetchPromise = this.fetchBaseServerConfigs(cacheKey, userId, role);
-    this.pendingGetAllPromises.set(cacheKey, fetchPromise);
+    const fetchPromise = this.fetchBaseServerConfigs(cacheKey, userId, role, fill);
+    const pendingFill = { generation: fill.generation, promise: fetchPromise };
+    this.pendingGetAllPromises.set(cacheKey, pendingFill);
 
     try {
       return await fetchPromise;
     } finally {
-      this.pendingGetAllPromises.delete(cacheKey);
+      if (this.pendingGetAllPromises.get(cacheKey) === pendingFill) {
+        this.pendingGetAllPromises.delete(cacheKey);
+      }
     }
   }
 
@@ -431,6 +817,7 @@ export class MCPServersRegistry {
     cacheKey: string,
     userId?: string,
     role?: string,
+    fill?: FillToken,
   ): Promise<Record<string, t.ParsedServerConfig>> {
     const [dbConfigs, yamlConfigs] = await Promise.all([
       this.dbConfigsRepo.getAll(userId, role),
@@ -441,7 +828,7 @@ export class MCPServersRegistry {
 
     const result = { ...dbConfigs, ...yamlConfigs };
 
-    await this.readThroughCacheAll.set(cacheKey, result);
+    await this.readThroughCacheAll.set(cacheKey, result, fill);
     return result;
   }
 
@@ -462,7 +849,7 @@ export class MCPServersRegistry {
       source: resolveServerSource(config, 'yaml'),
     };
     const result = await configRepo.add(serverName, stubConfig, userId);
-    await this.invalidateServerReadCaches(result.serverName, userId);
+    await this.invalidateServerReadCaches(result.serverName, userId, 'CACHE');
     this.resetYamlServerNamesMemo();
     return result;
   }
@@ -498,16 +885,24 @@ export class MCPServersRegistry {
       ...parsedConfig,
       source,
     };
-    const result =
-      storageLocation === 'DB'
-        ? await this.dbConfigsRepo.add(
-            serverName,
-            tagged,
-            userId,
-            await this.getOperatorManagedServerNames(reservedServerNames),
-          )
-        : await configRepo.add(serverName, tagged, userId);
-    await this.invalidateServerReadCaches(result.serverName, userId);
+    let result: t.AddServerResult;
+    try {
+      result =
+        storageLocation === 'DB'
+          ? await this.dbConfigsRepo.add(
+              serverName,
+              tagged,
+              userId,
+              await this.getOperatorManagedServerNames(reservedServerNames),
+            )
+          : await configRepo.add(serverName, tagged, userId);
+    } catch (error) {
+      await this.invalidateAfterCommittedFailure(error, serverName, userId, storageLocation);
+      throw error;
+    }
+    await this.invalidateCommitted(result, () =>
+      this.invalidateServerReadCaches(result.serverName, userId, storageLocation),
+    );
     if (storageLocation === 'CACHE') {
       this.resetYamlServerNamesMemo();
     }
@@ -515,48 +910,359 @@ export class MCPServersRegistry {
   }
 
   /**
-   * Re-inspects a server that previously failed initialization.
-   * Uses the stored stub config to attempt a full inspection and replaces the stub on success.
+   * A repository step after a committed write failed (for example permission bookkeeping),
+   * so the stored config changed even though the call rejects: refresh the read caches
+   * best-effort before the failure propagates, or they would keep serving the old state.
+   */
+  private async invalidateAfterCommittedFailure(
+    error: unknown,
+    serverName: string,
+    userId: string | undefined,
+    storageLocation: 'CACHE' | 'DB',
+  ): Promise<void> {
+    if (!(error instanceof MCPCommittedWriteError)) {
+      return;
+    }
+    const committed = error.committed as t.AddServerResult | undefined;
+    await this.invalidateServerReadCaches(
+      committed?.serverName ?? serverName,
+      userId,
+      storageLocation,
+    ).catch((invalidationError) =>
+      logger.error(
+        '[MCPServersRegistry] cache invalidation failed after a committed write error:',
+        getSafeErrorMetadata(invalidationError),
+      ),
+    );
+  }
+
+  /**
+   * Runs the cache invalidation that follows a committed write. A failure is rethrown as
+   * `MCPCommittedWriteError` carrying what was persisted, so the caller can record
+   * the committed change instead of mistaking it for a write that never happened.
+   */
+  private async invalidateCommitted<T>(
+    committed: T | undefined,
+    invalidate: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await invalidate();
+    } catch (error) {
+      throw new MCPCommittedWriteError(committed, error);
+    }
+  }
+
+  /**
+   * Backfills the inspector-derived `resolvedInstructions` for a server whose
+   * operator explicitly deferred startup inspection. An enabled
+   * `serverInstructions` declaration has no fetched text to resolve in that
+   * case. Identity- or request-scoped servers are deliberately rejected:
+   * their live instructions cannot safely be stored in a shared config.
+   *
+   * First write wins: once the stored entry carries any text, later calls are
+   * no-ops. Without this, identities racing the first backfill under stale
+   * config snapshots would churn the shared copy and rotate the global read
+   * caches on every divergence.
+   *
+   * YAML-tier servers only. Config-overlay servers are cached under
+   * config-hash keys and cannot be addressed by name here; DB-backed user
+   * servers need an identity-preserving write through mongoose timestamps and
+   * the credential-sanitization pipeline, which is its own change. Both are
+   * left untouched. An overlaid effective config carries its base's `'yaml'`
+   * source tag (`overlaySource`), so `connectedConfig` — the config the
+   * delivering connection was actually created from — is compared against the
+   * stored entry on every admin-configurable field: text fetched from an
+   * overridden endpoint must never be stored as the shared base's.
+   *
+   * The entry's `updatedAt` is deliberately preserved (the storage `patch`
+   * contract): the config identity did not change, and bumping it would mark
+   * every live connection for this server stale.
+   *
+   * @returns true when a stored config was updated.
+   */
+  public async setResolvedInstructions(
+    serverName: string,
+    instructions: string,
+    userId?: string,
+    connectedConfig?: t.ParsedServerConfig,
+  ): Promise<boolean> {
+    if (!this.cacheConfigsRepo.patch) {
+      return false;
+    }
+    const yamlEntry = await this.cacheConfigsRepo.get(serverName);
+    if (
+      !yamlEntry ||
+      yamlEntry.resolvedInstructions != null ||
+      !canBackfillSharedServerInstructions(yamlEntry)
+    ) {
+      return false;
+    }
+    if (connectedConfig && !matchesAdminConfigurableFields(yamlEntry, connectedConfig)) {
+      logger.debug(
+        `[MCPServersRegistry][${serverName}] Connection config differs from the stored YAML entry (config-tier override or stale snapshot); not storing its instructions`,
+      );
+      return false;
+    }
+    /** The identity comparison above ran against a snapshot that can lag by the
+     *  registry cache TTL; passing the validated entry's `updatedAt` makes the
+     *  store-side patch a compare-and-set, so instructions never land on an
+     *  entry another replica replaced in between. */
+    const patched = await this.cacheConfigsRepo.patch(
+      serverName,
+      { resolvedInstructions: instructions },
+      yamlEntry.updatedAt,
+    );
+    if (!patched) {
+      return false;
+    }
+    await this.invalidateServerReadCaches(serverName, userId, 'CACHE');
+    return true;
+  }
+
+  /**
+   * Resolves a config that failed inspection to the config a connection should be made with.
+   *
+   * Once the server is reachable this is the stored, inspected config — whether this call
+   * recovered it or a concurrent request did, on this replica or another — so a caller that
+   * read the stub connects with what inspection found rather than the stub. Resolves undefined
+   * while the server is still unreachable. Config-tier stubs are left to `ensureConfigServers`,
+   * which retries them on its own schedule.
+   */
+  public async recoverServerConfig(
+    serverName: string,
+    config: t.ParsedServerConfig,
+    userId?: string,
+  ): Promise<t.ParsedServerConfig | undefined> {
+    if (!config.inspectionFailed) {
+      return config;
+    }
+    if (config.source === 'config') {
+      logger.info(
+        '[MCPServersRegistry] Config-source server inspection failed; retry handled by config cache',
+      );
+      return undefined;
+    }
+    try {
+      const result = await this.reinspectServer(
+        serverName,
+        isUserSourced(config) ? 'DB' : 'CACHE',
+        userId,
+      );
+      return result.config;
+    } catch {
+      logger.info('[MCPServersRegistry] Server is still unreachable after reinspection');
+      return undefined;
+    }
+  }
+
+  /**
+   * Re-inspects a server whose stored config failed inspection and replaces that stub with the
+   * inspected config.
+   *
+   * Inspection is a network round trip, and every caller that read the stub before a recovery
+   * was written would otherwise inspect and write again. Each write bumps `updatedAt`, which
+   * marks connections made after the previous write stale, so a caller already holding one
+   * reads an empty tool list. Callers in this process that read the same stub and are judged
+   * against the same allowlists therefore share one inspection and one write, and the write
+   * replaces only the stub that was inspected, so a replica that lost the race writes nothing.
+   *
+   * Every decision reads the entry past the store's process-local snapshot. An entry that is no
+   * longer failed was already recovered and resolves to the stored config without another
+   * inspection, including when that recovery is found only after this call's own inspection
+   * failed. A stub that a registry re-initialization replaced while it was inspected resolves
+   * through an inspection of the newer stub. A server that is still unreachable rejects with
+   * `MCPInspectionFailedError`; an allowlist rejection is rethrown as is.
    */
   public async reinspectServer(
     serverName: string,
     storageLocation: 'CACHE' | 'DB',
     userId?: string,
   ): Promise<t.AddServerResult> {
-    const configRepo = this.getConfigRepository(storageLocation);
-    const existing = await configRepo.get(serverName, userId);
-    if (!existing) {
-      throw new Error(`Server "${serverName}" not found in ${storageLocation} for reinspection.`);
-    }
-    if (!existing.inspectionFailed) {
-      throw new Error(
-        `Server "${serverName}" is not in a failed state. Use updateServer() instead.`,
-      );
-    }
-
-    const { inspectionFailed: _, ...configForInspection } = existing;
+    const target: ReinspectionTarget = {
+      configRepo: this.getConfigRepository(storageLocation),
+      serverName,
+      storageLocation,
+      userId,
+    };
     const { allowedDomains, allowedAddresses } = await this.resolveAllowlists({ userId });
+    const entry = await this.getReinspectionEntry(target);
+    if (!entry.inspectionFailed) {
+      return { serverName, config: entry };
+    }
+    return this.joinReinspection(target, { allowedDomains, allowedAddresses }, entry);
+  }
+
+  /**
+   * Shares one inspection and write of `stub` among callers judged against the same allowlists.
+   * A flight settling against another stub passes its own key as `waiter` and joins that stub's
+   * flight, unless the flight already waits on the waiter; then the waiter inspects it itself.
+   */
+  private async joinReinspection(
+    target: ReinspectionTarget,
+    allowlists: ResolvedMCPAllowlists,
+    stub: t.ParsedServerConfig,
+    waiter?: string,
+  ): Promise<t.AddServerResult> {
+    const key = this.reinspectionKey(target, allowlists, stub);
+    if (waiter != null && this.waitsOn(key, waiter)) {
+      return this.reinspectStub(target, allowlists, stub, waiter);
+    }
+    const pending = this.pendingReinspections.get(key);
+    const reinspection = pending ?? this.reinspectStub(target, allowlists, stub, key);
+    if (!pending) {
+      this.pendingReinspections.set(key, reinspection);
+    }
+    if (waiter != null) {
+      this.reinspectionWaits.set(waiter, key);
+    }
+    try {
+      return await reinspection;
+    } finally {
+      if (waiter != null && this.reinspectionWaits.get(waiter) === key) {
+        this.reinspectionWaits.delete(waiter);
+      }
+      if (!pending && this.pendingReinspections.get(key) === reinspection) {
+        this.pendingReinspections.delete(key);
+      }
+    }
+  }
+
+  /** Whether the flight for `key` is `waiter` or waits on it, directly or through other flights. */
+  private waitsOn(key: string, waiter: string): boolean {
+    for (
+      let next: string | undefined = key;
+      next != null;
+      next = this.reinspectionWaits.get(next)
+    ) {
+      if (next === waiter) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private async reinspectStub(
+    target: ReinspectionTarget,
+    allowlists: ResolvedMCPAllowlists,
+    stub: t.ParsedServerConfig,
+    flightKey: string,
+  ): Promise<t.AddServerResult> {
+    const { serverName, storageLocation, userId } = target;
+    const { inspectionFailed: _, ...configForInspection } = stub;
     let parsedConfig: t.ParsedServerConfig;
     try {
       parsedConfig = await MCPServerInspector.inspect(
         serverName,
         configForInspection,
         undefined,
-        allowedDomains,
-        allowedAddresses,
+        allowlists.allowedDomains,
+        allowlists.allowedAddresses,
       );
     } catch (error) {
-      logger.error(`[MCPServersRegistry] Reinspection failed for server "${serverName}":`, error);
+      logger.error('[MCPServersRegistry] Server reinspection failed');
       if (isMCPDomainNotAllowedError(error)) {
         throw error;
       }
-      throw new MCPInspectionFailedError(serverName, error as Error);
+      return this.resolveStoredEntry(
+        target,
+        allowlists,
+        stub,
+        flightKey,
+        new MCPInspectionFailedError(serverName, error as Error),
+      );
     }
 
+    const stored = await this.replaceStub(target, stub, parsedConfig);
+    if (stored) {
+      await this.invalidateServerReadCaches(serverName, userId, storageLocation);
+      return { serverName, config: stored };
+    }
+    return this.resolveStoredEntry(
+      target,
+      allowlists,
+      stub,
+      flightKey,
+      new MCPInspectionFailedError(
+        serverName,
+        new Error('Storage did not replace the inspected stub'),
+      ),
+    );
+  }
+
+  /**
+   * Settles a reinspection whose own inspection did not replace `stub` against the entry stored
+   * now. A recovery another writer stored is the outcome, and this replica's read caches drop
+   * the stub they may still memoize from before it. A different stub from a registry
+   * re-initialization is settled through its own flight, which this one joins when another
+   * request already started it. A stub still in place rejects with `failure`.
+   */
+  private async resolveStoredEntry(
+    target: ReinspectionTarget,
+    allowlists: ResolvedMCPAllowlists,
+    stub: t.ParsedServerConfig,
+    flightKey: string,
+    failure: MCPInspectionFailedError,
+  ): Promise<t.AddServerResult> {
+    const { serverName, storageLocation, userId } = target;
+    const current = await this.getReinspectionEntry(target);
+    if (!current.inspectionFailed) {
+      await this.invalidateServerReadCaches(serverName, userId, storageLocation);
+      return { serverName, config: current };
+    }
+    if (current.updatedAt === stub.updatedAt) {
+      throw failure;
+    }
+    return this.joinReinspection(target, allowlists, current, flightKey);
+  }
+
+  private async getReinspectionEntry({
+    configRepo,
+    serverName,
+    storageLocation,
+    userId,
+  }: ReinspectionTarget): Promise<t.ParsedServerConfig> {
+    const entry = configRepo.getCurrent
+      ? await configRepo.getCurrent(serverName, userId)
+      : await configRepo.get(serverName, userId);
+    if (!entry) {
+      throw new Error(`Server "${serverName}" not found in ${storageLocation} for reinspection.`);
+    }
+    return entry;
+  }
+
+  /** Writes an inspected config over the stub it came from; undefined when another writer
+   *  replaced the stub first. DB storage holds no startup stubs, so it keeps a plain update. */
+  private async replaceStub(
+    { configRepo, serverName, userId }: ReinspectionTarget,
+    stub: t.ParsedServerConfig,
+    parsedConfig: t.ParsedServerConfig,
+  ): Promise<t.ParsedServerConfig | undefined> {
+    if (configRepo.replaceStub) {
+      return configRepo.replaceStub(serverName, parsedConfig, stub.updatedAt);
+    }
     const updatedConfig = { ...parsedConfig, updatedAt: Date.now() };
     await configRepo.update(serverName, updatedConfig, userId);
-    await this.invalidateServerReadCaches(serverName, userId);
-    return { serverName, config: updatedConfig };
+    return updatedConfig;
+  }
+
+  /**
+   * Identity of a reinspection: the stored stub it inspects — a DB entry is visible per user and
+   * tenant — and the allowlists it is judged against, so neither a user's DB visibility nor a
+   * tenant's allowlist decision reaches another caller through a shared inspection, and a newer
+   * stub is never answered by an inspection of the one it replaced.
+   */
+  private reinspectionKey(
+    { serverName, storageLocation, userId }: ReinspectionTarget,
+    allowlists: ResolvedMCPAllowlists,
+    stub: t.ParsedServerConfig,
+  ): string {
+    return JSON.stringify([
+      storageLocation,
+      storageLocation === 'DB' ? this.getReadThroughCacheKey(serverName, userId) : serverName,
+      stub.updatedAt ?? null,
+      allowlists.allowedDomains ?? null,
+      allowlists.allowedAddresses ?? null,
+    ]);
   }
 
   /**
@@ -573,11 +1279,12 @@ export class MCPServersRegistry {
     const configRepo = this.getConfigRepository(storageLocation);
     const source = resolveServerSource(config, storageLocation === 'CACHE' ? 'yaml' : 'user');
 
-    // Merge existing admin API key if not provided in update (needed for inspection)
+    // Merge an equivalent update's existing admin API key for inspection.
     let configForInspection = { ...config };
     if (config.apiKey?.source === 'admin' && !config.apiKey?.key) {
       const existingConfig = await configRepo.get(serverName, userId);
       if (existingConfig?.apiKey?.key) {
+        requireApiKeyReentryForRebinding(existingConfig, config);
         configForInspection = {
           ...configForInspection,
           apiKey: {
@@ -616,9 +1323,11 @@ export class MCPServersRegistry {
     userId?: string,
   ): Promise<t.ParsedServerConfig> {
     const configRepo = this.getConfigRepository(storageLocation);
-    await configRepo.update(serverName, parsedConfig, userId);
-    await this.invalidateServerReadCaches(serverName, userId);
-    return parsedConfig;
+    const persisted = (await configRepo.update(serverName, parsedConfig, userId)) ?? parsedConfig;
+    await this.invalidateCommitted(persisted, () =>
+      this.invalidateServerReadCaches(serverName, userId, storageLocation),
+    );
+    return persisted;
   }
 
   public async updateServer(
@@ -646,6 +1355,7 @@ export class MCPServersRegistry {
    */
   public async ensureConfigServers(
     resolvedMcpConfig: Record<string, t.MCPOptions>,
+    limit: <T>(task: () => Promise<T>) => Promise<T> = (task) => task(),
   ): Promise<Record<string, t.ParsedServerConfig>> {
     if (!resolvedMcpConfig || Object.keys(resolvedMcpConfig).length === 0) {
       return {};
@@ -667,7 +1377,12 @@ export class MCPServersRegistry {
         if (this.isUnmodifiedYamlServer(yamlSnapshot, serverName, rawConfig)) {
           return;
         }
-        const parsed = await this.ensureSingleConfigServer(serverName, rawConfig, allowlists);
+        const parsed = await this.ensureSingleConfigServer(
+          serverName,
+          rawConfig,
+          allowlists,
+          limit,
+        );
         if (parsed) {
           result[serverName] = parsed;
         }
@@ -675,7 +1390,7 @@ export class MCPServersRegistry {
     );
     for (const outcome of settled) {
       if (outcome.status === 'rejected') {
-        logger.error('[MCPServersRegistry][ensureConfigServers] Unexpected error:', outcome.reason);
+        logger.error('[MCPServersRegistry][ensureConfigServers] Unexpected initialization error');
       }
     }
 
@@ -687,6 +1402,13 @@ export class MCPServersRegistry {
    * on every admin-configurable field, so an unmodified YAML-defined server
    * can skip lazy-init and avoid being re-inspected or shadowed in the
    * config tier.
+   *
+   * `rawConfig` is the resolved, pre-inspection config, while the cached entry
+   * carries fields the inspector derived (such as `requiresOAuth`). A field the
+   * resolved config lacks is therefore unmodified only when librechat.yaml did
+   * not set it either; one librechat.yaml set was removed by a tombstone. Set
+   * fields are compared with the cached entry, so restating a derived value is
+   * still no change.
    */
   private isUnmodifiedYamlServer(
     yamlSnapshot: Record<string, t.ParsedServerConfig>,
@@ -699,10 +1421,12 @@ export class MCPServersRegistry {
     }
     const yamlRecord = yamlEntry as unknown as Record<string, unknown>;
     const rawRecord = rawConfig as unknown as Record<string, unknown>;
-    /** rawConfig is the pre-inspection MCPOptions; absent fields mean the admin didn't override and shouldn't count as a diff against inspector-derived values on the cached YAML entry. */
+    const yamlOptions = this.yamlServerOptions.get(serverName) as
+      | Record<string, unknown>
+      | undefined;
     return ADMIN_CONFIGURABLE_FIELDS.every((field) => {
       const rawVal = rawRecord[field];
-      if (rawVal === undefined) return true;
+      if (rawVal === undefined) return yamlOptions?.[field] === undefined;
       return deepEqual(yamlRecord[field], rawVal);
     });
   }
@@ -717,6 +1441,7 @@ export class MCPServersRegistry {
     serverName: string,
     rawConfig: t.MCPOptions,
     allowlists: ResolvedMCPAllowlists,
+    limit: <T>(task: () => Promise<T>) => Promise<T>,
   ): Promise<t.ParsedServerConfig | undefined> {
     const cacheKey = this.configCacheKey(serverName, rawConfig, allowlists);
 
@@ -727,15 +1452,27 @@ export class MCPServersRegistry {
       if (!isStaleStub) {
         return cached;
       }
-      logger.info(`[MCP][config][${serverName}] Retrying stale failure stub`);
+      logger.info('[MCP][config] Retrying stale failure stub');
     }
 
     const pending = this.pendingConfigInits.get(cacheKey);
     if (pending) {
-      return pending;
+      try {
+        return await pending;
+      } catch (error) {
+        if (error instanceof MCPConfigInitializationCanceledError) {
+          return this.ensureSingleConfigServer(serverName, rawConfig, allowlists, limit);
+        }
+        throw error;
+      }
     }
 
-    const initPromise = this.lazyInitConfigServer(cacheKey, serverName, rawConfig, allowlists);
+    // Only the caller that owns the cold initialization consumes shared capacity.
+    // Joiners await the single-flight promise directly instead of filling every
+    // slot while the same inspection runs once.
+    const initPromise = limit(() =>
+      this.lazyInitConfigServer(cacheKey, serverName, rawConfig, allowlists),
+    );
     this.pendingConfigInits.set(cacheKey, initPromise);
 
     try {
@@ -755,7 +1492,7 @@ export class MCPServersRegistry {
     rawConfig: t.MCPOptions,
     allowlists: ResolvedMCPAllowlists,
   ): Promise<t.ParsedServerConfig | undefined> {
-    const prefix = `[MCP][config][${serverName}]`;
+    const prefix = '[MCP][config]';
     logger.info(`${prefix} Lazy-initializing config-source server`);
 
     const source = resolveServerSource(rawConfig, 'config');
@@ -779,12 +1516,12 @@ export class MCPServersRegistry {
       await this.upsertConfigCache(cacheKey, parsedConfig);
 
       logger.info(
-        `${prefix} Initialized: tools=${parsedConfig.tools ?? 'N/A'}, ` +
+        `${prefix} Initialized: toolCount=${parsedConfig.toolFunctions ? Object.keys(parsedConfig.toolFunctions).length : 0}, ` +
           `duration=${parsedConfig.initDuration ?? 'N/A'}ms`,
       );
       return parsedConfig;
-    } catch (error) {
-      logger.error(`${prefix} Failed to initialize:`, error);
+    } catch {
+      logger.error(`${prefix} Failed to initialize`);
 
       const stubConfig: t.ParsedServerConfig = {
         ...rawConfig,
@@ -795,11 +1532,8 @@ export class MCPServersRegistry {
       try {
         await this.upsertConfigCache(cacheKey, stubConfig);
         logger.info(`${prefix} Stored stub config for recovery`);
-      } catch (cacheError) {
-        logger.error(
-          `${prefix} Failed to store stub config (will retry on next request):`,
-          cacheError,
-        );
+      } catch {
+        logger.error(`${prefix} Failed to store stub config; will retry on next request`);
       }
       return stubConfig;
     }
@@ -821,6 +1555,8 @@ export class MCPServersRegistry {
    *          Callers should disconnect active connections for these servers.
    */
   public async invalidateConfigCache(): Promise<string[]> {
+    /** Hiding decisions are dropped first, so lookups stop using them at once, and again last. */
+    this.hiddenServers.clear();
     const allCached = await this.configCacheRepo.getAll();
     const evictedNames = [
       ...new Set(Object.keys(allCached).map((key) => this.parseServerNameFromConfigCacheKey(key))),
@@ -828,10 +1564,13 @@ export class MCPServersRegistry {
 
     await Promise.all([
       this.configCacheRepo.reset(),
-      // Only clear readThroughCacheAll (merged results that may include stale config servers).
+      // Only invalidate readThroughCacheAll (merged results that may include stale config servers).
       // readThroughCache (individual YAML/user lookups) is unaffected by config mutations.
-      this.readThroughCacheAll.clear(),
+      // Operator config changes are global, so the eviction crosses tenants.
+      this.readThroughCacheAll.invalidateAllGlobal(),
     ]);
+    /** Drops a decision resolved meanwhile from a merged config that was still being cleared. */
+    this.hiddenServers.clear();
 
     if (evictedNames.length > 0) {
       logger.info(
@@ -845,8 +1584,11 @@ export class MCPServersRegistry {
   // Known gap: config-source OAuth servers are not included here because callers
   // (OAuthReconnectionManager, UserController) lack request context to resolve configServers.
   // Config-source OAuth auto-reconnection and uninstall cleanup require a separate mechanism.
-  public async getOAuthServers(userId?: string): Promise<Set<string>> {
-    const allServers = await this.getAllServerConfigs(userId);
+  public async getOAuthServers(
+    userId?: string,
+    options?: t.MCPServerLookupOptions,
+  ): Promise<Set<string>> {
+    const allServers = await this.getAllServerConfigs(userId, undefined, undefined, options);
     const oauthServers = Object.entries(allServers).filter(([, config]) => config.requiresOAuth);
     return new Set(oauthServers.map(([name]) => name));
   }
@@ -855,7 +1597,8 @@ export class MCPServersRegistry {
     await this.cacheConfigsRepo.reset();
     await this.configCacheRepo.reset();
     await this.readThroughCache.clear();
-    await this.readThroughCacheAll.clear();
+    await this.readThroughCacheAll.invalidateAllGlobal();
+    this.hiddenServers.clear();
     this.resetYamlServerNamesMemo();
   }
 
@@ -863,13 +1606,22 @@ export class MCPServersRegistry {
     serverName: string,
     storageLocation: 'CACHE' | 'DB',
     userId?: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const configRepo = this.getConfigRepository(storageLocation);
-    await configRepo.remove(serverName, userId);
-    await this.invalidateServerReadCaches(serverName, userId);
+    let removed: boolean | void;
+    try {
+      removed = await configRepo.remove(serverName, userId);
+    } catch (error) {
+      await this.invalidateAfterCommittedFailure(error, serverName, userId, storageLocation);
+      throw error;
+    }
+    await this.invalidateCommitted(removed !== false, () =>
+      this.invalidateServerReadCaches(serverName, userId, storageLocation),
+    );
     if (storageLocation === 'CACHE') {
       this.resetYamlServerNamesMemo();
     }
+    return removed !== false;
   }
 
   private getConfigRepository(storageLocation: 'CACHE' | 'DB'): IServerConfigsRepositoryInterface {
@@ -885,14 +1637,37 @@ export class MCPServersRegistry {
     }
   }
 
-  private getReadThroughCacheKey(serverName: string, userId?: string): string {
-    return userId ? `${serverName}::${userId}` : serverName;
+  /** Tenant-scoped because DB-backed lookups are filtered by the active tenant:
+   *  an entry populated in one tenant's context must never satisfy another's. */
+  private getReadThroughCacheKey(serverName: string, userId?: string, role?: string): string {
+    return scopedCacheKey(
+      userId ? `${serverName}::${userId}${role != null ? `::role:${role}` : ''}` : serverName,
+    );
   }
 
-  private async invalidateServerReadCaches(serverName: string, userId?: string): Promise<void> {
+  /**
+   * DB-backed servers and their ACL grants are tenant-scoped data, so their
+   * invalidation stays within the acting tenant. CACHE-tier (YAML/App
+   * repository) entries are global, so those mutations evict across tenants:
+   * the per-server cache cannot enumerate tenant-scoped keys, so it clears the
+   * namespace, and the aggregate map uses its global path.
+   */
+  private async invalidateServerReadCaches(
+    serverName: string,
+    userId?: string,
+    storageLocation?: 'CACHE' | 'DB',
+  ): Promise<void> {
+    if (storageLocation === 'CACHE') {
+      await Promise.all([
+        this.readThroughCache.clear(),
+        this.readThroughCacheAll.invalidateAllGlobal(),
+      ]);
+      return;
+    }
+
     const deletes = [
       this.readThroughCache.delete(this.getReadThroughCacheKey(serverName)),
-      this.readThroughCacheAll.clear(),
+      this.readThroughCacheAll.invalidateAll(),
     ];
 
     if (userId) {
@@ -928,8 +1703,7 @@ export class MCPServersRegistry {
     }
 
     logger.warn(
-      `[MCPServersRegistry] ${operatorSource} MCP server(s) shadow DB-backed server(s) with colliding name(s): ` +
-        `${shadowedNames.join(', ')}. DB records remain stored but are hidden while operator-managed servers use these names.`,
+      `[MCPServersRegistry] ${operatorSource} MCP server(s) shadow DB-backed servers with ${shadowedNames.length} colliding name(s); DB records remain stored but hidden`,
     );
   }
 

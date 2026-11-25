@@ -1,24 +1,21 @@
 const mongoose = require('mongoose');
-const { isEnabled } = require('@librechat/api');
+const { AccessControlService, isEnabled, createPrincipalService } = require('@librechat/api');
 const {
-  getTransactionSupport,
   tenantStorage,
   getTenantId,
   logger,
+  runAfterTransaction,
 } = require('@librechat/data-schemas');
-const { ResourceType, PrincipalType, PrincipalModel } = require('librechat-data-provider');
+const { RetryHandlerOptions } = require('@microsoft/microsoft-graph-client');
+const { ResourceType, PrincipalType } = require('librechat-data-provider');
 const {
   entraIdPrincipalFeatureEnabled,
   getUserOwnedEntraGroups,
   getUserEntraGroups,
   getEntraGroupDetailsBatch,
-  getGroupMembers,
-  getGroupOwners,
+  createGraphClient,
 } = require('~/server/services/GraphApiService');
 const db = require('~/models');
-
-/** @type {boolean|null} */
-let transactionSupportCache = null;
 
 /**
  * Validates that the resourceType is one of the supported enum values
@@ -30,22 +27,6 @@ const validateResourceType = (resourceType) => {
   if (!validTypes.includes(resourceType)) {
     throw new Error(`Invalid resourceType: ${resourceType}. Valid types: ${validTypes.join(', ')}`);
   }
-};
-
-const ensureLocalUserPrincipalExists = async (principalId) => {
-  const user = await db.findUser({ _id: principalId }, '_id');
-  if (!user) {
-    throw new Error('User principal not found');
-  }
-  return user._id.toString();
-};
-
-const ensureLocalGroupPrincipalExists = async (principalId) => {
-  const group = await db.findGroupById(principalId, { _id: 1 });
-  if (!group) {
-    throw new Error('Group principal not found');
-  }
-  return group._id.toString();
 };
 
 /**
@@ -114,7 +95,7 @@ const grantPermission = async ({
         `Role ${accessRoleId} is for ${role.resourceType} resources, not ${resourceType}`,
       );
     }
-    return await db.grantPermission(
+    const result = await db.grantPermission(
       principalType,
       principalId,
       resourceType,
@@ -124,6 +105,12 @@ const grantPermission = async ({
       session,
       role._id,
     );
+    if (resourceType === ResourceType.PROMPTGROUP) {
+      /** A caller-owned session may not have committed yet; invalidating early
+       * would let a concurrent read re-cache pre-commit IDs under the new generation. */
+      await runAfterTransaction(session, () => db.invalidatePromptGroupAccessContext());
+    }
+    return result;
   } catch (error) {
     logger.error(`[PermissionService.grantPermission] Error: ${error.message}`);
     throw error;
@@ -312,187 +299,20 @@ const getAvailableRoles = async ({ resourceType }) => {
   return await db.findRolesByResourceType(resourceType);
 };
 
-/**
- * Ensures a principal exists in the database based on TPrincipal data
- * Creates user if it doesn't exist locally (for Entra ID users)
- * @param {Object} principal - TPrincipal object from frontend
- * @param {string} principal.type - PrincipalType.USER, PrincipalType.GROUP, or PrincipalType.PUBLIC
- * @param {string} [principal.id] - Local database ID (null for Entra ID principals not yet synced)
- * @param {string} principal.name - Display name
- * @param {string} [principal.email] - Email address
- * @param {string} [principal.source] - 'local' or 'entra'
- * @param {string} [principal.idOnTheSource] - Entra ID object ID for external principals
- * @returns {Promise<string|null>} Returns the principalId for database operations, null for public
- */
-const ensurePrincipalExists = async function (principal) {
-  if (principal.type === PrincipalType.PUBLIC) {
-    return null;
-  }
-
-  if (principal.type === PrincipalType.USER && principal.id) {
-    return await ensureLocalUserPrincipalExists(principal.id);
-  }
-
-  if (principal.type === PrincipalType.USER && principal.source === 'entra') {
-    if (!principal.email || !principal.idOnTheSource) {
-      throw new Error('Entra ID user principals must have email and idOnTheSource');
-    }
-
-    let existingUser = await db.findUser({ idOnTheSource: principal.idOnTheSource });
-
-    if (!existingUser) {
-      existingUser = await db.findUser({ email: principal.email });
-    }
-
-    if (existingUser) {
-      if (!existingUser.idOnTheSource && principal.idOnTheSource) {
-        await db.updateUser(existingUser._id, {
-          idOnTheSource: principal.idOnTheSource,
-          provider: 'openid',
-        });
-      }
-      return existingUser._id.toString();
-    }
-
-    const userData = {
-      name: principal.name,
-      email: principal.email.toLowerCase(),
-      emailVerified: false,
-      provider: 'openid',
-      idOnTheSource: principal.idOnTheSource,
-    };
-
-    const userId = await db.createUser(userData, true, true);
-    return userId.toString();
-  }
-
-  if (principal.type === PrincipalType.GROUP) {
-    throw new Error('Group principals should be handled by group-specific methods');
-  }
-
-  throw new Error(`Unsupported principal type: ${principal.type}`);
-};
-
-/**
- * Ensures a group principal exists in the database based on TPrincipal data
- * Creates group if it doesn't exist locally (for Entra ID groups)
- * For Entra ID groups, always synchronizes member IDs when authentication context is provided
- * @param {Object} principal - TPrincipal object from frontend
- * @param {string} principal.type - Must be PrincipalType.GROUP
- * @param {string} [principal.id] - Local database ID (null for Entra ID principals not yet synced)
- * @param {string} principal.name - Display name
- * @param {string} [principal.email] - Email address
- * @param {string} [principal.description] - Group description
- * @param {string} [principal.source] - 'local' or 'entra'
- * @param {string} [principal.idOnTheSource] - Entra ID object ID for external principals
- * @param {Object} [authContext] - Optional authentication context for fetching member data
- * @param {string} [authContext.accessToken] - Access token for Graph API calls
- * @param {string} [authContext.sub] - Subject identifier
- * @returns {Promise<string>} Returns the groupId for database operations
- */
-const ensureGroupPrincipalExists = async function (principal, authContext = null) {
-  if (principal.type !== PrincipalType.GROUP) {
-    throw new Error(`Invalid principal type: ${principal.type}. Expected '${PrincipalType.GROUP}'`);
-  }
-
-  if (principal.id && principal.source !== 'entra') {
-    return await ensureLocalGroupPrincipalExists(principal.id);
-  }
-
-  if (principal.source === 'entra') {
-    if (!principal.name || !principal.idOnTheSource) {
-      throw new Error('Entra ID group principals must have name and idOnTheSource');
-    }
-
-    let memberIds = [];
-    if (authContext && authContext.accessToken && authContext.sub) {
-      try {
-        memberIds = await getGroupMembers(
-          authContext.accessToken,
-          authContext.sub,
-          principal.idOnTheSource,
-        );
-
-        // Include group owners as members if feature is enabled
-        if (isEnabled(process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS)) {
-          const ownerIds = await getGroupOwners(
-            authContext.accessToken,
-            authContext.sub,
-            principal.idOnTheSource,
-          );
-          if (ownerIds && ownerIds.length > 0) {
-            memberIds.push(...ownerIds);
-            // Remove duplicates
-            memberIds = [...new Set(memberIds)];
-          }
-        }
-      } catch (error) {
-        logger.error('Failed to fetch group members from Graph API:', error);
-      }
-    }
-
-    let existingGroup = await db.findGroupByExternalId(principal.idOnTheSource, 'entra');
-
-    if (!existingGroup && principal.email) {
-      existingGroup = await db.findGroupByQuery({ email: principal.email.toLowerCase() });
-    }
-
-    if (existingGroup) {
-      const updateData = {};
-      let needsUpdate = false;
-
-      if (!existingGroup.idOnTheSource && principal.idOnTheSource) {
-        updateData.idOnTheSource = principal.idOnTheSource;
-        updateData.source = 'entra';
-        needsUpdate = true;
-      }
-
-      if (principal.description && existingGroup.description !== principal.description) {
-        updateData.description = principal.description;
-        needsUpdate = true;
-      }
-
-      if (principal.email && existingGroup.email !== principal.email.toLowerCase()) {
-        updateData.email = principal.email.toLowerCase();
-        needsUpdate = true;
-      }
-
-      if (authContext && authContext.accessToken && authContext.sub) {
-        updateData.memberIds = memberIds;
-        needsUpdate = true;
-      }
-
-      if (needsUpdate) {
-        await db.updateGroupById(existingGroup._id, updateData);
-      }
-
-      return existingGroup._id.toString();
-    }
-
-    const groupData = {
-      name: principal.name,
-      source: 'entra',
-      idOnTheSource: principal.idOnTheSource,
-      memberIds: memberIds, // Store idOnTheSource values of group members (empty if no auth context)
-    };
-
-    if (principal.email) {
-      groupData.email = principal.email.toLowerCase();
-    }
-
-    if (principal.description) {
-      groupData.description = principal.description;
-    }
-
-    const newGroup = await db.createGroup(groupData);
-    return newGroup._id.toString();
-  }
-  if (principal.id && authContext == null) {
-    return principal.id;
-  }
-
-  throw new Error(`Unsupported group principal source: ${principal.source}`);
-};
+const principalService = createPrincipalService({
+  findPermissionUser: (...args) => db.findPermissionUser(...args),
+  findPermissionGroup: (...args) => db.findPermissionGroup(...args),
+  persistPermissionPrincipals: (...args) => db.persistPermissionPrincipals(...args),
+  createClient: createGraphClient,
+  retryOptions: [new RetryHandlerOptions(0, 0)],
+  get includeOwners() {
+    return isEnabled(process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS);
+  },
+  logger,
+});
+const ensurePrincipalExists = principalService.ensureUser;
+const ensureGroupPrincipalExists = principalService.ensureGroup;
+const preparePermissionPrincipals = principalService.prepare;
 
 /**
  * Sync user's Entra ID group memberships with auto-creation of missing groups
@@ -704,252 +524,10 @@ const hasPublicPermission = async ({ resourceType, resourceId, requiredPermissio
   }
 };
 
-/**
- * Bulk update permissions for a resource (grant, update, revoke)
- * Efficiently handles multiple permission changes in a single transaction
- *
- * @param {Object} params - Parameters for bulk permission update
- * @param {string} params.resourceType - Type of resource (e.g., 'agent')
- * @param {string|mongoose.Types.ObjectId} params.resourceId - The ID of the resource
- * @param {Array<TPrincipal>} params.updatedPrincipals - Array of principals to grant/update permissions for
- * @param {Array<TPrincipal>} params.revokedPrincipals - Array of principals to revoke permissions from
- * @param {string|mongoose.Types.ObjectId} params.grantedBy - User ID making the changes
- * @param {mongoose.ClientSession} [params.session] - Optional MongoDB session for transactions
- * @returns {Promise<Object>} Results object with granted, updated, revoked arrays and error details
- */
-const bulkUpdateResourcePermissions = async ({
-  resourceType,
-  resourceId,
-  updatedPrincipals = [],
-  revokedPrincipals = [],
-  grantedBy,
-  session,
-}) => {
-  const supportsTransactions = await getTransactionSupport(mongoose, transactionSupportCache);
-  transactionSupportCache = supportsTransactions;
-  let localSession = session;
-  let shouldEndSession = false;
-
-  try {
-    if (!Array.isArray(updatedPrincipals)) {
-      throw new Error('updatedPrincipals must be an array');
-    }
-
-    if (!Array.isArray(revokedPrincipals)) {
-      throw new Error('revokedPrincipals must be an array');
-    }
-
-    if (!resourceId || !mongoose.Types.ObjectId.isValid(resourceId)) {
-      throw new Error(`Invalid resource ID: ${resourceId}`);
-    }
-
-    if (!localSession && supportsTransactions) {
-      localSession = await mongoose.startSession();
-      localSession.startTransaction();
-      shouldEndSession = true;
-    }
-
-    const sessionOptions = localSession ? { session: localSession } : {};
-
-    const roles = await db.findRolesByResourceType(resourceType);
-    const rolesMap = new Map();
-    roles.forEach((role) => {
-      rolesMap.set(role.accessRoleId, role);
-    });
-
-    const results = {
-      granted: [],
-      updated: [],
-      revoked: [],
-      errors: [],
-    };
-
-    const bulkWrites = [];
-
-    /**
-     * Tracks non-public principals granted in this same request so their revoke is skipped below.
-     * Grants are flushed before deletes, so a principal present in both `updatedPrincipals` and
-     * `revokedPrincipals` would be upserted and then deleted, stripping access the caller just set
-     * (e.g. a resource owner landing in both lists from a client `id`/`idOnTheSource` mismatch).
-     * Granting wins to make owner lockout impossible regardless of the client-side diff (#14316).
-     *
-     * PUBLIC is deliberately excluded: an explicit `public: false` disable adds the public principal
-     * to the revoke list, and disabling public access must always win over a stale/contradictory
-     * grant so a resource is never left public when the caller asked to make it private.
-     */
-    const grantedPrincipalKeys = new Set();
-    const principalKey = (principal) => `${principal.type}:${principal.id}`;
-
-    for (const principal of updatedPrincipals) {
-      try {
-        if (!principal.accessRoleId) {
-          results.errors.push({
-            principal,
-            error: 'accessRoleId is required for updated principals',
-          });
-          continue;
-        }
-
-        const role = rolesMap.get(principal.accessRoleId);
-        if (!role) {
-          results.errors.push({
-            principal,
-            error: `Role ${principal.accessRoleId} not found`,
-          });
-          continue;
-        }
-
-        const query = {
-          principalType: principal.type,
-          resourceType,
-          resourceId,
-        };
-
-        if (principal.type !== PrincipalType.PUBLIC) {
-          query.principalId =
-            principal.type === PrincipalType.ROLE
-              ? principal.id
-              : new mongoose.Types.ObjectId(principal.id);
-        }
-
-        const principalModelMap = {
-          [PrincipalType.USER]: PrincipalModel.USER,
-          [PrincipalType.GROUP]: PrincipalModel.GROUP,
-          [PrincipalType.ROLE]: PrincipalModel.ROLE,
-        };
-
-        const update = {
-          $set: {
-            permBits: role.permBits,
-            roleId: role._id,
-            grantedBy,
-            grantedAt: new Date(),
-          },
-          $setOnInsert: {
-            principalType: principal.type,
-            resourceType,
-            resourceId,
-            ...(principal.type !== PrincipalType.PUBLIC && {
-              principalId:
-                principal.type === PrincipalType.ROLE
-                  ? principal.id
-                  : new mongoose.Types.ObjectId(principal.id),
-              principalModel: principalModelMap[principal.type],
-            }),
-          },
-        };
-
-        bulkWrites.push({
-          updateOne: {
-            filter: query,
-            update: update,
-            upsert: true,
-          },
-        });
-
-        results.granted.push({
-          type: principal.type,
-          id: principal.id,
-          name: principal.name,
-          email: principal.email,
-          source: principal.source,
-          avatar: principal.avatar,
-          description: principal.description,
-          idOnTheSource: principal.idOnTheSource,
-          accessRoleId: principal.accessRoleId,
-          memberCount: principal.memberCount,
-          memberIds: principal.memberIds,
-        });
-        if (principal.type !== PrincipalType.PUBLIC) {
-          grantedPrincipalKeys.add(principalKey(principal));
-        }
-      } catch (error) {
-        results.errors.push({
-          principal,
-          error: error.message,
-        });
-      }
-    }
-
-    if (bulkWrites.length > 0) {
-      await db.bulkWriteAclEntries(bulkWrites, sessionOptions);
-    }
-
-    const deleteQueries = [];
-    for (const principal of revokedPrincipals) {
-      try {
-        // Inside the try so a malformed revoke entry (e.g. a nullish principal) is recorded in
-        // results.errors and skipped, rather than throwing out after grants were already flushed.
-        if (
-          principal.type !== PrincipalType.PUBLIC &&
-          grantedPrincipalKeys.has(principalKey(principal))
-        ) {
-          continue;
-        }
-        const query = {
-          principalType: principal.type,
-          resourceType,
-          resourceId,
-        };
-
-        if (principal.type !== PrincipalType.PUBLIC) {
-          query.principalId =
-            principal.type === PrincipalType.ROLE
-              ? principal.id
-              : new mongoose.Types.ObjectId(principal.id);
-        }
-
-        deleteQueries.push(query);
-
-        results.revoked.push({
-          type: principal.type,
-          id: principal.id,
-          name: principal.name,
-          email: principal.email,
-          source: principal.source,
-          avatar: principal.avatar,
-          description: principal.description,
-          idOnTheSource: principal.idOnTheSource,
-          memberCount: principal.memberCount,
-        });
-      } catch (error) {
-        results.errors.push({
-          principal,
-          error: error.message,
-        });
-      }
-    }
-
-    if (deleteQueries.length > 0) {
-      await db.deleteAclEntries({ $or: deleteQueries }, sessionOptions);
-    }
-
-    if (shouldEndSession && supportsTransactions) {
-      await localSession.commitTransaction();
-    }
-
-    return results;
-  } catch (error) {
-    if (shouldEndSession && supportsTransactions) {
-      try {
-        await localSession.abortTransaction();
-      } catch (transactionError) {
-        /** best-effort abort; may fail if commit already succeeded */
-        logger.error(
-          `[PermissionService.bulkUpdateResourcePermissions] Error aborting transaction:`,
-          transactionError,
-        );
-      }
-    }
-    logger.error(`[PermissionService.bulkUpdateResourcePermissions] Error: ${error.message}`);
-    throw error;
-  } finally {
-    if (shouldEndSession && localSession) {
-      localSession.endSession();
-    }
-  }
-};
-
+/** Typed implementation; this legacy module only binds the shared model methods. */
+const accessControlService = new AccessControlService(mongoose, db);
+const bulkUpdateResourcePermissions = (params) =>
+  accessControlService.bulkUpdateResourcePermissions(params);
 /**
  * Remove all permissions for a resource (cleanup when resource is deleted)
  * @param {Object} params - Parameters for removing all permissions
@@ -970,6 +548,10 @@ const removeAllPermissions = async ({ resourceType, resourceId }) => {
       resourceId,
     });
 
+    if (resourceType === ResourceType.PROMPTGROUP) {
+      await db.invalidatePromptGroupAccessContext();
+    }
+
     return result;
   } catch (error) {
     logger.error(`[PermissionService.removeAllPermissions] Error: ${error.message}`);
@@ -987,6 +569,7 @@ module.exports = {
   hasPublicPermission,
   getAvailableRoles,
   bulkUpdateResourcePermissions,
+  preparePermissionPrincipals,
   ensurePrincipalExists,
   ensureGroupPrincipalExists,
   syncUserEntraGroupMemberships,

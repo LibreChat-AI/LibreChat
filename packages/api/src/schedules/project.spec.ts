@@ -15,7 +15,10 @@ const BASE_LIMITS: ScheduleLimits = {
   maxPerUser: 10,
   minIntervalMinutes: 60,
   autoDisableAfterFailures: 5,
+  admissionConcurrency: 20,
   fireConcurrency: 5,
+  mcpPreflightConcurrency: 3,
+  mcpPreflightTimeoutMs: 300_000,
   requireProject: false,
 };
 
@@ -76,6 +79,7 @@ function makeEngineDeps(
     getLimits: async () => BASE_LIMITS,
     getUserContext: async () => OWNER,
     isOutOfBalance: async () => false,
+    preflightMCP: jest.fn().mockResolvedValue([]),
     agentAccess: async () => 'ok',
     projectAccess: async () => 'ok',
     hasScheduleAccess: async () => true,
@@ -87,6 +91,7 @@ function makeEngineDeps(
     abortScheduledJob: async () => undefined,
     clearReconciledJob: async () => undefined,
     isOwnerDeleting: async () => false,
+    isTermsBlocked: async () => false,
     isGloballyDisabled: async () => false,
     countActiveRunsGlobal: async () => 0,
     withGlobalCapacitySlot: (cap: number, claim: (slot: number) => Promise<unknown>) =>
@@ -351,6 +356,7 @@ function makeHandlerDeps(
   const deps = {
     methods: methods as unknown as SchedulesHandlersDeps['methods'],
     getLimits: async () => ({ ...BASE_LIMITS, ...limits }),
+    preflightMCP: jest.fn().mockResolvedValue([]),
     canViewAgent: async () => true,
     canUseProject: async () => true,
     filterOwnedFileIds: async (ids: string[]) => ids,

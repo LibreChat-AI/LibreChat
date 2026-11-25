@@ -7,12 +7,20 @@ type Props = {
   name?: string;
   isLoading?: boolean;
   isError?: boolean;
+  /** Hides the edit affordance and keeps the name read-only */
+  disabled?: boolean;
   onSave: (newName: string) => void;
 };
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
-const PromptName: React.FC<Props> = ({ name, isLoading = false, isError = false, onSave }) => {
+const PromptName: React.FC<Props> = ({
+  name,
+  isLoading = false,
+  isError = false,
+  disabled = false,
+  onSave,
+}) => {
   const localize = useLocalize();
   const inputRef = useRef<HTMLInputElement>(null);
   const wasLoadingRef = useRef(false);
@@ -99,7 +107,11 @@ const PromptName: React.FC<Props> = ({ name, isLoading = false, isError = false,
     };
   }, []);
 
-  const displayButton = (
+  const displayButton = disabled ? (
+    <span className="text-text-primary h-8 min-w-0 flex-1 truncate pl-2 text-left text-base font-semibold">
+      {newName}
+    </span>
+  ) : (
     <button
       type="button"
       onClick={() => {
@@ -107,7 +119,7 @@ const PromptName: React.FC<Props> = ({ name, isLoading = false, isError = false,
           setIsEditing(true);
         }
       }}
-      className="h-8 min-w-0 flex-1 cursor-text truncate pl-2 text-left text-base font-semibold text-text-primary transition-colors hover:text-text-secondary focus:outline-none"
+      className="text-text-primary hover:text-text-secondary h-8 min-w-0 flex-1 cursor-text truncate ps-2 text-start text-base font-semibold transition-colors focus:outline-hidden"
       aria-label={localize('com_ui_edit') + ': ' + (newName ?? '')}
     >
       {newName}
@@ -121,7 +133,7 @@ const PromptName: React.FC<Props> = ({ name, isLoading = false, isError = false,
   );
 
   return (
-    <div className="group/title relative mr-2 flex h-8 min-w-0 flex-1 items-center">
+    <div className="group/title relative me-2 flex h-8 min-w-0 flex-1 items-center">
       {isEditing ? (
         <Input
           ref={inputRef}
@@ -131,34 +143,34 @@ const PromptName: React.FC<Props> = ({ name, isLoading = false, isError = false,
           onKeyDown={handleKeyDown}
           onBlur={saveName}
           disabled={isLoading}
-          className="h-8 min-w-0 flex-1 rounded-md border border-transparent bg-transparent pl-2 pr-0 text-base font-semibold text-text-primary outline-none focus:border-border-medium focus:outline-none disabled:opacity-60"
+          className="text-text-primary focus:border-border-medium h-8 min-w-0 flex-1 rounded-md border-transparent pr-0 pl-2 text-base font-semibold"
           aria-label={localize('com_ui_name')}
         />
       ) : (
         readView
       )}
-      <div className="ml-1.5 flex shrink-0 items-center justify-center">
+      <div className="ms-1.5 flex shrink-0 items-center justify-center">
         {saveStatus === 'saving' && (
           <Loader2
-            className="size-4 animate-spin text-text-secondary"
+            className="text-text-secondary size-4 animate-spin"
             aria-label={localize('com_ui_saving')}
           />
         )}
         {saveStatus === 'saved' && (
           <Check
-            className="size-4 text-status-success transition-opacity duration-300"
+            className="text-status-success size-4 transition-opacity duration-300"
             aria-label={localize('com_ui_saved')}
           />
         )}
         {saveStatus === 'error' && (
           <X
-            className="size-4 text-text-destructive transition-opacity duration-300"
+            className="text-text-destructive size-4 transition-opacity duration-300"
             aria-label={localize('com_ui_error')}
           />
         )}
-        {saveStatus === 'idle' && !isEditing && (
+        {saveStatus === 'idle' && !isEditing && !disabled && (
           <Pencil
-            className="size-3.5 text-text-secondary opacity-0 transition-opacity group-hover/title:opacity-100"
+            className="text-text-secondary size-3.5 opacity-0 transition-opacity group-hover/title:opacity-100"
             aria-hidden="true"
           />
         )}

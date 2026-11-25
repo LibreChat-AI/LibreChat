@@ -1,14 +1,36 @@
 import mongoose, { FilterQuery } from 'mongoose';
-import {
-  AUTH_USER_DOC_BY_ID_PREFIX,
-  CacheKeys,
-  type RefillIntervalUnit,
-  type StatefulCodeEnvironment,
+import { AUTH_USER_DOC_MAX_AGE_MS } from 'librechat-data-provider';
+import type {
+  ChannelStorageConfig,
+  BalanceRefillMode,
+  RefillIntervalUnit,
+  StatefulCodeEnvironment,
 } from 'librechat-data-provider';
-import type { IUser, BalanceConfig, CreateUserRequest, UserDeleteResult } from '~/types';
+import type {
+  IUser,
+  BalanceConfig,
+  CreateUserRequest,
+  UserRecord,
+  NewUserData,
+  UserDeleteResult,
+  CreateUserIfAbsentResult,
+} from '~/types';
+import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '~/types';
 import type { CacheStore } from '~/types';
-import { escapeRegExp } from '~/utils/string';
+import {
+  scoreSearchMatch,
+  mergeSearchResults,
+  buildUserExactFilter,
+  buildUserSearchFilter,
+} from '~/utils/search';
+import {
+  eraseChannelPersistenceForUser,
+  resolveChannelErasureConfig,
+} from '~/methods/channelErasure';
+import { closeResponseScopes, eraseResponseRecords } from './responseScope';
+import { evictAuthUserDocsForUsers } from '~/utils/eviction';
 import { signPayload } from '~/crypto';
+import logger from '~/config/winston';
 
 /** Default JWT session expiry: 15 minutes in milliseconds */
 export const DEFAULT_SESSION_EXPIRY: number = 1000 * 60 * 15;
@@ -17,19 +39,34 @@ export const USER_DELETION_FENCE_STALE_MS: number = 15 * 60_000;
 /** Bounds concurrent bulk deletions held for one owner at any moment. */
 const MAX_SUBAGENT_ADMISSION_FENCES = 32;
 
+/** Providers whose credentials LibreChat owns, and therefore the only ones it can enroll in 2FA. */
+const TWO_FACTOR_ENROLLMENT_PROVIDERS = [null, 'local', 'ldap'];
+const TWO_FACTOR_ENROLLMENT_PROJECTION =
+  '+totpSecret +backupCodes +pendingTotpSecret +pendingBackupCodes +twoFactorAcknowledgementNonceHash +twoFactorFinalizationNonceHash';
+
 interface UserMethodDeps {
+  getChannelStorageConfig?: () => Promise<Partial<ChannelStorageConfig>>;
   getCache?: (key: string) => CacheStore | undefined;
+  /** Resolves after the given milliseconds; tests pass one that need not wait out the cache TTL. */
+  delay?: (ms: number) => Promise<void>;
 }
 
-function isAuthUserDocCacheEnabled(): boolean {
-  return process.env.AUTH_USER_CACHE_MODE === 'on';
-}
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Timers can fire a millisecond early, so the wait outlasts a cached document by this much. */
+const AUTH_USER_DOC_EXPIRY_MARGIN_MS = 100;
+
+/** Cached auth documents evicted at once when a reset touches every user. */
+const TERMS_RESET_EVICTION_BATCH = 100;
 
 /** Factory function that takes mongoose instance and returns the methods */
 export function createUserMethods(
   mongoose: typeof import('mongoose'),
   deps: UserMethodDeps = {},
 ): {
+  findScheduleOwner: (
+    userId: string,
+  ) => Promise<{ _id: string; tenantId?: string; role?: string; termsAccepted?: boolean } | null>;
   findUser: (
     searchCriteria: FilterQuery<IUser>,
     fieldsToSelect?: string | string[] | null,
@@ -39,6 +76,9 @@ export function createUserMethods(
     fieldsToSelect?: string | string[] | null,
     options?: { limit?: number; offset?: number; sort?: Record<string, 1 | -1> },
   ) => Promise<IUser[]>;
+  findOwnerContactUsers: (
+    ownerIds: string[],
+  ) => Promise<Array<Pick<IUser, '_id' | 'name' | 'username'>>>;
   countUsers: (filter?: FilterQuery<IUser>) => Promise<number>;
   createUser: (
     data: CreateUserRequest,
@@ -46,8 +86,30 @@ export function createUserMethods(
     disableTTL?: boolean,
     returnUser?: boolean,
   ) => Promise<mongoose.Types.ObjectId | Partial<IUser>>;
-  updateUser: (userId: string, updateData: Partial<IUser>) => Promise<IUser | null>;
+  createUserIfAbsent: (
+    data: NewUserData,
+    balanceConfig?: BalanceConfig,
+  ) => Promise<CreateUserIfAbsentResult>;
+  updateUser: (
+    userId: string,
+    updateData: Partial<IUser>,
+    expectedState?: FilterQuery<IUser>,
+    options?: { preserveExpiresAt?: boolean },
+  ) => Promise<IUser | null>;
+  awaitAuthUserDocEviction: (userId: string) => Promise<void>;
+  consumeBackupCode: (userId: string, codeHash: string) => Promise<boolean>;
+  claimSamlIdentity: (
+    userId: string,
+    samlId: string,
+    profileData: Pick<Partial<IUser>, 'username' | 'name'>,
+  ) => Promise<IUser | null>;
+  updateTwoFactorEnrollment: (
+    userId: string,
+    guard: TwoFactorEnrollmentGuard,
+    updateData: TwoFactorEnrollmentUpdate,
+  ) => Promise<IUser | null>;
   acceptTerms: (userId: string) => Promise<IUser | null>;
+  resetTermsAcceptance: () => Promise<{ modifiedCount: number }>;
   searchUsers: ({
     searchPattern,
     limit,
@@ -91,6 +153,8 @@ export function createUserMethods(
         used: boolean;
         usedAt?: Date | null;
       }>;
+      twoFactorAcknowledgementNonceHash?: string | null;
+      twoFactorFinalizationNonceHash?: string | null;
       refreshToken?: Array<{
         refreshToken: string;
       }>;
@@ -124,18 +188,33 @@ export function createUserMethods(
   beginAgentTriggerUserDeletion: (
     userId: string,
     startedAt: Date,
+    attemptId?: string,
   ) => Promise<'acquired' | 'in_progress' | 'missing'>;
   recoverStaleAgentTriggerUserDeletion: (
     userId: string,
     recoveredAt: Date,
+    legacyAttemptId?: string,
   ) => Promise<'acquired' | 'in_progress' | 'missing'>;
-  cancelAgentTriggerUserDeletion: (userId: string, startedAt: Date) => Promise<boolean>;
+  getAgentTriggerUserDeletionAttemptId: (userId: string, startedAt: Date) => Promise<string | null>;
+  isAgentTriggerUserDeletionOwner: (
+    userId: string,
+    startedAt: Date,
+    attemptId?: string,
+  ) => Promise<boolean>;
+  cancelAgentTriggerUserDeletion: (
+    userId: string,
+    startedAt: Date,
+    attemptId?: string,
+  ) => Promise<boolean>;
   isAgentTriggerPrincipalActive: (userId: string) => Promise<boolean>;
   fenceSubagentAdmission: (userId: string, token: string, fencedUntil: Date) => Promise<void>;
   renewSubagentAdmission: (userId: string, token: string, fencedUntil: Date) => Promise<boolean>;
   releaseSubagentAdmission: (userId: string, token: string) => Promise<void>;
   isSubagentOwnerAdmissible: (userId: string) => Promise<boolean>;
-  deleteUserById: (userId: string) => Promise<UserDeleteResult>;
+  deleteUserById: (
+    userId: string,
+    fence?: { startedAt: Date; attemptId: string },
+  ) => Promise<UserDeleteResult>;
   updateUserPlugins: (
     userId: string,
     plugins: string[] | undefined,
@@ -207,6 +286,19 @@ export function createUserMethods(
     }
     return await query.lean<IUser[]>();
   }
+  async function findOwnerContactUsers(
+    ownerIds: string[],
+  ): Promise<Array<Pick<IUser, '_id' | 'name' | 'username'>>> {
+    if (ownerIds.length === 0) {
+      return [];
+    }
+
+    const User = mongoose.models.User as mongoose.Model<IUser>;
+    const objectIds = ownerIds.map((ownerId) => new mongoose.Types.ObjectId(ownerId));
+    return await User.find({ _id: { $in: objectIds } })
+      .select('_id name username')
+      .lean<Array<Pick<IUser, '_id' | 'name' | 'username'>>>();
+  }
 
   /**
    * Count the number of user documents in the collection based on the provided filter.
@@ -214,6 +306,59 @@ export function createUserMethods(
   async function countUsers(filter: FilterQuery<IUser> = {}): Promise<number> {
     const User = mongoose.models.User;
     return await User.countDocuments(filter);
+  }
+
+  /**
+   * Initializes a new user's start balance, with auto-refill settings when complete. The write is
+   * insert-only, so it never replaces a balance that already exists or the activity recorded on it.
+   */
+  async function creditStartBalance(
+    userId: mongoose.Types.ObjectId,
+    balanceConfig?: BalanceConfig,
+  ): Promise<void> {
+    if (!balanceConfig?.enabled || !balanceConfig?.startBalance) {
+      return;
+    }
+
+    const Balance = mongoose.models.Balance;
+    const grantedAt = new Date();
+    const initial: {
+      tokenCredits: number;
+      autoRefillEnabled?: boolean;
+      refillIntervalValue?: number;
+      refillIntervalUnit?: RefillIntervalUnit;
+      refillAmount?: number;
+      refillMode?: BalanceRefillMode;
+      refillAnchor?: string | null;
+      allotment: number;
+      allottedAt: Date;
+      lastRefill: Date;
+    } = {
+      tokenCredits: balanceConfig.startBalance,
+      allotment: balanceConfig.startBalance,
+      allottedAt: grantedAt,
+      lastRefill: grantedAt,
+    };
+
+    if (
+      balanceConfig.autoRefillEnabled &&
+      balanceConfig.refillIntervalValue != null &&
+      balanceConfig.refillIntervalUnit != null &&
+      balanceConfig.refillAmount != null
+    ) {
+      initial.autoRefillEnabled = true;
+      initial.refillIntervalValue = balanceConfig.refillIntervalValue;
+      initial.refillIntervalUnit = balanceConfig.refillIntervalUnit;
+      initial.refillAmount = balanceConfig.refillAmount;
+      initial.refillMode = balanceConfig.refillMode ?? 'add';
+      initial.refillAnchor = balanceConfig.refillAnchor ?? null;
+    }
+
+    await Balance.findOneAndUpdate(
+      { _id: userId },
+      { $setOnInsert: { ...initial, user: userId } },
+      { upsert: true, new: true },
+    ).lean();
   }
 
   /**
@@ -226,7 +371,6 @@ export function createUserMethods(
     returnUser: boolean = false,
   ): Promise<mongoose.Types.ObjectId | Partial<IUser>> {
     const User = mongoose.models.User;
-    const Balance = mongoose.models.Balance;
 
     const userData: Partial<IUser> = {
       ...data,
@@ -238,40 +382,7 @@ export function createUserMethods(
     }
 
     const user = await User.create(userData);
-
-    // If balance is enabled, create or update a balance record for the user
-    if (balanceConfig?.enabled && balanceConfig?.startBalance) {
-      const update: {
-        $inc: { tokenCredits: number };
-        $set?: {
-          autoRefillEnabled: boolean;
-          refillIntervalValue: number;
-          refillIntervalUnit: RefillIntervalUnit;
-          refillAmount: number;
-        };
-      } = {
-        $inc: { tokenCredits: balanceConfig.startBalance },
-      };
-
-      if (
-        balanceConfig.autoRefillEnabled &&
-        balanceConfig.refillIntervalValue != null &&
-        balanceConfig.refillIntervalUnit != null &&
-        balanceConfig.refillAmount != null
-      ) {
-        update.$set = {
-          autoRefillEnabled: true,
-          refillIntervalValue: balanceConfig.refillIntervalValue,
-          refillIntervalUnit: balanceConfig.refillIntervalUnit,
-          refillAmount: balanceConfig.refillAmount,
-        };
-      }
-
-      await Balance.findOneAndUpdate({ user: user._id }, update, {
-        upsert: true,
-        new: true,
-      }).lean();
-    }
+    await creditStartBalance(user._id, balanceConfig);
 
     if (returnUser) {
       return user.toObject() as Partial<IUser>;
@@ -280,42 +391,181 @@ export function createUserMethods(
   }
 
   /**
-   * Update a user with new data without overwriting existing properties.
+   * Creates a user without a TTL, or reports `user_exists` when a unique email or provider
+   * identity index already holds the account, as when concurrent first logins race to insert it.
+   * The start balance is initialized under the new user's id before the user is inserted, so
+   * the account is never visible without it and login balance sync never initializes it first.
+   * A balance write that fails, or an insert a unique index rejects, removes the balance under
+   * the id that never became a user; any other insert failure keeps it, since an unacknowledged
+   * insert may still have committed.
    */
-  async function updateUser(userId: string, updateData: Partial<IUser>): Promise<IUser | null> {
+  async function createUserIfAbsent(
+    data: NewUserData,
+    balanceConfig?: BalanceConfig,
+  ): Promise<CreateUserIfAbsentResult> {
+    const User = mongoose.models.User as mongoose.Model<IUser>;
+    const userData: Partial<IUser> = { ...data };
+    delete userData.expiresAt;
+
+    const user = new User(userData);
+    await user.validate();
+    try {
+      await creditStartBalance(user._id, balanceConfig);
+    } catch (error) {
+      await discardStartBalance(user._id, balanceConfig);
+      throw error;
+    }
+
+    try {
+      await user.save({ validateBeforeSave: false });
+    } catch (error) {
+      if ((error as { code?: number }).code !== 11000) {
+        throw error;
+      }
+      await discardStartBalance(user._id, balanceConfig);
+      return { ok: false, error: { code: 'user_exists' } };
+    }
+
+    return { ok: true, value: user.toObject() as UserRecord };
+  }
+
+  /** Removes, best effort, the start balance initialized for an id that never became a user. */
+  async function discardStartBalance(
+    userId: mongoose.Types.ObjectId,
+    balanceConfig?: BalanceConfig,
+  ): Promise<void> {
+    if (!balanceConfig?.enabled || !balanceConfig?.startBalance) {
+      return;
+    }
+    try {
+      await mongoose.models.Balance.deleteOne({ _id: userId });
+    } catch {
+      logger.warn(
+        '[createUserIfAbsent] Could not remove the start balance of a user never created',
+        {
+          userId: userId.toString(),
+        },
+      );
+    }
+  }
+
+  /**
+   * Update a user with new data without overwriting existing properties.
+   * Removes pending-account expiry unless preserveExpiresAt is requested.
+   */
+  async function updateUser(
+    userId: string,
+    updateData: Partial<IUser>,
+    expectedState: FilterQuery<IUser> = {},
+    options: { preserveExpiresAt?: boolean } = {},
+  ): Promise<IUser | null> {
     const User = mongoose.models.User;
     const updateOperation = {
       $set: updateData,
-      $unset: { expiresAt: '' }, // Remove the expiresAt field to prevent TTL
+      ...(options.preserveExpiresAt ? {} : { $unset: { expiresAt: '' } }),
     };
-    const updated = await User.findByIdAndUpdate(userId, updateOperation, {
-      new: true,
-      runValidators: true,
-    }).lean<IUser>();
+    const updated = await User.findOneAndUpdate(
+      { ...expectedState, _id: userId },
+      updateOperation,
+      {
+        new: true,
+        runValidators: true,
+      },
+    ).lean<IUser>();
     await invalidateAuthUserDocCache(userId);
     return updated;
   }
 
-  async function invalidateAuthUserDocCache(userId: string): Promise<void> {
-    if (!isAuthUserDocCacheEnabled()) {
+  /**
+   * The barrier a credential change passes before it is confirmed. A cached document without
+   * the new credentialsChangedAt keeps pre-change access tokens verifying until it expires, so
+   * eviction is retried and, when it still cannot remove every document, this resolves only
+   * after the longest a cached document can live, which a lookup that began just before the
+   * change may stretch to two cache TTLs. Callers revoke sessions and passkeys first: during the wait those
+   * could otherwise mint access tokens issued after the stamp.
+   */
+  async function awaitAuthUserDocEviction(userId: string): Promise<void> {
+    if (await invalidateAuthUserDocCache(userId)) {
       return;
     }
-    const cache = deps.getCache?.(CacheKeys.AUTH_USER_DOC);
-    if (!cache?.get || !cache?.delete) {
-      return;
+    logger.warn(
+      '[awaitAuthUserDocEviction] Cached auth documents were not evicted after a credential change; waiting for them to expire',
+      { userId, waitMs: AUTH_USER_DOC_MAX_AGE_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS },
+    );
+    await (deps.delay ?? wait)(AUTH_USER_DOC_MAX_AGE_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
+  }
+
+  /** Only the request that atomically consumes an unused recovery code may authenticate. */
+  async function consumeBackupCode(userId: string, codeHash: string): Promise<boolean> {
+    const result = await mongoose.models.User.updateOne(
+      { _id: userId, backupCodes: { $elemMatch: { codeHash, used: false } } },
+      { $set: { 'backupCodes.$.used': true, 'backupCodes.$.usedAt': new Date() } },
+    );
+    if (result.modifiedCount !== 1) {
+      return false;
     }
-    try {
-      const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
-      const cachedKeys = await cache.get(indexKey);
-      if (Array.isArray(cachedKeys)) {
-        await Promise.all(
-          cachedKeys.map((key) => (typeof key === 'string' ? cache.delete?.(key) : undefined)),
-        );
-      }
-      await cache.delete(indexKey);
-    } catch {
-      // Cache invalidation must not make a user update fail.
+    await invalidateAuthUserDocCache(userId);
+    return true;
+  }
+
+  /** Atomically updates a SAML user only when the incoming identity can claim the document. */
+  async function claimSamlIdentity(
+    userId: string,
+    samlId: string,
+    profileData: Pick<Partial<IUser>, 'username' | 'name'>,
+  ): Promise<IUser | null> {
+    const User = mongoose.models.User;
+    const updated = await User.findOneAndUpdate(
+      {
+        _id: userId,
+        provider: 'saml',
+        $or: [{ samlId }, { samlId: { $exists: false } }, { samlId: null }, { samlId: '' }],
+      },
+      {
+        $set: { ...profileData, samlId },
+        $unset: { expiresAt: '' },
+      },
+      { new: true, runValidators: true },
+    ).lean<IUser>();
+    if (updated) {
+      await invalidateAuthUserDocCache(userId);
     }
+    return updated;
+  }
+
+  /**
+   * Single compare-and-swap for every step of required two-factor enrollment. The filter always
+   * pins the user to an unenrolled, policy-eligible provider, and `guard` adds the exact pending
+   * secret, pending backup-code snapshot, or one-time nonce hash the caller observed. A step whose
+   * predicate has moved returns `null` instead of writing.
+   */
+  async function updateTwoFactorEnrollment(
+    userId: string,
+    guard: TwoFactorEnrollmentGuard,
+    updateData: TwoFactorEnrollmentUpdate,
+  ): Promise<IUser | null> {
+    const User = mongoose.models.User;
+    const updated = await User.findOneAndUpdate(
+      {
+        _id: userId,
+        twoFactorEnabled: { $ne: true },
+        provider: { $in: TWO_FACTOR_ENROLLMENT_PROVIDERS },
+        ...guard,
+      },
+      { $set: updateData, $unset: { expiresAt: '' } },
+      { new: true, runValidators: true },
+    )
+      .select(TWO_FACTOR_ENROLLMENT_PROJECTION)
+      .lean<IUser>();
+    if (updated) {
+      await invalidateAuthUserDocCache(userId);
+    }
+    return updated;
+  }
+
+  /** Resolves false only when a cached document for the user may still be served. */
+  async function invalidateAuthUserDocCache(userId: string): Promise<boolean> {
+    return evictAuthUserDocsForUsers(deps.getCache, [userId]);
   }
 
   /**
@@ -331,13 +581,51 @@ export function createUserMethods(
    * updates are used instead of an aggregation pipeline with $$NOW, which
    * Amazon DocumentDB rejects.
    */
+  /** Withdraws every user's acceptance and evicts their cached auth documents, so a reset takes effect at once. */
+  async function resetTermsAcceptance(): Promise<{ modifiedCount: number }> {
+    const User = mongoose.models.User;
+    const result = await User.updateMany(
+      {},
+      {
+        $set: { termsAccepted: false, termsAcceptedAt: null },
+        $unset: { termsAcceptedSource: 1 },
+      },
+    );
+    /** Every user, not only those read as accepted beforehand: an acceptance racing the update may be cached. */
+    const cursor = User.find({}).select('_id').lean().cursor();
+    let evicted = true;
+    let batch: string[] = [];
+    for await (const user of cursor) {
+      batch.push(String(user._id));
+      if (batch.length === TERMS_RESET_EVICTION_BATCH) {
+        evicted = (await evictAuthUserDocsForUsers(deps.getCache, batch)) && evicted;
+        batch = [];
+      }
+    }
+    evicted = (await evictAuthUserDocsForUsers(deps.getCache, batch)) && evicted;
+    if (!evicted) {
+      /** The eviction fence keeps requests that read the old document from caching it, so only a failed eviction needs to outlast the TTL. */
+      logger.warn(
+        '[resetTermsAcceptance] Cached auth documents were not evicted; waiting for them to expire',
+        {
+          waitMs: AUTH_USER_DOC_MAX_AGE_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS,
+        },
+      );
+      await (deps.delay ?? wait)(AUTH_USER_DOC_MAX_AGE_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
+    }
+    return { modifiedCount: result.modifiedCount };
+  }
+
   async function acceptTerms(userId: string): Promise<IUser | null> {
     const User = mongoose.models.User;
     const maxAttempts = 3;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const firstAcceptance = await User.findOneAndUpdate(
         { _id: userId, termsAcceptedAt: null },
-        { $set: { termsAccepted: true, termsAcceptedAt: new Date() } },
+        {
+          $set: { termsAccepted: true, termsAcceptedAt: new Date() },
+          $unset: { termsAcceptedSource: 1 },
+        },
         { new: true, runValidators: true },
       ).lean<IUser>();
       if (firstAcceptance) {
@@ -379,10 +667,43 @@ export function createUserMethods(
   /**
    * Delete a user by their unique ID.
    */
-  async function deleteUserById(userId: string): Promise<UserDeleteResult> {
+  async function deleteUserById(
+    userId: string,
+    fence?: { startedAt: Date; attemptId: string },
+  ): Promise<UserDeleteResult> {
+    if (fence !== undefined) {
+      if (!(fence?.startedAt instanceof Date) || !Number.isFinite(fence.startedAt.getTime())) {
+        throw new TypeError('startedAt must be a valid Date');
+      }
+      validateDeletionAttemptId(fence.attemptId);
+    }
     try {
       const User = mongoose.models.User;
-      const result = await User.deleteOne({ _id: userId });
+      const owner = await User.findById(userId).select('tenantId').lean<Pick<IUser, 'tenantId'>>();
+      if (owner) {
+        const channelConfig = resolveChannelErasureConfig(
+          (await deps.getChannelStorageConfig?.()) ?? {},
+        );
+        await closeResponseScopes(mongoose, { userId, tenantId: owner.tenantId });
+        await eraseResponseRecords(mongoose, { userId, tenantId: owner.tenantId });
+        // Admission writes the same owner anchor in its insertion transaction.
+        // Closing it therefore precedes both this sweep and every delayed retry.
+        await eraseChannelPersistenceForUser(
+          mongoose,
+          { userId, tenantId: owner.tenantId },
+          channelConfig,
+        );
+      }
+      await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
+      const result = await User.deleteOne({
+        _id: userId,
+        ...(fence === undefined
+          ? {}
+          : {
+              agentTriggerDeletionStartedAt: fence.startedAt,
+              agentTriggerDeletionAttemptId: fence.attemptId,
+            }),
+      });
       if (result.deletedCount === 0) {
         return { deletedCount: 0, message: 'No user found with that ID.' };
       }
@@ -394,18 +715,32 @@ export function createUserMethods(
     }
   }
 
+  function validateDeletionAttemptId(attemptId: string): void {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(attemptId)) {
+      throw new TypeError('Invalid user deletion attempt ID');
+    }
+  }
+
   /** Establishes the durable admission fence used while account deletion drains triggers. */
   async function beginAgentTriggerUserDeletion(
     userId: string,
     startedAt: Date,
+    attemptId?: string,
   ): Promise<'acquired' | 'in_progress' | 'missing'> {
     if (!(startedAt instanceof Date) || !Number.isFinite(startedAt.getTime())) {
       throw new TypeError('startedAt must be a valid Date');
     }
+    if (attemptId !== undefined) validateDeletionAttemptId(attemptId);
     const User = mongoose.models.User;
     const result = await User.updateOne(
       { _id: userId, agentTriggerDeletionStartedAt: { $exists: false } },
-      { $set: { agentTriggerDeletionStartedAt: startedAt } },
+      {
+        $set: {
+          agentTriggerDeletionStartedAt: startedAt,
+          ...(attemptId === undefined ? {} : { agentTriggerDeletionAttemptId: attemptId }),
+        },
+        ...(attemptId === undefined ? { $unset: { agentTriggerDeletionAttemptId: 1 } } : {}),
+      },
     );
     if (result.modifiedCount === 1) {
       await invalidateAuthUserDocCache(userId);
@@ -419,12 +754,34 @@ export function createUserMethods(
   async function recoverStaleAgentTriggerUserDeletion(
     userId: string,
     recoveredAt: Date,
+    legacyAttemptId?: string,
   ): Promise<'acquired' | 'in_progress' | 'missing'> {
     if (!(recoveredAt instanceof Date) || !Number.isFinite(recoveredAt.getTime())) {
       throw new TypeError('recoveredAt must be a valid Date');
     }
     const User = mongoose.models.User;
+    if (legacyAttemptId !== undefined) validateDeletionAttemptId(legacyAttemptId);
     const staleBefore = new Date(recoveredAt.getTime() - USER_DELETION_FENCE_STALE_MS);
+    // Two ordinary CAS updates keep DocumentDB compatibility and never overwrite a stored UUID.
+    if (legacyAttemptId !== undefined) {
+      const legacy = await User.updateOne(
+        {
+          _id: userId,
+          agentTriggerDeletionStartedAt: { $lte: staleBefore },
+          agentTriggerDeletionAttemptId: { $exists: false },
+        },
+        {
+          $set: {
+            agentTriggerDeletionStartedAt: recoveredAt,
+            agentTriggerDeletionAttemptId: legacyAttemptId,
+          },
+        },
+      );
+      if (legacy.modifiedCount === 1) {
+        await invalidateAuthUserDocCache(userId);
+        return 'acquired';
+      }
+    }
     const result = await User.updateOne(
       { _id: userId, agentTriggerDeletionStartedAt: { $lte: staleBefore } },
       { $set: { agentTriggerDeletionStartedAt: recoveredAt } },
@@ -436,12 +793,55 @@ export function createUserMethods(
     return (await User.exists({ _id: userId })) == null ? 'missing' : 'in_progress';
   }
 
+  async function getAgentTriggerUserDeletionAttemptId(
+    userId: string,
+    startedAt: Date,
+  ): Promise<string | null> {
+    const user = await mongoose.models.User.findOne({
+      _id: userId,
+      agentTriggerDeletionStartedAt: startedAt,
+    })
+      .select({ agentTriggerDeletionAttemptId: 1, _id: 0 })
+      .read('primary')
+      .lean<Pick<IUser, 'agentTriggerDeletionAttemptId'>>();
+    const attemptId = user?.agentTriggerDeletionAttemptId;
+    if (attemptId == null) return null;
+    validateDeletionAttemptId(attemptId);
+    return attemptId;
+  }
+
+  /** Reads current ownership without releasing the durable retry anchor. */
+  async function isAgentTriggerUserDeletionOwner(
+    userId: string,
+    startedAt: Date,
+    attemptId?: string,
+  ): Promise<boolean> {
+    if (attemptId !== undefined) validateDeletionAttemptId(attemptId);
+    const User = mongoose.models.User;
+    return (
+      (await User.exists({
+        _id: userId,
+        agentTriggerDeletionStartedAt: startedAt,
+        ...(attemptId === undefined ? {} : { agentTriggerDeletionAttemptId: attemptId }),
+      }).read('primary')) != null
+    );
+  }
+
   /** Releases only the account-deletion attempt that owns this exact fence. */
-  async function cancelAgentTriggerUserDeletion(userId: string, startedAt: Date): Promise<boolean> {
+  async function cancelAgentTriggerUserDeletion(
+    userId: string,
+    startedAt: Date,
+    attemptId?: string,
+  ): Promise<boolean> {
+    if (attemptId !== undefined) validateDeletionAttemptId(attemptId);
     const User = mongoose.models.User;
     const result = await User.updateOne(
-      { _id: userId, agentTriggerDeletionStartedAt: startedAt },
-      { $unset: { agentTriggerDeletionStartedAt: 1 } },
+      {
+        _id: userId,
+        agentTriggerDeletionStartedAt: startedAt,
+        ...(attemptId === undefined ? {} : { agentTriggerDeletionAttemptId: attemptId }),
+      },
+      { $unset: { agentTriggerDeletionStartedAt: 1, agentTriggerDeletionAttemptId: 1 } },
     );
     if (result.modifiedCount === 1) {
       await invalidateAuthUserDocCache(userId);
@@ -571,6 +971,9 @@ export function createUserMethods(
         username: user.username,
         provider: user.provider,
         email: user.email,
+        /** `iat` is whole seconds, too coarse to order this token against a password reset that
+         * lands in the same second. `isTokenRetired` reads this claim to settle that exactly. */
+        issuedAtMs: Date.now(),
       },
       secret: process.env.JWT_SECRET,
       expirationTime: expires / 1000,
@@ -587,13 +990,7 @@ export function createUserMethods(
   ): Promise<IUser | null> {
     const User = mongoose.models.User;
 
-    // First, ensure the personalization object exists
-    const user = await User.findById(userId);
-    if (!user) {
-      return null;
-    }
-
-    // Use $set to update the nested field, which will create the personalization object if it doesn't exist
+    /** `$set` on the nested path creates `personalization` when missing; a missing user yields null. */
     const updateOperation = {
       $set: {
         'personalization.memories': memoriesEnabled,
@@ -627,7 +1024,7 @@ export function createUserMethods(
   }
 
   /**
-   * Search for users by pattern matching on name, email, or username (case-insensitive)
+   * Search for users by word prefix of name, email, or username (see `buildUserSearchFilter`)
    * @param searchPattern - The pattern to search for
    * @param limit - Maximum number of results to return
    * @param fieldsToSelect - The fields to include or exclude in the returned documents
@@ -676,6 +1073,8 @@ export function createUserMethods(
         used: boolean;
         usedAt?: Date | null;
       }>;
+      twoFactorAcknowledgementNonceHash?: string | null;
+      twoFactorFinalizationNonceHash?: string | null;
       refreshToken?: Array<{
         refreshToken: string;
       }>;
@@ -709,54 +1108,31 @@ export function createUserMethods(
     }
 
     const trimmedPattern = searchPattern.trim();
-    const regex = new RegExp(escapeRegExp(trimmedPattern), 'i');
-    const User = mongoose.models.User;
-
-    const query = User.find({
-      $or: [{ email: regex }, { name: regex }, { username: regex }],
-    }).limit(limit * 2); // Get more results to allow for relevance sorting
-
-    if (fieldsToSelect) {
-      query.select(fieldsToSelect);
+    const filter = buildUserSearchFilter(trimmedPattern);
+    if (!filter) {
+      return [];
     }
-
-    const users = await query.lean<IUser[]>();
-
-    // Score results by relevance
-    const startsWithPattern = trimmedPattern.toLowerCase();
-
-    const scoredUsers = users.map((user) => {
-      const searchableFields = [user.name, user.email, user.username].filter(
-        (field): field is string => typeof field === 'string' && field.length > 0,
-      );
-      let maxScore = 0;
-
-      for (const field of searchableFields) {
-        const fieldLower = field.toLowerCase();
-        let score = 0;
-
-        // Exact match gets highest score
-        if (fieldLower === startsWithPattern) {
-          score = 100;
-        }
-        // Starts with query gets high score
-        else if (fieldLower.startsWith(startsWithPattern)) {
-          score = 80;
-        }
-        // Contains query gets medium score
-        else if (fieldLower.includes(startsWithPattern)) {
-          score = 50;
-        }
-        // Default score for database match
-        else {
-          score = 10;
-        }
-
-        maxScore = Math.max(maxScore, score);
+    const User = mongoose.models.User;
+    const find = (query: Record<string, unknown>, size: number) => {
+      const cursor = User.find(query).limit(size);
+      if (fieldsToSelect) {
+        cursor.select(fieldsToSelect);
       }
+      return cursor.lean<IUser[]>();
+    };
 
-      return { ...user, _searchScore: maxScore };
-    });
+    /** The prefix window is fetched in index order, so exact matches are fetched beside it */
+    const exactFilter = buildUserExactFilter(trimmedPattern);
+    const [exact, matches] = await Promise.all([
+      exactFilter ? find(exactFilter, limit) : [],
+      find(filter, limit * 2),
+    ]);
+    const users = mergeSearchResults(exact, matches);
+
+    const scoredUsers = users.map((user) => ({
+      ...user,
+      _searchScore: scoreSearchMatch([user.name, user.email, user.username], trimmedPattern),
+    }));
 
     /** Top results sorted by relevance */
     return scoredUsers
@@ -769,43 +1145,76 @@ export function createUserMethods(
   };
 
   /**
-   * Updates the plugins for a user based on the action specified (install/uninstall).
+   * Installs or uninstalls a plugin with a single atomic array operator, so concurrent
+   * install/uninstall requests cannot overwrite each other.
    * @param userId - The user ID whose plugins are to be updated
-   * @param plugins - The current plugins array
+   * @param _plugins - Ignored; the caller's possibly stale snapshot, kept for signature compatibility
    * @param pluginKey - The key of the plugin to install or uninstall
    * @param action - The action to perform, 'install' or 'uninstall'
-   * @returns The result of the update operation or null if action is invalid
+   * @returns The updated user, or null if the action is invalid or the user is missing
    */
   async function updateUserPlugins(
     userId: string,
-    plugins: string[] | undefined,
+    _plugins: string[] | undefined,
     pluginKey: string,
     action: 'install' | 'uninstall',
   ): Promise<IUser | null> {
-    const userPlugins = plugins ?? [];
+    let arrayOperation: Record<string, { plugins: string }>;
     if (action === 'install') {
-      return updateUser(userId, { plugins: [...userPlugins, pluginKey] });
+      arrayOperation = { $addToSet: { plugins: pluginKey } };
+    } else if (action === 'uninstall') {
+      arrayOperation = { $pull: { plugins: pluginKey } };
+    } else {
+      return null;
     }
-    if (action === 'uninstall') {
-      return updateUser(userId, {
-        plugins: userPlugins.filter((plugin) => plugin !== pluginKey),
-      });
-    }
-    return null;
+    const User = mongoose.models.User;
+    const updated = await User.findByIdAndUpdate(
+      userId,
+      { ...arrayOperation, $unset: { expiresAt: '' } },
+      { new: true, runValidators: true },
+    ).lean<IUser>();
+    await invalidateAuthUserDocCache(userId);
+    return updated;
+  }
+
+  async function findScheduleOwner(
+    userId: string,
+  ): Promise<{ _id: string; tenantId?: string; role?: string; termsAccepted?: boolean } | null> {
+    const user = await mongoose.models.User.findById(userId)
+      .select('_id tenantId role termsAccepted')
+      .lean<IUser>();
+    return user
+      ? {
+          _id: user._id.toString(),
+          tenantId: user.tenantId,
+          role: user.role,
+          termsAccepted: user.termsAccepted,
+        }
+      : null;
   }
 
   return {
+    findScheduleOwner,
     findUser,
     findUsers,
+    findOwnerContactUsers,
     countUsers,
     createUser,
+    createUserIfAbsent,
     updateUser,
+    awaitAuthUserDocEviction,
+    consumeBackupCode,
+    claimSamlIdentity,
+    updateTwoFactorEnrollment,
     acceptTerms,
+    resetTermsAcceptance,
     searchUsers,
     getUserById,
     generateToken,
     beginAgentTriggerUserDeletion,
     recoverStaleAgentTriggerUserDeletion,
+    getAgentTriggerUserDeletionAttemptId,
+    isAgentTriggerUserDeletionOwner,
     cancelAgentTriggerUserDeletion,
     isAgentTriggerPrincipalActive,
     fenceSubagentAdmission,

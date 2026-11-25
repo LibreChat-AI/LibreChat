@@ -1,4 +1,5 @@
 import { Readable } from 'stream';
+import { logger } from '@librechat/data-schemas';
 import { FileSources } from 'librechat-data-provider';
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -52,7 +53,7 @@ import axios from 'axios';
 import FormData from 'form-data';
 import type { ServerRequest } from '~/types';
 import { generateShortLivedToken } from '~/crypto/jwt';
-import { readFileAsString } from '~/utils';
+import { logAxiosError, readFileAsString } from '~/utils';
 
 const mockedFs = fs as jest.Mocked<typeof fs>;
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -61,6 +62,8 @@ const mockedGenerateShortLivedToken = generateShortLivedToken as jest.MockedFunc
   typeof generateShortLivedToken
 >;
 const mockedReadFileAsString = readFileAsString as jest.MockedFunction<typeof readFileAsString>;
+const mockedLogAxiosError = logAxiosError as jest.MockedFunction<typeof logAxiosError>;
+const mockedLoggerError = logger.error as jest.MockedFunction<typeof logger.error>;
 
 describe('text', () => {
   const mockFile: Express.Multer.File = {
@@ -417,6 +420,54 @@ describe('text', () => {
           }),
         ).rejects.toThrow('native fallback is disabled');
         expect(mockedReadFileAsString).not.toHaveBeenCalled();
+      });
+
+      it('does not log protected filenames or provider response data', async () => {
+        process.env.RAG_API_URL = 'http://rag-api.test';
+        mockedAxios.get.mockResolvedValue({ status: 200, statusText: 'OK' });
+        const providerError = Object.assign(new Error('PRIVATE provider response'), {
+          response: { status: 502, data: 'PRIVATE document fragment' },
+        });
+        mockedAxios.post.mockRejectedValue(providerError);
+        const protectedReq = {
+          user: { id: 'user123' },
+          config: {
+            filters: {
+              files: {
+                pii: {
+                  fields: ['extracted_text'],
+                  uninspectable: 'block',
+                },
+              },
+            },
+          },
+        } as ServerRequest;
+        const protectedFile = {
+          ...docFile,
+          originalname: 'PRIVATE-report.docx',
+        } as Express.Multer.File;
+
+        let thrownError: unknown;
+        try {
+          await parseText({
+            req: protectedReq,
+            file: protectedFile,
+            file_id: mockFileId,
+            allowNativeFallback: false,
+          });
+        } catch (error) {
+          thrownError = error;
+        }
+
+        expect(thrownError).toBeInstanceOf(Error);
+        expect((thrownError as Error).message).toContain('file_id=file123');
+        expect((thrownError as Error).message).not.toContain('PRIVATE');
+        expect(mockedLogAxiosError).not.toHaveBeenCalled();
+        expect(mockedLoggerError).toHaveBeenCalledWith('[parseText] RAG API text parsing failed', {
+          type: 'Error',
+          status: 502,
+        });
+        expect(JSON.stringify(mockedLoggerError.mock.calls)).not.toContain('PRIVATE');
       });
 
       it('should return the RAG result when RAG is available', async () => {

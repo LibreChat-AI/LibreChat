@@ -143,7 +143,7 @@ describe('createAgentStartupTelemetry', () => {
     mockTracer(span);
     let now = 10;
     const telemetry = createAgentStartupTelemetry({ now: () => now })!;
-    const error = new Error('startup failed');
+    const error = new TypeError('startup failed: sk-secret-canary');
 
     now = 25;
     telemetry.end('error', error);
@@ -151,7 +151,11 @@ describe('createAgentStartupTelemetry', () => {
     telemetry.end('aborted');
     telemetry.mark('client_initialized');
 
-    expect(span.recordException).toHaveBeenCalledWith(error);
+    expect(span.recordException).toHaveBeenCalledWith({
+      message: 'Error details withheld',
+      name: 'TypeError',
+    });
+    expect(JSON.stringify(span.recordException.mock.calls)).not.toContain('sk-secret-canary');
     expect(span.setStatus).toHaveBeenCalledWith({ code: SpanStatusCode.ERROR });
     expect(recordAgentStartupResult).toHaveBeenCalledTimes(1);
     expect(recordAgentStartupResult).toHaveBeenCalledWith('error');

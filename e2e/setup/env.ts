@@ -1,7 +1,10 @@
+import fs from 'fs';
 import crypto from 'crypto';
 import path from 'path';
 
-const DEFAULT_BASE_URL = 'http://localhost:3080';
+/** Off 3080, which a standard LibreChat deployment (`.env.example`, Docker) publishes, so the
+ *  harness can start its own server while a normal instance keeps running. */
+const DEFAULT_BASE_URL = 'http://localhost:3180';
 const DEFAULT_MONGO_URI = 'mongodb://127.0.0.1:27017/LibreChat-e2e';
 const DEFAULT_RUNTIME_ENV_PATH = path.resolve(__dirname, '../specs/.test-results/runtime-env.json');
 const GENERATED_CREDS_KEY = crypto.randomBytes(32).toString('hex');
@@ -51,6 +54,22 @@ export function getE2EServerAddress(baseURL = getE2EBaseURL()) {
 
 export function getRuntimeEnvPath() {
   return process.env.E2E_RUNTIME_ENV_PATH ?? DEFAULT_RUNTIME_ENV_PATH;
+}
+
+/**
+ * The Mongo URI of the running test server. e2e/setup/start-server.js writes the active URI
+ * (memory-Mongo port included) to the runtime env file on boot.
+ */
+export function getMongoUri(): string {
+  try {
+    const env = JSON.parse(fs.readFileSync(getRuntimeEnvPath(), 'utf8')) as { MONGO_URI?: string };
+    if (env.MONGO_URI) {
+      return env.MONGO_URI;
+    }
+  } catch {
+    /* fall through to env/default */
+  }
+  return process.env.MONGO_URI ?? DEFAULT_MONGO_URI;
 }
 
 function getPassthroughEnv(): Record<string, string> {
@@ -138,6 +157,8 @@ export function getBaseE2EEnv(): Record<string, string> {
     SESSION_EXPIRY: process.env.SESSION_EXPIRY ?? '3600000',
     ALLOW_REGISTRATION: 'true',
     REFRESH_TOKEN_EXPIRY: process.env.REFRESH_TOKEN_EXPIRY ?? '3600000',
+    /** Playwright's Node-side requests keep idle sockets indefinitely; see `keepalive.js`. */
+    HTTP_KEEP_ALIVE_TIMEOUT_MS: '0',
     ...getStreamStoreEnv(),
   };
 }
@@ -145,7 +166,7 @@ export function getBaseE2EEnv(): Record<string, string> {
 export function getLocalE2EEnv(): Record<string, string> {
   return {
     ...getBaseE2EEnv(),
-    TITLE_CONVO: 'false',
+    TITLE_CONVO: process.env.E2E_TITLE_CONVO ?? 'false',
     LOGIN_VIOLATION_SCORE: '0',
     REGISTRATION_VIOLATION_SCORE: '0',
     CONCURRENT_VIOLATION_SCORE: '0',
@@ -161,9 +182,13 @@ export function getLocalE2EEnv(): Record<string, string> {
     TOOL_CALL_VIOLATION_SCORE: '0',
     CONVO_ACCESS_VIOLATION_SCORE: '0',
     ILLEGAL_MODEL_REQ_SCORE: '0',
-    LOGIN_MAX: '20',
+    /** The suite authenticates far more often than a person does: a spec that
+     *  exercises a second account logs in once per Playwright project, and the
+     *  admin-config specs log in per test. 20 per minute throttles those runs
+     *  into flakes; no spec asserts login or registration throttling. */
+    LOGIN_MAX: '200',
     LOGIN_WINDOW: '1',
-    REGISTER_MAX: '20',
+    REGISTER_MAX: '200',
     REGISTER_WINDOW: '1',
     LIMIT_CONCURRENT_MESSAGES: 'false',
     CONCURRENT_MESSAGE_MAX: '20',

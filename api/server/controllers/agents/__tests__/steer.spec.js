@@ -213,29 +213,19 @@ describe('SteerController (wrapper)', () => {
     expect(res.headers[GENERATION_PROTOCOL_HEADER]).toBe('1');
   });
 
-  it('honors a v1 server rollout gate even when the request advertises exact v2', async () => {
-    const previous = process.env.GENERATION_PROTOCOL_VERSION;
-    process.env.GENERATION_PROTOCOL_VERSION = '1';
+  it('passes an exact v2 advertisement to the package host contract', async () => {
     mockHandleSteerRequest.mockResolvedValue({
       status: 202,
-      body: { status: 'queued', generationProtocolVersion: 1 },
+      body: { status: 'queued', generationProtocolVersion: 2 },
     });
-    try {
-      await request(buildApp())
-        .post('/chat/steer')
-        .set('X-LibreChat-Generation-Protocol', '2')
-        .send({ conversationId: 'c1', text: 'hello', generationProtocolVersion: 2 });
+    await request(buildApp())
+      .post('/chat/steer')
+      .set('X-LibreChat-Generation-Protocol', '2')
+      .send({ conversationId: 'c1', text: 'hello', generationProtocolVersion: 2 });
 
-      expect(mockHandleSteerRequest.mock.calls[0][2]).toEqual(
-        expect.objectContaining({ generationProtocolVersion: 1 }),
-      );
-    } finally {
-      if (previous == null) {
-        delete process.env.GENERATION_PROTOCOL_VERSION;
-      } else {
-        process.env.GENERATION_PROTOCOL_VERSION = previous;
-      }
-    }
+    expect(mockHandleSteerRequest.mock.calls[0][2]).toEqual(
+      expect.objectContaining({ generationProtocolVersion: 2 }),
+    );
   });
 
   it('uses the package job cap, not the host maximum, for the final response marker', async () => {

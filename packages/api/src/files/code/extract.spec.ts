@@ -1,12 +1,24 @@
 import * as os from 'os';
 import * as path from 'path';
+import { logger } from '@librechat/data-schemas';
 import {
+  extractCodeArtifactRawText,
+  extractCodeArtifactInspectionText,
   extractCodeArtifactText,
   getExtractedTextFormat,
   resolveMaxTextExtractBytes,
   MAX_TEXT_CACHE_BYTES,
   MAX_TEXT_EXTRACT_BYTES,
 } from './extract';
+import { parseDocument } from '~/files/documents/crud';
+
+jest.mock('@librechat/data-schemas', () => ({
+  logger: {
+    debug: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+  },
+}));
 
 const docxText = '__DOCX_PARSED__';
 /* parseDocument throws on any originalname containing this token, so
@@ -513,6 +525,119 @@ describe('extractCodeArtifactText', () => {
       expect(mockOfficeHtml).not.toHaveBeenCalled();
       expect(text).toBeNull();
     });
+  });
+});
+
+describe('extractCodeArtifactRawText', () => {
+  it('returns the full inspectable text beyond the preview cache limit', () => {
+    const suffix = 'BLOCK-LATE';
+    const buffer = Buffer.from(`${'a'.repeat(MAX_TEXT_CACHE_BYTES + 1024)}${suffix}`);
+
+    const text = extractCodeArtifactRawText(buffer, 'utf8-text');
+
+    expect(text).toHaveLength(buffer.length);
+    expect(text?.endsWith(suffix)).toBe(true);
+    expect(text).not.toContain('…[truncated]');
+  });
+
+  it('rejects binary, unsupported, and oversized raw content', () => {
+    expect(extractCodeArtifactRawText(Buffer.from([0x00, 0x01]), 'utf8-text')).toBeNull();
+    expect(extractCodeArtifactRawText(Buffer.from('text'), 'document')).toBeNull();
+    expect(
+      extractCodeArtifactRawText(Buffer.alloc(MAX_TEXT_EXTRACT_BYTES + 1, 'a'), 'utf8-text'),
+    ).toBeNull();
+  });
+});
+
+describe('extractCodeArtifactInspectionText', () => {
+  beforeEach(() => {
+    mockOfficeHtml.mockReset();
+    parseDocumentCalls.length = 0;
+  });
+
+  it('returns complete plain text beyond the persisted preview cache limit', async () => {
+    const suffix = 'BLOCK-LATE';
+    const buffer = Buffer.from(`${'a'.repeat(MAX_TEXT_CACHE_BYTES + 1024)}${suffix}`);
+
+    const result = await extractCodeArtifactInspectionText(
+      buffer,
+      'output.txt',
+      'text/plain',
+      'utf8-text',
+    );
+
+    expect(result.complete).toBe(true);
+    expect(result.text?.endsWith(suffix)).toBe(true);
+    expect(result.text).not.toContain('…[truncated]');
+  });
+
+  it('returns complete parsed document text when the derived output fits the inspection limit', async () => {
+    const result = await extractCodeArtifactInspectionText(
+      Buffer.from('%PDF'),
+      'report.pdf',
+      'application/pdf',
+      'document',
+    );
+
+    expect(result).toEqual({
+      text: docxText,
+      complete: true,
+    });
+  });
+
+  it('marks parsed document text incomplete when the derived output exceeds the inspection limit', async () => {
+    const suffix = 'BLOCK-DOCUMENT-SUFFIX';
+    const text = `${'a'.repeat(MAX_TEXT_EXTRACT_BYTES + 1)}${suffix}`;
+    jest.mocked(parseDocument).mockResolvedValueOnce({
+      filename: 'large.pdf',
+      bytes: Buffer.byteLength(text),
+      filepath: 'document_parser',
+      text,
+      images: [],
+    });
+
+    const result = await extractCodeArtifactInspectionText(
+      Buffer.from('%PDF'),
+      'large.pdf',
+      'application/pdf',
+      'document',
+    );
+
+    expect(result.complete).toBe(false);
+    expect(result.text).toContain('…[truncated]');
+    expect(result.text).not.toContain(suffix);
+  });
+
+  it('marks an oversized office preview banner as incomplete', async () => {
+    mockOfficeHtml.mockResolvedValueOnce('x'.repeat(MAX_TEXT_CACHE_BYTES + 1));
+
+    const result = await extractCodeArtifactInspectionText(
+      Buffer.from('PK'),
+      'slides.pptx',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'presentation',
+    );
+
+    expect(result.complete).toBe(false);
+    expect(result.text).toContain('Preview exceeds the size limit');
+  });
+
+  it('keeps parser diagnostics free of generated filenames and parser errors', async () => {
+    jest.mocked(parseDocument).mockRejectedValueOnce(new Error('PRIVATE-PARSER-ERROR'));
+
+    await expect(
+      extractCodeArtifactInspectionText(
+        Buffer.from('%PDF'),
+        'PRIVATE-FILENAME.pdf',
+        'application/pdf',
+        'document',
+      ),
+    ).resolves.toEqual({ text: null, complete: false });
+
+    expect(logger.debug).toHaveBeenCalledWith(
+      '[extractCodeArtifactInspectionText] Artifact inspection failed',
+    );
+    expect(JSON.stringify(jest.mocked(logger.debug).mock.calls)).not.toContain('PRIVATE-');
   });
 });
 

@@ -1,6 +1,11 @@
 const rateLimit = require('express-rate-limit');
 const { ViolationTypes } = require('librechat-data-provider');
-const { limiterCache, removePorts } = require('@librechat/api');
+const {
+  limiterCache,
+  removePorts,
+  getRateLimitReset,
+  createAgentEventLimiter,
+} = require('@librechat/api');
 const denyRequest = require('~/server/middleware/denyRequest');
 const { logViolation } = require('~/cache');
 
@@ -36,6 +41,7 @@ const createHandler = (ip = true) => {
       max: ip ? ipMax : userMax,
       limiter: ip ? 'ip' : 'user',
       windowInMinutes: ip ? ipWindowInMinutes : userWindowInMinutes,
+      ...getRateLimitReset(req.rateLimit, ip ? ipWindowMs : userWindowMs),
     };
 
     await logViolation(req, res, type, errorMessage, score);
@@ -74,7 +80,17 @@ const messageIpLimiter = rateLimit(ipLimiterOptions);
  */
 const messageUserLimiter = rateLimit(userLimiterOptions);
 
+/**
+ * Agent event admission, built after startup checks apply `rateLimits` from librechat.yaml.
+ */
+const agentEventUserLimiter = createAgentEventLimiter({
+  max: process.env.AGENT_EVENT_USER_MAX,
+  window: process.env.AGENT_EVENT_USER_WINDOW,
+  store: limiterCache('agent_event_user_limiter'),
+});
+
 module.exports = {
+  agentEventUserLimiter,
   messageIpLimiter,
   messageUserLimiter,
 };

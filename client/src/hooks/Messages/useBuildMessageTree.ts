@@ -1,13 +1,20 @@
-import { useRecoilCallback } from 'recoil';
+import { useCallback } from 'react';
+import { useStore } from 'jotai';
 import type { TMessage } from 'librechat-data-provider';
-import store from '~/store';
+import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
+
+/** What started a turn is shown to its owner in the app. It is not part of what they export. */
+function exportable(message: Partial<TMessage>): Partial<TMessage> {
+  const { trigger: _trigger, ...rest } = message;
+  return rest;
+}
 
 export default function useBuildMessageTree() {
-  const getSiblingIdx = useRecoilCallback(
-    ({ snapshot }) =>
-      async (messageId: string | null | undefined) =>
-        await snapshot.getPromise(store.messagesSiblingIdxFamily(messageId)),
-    [],
+  const jotaiStore = useStore();
+  const getSiblingIdx = useCallback(
+    async (messageId: string | null | undefined) =>
+      jotaiStore.get(siblingIdxFamily(siblingKey(messageId))),
+    [jotaiStore],
   );
 
   // return an object or an array based on branches and recursive option
@@ -59,11 +66,11 @@ export default function useBuildMessageTree() {
     }
 
     if (recursive && message) {
-      return { ...(message as TMessage), children: children as TMessage[] };
+      return { ...(exportable(message) as TMessage), children: children as TMessage[] };
     } else {
       let ret: TMessage[] = [];
       if (message) {
-        const _message = { ...message };
+        const _message = exportable(message);
         delete _message.children;
         ret = [_message as TMessage];
       }

@@ -158,6 +158,7 @@ describe('InMemoryJobStore steer receipt integrity', () => {
         {
           text: item.text,
           fileIds: (item.files ?? []).flatMap((file) => file.file_id ?? []).sort(),
+          quotes: item.quotes ?? [],
         },
       );
 
@@ -209,6 +210,7 @@ describe('InMemoryJobStore steer receipt integrity', () => {
         {
           text: item.text,
           fileIds: (item.files ?? []).flatMap((file) => file.file_id ?? []).sort(),
+          quotes: item.quotes ?? [],
         },
       );
 

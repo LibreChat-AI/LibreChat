@@ -1,5 +1,20 @@
-import type { AgentToolOptions } from './types/assistants';
-import { removeCodeExecutionCaller } from './agentToolOptions';
+import type { AgentToolOptions } from './types/tools';
+import { normalizeActionToolName, removeCodeExecutionCaller } from './agentToolOptions';
+
+describe('normalizeActionToolName', () => {
+  it('normalizes only the encoded action domain', () => {
+    expect(normalizeActionToolName('get_foo---bar_action_swapi---tech')).toBe(
+      'get_foo---bar_action_swapi_tech',
+    );
+  });
+
+  it('leaves non-action tool names unchanged', () => {
+    expect(normalizeActionToolName('search_mcp_docs---server')).toBe('search_mcp_docs---server');
+    expect(normalizeActionToolName('get_action_data---x_mcp_srv')).toBe(
+      'get_action_data---x_mcp_srv',
+    );
+  });
+});
 
 describe('removeCodeExecutionCaller', () => {
   it('removes a programmatic-only entry that has no other options', () => {

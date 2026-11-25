@@ -40,7 +40,7 @@ async function waitForBackgroundTool(page: Page) {
 }
 
 test.describe('background tool calls', () => {
-  test('dispatches a tool in the background and collects its result on a later turn', async ({
+  test('dispatches a tool in the background and resumes the agent when it finishes', async ({
     page,
   }) => {
     test.setTimeout(120000);
@@ -92,21 +92,41 @@ test.describe('background tool calls', () => {
       await expect(dispatchAck).toBeVisible({ timeout: 30000 });
       await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });
 
-      /** The tool finishes ~1.5s after dispatch, past the end of turn 1 — the
-       *  detached promise survives its originating turn. Give it time to land
-       *  in the registry before the collect turn polls. */
-      await page.waitForTimeout(2500);
+      /** The tool finishes after turn 1. The host durably claims the result and
+       * starts a fresh run on the same agent thread without another user turn.
+       * Triggered runs do not share the browser's original SSE connection, so
+       * reload while waiting for the persisted assistant response. */
+      const notification = new RegExp(
+        `E2E background notified status=completed echo=bg-${runToken} agent=${createdAgentId}`,
+      );
+      await expect
+        .poll(
+          async () => {
+            await page.reload();
+            /** `reload()` resolves before the asynchronously fetched message
+             * list is hydrated. Anchor each observation to the already-known
+             * dispatch response so a fast polling interval cannot repeatedly
+             * sample the transient empty conversation. */
+            await expect(dispatchAck).toBeVisible({ timeout: 5000 });
+            return messagesView(page).getByText(notification).count();
+          },
+          { timeout: 30000, intervals: [1500] },
+        )
+        .toBeGreaterThan(0);
 
-      /** Turn 2: the fake model recovers the task id from turn-1 history, calls
-       *  `check_background_task` with it, and echoes what the poll returned —
-       *  status + the tool's output retrieved from the cross-turn registry. */
-      const collect = await sendMessage(page, `E2E_BACKGROUND_COLLECT:${runToken}`);
-      expect(collect.ok()).toBeTruthy();
-      await expect(
-        messagesView(page).getByText(
-          new RegExp(`E2E background collected status=completed echo=bg-${runToken}`),
-        ),
-      ).toBeVisible({ timeout: 30000 });
+      /** The session rail lists the finished tool, and its way to the call opens the call: the
+       *  folds the thread drew around it, then the call's own details, and brings it into view.
+       *  It is not enough to land on the message and leave the reader to find it. */
+      const calls = messagesView(page).locator('[data-task-tool-call]');
+      await page.getByTestId('header-background-tasks-button').click();
+      const rail = page.getByRole('complementary', { name: 'Session' });
+      const task = rail.getByTestId('session-row').first();
+      await expect(task).toBeVisible();
+      await task.getByRole('button', { name: /^Take me to that tool/ }).click();
+      const call = calls.first();
+      await expect(call).toBeVisible();
+      await expect(call.getByRole('button').first()).toHaveAttribute('aria-expanded', 'true');
+      await expect(call).toBeInViewport();
     } finally {
       await cleanupAgent(page, createdAgentId);
     }

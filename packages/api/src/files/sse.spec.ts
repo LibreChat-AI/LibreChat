@@ -1,6 +1,14 @@
 import { EventEmitter } from 'events';
 import type { Request, Response } from 'express';
-import { sendUploadSuccess, shouldUseUploadSse, startUploadSseStream } from './sse';
+import {
+  sendUploadPolicyError,
+  sendUploadSuccess,
+  shouldUseUploadSse,
+  startUploadSseStream,
+} from './sse';
+import { ContentFilterInputTooLargeError, UninspectableFileError } from '~/protection/files';
+import { SpreadsheetLimitError } from './documents/workbook';
+import { SpreadsheetBusyError } from './upload/errors';
 
 describe('sse', () => {
   const createMockReq = (accept?: string): Request =>
@@ -14,6 +22,7 @@ describe('sse', () => {
     res.end = jest.fn().mockReturnValue(res);
     res.status = jest.fn().mockReturnValue(res);
     res.json = jest.fn().mockReturnValue(res);
+    res.setHeader = jest.fn().mockReturnValue(res);
     Object.defineProperty(res, 'writableEnded', { value: false, writable: true });
     Object.defineProperty(res, 'destroyed', { value: false, writable: true });
     return res;
@@ -213,6 +222,159 @@ describe('sse', () => {
 
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({ message: 'Upload complete', file_id: 'abc' });
+    });
+  });
+
+  describe('sendUploadPolicyError', () => {
+    it('returns retryable admission pressure as HTTP 503 with Retry-After', () => {
+      const res = createMockRes();
+      expect(sendUploadPolicyError(res, null, new SpreadsheetBusyError())).toBe(true);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.setHeader).toHaveBeenCalledWith('Retry-After', '1');
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'SPREADSHEET_BUSY',
+        message: 'Spreadsheet processing is busy; retry later.',
+        retryable: true,
+        retry_after: 1,
+      });
+    });
+
+    it('retains the retry contract when SSE headers have already been sent', () => {
+      const res = createMockRes();
+      const stream = { sendData: jest.fn(), sendError: jest.fn(), close: jest.fn() };
+      expect(
+        sendUploadPolicyError(res, stream, new SpreadsheetBusyError(), {
+          tempFileId: 'temp-1',
+          toolResource: 'context',
+        }),
+      ).toBe(true);
+      expect(stream.sendError).toHaveBeenCalledWith({
+        error: 'SPREADSHEET_BUSY',
+        message: 'Spreadsheet processing is busy; retry later.',
+        retryable: true,
+        retry_after: 1,
+        code: 503,
+        temp_file_id: 'temp-1',
+        tool_resource: 'context',
+        display_to_user: true,
+      });
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.setHeader).not.toHaveBeenCalled();
+    });
+
+    it('returns a stable HTTP 413 for a spreadsheet resource limit', () => {
+      const res = createMockRes();
+      expect(sendUploadPolicyError(res, null, new SpreadsheetLimitError())).toBe(true);
+      expect(res.status).toHaveBeenCalledWith(413);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'SPREADSHEET_LIMIT',
+        message: 'Spreadsheet exceeds the safe processing limits.',
+        retryable: false,
+      });
+      expect(res.setHeader).not.toHaveBeenCalled();
+    });
+
+    it('preserves limit rejection in the SSE error contract without retry metadata', () => {
+      const res = createMockRes();
+      const stream = { sendData: jest.fn(), sendError: jest.fn(), close: jest.fn() };
+      expect(
+        sendUploadPolicyError(res, stream, new SpreadsheetLimitError(), {
+          tempFileId: 'temp-1',
+          toolResource: 'context',
+        }),
+      ).toBe(true);
+      expect(stream.sendError).toHaveBeenCalledWith({
+        error: 'SPREADSHEET_LIMIT',
+        message: 'Spreadsheet exceeds the safe processing limits.',
+        retryable: false,
+        code: 413,
+        temp_file_id: 'temp-1',
+        tool_resource: 'context',
+        display_to_user: true,
+      });
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.setHeader).not.toHaveBeenCalled();
+    });
+
+    it('sends structured policy errors as JSON', () => {
+      const res = createMockRes();
+
+      expect(sendUploadPolicyError(res, null, new UninspectableFileError('extracted_text'))).toBe(
+        true,
+      );
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'content_filter_uninspectable',
+        message: 'Submitted file content could not be inspected before processing.',
+        source: 'file',
+        field: 'extracted_text',
+      });
+    });
+
+    it('preserves the upload inspection limit status and raw-free body', () => {
+      const res = createMockRes();
+
+      expect(sendUploadPolicyError(res, null, new ContentFilterInputTooLargeError('content'))).toBe(
+        true,
+      );
+      expect(res.status).toHaveBeenCalledWith(413);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'content_filter_input_too_large',
+        message: 'Text file exceeds the 15 MB content inspection limit.',
+        source: 'file',
+        field: 'content',
+      });
+    });
+
+    it('sends structured policy errors over an active SSE stream', () => {
+      const res = createMockRes();
+      const sseStream = {
+        sendData: jest.fn(),
+        sendError: jest.fn(),
+        close: jest.fn(),
+      };
+
+      expect(
+        sendUploadPolicyError(res, sseStream, new UninspectableFileError('extracted_text'), {
+          tempFileId: 'temp-1',
+          toolResource: 'context',
+        }),
+      ).toBe(true);
+      expect(sseStream.sendError).toHaveBeenCalledWith({
+        error: 'content_filter_uninspectable',
+        message: 'Submitted file content could not be inspected before processing.',
+        source: 'file',
+        field: 'extracted_text',
+        code: 400,
+        temp_file_id: 'temp-1',
+        tool_resource: 'context',
+        display_to_user: true,
+      });
+      expect(res.status).not.toHaveBeenCalled();
+    });
+
+    it('leaves non-policy errors for the route-specific handler', () => {
+      const res = createMockRes();
+
+      expect(sendUploadPolicyError(res, null, new Error('provider failed'))).toBe(false);
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.json).not.toHaveBeenCalled();
+    });
+
+    it('unwraps a policy error carried as an error cause', () => {
+      const res = createMockRes();
+      const wrapped = new Error('wrapped extraction failure', {
+        cause: new UninspectableFileError('transcript'),
+      });
+
+      expect(sendUploadPolicyError(res, null, wrapped)).toBe(true);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'content_filter_uninspectable',
+          field: 'transcript',
+        }),
+      );
     });
   });
 });

@@ -3,6 +3,8 @@ import { EToolResources } from 'librechat-data-provider';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   QueryKeys,
+  FileSources,
+  EModelEndpoint,
   dataService,
   MutationKeys,
   defaultOrderQuery,
@@ -10,12 +12,14 @@ import {
 } from 'librechat-data-provider';
 import type { UseMutationResult } from '@tanstack/react-query';
 import type * as t from 'librechat-data-provider';
+import { invalidateAssistantDetails } from '../Assistants/cache';
+import { invalidateRecentFiles } from '~/utils/files';
 import { useGetStartupConfig } from '../Endpoints';
 import { useLocalize } from '~/hooks';
 
 export const useUploadFileMutation = (
   _options?: t.UploadMutationOptions,
-  signal?: AbortSignal | null,
+  signal?: AbortSignal | null | ((body: FormData) => AbortSignal | undefined),
 ): UseMutationResult<
   t.TFileUpload, // response data
   unknown, // error
@@ -28,19 +32,20 @@ export const useUploadFileMutation = (
   const { onSuccess, ...options } = _options || {};
   return useMutation([MutationKeys.fileUpload], {
     mutationFn: (body: FormData) => {
+      const uploadSignal = typeof signal === 'function' ? signal(body) : signal;
       const width = body.get('width') ?? '';
       const height = body.get('height') ?? '';
       const version = body.get('version') ?? '';
       const endpoint = (body.get('endpoint') ?? '') as string;
       if (isAssistantsEndpoint(endpoint) && version === '2') {
-        return dataService.uploadFile(body, signal, sseEnabled);
+        return dataService.uploadFile(body, uploadSignal, sseEnabled);
       }
 
       if (width !== '' && height !== '') {
-        return dataService.uploadImage(body, signal, sseEnabled);
+        return dataService.uploadImage(body, uploadSignal, sseEnabled);
       }
 
-      return dataService.uploadFile(body, signal, sseEnabled);
+      return dataService.uploadFile(body, uploadSignal, sseEnabled);
     },
     ...options,
     onSuccess: (data, formData, context) => {
@@ -58,6 +63,7 @@ export const useUploadFileMutation = (
         file,
         ...(_files ?? []),
       ]);
+      invalidateRecentFiles(queryClient);
 
       const endpoint = formData.get('endpoint');
       const message_file = formData.get('message_file');
@@ -104,6 +110,10 @@ export const useUploadFileMutation = (
       if (!assistant_id) {
         onSuccess?.(file, formData, context);
         return;
+      }
+
+      if (typeof endpoint === 'string') {
+        invalidateAssistantDetails(queryClient, endpoint, assistant_id);
       }
 
       queryClient.setQueryData<t.AssistantListResponse>(
@@ -178,12 +188,12 @@ export const useDeleteFilesMutation = (
   const queryClient = useQueryClient();
   const { showToast } = useToastContext();
   const localize = useLocalize();
-  const { onSuccess, onError, ...options } = _options || {};
+  const { onSuccess, onError, silent = false, ...options } = _options || {};
   return useMutation([MutationKeys.fileDelete], {
     mutationFn: (body: t.DeleteFilesBody) => dataService.deleteFiles(body),
     ...options,
     onError: (error, vars, context) => {
-      if (error && typeof error === 'object' && 'response' in error) {
+      if (!silent && error && typeof error === 'object' && 'response' in error) {
         const errorWithResponse = error as { response?: { status?: number } };
         if (errorWithResponse.response?.status === 403) {
           showToast({
@@ -195,21 +205,50 @@ export const useDeleteFilesMutation = (
       onError?.(error, vars, context);
     },
     onSuccess: (data, vars, context) => {
+      if (vars.assistant_id) {
+        const endpoints = new Set<string>();
+        for (const file of vars.files) {
+          if (file.source === FileSources.openai || file.filepath === EModelEndpoint.assistants) {
+            endpoints.add(EModelEndpoint.assistants);
+          } else if (
+            file.source === FileSources.azure ||
+            file.filepath === EModelEndpoint.azureAssistants
+          ) {
+            endpoints.add(EModelEndpoint.azureAssistants);
+          }
+        }
+        for (const endpoint of endpoints) {
+          invalidateAssistantDetails(queryClient, endpoint, vars.assistant_id);
+        }
+      }
+
+      /** Only a reported failure leaves a record on disk, so everything else the request named
+       * is gone. Reading it the other way around would strand a row the server never had: a
+       * file another tab already deleted matches no record, and the route answers that with
+       * both id lists empty. Failed ids stay cached so the retry can still find them. */
+      const failed = new Set(data?.failedFileIds ?? []);
       queryClient.setQueryData<t.TFile[] | undefined>([QueryKeys.files], (cachefiles) => {
         const { files: filesDeleted } = vars;
-
-        const fileMap = filesDeleted.reduce((acc, file) => {
-          acc.set(file.file_id, file);
+        const requested = filesDeleted.reduce((acc, file) => {
+          acc.add(file.file_id);
           return acc;
-        }, new Map<string, t.BatchFile>());
+        }, new Set<string>());
 
-        return (cachefiles ?? []).filter((file) => !fileMap.has(file.file_id));
+        return (cachefiles ?? []).filter(
+          (file) => !requested.has(file.file_id) || failed.has(file.file_id),
+        );
       });
+      invalidateRecentFiles(queryClient);
 
-      showToast({
-        message: localize('com_ui_delete_success'),
-        status: 'success',
-      });
+      /** A storage failure still answers 200, so reporting success off the status alone would
+       * tell the user a file is gone while it is sitting on disk and back in their list. */
+      if (!silent) {
+        showToast(
+          failed.size > 0
+            ? { message: localize('com_ui_delete_partial_failure'), status: 'error' }
+            : { message: localize('com_ui_delete_success'), status: 'success' },
+        );
+      }
 
       onSuccess?.(data, vars, context);
       if (vars.agent_id != null && vars.agent_id) {

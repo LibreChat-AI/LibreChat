@@ -9,15 +9,50 @@ import {
 import type { TModelsConfig, TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest, GetUserKeyValuesFunction, UserKeyValues } from '~/types';
-import type { FetchModelsParams } from '~/endpoints/models';
+import type { CatalogDiscoveryOptions, FetchModelsParams } from '~/endpoints/models';
+import type { ServedCustomEndpoint } from '~/endpoints/custom/config';
 import type { GetAppConfigOptions } from '~/app/service';
+import { isServedCustomEndpoint, resolveServedCustomEndpoints } from '~/endpoints/custom/config';
 import { fetchModels as defaultFetchModels } from '~/endpoints/models';
 import { getTokenConfigKey } from '~/endpoints/custom/initialize';
 import { getAppConfigOptionsFromUser } from '~/app/service';
+
+/**
+ * Built-in endpoints whose configured `models` list replaces their `*_MODELS`
+ * environment list. Read per request, so principal overrides can narrow them.
+ */
+type ConfiguredModelListEndpoint =
+  | EModelEndpoint.openAI
+  | EModelEndpoint.google
+  | EModelEndpoint.anthropic
+  | EModelEndpoint.bedrock;
+
+const CONFIGURED_MODEL_LIST_ENDPOINTS: readonly ConfiguredModelListEndpoint[] = [
+  EModelEndpoint.openAI,
+  EModelEndpoint.google,
+  EModelEndpoint.anthropic,
+  EModelEndpoint.bedrock,
+];
+
+/**
+ * The model list configured for a built-in endpoint in the resolved config, or
+ * `undefined` when none is set. A configured list replaces the environment list
+ * and makes provider discovery unnecessary.
+ */
+export function configuredModelList(
+  appConfig: AppConfig | null | undefined,
+  endpoint: ConfiguredModelListEndpoint,
+): string[] | undefined {
+  const models = appConfig?.endpoints?.[endpoint]?.models;
+  if (!Array.isArray(models)) {
+    return undefined;
+  }
+  return models.filter((model): model is string => typeof model === 'string');
+}
 import { resolveConfigSecret } from '~/admin/secrets';
 import { validateEndpointURL } from '~/auth';
 import { tokenConfigCache } from '~/cache';
-import { isUserProvided } from '~/utils';
+import { getSafeErrorMetadata, isUserProvided } from '~/utils';
 
 /**
  * Stable fingerprint of a headers object, used to disambiguate the
@@ -38,7 +73,7 @@ function headersFingerprint(headers: Record<string, string> | undefined): string
 
 interface ResolvedEndpoint {
   name: string;
-  endpoint: TEndpoint;
+  endpoint: ServedCustomEndpoint;
   apiKey: string;
   baseURL: string;
   apiKeyIsUserProvided: boolean;
@@ -54,7 +89,14 @@ export interface LoadConfigModelsDeps {
 export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
   const { getAppConfig, getUserKeyValues, fetchModels = defaultFetchModels } = deps;
 
-  return async function loadConfigModels(req: ServerRequest): Promise<TModelsConfig> {
+  return async function loadConfigModels(
+    req: ServerRequest,
+    requestedEndpoint?: string,
+    options?: CatalogDiscoveryOptions,
+  ): Promise<TModelsConfig> {
+    if (options?.strictDiscovery && requestedEndpoint == null) {
+      throw new Error('Strict model discovery requires an endpoint');
+    }
     const appConfig = req.config ?? (await getAppConfig(getAppConfigOptionsFromUser(req.user)));
     if (!appConfig) {
       return {};
@@ -64,38 +106,51 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
     const azureConfig = appConfig.endpoints?.[EModelEndpoint.azureOpenAI];
     const { modelNames } = azureConfig ?? {};
 
-    if (modelNames && azureConfig) {
+    if (
+      modelNames &&
+      azureConfig &&
+      (requestedEndpoint == null || requestedEndpoint === EModelEndpoint.azureOpenAI)
+    ) {
       modelsConfig[EModelEndpoint.azureOpenAI] = modelNames;
     }
 
-    if (azureConfig?.assistants && azureConfig.assistantModels) {
+    if (
+      azureConfig?.assistants &&
+      azureConfig.assistantModels &&
+      (requestedEndpoint == null || requestedEndpoint === EModelEndpoint.azureAssistants)
+    ) {
       modelsConfig[EModelEndpoint.azureAssistants] = azureConfig.assistantModels;
     }
 
-    const bedrockConfig = appConfig.endpoints?.[EModelEndpoint.bedrock];
-    if (bedrockConfig?.models && Array.isArray(bedrockConfig.models)) {
-      modelsConfig[EModelEndpoint.bedrock] = bedrockConfig.models;
+    for (const endpoint of CONFIGURED_MODEL_LIST_ENDPOINTS) {
+      if (requestedEndpoint != null && requestedEndpoint !== endpoint) {
+        continue;
+      }
+      const models = configuredModelList(appConfig, endpoint);
+      if (models) {
+        modelsConfig[endpoint] = models;
+      }
     }
 
     if (!Array.isArray(appConfig.endpoints?.[EModelEndpoint.custom])) {
       return modelsConfig;
     }
 
-    const customEndpoints = (appConfig.endpoints[EModelEndpoint.custom] as TEndpoint[]).filter(
-      (endpoint) =>
-        endpoint.baseURL &&
-        endpoint.apiKey &&
-        endpoint.name &&
-        endpoint.models &&
-        (endpoint.models.fetch || endpoint.models.default),
-    );
+    const definitions = appConfig.endpoints[EModelEndpoint.custom] as TEndpoint[];
+    const selected =
+      requestedEndpoint == null
+        ? undefined
+        : resolveServedCustomEndpoints(definitions).get(requestedEndpoint);
+    let customEndpoints: ServedCustomEndpoint[];
+    if (requestedEndpoint == null) customEndpoints = definitions.filter(isServedCustomEndpoint);
+    else customEndpoints = selected ? [selected] : [];
 
     const fetchPromisesMap: Record<string, Promise<string[]>> = {};
     const uniqueKeyToEndpointsMap: Record<string, string[]> = {};
     /** tokenKey the deduped fetch cached its token config under, so siblings
      *  sharing the fetch can be backfilled with the same config afterward */
     const uniqueKeyToTokenKey: Record<string, string> = {};
-    const endpointsMap: Record<string, TEndpoint> = {};
+    const endpointsMap: Record<string, ServedCustomEndpoint> = {};
     const tenantId = req.user?.tenantId;
 
     const resolved: ResolvedEndpoint[] = [];
@@ -150,7 +205,8 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
             );
           } else {
             logger.warn(
-              `[loadConfigModels] Failed to retrieve user key for "${userKeyEndpoints[i].name}": ${msg}`,
+              `[loadConfigModels] Failed to retrieve user key for "${userKeyEndpoints[i].name}":`,
+              getSafeErrorMetadata(settled.reason),
             );
           }
           userKeyMap.set(userKeyEndpoints[i].name, null);
@@ -167,11 +223,21 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       baseURLIsUserProvided,
     } of resolved) {
       const { models, headers: endpointHeaders } = endpoint;
-      // Include a fingerprint of the configured headers so two admin-trusted
+      // Include the provider and a fingerprint of the headers so two admin-trusted
       // endpoints that happen to share the same baseURL+apiKey but configure
       // different (potentially user-bound) headers don't reuse each other's
       // fetched model list within the same request.
-      const uniqueKey = `${BASE_URL}__${API_KEY}__${headersFingerprint(endpointHeaders)}`;
+      const uniqueKey = crypto
+        .createHash('sha256')
+        .update(
+          JSON.stringify([
+            BASE_URL,
+            API_KEY,
+            endpoint.provider ?? '',
+            headersFingerprint(endpointHeaders),
+          ]),
+        )
+        .digest('hex');
 
       if (models?.fetch && !apiKeyIsUserProvided && !baseURLIsUserProvided) {
         if (!fetchPromisesMap[uniqueKey]) {
@@ -181,6 +247,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
           uniqueKeyToTokenKey[uniqueKey] = tokenKey;
           fetchPromisesMap[uniqueKey] = fetchModels({
             name,
+            provider: endpoint.provider,
             apiKey: API_KEY,
             baseURL: BASE_URL,
             baseURLIsUserProvided: false,
@@ -191,6 +258,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
             direct: endpoint.directEndpoint,
             userIdQuery: models.userIdQuery,
             tokenKey,
+            ...options,
           });
         }
         uniqueKeyToEndpointsMap[uniqueKey] = uniqueKeyToEndpointsMap[uniqueKey] || [];
@@ -218,6 +286,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
               }
               return fetchModels({
                 name,
+                provider: endpoint.provider,
                 apiKey: resolvedApiKey,
                 baseURL: resolvedBaseURL,
                 baseURLIsUserProvided,
@@ -236,6 +305,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
                 skipCache: true,
                 /** Fetched with the user's key/URL — always user-scoped */
                 tokenKey: getTokenConfigKey(endpoint, name, req.user?.id ?? '', tenantId),
+                ...options,
               });
             })();
           uniqueKeyToEndpointsMap[userFetchKey] = uniqueKeyToEndpointsMap[userFetchKey] || [];
@@ -244,6 +314,9 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
         }
       }
 
+      if (options?.strictDiscovery && models?.fetch) {
+        throw new Error('Model discovery credentials unavailable');
+      }
       if (Array.isArray(models?.default)) {
         modelsConfig[name] = models.default.map((model) =>
           typeof model === 'string' ? model : model.name,
@@ -257,18 +330,27 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
     for (let i = 0; i < settledResults.length; i++) {
       const currentKey = uniqueKeys[i];
       const settled = settledResults[i];
+      const associatedNames = uniqueKeyToEndpointsMap[currentKey];
       if (settled.status === 'rejected') {
-        logger.warn(`[loadConfigModels] Model fetch failed for "${currentKey}":`, settled.reason);
+        if (options?.strictDiscovery) {
+          throw settled.reason;
+        }
+        logger.warn(
+          `[loadConfigModels] Model fetch failed for "${associatedNames.join('", "')}":`,
+          getSafeErrorMetadata(settled.reason),
+        );
       }
       const modelData = settled.status === 'fulfilled' ? settled.value : [];
-      const associatedNames = uniqueKeyToEndpointsMap[currentKey];
+      if (options?.strictDiscovery && !Array.isArray(modelData)) {
+        throw new Error('Model discovery returned no catalog');
+      }
 
       for (const name of associatedNames) {
         const endpoint = endpointsMap[name];
         const defaults = (endpoint.models?.default ?? []).map((m) =>
           typeof m === 'string' ? m : m.name,
         );
-        modelsConfig[name] = !modelData?.length ? defaults : modelData;
+        modelsConfig[name] = options?.strictDiscovery || modelData?.length ? modelData : defaults;
       }
 
       /** A shared fetch caches token config under one endpoint's tokenKey;
@@ -276,20 +358,27 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
        *  name (the query is staleTime:Infinity and won't recover otherwise) */
       const winnerTokenKey = uniqueKeyToTokenKey[currentKey];
       if (settled.status === 'fulfilled' && winnerTokenKey != null && associatedNames.length > 1) {
-        const cache = tokenConfigCache();
-        const config = await cache.get(winnerTokenKey);
-        if (config != null) {
-          for (const name of associatedNames) {
-            const siblingKey = getTokenConfigKey(
-              endpointsMap[name],
-              name,
-              req.user?.id ?? '',
-              tenantId,
-            );
-            if (siblingKey !== winnerTokenKey) {
-              await cache.set(siblingKey, config);
+        try {
+          const cache = tokenConfigCache();
+          const config = await cache.get(winnerTokenKey);
+          if (config != null) {
+            for (const name of associatedNames) {
+              const siblingKey = getTokenConfigKey(
+                endpointsMap[name],
+                name,
+                req.user?.id ?? '',
+                tenantId,
+              );
+              if (siblingKey !== winnerTokenKey) {
+                await cache.set(siblingKey, config);
+              }
             }
           }
+        } catch (error) {
+          logger.warn(
+            `[loadConfigModels] Failed to share token config for "${associatedNames.join('", "')}":`,
+            getSafeErrorMetadata(error),
+          );
         }
       }
     }

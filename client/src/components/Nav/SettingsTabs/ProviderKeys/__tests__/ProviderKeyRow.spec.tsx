@@ -1,3 +1,4 @@
+import { EModelEndpoint } from 'librechat-data-provider';
 import type { TEndpointsConfig } from 'librechat-data-provider';
 import { changeLanguageSafely, initializeI18n } from '~/locales/i18n';
 import { render, screen } from 'test/layout-test-utils';
@@ -6,6 +7,7 @@ import ProviderKeyRow from '../ProviderKeyRow';
 const mockExpiry = '2026-08-11T12:00:00.000Z';
 
 jest.mock('~/hooks', () => ({
+  useClockFormat: () => true,
   useLocalize: jest.requireActual('~/hooks/useLocalize').default,
   useUserKey: () => ({
     getExpiry: () => mockExpiry,
@@ -13,8 +15,6 @@ jest.mock('~/hooks', () => ({
   }),
 }));
 
-jest.mock('~/hooks/Endpoint/Icons', () => ({ icons: {} }));
-jest.mock('~/utils', () => ({ getIconKey: () => '' }));
 jest.mock('~/components/Input/SetKeyDialog', () => ({ SetKeyDialog: () => null }));
 
 describe('ProviderKeyRow', () => {
@@ -41,5 +41,24 @@ describe('ProviderKeyRow', () => {
     render(<ProviderKeyRow endpoint="openAI" endpointsConfig={{} as TEndpointsConfig} />);
 
     expect(screen.getByText(new RegExp(new Date(mockExpiry).toLocaleString()))).toBeInTheDocument();
+  });
+
+  it('renders a configured endpoint image instead of the generic mark', () => {
+    const { container } = render(
+      <ProviderKeyRow
+        endpoint="Branded"
+        endpointsConfig={
+          {
+            Branded: {
+              type: EModelEndpoint.custom,
+              iconURL: 'https://cdn.example.com/x.png',
+              order: 0,
+            },
+          } as TEndpointsConfig
+        }
+      />,
+    );
+
+    expect(container.querySelector('img')).toHaveAttribute('src', 'https://cdn.example.com/x.png');
   });
 });

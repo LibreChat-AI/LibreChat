@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-
 import type { CredentialRuntimeState } from './credentials';
 import {
   bootstrapCredentials,
@@ -10,8 +9,19 @@ import {
   getCredentialRuntimeState,
   isLegacyCredential,
 } from './credentials';
+import {
+  expectPrivateWindowsAcl,
+  grantWindowsEveryone,
+  inspectWindowsAcl,
+} from './utils/windowsAcl.helper';
 
 const credentialRuntimeKey = Symbol.for('librechat.credentials.runtime');
+const windows = process.platform === 'win32';
+
+function writeLegacyFile(file: string, contents: string): void {
+  fs.writeFileSync(file, contents, { mode: 0o600 });
+  if (process.platform === 'win32') grantWindowsEveryone(file, 'Read');
+}
 
 function resetCredentialRuntime(): void {
   const runtime = globalThis as typeof globalThis &
@@ -51,7 +61,8 @@ describe('credentials', () => {
     expect(state.loadedFromFile).toEqual([]);
     expect(state.persistenceFailed).toBe(false);
     expect(getCredentialRuntimeState()).toEqual(state);
-    expect(fs.statSync(tempFile).mode & 0o777).toBe(0o600);
+    if (process.platform === 'win32') expectPrivateWindowsAcl(tempFile, 'file');
+    else expect(fs.statSync(tempFile).mode & 0o777).toBe(0o600);
     expect(getCredentialFingerprints()).toEqual(
       expect.objectContaining({
         CREDS_KEY: expect.any(String),
@@ -88,14 +99,13 @@ describe('credentials', () => {
       JWT_SECRET: 'c'.repeat(64),
       JWT_REFRESH_SECRET: 'd'.repeat(64),
     };
-    fs.writeFileSync(
+    writeLegacyFile(
       tempFile,
       `CREDS_KEY=${winningValues.CREDS_KEY}\nCREDS_IV=${winningValues.CREDS_IV}\n`,
     );
-    fs.writeFileSync(
+    writeLegacyFile(
       `${tempFile}.lock`,
       credentialNames.map((name) => `${name}=${winningValues[name]}`).join('\n'),
-      { mode: 0o600 },
     );
 
     const state = bootstrapCredentials();
@@ -104,9 +114,61 @@ describe('credentials', () => {
     expect(state.loadedFromFile).toEqual(credentialNames);
     expect(state.persistenceFailed).toBe(false);
     expect(fs.existsSync(`${tempFile}.lock`)).toBe(false);
+    if (process.platform === 'win32') expectPrivateWindowsAcl(tempFile, 'file');
     for (const name of credentialNames) {
       expect(process.env[name]).toBe(winningValues[name]);
     }
+  });
+
+  it.each([
+    ['passphrase', 'not-a-hex-key'],
+    ['short AES-128 key', 'a'.repeat(32)],
+    ['short AES-192 key', 'a'.repeat(48)],
+    ['odd-length key', 'a'.repeat(63)],
+    ['trailing non-hex', `${'a'.repeat(64)}!`],
+    ['whitespace', ` ${'a'.repeat(64)}`],
+  ])('refuses startup for a configured %s without logging the key', (_case, value) => {
+    process.env.CREDS_KEY = value;
+
+    expect(() => bootstrapCredentials()).toThrow(
+      '[credentials] CREDS_KEY must be exactly 64 hexadecimal characters (32 bytes).',
+    );
+    expect(() => bootstrapCredentials()).not.toThrow(value);
+    expect(getCredentialRuntimeState()).toBeUndefined();
+    expect(fs.existsSync(tempFile)).toBe(false);
+    expect(process.env.CREDS_KEY).toBe(value);
+  });
+
+  it.each([
+    ['passphrase', 'not-hex'],
+    ['short IV', 'b'.repeat(30)],
+    ['overlong IV', 'b'.repeat(64)],
+    ['trailing non-hex', `${'b'.repeat(32)}!`],
+  ])(
+    'refuses startup for a configured %s even when temporary credentials exist',
+    (_case, value) => {
+      fs.writeFileSync(tempFile, `CREDS_IV=${'b'.repeat(32)}\n`);
+      process.env.CREDS_IV = value;
+
+      expect(() => bootstrapCredentials()).toThrow(
+        '[credentials] CREDS_IV must be exactly 32 hexadecimal characters (16 bytes).',
+      );
+      expect(getCredentialRuntimeState()).toBeUndefined();
+      expect(process.env.CREDS_KEY).toBeUndefined();
+      expect(process.env.CREDS_IV).toBe(value);
+    },
+  );
+
+  it('accepts exact-length uppercase hex credentials without replacing them', () => {
+    process.env.CREDS_KEY = 'A'.repeat(64);
+    process.env.CREDS_IV = 'B'.repeat(32);
+
+    const state = bootstrapCredentials();
+
+    expect(state.sources.CREDS_KEY).toBe('environment');
+    expect(state.sources.CREDS_IV).toBe('environment');
+    expect(process.env.CREDS_KEY).toBe('A'.repeat(64));
+    expect(process.env.CREDS_IV).toBe('B'.repeat(32));
   });
 
   it('preserves explicitly configured JWT secrets for backward compatibility', () => {
@@ -121,6 +183,141 @@ describe('credentials', () => {
     expect(state.sources.JWT_REFRESH_SECRET).toBe('environment');
     expect(state.generated).toEqual(['CREDS_KEY', 'CREDS_IV']);
   });
+
+  it.each([
+    ['JWT_SECRET', '16f8c0ef4a5d391b26034086c628469d3f9f497f08163ab9b40137092f2909ef'],
+    ['JWT_REFRESH_SECRET', 'eaa5191f2914e30b9387fd84e254e4ba6fc51b4654968a9b0803b456a54b8418'],
+  ] as const)('rejects retired default %s values', (name, value) => {
+    process.env[name] = value;
+
+    expect(() => bootstrapCredentials()).toThrow(
+      `[credentials] ${name} uses a retired default value. Configure a unique replacement before starting LibreChat.`,
+    );
+  });
+
+  it.each([
+    ['JWT_SECRET', '16f8c0ef4a5d391b26034086c628469d3f9f497f08163ab9b40137092f2909ef'],
+    ['JWT_REFRESH_SECRET', 'eaa5191f2914e30b9387fd84e254e4ba6fc51b4654968a9b0803b456a54b8418'],
+  ] as const)('rejects retired default %s values from temporary credentials', (name, value) => {
+    writeLegacyFile(tempFile, `${name}=${value}\n`);
+
+    expect(() => bootstrapCredentials()).toThrow(
+      `[credentials] ${name} uses a retired default value. Configure a unique replacement before starting LibreChat.`,
+    );
+  });
+
+  it('rejects a retired default adopted from a concurrent temporary credential write', () => {
+    writeLegacyFile(tempFile, `CREDS_KEY=${'a'.repeat(64)}\nCREDS_IV=${'b'.repeat(32)}\n`);
+    writeLegacyFile(
+      `${tempFile}.lock`,
+      [
+        `CREDS_KEY=${'a'.repeat(64)}`,
+        `CREDS_IV=${'b'.repeat(32)}`,
+        'JWT_SECRET=16f8c0ef4a5d391b26034086c628469d3f9f497f08163ab9b40137092f2909ef',
+        `JWT_REFRESH_SECRET=${'c'.repeat(64)}`,
+      ].join('\n'),
+    );
+
+    expect(() => bootstrapCredentials()).toThrow(
+      '[credentials] JWT_SECRET uses a retired default value. Configure a unique replacement before starting LibreChat.',
+    );
+  });
+
+  if (windows) {
+    it('removes inherited and explicit unrelated grants before adopting a file', () => {
+      grantWindowsEveryone(tempDirectory, 'ReadAndExecute', 'ContainerInherit, ObjectInherit');
+      writeLegacyFile(
+        tempFile,
+        credentialNames
+          .map((name) => `${name}=${'a'.repeat(name === 'CREDS_IV' ? 32 : 64)}`)
+          .join('\n'),
+      );
+      expect(inspectWindowsAcl(tempFile).entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ sid: 'S-1-1-0', flags: 16 }),
+          expect.objectContaining({ sid: 'S-1-1-0', flags: 0 }),
+        ]),
+      );
+
+      const state = bootstrapCredentials();
+
+      expect(state.loadedFromFile).toEqual(credentialNames);
+      expect(state.generated).toEqual([]);
+      expect(state.persistenceFailed).toBe(false);
+      expectPrivateWindowsAcl(tempFile, 'file');
+    });
+
+    it.each(['WriteData', 'ChangePermissions'])(
+      'rejects a credential file with unrelated %s authority',
+      (right) => {
+        const contents = `CREDS_KEY=${'a'.repeat(64)}\n`;
+        writeLegacyFile(tempFile, contents);
+        grantWindowsEveryone(tempFile, right);
+        const acl = inspectWindowsAcl(tempFile);
+
+        const state = bootstrapCredentials();
+
+        expect(state.loadedFromFile).toEqual([]);
+        expect(state.persistenceFailed).toBe(true);
+        expect(fs.readFileSync(tempFile, 'utf8')).toBe(contents);
+        expect(inspectWindowsAcl(tempFile)).toEqual(acl);
+      },
+    );
+
+    it('replaces an incomplete file with a private file and removes the repair name', () => {
+      tempFile = path.join(tempDirectory, "settings [test] & 'private'");
+      process.env.LIBRECHAT_TEMP_CREDENTIALS_PATH = tempFile;
+      writeLegacyFile(tempFile, `CREDS_KEY=${'a'.repeat(64)}\n`);
+
+      const state = bootstrapCredentials();
+
+      expect(state.loadedFromFile).toEqual(['CREDS_KEY']);
+      expect(state.generated).toEqual(['CREDS_IV', 'JWT_SECRET', 'JWT_REFRESH_SECRET']);
+      expect(state.persistenceFailed).toBe(false);
+      expectPrivateWindowsAcl(tempFile, 'file');
+      expect(fs.readdirSync(tempDirectory)).toEqual([path.basename(tempFile)]);
+    });
+
+    it('rejects a multi-link credential without hardening or replacing either name', () => {
+      const alias = path.join(tempDirectory, 'alias');
+      writeLegacyFile(tempFile, `CREDS_KEY=${'a'.repeat(64)}\n`);
+      fs.linkSync(tempFile, alias);
+      const acl = inspectWindowsAcl(alias);
+
+      const state = bootstrapCredentials();
+
+      expect(state.loadedFromFile).toEqual([]);
+      expect(state.persistenceFailed).toBe(true);
+      expect(fs.statSync(tempFile).nlink).toBe(2);
+      expect(inspectWindowsAcl(alias)).toEqual(acl);
+    });
+
+    it('does not promote a multiply linked repair candidate', () => {
+      writeLegacyFile(tempFile, `CREDS_KEY=${'a'.repeat(64)}\n`);
+      const lock = `${tempFile}.lock`;
+      writeLegacyFile(lock, `JWT_SECRET=${'b'.repeat(64)}\n`);
+      fs.linkSync(lock, `${lock}.alias`);
+
+      const state = bootstrapCredentials();
+
+      expect(state.loadedFromFile).toEqual(['CREDS_KEY']);
+      expect(state.persistenceFailed).toBe(true);
+      expect(fs.statSync(lock).nlink).toBe(2);
+    });
+
+    it.each(['DeleteSubdirectoriesAndFiles', 'CreateFiles'])(
+      'does not stage credentials below a parent with unrelated %s rights',
+      (right) => {
+        grantWindowsEveryone(tempDirectory, right);
+
+        const state = bootstrapCredentials();
+
+        expect(state.loadedFromFile).toEqual([]);
+        expect(state.persistenceFailed).toBe(true);
+        expect(fs.readdirSync(tempDirectory)).toEqual([]);
+      },
+    );
+  }
 
   it('does not overwrite an explicitly selected environment file', () => {
     const environmentFile = path.join(tempDirectory, '.env');

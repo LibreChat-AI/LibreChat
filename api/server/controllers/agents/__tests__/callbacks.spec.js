@@ -1,4 +1,4 @@
-const { Tools } = require('librechat-data-provider');
+const { Tools, StepEvents } = require('librechat-data-provider');
 
 // Mock all dependencies before requiring the module
 jest.mock('nanoid', () => ({
@@ -6,8 +6,28 @@ jest.mock('nanoid', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  collectGoogleThoughtSignatures: (...args) =>
+    jest.requireActual('@librechat/api').collectGoogleThoughtSignatures(...args),
+  captureResponseAccountingUsage: (...args) =>
+    jest.requireActual('@librechat/api').captureResponseAccountingUsage(...args),
+  writeGuarded: (res, chunk) => {
+    if (res.writableEnded === true || res.destroyed === true) {
+      return false;
+    }
+    res.write(chunk);
+    return true;
+  },
   sendEvent: jest.fn(),
   writeAttachmentEvent: jest.fn(),
+  createOwnedToolEndHandler: jest.fn((callback) => ({ handle: callback })),
+  getAttachmentOwnership: jest.fn((metadata) => {
+    const agentId = metadata?.executingAgentId ?? metadata?.agentId ?? metadata?.agent_id;
+    const stepId = metadata?.stepId;
+    return {
+      ...(typeof agentId === 'string' && agentId.length > 0 ? { agentId } : {}),
+      ...(typeof stepId === 'string' && stepId.length > 0 ? { stepId } : {}),
+    };
+  }),
   GenerationJobManager: {
     emitChunk: jest.fn(),
   },
@@ -21,15 +41,22 @@ jest.mock('@librechat/api', () => ({
         }
       : null,
   ),
-  isCodeSessionToolName: jest.fn((name) =>
-    ['execute_code', 'bash_tool', 'read_file'].includes(name),
-  ),
+  isCodeArtifactToolOutput: jest.requireActual('@librechat/api').isCodeArtifactToolOutput,
+  isCodeSessionToolName: jest.requireActual('@librechat/api').isCodeSessionToolName,
+  collectToolCallIds: jest.requireActual('@librechat/api').collectToolCallIds,
+  getImageAttachmentContent: jest.requireActual('@librechat/api').getImageAttachmentContent,
+  captureSubagentIdentity: jest.requireActual('@librechat/api').captureSubagentIdentity,
+  feedSubagentAggregator: jest.requireActual('@librechat/api').feedSubagentAggregator,
+  createToolTimingAdapter: jest.requireActual('@librechat/api').createToolTimingAdapter,
+  stampCommandExecutor: jest.requireActual('@librechat/api').stampCommandExecutor,
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
     debug: jest.fn(),
+    info: jest.fn(),
     error: jest.fn(),
+    warn: jest.fn(),
   },
 }));
 
@@ -68,6 +95,17 @@ jest.mock('~/server/services/Files/Code/process', () => ({
         /* swallowed in the mock — see process.spec.js for catch coverage */
       });
   },
+}));
+
+jest.mock('~/server/services/Files/Code/preflight', () => ({
+  preflightCodeOutputBatch: jest.fn(async ({ artifact }) =>
+    (artifact.files ?? [])
+      .filter((file) => file.inherited !== true)
+      .map((file) => ({
+        file,
+        sessionId: file.storage_session_id ?? artifact.session_id,
+      })),
+  ),
 }));
 
 jest.mock('~/server/services/Tools/credentials', () => ({
@@ -113,6 +151,470 @@ describe('resumable event generation fencing', () => {
     );
   });
 
+  it('keeps a tool result and its input at full size in the content parts LibreChat persists', async () => {
+    const { GraphEvents, createContentAggregator } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    /** Far beyond any cap the SDK's provider-only projection would apply. */
+    const output = 'r'.repeat(600_000);
+    const args = { query: 'q'.repeat(120_000) };
+    const { contentParts, stepMap, aggregateContent } = createContentAggregator();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent,
+      contentParts,
+      stepMap,
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      streamId: 'conversation-1',
+      jobCreatedAt: 1234,
+    });
+    const step = {
+      id: 'step-full-size',
+      index: 0,
+      stepDetails: {
+        type: 'tool_calls',
+        tool_calls: [{ id: 'call-full-size', name: 'fetch', args: JSON.stringify(args) }],
+      },
+    };
+
+    await handlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, step);
+    await handlers[GraphEvents.ON_RUN_STEP_COMPLETED].handle(GraphEvents.ON_RUN_STEP_COMPLETED, {
+      result: {
+        id: step.id,
+        index: 0,
+        tool_call: { id: 'call-full-size', name: 'fetch', args, output },
+      },
+    });
+
+    expect(contentParts).toHaveLength(1);
+    expect(contentParts[0].tool_call.output).toBe(output);
+    expect(contentParts[0].tool_call.args).toEqual(args);
+    expect(JSON.stringify(contentParts[0])).not.toContain('[truncated:');
+  });
+
+  it('publishes a hidden sequential agent snapshot without recording or forwarding it', async () => {
+    const { GenerationJobManager } = require('@librechat/api');
+    const { GraphEvents } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const onSnapshot = jest.fn(async () => undefined);
+    const contextUsageSink = { latest: null, count: 0, onSnapshot };
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      streamId: 'conversation-1',
+      jobCreatedAt: 1234,
+      contextUsageSink,
+      usageEmitSink: [],
+    });
+
+    await handlers[GraphEvents.ON_CONTEXT_USAGE].handle(
+      GraphEvents.ON_CONTEXT_USAGE,
+      { contextBudget: 1000, remainingContextTokens: 400 },
+      {
+        hide_sequential_outputs: true,
+        last_agent_id: 'agent-final',
+        langgraph_node: 'agent-intermediate',
+      },
+    );
+
+    expect(onSnapshot).toHaveBeenCalledTimes(1);
+    expect(contextUsageSink).toMatchObject({ latest: null, count: 0 });
+    expect(GenerationJobManager.emitChunk).not.toHaveBeenCalled();
+  });
+
+  it('records a context snapshot and notifies the sink before forwarding it', async () => {
+    const { GenerationJobManager } = require('@librechat/api');
+    const { GraphEvents } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    let releaseSnapshot;
+    const onSnapshot = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          releaseSnapshot = resolve;
+        }),
+    );
+    const contextUsageSink = { latest: null, count: 0, onSnapshot };
+    const usageEmitSink = [{ input_tokens: 10 }];
+    /** The call this snapshot already accounts for: a later tool-limit stop counts
+     *  the results of the calls missing from this set. */
+    const contentParts = [
+      { type: 'text', text: 'answering' },
+      { type: 'tool_call', tool_call: { id: 'call_1', name: 'grep' } },
+    ];
+    const data = { contextBudget: 1000, remainingContextTokens: 400 };
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent: jest.fn(),
+      contentParts,
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      streamId: 'conversation-1',
+      jobCreatedAt: 1234,
+      contextUsageSink,
+      usageEmitSink,
+    });
+
+    let settled = false;
+    const handled = handlers[GraphEvents.ON_CONTEXT_USAGE]
+      .handle(GraphEvents.ON_CONTEXT_USAGE, data, { hide_sequential_outputs: false })
+      .then(() => {
+        settled = true;
+      });
+    await Promise.resolve();
+
+    expect(contextUsageSink).toMatchObject({
+      latest: data,
+      count: 1,
+      latestUsageIndex: 1,
+      latestToolCallIds: new Set(['call_1']),
+    });
+    expect(onSnapshot).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+    releaseSnapshot();
+    await handled;
+    expect(settled).toBe(true);
+    expect(GenerationJobManager.emitChunk).toHaveBeenCalledWith(
+      'conversation-1',
+      { event: GraphEvents.ON_CONTEXT_USAGE, data },
+      { expectedCreatedAt: 1234 },
+    );
+  });
+
+  it('resolves MCP identity from a function-shaped root tool call', async () => {
+    const { GraphEvents } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const resolveMcpServerName = jest.fn(() => 'server');
+    const data = {
+      id: 'step-function-tool',
+      index: 0,
+      stepDetails: {
+        type: 'tool_calls',
+        tool_calls: [
+          {
+            id: 'call-function-tool',
+            function: { name: 'lookup_mcp_server', arguments: '{}' },
+          },
+        ],
+      },
+    };
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      resolveMcpServerName,
+    });
+
+    await handlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, data, {
+      agent_id: 'lazy-agent',
+    });
+
+    expect(resolveMcpServerName).toHaveBeenCalledWith('lookup_mcp_server', 'lazy-agent');
+    expect(data.stepDetails.tool_calls[0]).toEqual(
+      expect.objectContaining({ name: 'lookup_mcp_server', mcpServerName: 'server' }),
+    );
+  });
+
+  it('publishes root event-child progress through the child activity transport', async () => {
+    const { nanoid } = require('nanoid');
+    nanoid.mockReturnValueOnce('invocation-1').mockReturnValueOnce('invocation-2');
+    const { GraphEvents } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const publish = jest.fn().mockResolvedValue(undefined);
+    const data = {
+      id: 'step-1',
+      index: 0,
+      stepDetails: { type: 'message_creation' },
+    };
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      streamId: 'event-thread',
+      jobCreatedAt: 1234,
+      eventChildActivity: {
+        runId: 'event-thread',
+        parentRunId: 'parent-conversation',
+        subagentRunId: 'delivery-1',
+        subagentType: 'agent-1',
+        subagentAgentId: 'agent-1',
+        parentAgentId: 'director',
+        publish,
+      },
+    });
+
+    await handlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, data);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const firstUpdate = publish.mock.calls[0][0];
+    expect(firstUpdate).toEqual(
+      expect.objectContaining({
+        runId: 'event-thread',
+        parentRunId: 'parent-conversation',
+        subagentRunId: 'delivery-1',
+        phase: 'run_step',
+        activityEventId: expect.stringMatching(/^delivery-1:.+:0$/),
+        data,
+      }),
+    );
+    expect(firstUpdate).not.toHaveProperty('activitySequence');
+
+    const resumedPublish = jest.fn().mockResolvedValue(undefined);
+    const resumedHandlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      streamId: 'event-thread',
+      jobCreatedAt: 1234,
+      eventChildActivity: {
+        runId: 'event-thread',
+        parentRunId: 'parent-conversation',
+        subagentRunId: 'delivery-1',
+        subagentType: 'agent-1',
+        subagentAgentId: 'agent-1',
+        parentAgentId: 'director',
+        publish: resumedPublish,
+      },
+    });
+    await resumedHandlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, data);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(resumedPublish.mock.calls[0][0].activityEventId).not.toBe(firstUpdate.activityEventId);
+  });
+
+  it('publishes tool preparation and handoff into event-child activity', async () => {
+    const { GraphEvents, createContentAggregator } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const publish = jest.fn().mockResolvedValue(undefined);
+    const { contentParts, stepMap, aggregateContent } = createContentAggregator();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent,
+      contentParts,
+      stepMap,
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      streamId: 'event-thread',
+      eventChildActivity: {
+        runId: 'event-thread',
+        parentRunId: 'parent-conversation',
+        subagentRunId: 'child-1',
+        subagentType: 'researcher',
+        subagentAgentId: 'agent-1',
+        parentAgentId: 'director',
+        publish,
+      },
+    });
+    const step = {
+      id: 'step-child',
+      index: 0,
+      type: 'tool_calls',
+      stepDetails: {
+        type: 'tool_calls',
+        tool_calls: [{ id: 'call-child', name: 'query', args: '{}' }],
+      },
+    };
+    await handlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, step);
+    await handlers[GraphEvents.ON_RUN_STEP_DELTA].handle(GraphEvents.ON_RUN_STEP_DELTA, {
+      id: 'step-child',
+      observed_at: 100,
+      delta: { type: 'tool_calls', tool_calls: [{ id: 'call-child', index: 0, args: '{' }] },
+    });
+    await handlers[StepEvents.ON_TOOL_CALLS_DISPATCHED].handle(
+      StepEvents.ON_TOOL_CALLS_DISPATCHED,
+      {
+        dispatched_at: 500,
+        toolCalls: [{ id: 'call-child', name: 'query', stepId: 'step-child' }],
+      },
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(publish.mock.calls.map(([value]) => value.phase)).toEqual([
+      'run_step',
+      'tool_preparation',
+      'run_step_delta',
+      'tool_calls_dispatched',
+    ]);
+    expect(publish.mock.calls[1][0].data).toEqual({
+      id: 'step-child',
+      index: 0,
+      toolCallId: 'call-child',
+      observed_at: 100,
+    });
+    expect(publish.mock.calls[3][0].data.toolCalls[0]).not.toHaveProperty('args');
+  });
+
+  it('folds child dispatch and result into the parent-owned subagent tool part', async () => {
+    const { GraphEvents } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const aggregators = new Map();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      subagentAggregatorsByToolCallId: aggregators,
+    });
+    const base = {
+      parentToolCallId: 'parent-call',
+      parentRunId: 'parent-run',
+      subagentRunId: 'child-run',
+      subagentType: 'researcher',
+      subagentAgentId: 'child-agent',
+      runId: 'parent-run',
+    };
+    for (const event of [
+      {
+        phase: 'run_step',
+        data: {
+          id: 'child-step',
+          index: 0,
+          type: 'tool_calls',
+          stepDetails: {
+            type: 'tool_calls',
+            tool_calls: [{ id: 'child-call', name: 'query', args: '{}' }],
+          },
+        },
+      },
+      {
+        phase: 'tool_preparation',
+        data: { id: 'child-step', toolCallId: 'child-call', observed_at: 100 },
+      },
+      {
+        phase: 'tool_calls_dispatched',
+        data: {
+          dispatched_at: 500,
+          toolCalls: [{ id: 'child-call', stepId: 'child-step', name: 'query' }],
+        },
+      },
+      {
+        phase: 'run_step_completed',
+        data: {
+          result: {
+            id: 'child-step',
+            index: 0,
+            type: 'tool_call',
+            completed_at: 540,
+            tool_call: { id: 'child-call', name: 'query', args: '{}', output: 'ok', progress: 1 },
+          },
+        },
+      },
+    ]) {
+      await handlers[GraphEvents.ON_SUBAGENT_UPDATE].handle(GraphEvents.ON_SUBAGENT_UPDATE, {
+        ...base,
+        ...event,
+      });
+    }
+    expect(jest.requireMock('@librechat/data-schemas').logger.warn).not.toHaveBeenCalled();
+    expect(aggregators.get('parent-call')?.contentParts[0]?.tool_call).toMatchObject({
+      id: 'child-call',
+      toolPreparationStartedAt: 100,
+      toolPreparationDurationMs: 400,
+      toolDispatchedAt: 500,
+      toolExecutionDurationMs: 40,
+      output: 'ok',
+    });
+  });
+
+  it('retains a duplicate steering boundary between parallel child tools and shifted text', async () => {
+    const { GraphEvents } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const aggregators = new Map();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      subagentAggregatorsByToolCallId: aggregators,
+    });
+    const base = {
+      parentToolCallId: 'nested-parent-call',
+      parentRunId: 'child-run',
+      subagentRunId: 'nested-run',
+      subagentType: 'researcher',
+      subagentAgentId: 'nested-agent',
+      runId: 'parent-run',
+      depth: 2,
+    };
+    const part = {
+      type: 'steer',
+      steer: 'Use the revised sources',
+      steerId: 'steer-1',
+      clientSteerId: 'client-steer-1',
+      createdAt: 1234,
+    };
+    const boundary = {
+      phase: 'steer_applied',
+      data: { index: 2, steerId: part.steerId, clientSteerId: part.clientSteerId, part },
+    };
+    for (const update of [
+      {
+        phase: 'run_step',
+        data: {
+          id: 'parallel-tools',
+          index: 0,
+          stepDetails: {
+            type: 'tool_calls',
+            tool_calls: [
+              { id: 'query-1', name: 'query', args: '{}', mcpServerName: 'search' },
+              { id: 'query-2', name: 'query', args: '{}' },
+            ],
+          },
+        },
+      },
+      boundary,
+      {
+        phase: 'run_step',
+        data: { id: 'after-step', index: 3, stepDetails: { type: 'message_creation' } },
+      },
+      {
+        phase: 'message_delta',
+        data: { id: 'after-step', delta: { content: [{ type: 'text', text: 'after' }] } },
+      },
+      boundary,
+    ]) {
+      await handlers[GraphEvents.ON_SUBAGENT_UPDATE].handle(GraphEvents.ON_SUBAGENT_UPDATE, {
+        ...base,
+        ...update,
+      });
+    }
+    const aggregator = aggregators.get(base.parentToolCallId);
+    expect(aggregator.contentParts).toHaveLength(4);
+    expect(aggregator.contentParts[0].tool_call).toMatchObject({
+      id: 'query-1',
+      mcpServerName: 'search',
+    });
+    expect(aggregator.contentParts[1].tool_call.id).toBe('query-2');
+    expect(aggregator.contentParts[2]).toEqual(part);
+    expect(aggregator.contentParts[3]).toMatchObject({ type: 'text', text: 'after' });
+    expect(aggregator.stepMap.get('after-step').index).toBe(3);
+    expect(aggregator.contentParts.filter((content) => content?.type === 'steer')).toHaveLength(1);
+    expect(jest.requireMock('@librechat/data-schemas').logger.warn).not.toHaveBeenCalled();
+  });
+
+  it.each([-1, 1.5, NaN, Infinity])('ignores invalid steering index %s', async (index) => {
+    const { GraphEvents } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const aggregators = new Map();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent: jest.fn(),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      subagentAggregatorsByToolCallId: aggregators,
+    });
+    await handlers[GraphEvents.ON_SUBAGENT_UPDATE].handle(GraphEvents.ON_SUBAGENT_UPDATE, {
+      parentToolCallId: 'parent-call',
+      phase: 'steer_applied',
+      data: { index, part: { type: 'steer', steer: 'guidance' } },
+    });
+    expect(aggregators.get('parent-call').contentParts).toEqual([]);
+  });
+
   it('forwards the originating job epoch with deferred attachments', () => {
     const { GenerationJobManager } = require('@librechat/api');
     const { createAttachmentEmitter } = require('../callbacks');
@@ -130,6 +632,82 @@ describe('resumable event generation fencing', () => {
       { event: 'attachment', data: attachment },
       { expectedCreatedAt: 1234 },
     );
+  });
+});
+
+describe('createPtcProgressEmitter', () => {
+  const ptcEvent = {
+    tool_call_id: 'call_ptc',
+    call_id: 'call_ptc:0',
+    name: 'read_file',
+    status: 'running',
+    args: 'path=a.ts',
+  };
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it('emits the inner tool-call event on the resumable job stream', () => {
+    const { GenerationJobManager } = require('@librechat/api');
+    const { createPtcProgressEmitter } = require('../callbacks');
+    const emit = createPtcProgressEmitter({
+      res: { write: jest.fn() },
+      streamId: 'conversation-1',
+      jobCreatedAt: 1234,
+    });
+
+    emit(ptcEvent);
+
+    expect(GenerationJobManager.emitChunk).toHaveBeenCalledWith(
+      'conversation-1',
+      { event: StepEvents.ON_PTC_TOOL_CALL, data: ptcEvent },
+      { expectedCreatedAt: 1234 },
+    );
+  });
+
+  it('writes to the live response when no stream id is in play', () => {
+    const { sendEvent } = require('@librechat/api');
+    const { createPtcProgressEmitter } = require('../callbacks');
+    const res = { write: jest.fn(), headersSent: true, writableEnded: false };
+    const emit = createPtcProgressEmitter({ res });
+
+    emit(ptcEvent);
+
+    expect(sendEvent).toHaveBeenCalledWith(res, {
+      event: StepEvents.ON_PTC_TOOL_CALL,
+      data: ptcEvent,
+    });
+  });
+
+  it('absorbs a rejected resumable emit instead of leaving an unhandled rejection', async () => {
+    const { GenerationJobManager } = require('@librechat/api');
+    const { createPtcProgressEmitter } = require('../callbacks');
+    GenerationJobManager.emitChunk.mockRejectedValueOnce(new Error('transport down'));
+    const unhandled = jest.fn();
+    process.on('unhandledRejection', unhandled);
+
+    const emit = createPtcProgressEmitter({
+      res: { write: jest.fn() },
+      streamId: 'conversation-1',
+      jobCreatedAt: 1234,
+    });
+
+    expect(() => emit(ptcEvent)).not.toThrow();
+    await new Promise((resolve) => setImmediate(resolve));
+    process.off('unhandledRejection', unhandled);
+
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  it('drops the event once the response has closed', () => {
+    const { sendEvent } = require('@librechat/api');
+    const { createPtcProgressEmitter } = require('../callbacks');
+    const emit = createPtcProgressEmitter({
+      res: { write: jest.fn(), headersSent: true, writableEnded: true },
+    });
+
+    emit(ptcEvent);
+
+    expect(sendEvent).not.toHaveBeenCalled();
   });
 });
 
@@ -156,6 +734,169 @@ describe('createToolEndCallback', () => {
     };
     artifactPromises = [];
   });
+
+  it('preserves separate owners for final search artifacts with repeated tool-call IDs', async () => {
+    const toolEndCallback = createToolEndCallback({ req, res, artifactPromises });
+    for (const agentId of ['agent-a', 'agent-b']) {
+      await toolEndCallback(
+        {
+          output: {
+            tool_call_id: 'call_0',
+            artifact: {
+              [Tools.web_search]: {
+                turn: 0,
+                organic: [{ link: `https://example.com/${agentId}` }],
+              },
+            },
+          },
+        },
+        { run_id: 'run456', thread_id: 'thread789', agent_id: agentId },
+      );
+    }
+    const results = await Promise.all(artifactPromises);
+    expect(
+      results.map((attachment) => ({
+        owner: attachment.agentId,
+        link: attachment[Tools.web_search].organic[0].link,
+      })),
+    ).toEqual([
+      { owner: 'agent-a', link: 'https://example.com/agent-a' },
+      { owner: 'agent-b', link: 'https://example.com/agent-b' },
+    ]);
+  });
+
+  it.each(
+    ['createToolEndCallback', 'createResponsesToolEndCallback'].flatMap((factoryName) => [
+      [factoryName, true],
+      [factoryName, false],
+    ]),
+  )(
+    '%s persists original images with model images enabled: %s',
+    async (factoryName, modelImagesEnabled) => {
+      const { saveBase64Image } = require('~/server/services/Files/process');
+      saveBase64Image.mockResolvedValue({ file_id: 'original-image' });
+      const callback = require('../callbacks')[factoryName]({ req, res, artifactPromises });
+      const content = modelImagesEnabled
+        ? [{ type: 'image_url', image_url: { url: 'data:image/png;base64,model' } }]
+        : [];
+      const artifact = {
+        content,
+        imageAttachments: [
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,original' } },
+        ],
+      };
+      await callback(
+        { output: { name: 'flux', tool_call_id: 'image-call', artifact } },
+        { run_id: 'run-image', thread_id: 'thread-image', provider: 'anthropic' },
+      );
+      await Promise.all(artifactPromises);
+      expect(saveBase64Image).toHaveBeenCalledWith(
+        'data:image/png;base64,original',
+        expect.objectContaining({ req, endpoint: 'anthropic' }),
+      );
+      expect(artifact.content).toBe(content);
+    },
+  );
+
+  it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
+    '%s preserves memory payloads and their execution owner',
+    async (factoryName) => {
+      const toolEndCallback = require('../callbacks')[factoryName]({ req, res, artifactPromises });
+      await toolEndCallback(
+        {
+          output: {
+            tool_call_id: 'call_0',
+            artifact: {
+              [Tools.memory]: {
+                key: 'project',
+                type: 'update',
+                value: 'owned',
+              },
+            },
+          },
+        },
+        {
+          run_id: 'run456',
+          thread_id: 'thread789',
+          agent_id: 'outer-agent',
+          executingAgentId: 'agent-a',
+          stepId: 'step-memory-1',
+        },
+      );
+
+      const [attachment] = await Promise.all(artifactPromises);
+      expect(attachment).toMatchObject({
+        type: Tools.memory,
+        toolCallId: 'call_0',
+        agentId: 'agent-a',
+        stepId: 'step-memory-1',
+        [Tools.memory]: { key: 'project', type: 'update', value: 'owned' },
+      });
+    },
+  );
+
+  it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
+    '%s preserves distinct UI owners when provider tool-call IDs repeat',
+    async (factoryName) => {
+      const { getAttachmentOwnership, writeAttachmentEvent } = require('@librechat/api');
+      const tracker = { nextSequence: jest.fn().mockReturnValueOnce(1).mockReturnValueOnce(2) };
+      res.headersSent = true;
+      res.writableEnded = false;
+      const toolEndCallback = require('../callbacks')[factoryName]({
+        req,
+        res,
+        tracker,
+        artifactPromises,
+      });
+
+      for (const [agentId, stepId] of [
+        ['agent-a', 'step-a'],
+        ['agent-b', 'step-b'],
+      ]) {
+        await toolEndCallback(
+          {
+            output: {
+              tool_call_id: 'call_0',
+              artifact: {
+                [Tools.ui_resources]: {
+                  data: [{ uri: `ui://${agentId}`, resourceId: agentId }],
+                },
+              },
+            },
+          },
+          {
+            run_id: 'run456',
+            thread_id: 'thread789',
+            executingAgentId: agentId,
+            stepId,
+          },
+        );
+      }
+
+      const results = await Promise.all(artifactPromises);
+      expect(
+        results.map(({ agentId, stepId, toolCallId, ui_resources }) => ({
+          agentId,
+          stepId,
+          toolCallId,
+          resourceId: ui_resources[0].resourceId,
+        })),
+      ).toEqual([
+        { agentId: 'agent-a', stepId: 'step-a', toolCallId: 'call_0', resourceId: 'agent-a' },
+        { agentId: 'agent-b', stepId: 'step-b', toolCallId: 'call_0', resourceId: 'agent-b' },
+      ]);
+      expect(getAttachmentOwnership).toHaveBeenCalledTimes(2);
+
+      if (factoryName === 'createResponsesToolEndCallback') {
+        expect(writeAttachmentEvent.mock.calls.map((call) => call[2])).toEqual(results);
+      } else {
+        const emitted = res.write.mock.calls.map(([event]) =>
+          JSON.parse(event.match(/^event: attachment\ndata: (.+)\n\n$/)[1]),
+        );
+        expect(emitted).toEqual(results);
+      }
+    },
+  );
 
   describe('ui_resources artifact handling', () => {
     it('should process ui_resources artifact and return attachment when headers not sent', async () => {
@@ -436,6 +1177,7 @@ describe('createToolEndCallback', () => {
      * message slot, leaving the current turn's pending chip stuck. */
 
     const { processCodeOutput } = require('~/server/services/Files/Code/process');
+    const { preflightCodeOutputBatch } = require('~/server/services/Files/Code/preflight');
 
     function makeCodeExecutionEvent({
       runId,
@@ -697,6 +1439,7 @@ describe('createToolEndCallback', () => {
         codeExecutionContext: {
           baseUrl: 'https://code-stateful.example.com',
           executionProfile: 'stateful',
+          executionRouteKey: `stateful:${'a'.repeat(32)}`,
         },
       });
       await toolEndCallback({ output: event.output }, event.metadata);
@@ -712,6 +1455,7 @@ describe('createToolEndCallback', () => {
           conversationId: 'thread789',
           codeApiBaseUrl: 'https://code-stateful.example.com',
           executionProfile: 'stateful',
+          executionRouteKey: `stateful:${'a'.repeat(32)}`,
         }),
       );
       expect(res.write).toHaveBeenCalledTimes(2);
@@ -867,6 +1611,189 @@ describe('createToolEndCallback', () => {
       expect(processCodeOutput).not.toHaveBeenCalled();
       expect(res.write).not.toHaveBeenCalled();
     });
+
+    it('rejects blocked generated bytes before queuing any persistence', async () => {
+      const blocked = new Error('Generated file content blocked');
+      preflightCodeOutputBatch.mockRejectedValueOnce(blocked);
+      const toolEndCallback = createToolEndCallback({ req, res, artifactPromises });
+      const event = makeCodeExecutionEvent({
+        runId: 'run-blocked',
+        threadId: 'thread-1',
+        toolCallId: 'tool-blocked',
+        fileId: 'fid-blocked',
+        name: 'blocked.txt',
+      });
+
+      await expect(toolEndCallback({ output: event.output }, event.metadata)).rejects.toBe(blocked);
+
+      expect(processCodeOutput).not.toHaveBeenCalled();
+      expect(artifactPromises).toHaveLength(0);
+      expect(res.write).not.toHaveBeenCalled();
+    });
+
+    it('rejects blocked generated bytes in the Responses callback before persistence', async () => {
+      const blocked = new Error('Generated file content blocked');
+      preflightCodeOutputBatch.mockRejectedValueOnce(blocked);
+      const { createResponsesToolEndCallback } = require('../callbacks');
+      const callback = createResponsesToolEndCallback({
+        req,
+        res,
+        tracker: { nextSequence: jest.fn(() => 1) },
+        artifactPromises,
+      });
+      const event = makeCodeExecutionEvent({
+        runId: 'run-responses-blocked',
+        threadId: 'thread-1',
+        toolCallId: 'tool-responses-blocked',
+        fileId: 'fid-responses-blocked',
+        name: 'blocked.txt',
+      });
+
+      await expect(callback({ output: event.output }, event.metadata)).rejects.toBe(blocked);
+
+      expect(processCodeOutput).not.toHaveBeenCalled();
+      expect(artifactPromises).toHaveLength(0);
+      expect(res.write).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('tool dispatch timing', () => {
+  it('forwards the SDK handoff and stores preparation and result intervals independently', async () => {
+    const { GraphEvents, createContentAggregator } = jest.requireActual('@librechat/agents');
+    const { GenerationJobManager } = require('@librechat/api');
+    const { getDefaultHandlers } = require('../callbacks');
+    const { contentParts, stepMap, aggregateContent } = createContentAggregator();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      contentParts,
+      stepMap,
+      aggregateContent,
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      streamId: 'run',
+    });
+    const step = {
+      id: 'step-1',
+      index: 0,
+      type: 'tool_calls',
+      stepDetails: {
+        type: 'tool_calls',
+        tool_calls: [{ id: 'call-1', name: 'query', args: '{}' }],
+      },
+    };
+    await handlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, step);
+    await handlers[GraphEvents.ON_RUN_STEP_DELTA].handle(GraphEvents.ON_RUN_STEP_DELTA, {
+      id: 'step-1',
+      observed_at: 1_000,
+      delta: { type: 'tool_calls', tool_calls: [{ id: 'call-1', index: 0, args: '{' }] },
+    });
+    const dispatched = {
+      dispatched_at: 248_000,
+      toolCalls: [{ id: 'call-1', name: 'query', stepId: 'step-1' }],
+    };
+    await handlers[StepEvents.ON_TOOL_CALLS_DISPATCHED].handle(
+      StepEvents.ON_TOOL_CALLS_DISPATCHED,
+      dispatched,
+    );
+    await handlers[GraphEvents.ON_RUN_STEP_COMPLETED].handle(GraphEvents.ON_RUN_STEP_COMPLETED, {
+      result: {
+        id: 'step-1',
+        completed_at: 248_340,
+        index: 0,
+        tool_call: { id: 'call-1', name: 'query', args: '{}', output: 'ok' },
+      },
+    });
+    await handlers[GraphEvents.ON_RUN_STEP_CLOSED].handle(GraphEvents.ON_RUN_STEP_CLOSED, {
+      id: 'step-1',
+      index: 0,
+      type: 'tool_calls',
+      status: 'completed',
+      created_at: 1_000,
+      closed_at: 248_340,
+    });
+    expect(GenerationJobManager.emitChunk).toHaveBeenCalledWith(
+      'run',
+      {
+        event: StepEvents.ON_TOOL_PREPARATION,
+        data: {
+          id: 'step-1',
+          index: 0,
+          toolCallId: 'call-1',
+          observed_at: 1_000,
+        },
+      },
+      expect.anything(),
+    );
+    expect(GenerationJobManager.emitChunk).toHaveBeenCalledWith(
+      'run',
+      { event: StepEvents.ON_TOOL_CALLS_DISPATCHED, data: dispatched },
+      expect.anything(),
+    );
+    expect(contentParts[0].tool_call).toMatchObject({
+      runStepDurationMs: 247_340,
+      runStepClosedAt: 248_340,
+      toolPreparationDurationMs: 247_000,
+      toolExecutionDurationMs: 340,
+    });
+  });
+
+  it('keeps preparation across a new handler created after HITL approval', async () => {
+    const { GraphEvents, createContentAggregator } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const { contentParts, stepMap, aggregateContent } = createContentAggregator();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      contentParts,
+      stepMap,
+      aggregateContent,
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      toolTimingReplayEvents: [
+        {
+          event: StepEvents.ON_TOOL_PREPARATION,
+          data: {
+            id: 'step-1',
+            index: 0,
+            toolCallId: 'call-1',
+            observed_at: 1_000,
+          },
+        },
+      ],
+    });
+    await handlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, {
+      id: 'step-1',
+      index: 0,
+      type: 'tool_calls',
+      stepDetails: {
+        type: 'tool_calls',
+        tool_calls: [{ id: 'call-1', name: 'query', args: '{}' }],
+      },
+    });
+    await handlers[StepEvents.ON_TOOL_CALLS_DISPATCHED].handle(
+      StepEvents.ON_TOOL_CALLS_DISPATCHED,
+      { dispatched_at: 51_000, toolCalls: [{ id: 'call-1', name: 'query', stepId: 'step-1' }] },
+    );
+    await handlers[GraphEvents.ON_RUN_STEP_COMPLETED].handle(GraphEvents.ON_RUN_STEP_COMPLETED, {
+      result: {
+        id: 'step-1',
+        index: 0,
+        completed_at: 51_200,
+        tool_call: { id: 'call-1', name: 'query', args: '{}', output: 'ok' },
+      },
+    });
+    await handlers[GraphEvents.ON_RUN_STEP_CLOSED].handle(GraphEvents.ON_RUN_STEP_CLOSED, {
+      id: 'step-1',
+      index: 0,
+      type: 'tool_calls',
+      status: 'completed',
+      created_at: 1_000,
+      closed_at: 51_200,
+    });
+    expect(contentParts[0].tool_call).toMatchObject({
+      toolPreparationDurationMs: 50_000,
+      toolExecutionDurationMs: 200,
+    });
   });
 });
 
@@ -921,6 +1848,7 @@ describe('tool input validation marker', () => {
 
     expect(data.result.tool_call.inputValidationError).toBe(true);
     expect(contentParts[0].tool_call.inputValidationError).toBe(true);
+    expect(contentParts[0].tool_call.stepId).toBe('step-1');
     expect(toolInputValidationErrors.size).toBe(0);
   });
 
@@ -969,6 +1897,7 @@ describe('tool input validation marker', () => {
 
     expect(data.result.tool_call).not.toHaveProperty('inputValidationError');
     expect(contentParts[0].tool_call).not.toHaveProperty('inputValidationError');
+    expect(contentParts[0].tool_call.stepId).toBe('step-1');
   });
 });
 

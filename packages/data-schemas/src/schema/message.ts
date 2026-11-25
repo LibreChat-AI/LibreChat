@@ -1,5 +1,6 @@
 import mongoose, { Schema } from 'mongoose';
 import type { IMessage } from '~/types/message';
+import { agentFadingContextDefinition } from './fading';
 
 const messageSchema: Schema<IMessage> = new Schema(
   {
@@ -58,10 +59,34 @@ const messageSchema: Schema<IMessage> = new Schema(
     summary: {
       type: String,
     },
+    privateText: { type: String, select: false },
+    privacyRevision: { type: String },
+    privateTextTokens: { type: [String], select: false, default: undefined },
     isCreatedByUser: {
       type: Boolean,
       required: true,
       default: false,
+    },
+    isUserSubmitted: {
+      type: Boolean,
+    },
+    userSubmittedPaths: {
+      type: [String],
+      default: undefined,
+    },
+    userSubmittedMessageFieldPaths: {
+      type: [
+        {
+          _id: false,
+          path: { type: String, required: true },
+          field: {
+            type: String,
+            enum: ['answer', 'decision_response', 'decision_reason'],
+            required: true,
+          },
+        },
+      ],
+      default: undefined,
     },
     isTemporary: {
       type: Boolean,
@@ -97,12 +122,16 @@ const messageSchema: Schema<IMessage> = new Schema(
       default: undefined,
       required: false,
     },
+    langfuseCentralTraceExportEnabled: { type: Boolean },
     langfuseSampled: {
       type: Boolean,
     },
     langfuseDestinationIds: {
       type: [String],
       default: undefined,
+    },
+    langfuseRunId: {
+      type: String,
     },
     _meiliIndex: {
       type: Boolean,
@@ -124,11 +153,76 @@ const messageSchema: Schema<IMessage> = new Schema(
       type: String,
     },
     metadata: { type: mongoose.Schema.Types.Mixed },
+    subagentContent: {
+      type: {
+        version: { type: Number, enum: [1], required: true },
+        throughSequence: Number,
+        deleted: { type: Boolean, default: undefined },
+      },
+      _id: false,
+      select: false,
+      default: undefined,
+    },
     subagentTranscript: {
       type: {
         taskId: { type: String, required: true },
         mode: { type: String, enum: ['append', 'replace'], required: true },
         messagesJson: { type: String, required: true },
+      },
+      _id: false,
+      select: false,
+      default: undefined,
+    },
+    subagentActivityProjection: {
+      type: {
+        taskId: { type: String, required: true },
+        version: { type: Number, enum: [1, 2], required: true },
+        activityJson: { type: String, required: true },
+        truncated: { type: Boolean, required: true },
+      },
+      _id: false,
+      select: false,
+      default: undefined,
+    },
+    /**
+     * What started a turn no person sent: the event its delivery carried, who the run acts
+     * for and, on a turn that reports background work, the event that began that run. The
+     * server writes it from the run it verified. Read only where the owner's client reads.
+     */
+    trigger: {
+      type: {
+        event: {
+          type: { type: String, required: true },
+          occurredAt: { type: Date, required: true },
+        },
+        subject: {
+          type: { kind: { type: String, required: true }, id: { type: String, required: true } },
+          _id: false,
+          default: undefined,
+        },
+        origin: {
+          type: {
+            event: {
+              type: { type: String, required: true },
+              occurredAt: { type: Date, required: true },
+            },
+          },
+          _id: false,
+          default: undefined,
+        },
+      },
+      _id: false,
+      select: false,
+      default: undefined,
+    },
+    /** Bounded, display-safe identity for an event-authored child turn. */
+    subagentTriggerProjection: {
+      type: {
+        version: { type: Number, enum: [1], required: true },
+        eventType: { type: String, required: true },
+        sourceType: { type: String, required: true },
+        occurredAt: { type: Date, required: true },
+        expectedActionToolName: { type: String },
       },
       _id: false,
       select: false,
@@ -154,6 +248,33 @@ const messageSchema: Schema<IMessage> = new Schema(
           _id: false,
           default: undefined,
         },
+        controlReceipts: {
+          type: [
+            {
+              invocationId: { type: String, required: true },
+              fingerprint: { type: String, required: true },
+              controlId: { type: String },
+              action: {
+                type: String,
+                enum: ['steer', 'queue', 'interrupt', 'cancel', 'cancel_message'],
+                required: true,
+              },
+              status: {
+                type: String,
+                enum: ['reserved', 'accepted', 'applied', 'rejected', 'failed'],
+                required: true,
+              },
+              createdAt: { type: Date, required: true },
+              updatedAt: { type: Date, required: true },
+              boundary: { type: String, enum: ['preempt', 'tool', 'turn'] },
+              reason: { type: String },
+              message: { type: String },
+              messageTruncated: { type: Boolean },
+              _id: false,
+            },
+          ],
+          default: undefined,
+        },
       },
       _id: false,
       select: false,
@@ -163,6 +284,7 @@ const messageSchema: Schema<IMessage> = new Schema(
       type: {
         calibrationRatio: { type: Number },
         encoding: { type: String },
+        ...agentFadingContextDefinition,
       },
       _id: false,
       default: undefined,
@@ -193,6 +315,19 @@ const messageSchema: Schema<IMessage> = new Schema(
      * count), so they are not duplicated into the stored `text`.
      */
     quotes: { type: [String], default: undefined },
+    /** Request-scoped reasoning selection used for this user turn. */
+    reasoningOverride: {
+      type: {
+        key: {
+          type: String,
+          enum: ['reasoning_effort', 'effort', 'thinkingLevel', 'thinkingBudget'],
+          required: true,
+        },
+        value: { type: mongoose.Schema.Types.Mixed, required: true },
+      },
+      _id: false,
+      default: undefined,
+    },
     /*
     attachments: {
       type: [
@@ -234,6 +369,15 @@ messageSchema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
 messageSchema.index({ createdAt: 1 });
 messageSchema.index({ messageId: 1, user: 1, tenantId: 1 }, { unique: true });
 messageSchema.index({ tenantId: 1, isTemporary: 1, createdAt: -1, _id: -1 });
+/** Insights attributes assistant activity from the persisted top-level agent model. */
+messageSchema.index({
+  tenantId: 1,
+  isTemporary: 1,
+  isCreatedByUser: 1,
+  model: 1,
+  createdAt: -1,
+  _id: -1,
+});
 messageSchema.index({
   tenantId: 1,
   isTemporary: 1,
@@ -252,6 +396,22 @@ messageSchema.index({
  * the sort back into memory for them.
  */
 messageSchema.index({ conversationId: 1, user: 1, createdAt: 1, _id: 1 });
+
+/**
+ * Serves the cursor-paginated message read when sorted by `updatedAt`, the
+ * default of `GET /api/messages`; the `createdAt` sort uses the index above.
+ */
+messageSchema.index({ conversationId: 1, user: 1, updatedAt: 1, _id: 1 });
+
+/**
+ * Serves the batched newest-task read for child threads. `user` is an equality
+ * prefix and `conversationId` is the partition key, so Mongo/DocumentDB can
+ * stream each partition newest-first without materializing an unbounded sort.
+ */
+messageSchema.index(
+  { user: 1, conversationId: 1, createdAt: -1, _id: -1 },
+  { name: 'subagent_thread_latest_message' },
+);
 
 /** Bounds parent-run completion snapshots without scanning a user's message history. */
 messageSchema.index(

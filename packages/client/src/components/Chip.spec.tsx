@@ -3,6 +3,16 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { Chip } from './Chip';
 
 describe('Chip', () => {
+  it('renders a theme-aware surface tone for non-status context', () => {
+    render(<Chip tone="surface">Context</Chip>);
+
+    expect(screen.getByText('Context').parentElement).toHaveClass(
+      'border-border-chrome',
+      'bg-surface-secondary',
+      'text-text-secondary',
+    );
+  });
+
   it('renders semantic tone classes', () => {
     render(<Chip tone="info">Search result</Chip>);
 
@@ -10,6 +20,19 @@ describe('Chip', () => {
       'bg-status-info-subtle',
       'text-status-info',
     );
+  });
+
+  it('renders the merged tone as purple text on the plain surface', () => {
+    render(<Chip tone="merged">Merged</Chip>);
+
+    const chip = screen.getByText('Merged').parentElement;
+    expect(chip).toHaveClass('text-brand-purple', 'bg-transparent');
+  });
+
+  it('does not tint the merged tone, which would drop its dark-theme text contrast below 4.5:1', () => {
+    render(<Chip tone="merged">Merged</Chip>);
+
+    expect(screen.getByText('Merged').parentElement?.className).not.toMatch(/bg-brand-purple/);
   });
 
   it('stops propagation and calls the remove handler', () => {
@@ -40,7 +63,8 @@ describe('Chip', () => {
     expect(screen.getByText('Themeable').parentElement).toHaveClass(
       'h-theme-control',
       'rounded-theme-control',
-      'gap-theme-compact',
+      'gap-theme-control-gap',
+      'px-theme-control-x',
     );
     expect(screen.getByRole('button', { name: 'Remove theme' })).toHaveClass(
       'rounded-theme-control-round',

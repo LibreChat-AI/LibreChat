@@ -4,6 +4,7 @@ import {
   getRegisteredToolApprovalHookCount,
   clearToolApprovalHooks,
   buildToolApprovalHooks,
+  resolvedToolApprovalHooksCanMatch,
 } from './hooks';
 
 const denyHook: ToolApprovalHook = async () => ({ decision: 'deny' });
@@ -72,6 +73,20 @@ describe('tool-approval hook registry', () => {
 
     test('returns an empty list when nothing is registered', () => {
       expect(buildToolApprovalHooks({})).toEqual([]);
+    });
+  });
+
+  describe('resolvedToolApprovalHooksCanMatch', () => {
+    test('matches only hooks that can run for the selected tool names', () => {
+      const hooks = [{ hook: denyHook, matcher: '^approval_probe$' }];
+      expect(resolvedToolApprovalHooksCanMatch(hooks, ['read_file'])).toBe(false);
+      expect(resolvedToolApprovalHooksCanMatch(hooks, ['approval_probe'])).toBe(true);
+    });
+
+    test('treats an unscoped hook as matching any nonempty tool surface', () => {
+      const hooks = [{ hook: denyHook }];
+      expect(resolvedToolApprovalHooksCanMatch(hooks, [])).toBe(false);
+      expect(resolvedToolApprovalHooksCanMatch(hooks, ['read_file'])).toBe(true);
     });
   });
 });

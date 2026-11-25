@@ -64,6 +64,39 @@ describe('computeShareChanges', () => {
     expect(removed.some((p) => p.idOnTheSource === 'group-oid')).toBe(true);
     expect(principalKey(currentShares[0])).toBe(`${PrincipalType.GROUP}-group-oid`);
   });
+
+  it('emits an update when only Insights access changes', () => {
+    const currentShares = [principal({ id: 'viewer', viewInsights: false })];
+    const allShares = [principal({ id: 'viewer', viewInsights: true })];
+
+    const { updated, removed } = computeShareChanges(currentShares, allShares);
+
+    expect(updated).toEqual([expect.objectContaining({ id: 'viewer', viewInsights: true })]);
+    expect(removed).toEqual([]);
+  });
+
+  it('omits Insights access when a role change preserves it', () => {
+    const currentShares = [
+      principal({ id: 'viewer', accessRoleId: AccessRoleIds.AGENT_VIEWER, viewInsights: true }),
+    ];
+    const allShares = [
+      principal({ id: 'viewer', accessRoleId: AccessRoleIds.AGENT_EDITOR, viewInsights: true }),
+    ];
+
+    const { updated } = computeShareChanges(currentShares, allShares);
+
+    expect(updated).toEqual([
+      expect.objectContaining({ id: 'viewer', accessRoleId: AccessRoleIds.AGENT_EDITOR }),
+    ]);
+    expect(updated[0]).not.toHaveProperty('viewInsights');
+  });
+
+  it('does not emit a no-op Insights update', () => {
+    const currentShares = [principal({ id: 'viewer', viewInsights: true })];
+    const allShares = [principal({ id: 'viewer', viewInsights: true })];
+
+    expect(computeShareChanges(currentShares, allShares)).toEqual({ updated: [], removed: [] });
+  });
 });
 
 describe('dedupeNewShares', () => {

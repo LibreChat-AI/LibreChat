@@ -29,9 +29,36 @@ describe('generation protocol rollout storage', () => {
     });
 
     expect(v2.generationProtocolVersion).toBe(2);
-    expect(v2.checkpointNamespace).toBe(String(v2.createdAt));
+    expect(v2.checkpointNamespace).toEqual(expect.any(String));
+    expect(v2.checkpointNamespace).not.toBe(String(v2.createdAt));
     expect(v1.generationProtocolVersion).toBe(1);
     expect(v1.checkpointNamespace).toBeUndefined();
+  });
+
+  test('jobs receive distinct globally unique checkpoint scopes under a frozen clock', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    try {
+      const store = new InMemoryJobStore();
+      const first = await store.createJob('stream-a', 'owner-a', 'shared-conversation', undefined, {
+        providerExecutionId: 'shared-execution',
+      });
+      const second = await store.createJob(
+        'stream-b',
+        'owner-b',
+        'shared-conversation',
+        undefined,
+        {
+          providerExecutionId: 'shared-execution',
+        },
+      );
+
+      expect(second.createdAt).toBeGreaterThan(first.createdAt);
+      expect(first.checkpointNamespace).not.toBe(second.checkpointNamespace);
+      expect(first.checkpointNamespace).toMatch(/^lcg:v2:[0-9a-f]{64}:[0-9a-f-]{36}$/);
+      expect(second.checkpointNamespace).toMatch(/^lcg:v2:[0-9a-f]{64}:[0-9a-f-]{36}$/);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   test('v1 steering stays receiptless and uses the legacy destructive drain', async () => {
@@ -110,7 +137,7 @@ describe('generation protocol rollout storage', () => {
       undefined,
       undefined,
       undefined,
-      { text: leased.text, fileIds: [] },
+      { text: leased.text, fileIds: [], quotes: [] },
     );
 
     const downgraded = await store.claimParkedSteersDetailed(streamId, 'user-1', undefined, 1);
@@ -189,7 +216,7 @@ describe('generation protocol rollout storage', () => {
         undefined,
         undefined,
         undefined,
-        { text: 'legacy words', fileIds: [] },
+        { text: 'legacy words', fileIds: [], quotes: [] },
       ),
     ).rejects.toMatchObject({ code: 'RECOVERY_PAYLOAD_MISMATCH' });
   });

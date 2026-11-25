@@ -3,12 +3,13 @@ import 'winston-daily-rotate-file';
 import {
   redactFormat,
   redactMessage,
+  redactLogString,
   debugTraverse,
   jsonTruncateFormat,
   stripHeavyErrorFields,
 } from './parsers';
 import { appendLogContext, attachRequestContext } from './requestLogContext';
-import { getLogDirectory } from './utils';
+import { getLogDirectory, logLevels, resolveConsoleLevel } from './utils';
 
 const { NODE_ENV, DEBUG_LOGGING, CONSOLE_JSON, DEBUG_CONSOLE, LOG_TO_FILE } = process.env;
 
@@ -20,18 +21,13 @@ const useDebugLogging = typeof DEBUG_LOGGING === 'string' && DEBUG_LOGGING.toLow
 
 const useFileLogging = typeof LOG_TO_FILE !== 'string' || LOG_TO_FILE.toLowerCase() !== 'false';
 
-const levels: winston.config.AbstractConfigSetLevels = {
-  error: 0,
-  warn: 1,
-  info: 2,
-  http: 3,
-  verbose: 4,
-  debug: 5,
-  activity: 6,
-  silly: 7,
-};
-
-const requestContextFormat = winston.format(attachRequestContext);
+const requestContextFormat = winston.format((info) => {
+  const withContext = attachRequestContext(info);
+  if (typeof withContext.request_path === 'string') {
+    withContext.request_path = redactLogString(withContext.request_path);
+  }
+  return withContext;
+});
 
 winston.addColors({
   info: 'green',
@@ -45,7 +41,7 @@ const level = (): string => {
   return env === 'development' ? 'debug' : 'warn';
 };
 
-const fileFormat = winston.format.combine(
+export const baseLogFormat: winston.Logform.Format = winston.format.combine(
   redactFormat(),
   winston.format.timestamp({ format: () => new Date().toISOString() }),
   winston.format.errors({ stack: true }),
@@ -67,7 +63,7 @@ if (useFileLogging) {
       zippedArchive: true,
       maxSize: '20m',
       maxFiles: '14d',
-      format: winston.format.combine(fileFormat, winston.format.json()),
+      format: winston.format.combine(baseLogFormat, winston.format.json()),
     }),
   );
 
@@ -80,7 +76,7 @@ if (useFileLogging) {
         zippedArchive: true,
         maxSize: '20m',
         maxFiles: '14d',
-        format: winston.format.combine(fileFormat, debugTraverse),
+        format: winston.format.combine(baseLogFormat, debugTraverse),
       }),
     );
   }
@@ -98,32 +94,36 @@ const consoleFormat = winston.format.combine(
   }),
 );
 
-let consoleLogLevel: string = 'info';
-if (useDebugConsole) {
-  consoleLogLevel = 'debug';
-}
+/** `DEBUG_CONSOLE` still picks the debug *format* below; here it only moves the
+ * default level, so an explicit `CONSOLE_LOG_LEVEL` stays in charge of verbosity. */
+const { level: consoleLogLevel, silent: consoleSilent } = resolveConsoleLevel(
+  useDebugConsole ? 'debug' : 'info',
+);
 
 // Add console transport
 if (useDebugConsole) {
   transports.push(
     new winston.transports.Console({
       level: consoleLogLevel,
+      silent: consoleSilent,
       format: useConsoleJson
-        ? winston.format.combine(fileFormat, jsonTruncateFormat(), winston.format.json())
-        : winston.format.combine(fileFormat, debugTraverse),
+        ? winston.format.combine(baseLogFormat, jsonTruncateFormat(), winston.format.json())
+        : winston.format.combine(baseLogFormat, debugTraverse),
     }),
   );
 } else if (useConsoleJson) {
   transports.push(
     new winston.transports.Console({
       level: consoleLogLevel,
-      format: winston.format.combine(fileFormat, jsonTruncateFormat(), winston.format.json()),
+      silent: consoleSilent,
+      format: winston.format.combine(baseLogFormat, jsonTruncateFormat(), winston.format.json()),
     }),
   );
 } else {
   transports.push(
     new winston.transports.Console({
       level: consoleLogLevel,
+      silent: consoleSilent,
       format: consoleFormat,
     }),
   );
@@ -132,7 +132,10 @@ if (useDebugConsole) {
 // Create logger
 const logger: winston.Logger = winston.createLogger({
   level: level(),
-  levels,
+  // Transports sanitize and serialize. Winston otherwise JSON-serializes raw
+  // errors here, walking the shared HTTP agent graph before those guards run.
+  format: winston.format((info) => info)(),
+  levels: logLevels,
   transports,
 });
 

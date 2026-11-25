@@ -11,9 +11,14 @@ jest.mock('~/models', () => ({
   getRoleByName: jest.fn(),
 }));
 
-jest.mock('@librechat/api', () => ({
-  checkAccess: jest.fn().mockResolvedValue(true),
-}));
+jest.mock('@librechat/api', () => {
+  const { applyCitationLimits, selectFileCitationSources } = jest.requireActual('@librechat/api');
+  return {
+    applyCitationLimits,
+    checkAccess: jest.fn().mockResolvedValue(true),
+    selectFileCitationSources,
+  };
+});
 
 jest.mock('~/cache/getLogStores', () => () => ({
   get: jest.fn().mockResolvedValue({

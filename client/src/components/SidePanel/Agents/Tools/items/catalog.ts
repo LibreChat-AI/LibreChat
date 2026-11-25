@@ -23,7 +23,18 @@ export interface BuildCatalogInputs {
   mcpServersMap: Map<string, MCPServerInfo>;
   skills: TSkillSummary[];
   actions: Action[];
-  permissions: { mcp: boolean; skills: boolean };
+  /**
+   * Role grants gating catalog inclusion. `mcp` and `skills` gate their own item
+   * kinds; the rest gate the matching builtin (see `BUILTIN_ROLE_PERMISSIONS`) on
+   * top of its admin-enabled capability, so a builtin has to clear both.
+   */
+  permissions: {
+    mcp: boolean;
+    skills: boolean;
+    webSearch: boolean;
+    runCode: boolean;
+    fileSearch: boolean;
+  };
   /**
    * Id of the signed-in user. When provided, skills authored by this user are
    * flagged `ownedByUser` so the "Made by you" view can surface them. Optional
@@ -87,6 +98,15 @@ const BUILTIN_DEFINITIONS: BuiltinDef[] = [
   },
 ];
 
+/** Role grant each builtin needs on top of its capability. A builtin absent here
+ *  (`artifacts`) carries no role permission and passes on the capability alone. */
+const BUILTIN_ROLE_PERMISSIONS: Partial<Record<BuiltinId, 'webSearch' | 'runCode' | 'fileSearch'>> =
+  {
+    [AgentCapabilities.execute_code]: 'runCode',
+    [AgentCapabilities.web_search]: 'webSearch',
+    [AgentCapabilities.file_search]: 'fileSearch',
+  };
+
 function countEndpoints(settings: Action['settings']): number {
   if (settings == null) {
     return 0;
@@ -99,11 +119,41 @@ function countEndpoints(settings: Action['settings']): number {
 }
 
 export function buildCatalog(inputs: BuildCatalogInputs): AgentItem[] {
-  const items: AgentItem[] = [];
+  const items: AgentItem[] = [
+    {
+      kind: 'builtin',
+      id: 'handoffs',
+      iconKey: 'handoffs',
+      name: 'com_ui_agent_handoffs',
+      description: 'com_ui_agent_handoffs_subtitle',
+    },
+  ];
 
   const enabled = new Set(inputs.agentsConfig.capabilities);
+  if (enabled.has(AgentCapabilities.subagents)) {
+    items.unshift({
+      kind: 'builtin',
+      id: AgentCapabilities.subagents,
+      iconKey: 'subagents',
+      name: 'com_ui_agent_subagents',
+      description: 'com_ui_agent_subagents_subtitle',
+    });
+  }
+  if (enabled.has(AgentCapabilities.subagent_graphs)) {
+    items.push({
+      kind: 'builtin',
+      id: AgentCapabilities.subagent_graphs,
+      iconKey: 'subagent_graphs',
+      name: 'com_ui_agent_graphs',
+      description: 'com_ui_agent_graphs_hint',
+    });
+  }
   for (const def of BUILTIN_DEFINITIONS) {
     if (!enabled.has(def.id)) {
+      continue;
+    }
+    const roleGrant = BUILTIN_ROLE_PERMISSIONS[def.id];
+    if (roleGrant != null && !inputs.permissions[roleGrant]) {
       continue;
     }
     items.push({
@@ -159,7 +209,7 @@ export function buildCatalog(inputs: BuildCatalogInputs): AgentItem[] {
       items.push({
         kind: 'mcp',
         id: name,
-        name,
+        name: server.metadata?.name ?? name,
         description: server.metadata?.description ?? '',
         iconKey: 'mcp',
         server,

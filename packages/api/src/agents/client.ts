@@ -1,19 +1,25 @@
 import { logger } from '@librechat/data-schemas';
-import { ContentTypes, isAgentsEndpoint } from 'librechat-data-provider';
+import {
+  ContentTypes,
+  isAgentsEndpoint,
+  DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
+} from 'librechat-data-provider';
 import {
   labelContentByAgent,
   extractImageDimensions,
   getTokenCountForMessage,
   estimateOpenAIImageTokens,
   estimateAnthropicImageTokens,
+  estimateTimedMediaBlockTokens,
+  markTokenCounterCacheCompatible,
 } from '@librechat/agents';
+import type { MessageContentComplex, TokenCounter } from '@librechat/agents';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
-import type { MessageContentComplex } from '@librechat/agents';
 import type { Agent, TMessage } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
-import { logAxiosError, mergeQuotedText, formatQuotesAsMarkdown } from '~/utils';
+import { getSafeErrorMetadata, mergeQuotedText, formatQuotesAsMarkdown } from '~/utils';
+import Tokenizer, { getExactCountWork } from '~/utils/tokenizer';
 import { ATTACHMENT_ONLY_TEXT } from '~/files/context';
-import Tokenizer from '~/utils/tokenizer';
 
 export const omitTitleOptions: Set<string> = new Set([
   'stream',
@@ -37,7 +43,24 @@ export function payloadParser({
   if (isAgentsEndpoint(endpoint)) {
     return;
   }
-  return req.body?.endpointOption?.model_parameters;
+  const modelParameters = req.body?.endpointOption?.model_parameters;
+  if (modelParameters == null || req.reasoningOverrideBase == null) {
+    return modelParameters;
+  }
+
+  const { key, hadValue, value } = req.reasoningOverrideBase;
+  const persistedParameters = { ...modelParameters };
+  if (hadValue) {
+    persistedParameters[key] = value;
+  } else {
+    delete persistedParameters[key];
+  }
+  if (req.reasoningOverrideBase.thinkingHadValue === true) {
+    persistedParameters.thinking = req.reasoningOverrideBase.thinkingValue;
+  } else if (req.reasoningOverrideBase.thinkingHadValue === false) {
+    delete persistedParameters.thinking;
+  }
+  return persistedParameters;
 }
 
 /**
@@ -51,6 +74,7 @@ const BASE64_BYTES_PER_PDF_PAGE = 75_000;
 const PDF_TOKENS_PER_PAGE_CLAUDE = 2000;
 const PDF_TOKENS_PER_PAGE_OPENAI = 1500;
 const URL_DOCUMENT_FALLBACK_TOKENS = 2000;
+const BINARY_DOCUMENT_BYTES_PER_TOKEN = 4;
 
 type ContentBlock = {
   type?: string;
@@ -58,9 +82,10 @@ type ContentBlock = {
   source?: { type?: string; data?: string; media_type?: string; content?: unknown[] };
   source_type?: string;
   mime_type?: string;
+  mimeType?: string;
   data?: string;
   text?: string;
-  tool_call?: { name?: string; args?: string; output?: string };
+  tool_call?: { id?: string; name?: string; args?: string; output?: string };
 };
 
 export type FormattedMessageContentPart = {
@@ -101,16 +126,24 @@ export function applyAttachmentOnlyText(
   formattedMessage.content = ATTACHMENT_ONLY_TEXT;
 }
 
-export function prependFileContext(
+/**
+ * Prepends context text to a formatted message: joined ahead of its string
+ * content or first text part, or added as a leading text part when it has
+ * neither. Array content is replaced, never edited in place: a formatted copy
+ * shares its array with the stored row it came from, so the stored row and
+ * every other reader of it stay untouched.
+ */
+export function prependContextText(
   formattedMessage: FormattedMessageWithContent,
-  fileContext?: string | null,
+  text: string | null | undefined,
+  separator = '\n',
 ): void {
-  if (!fileContext) {
+  if (!text) {
     return;
   }
 
   if (typeof formattedMessage.content === 'string') {
-    formattedMessage.content = `${fileContext}\n${formattedMessage.content}`;
+    formattedMessage.content = `${text}${separator}${formattedMessage.content}`;
     return;
   }
 
@@ -118,13 +151,24 @@ export function prependFileContext(
     return;
   }
 
-  const textPart = formattedMessage.content.find((part) => part.type === ContentTypes.TEXT);
-  if (textPart != null && typeof textPart.text === 'string') {
-    textPart.text = `${fileContext}\n${textPart.text}`;
+  const index = formattedMessage.content.findIndex(
+    (part) => part.type === ContentTypes.TEXT && typeof part.text === 'string',
+  );
+  if (index < 0) {
+    formattedMessage.content = [{ type: ContentTypes.TEXT, text }, ...formattedMessage.content];
     return;
   }
+  const textPart = formattedMessage.content[index];
+  formattedMessage.content = formattedMessage.content.map((part, position) =>
+    position === index ? { ...textPart, text: `${text}${separator}${textPart.text}` } : part,
+  );
+}
 
-  formattedMessage.content.unshift({ type: ContentTypes.TEXT, text: fileContext });
+export function prependFileContext(
+  formattedMessage: FormattedMessageWithContent,
+  fileContext?: string | null,
+): void {
+  prependContextText(formattedMessage, fileContext);
 }
 
 /**
@@ -194,6 +238,23 @@ function estimateImageBlockTokens(block: ContentBlock, isClaude: boolean): numbe
   return estimateImageDataTokens(base64Data, isClaude);
 }
 
+/**
+ * A base64 document that is neither a PDF nor an image reaches the model as its contents, not as
+ * base64: a textual one is counted by its decoded text, a binary one (Office formats) by its
+ * decoded size. Tokenizing the base64 itself would count about twice a text file's real tokens.
+ */
+function estimateBase64DocumentTokens(
+  data: string,
+  mime: string,
+  countTokens?: (text: string) => number,
+): number {
+  if (!mime.startsWith('text/')) {
+    return Math.ceil((data.length * 3) / 4 / BINARY_DOCUMENT_BYTES_PER_TOKEN);
+  }
+  const text = Buffer.from(data, 'base64').toString('utf8');
+  return countTokens != null ? countTokens(text) : Math.ceil(text.length / 4);
+}
+
 function estimateDocumentBlockTokens(
   block: ContentBlock,
   isClaude: boolean,
@@ -213,7 +274,7 @@ function estimateDocumentBlockTokens(
       if (mime.startsWith('image/')) {
         return estimateImageDataTokens(block.data, isClaude);
       }
-      return countTokens != null ? countTokens(block.data) : Math.ceil(block.data.length / 4);
+      return estimateBase64DocumentTokens(block.data, mime, countTokens);
     }
     return URL_DOCUMENT_FALLBACK_TOKENS;
   }
@@ -233,9 +294,7 @@ function estimateDocumentBlockTokens(
       if (mime.startsWith('image/')) {
         return estimateImageDataTokens(block.source.data, isClaude);
       }
-      return countTokens != null
-        ? countTokens(block.source.data)
-        : Math.ceil(block.source.data.length / 4);
+      return estimateBase64DocumentTokens(block.source.data, mime, countTokens);
     }
     if (block.source.type === 'url') {
       return URL_DOCUMENT_FALLBACK_TOKENS;
@@ -260,32 +319,42 @@ function estimateDocumentBlockTokens(
 }
 
 /**
- * Estimates token cost for image and document blocks in a message's
- * content array. Covers: image_url, image, image_file, document, file.
+ * Google/Vertex native media blocks (`{ type: 'media', mimeType, data | fileUri }`), as built by
+ * the file encoders and YouTube links. Mirrors the agents SDK's media accounting so these blocks
+ * are not skipped by the precomputed context budget.
  */
-export function estimateMediaTokensForMessage(
-  content: unknown,
+function estimateMediaBlockTokens(
+  block: ContentBlock,
   isClaude: boolean,
-  getTokenCount?: (text: string) => number,
+  countTokens: (text: string) => number,
 ): number {
-  if (!Array.isArray(content)) {
-    return 0;
+  const mime = (block.mimeType ?? block.mime_type ?? '').split(';')[0].trim().toLowerCase();
+  const data = typeof block.data === 'string' && block.data.length > 0 ? block.data : undefined;
+
+  if (mime.startsWith('audio/') || mime.startsWith('video/')) {
+    const timed = estimateTimedMediaBlockTokens({ ...block, mimeType: mime });
+    return Math.ceil(timed * IMAGE_TOKEN_SAFETY_MARGIN);
   }
-  let tokens = 0;
-  for (const block of content as ContentBlock[]) {
-    if (block == null || typeof block !== 'object' || typeof block.type !== 'string') {
-      continue;
-    }
-    const type = block.type;
-    if (type === 'image_url' || type === 'image' || type === 'image_file') {
-      tokens += estimateImageBlockTokens(block, isClaude);
-      continue;
-    }
-    if (type === 'document' || type === 'file') {
-      tokens += estimateDocumentBlockTokens(block, isClaude, getTokenCount);
-    }
+  if (data == null) {
+    return mime.startsWith('image/') ? 1024 : URL_DOCUMENT_FALLBACK_TOKENS;
   }
-  return tokens;
+  if (mime.startsWith('image/')) {
+    return estimateImageDataTokens(data, isClaude);
+  }
+  if (mime === 'application/pdf') {
+    const comma = data.startsWith('data:') ? data.indexOf(',') : -1;
+    return estimateDocumentBlockTokens(
+      {
+        type: 'file',
+        source_type: 'base64',
+        mime_type: mime,
+        data: comma >= 0 ? data.slice(comma + 1) : data,
+      },
+      isClaude,
+      countTokens,
+    );
+  }
+  return Math.max(URL_DOCUMENT_FALLBACK_TOKENS, data.length);
 }
 
 /**
@@ -337,6 +406,11 @@ export function countFormattedMessageTokens(
           continue;
         }
 
+        if (type === 'media') {
+          numTokens += estimateMediaBlockTokens(block, isClaude, countTokens);
+          continue;
+        }
+
         if (type === ContentTypes.TOOL_CALL && block.tool_call != null) {
           const { name, args, output } = block.tool_call;
           if (typeof name === 'string' && name) {
@@ -378,9 +452,114 @@ export function countFormattedMessageTokens(
   return isClaude ? Math.ceil(numTokens * CLAUDE_TOKEN_CORRECTION) : numTokens;
 }
 
-export function createTokenCounter(encoding: Parameters<typeof Tokenizer.getTokenCount>[1]) {
+/**
+ * Exact token count of the tool results a turn retains beyond its last context
+ * snapshot.
+ *
+ * Snapshots are dispatched pre-invoke, so the results of the tools the call they
+ * precede requested are never in them; normally the next call's snapshot carries
+ * those results as kept-message context, but a run that stops at the tool-call
+ * limit makes no next call — the result stays on the response and in no snapshot.
+ * `priorToolCallIds` are the calls the last snapshot already saw, so a call whose
+ * id is absent from it belongs to that final, unsnapshotted step. The boundary is
+ * the call id rather than a content index because completion reshapes the array —
+ * skill cards are unshifted onto the front and `hide_sequential_outputs` replaces
+ * it with a filtered one — so any index recorded mid-run means something else by
+ * the time the turn is saved. A call with no id cannot be placed and is skipped.
+ *
+ * Only the tool OUTPUT counts. A call's name and arguments are model output,
+ * already carried by the snapshot's `completedOutputTokens`, so counting them
+ * again would double them. The result-message framing the next turn adds (role,
+ * tool_call_id, per-message overhead) is left out as well: the figure is added to
+ * exact provider accounting, so it errs low rather than overstating the context.
+ * Non-string outputs are skipped, matching {@link countFormattedMessageTokens}.
+ *
+ * `maxCountChars` bounds the tokenization this turn may cost (one call can request
+ * several tools, so the budget spans all their results). It is spent in UTF-8 bytes'
+ * worth of merge work ({@link getExactCountWork}), not characters: one long unbroken
+ * run costs the square of its byte length, so 200 KB of whitespace from a scraped page or
+ * a program's output cannot block the event loop for seconds under a budget sized
+ * for prose. `countExact` returns `undefined` for content it cannot count exactly. Either limit withdraws the whole
+ * figure: a turn whose gauge is missing the retained result is better than one
+ * whose exact figures absorbed a guess. The Claude framing correction is applied,
+ * matching the counter that produced the snapshot.
+ */
+export function countRetainedToolTokens({
+  contentParts,
+  priorToolCallIds,
+  countExact,
+  maxCountChars = DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
+  isClaude = false,
+}: {
+  contentParts: ReadonlyArray<unknown> | null | undefined;
+  priorToolCallIds: ReadonlySet<string> | null | undefined;
+  countExact: (text: string) => number | undefined;
+  maxCountChars?: number;
+  isClaude?: boolean;
+}): number | undefined {
+  if (!Array.isArray(contentParts)) {
+    return 0;
+  }
+  let tokens = 0;
+  let workCounted = 0;
+  for (const candidate of contentParts) {
+    const part = candidate as ContentBlock | null | undefined;
+    if (part == null || part.type !== ContentTypes.TOOL_CALL) {
+      continue;
+    }
+    const { id, output } = part.tool_call ?? {};
+    if (typeof id !== 'string' || id.length === 0 || priorToolCallIds?.has(id) === true) {
+      continue;
+    }
+    if (typeof output !== 'string' || output.length === 0) {
+      continue;
+    }
+    /** Work is never below length, so oversized output is refused before any scan,
+     *  and the scan itself stops at the remaining budget. */
+    const remaining = maxCountChars - workCounted;
+    if (output.length > remaining) {
+      return undefined;
+    }
+    workCounted += getExactCountWork(output, {
+      limit: remaining,
+      encoding: isClaude ? 'claude' : 'o200k_base',
+    });
+    if (workCounted > maxCountChars) {
+      return undefined;
+    }
+    const counted = countExact(output);
+    if (counted == null) {
+      return undefined;
+    }
+    tokens += counted;
+  }
+  return isClaude ? Math.ceil(tokens * CLAUDE_TOKEN_CORRECTION) : tokens;
+}
+
+/** The tool calls a content array carries, by provider id — the boundary a later
+ *  save path measures "retained past this snapshot" against. */
+export function collectToolCallIds(
+  contentParts: ReadonlyArray<unknown> | null | undefined,
+): Set<string> {
+  const ids = new Set<string>();
+  if (!Array.isArray(contentParts)) {
+    return ids;
+  }
+  for (const candidate of contentParts) {
+    const part = candidate as ContentBlock | null | undefined;
+    const id = part?.type === ContentTypes.TOOL_CALL ? part.tool_call?.id : undefined;
+    if (typeof id === 'string' && id.length > 0) {
+      ids.add(id);
+    }
+  }
+  return ids;
+}
+
+function createMessageTokenCounter(
+  encoding: Parameters<typeof Tokenizer.getTokenCount>[1],
+  countTokens: (text: string) => number,
+): TokenCounter {
   const isClaude = encoding === 'claude';
-  const countTokens = (text: string) => Tokenizer.getTokenCount(text, encoding);
   return function (message: BaseMessage): number {
     const count = getTokenCountForMessage(
       message,
@@ -389,6 +568,13 @@ export function createTokenCounter(encoding: Parameters<typeof Tokenizer.getToke
     );
     return isClaude ? Math.ceil(count * CLAUDE_TOKEN_CORRECTION) : count;
   };
+}
+
+export async function createCachedTokenCounter(
+  encoding: Parameters<typeof Tokenizer.getTokenCount>[1],
+): Promise<TokenCounter> {
+  const countTokens = await Tokenizer.createExactTokenCounter(encoding ?? 'o200k_base');
+  return markTokenCounterCacheCompatible(createMessageTokenCounter(encoding, countTokens));
 }
 
 export function logToolError(_graph: unknown, error: unknown, toolId: string): void {
@@ -402,10 +588,10 @@ export function logToolError(_graph: unknown, error: unknown, toolId: string): v
   if ((error as Error | undefined)?.name === 'GraphInterrupt') {
     return;
   }
-  logAxiosError({
-    error,
-    message: `[api/server/controllers/agents/client.js #chatCompletion] Tool Error "${toolId}"`,
-  });
+  logger.error(
+    `[api/server/controllers/agents/client.js #chatCompletion] Tool Error "${toolId}"`,
+    getSafeErrorMetadata(error),
+  );
 }
 
 const AGENT_SUFFIX_PATTERN = /____(\d+)$/;
@@ -522,7 +708,10 @@ export function createMultiAgentMapper(primaryAgent: Agent, agentConfigs?: Map<s
 
       return { ...message, content: finalContent as TMessage['content'] };
     } catch (error) {
-      logger.error('[AgentClient] Error processing multi-agent message:', error);
+      logger.error(
+        '[AgentClient] Error processing multi-agent message:',
+        getSafeErrorMetadata(error),
+      );
       return message;
     }
   };

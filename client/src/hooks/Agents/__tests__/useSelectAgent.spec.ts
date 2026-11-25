@@ -1,11 +1,14 @@
 import { renderHook, act } from '@testing-library/react';
 import { EModelEndpoint } from 'librechat-data-provider';
-import type { TConversation } from 'librechat-data-provider';
+import type { Agent, TAgentsMap, TConversation } from 'librechat-data-provider';
 
 const mockNewConversation = jest.fn();
 const mockFetchQuery = jest.fn();
 const mockGetConversation = jest.fn();
 const mockGetDefaultConversation = jest.fn();
+const listedAgent = { id: 'agent-1', name: 'Agent' } as Agent;
+const loadedAgentsMap: TAgentsMap = { [listedAgent.id]: listedAgent };
+let mockAgentsMap: TAgentsMap | undefined = loadedAgentsMap;
 
 jest.mock('@tanstack/react-query', () => ({
   useQueryClient: jest.fn(() => ({ fetchQuery: mockFetchQuery })),
@@ -27,23 +30,43 @@ jest.mock('~/hooks/Conversations/useDefaultConvo', () => ({
 }));
 
 jest.mock('~/Providers/AgentsMapContext', () => ({
-  useAgentsMapContext: jest.fn(() => ({ 'agent-1': { id: 'agent-1', name: 'Agent' } })),
+  useAgentsMapContext: jest.fn(() => mockAgentsMap),
 }));
 
-jest.mock('~/utils', () => ({ logger: { log: jest.fn() } }));
+jest.mock('~/utils', () => ({
+  logger: { log: jest.fn() },
+  specDisplayFieldReset: {
+    spec: null,
+    iconURL: null,
+    modelLabel: null,
+    greeting: undefined,
+  },
+}));
 
+import { resetCatalogWarmup, useCatalogReady } from '~/hooks/useCatalogWarmup';
 import useSelectAgent from '../useSelectAgent';
 
 describe('useSelectAgent', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    resetCatalogWarmup();
+    mockAgentsMap = loadedAgentsMap;
     mockGetConversation.mockResolvedValue({ endpoint: EModelEndpoint.agents } as TConversation);
     mockGetDefaultConversation.mockImplementation(
-      ({ conversation }: { conversation: Partial<TConversation> }) => conversation,
+      ({
+        conversation,
+        preset,
+      }: {
+        conversation: Partial<TConversation>;
+        preset: Partial<TConversation>;
+      }) => ({
+        ...conversation,
+        ...preset,
+      }),
     );
   });
 
-  it('opens a fresh composer first and keeps it when the agent details arrive', async () => {
+  it('opens one fresh composer without waiting for or reopening it for metadata', async () => {
     mockFetchQuery.mockResolvedValue({ id: 'agent-1', name: 'Full Agent' });
     const { result } = renderHook(() => useSelectAgent());
 
@@ -51,12 +74,12 @@ describe('useSelectAgent', () => {
       await result.current.onSelect('agent-1');
     });
 
-    expect(mockNewConversation).toHaveBeenCalledTimes(2);
-    expect(mockNewConversation.mock.calls[0][0].keepComposerState).toBe(false);
-    expect(mockNewConversation.mock.calls[1][0].keepComposerState).toBe(true);
+    expect(mockNewConversation).toHaveBeenCalledTimes(1);
+    expect(mockNewConversation.mock.calls[0][0].keepComposerState).toBeUndefined();
+    expect(mockFetchQuery).not.toHaveBeenCalled();
   });
 
-  it('keeps the composer when the agent details cannot be fetched', async () => {
+  it('does not couple selection to a metadata request', async () => {
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     mockFetchQuery.mockRejectedValue(new Error('offline'));
     const { result } = renderHook(() => useSelectAgent());
@@ -65,8 +88,8 @@ describe('useSelectAgent', () => {
       await result.current.onSelect('agent-1');
     });
 
-    expect(mockNewConversation).toHaveBeenCalledTimes(2);
-    expect(mockNewConversation.mock.calls[1][0].keepComposerState).toBe(true);
+    expect(mockNewConversation).toHaveBeenCalledTimes(1);
+    expect(mockFetchQuery).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
 
@@ -82,7 +105,109 @@ describe('useSelectAgent', () => {
     });
 
     expect(mockGetDefaultConversation).not.toHaveBeenCalled();
-    expect(mockNewConversation.mock.calls[0][0].keepComposerState).toBe(false);
-    expect(mockNewConversation.mock.calls[1][0].keepComposerState).toBe(true);
+    expect(mockNewConversation.mock.calls[0][0].keepComposerState).toBeUndefined();
+    expect(mockFetchQuery).not.toHaveBeenCalled();
+  });
+
+  it('clears model spec display fields when selecting an agent', async () => {
+    mockGetConversation.mockResolvedValue({
+      endpoint: EModelEndpoint.openAI,
+      spec: 'ClickHouse Agent',
+      iconURL: EModelEndpoint.bedrock,
+      modelLabel: 'ClickHouse Agent',
+    } as TConversation);
+    mockFetchQuery.mockResolvedValue({ id: 'agent-1', name: 'Full Agent' });
+    const { result } = renderHook(() => useSelectAgent());
+
+    await act(async () => {
+      await result.current.onSelect('agent-1');
+    });
+
+    const firstConversation = mockNewConversation.mock.calls[0][0].template;
+    expect(firstConversation).toMatchObject({
+      endpoint: EModelEndpoint.agents,
+      agent_id: 'agent-1',
+      spec: null,
+      iconURL: null,
+      modelLabel: null,
+      codeWorkspaces: undefined,
+    });
+  });
+
+  it('does not carry a prior agent workspace binding into the selected agent', async () => {
+    mockGetConversation.mockResolvedValue({
+      endpoint: EModelEndpoint.agents,
+      agent_id: 'agent-old',
+      codeWorkspaces: [{ environmentId: 'machine-a', workspaceId: 'project-old' }],
+    } as TConversation);
+    mockFetchQuery.mockResolvedValue({ id: 'agent-1', name: 'Full Agent' });
+    const { result } = renderHook(() => useSelectAgent());
+
+    await act(async () => {
+      await result.current.onSelect('agent-1');
+    });
+
+    expect(mockNewConversation.mock.calls[0][0].template.codeWorkspaces).toBeUndefined();
+    expect(mockFetchQuery).not.toHaveBeenCalled();
+    expect(mockGetDefaultConversation.mock.calls[0][0].conversation.codeWorkspaces).toBeUndefined();
+  });
+
+  it('leaves subsequent workspace choices to the active conversation', async () => {
+    const selectedWorkspace = [{ environmentId: 'machine-a', workspaceId: 'project-a' }];
+    mockGetConversation
+      .mockResolvedValueOnce({
+        endpoint: EModelEndpoint.agents,
+        agent_id: 'agent-old',
+      } as TConversation)
+      .mockResolvedValueOnce({
+        endpoint: EModelEndpoint.agents,
+        agent_id: 'agent-1',
+        codeWorkspaces: selectedWorkspace,
+      } as TConversation);
+    mockFetchQuery.mockResolvedValue({ id: 'agent-1', name: 'Full Agent' });
+    const { result } = renderHook(() => useSelectAgent());
+
+    await act(async () => {
+      await result.current.onSelect('agent-1');
+    });
+
+    expect(mockNewConversation.mock.calls[0][0].template.codeWorkspaces).toBeUndefined();
+    expect(mockFetchQuery).not.toHaveBeenCalled();
+  });
+
+  describe('agents catalog readiness', () => {
+    const renderSelection = () =>
+      renderHook(() => ({
+        selection: useSelectAgent(),
+        catalogReady: useCatalogReady('agents'),
+      }));
+
+    it('selects an agent before the deferred catalog has loaded, and releases the catalog', async () => {
+      mockAgentsMap = undefined;
+      const { result } = renderSelection();
+      expect(result.current.catalogReady).toBe(false);
+
+      await act(async () => {
+        await result.current.selection.onSelect('agent-new');
+      });
+
+      expect(mockNewConversation).toHaveBeenCalledTimes(1);
+      expect(mockNewConversation.mock.calls[0][0].template).toMatchObject({
+        endpoint: EModelEndpoint.agents,
+        agent_id: 'agent-new',
+      });
+      expect(result.current.catalogReady).toBe(true);
+    });
+
+    it('refuses an agent that a loaded catalog does not list', async () => {
+      const { result } = renderSelection();
+
+      await act(async () => {
+        await result.current.selection.onSelect('agent-missing');
+      });
+
+      expect(mockNewConversation).not.toHaveBeenCalled();
+      expect(result.current.catalogReady).toBe(false);
+    });
   });
 });

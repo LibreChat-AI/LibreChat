@@ -50,3 +50,5 @@ export {
   type ChatCompletionValidationSuccess,
   type ChatCompletionValidationFailure,
 } from './service';
+
+export { createServerToolResults } from './results';

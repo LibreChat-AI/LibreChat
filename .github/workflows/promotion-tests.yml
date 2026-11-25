@@ -1,0 +1,35 @@
+name: Main Promotion Policy Tests
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - '.github/workflows/promote-main.yml'
+      - '.github/workflows/promotion-tests.yml'
+      - '.github/workflows/backend-review.yml'
+      - '.github/workflows/frontend-review.yml'
+      - '.github/scripts/test_main_promotion.py'
+      - '.github/CODEOWNERS'
+  push:
+    branches: [dev]
+    paths:
+      - '.github/workflows/promote-main.yml'
+      - '.github/workflows/promotion-tests.yml'
+      - '.github/workflows/backend-review.yml'
+      - '.github/workflows/frontend-review.yml'
+      - '.github/scripts/test_main_promotion.py'
+      - '.github/CODEOWNERS'
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    name: Main promotion denial and fast-forward tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - run: python3 -I .github/scripts/test_main_promotion.py

@@ -123,6 +123,20 @@ describe('Redis generation predecessor create fence', () => {
       currentJob: { active: true, status: 'aborted' },
     });
     await store.updateJob(streamId, { terminalPersistencePending: false }, parent.createdAt);
+    await store.updateJob(streamId, { terminalHostActionPending: true }, parent.createdAt);
+    await expect(
+      createWakeupJob(store, streamId, 'redis-wakeup-terminal-host-action'),
+    ).rejects.toMatchObject({
+      currentJob: { active: true, status: 'aborted' },
+    });
+    await expect(
+      store.createJob(streamId, 'owner-1', streamId, undefined, {
+        generationProtocolVersion: 2,
+      }),
+    ).rejects.toMatchObject({
+      currentJob: { active: true, status: 'aborted' },
+    });
+    await store.updateJob(streamId, { terminalHostActionPending: false }, parent.createdAt);
     const wakeup = await createWakeupJob(store, streamId, 'redis-wakeup-settled');
     expect(wakeup.createdAt).toBeGreaterThanOrEqual(parent.createdAt);
   });

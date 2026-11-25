@@ -159,11 +159,11 @@ describe('Agent Context Utilities', () => {
       expect(mockMCPManager.formatInstructionsForContext).toHaveBeenCalledWith(
         ['server1', 'server2'],
         undefined,
+        undefined,
       );
-      expect(mockLogger.debug).toHaveBeenCalledWith(
-        '[AgentContext] Fetched MCP instructions for servers:',
-        ['server1', 'server2'],
-      );
+      expect(mockLogger.debug).toHaveBeenCalledWith('[AgentContext] Fetched MCP instructions', {
+        serverCount: 2,
+      });
     });
 
     it('should return empty string when MCP manager returns empty', async () => {
@@ -183,9 +183,10 @@ describe('Agent Context Utilities', () => {
 
       expect(result).toBe('');
       expect(mockLogger.error).toHaveBeenCalledWith(
-        '[AgentContext] Failed to get MCP instructions:',
-        error,
+        '[AgentContext] Failed to get MCP instructions',
       );
+      expect(JSON.stringify(jest.mocked(mockLogger.error).mock.calls)).not.toContain(error.message);
+      expect(JSON.stringify(jest.mocked(mockLogger.error).mock.calls)).not.toContain('server1');
     });
 
     it('should work without logger', async () => {
@@ -340,9 +341,7 @@ describe('Agent Context Utilities', () => {
 
       expect(agent.instructions).toBe('Original instructions\n\nMCP instructions');
       expect(agent.additional_instructions).toBe('Shared context');
-      expect(mockLogger.debug).toHaveBeenCalledWith(
-        '[AgentContext] Applied context to agent: test-agent',
-      );
+      expect(mockLogger.debug).toHaveBeenCalledWith('[AgentContext] Applied context to agent');
     });
 
     it('should use ephemeral agent MCP servers when provided', async () => {
@@ -354,17 +353,21 @@ describe('Agent Context Utilities', () => {
 
       mockMCPManager.formatInstructionsForContext.mockResolvedValue('Ephemeral MCP');
 
+      const user = { id: 'user-1', role: 'USER', idOnTheSource: null };
       await applyContextToAgent({
         agent,
         sharedRunContext: 'Context',
         mcpManager: mockMCPManager,
         ephemeralAgent: { mcp: ['ephemeral-server'] },
         logger: mockLogger,
+        user,
       });
 
+      /** The acting user reaches the lookup, which leaves out servers hidden from them. */
       expect(mockMCPManager.formatInstructionsForContext).toHaveBeenCalledWith(
         ['ephemeral-server'],
         undefined,
+        user,
       );
       expect(agent.instructions).toBe('Base instructions\n\nEphemeral MCP');
       expect(agent.additional_instructions).toBe('Context');
@@ -396,6 +399,7 @@ describe('Agent Context Utilities', () => {
 
       expect(mockMCPManager.formatInstructionsForContext).toHaveBeenCalledWith(
         ['agent-server'],
+        undefined,
         undefined,
       );
     });
@@ -478,8 +482,7 @@ describe('Agent Context Utilities', () => {
       expect(agent.additional_instructions).toBe('Shared context');
       // Error is logged by getMCPInstructionsForServers, not applyContextToAgent
       expect(mockLogger.error).toHaveBeenCalledWith(
-        '[AgentContext] Failed to get MCP instructions:',
-        error,
+        '[AgentContext] Failed to get MCP instructions',
       );
     });
 

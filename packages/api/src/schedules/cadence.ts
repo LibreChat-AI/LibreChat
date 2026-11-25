@@ -1,39 +1,19 @@
 import { Cron } from 'croner';
+import {
+  cadenceToCron,
+  cadenceIntervalMinutes,
+  isValidCronExpression,
+} from 'librechat-data-provider';
 import type { TScheduleCadence } from 'librechat-data-provider';
 
 export const SCHEDULE_JITTER_WINDOW_MS = 120_000;
 
 /**
- * Spring-forward compresses consecutive wall-clock occurrences, so the ENFORCEABLE
- * minimum for day-and-longer gaps is the nominal gap minus the largest real-world
- * transition: two hours (Antarctica/Troll; every other zone shifts at most one).
- * A floor set exactly at the nominal value would otherwise admit a schedule that
- * genuinely violates it once a year. Hourly gaps are unaffected (the skipped hours
- * lengthen, never shorten, the gap between occurrences).
+ * Cadence compilation and the interval floor live in `librechat-data-provider` so
+ * the dialog validates against the exact rules this engine enforces. Re-exported
+ * here to keep the engine's imports pointed at one schedules module.
  */
-const DST_COMPRESSION_MINUTES = 120;
-
-const WEEKLY_DEFAULT_DAY = 1;
-
-/**
- * Compiles a structured cadence to a 5-field cron expression. The cadence
- * object stays canonical (UI-native, no cron round-tripping); cron exists only
- * as croner's input.
- */
-export function cadenceToCron(cadence: TScheduleCadence): string {
-  const { frequency, hour, minute } = cadence;
-  if (frequency === 'hourly') {
-    return `${minute} * * * *`;
-  }
-  if (frequency === 'daily') {
-    return `${minute} ${hour} * * *`;
-  }
-  if (frequency === 'weekdays') {
-    return `${minute} ${hour} * * 1-5`;
-  }
-  const days = cadence.daysOfWeek?.length ? cadence.daysOfWeek : [WEEKLY_DEFAULT_DAY];
-  return `${minute} ${hour} * * ${[...days].sort((a, b) => a - b).join(',')}`;
-}
+export { cadenceToCron, cadenceIntervalMinutes, isValidCronExpression };
 
 export function isValidTimezone(timezone: string): boolean {
   try {
@@ -42,34 +22,6 @@ export function isValidTimezone(timezone: string): boolean {
   } catch {
     return false;
   }
-}
-
-/** Minimum minutes between occurrences, for the admin interval floor. */
-export function cadenceIntervalMinutes(cadence: TScheduleCadence): number {
-  if (cadence.frequency === 'hourly') {
-    return 60;
-  }
-  if (cadence.frequency === 'daily' || cadence.frequency === 'weekdays') {
-    return 24 * 60 - DST_COMPRESSION_MINUTES;
-  }
-  // Deduped defensively: the payload schema normalizes new writes, but a legacy
-  // stored [1, 1] would otherwise read as a zero-day gap and fail every floor.
-  const days = cadence.daysOfWeek?.length
-    ? Array.from(new Set(cadence.daysOfWeek))
-    : [WEEKLY_DEFAULT_DAY];
-  if (days.length <= 1) {
-    return 7 * 24 * 60 - DST_COMPRESSION_MINUTES;
-  }
-  // The interval floor must reflect the SHORTEST gap between selected days
-  // (incl. the week wrap-around), not the average — e.g. [Mon, Tue] fires 24h
-  // apart, so it must be rejected against a >1440-minute floor.
-  const sorted = [...days].sort((a, b) => a - b);
-  let minGapDays = 7;
-  for (let i = 0; i < sorted.length; i++) {
-    const gap = i + 1 < sorted.length ? sorted[i + 1] - sorted[i] : 7 - sorted[i] + sorted[0];
-    minGapDays = Math.min(minGapDays, gap);
-  }
-  return minGapDays * 24 * 60 - DST_COMPRESSION_MINUTES;
 }
 
 /**

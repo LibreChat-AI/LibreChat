@@ -13,6 +13,9 @@ const assistantSchema: Schema<IAssistant> = new Schema<IAssistant>(
       index: true,
       required: true,
     },
+    endpoint: {
+      type: String,
+    },
     avatar: {
       type: Schema.Types.Mixed,
       default: undefined,
@@ -39,5 +42,7 @@ const assistantSchema: Schema<IAssistant> = new Schema<IAssistant>(
     timestamps: true,
   },
 );
+
+assistantSchema.index({ tenantId: 1, 'avatar.filepath': 1 });
 
 export default assistantSchema;

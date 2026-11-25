@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import type { NavLink } from '~/common';
+import { isRtlElement } from '~/hooks/Nav/useDirection';
 import SidePanelNav from '~/components/SidePanel/Nav';
 import ExpandedPanel from './ExpandedPanel';
 import { cn } from '~/utils';
@@ -13,6 +14,7 @@ function Sidebar({
   onCollapse,
   onExpand,
   onLeaveInsights,
+  switchToHistory,
   onResizeStart,
   onResizeKeyboard,
 }: {
@@ -24,7 +26,8 @@ function Sidebar({
   onCollapse: () => void;
   onExpand: () => void;
   onLeaveInsights: () => void;
-  onResizeStart: (e: React.MouseEvent) => void;
+  switchToHistory: boolean;
+  onResizeStart: (e: React.MouseEvent<HTMLElement>) => void;
   onResizeKeyboard: (direction: 'shrink' | 'grow') => void;
 }) {
   return (
@@ -36,10 +39,15 @@ function Sidebar({
           onCollapse={onCollapse}
           onExpand={onExpand}
           onLeaveInsights={onLeaveInsights}
+          switchToHistory={switchToHistory}
         />
         <nav
           className={cn(
-            'min-h-0 flex-1 overflow-hidden bg-surface-primary-alt',
+            /** The resize separator at the inline end is transparent until hovered, so
+             *  the edge is drawn here. The panel and the content beside it now sit
+             *  on the same surface, so the fill no longer separates them on its
+             *  own and the boundary has to be a line in every theme. */
+            'border-border-light bg-surface-sidebar min-h-0 flex-1 overflow-hidden border-e',
             expanded ? 'opacity-100' : 'pointer-events-none opacity-0',
           )}
           style={{ transition: expanded ? 'opacity 200ms ease 80ms' : 'opacity 150ms ease' }}
@@ -57,17 +65,19 @@ function Sidebar({
         aria-valuemax={Math.round(maxWidth)}
         tabIndex={expanded ? 0 : -1}
         className={cn(
-          'absolute right-0 top-0 z-10 h-full w-1 cursor-col-resize transition-colors hover:bg-border-medium active:bg-border-heavy',
+          'hover:bg-border-medium active:bg-border-heavy absolute inset-e-0 top-0 z-10 h-full w-1 cursor-col-resize transition-colors',
           expanded ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
         style={{ transition: expanded ? 'opacity 200ms ease 80ms' : 'opacity 150ms ease' }}
         onMouseDown={onResizeStart}
         onKeyDown={(e) => {
-          if (e.key === 'ArrowLeft') {
-            onResizeKeyboard('shrink');
-          } else if (e.key === 'ArrowRight') {
-            onResizeKeyboard('grow');
+          if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') {
+            return;
           }
+          /** The handle sits on the inline-end edge, so the arrow pointing away from the
+           *  sidebar grows it: right in LTR, left in RTL. */
+          const towardEnd = (e.key === 'ArrowRight') !== isRtlElement(e.currentTarget);
+          onResizeKeyboard(towardEnd ? 'grow' : 'shrink');
         }}
       />
     </>

@@ -1,14 +1,21 @@
 const AgentClient = require('../client');
-const { isSteeringSupported, isSteerPreemptSupported } = require('@librechat/api');
+const {
+  GenerationJobManager,
+  isSteeringSupported,
+  isSteerPreemptSupported,
+  isSteerTerminalContinuationSupported,
+} = require('@librechat/api');
 
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
   isSteeringSupported: jest.fn(() => true),
   isSteerPreemptSupported: jest.fn(() => true),
+  isSteerTerminalContinuationSupported: jest.fn(() => true),
 }));
 
 const mockIsSteeringSupported = isSteeringSupported;
 const mockIsPreemptSupported = isSteerPreemptSupported;
+const mockIsTerminalContinuationSupported = isSteerTerminalContinuationSupported;
 
 /** Minimal `this` for the wiring builder — it only reads these three. */
 function buildWiring(streamId, { jobCreatedAt = 1700000000000 } = {}) {
@@ -25,6 +32,7 @@ describe('AgentClient.buildSteerWiring — preempt capability gating', () => {
     jest.clearAllMocks();
     mockIsSteeringSupported.mockReturnValue(true);
     mockIsPreemptSupported.mockReturnValue(true);
+    mockIsTerminalContinuationSupported.mockReturnValue(true);
   });
 
   it('returns both boundary hooks and the poll when preempt is supported', () => {
@@ -33,6 +41,16 @@ describe('AgentClient.buildSteerWiring — preempt capability gating', () => {
     expect(typeof wiring.hook).toBe('function');
     expect(typeof wiring.preemptHook).toBe('function');
     expect(typeof wiring.preemption?.shouldPreempt).toBe('function');
+    expect(typeof wiring.terminalHook).toBe('function');
+  });
+
+  it('omits only terminal continuation when the SDK lacks Stop continuation', () => {
+    mockIsTerminalContinuationSupported.mockReturnValue(false);
+    const wiring = buildWiring('stream-terminal-unsupported');
+
+    expect(typeof wiring.hook).toBe('function');
+    expect(typeof wiring.preemptHook).toBe('function');
+    expect(wiring.terminalHook).toBeUndefined();
   });
 
   /**
@@ -75,5 +93,48 @@ describe('AgentClient.buildSteerWiring — preempt capability gating', () => {
 
     expect(wiring.hook).not.toBe(wiring.preemptHook);
     expect(applySteerPart).not.toHaveBeenCalled();
+  });
+
+  it('durably corrects an applied steer after media encoding rejects its files', async () => {
+    const part = {
+      type: 'steer',
+      steer: 'keep the text',
+      steerId: 'steer-1',
+      files: [{ file_id: 'rejected-file' }],
+    };
+    const turnAttachments = [part.files[0]];
+    const telemetryAttachments = [part.files[0]];
+    const self = {
+      appliedSteerParts: new Map([['steer-1', { index: 2, part }]]),
+      admittedSteerAttachments: new Map([['steer-1', [part.files[0]]]]),
+      turnSharedAttachmentFiles: turnAttachments,
+      attachmentMemoryContext: { attachments: telemetryAttachments },
+      contentParts: [undefined, undefined, part],
+      responseMessageId: 'response-1',
+      conversationId: 'conversation-1',
+      jobCreatedAt: 1700000000000,
+      rollbackSteerAttachmentAdmission: AgentClient.prototype.rollbackSteerAttachmentAdmission,
+    };
+    const emitChunk = jest.spyOn(GenerationJobManager, 'emitChunk').mockResolvedValue();
+
+    await AgentClient.prototype.stripSteerAttachmentRefs.call(self, 'stream-1', {
+      steerId: 'steer-1',
+    });
+
+    expect(self.contentParts[2]).not.toHaveProperty('files');
+    expect(self.turnSharedAttachmentFiles).toBe(turnAttachments);
+    expect(self.turnSharedAttachmentFiles).toEqual([]);
+    expect(self.attachmentMemoryContext.attachments).toBe(telemetryAttachments);
+    expect(self.attachmentMemoryContext.attachments).toEqual([]);
+    expect(self.admittedSteerAttachments).toEqual(new Map());
+    expect(emitChunk).toHaveBeenCalledWith(
+      'stream-1',
+      expect.objectContaining({
+        event: 'on_steer_applied',
+        data: expect.objectContaining({ index: 2, part: self.contentParts[2] }),
+      }),
+      { durable: true, expectedCreatedAt: 1700000000000 },
+    );
+    emitChunk.mockRestore();
   });
 });

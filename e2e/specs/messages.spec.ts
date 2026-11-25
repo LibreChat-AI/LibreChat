@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
 import type { Response, Page, BrowserContext } from '@playwright/test';
+import { getE2EBaseURL } from '../setup/env';
 
-const basePath = 'http://localhost:3080/c/';
+const basePath = new URL('/c/', getE2EBaseURL()).href;
 const initialUrl = `${basePath}new`;
 const endpoints = ['google', 'openAI', 'azureOpenAI'];
 const endpoint = endpoints[1];
@@ -96,11 +97,12 @@ test.describe('Messaging suite', () => {
     const updatedTextElement = page.getByText(editText);
     expect(updatedTextElement).toBeTruthy();
 
-    // Check edit response
+    // Check edit response. Nothing is typed into the editor, so the submit button reads
+    // "Rerun": reissuing an untouched request is a supported action, not a disabled one.
     await page.getByRole('button', { name: 'edit' }).click();
     const editResponsePromise = [
       page.waitForResponse(waitForServerStream),
-      await page.getByRole('button', { name: 'Update & rerun' }).click(),
+      await page.getByRole('button', { name: 'Rerun', exact: true }).click(),
     ];
 
     const [editResponse] = (await Promise.all(editResponsePromise)) as [Response];

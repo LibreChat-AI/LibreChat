@@ -29,6 +29,8 @@ export const SystemCapabilities = {
   READ_AGENTS: 'read:agents',
   MANAGE_AGENTS: 'manage:agents',
   MANAGE_MCP_SERVERS: 'manage:mcpservers',
+  /** Enrolls and revokes deployment-owned Code API workers. */
+  MANAGE_CODE_ENVIRONMENTS: 'manage:code_environments',
   READ_PROMPTS: 'read:prompts',
   MANAGE_PROMPTS: 'manage:prompts',
   READ_SKILLS: 'read:skills',
@@ -44,6 +46,13 @@ export const SystemCapabilities = {
    * would defeat the forensic guarantee.
    */
   READ_AUDIT_LOG: 'read:audit_log',
+  /**
+   * Dead letters of the agent trigger queue. A delivery carries its owner's identity,
+   * so requeueing one runs an agent as that user: reading the queue and acting on it
+   * are granted separately.
+   */
+  READ_EVENTS: 'read:events',
+  MANAGE_EVENTS: 'manage:events',
 } as const;
 
 /** Base capabilities derived from the SystemCapabilities constant. */
@@ -94,6 +103,7 @@ export const CapabilityImplications: Partial<Record<BaseSystemCapability, BaseSy
     [SystemCapabilities.MANAGE_SKILLS]: [SystemCapabilities.READ_SKILLS],
     [SystemCapabilities.MANAGE_SHARED_LINKS]: [SystemCapabilities.READ_SHARED_LINKS],
     [SystemCapabilities.MANAGE_ASSISTANTS]: [SystemCapabilities.READ_ASSISTANTS],
+    [SystemCapabilities.MANAGE_EVENTS]: [SystemCapabilities.READ_EVENTS],
   };
 
 // ---------------------------------------------------------------------------
@@ -177,11 +187,13 @@ export function expandImplications(directCaps: string[]): string[] {
  */
 export const ResourceCapabilityMap: Record<ResourceType, SystemCapability> = {
   [ResourceType.AGENT]: SystemCapabilities.MANAGE_AGENTS,
+  [ResourceType.CODE_ENVIRONMENT]: SystemCapabilities.MANAGE_CODE_ENVIRONMENTS,
   [ResourceType.PROMPTGROUP]: SystemCapabilities.MANAGE_PROMPTS,
   [ResourceType.MCPSERVER]: SystemCapabilities.MANAGE_MCP_SERVERS,
   [ResourceType.REMOTE_AGENT]: SystemCapabilities.MANAGE_AGENTS,
   [ResourceType.SKILL]: SystemCapabilities.MANAGE_SKILLS,
   [ResourceType.SHARED_LINK]: SystemCapabilities.MANAGE_SHARED_LINKS,
+  [ResourceType.SLACK_BOT]: SystemCapabilities.MANAGE_AGENTS,
 };
 
 /**
@@ -252,6 +264,7 @@ export const CAPABILITY_CATEGORIES: CapabilityCategory[] = [
       SystemCapabilities.MANAGE_ASSISTANTS,
       SystemCapabilities.READ_ASSISTANTS,
       SystemCapabilities.MANAGE_MCP_SERVERS,
+      SystemCapabilities.MANAGE_CODE_ENVIRONMENTS,
       SystemCapabilities.MANAGE_SHARED_LINKS,
       SystemCapabilities.READ_SHARED_LINKS,
     ],
@@ -264,6 +277,8 @@ export const CAPABILITY_CATEGORIES: CapabilityCategory[] = [
       SystemCapabilities.READ_USAGE,
       SystemCapabilities.READ_INSIGHTS,
       SystemCapabilities.READ_AUDIT_LOG,
+      SystemCapabilities.MANAGE_EVENTS,
+      SystemCapabilities.READ_EVENTS,
     ],
   },
 ];

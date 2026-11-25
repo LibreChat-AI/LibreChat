@@ -100,6 +100,71 @@ describe('MCPOAuthHandler.refreshOAuthTokens — scope parameter fallback', () =
     global.fetch = originalFetch;
   });
 
+  it.each([408, 429, 500, 502, 503, 504])(
+    'keeps HTTP %i retryable without reading or logging misleading scope/client errors',
+    async (status) => {
+      const cancel = jest.fn().mockResolvedValue(undefined);
+      const text = jest.fn(async () => 'invalid_client invalid_grant invalid_scope not supported');
+      responseQueue = [{ status, ok: false, text, body: { cancel } } as unknown as Response];
+      await expect(
+        MCPOAuthHandler.refreshOAuthTokens(refreshToken, metadata, {}, {}),
+      ).rejects.toMatchObject({
+        name: 'MCPTokenRefreshUnavailableError',
+        cause: { message: `Token refresh temporarily unavailable (HTTP ${status})` },
+      });
+      expect(sentBodies).toHaveLength(1);
+      expect(text).not.toHaveBeenCalled();
+      expect(cancel).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('keeps an outage after the scope fallback retryable', async () => {
+    responseQueue = [scopeRejection, new Response('{"error":"invalid_client"}', { status: 503 })];
+    await expect(
+      MCPOAuthHandler.refreshOAuthTokens(refreshToken, metadata, {}, {}),
+    ).rejects.toMatchObject({ name: 'MCPTokenRefreshUnavailableError' });
+    expect(sentBodies).toHaveLength(2);
+    expect(sentBodies[1]).not.toContain('scope=');
+  });
+
+  it('keeps an outage retryable even when cancelling its response stream fails', async () => {
+    responseQueue = [
+      {
+        status: 503,
+        body: {
+          cancel: async () => {
+            throw new Error('invalid_client');
+          },
+        },
+      } as unknown as Response,
+    ];
+    await expect(
+      MCPOAuthHandler.refreshOAuthTokens(refreshToken, metadata, {}, {}),
+    ).rejects.toMatchObject({ name: 'MCPTokenRefreshUnavailableError' });
+  });
+
+  it.each(['configured', 'discovered'] as const)(
+    'preserves outage status in the %s refresh path',
+    async (mode) => {
+      responseQueue = [new Response('{"error":"invalid_grant"}', { status: 503 })];
+      await expect(
+        MCPOAuthHandler.refreshOAuthTokens(
+          refreshToken,
+          { serverName: metadata.serverName, serverUrl: metadata.serverUrl },
+          {},
+          mode === 'configured'
+            ? {
+                token_url: discovered.token_endpoint,
+                client_id: 'configured-client',
+                scope: 'read',
+              }
+            : {},
+        ),
+      ).rejects.toMatchObject({ name: 'MCPTokenRefreshUnavailableError' });
+      expect(sentBodies).toHaveLength(1);
+    },
+  );
+
   it('retries without scope when the server rejects the scope parameter, then succeeds', async () => {
     responseQueue = [scopeRejection, success];
 

@@ -117,7 +117,7 @@ describe('InMemoryJobStore createJob ownership integrity', () => {
 
       expect(second.createdAt).toBeGreaterThan(first.createdAt);
       expect(second.checkpointNamespace).not.toBe(first.checkpointNamespace);
-      expect(second.checkpointNamespace).toBe(String(second.createdAt));
+      expect(second.checkpointNamespace).not.toBe(String(second.createdAt));
     } finally {
       now.mockRestore();
     }

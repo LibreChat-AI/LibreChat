@@ -1,5 +1,7 @@
-import { get } from 'lodash';
+import get from 'lodash/get';
 import { SystemRoles } from 'librechat-data-provider';
+import type { RecordAuditEntry } from '~/admin/audit';
+import { recordSystemAuditEntry } from '~/admin/audit';
 import { isEnabled } from '~/utils';
 
 export type OpenIdRoleSyncClaimSource = 'access' | 'id' | 'userinfo';
@@ -311,4 +313,112 @@ export function selectOpenIdRole(
   }
 
   return { reason: 'no_matching_role' };
+}
+
+/**
+ * Records a `user.role_changed` entry when an IdP claim moved a user to a new
+ * role (OpenID admin-role claim or role sync). No-op when the role is unchanged.
+ * Fail-open, since it runs inside login and API authentication.
+ */
+export async function recordIdpRoleChange({
+  recordAuditEntry,
+  userId,
+  previousRole,
+  role,
+  source,
+  tenantId,
+}: {
+  recordAuditEntry?: RecordAuditEntry;
+  userId: string;
+  previousRole?: string | null;
+  role?: string | null;
+  source: 'openid_login' | 'remote_agent_oidc';
+  tenantId?: string;
+}): Promise<void> {
+  if (!role || role === previousRole) {
+    return;
+  }
+  const adminChange = role === SystemRoles.ADMIN || previousRole === SystemRoles.ADMIN;
+  await recordSystemAuditEntry(
+    recordAuditEntry,
+    {
+      action: 'user.role_changed',
+      severity: adminChange ? 'critical' : 'warning',
+      actor: { type: 'system', name: 'OpenID role sync' },
+      target: { type: 'user', id: userId },
+      metadata: { previousRole: previousRole ?? null, role, source },
+      tenantId,
+    },
+    '[openidRoleSync]',
+  );
+}
+
+/**
+ * How many times a role write is attempted before it gives up. This bounds an optimistic
+ * concurrency loop rather than tuning a deployment: it runs out only when other role writes
+ * for the same user land between every read and write, so a configurable value could only make
+ * that login fail sooner or keep contending longer, and it stays a constant.
+ */
+const ROLE_WRITE_ATTEMPTS = 3;
+
+/** The part of a stored user the role write reads; callers keep their own user record type. */
+type RoleRecord = { role?: string | null };
+
+type IdpRoleWriteInput<T extends RoleRecord> = {
+  userId: string;
+  /** The fields to persist, `role` included. */
+  update: Partial<T>;
+  /** The stored role the caller read before deciding `update.role`. */
+  observedRole?: string | null;
+  updateUser: (
+    userId: string,
+    update: Partial<T>,
+    expectedState: { role: string | null },
+  ) => Promise<T | null>;
+  findUser: (filter: { _id: string }, fields: string) => Promise<RoleRecord | null>;
+  recordAuditEntry?: RecordAuditEntry;
+  source: 'openid_login' | 'remote_agent_oidc';
+  tenantId?: string;
+};
+
+/**
+ * Persists an IdP-decided role and audits the transition that write performed. The write is
+ * conditional on the stored role the caller read; when a concurrent write moved it first, the
+ * stored role is read again and the write retried from it. Each audit entry therefore names the
+ * role the write replaced, and overlapping logins that make the same change audit it once.
+ * Resolves `null` when the user no longer exists.
+ */
+export async function writeIdpRoleChange<T extends RoleRecord>({
+  userId,
+  update,
+  observedRole,
+  updateUser,
+  findUser,
+  recordAuditEntry,
+  source,
+  tenantId,
+}: IdpRoleWriteInput<T>): Promise<T | null> {
+  let previousRole = observedRole ?? null;
+  for (let attempt = 0; attempt < ROLE_WRITE_ATTEMPTS; attempt++) {
+    const user = await updateUser(userId, update, { role: previousRole });
+    if (user) {
+      await recordIdpRoleChange({
+        recordAuditEntry,
+        userId,
+        previousRole,
+        role: update.role,
+        source,
+        tenantId,
+      });
+      return user;
+    }
+    const current = await findUser({ _id: userId }, 'role');
+    if (!current) {
+      return null;
+    }
+    previousRole = current.role ?? null;
+  }
+  throw new Error(
+    `[openidRoleSync] The stored role of user ${userId} kept changing during the role write`,
+  );
 }

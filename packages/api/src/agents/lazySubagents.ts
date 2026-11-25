@@ -1,5 +1,12 @@
 import { createHash } from 'crypto';
-import type { Agent } from 'librechat-data-provider';
+import { logger } from '@librechat/data-schemas';
+import type { Agent, CodeWorkspaceSelectionErrorReason } from 'librechat-data-provider';
+import type { CodeExecutionContext } from './execution';
+import {
+  CodeWorkspaceSelectionError,
+  describeCodeWorkspaceUnavailableSubagent,
+  getSubagentCodeWorkspaceUnavailableReason,
+} from '~/code/errors';
 
 type VersionedAgent = Pick<
   Agent,
@@ -18,8 +25,13 @@ type VersionedAgent = Pick<
   | 'tool_resources'
   | 'skills'
   | 'skills_enabled'
+  | 'skill_authoring_enabled'
+  | 'skills_scope'
   | 'stateful_code_sessions'
   | 'stateful_code_environment'
+  | 'code_environment_id'
+  | 'code_environment_ids'
+  | 'git_identity'
   | 'artifacts'
   | 'recursion_limit'
   | 'agent_ids'
@@ -28,6 +40,7 @@ type VersionedAgent = Pick<
   | 'hide_sequential_outputs'
   | 'subagents'
   | 'memory_scope'
+  | 'instructionsPrompt'
 > & {
   version?: number;
   actions?: string[];
@@ -77,6 +90,7 @@ export function selectLazySubagentConfig(agent: VersionedAgent): Omit<VersionedA
     description,
     instructions,
     additional_instructions,
+    instructionsPrompt,
     endpoint,
     provider,
     model,
@@ -87,8 +101,13 @@ export function selectLazySubagentConfig(agent: VersionedAgent): Omit<VersionedA
     tool_resources,
     skills,
     skills_enabled,
+    skill_authoring_enabled,
+    skills_scope,
     stateful_code_sessions,
     stateful_code_environment,
+    code_environment_id,
+    code_environment_ids,
+    git_identity,
     artifacts,
     recursion_limit,
     agent_ids,
@@ -106,6 +125,7 @@ export function selectLazySubagentConfig(agent: VersionedAgent): Omit<VersionedA
     description,
     instructions,
     additional_instructions,
+    instructionsPrompt,
     endpoint,
     provider,
     model,
@@ -116,8 +136,13 @@ export function selectLazySubagentConfig(agent: VersionedAgent): Omit<VersionedA
     tool_resources,
     skills,
     skills_enabled,
+    skill_authoring_enabled,
+    skills_scope,
     stateful_code_sessions,
     stateful_code_environment,
+    code_environment_id,
+    code_environment_ids,
+    git_identity,
     artifacts,
     recursion_limit,
     agent_ids,
@@ -141,4 +166,246 @@ export function getLazySubagentConfigId(agent: VersionedAgent): string {
     .update(canonicalize(selectLazySubagentConfig(agent)))
     .digest('hex');
   return `${agent.id}:${version}:${fingerprint}`;
+}
+
+/**
+ * Memoizes one read and one VIEW check per subagent for the life of a request, so machine
+ * inheritance, lazy descriptors and graph members share them. A missing or unviewable agent
+ * resolves to `null`; a failed read rejects for every caller, which each handles as before.
+ */
+export function createViewableSubagentLoader<TAgent>({
+  getAgent,
+  canView,
+}: {
+  getAgent: (agentId: string) => Promise<TAgent | null | undefined>;
+  canView: (agent: TAgent, agentId: string) => Promise<boolean>;
+}): (agentId: string) => Promise<TAgent | null> {
+  const loads = new Map<string, Promise<TAgent | null>>();
+  return (agentId) => {
+    let loading = loads.get(agentId);
+    if (loading == null) {
+      loading = getAgent(agentId).then(async (agent) =>
+        agent != null && (await canView(agent, agentId)) ? agent : null,
+      );
+      loads.set(agentId, loading);
+    }
+    return loading;
+  };
+}
+
+/** The SDK-facing context a routed graph member initializes under. */
+export interface RoutedGraphMemberContext {
+  signal: AbortSignal;
+  /** The per-call-routed parent execution the member follows. */
+  parentRunId: string;
+  /** Stable per parent and member; routing groups the member's route with the parent's. */
+  executionId: string;
+}
+
+/**
+ * Loads the graph members a per-call-routed parent resolves. A member already shared
+ * this request (initialized on its own route) is reused; otherwise it initializes as
+ * a child of the parent's execution so it may follow the parent's machine, and its
+ * config stays with that execution rather than the request-wide graph cache.
+ */
+export function createRoutedGraphMemberLoader<TAgent, TConfig>({
+  getShared,
+  isSkipped,
+  skip,
+  getAgent,
+  canView,
+  initialize,
+  isFatal,
+}: {
+  getShared: (memberId: string) => TConfig | undefined;
+  isSkipped: (memberId: string) => boolean;
+  skip: (memberId: string) => void;
+  getAgent: (memberId: string, signal: AbortSignal) => Promise<TAgent | null | undefined>;
+  canView: (agent: TAgent, memberId: string, signal: AbortSignal) => Promise<boolean>;
+  initialize: (input: {
+    agent: TAgent;
+    memberId: string;
+    context: RoutedGraphMemberContext;
+  }) => Promise<TConfig>;
+  isFatal: (error: unknown, signal: AbortSignal) => boolean;
+}): (memberId: string, parentRunId: string, signal: AbortSignal) => Promise<TConfig | null> {
+  return async (memberId, parentRunId, signal) => {
+    if (signal.aborted) {
+      throw signal.reason ?? new Error('Subagent resolution was aborted.');
+    }
+    const shared = getShared(memberId);
+    if (shared != null) {
+      return shared;
+    }
+    if (isSkipped(memberId)) {
+      return null;
+    }
+    const agent = await getAgent(memberId, signal);
+    if (agent == null || !(await canView(agent, memberId, signal))) {
+      skip(memberId);
+      return null;
+    }
+    const executionId = `${parentRunId}:graph:${memberId}`;
+    try {
+      return await initialize({ agent, memberId, context: { signal, parentRunId, executionId } });
+    } catch (error) {
+      if (isFatal(error, signal)) {
+        throw error;
+      }
+      logger.error(`[lazySubagents] Error initializing routed graph member ${memberId}:`, error);
+      return null;
+    }
+  };
+}
+
+/** What the run's build recorded for a graph member of a lazily resolved subagent. */
+export interface GraphMemberPin<TFlags> {
+  configId: string;
+  subagentCodeFlags?: TFlags;
+  /** Set when the member's machine had no usable workspace when the run was built. */
+  codeWorkspaceUnavailable?: CodeWorkspaceSelectionErrorReason;
+  /** The member's per-call machine choices; without them it has no other route to follow. */
+  subagentHostArgs?: object | null;
+}
+
+/** The inputs a graph member initializes with. */
+export interface GraphMemberInputs<TFlags> {
+  configId: string;
+  codeFlags?: TFlags;
+  codeWorkspaceUnavailable?: CodeWorkspaceSelectionErrorReason;
+}
+
+/**
+ * Initializes a graph member with the inputs its run was built with. A member resolved for a
+ * lazily selected parent is pinned to its build-time record: a document edited since fails the
+ * config id check, and a member the build recorded as unavailable stays unavailable unless it
+ * follows a machine it listed. That refusal is rethrown without `CODE_WORKSPACE_UNAVAILABLE`,
+ * which is fatal to initialization, so the loader drops the member and its parent still runs.
+ *
+ * A member with no record, or one initialized while the run is built, uses its fresh read.
+ * Pinned flags lose nothing on a per-call route: the config id covers every field they derive
+ * from, so a member that passes the id check has the flags the build recorded.
+ */
+export function createGraphMemberInitializer<
+  TAgent extends VersionedAgent,
+  TFlags,
+  TContext,
+  TConfig,
+>({
+  getPin,
+  getFlags,
+  initialize,
+}: {
+  getPin: (memberId: string) => GraphMemberPin<TFlags> | undefined;
+  getFlags: (agent: TAgent) => TFlags;
+  initialize: (
+    input: { agent: TAgent; agentId: string; context: TContext } & GraphMemberInputs<TFlags>,
+  ) => Promise<TConfig>;
+}): (input: {
+  agent: TAgent;
+  memberId: string;
+  context: TContext;
+  /** False while the run is built: a root-level member has no earlier record to hold it to. */
+  pinned: boolean;
+}) => Promise<TConfig> {
+  const unavailable = (memberId: string, reason: CodeWorkspaceSelectionErrorReason): Error =>
+    new Error(`Graph member ${memberId} has no usable code workspace in this run (${reason}).`);
+  return async ({ agent, memberId, context, pinned }) => {
+    const pin = pinned ? getPin(memberId) : undefined;
+    if (pin == null) {
+      return initialize({
+        agent,
+        agentId: memberId,
+        context,
+        configId: getLazySubagentConfigId(agent),
+        codeFlags: getFlags(agent),
+      });
+    }
+    const { codeWorkspaceUnavailable } = pin;
+    if (codeWorkspaceUnavailable != null && pin.subagentHostArgs == null) {
+      throw unavailable(memberId, codeWorkspaceUnavailable);
+    }
+    try {
+      return await initialize({
+        agent,
+        agentId: memberId,
+        context,
+        configId: pin.configId,
+        codeFlags: pin.subagentCodeFlags,
+        codeWorkspaceUnavailable,
+      });
+    } catch (error) {
+      const reason =
+        codeWorkspaceUnavailable == null
+          ? undefined
+          : getSubagentCodeWorkspaceUnavailableReason(error);
+      if (reason == null) {
+        throw error;
+      }
+      throw unavailable(memberId, reason);
+    }
+  };
+}
+
+export interface SubagentCodeAvailability {
+  codeEnvAvailable: boolean;
+  statefulCodeSessions: boolean;
+  codeExecutionContext?: CodeExecutionContext;
+  /** Set when the subagent's machine has no usable workspace in this conversation. */
+  codeWorkspaceUnavailable?: Exclude<CodeWorkspaceSelectionErrorReason, 'locked'>;
+}
+
+/**
+ * Resolves a lazy subagent's code route for its descriptor. A subagent whose machine has no usable
+ * workspace is reported unavailable, with code off, instead of failing its parent's turn; a locked
+ * decision and every other error still propagate.
+ */
+export async function resolveSubagentCodeAvailability({
+  agentId,
+  codeEnvAvailable,
+  statefulCodeSessions,
+  resolveContext,
+}: {
+  agentId: string;
+  codeEnvAvailable: boolean;
+  statefulCodeSessions: boolean;
+  resolveContext: () => Promise<CodeExecutionContext | undefined>;
+}): Promise<SubagentCodeAvailability> {
+  try {
+    return { codeEnvAvailable, statefulCodeSessions, codeExecutionContext: await resolveContext() };
+  } catch (error) {
+    const codeWorkspaceUnavailable = getSubagentCodeWorkspaceUnavailableReason(error);
+    if (!codeWorkspaceUnavailable) {
+      throw error;
+    }
+    logger.warn('[resolveSubagentCodeAvailability] Subagent advertised without a code workspace', {
+      agentId,
+      reason: codeWorkspaceUnavailable,
+    });
+    return { codeEnvAvailable: false, statefulCodeSessions: false, codeWorkspaceUnavailable };
+  }
+}
+
+/**
+ * Keeps an unavailable subagent listed so its parent learns why, while its resolver rejects with
+ * the same `CODE_WORKSPACE_UNAVAILABLE` error so it can never run.
+ */
+export function guardUnavailableSubagent<TContext, TConfig>({
+  description,
+  codeWorkspaceUnavailable,
+  resolve,
+}: {
+  description?: string;
+  codeWorkspaceUnavailable?: CodeWorkspaceSelectionErrorReason;
+  resolve: (context: TContext) => Promise<TConfig>;
+}): { description?: string; resolve: (context: TContext) => Promise<TConfig> } {
+  if (!codeWorkspaceUnavailable) {
+    return { description, resolve };
+  }
+  return {
+    description: describeCodeWorkspaceUnavailableSubagent(description, codeWorkspaceUnavailable),
+    resolve: async () => {
+      throw new CodeWorkspaceSelectionError(codeWorkspaceUnavailable);
+    },
+  };
 }

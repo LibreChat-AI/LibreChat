@@ -22,6 +22,11 @@ function staticCache(staticPath, options = {}) {
   const enableBrotli = isEnabled(process.env.ENABLE_STATIC_ASSET_BROTLI);
 
   const setHeaders = (res, filePath) => {
+    if (res.locals?.privateImageCache) {
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('Vary', 'Cookie');
+      return;
+    }
     if (process.env.NODE_ENV?.toLowerCase() !== 'production') {
       return;
     }

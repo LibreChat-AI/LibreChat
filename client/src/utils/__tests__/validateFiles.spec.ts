@@ -1,7 +1,7 @@
 import { megabyte, fileConfig as defaultFileConfig } from 'librechat-data-provider';
 import type { EndpointFileConfig, FileConfig } from 'librechat-data-provider';
 import type { ExtendedFile } from '~/common';
-import { validateFiles, validateFileSizes } from '../files';
+import { validateFiles, validateFileSizes, partitionUploads } from '../files';
 
 const supportedMimeTypes = defaultFileConfig.endpoints.default.supportedMimeTypes;
 
@@ -19,6 +19,13 @@ function makeEndpointConfig(overrides: Partial<EndpointFileConfig> = {}): Endpoi
 function makeFile(name: string, type: string, size: number): File {
   const content = new ArrayBuffer(size);
   return new File([content], name, { type });
+}
+
+/** Stands in for a file of any size without allocating its bytes, which only the size rules read. */
+function makeSizedFile(name: string, type: string, size: number): File {
+  const file = new File(['content'], name, { type });
+  Object.defineProperty(file, 'size', { value: size });
+  return file;
 }
 
 function makeExtendedFile(overrides: Partial<ExtendedFile> = {}): ExtendedFile {
@@ -46,6 +53,42 @@ describe('validateFiles', () => {
   it('returns true when all checks pass', () => {
     const fileList = [makeFile('doc.pdf', 'application/pdf', 1024)];
     const result = validateFiles({ files, fileList, setError, endpointFileConfig, fileConfig });
+    expect(result).toBe(true);
+    expect(setError).not.toHaveBeenCalled();
+  });
+
+  it('rejects a type outside a restricted endpoint allowlist in unified mode', () => {
+    endpointFileConfig = makeEndpointConfig({
+      supportedMimeTypes: [/^image\/(jpeg|png)$/],
+    });
+    const fileList = [makeFile('notes.txt', 'text/plain', 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig: defaultFileConfig,
+    });
+
+    expect(result).toBe(false);
+    expect(setError).toHaveBeenCalledWith('Unsupported file type: text/plain');
+  });
+
+  it('accepts a type the restricted endpoint allowlist permits in unified mode', () => {
+    endpointFileConfig = makeEndpointConfig({
+      supportedMimeTypes: [/^image\/(jpeg|png)$/],
+    });
+    const fileList = [makeFile('shot.png', 'image/png', 1024)];
+
+    const result = validateFiles({
+      files,
+      fileList,
+      setError,
+      endpointFileConfig,
+      fileConfig: defaultFileConfig,
+    });
+
     expect(result).toBe(true);
     expect(setError).not.toHaveBeenCalled();
   });
@@ -242,5 +285,119 @@ describe('validateFiles', () => {
     const fileList = [makeFile('huge.pdf', 'application/pdf', limit)];
     validateFiles({ files, fileList, setError, endpointFileConfig, fileConfig });
     expect(setError).toHaveBeenCalledWith('File limit reached: 1 files');
+  });
+});
+
+describe('partitionUploads', () => {
+  let files: Map<string, ExtendedFile>;
+  let endpointFileConfig: EndpointFileConfig;
+
+  beforeEach(() => {
+    files = new Map();
+    endpointFileConfig = makeEndpointConfig();
+  });
+
+  it('keeps the files that fit and skips only the ones over the individual limit', () => {
+    const limit = 20 * megabyte;
+    endpointFileConfig = makeEndpointConfig({ fileSizeLimit: limit });
+    const fileList = [
+      makeSizedFile('small.pdf', 'application/pdf', 1 * megabyte),
+      makeSizedFile('huge.pdf', 'application/pdf', 21 * megabyte),
+      makeSizedFile('medium.pdf', 'application/pdf', 5 * megabyte),
+    ];
+
+    const { keptIndices, skipped } = partitionUploads({ files, fileList, endpointFileConfig });
+
+    expect(keptIndices).toEqual([0, 2]);
+    expect(skipped).toEqual([{ index: 1, file: fileList[1], reason: 'fileSize' }]);
+  });
+
+  it('skips every file when all of them are over the individual limit', () => {
+    endpointFileConfig = makeEndpointConfig({ fileSizeLimit: 1 * megabyte });
+    const fileList = [
+      makeSizedFile('one.pdf', 'application/pdf', 2 * megabyte),
+      makeSizedFile('two.pdf', 'application/pdf', 3 * megabyte),
+    ];
+
+    const { keptIndices, skipped } = partitionUploads({ files, fileList, endpointFileConfig });
+
+    expect(keptIndices).toEqual([]);
+    expect(skipped.map(({ reason }) => reason)).toEqual(['fileSize', 'fileSize']);
+  });
+
+  it('treats a file matching an existing attachment as a duplicate without dropping the rest', () => {
+    files = new Map([
+      [
+        'f1',
+        makeExtendedFile({
+          file_id: 'f1',
+          filename: 'report.pdf',
+          size: 1024,
+          type: 'application/pdf',
+        }),
+      ],
+    ]);
+    const fileList = [
+      makeSizedFile('report.pdf', 'application/pdf', 1024),
+      makeSizedFile('notes.pdf', 'application/pdf', 2048),
+    ];
+
+    const { keptIndices, skipped } = partitionUploads({ files, fileList, endpointFileConfig });
+
+    expect(keptIndices).toEqual([1]);
+    expect(skipped).toEqual([{ index: 0, file: fileList[0], reason: 'duplicate' }]);
+  });
+
+  it('skips a file repeated within the same selection and keeps the first copy', () => {
+    const fileList = [
+      makeSizedFile('report.pdf', 'application/pdf', 1024),
+      makeSizedFile('report.pdf', 'application/pdf', 1024),
+    ];
+
+    const { keptIndices, skipped } = partitionUploads({ files, fileList, endpointFileConfig });
+
+    expect(keptIndices).toEqual([0]);
+    expect(skipped).toEqual([{ index: 1, file: fileList[1], reason: 'duplicate' }]);
+  });
+
+  it('leaves size checks alone when they are deferred until after transformation', () => {
+    endpointFileConfig = makeEndpointConfig({ fileSizeLimit: 1 * megabyte });
+    const fileList = [makeSizedFile('huge.pdf', 'application/pdf', 21 * megabyte)];
+
+    const { keptIndices, skipped } = partitionUploads({
+      files,
+      fileList,
+      endpointFileConfig,
+      skipSizeValidation: true,
+    });
+
+    expect(keptIndices).toEqual([0]);
+    expect(skipped).toEqual([]);
+  });
+
+  it('keeps everything when no individual limit is configured', () => {
+    endpointFileConfig = makeEndpointConfig({ fileSizeLimit: 0 });
+    const fileList = [makeSizedFile('huge.pdf', 'application/pdf', 500 * megabyte)];
+
+    const { keptIndices, skipped } = partitionUploads({ files, fileList, endpointFileConfig });
+
+    expect(keptIndices).toEqual([0]);
+    expect(skipped).toEqual([]);
+  });
+
+  it('leaves the batch-wide total limit to validateFileSizes', () => {
+    endpointFileConfig = makeEndpointConfig({
+      fileSizeLimit: 10 * megabyte,
+      totalSizeLimit: 7 * megabyte,
+    });
+    const fileList = [
+      makeSizedFile('one.pdf', 'application/pdf', 4 * megabyte),
+      makeSizedFile('two.pdf', 'application/pdf', 4 * megabyte),
+    ];
+
+    const { keptIndices, skipped } = partitionUploads({ files, fileList, endpointFileConfig });
+
+    expect(keptIndices).toEqual([0, 1]);
+    expect(skipped).toEqual([]);
   });
 });

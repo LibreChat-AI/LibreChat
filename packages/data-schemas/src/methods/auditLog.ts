@@ -14,7 +14,9 @@ import type {
   RecordAuditEntryOptions,
   VerifyAuditChainOptions,
 } from '~/types';
+import type { IndexBuildOptions } from '~/utils/retry';
 import { GENESIS_HASH, PLATFORM_CHAIN_KEY } from '~/schema/auditLog';
+import { createIndexesWithRetry } from '~/utils/retry';
 import { AUDIT_ACTION_CATEGORY } from '~/types/admin';
 import logger from '~/config/winston';
 
@@ -290,7 +292,18 @@ function buildFilter(chainKey: string, filters: AuditLogFilters): FilterQuery<IA
   return query;
 }
 
-export function createAuditLogMethods(mongoose: typeof import('mongoose')): AuditLogMethods {
+/** Longest wait on the request path for a peer's index build before an append fails open. */
+const AUDIT_INDEX_BUILD_DEADLINE_MS = 10_000;
+
+export interface AuditLogMethodOptions {
+  /** Overrides for the append index build; tests shorten its polling and deadline. */
+  indexBuild?: IndexBuildOptions;
+}
+
+export function createAuditLogMethods(
+  mongoose: typeof import('mongoose'),
+  options: AuditLogMethodOptions = {},
+): AuditLogMethods {
   function model(): Model<IAuditLog> {
     return mongoose.models.AuditLog as Model<IAuditLog>;
   }
@@ -301,18 +314,22 @@ export function createAuditLogMethods(mongoose: typeof import('mongoose')): Audi
    * during the startup window before a background build finishes, two writers
    * could insert the same `seq` with no duplicate-key error and silently fork
    * the chain. Build the indexes once before the first append so serialization
-   * never depends on a background build. Memoized; reset on failure so a later
-   * write retries.
+   * never depends on a background build — letting Mongoose's own background
+   * build settle first, so the two never overlap on a single-build engine. The
+   * wait for a peer's build is bounded, because this runs on the request path:
+   * past the deadline the append fails open below instead of holding the
+   * request. Memoized; reset on failure so a later write retries.
    */
   let indexPromise: Promise<unknown> | null = null;
   function ensureIndexes(): Promise<unknown> {
     if (!indexPromise) {
-      indexPromise = model()
-        .createIndexes()
-        .catch((err) => {
-          indexPromise = null;
-          throw err;
-        });
+      indexPromise = createIndexesWithRetry(model(), {
+        peerBuildDeadlineMs: AUDIT_INDEX_BUILD_DEADLINE_MS,
+        ...options.indexBuild,
+      }).catch((err) => {
+        indexPromise = null;
+        throw err;
+      });
     }
     return indexPromise;
   }
@@ -410,7 +427,9 @@ export function createAuditLogMethods(mongoose: typeof import('mongoose')): Audi
           actorType: actor.type,
           targetType: target.type,
           targetId: target.id ?? null,
-          err,
+          /** Name and driver code only: the message can echo query text or connection details. */
+          errName: err instanceof Error ? err.name : typeof err,
+          errCode: (err as { code?: unknown } | null)?.code ?? null,
         });
         if (options?.failClosed) {
           throw err instanceof Error ? err : new Error('Failed to record audit entry');
@@ -642,6 +661,16 @@ export function createAuditLogMethods(mongoose: typeof import('mongoose')): Audi
     const AuditLog = model();
     const chainKey = auditChainKey(tenantId);
 
+    /** Read before the retention boundary, so a row appended in between is
+     * always above the tail and never deleted by a full purge. */
+    const tail = await AuditLog.findOne({ chainKey })
+      .sort({ seq: -1 })
+      .select('seq')
+      .lean<{ seq: number }>();
+    if (!tail) {
+      return { deletedCount: 0 };
+    }
+
     /**
      * Translate the date intent into a contiguous `seq` boundary before deleting.
      * `createdAt` is app-generated, so under multi-instance clock skew a later
@@ -657,18 +686,58 @@ export function createAuditLogMethods(mongoose: typeof import('mongoose')): Audi
       .select('seq')
       .lean<{ seq: number }>();
 
-    const deleteFilter: FilterQuery<IAuditLog> = firstRetained
-      ? { chainKey, seq: { $lt: firstRetained.seq } }
-      : { chainKey };
+    const purge = (
+      metadata: Record<string, number>,
+      outcome?: 'failure',
+    ): RecordAuditEntryInput => ({
+      action: 'audit.purged',
+      severity: 'critical',
+      actor: { type: 'system', name: 'audit-retention' },
+      target: { type: 'audit_log' },
+      metadata: { ...metadata, before: options.before.toISOString() },
+      ...(outcome ? { outcome } : {}),
+      tenantId,
+    });
+
+    /**
+     * A purge that empties the chain would leave its own record to start a fresh
+     * chain at the genesis hash, with nothing tying it to the deleted history. So
+     * an intent record is written first, chained to the current tail, and only
+     * rows up to that tail are deleted: the intent resumes the chain and the
+     * checkpoint below bridges the gap. Without it the chain would restart
+     * unanchored, so a failed write aborts the purge instead of being skipped.
+     * The intent only states what is about to be removed; the result record
+     * written after the delete carries what actually was, so an overlapping
+     * purge or a failed delete never leaves a success claim behind.
+     */
+    const boundary = firstRetained?.seq ?? tail.seq + 1;
+    if (!firstRetained) {
+      const pendingCount = await AuditLog.countDocuments({ chainKey, seq: { $lt: boundary } });
+      await recordAuditEntry(purge({ pendingCount, throughSeq: tail.seq }), { failClosed: true });
+    }
+    const complete = async (deletedCount: number) => {
+      if (!firstRetained) {
+        await recordAuditEntry(
+          purge({ deletedCount, throughSeq: tail.seq }, deletedCount === 0 ? 'failure' : undefined),
+        );
+      }
+    };
 
     /**
      * Retention purge is the one privileged path that removes audit rows. It
      * intentionally uses the raw driver to bypass the append-only Mongoose hooks
      * (the model blocks every delete). Tenant isolation is applied via `chainKey`.
      */
-    // eslint-disable-next-line no-restricted-syntax -- privileged retention purge; append-only hooks block deleteMany, tenant scoped via chainKey
-    const result = await AuditLog.collection.deleteMany(deleteFilter);
+    let result: { deletedCount?: number };
+    try {
+      // eslint-disable-next-line no-restricted-syntax -- privileged retention purge; append-only hooks block deleteMany, tenant scoped via chainKey
+      result = await AuditLog.collection.deleteMany({ chainKey, seq: { $lt: boundary } });
+    } catch (err) {
+      await complete(0);
+      throw err;
+    }
     const deletedCount = result.deletedCount ?? 0;
+    await complete(deletedCount);
 
     logger.warn('[auditLog] retention purge executed', {
       chainKey,
@@ -690,6 +759,22 @@ export function createAuditLogMethods(mongoose: typeof import('mongoose')): Audi
       .sort({ seq: 1 })
       .select('seq prevHash')
       .lean<{ seq: number; prevHash: string }>();
+
+    /** A partial purge is audited after the checkpoint is read, so the new entry
+     * cannot shift the boundary; a failed write is logged, not thrown. */
+    if (firstRetained) {
+      try {
+        await recordAuditEntry(
+          purge({ deletedCount, ...(newFirst ? { throughSeq: newFirst.seq - 1 } : {}) }),
+        );
+      } catch (err) {
+        logger.error('[auditLog] failed to record retention purge', {
+          chainKey,
+          deletedCount,
+          error: err instanceof Error ? err.name : 'unknown error',
+        });
+      }
+    }
 
     return {
       deletedCount,

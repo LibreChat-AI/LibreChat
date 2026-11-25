@@ -1,11 +1,13 @@
-/** v0.8.8-rc1 */
+/** v0.8.9 */
+const { maxWorkers } = require('../config/jest.workers.cjs');
+
 module.exports = {
   roots: ['<rootDir>/src'],
   testEnvironment: 'jsdom',
   testEnvironmentOptions: {
     url: 'http://localhost:3080',
   },
-  collectCoverage: true,
+  collectCoverage: process.env.COVERAGE === 'true',
   collectCoverageFrom: [
     'src/**/*.{js,jsx,ts,tsx}',
     '!<rootDir>/node_modules/',
@@ -25,14 +27,21 @@ module.exports = {
   // },
   moduleNameMapper: {
     '\\.(css)$': 'identity-obj-proxy',
+    /** Mirror the vite resolve.alias so tests parse math with the same tokenizer as production. */
+    '^micromark-extension-math$': 'micromark-extension-llm-math',
     '\\.(jpg|jpeg|png|gif|eot|otf|webp|svg|ttf|woff|woff2|mp4|webm|wav|mp3|m4a|aac|oga)$':
       'jest-file-loader',
     '^test/(.*)$': '<rootDir>/test/$1',
     '^~/(.*)$': '<rootDir>/src/$1',
+    '^@librechat/client$': '<rootDir>/../packages/client/dist/index.cjs',
+    /** One built module of the chat package, for a spec that stands in for a card the package
+     *  draws: `jest.mock('@librechat/chat/dist/components/Text.cjs', …)`. */
+    '^@librechat/chat/dist/(.*)$': '<rootDir>/../packages/chat/dist/$1',
+    '^@librechat/chat$': '<rootDir>/../packages/chat/dist/index.cjs',
     '^librechat-data-provider/react-query$':
       '<rootDir>/../node_modules/librechat-data-provider/src/react-query',
   },
-  maxWorkers: '50%',
+  maxWorkers,
   /** Coverage maps accumulate for the life of a worker, so a long run can push
    * a worker past a gigabyte and get it killed by the OS, which fails whatever
    * suite it was holding. Recycling bloated workers also avoids swap thrash. */
@@ -43,11 +52,14 @@ module.exports = {
   resolver: '<rootDir>/jest.resolver.cjs',
   transform: {
     '\\.[jt]sx?$': 'babel-jest',
+    /** The chat package's build loads its highlighter and markdown plugins with `import()`, which
+     *  jest cannot run natively in a CommonJS file; babel turns it into a `require`. */
+    '/packages/chat/dist/.+\\.cjs$': 'babel-jest',
     '\\.(jpg|jpeg|png|gif|eot|otf|webp|svg|ttf|woff|woff2|mp4|webm|wav|mp3|m4a|aac|oga)$':
       'jest-file-loader',
   },
   transformIgnorePatterns: [
-    '/node_modules/(?!(@ariakit/react-components|@ariakit/react-utils|@ariakit/react-store|@ariakit/components|@ariakit/store|@ariakit/utils|@zattoo/use-double-click|@dicebear|@react-dnd|react-dnd.*|dnd-core|filenamify|filename-reserved-regex|heic-to|lowlight|highlight\\.js|fault|react-markdown|unified|bail|trough|devlop|is-.*|parse-entities|stringify-entities|character-.*|trim-lines|style-to-object|inline-style-parser|html-url-attributes|escape-string-regexp|longest-streak|zwitch|ccount|markdown-table|comma-separated-tokens|space-separated-tokens|web-namespaces|property-information|remark-.*|rehype-.*|recma-.*|hast.*|mdast-.*|unist-.*|vfile.*|micromark.*|estree-util-.*|decode-named-character-reference)/)/',
+    '/node_modules/(?!(@ariakit/react-components|@ariakit/react-utils|@ariakit/react-store|@ariakit/components|@ariakit/store|@ariakit/utils|@zattoo/use-double-click|@dicebear|@react-dnd|react-dnd.*|dnd-core|filenamify|filename-reserved-regex|heic-to|lowlight|highlight\\.js|fault|lucide-react|lucide|morphicons|react-markdown|unified|bail|trough|devlop|is-.*|parse-entities|stringify-entities|character-.*|trim-lines|style-to-object|inline-style-parser|html-url-attributes|escape-string-regexp|longest-streak|zwitch|ccount|markdown-table|comma-separated-tokens|space-separated-tokens|web-namespaces|property-information|remark-.*|rehype-.*|recma-.*|hast.*|mdast-.*|unist-.*|vfile.*|micromark.*|estree-util-.*|decode-named-character-reference)/)/',
   ],
   setupFiles: ['<rootDir>/test/polyfills.js'],
   setupFilesAfterEnv: ['@testing-library/jest-dom/extend-expect', '<rootDir>/test/setupTests.js'],

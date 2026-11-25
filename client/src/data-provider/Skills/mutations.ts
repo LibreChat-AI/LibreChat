@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type {
   TSkill,
   TSkillFile,
+  TSkillImportFailedResponse,
   TCreateSkill,
   TUpdateSkillVariables,
   TUpdateSkillResponse,
@@ -149,7 +150,7 @@ export const useImportSkillMutation = (
   options?: ImportSkillOptions,
 ): UseMutationResult<TSkill, unknown, FormData> => {
   const queryClient = useQueryClient();
-  const { onSuccess, ...rest } = options ?? {};
+  const { onError, onSuccess, ...rest } = options ?? {};
   return useMutation({
     mutationFn: (formData: FormData) => dataService.importSkill(formData),
     ...rest,
@@ -159,6 +160,19 @@ export const useImportSkillMutation = (
       addSkillToCachedLists(queryClient, skill);
       void queryClient.invalidateQueries([QueryKeys.skills]);
       if (onSuccess) onSuccess(skill, variables, context);
+    },
+    onError: (error, variables, context) => {
+      const body = (error as { response?: { data?: Partial<TSkillImportFailedResponse> } })
+        ?.response?.data;
+      if (
+        body?.error === 'skill_import_incomplete' ||
+        body?.error === 'skill_import_rollback_failed' ||
+        body?.error === 'skill_import_cleanup_incomplete'
+      ) {
+        queryClient.removeQueries([QueryKeys.skills], { type: 'inactive' });
+        void queryClient.invalidateQueries([QueryKeys.skills]);
+      }
+      if (onError) onError(error, variables, context);
     },
   });
 };
@@ -244,10 +258,7 @@ export const useDeleteSkillMutation = (
   });
 };
 
-/**
- * Upload a file into a skill. Stubbed in phase 1 — the backend responds 501.
- * The hook is wired now so the frontend can call it once the backend is ready.
- */
+/** Upload or replace a file in a skill and refresh its cached contents. */
 export const useUploadSkillFileMutation = (
   options?: UploadSkillFileOptions,
 ): UseMutationResult<TSkillFile, unknown, TUploadSkillFileVariables> => {
@@ -257,17 +268,31 @@ export const useUploadSkillFileMutation = (
     mutationFn: ({ skillId, formData }: TUploadSkillFileVariables) =>
       dataService.uploadSkillFile(skillId, formData),
     ...rest,
-    onSuccess: (skillFile, variables, context) => {
+    onSuccess: async (skillFile, variables, context) => {
+      await Promise.all([
+        queryClient.cancelQueries([QueryKeys.skillFiles, variables.skillId]),
+        queryClient.cancelQueries([
+          QueryKeys.skillFileContent,
+          variables.skillId,
+          skillFile.relativePath,
+        ]),
+      ]);
       queryClient.setQueryData<TListSkillFilesResponse>(
         [QueryKeys.skillFiles, variables.skillId],
         (prev) => {
-          if (!prev) return { files: [skillFile] };
+          if (!prev) return prev;
           const filtered = prev.files.filter((f) => f.relativePath !== skillFile.relativePath);
           return { files: [...filtered, skillFile] };
         },
       );
       queryClient.invalidateQueries([QueryKeys.skill, variables.skillId]);
       if (onSuccess) onSuccess(skillFile, variables, context);
+      queryClient.invalidateQueries([QueryKeys.skillFiles, variables.skillId]);
+      queryClient.invalidateQueries([
+        QueryKeys.skillFileContent,
+        variables.skillId,
+        skillFile.relativePath,
+      ]);
     },
   });
 };

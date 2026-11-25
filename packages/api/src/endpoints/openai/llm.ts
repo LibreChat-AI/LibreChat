@@ -1,16 +1,28 @@
+import { createHash } from 'node:crypto';
+import { Providers, isOpenAILike } from '@librechat/agents';
 import {
   EModelEndpoint,
   ReasoningEffort,
   ReasoningParameterFormat,
   removeNullishValues,
+  prefersResponsesApiByModel,
   supportsAdaptiveThinking,
+  gpt6Tier,
+  gpt6Release,
 } from 'librechat-data-provider';
 import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
 import type { AzureOpenAIInput } from '@librechat/agents/langchain/openai';
 import type { SettingDefinition } from 'librechat-data-provider';
 import type { OpenAI } from 'openai';
 import type * as t from '~/types';
-import { sanitizeModelName, constructAzureURL } from '~/utils/azure';
+import {
+  sanitizeModelName,
+  constructAzureURL,
+  isCanonicalAzureURL,
+  getAzureDeploymentName,
+  constructAzureChatBasePath,
+  constructAzureInstanceBasePath,
+} from '~/utils/azure';
 import { isEnabled } from '~/utils/common';
 
 type OpenAILLMConfig = Omit<Partial<t.OAIClientOptions>, 'verbosity'> &
@@ -121,29 +133,31 @@ function isOpenAIEndpoint(endpoint?: EModelEndpoint | string | null): boolean {
 }
 
 /**
- * GPT-5.6 models reject function tools combined with `reasoning_effort` in
- * `/v1/chat/completions` (400: "To use function tools, use /v1/responses or
- * set reasoning_effort to 'none'"). Reasoning without tools still works on
- * Chat Completions, but tools are bound after config time, so GPT-5.6
- * reasoning requests default to the Responses API to avoid tool failures.
+ * GPT-5.6 models reason by default and reject function tools alongside
+ * reasoning in `/v1/chat/completions` (400: "To use function tools, use
+ * /v1/responses or set reasoning_effort to 'none'"). Tools are bound after
+ * config time, and the Chat Completions client never transmits the flat
+ * `reasoning_effort` this config sets, so a request there always runs at the
+ * provider's default effort, whether the user chose `none`, another effort, or
+ * nothing. GPT-5.6 therefore defaults to the Responses API, which carries the
+ * selected effort as `reasoning.effort`.
  */
 const responsesApiRequiredPattern = /\bgpt-5\.6\b/;
 
-function requiresResponsesApiForReasoning({
-  model,
-  reasoningEffort,
-}: {
-  model?: string;
-  reasoningEffort?: string | null;
-}): boolean {
-  if (typeof model !== 'string' || !responsesApiRequiredPattern.test(model)) {
+/** Native model defaults apply only to canonical Azure transports; gateways
+ * may implement a different API contract even for the same model name. */
+function isCanonicalAzureBaseURL(baseURL?: string | null, azure?: false | t.AzureOptions): boolean {
+  if (!azure) {
     return false;
   }
-  return (
-    reasoningEffort != null &&
-    reasoningEffort !== ReasoningEffort.unset &&
-    reasoningEffort !== ReasoningEffort.none
-  );
+  if (!baseURL) {
+    return true;
+  }
+  return isCanonicalAzureURL(constructAzureURL({ baseURL, azureOptions: azure }));
+}
+
+function requiresResponsesApi(model?: string): boolean {
+  return typeof model === 'string' && responsesApiRequiredPattern.test(model);
 }
 
 /**
@@ -162,6 +176,52 @@ function isCanonicalOpenAIBaseURL(baseURL?: string | null): boolean {
   }
 }
 
+/**
+ * A `directEndpoint` sends every request to its configured URL, whichever API
+ * the SDK selected, so a URL naming Chat Completions fixes the request schema
+ * along with the destination.
+ */
+function isExactChatCompletionsURL(directEndpoint?: boolean, baseURL?: string | null): boolean {
+  if (directEndpoint !== true || !baseURL) {
+    return false;
+  }
+  try {
+    return /\/chat\/completions\/?$/.test(new URL(baseURL).pathname);
+  } catch {
+    return false;
+  }
+}
+
+export function isNativeCyberRequest({
+  model,
+  endpoint,
+  baseURL,
+  azure,
+  useOpenRouter,
+}: {
+  model?: string;
+  endpoint?: string | null;
+  baseURL?: string | null;
+  azure?: false | t.AzureOptions;
+  useOpenRouter?: boolean;
+}): boolean {
+  if (
+    model !== 'gpt-6-cyber' ||
+    useOpenRouter ||
+    azure ||
+    (endpoint !== EModelEndpoint.openAI && baseURL == null)
+  ) {
+    return false;
+  }
+  // Agents 4.2.2 resolves explicit URLs, API_BASE, BASE_URL, then the SDK gateway.
+  const effectiveURL = baseURL || process.env.OPENAI_API_BASE || process.env.OPENAI_BASE_URL;
+  if (effectiveURL) {
+    return isCanonicalOpenAIBaseURL(effectiveURL);
+  }
+  const gateway = process.env.LANGSMITH_GATEWAY;
+  return !gateway || /^(false|0|no)$/i.test(gateway);
+}
+
 function removeReasoningField(target: Record<string, unknown>, field: string) {
   const { reasoning } = target;
   if (reasoning == null || typeof reasoning !== 'object' || Array.isArray(reasoning)) {
@@ -178,9 +238,10 @@ function removeReasoningField(target: Record<string, unknown>, field: string) {
   target.reasoning = rest;
 }
 
-function removeReasoningPayload(target: Record<string, unknown>) {
+export function removeReasoningPayload(target: Record<string, unknown>): void {
   delete target.reasoning;
   delete target.reasoning_effort;
+  delete target.include_reasoning;
 }
 
 function deleteConfigParam({
@@ -192,6 +253,13 @@ function deleteConfigParam({
   llmConfig: OpenAILLMConfig;
   modelKwargs: Record<string, unknown>;
 }) {
+  if (param === 'top_p' || param === 'topP') {
+    delete llmConfig.topP;
+    delete llmConfig.top_p;
+    delete modelKwargs.topP;
+    delete modelKwargs.top_p;
+    return;
+  }
   if (param === 'reasoning_effort') {
     removeReasoningPayload(llmConfig as Record<string, unknown>);
     removeReasoningPayload(modelKwargs);
@@ -347,6 +415,129 @@ function applyOpenRouterReasoningConfig({
 
   modelKwargs.reasoning = { enabled: true };
   return true;
+}
+
+/**
+ * Translates a scalar `reasoning_effort` parameter into the reasoning fields an
+ * already-resolved OpenAI-compatible client honors, for callers that layer
+ * their own parameters on top of a client configuration built elsewhere
+ * (summarization reusing the agent's client options).
+ *
+ * The override has to land in *top-level* fields. A nested `modelKwargs`
+ * fragment would replace the inherited `modelKwargs` wholesale, and a scalar
+ * `reasoning_effort` is dropped outright: LangChain reads only `reasoning` from
+ * constructor fields — `reasoning_effort` is a call-time option. `reasoning` is
+ * the one shape every OpenAI-compatible client honors, since Chat Completions
+ * re-emits it as `reasoning_effort`, the Responses API sends it as-is, and
+ * `ChatOpenRouter` merges it over an inherited `modelKwargs.reasoning`.
+ *
+ * Mirrors {@link applyOpenRouterReasoningConfig} for OpenRouter's adaptive
+ * Anthropic models, where effort is expressed as `verbosity` rather than
+ * `reasoning.effort`. Non-OpenAI-compatible providers are left untouched:
+ * they have no `reasoning_effort` concept to translate into.
+ */
+export function resolveReasoningParams({
+  provider,
+  model,
+  parameters,
+}: {
+  provider?: string | null;
+  model?: string | null;
+  parameters?: Record<string, unknown>;
+}): Record<string, unknown> | undefined {
+  if (parameters == null || provider == null) {
+    return parameters;
+  }
+
+  const reasoningEffort = parameters.reasoning_effort;
+  if (typeof reasoningEffort !== 'string' || reasoningEffort === ReasoningEffort.unset) {
+    return parameters;
+  }
+
+  const isOpenRouter = provider.toLowerCase() === Providers.OPENROUTER;
+  if (!isOpenRouter && !isOpenAILike(provider as Providers)) {
+    return parameters;
+  }
+
+  const resolved = { ...parameters };
+  delete resolved.reasoning_effort;
+
+  if (isOpenRouter && isOpenRouterAnthropicAdaptiveModel(model)) {
+    /** Adaptive thinking is disabled through the object itself: the inherited
+     * `modelKwargs.reasoning` would otherwise keep it enabled, which the main
+     * flow's `include_reasoning: false` cannot undo. */
+    if (reasoningEffort === ReasoningEffort.none) {
+      resolved.reasoning = { enabled: false };
+      return resolved;
+    }
+    const adaptiveVerbosity = getOpenRouterAnthropicVerbosity(reasoningEffort, model);
+    if (adaptiveVerbosity != null && resolved.verbosity == null) {
+      resolved.verbosity = adaptiveVerbosity;
+    }
+    resolved.reasoning = { enabled: true };
+    return resolved;
+  }
+
+  const inherited = resolved.reasoning;
+  const base =
+    inherited != null && typeof inherited === 'object' && !Array.isArray(inherited)
+      ? (inherited as Record<string, unknown>)
+      : undefined;
+  resolved.reasoning = { ...base, effort: reasoningEffort };
+  return resolved;
+}
+
+const sol62SamplingKeys = [
+  'temperature',
+  'topP',
+  'top_p',
+  'logprobs',
+  'topLogprobs',
+  'top_logprobs',
+] as const;
+
+/** Mutates request copies; explicit undefined values clear inherited summary options. */
+export function applySol62Constraints(
+  parameters: Record<string, unknown>,
+  inherited?: Record<string, unknown>,
+): void {
+  const effective = inherited ? { ...inherited, ...parameters } : parameters;
+  const targets = [effective];
+  const kwargs = effective.modelKwargs;
+  if (kwargs != null && typeof kwargs === 'object' && !Array.isArray(kwargs)) {
+    const copy = { ...kwargs };
+    effective.modelKwargs = copy;
+    targets.push(copy);
+  }
+  for (const target of targets) {
+    if (target.reasoning_effort === 'none' || target.reasoning_effort === 'minimal') {
+      target.reasoning_effort = 'low';
+    }
+    const reasoning = target.reasoning;
+    if (
+      reasoning != null &&
+      typeof reasoning === 'object' &&
+      'effort' in reasoning &&
+      (reasoning.effort === 'none' || reasoning.effort === 'minimal')
+    ) {
+      target.reasoning = { ...reasoning, effort: 'low' };
+    }
+    for (const key of sol62SamplingKeys) delete target[key];
+    if (Array.isArray(target.include)) {
+      target.include = target.include.filter((value) => value !== 'message.output_text.logprobs');
+    }
+  }
+  if (inherited) {
+    for (const key of [
+      'reasoning',
+      'reasoning_effort',
+      'modelKwargs',
+      'include',
+      ...sol62SamplingKeys,
+    ]) {
+      parameters[key] = effective[key];
+    }
+  }
 }
 
 function applyReasoningConfig({
@@ -507,19 +698,25 @@ export function getOpenAILLMConfig({
   addParams,
   dropParams,
   defaultParams,
+  inferenceParameters,
   useOpenRouter,
+  directEndpoint,
+  requestIdentity,
   reasoningFormat = ReasoningParameterFormat.reasoningEffort,
   modelOptions: _modelOptions,
 }: {
   apiKey: string;
   streaming: boolean;
+  requestIdentity?: t.OpenAIConfigOptions['requestIdentity'];
   baseURL?: string | null;
   endpoint?: EModelEndpoint | string | null;
   modelOptions: Partial<t.OpenAIParameters>;
   addParams?: Record<string, unknown>;
   dropParams?: string[];
   defaultParams?: Record<string, unknown>;
+  inferenceParameters?: Record<string, unknown>;
   useOpenRouter?: boolean;
+  directEndpoint?: boolean;
   reasoningFormat?: ReasoningParameterFormat;
   azure?: false | t.AzureOptions;
 }): Pick<t.LLMConfigResult, 'llmConfig' | 'tools'> & {
@@ -543,9 +740,14 @@ export function getOpenAILLMConfig({
     frequency_penalty,
     presence_penalty,
     top_p,
+    modelKwargs: _untrustedModelKwargs,
     ...modelOptions
   } = cleanedModelOptions as Partial<
-    t.OpenAIParameters & { promptCache?: boolean; promptCacheTtl?: '5m' | '1h' }
+    t.OpenAIParameters & {
+      promptCache?: boolean;
+      promptCacheTtl?: '5m' | '1h';
+      modelKwargs?: unknown;
+    }
   >;
 
   const llmConfig = Object.assign(
@@ -556,6 +758,9 @@ export function getOpenAILLMConfig({
     modelOptions,
   ) as OpenAILLMConfig;
 
+  if (top_p != null) {
+    llmConfig.topP = top_p;
+  }
   if (frequency_penalty != null) {
     llmConfig.frequencyPenalty = frequency_penalty;
   }
@@ -566,8 +771,8 @@ export function getOpenAILLMConfig({
     llmConfig.topP = top_p;
   }
 
-  const modelKwargs: Record<string, unknown> = {};
-  let hasModelKwargs = false;
+  const modelKwargs: Record<string, unknown> = { ...inferenceParameters };
+  let hasModelKwargs = Object.keys(modelKwargs).length > 0;
   let reasoningEffort = reasoning_effort;
   let reasoningSummary = reasoning_summary;
   let reasoningMode = reasoning_mode;
@@ -641,6 +846,24 @@ export function getOpenAILLMConfig({
         continue;
       }
 
+      if (
+        key === 'modelKwargs' &&
+        value != null &&
+        typeof value === 'object' &&
+        !Array.isArray(value)
+      ) {
+        applyDefaultParams(modelKwargs, value as Record<string, unknown>);
+        hasModelKwargs = true;
+        continue;
+      }
+      if (key === 'seed' && inferenceParameters != null) {
+        applyDefaultParams(modelKwargs, { [key]: value });
+        hasModelKwargs = true;
+        continue;
+      }
+      if (modelKwargs[key] !== undefined) {
+        continue;
+      }
       if (knownOpenAIParams.has(key)) {
         applyDefaultParams(llmConfig as Record<string, unknown>, { [key]: value });
       } else {
@@ -709,7 +932,31 @@ export function getOpenAILLMConfig({
           }) || hasModelKwargs;
         continue;
       }
+      if (
+        key === 'modelKwargs' &&
+        value != null &&
+        typeof value === 'object' &&
+        !Array.isArray(value)
+      ) {
+        Object.assign(modelKwargs, value);
+        hasModelKwargs = true;
+        continue;
+      }
+      if (
+        inferenceParameters != null &&
+        Object.prototype.hasOwnProperty.call(inferenceParameters, key)
+      ) {
+        modelKwargs[key] = value;
+        hasModelKwargs = true;
+        continue;
+      }
+      if (key === 'seed' && inferenceParameters != null) {
+        modelKwargs[key] = value;
+        hasModelKwargs = true;
+        continue;
+      }
       if (knownOpenAIParams.has(key)) {
+        delete modelKwargs[key];
         (llmConfig as Record<string, unknown>)[key] = value;
       } else {
         hasModelKwargs = true;
@@ -718,7 +965,10 @@ export function getOpenAILLMConfig({
     }
   }
 
-  if (useOpenRouter) {
+  if (reasoningFormat === ReasoningParameterFormat.disabled) {
+    removeReasoningPayload(llmConfig as Record<string, unknown>);
+    removeReasoningPayload(modelKwargs);
+  } else if (useOpenRouter) {
     /**
      * OpenRouter uses a `reasoning` object — `summary` is not supported.
      * ChatOpenRouter treats `reasoning` and `include_reasoning` as mutually exclusive:
@@ -770,29 +1020,79 @@ export function getOpenAILLMConfig({
   }
 
   /**
-   * Default GPT-5.6 reasoning requests to the Responses API unless explicitly set.
-   * Reads `llmConfig.model` (reflects `addParams` overrides) and skips when
-   * `dropParams` removes `reasoning_effort` later anyway (`'reasoning'` only
-   * drops the nested object, not the flat param) or opts out of the Responses
-   * API entirely. Limited to first-party OpenAI: OpenRouter, custom gateways
-   * (non-canonical base URL), and `reasoningFormat: 'disabled'` (no reasoning
-   * payload is sent) keep their existing Chat Completions path.
+   * Default GPT-5.6 to the Responses API unless explicitly set, whatever the
+   * reasoning effort. Reads `llmConfig.model` (reflects `addParams` overrides).
+   * Limited to first-party OpenAI: OpenRouter, custom gateways (non-canonical
+   * base URL), and `reasoningFormat: 'disabled'` keep their existing Chat
+   * Completions path.
+   *
+   * Both GPT-5.6 and GPT-6 route by model, so a drop rule clearing a stored
+   * effort must not also disable their routing. Only an explicit
+   * `useResponsesApi` drop does that.
    */
-  const responsesApiOptedOut =
-    dropParams != null &&
-    (dropParams.includes('reasoning_effort') || dropParams.includes('useResponsesApi'));
-  if (
+  const responsesApiExplicitlyOptedOut =
+    dropParams != null && dropParams.includes('useResponsesApi');
+  const cyber = isNativeCyberRequest({
+    model: llmConfig.model,
+    useOpenRouter,
+    azure,
+    endpoint,
+    baseURL,
+  });
+  const firstPartyOpenAI =
     !useOpenRouter &&
     endpoint === EModelEndpoint.openAI &&
-    isCanonicalOpenAIBaseURL(baseURL) &&
+    (llmConfig.model === 'gpt-6-cyber' ? cyber : isCanonicalOpenAIBaseURL(baseURL));
+  const firstPartyAzure =
+    !useOpenRouter &&
+    endpoint === EModelEndpoint.azureOpenAI &&
+    isCanonicalAzureBaseURL(baseURL, azure);
+  const firstPartyEndpoint = firstPartyOpenAI || firstPartyAzure;
+  const firstPartyResponsesModel =
+    (firstPartyEndpoint && prefersResponsesApiByModel(llmConfig.model)) || cyber;
+  if (
+    firstPartyOpenAI &&
     reasoningFormat !== ReasoningParameterFormat.disabled &&
     llmConfig.useResponsesApi == null &&
-    !responsesApiOptedOut &&
-    requiresResponsesApiForReasoning({ model: llmConfig.model, reasoningEffort })
+    !responsesApiExplicitlyOptedOut &&
+    requiresResponsesApi(llmConfig.model)
   ) {
     llmConfig.useResponsesApi = true;
   }
 
+  /**
+   * Route GPT-6 to Responses before invocation, including unset effort, so tools
+   * bound later cannot accidentally reach Chat Completions with default reasoning.
+   * An exact Chat Completions URL stays on Chat Completions, since the request
+   * reaches that URL whichever API is selected.
+   */
+  if (
+    firstPartyResponsesModel &&
+    llmConfig.useResponsesApi == null &&
+    !responsesApiExplicitlyOptedOut
+  ) {
+    llmConfig.useResponsesApi = !isExactChatCompletionsURL(directEndpoint, baseURL);
+  }
+
+  /**
+   * Declare the first-party surface for the agents SDK's model-specific request
+   * constraints. Computed here, from the same checks the Responses default
+   * above uses, so the decision lives in one place: OpenRouter and custom
+   * gateways route through endpoints whose contract is not OpenAI's, and only
+   * this layer can tell them apart.
+   */
+  if (firstPartyEndpoint) {
+    llmConfig.firstPartyEndpoint = true;
+  }
+
+  /** Settle an administrator route drop before shaping API-specific fields.
+   * The drop loop later removes the flag, but it must already govern effort. */
+  if (responsesApiExplicitlyOptedOut) llmConfig.useResponsesApi = false;
+
+  const tier = gpt6Tier(llmConfig.model);
+  const solLunaRulesApply =
+    firstPartyEndpoint && (tier === 'sol' || tier === 'terra' || tier === 'luna');
+  const sol62 = firstPartyEndpoint && gpt6Release(llmConfig.model)?.toLowerCase() === 'gpt-6.2-sol';
   if (!useOpenRouter) {
     hasModelKwargs =
       applyReasoningConfig({
@@ -805,6 +1105,17 @@ export function getOpenAILLMConfig({
         reasoningMode,
         reasoningContext,
       }) || hasModelKwargs;
+  }
+
+  /** Flat effort is an ignored constructor field in Chat Completions. Convert
+   * after shaping (including nested defaults), before administrator drops. */
+  if (solLunaRulesApply && llmConfig.useResponsesApi !== true) {
+    const effort = llmConfig.reasoning_effort ?? llmConfig.reasoning?.effort;
+    if (effort != null && effort !== '') {
+      modelKwargs.reasoning_effort = effort;
+      hasModelKwargs = true;
+    }
+    delete llmConfig.reasoning_effort;
   }
 
   /** DeepSeek thinking-mode requires `reasoning_content` replay on tool turns (#13366). */
@@ -866,6 +1177,84 @@ export function getOpenAILLMConfig({
     dropParams.forEach((param) => deleteConfigParam({ param, llmConfig, modelKwargs }));
   }
 
+  /** Normalize the final effective value in either API, regardless of whether
+   * it came from saved settings, flat params, or a nested configured object.
+   * Copy nested objects so administrator defaults are never mutated. */
+  if (sol62) {
+    applySol62Constraints(llmConfig as Record<string, unknown>);
+    applySol62Constraints(modelKwargs);
+  } else if (solLunaRulesApply) {
+    if (llmConfig.reasoning?.effort === ReasoningEffort.minimal) {
+      llmConfig.reasoning = { ...llmConfig.reasoning, effort: ReasoningEffort.low };
+    }
+    if (modelKwargs.reasoning_effort === ReasoningEffort.minimal) {
+      modelKwargs.reasoning_effort = ReasoningEffort.low;
+    }
+  }
+
+  /** Sol/Luna/Terra reject sampling controls when Responses uses reasoning. The
+   * provider default is medium, so an unset effort is reasoning-enabled too.
+   * Strip only the request copy; saved settings remain available when the user
+   * switches models or explicitly selects `none`. GPT-6.2 Sol rejects these
+   * controls on both APIs and cannot disable reasoning. */
+  const solLunaResponsesReasoning =
+    solLunaRulesApply &&
+    llmConfig.useResponsesApi === true &&
+    llmConfig.reasoning?.effort !== ReasoningEffort.none;
+  if (!sol62 && solLunaResponsesReasoning) {
+    for (const param of [
+      'temperature',
+      'topP',
+      'top_p',
+      'logprobs',
+      'topLogprobs',
+      'top_logprobs',
+    ]) {
+      deleteConfigParam({ param, llmConfig, modelKwargs });
+    }
+    for (const target of [llmConfig as Record<string, unknown>, modelKwargs]) {
+      if (Array.isArray(target.include)) {
+        target.include = target.include.filter((value) => value !== 'message.output_text.logprobs');
+      }
+    }
+  }
+
+  if (cyber) {
+    if (
+      requestIdentity != null &&
+      dropParams?.some((key) =>
+        ['modelKwargs', 'access_programs', 'safety_identifier'].includes(key),
+      )
+    ) {
+      throw new Error('GPT-6 Cyber requires its access program and safety identifier.');
+    }
+    // No published effort enum: omit restored/user reasoning and leave the provider default.
+    removeReasoningPayload(llmConfig as Record<string, unknown>);
+    removeReasoningPayload(modelKwargs);
+    if (modelKwargs.access_programs === undefined) {
+      modelKwargs.access_programs = { cyber: 'daybreak_red' };
+    }
+    if (requestIdentity != null) {
+      if (!requestIdentity.userId?.trim()) {
+        throw new Error('GPT-6 Cyber requires an authenticated user.');
+      }
+      // Required identity is server-owned, never an administrator's shared literal or a request field.
+      delete (llmConfig as Record<string, unknown>).safety_identifier;
+      delete llmConfig.user;
+      delete modelKwargs.user;
+      modelKwargs.safety_identifier = createHash('sha256')
+        .update(
+          JSON.stringify([
+            'librechat:gpt-6-cyber:v1',
+            requestIdentity.tenantId ?? '',
+            requestIdentity.userId,
+          ]),
+        )
+        .digest('hex');
+    }
+    hasModelKwargs = true;
+  }
+
   hasModelKwargs =
     applyResponsesVerbosity({
       llmConfig,
@@ -885,7 +1274,11 @@ export function getOpenAILLMConfig({
     hasModelKwargs = true;
   }
 
-  if (hasModelKwargs && Object.keys(modelKwargs).length > 0) {
+  if (
+    hasModelKwargs &&
+    Object.keys(modelKwargs).length > 0 &&
+    !dropParams?.includes('modelKwargs')
+  ) {
     llmConfig.modelKwargs = modelKwargs;
   }
 
@@ -895,26 +1288,27 @@ export function getOpenAILLMConfig({
   }
 
   const useModelName = isEnabled(process.env.AZURE_USE_MODEL_AS_DEPLOYMENT_NAME);
+  const model = llmConfig.model;
   const updatedAzure = { ...azure };
   updatedAzure.azureOpenAIApiDeploymentName = useModelName
     ? sanitizeModelName(llmConfig.model || '')
-    : azure.azureOpenAIApiDeploymentName;
+    : azure.azureOpenAIApiDeploymentName ||
+      getAzureDeploymentName(baseURL, azure) ||
+      (firstPartyResponsesModel || llmConfig.useResponsesApi ? model : undefined);
 
   if (process.env.AZURE_OPENAI_DEFAULT_MODEL) {
     llmConfig.model = process.env.AZURE_OPENAI_DEFAULT_MODEL;
   }
 
   const constructAzureOpenAIBasePath = () => {
-    if (!baseURL) {
+    if (baseURL) {
+      updatedAzure.azureOpenAIBasePath = constructAzureChatBasePath(baseURL, updatedAzure);
       return;
     }
-    const azureURL = constructAzureURL({
-      baseURL,
-      azureOptions: updatedAzure,
-    });
-    updatedAzure.azureOpenAIBasePath = azureURL.split(
-      `/${updatedAzure.azureOpenAIApiDeploymentName}`,
-    )[0];
+    const instanceBasePath = constructAzureInstanceBasePath(updatedAzure);
+    if (instanceBasePath != null && updatedAzure.azureOpenAIBasePath == null) {
+      updatedAzure.azureOpenAIBasePath = instanceBasePath;
+    }
   };
 
   constructAzureOpenAIBasePath();
@@ -935,6 +1329,15 @@ export function getOpenAILLMConfig({
 
   constructAzureResponsesApi();
 
-  llmConfig.model = updatedAzure.azureOpenAIApiDeploymentName;
+  /** Keep Astra's identity for SDK constraints; only the wire model is a deployment alias. */
+  if (firstPartyResponsesModel) {
+    llmConfig.model = model;
+    llmConfig.modelKwargs = {
+      ...llmConfig.modelKwargs,
+      model: updatedAzure.azureOpenAIApiDeploymentName,
+    };
+  } else {
+    llmConfig.model = updatedAzure.azureOpenAIApiDeploymentName;
+  }
   return { llmConfig, tools, azure: updatedAzure };
 }

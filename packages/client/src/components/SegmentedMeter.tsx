@@ -10,6 +10,7 @@ const SERIES_FILL = [
   'bg-series-5',
   'bg-series-6',
   'bg-series-7',
+  'bg-series-8',
 ] as const;
 
 const SERIES_TINT = [
@@ -20,6 +21,7 @@ const SERIES_TINT = [
   'bg-series-5/25',
   'bg-series-6/25',
   'bg-series-7/25',
+  'bg-series-8/25',
 ] as const;
 
 const SERIES_EDGE = [
@@ -30,6 +32,7 @@ const SERIES_EDGE = [
   'ring-series-5',
   'ring-series-6',
   'ring-series-7',
+  'ring-series-8',
 ] as const;
 
 export const SERIES_SLOT_COUNT: number = SERIES_FILL.length;
@@ -93,9 +96,9 @@ export interface SegmentedMeterProps extends React.ComponentPropsWithoutRef<'div
 }
 
 /** Surface gap between touching fills, and the floor that keeps a present
- *  category from rendering as nothing. Both in px. */
-const SEGMENT_GAP = 2;
-const SEGMENT_MIN = 2;
+ *  category from rendering as nothing. Both in rem, matching the CSS gap. */
+const SEGMENT_GAP = 0.125;
+const SEGMENT_MIN = 0.125;
 
 /**
  * A part-to-whole meter: one tinted segment per series, free space left as
@@ -108,7 +111,7 @@ const SEGMENT_MIN = 2;
  * The one deliberate overshoot is the {@link SEGMENT_MIN} floor: a category
  * present but too small to see is rounded up, and that rounding comes out of
  * free space, never out of a neighbouring category. It is bounded by
- * `SEGMENT_MIN` per sub-pixel category — on a 288px meter, five such categories
+ * `SEGMENT_MIN` per sub-pixel category. On an 18rem meter, five such categories
  * read about 3 percentage points fuller than the window actually is, and the
  * exact figures stay in the legend beside the bar.
  */
@@ -128,7 +131,7 @@ export const SegmentedMeter: React.ForwardRefExoticComponent<
       <div
         ref={ref}
         className={cn(
-          'flex h-2 w-full gap-[2px] overflow-hidden rounded-full bg-surface-tertiary',
+          'bg-surface-tertiary flex h-2 w-full gap-[0.125rem] overflow-hidden rounded-full',
           className,
         )}
         {...props}
@@ -149,8 +152,8 @@ export const SegmentedMeter: React.ForwardRefExoticComponent<
                 highlightId != null && segment.id !== highlightId && 'opacity-40',
               )}
               style={{
-                width: `calc(${fraction} * 100% - ${gapShare.toFixed(3)}px)`,
-                minWidth: `${SEGMENT_MIN}px`,
+                width: `calc(${fraction} * 100% - ${gapShare.toFixed(3)}rem)`,
+                minWidth: `${SEGMENT_MIN}rem`,
                 ...(segment.hatched ? hatchStyle('2.5px') : undefined),
               }}
             />

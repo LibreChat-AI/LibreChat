@@ -1,0 +1,213 @@
+import {
+  Tools,
+  isSubagentGraphsEnabled,
+  isSubagentsEnabled,
+  MAX_SUBAGENT_DEPTH,
+  MAX_SUBAGENT_GRAPH_NODES,
+  stripAgentIdSuffix,
+  isCodeWorkspaceSelections,
+  resolveCodeWorkspaceInheritance,
+} from 'librechat-data-provider';
+import type { Agent, CodeWorkspaceRoutingAgent } from 'librechat-data-provider';
+import type { CodeEnvironmentConfig, CodeExecutionContext } from '~/agents/execution';
+import {
+  isExecutableAttachedEnvironment,
+  resolveAgentCodeEnvironmentRouting,
+} from '~/agents/execution';
+
+type SpawnConfig = Pick<
+  NonNullable<Agent['subagents']>,
+  'enabled' | 'graphsEnabled' | 'agent_ids'
+> & {
+  graphs?: ReadonlyArray<
+    Pick<NonNullable<NonNullable<Agent['subagents']>['graphs']>[number], 'agent_ids'>
+  >;
+};
+
+/** Near the node limit, missing or unviewable IDs still load in parallel; the injected loader
+ *  bounds actual concurrency, and at most this many reads land past the limit. */
+const MIN_LOAD_BATCH = 8;
+
+/** The saved fields of a subagent that decide where it runs code. */
+export type SubagentCodeRoutingAgent = Pick<
+  Agent,
+  'id' | 'tools' | 'stateful_code_sessions' | 'code_environment_id' | 'code_environment_ids'
+> & { subagents?: SpawnConfig | null };
+
+/** An initialized root of the run, whose machine is already resolved. */
+export type CodeWorkspaceInheritanceRoot = Pick<SubagentCodeRoutingAgent, 'id' | 'subagents'> & {
+  statefulCodeSessions?: boolean;
+  codeExecutionContext?: Pick<CodeExecutionContext, 'environmentId' | 'environmentType'>;
+};
+
+/** Saved agents this agent may spawn: explicit subagents and the members of its subagent graphs.
+ *  Self-spawns already share their parent's route. */
+export function getSpawnableSubagentIds(
+  agent: Pick<SubagentCodeRoutingAgent, 'id' | 'subagents'>,
+  capabilities?: readonly string[],
+): string[] {
+  return getSpawnableReferences(agent, capabilities).map(({ id }) => id);
+}
+
+function getSpawnableReferences(
+  agent: Pick<SubagentCodeRoutingAgent, 'id' | 'subagents'>,
+  capabilities?: readonly string[],
+): Array<{ id: string; terminal: boolean }> {
+  const subagents = agent.subagents;
+  const references = new Map<string, boolean>();
+  if (isSubagentsEnabled(subagents, capabilities)) {
+    for (const id of Array.isArray(subagents?.agent_ids) ? subagents.agent_ids : [])
+      references.set(id, false);
+  }
+  if (isSubagentGraphsEnabled(subagents, capabilities)) {
+    for (const graph of subagents?.graphs ?? []) {
+      for (const id of Array.isArray(graph?.agent_ids) ? graph.agent_ids : []) {
+        if (!references.has(id)) references.set(id, true);
+      }
+    }
+  }
+  return [...references]
+    .filter(([id]) => typeof id === 'string' && id.length > 0 && id !== agent.id)
+    .map(([id, terminal]) => ({ id, terminal }));
+}
+
+/** Keyed by saved ID: a parallel root's runtime ID (`id____1`) must still mark that agent a root. */
+function toRootRoutingAgent(
+  root: CodeWorkspaceInheritanceRoot,
+  capabilities?: readonly string[],
+): CodeWorkspaceRoutingAgent {
+  const context = root.codeExecutionContext;
+  return {
+    id: stripAgentIdSuffix(root.id),
+    routesCode: root.statefulCodeSessions === true,
+    allowSelection: false,
+    subagentIds: getSpawnableSubagentIds(root, capabilities),
+    resolvedEnvironmentId:
+      context?.environmentType === 'attached' ? (context.environmentId ?? null) : null,
+  };
+}
+
+function toSubagentRoutingAgent(
+  agent: SubagentCodeRoutingAgent,
+  environments: readonly CodeEnvironmentConfig[] | undefined,
+  allowEnvironmentSelection: boolean | undefined,
+  capabilities?: readonly string[],
+  terminal = false,
+): CodeWorkspaceRoutingAgent {
+  const { defaultEnvironment, allowSelection } = resolveAgentCodeEnvironmentRouting({
+    environmentId: agent.code_environment_id,
+    environmentIds: agent.code_environment_ids,
+    environments,
+    allowEnvironmentSelection,
+  });
+  return {
+    id: agent.id,
+    routesCode:
+      agent.stateful_code_sessions === true && agent.tools?.includes(Tools.execute_code) === true,
+    environmentId: agent.code_environment_id ?? defaultEnvironment?.id,
+    environmentIds: agent.code_environment_ids,
+    allowSelection,
+    subagentIds: terminal ? [] : getSpawnableSubagentIds(agent, capabilities),
+  };
+}
+
+/**
+ * Derives, once per request, which subagents run on their parent's attached machine. Each
+ * routing site passes the result to `resolveCodeExecutionContext`, so lazy descriptors, child
+ * initialization and execution-time tool loads agree on one route per subagent.
+ *
+ * `loadSubagent` must return only agents the principal may view, and should share its results
+ * with the run's own subagent loading. It stays within the subagent depth limit and stops once
+ * more agents are admitted than the node limit allows; graph construction reports either.
+ */
+export async function resolveSubagentCodeWorkspaceInheritance({
+  selections,
+  roots,
+  loadSubagent,
+  environments,
+  allowEnvironmentSelection,
+  codeExecutionAvailable,
+  capabilities,
+}: {
+  selections: unknown;
+  roots: readonly CodeWorkspaceInheritanceRoot[];
+  loadSubagent: (agentId: string) => Promise<SubagentCodeRoutingAgent | null | undefined>;
+  environments?: readonly CodeEnvironmentConfig[];
+  allowEnvironmentSelection?: boolean;
+  /** The run may use stateful code at all: capability, role grant and deployment switches. */
+  codeExecutionAvailable: boolean;
+  /** Applies the same spawn gates to initialized roots and loaded persisted descendants. */
+  capabilities?: readonly string[];
+}): Promise<Map<string, string>> {
+  if (!codeExecutionAvailable || !isCodeWorkspaceSelections(selections) || !selections.length) {
+    return new Map();
+  }
+  const agents = new Map<string, CodeWorkspaceRoutingAgent>();
+  for (const root of roots) {
+    const node = toRootRoutingAgent(root, capabilities);
+    if (!agents.has(node.id)) agents.set(node.id, node);
+  }
+  const rootIds = [...agents.keys()];
+  let frontier = roots.flatMap((root) => getSpawnableReferences(root, capabilities));
+  const attempted = new Set<string>();
+  const loadedAgents = new Map<string, SubagentCodeRoutingAgent>();
+  const expanded = new Set(rootIds);
+  /** Only admitted agents count toward the node limit. Terminal paths can upgrade without reloading. */
+  let admitted = 0;
+  for (let depth = 1; depth <= MAX_SUBAGENT_DEPTH && frontier.length > 0; depth++) {
+    const references = new Map<string, boolean>();
+    for (const { id, terminal } of frontier) {
+      references.set(id, terminal && references.get(id) !== false);
+    }
+    const batchable = [...references].filter(
+      ([id, terminal]) =>
+        !expanded.has(id) &&
+        (!agents.has(id) || !terminal) &&
+        (!attempted.has(id) || loadedAgents.has(id)),
+    );
+    frontier = [];
+    for (let start = 0; start < batchable.length; ) {
+      const batch = batchable.slice(
+        start,
+        start + Math.max(MAX_SUBAGENT_GRAPH_NODES - admitted, MIN_LOAD_BATCH),
+      );
+      start += batch.length;
+      const loaded = await Promise.all(
+        batch.map(async ([id]) => {
+          if (loadedAgents.has(id)) return loadedAgents.get(id);
+          if (admitted >= MAX_SUBAGENT_GRAPH_NODES) return null;
+          attempted.add(id);
+          return loadSubagent(id).catch(() => null);
+        }),
+      );
+      for (let index = 0; index < batch.length; index++) {
+        const agent = loaded[index];
+        if (agent == null) continue;
+        const [id, terminal] = batch[index];
+        if (!loadedAgents.has(id)) {
+          admitted++;
+          loadedAgents.set(id, agent);
+        }
+        const node = toSubagentRoutingAgent(
+          { ...agent, id },
+          environments,
+          allowEnvironmentSelection,
+          capabilities,
+          terminal,
+        );
+        agents.set(id, node);
+        if (!terminal) {
+          expanded.add(id);
+          frontier.push(...getSpawnableReferences({ ...agent, id }, capabilities));
+        }
+      }
+    }
+  }
+  return resolveCodeWorkspaceInheritance({
+    selections,
+    rootIds,
+    agents,
+    isAttachedEnvironment: (environmentId) =>
+      isExecutableAttachedEnvironment(environmentId, environments),
+  });
+}

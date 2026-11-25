@@ -1,14 +1,18 @@
-const path = require('path');
 const { v4 } = require('uuid');
-const { countTokens } = require('@librechat/api');
-const { escapeRegExp } = require('@librechat/data-schemas');
 const {
-  Constants,
-  ContentTypes,
-  AnnotationTypes,
-  defaultOrderQuery,
-} = require('librechat-data-provider');
-const { recordMessage, getMessages, spendTokens, saveConvo } = require('~/models');
+  countTokens,
+  isAnnounceableReply,
+  syncMessages: syncThreadMessages,
+  processMessages: processThreadMessages,
+} = require('@librechat/api');
+const { Constants, ContentTypes, defaultOrderQuery } = require('librechat-data-provider');
+const {
+  saveConvo,
+  getMessages,
+  spendTokens,
+  saveMessage,
+  stampConvoLastResponse,
+} = require('~/models');
 const { retrieveAndProcessFile } = require('~/server/services/Files/process');
 
 /**
@@ -76,6 +80,9 @@ async function saveUserMessage(req, params) {
     tokenCount,
   };
 
+  // Only confirmed new conversations seed membership; saveConvo applies it on insert.
+  const chatProjectId =
+    req?.resolvedConversation === null ? req.chatProjectContext?.projectId : undefined;
   const convo = {
     endpoint: params.endpoint,
     conversationId: params.conversationId,
@@ -83,23 +90,31 @@ async function saveUserMessage(req, params) {
     instructions: params.instructions,
     assistant_id: params.assistant_id,
     model: params.model,
+    ...(typeof chatProjectId === 'string' && chatProjectId ? { chatProjectId } : {}),
   };
-
   if (params.files?.length) {
     userMessage.files = params.files.map(({ file_id }) => ({ file_id }));
     convo.file_ids = params.file_ids;
   }
 
-  const message = await recordMessage(userMessage);
-  await saveConvo(
-    {
-      userId: req?.user?.id,
-      isTemporary: req?.body?.isTemporary,
-      interfaceConfig: req?.config?.interfaceConfig,
-    },
+  const ctx = {
+    userId: req?.user?.id,
+    isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
+    expiredAt: req?.resolvedConversation?.expiredAt,
+    interfaceConfig: req?.config?.interfaceConfig,
+  };
+  const message = await saveMessage(ctx, userMessage);
+  const savedConvo = await saveConvo(
+    { ...ctx, expiredAt: message?.expiredAt ?? ctx.expiredAt },
     convo,
-    { context: 'api/server/services/Threads/manage.js #saveUserMessage' },
+    {
+      context: 'api/server/services/Threads/manage.js #saveUserMessage',
+      ...(message?._id != null ? { appendMessageIds: [message._id] } : {}),
+    },
   );
+  if (savedConvo != null) {
+    req.resolvedConversation = savedConvo;
+  }
   return message;
 }
 
@@ -121,14 +136,22 @@ async function saveUserMessage(req, params) {
  * @param {string} [params.instructions] - Optional: from preset for `instructions` field.
  * @param {string} [params.spec] - Optional: Model spec identifier.
  * @param {string} [params.iconURL]
+ * @param {import('librechat-data-provider').TAttachment[]} [params.attachments]
  * Overrides the instructions of the assistant.
  * @param {string} [params.promptPrefix] - Optional: from preset for `additional_instructions` field.
- * @return {Promise<Run>} A promise that resolves to the created run object.
+ * @return {Promise<{message: Object|null, conversation: Object|null}>} The persisted assistant
+ * message and the conversation snapshot settled by the same write.
  */
 async function saveAssistantMessage(req, params) {
   // const tokenCount = // TODO: need to count each content part
 
-  const message = await recordMessage({
+  const ctx = {
+    userId: req?.user?.id,
+    isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
+    expiredAt: req?.resolvedConversation?.expiredAt,
+    interfaceConfig: req?.config?.interfaceConfig,
+  };
+  const message = await saveMessage(ctx, {
     user: params.user,
     endpoint: params.endpoint,
     messageId: params.messageId,
@@ -138,6 +161,7 @@ async function saveAssistantMessage(req, params) {
     /* For messages, use the assistant_id instead of model */
     model: params.assistant_id,
     content: params.content,
+    attachments: params.attachments,
     sender: 'Assistant',
     isCreatedByUser: false,
     text: params.text,
@@ -147,12 +171,15 @@ async function saveAssistantMessage(req, params) {
     spec: params.spec,
   });
 
-  await saveConvo(
-    {
-      userId: req?.user?.id,
-      isTemporary: req?.body?.isTemporary,
-      interfaceConfig: req?.config?.interfaceConfig,
-    },
+  const announceable = isAnnounceableReply({
+    messageId: message?.messageId,
+    content: params.content,
+    text: params.text,
+    isTemporary: ctx.isTemporary,
+  });
+
+  const savedConvo = await saveConvo(
+    { ...ctx, expiredAt: message?.expiredAt ?? ctx.expiredAt },
     {
       endpoint: params.endpoint,
       conversationId: params.conversationId,
@@ -163,10 +190,23 @@ async function saveAssistantMessage(req, params) {
       iconURL: params.iconURL,
       spec: params.spec,
     },
-    { context: 'api/server/services/Threads/manage.js #saveAssistantMessage' },
+    {
+      context: 'api/server/services/Threads/manage.js #saveAssistantMessage',
+      /** Judged by the same predicate every other persistence path asks, so an assistant row
+       *  that renders nothing cannot raise a dot here that opening the chat can never clear.
+       *  `saveConvo` assigns the timestamp past its own awaited reads, so a catch-up recorded
+       *  while one of them is in flight cannot outrank this reply. */
+      stampReply: announceable,
+      ...(announceable ? { replyMessageId: message.messageId } : {}),
+      ...(message?._id != null ? { appendMessageIds: [message._id] } : {}),
+    },
   );
 
-  return message;
+  if (savedConvo != null) {
+    req.resolvedConversation = savedConvo;
+  }
+
+  return { message, conversation: savedConvo };
 }
 
 /**
@@ -196,168 +236,13 @@ async function addThreadMetadata({ openai, thread_id, messageId, messages }) {
 }
 
 /**
- * Synchronizes LibreChat messages to Thread Messages.
- * Updates the LibreChat DB with any missing Thread Messages and
- * updates the missing Thread Messages' metadata with their corresponding db messageId's.
+ * Synchronizes LibreChat messages to Thread Messages; see `syncMessages` in `@librechat/api`.
  *
- * Also updates the existing conversation's file_ids with any new file_ids.
- *
- * @param {Object} params - The parameters for synchronizing messages.
- * @param {OpenAIClient} params.openai - The OpenAI client instance.
- * @param {string} params.endpoint - The current endpoint.
- * @param {string} params.thread_id - The current thread ID.
- * @param {TMessage[]} params.dbMessages - The LibreChat DB messages.
- * @param {ThreadMessage[]} params.apiMessages - The thread messages from the API.
- * @param {string} [params.assistant_id] - The current assistant ID.
- * @param {string} params.conversationId - The current conversation ID.
+ * @param {Parameters<typeof import('@librechat/api').syncMessages>[1]} params
  * @return {Promise<TMessage[]>} A promise that resolves to the updated messages
  */
-async function syncMessages({
-  openai,
-  endpoint,
-  thread_id,
-  dbMessages,
-  apiMessages,
-  assistant_id,
-  conversationId,
-}) {
-  let result = [];
-  let dbMessageMap = new Map(dbMessages.map((msg) => [msg.messageId, msg]));
-
-  const modifyPromises = [];
-  const recordPromises = [];
-
-  /**
-   *
-   * Modify API message and save newMessage to DB
-   *
-   * @param {Object} params - The parameters object
-   * @param {TMessage} params.dbMessage
-   * @param {dbMessage} params.apiMessage
-   */
-  const processNewMessage = async ({ dbMessage, apiMessage }) => {
-    recordPromises.push(recordMessage({ ...dbMessage, user: openai.req.user.id }));
-
-    if (!apiMessage.id.includes('msg_')) {
-      return;
-    }
-
-    if (dbMessage.aggregateMessages?.length > 1) {
-      modifyPromises.push(
-        addThreadMetadata({
-          openai,
-          thread_id,
-          messageId: dbMessage.messageId,
-          messages: dbMessage.aggregateMessages,
-        }),
-      );
-      return;
-    }
-
-    modifyPromises.push(
-      openai.beta.threads.messages.update(apiMessage.id, {
-        thread_id,
-        metadata: {
-          messageId: dbMessage.messageId,
-        },
-      }),
-    );
-  };
-
-  let lastMessage = null;
-
-  for (let i = 0; i < apiMessages.length; i++) {
-    const apiMessage = apiMessages[i];
-
-    // Check if the message exists in the database based on metadata
-    const dbMessageId = apiMessage.metadata && apiMessage.metadata.messageId;
-    let dbMessage = dbMessageMap.get(dbMessageId);
-
-    if (dbMessage) {
-      // If message exists in DB, use its messageId and update parentMessageId
-      dbMessage.parentMessageId = lastMessage ? lastMessage.messageId : Constants.NO_PARENT;
-      lastMessage = dbMessage;
-      result.push(dbMessage);
-      continue;
-    }
-
-    if (apiMessage.role === 'assistant' && lastMessage && lastMessage.role === 'assistant') {
-      // Aggregate assistant messages
-      lastMessage.content = [...lastMessage.content, ...apiMessage.content];
-      lastMessage.files = [...(lastMessage.files ?? []), ...(apiMessage.files ?? [])];
-      lastMessage.aggregateMessages.push({ id: apiMessage.id });
-    } else {
-      // Handle new or missing message
-      const newMessage = {
-        thread_id,
-        conversationId,
-        messageId: v4(),
-        endpoint,
-        parentMessageId: lastMessage ? lastMessage.messageId : Constants.NO_PARENT,
-        role: apiMessage.role,
-        isCreatedByUser: apiMessage.role === 'user',
-        // TODO: process generated files in content parts
-        content: apiMessage.content,
-        aggregateMessages: [{ id: apiMessage.id }],
-        model: apiMessage.role === 'user' ? null : apiMessage.assistant_id,
-        user: openai.req.user.id,
-        unfinished: false,
-      };
-
-      if (apiMessage.file_ids?.length) {
-        // TODO: retrieve file objects from API
-        newMessage.files = apiMessage.file_ids.map((file_id) => ({ file_id }));
-      }
-
-      /* Assign assistant_id if defined */
-      if (assistant_id && apiMessage.role === 'assistant' && !newMessage.model) {
-        apiMessage.model = assistant_id;
-        newMessage.model = assistant_id;
-      }
-
-      result.push(newMessage);
-      lastMessage = newMessage;
-
-      if (apiMessage.role === 'user') {
-        processNewMessage({ dbMessage: newMessage, apiMessage });
-        continue;
-      }
-    }
-
-    const nextMessage = apiMessages[i + 1];
-    const processAssistant = !nextMessage || nextMessage.role === 'user';
-
-    if (apiMessage.role === 'assistant' && processAssistant) {
-      processNewMessage({ dbMessage: lastMessage, apiMessage });
-    }
-  }
-
-  const attached_file_ids = apiMessages.reduce((acc, msg) => {
-    if (msg.role === 'user' && msg.file_ids?.length) {
-      return [...acc, ...msg.file_ids];
-    }
-
-    return acc;
-  }, []);
-
-  await Promise.all(modifyPromises);
-  await Promise.all(recordPromises);
-
-  await saveConvo(
-    {
-      userId: openai.req?.user?.id,
-      isTemporary: openai.req?.body?.isTemporary,
-      interfaceConfig: openai.req?.config?.interfaceConfig,
-    },
-    {
-      conversationId,
-      file_ids: attached_file_ids,
-    },
-    { context: 'api/server/services/Threads/manage.js #syncMessages' },
-  );
-
-  return result;
-}
+const syncMessages = (params) =>
+  syncThreadMessages({ saveMessage, saveConvo, stampConvoLastResponse, addThreadMetadata }, params);
 
 /**
  * Maps messages to their corresponding steps. Steps with message creation will be paired with their messages,
@@ -497,7 +382,8 @@ async function checkMessageGaps({
  * @param {string} params.user - The user's ID.
  * @param {string} params.conversationId - LibreChat conversation ID.
  * @param {string} [params.context='message'] - The context of the usage. Defaults to 'message'.
- * @return {Promise<TMessage[]>} A promise that resolves to the updated messages
+ * @param {AppConfig['transactions']} [params.transactions] - Resolved transactions config.
+ * @return {Promise<void>}
  */
 const recordUsage = async ({
   prompt_tokens,
@@ -506,6 +392,7 @@ const recordUsage = async ({
   user,
   conversationId,
   context = 'message',
+  transactions,
 }) => {
   await spendTokens(
     {
@@ -513,16 +400,15 @@ const recordUsage = async ({
       model,
       context,
       conversationId,
+      transactions,
     },
     { promptTokens: prompt_tokens, completionTokens: completion_tokens },
   );
 };
 
-const uniqueCitationStart = '^====||===';
-const uniqueCitationEnd = '==|||||^';
-
 /**
- * Sorts, processes, and flattens messages to a single string.
+ * Sorts, processes, and flattens messages to a single string; see `processMessages` in
+ * `@librechat/api`.
  *
  * @param {object} params - The parameters for processing messages.
  * @param {OpenAIClient} params.openai - The OpenAI client instance.
@@ -530,153 +416,7 @@ const uniqueCitationEnd = '==|||||^';
  * @param {ThreadMessage[]} params.messages - An array of messages.
  * @returns {Promise<{messages: ThreadMessage[], text: string, edited: boolean}>} The sorted messages, the flattened text, and whether it was edited.
  */
-async function processMessages({ openai, client, messages = [] }) {
-  const sorted = messages.sort((a, b) => a.created_at - b.created_at);
-
-  let text = '';
-  let edited = false;
-  const sources = new Map();
-  const fileRetrievalPromises = [];
-
-  for (const message of sorted) {
-    message.files = [];
-    for (const content of message.content) {
-      const type = content.type;
-      const contentType = content[type];
-      const currentFileId = contentType?.file_id;
-
-      if (type === ContentTypes.IMAGE_FILE && !client.processedFileIds.has(currentFileId)) {
-        fileRetrievalPromises.push(
-          retrieveAndProcessFile({
-            openai,
-            client,
-            file_id: currentFileId,
-            basename: `${currentFileId}.png`,
-          })
-            .then((file) => {
-              client.processedFileIds.add(currentFileId);
-              message.files.push(file);
-            })
-            .catch((error) => {
-              console.error(`Failed to retrieve file: ${error.message}`);
-            }),
-        );
-        continue;
-      }
-
-      let currentText = contentType?.value ?? '';
-
-      /** @type {{ annotations: Annotation[] }} */
-      const { annotations } = contentType ?? {};
-
-      if (!annotations?.length) {
-        text += currentText;
-        continue;
-      }
-
-      const replacements = [];
-      const annotationPromises = annotations.map(async (annotation) => {
-        const type = annotation.type;
-        const annotationType = annotation[type];
-        const file_id = annotationType?.file_id;
-        const alreadyProcessed = client.processedFileIds.has(file_id);
-
-        let file;
-        let replacementText = '';
-
-        try {
-          if (alreadyProcessed) {
-            file = await retrieveAndProcessFile({ openai, client, file_id, unknownType: true });
-          } else if (type === AnnotationTypes.FILE_PATH) {
-            const basename = path.basename(annotation.text);
-            file = await retrieveAndProcessFile({
-              openai,
-              client,
-              file_id,
-              basename,
-            });
-            replacementText = file.filepath;
-          } else if (type === AnnotationTypes.FILE_CITATION && file_id) {
-            file = await retrieveAndProcessFile({
-              openai,
-              client,
-              file_id,
-              unknownType: true,
-            });
-            if (file && file.filename) {
-              if (!sources.has(file.filename)) {
-                sources.set(file.filename, sources.size + 1);
-              }
-              replacementText = `${uniqueCitationStart}${sources.get(
-                file.filename,
-              )}${uniqueCitationEnd}`;
-            }
-          }
-
-          if (file && replacementText) {
-            replacements.push({
-              start: annotation.start_index,
-              end: annotation.end_index,
-              text: replacementText,
-            });
-            edited = true;
-            if (!alreadyProcessed) {
-              client.processedFileIds.add(file_id);
-              message.files.push(file);
-            }
-          }
-        } catch (error) {
-          console.error(`Failed to process annotation: ${error.message}`);
-        }
-      });
-
-      await Promise.all(annotationPromises);
-
-      // Apply replacements in reverse order
-      replacements.sort((a, b) => b.start - a.start);
-      for (const { start, end, text: replacementText } of replacements) {
-        currentText = currentText.slice(0, start) + replacementText + currentText.slice(end);
-      }
-
-      text += currentText;
-    }
-  }
-
-  await Promise.all(fileRetrievalPromises);
-
-  // Handle adjacent identical citations with the unique format
-  const adjacentCitationRegex = new RegExp(
-    `${escapeRegExp(uniqueCitationStart)}(\\d+)${escapeRegExp(
-      uniqueCitationEnd,
-    )}(\\s*)${escapeRegExp(uniqueCitationStart)}(\\d+)${escapeRegExp(uniqueCitationEnd)}`,
-    'g',
-  );
-  text = text.replace(adjacentCitationRegex, (match, num1, space, num2) => {
-    return num1 === num2
-      ? `${uniqueCitationStart}${num1}${uniqueCitationEnd}`
-      : `${uniqueCitationStart}${num1}${uniqueCitationEnd}${space}${uniqueCitationStart}${num2}${uniqueCitationEnd}`;
-  });
-
-  // Remove any remaining adjacent identical citations
-  const remainingAdjacentRegex = new RegExp(
-    `(${escapeRegExp(uniqueCitationStart)}(\\d+)${escapeRegExp(uniqueCitationEnd)})\\s*\\1+`,
-    'g',
-  );
-  text = text.replace(remainingAdjacentRegex, '$1');
-
-  // Replace the unique citation format with the final format
-  text = text.replace(new RegExp(escapeRegExp(uniqueCitationStart), 'g'), '^');
-  text = text.replace(new RegExp(escapeRegExp(uniqueCitationEnd), 'g'), '^');
-
-  if (sources.size) {
-    text += '\n\n';
-    Array.from(sources.entries()).forEach(([source, index], arrayIndex) => {
-      text += `^${index}.^ ${source}${arrayIndex === sources.size - 1 ? '' : '\n'}`;
-    });
-  }
-
-  return { messages: sorted, text, edited };
-}
+const processMessages = (params) => processThreadMessages({ retrieveAndProcessFile }, params);
 
 module.exports = {
   initThread,

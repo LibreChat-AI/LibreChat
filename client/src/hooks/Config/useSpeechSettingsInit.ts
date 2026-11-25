@@ -18,7 +18,6 @@ export default function useSpeechSettingsInit(isAuthenticated: boolean) {
   const setSpeechSettingsInitialized = useSetRecoilState(store.speechSettingsInitialized);
 
   const setters = useRef({
-    conversationMode: useSetRecoilState(store.conversationMode),
     advancedMode: useSetRecoilState(store.advancedMode),
     speechToText: useSetRecoilState(store.speechToText),
     textToSpeech: useSetRecoilState(store.textToSpeech),

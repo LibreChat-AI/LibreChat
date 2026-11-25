@@ -24,6 +24,7 @@ jest.mock('react-virtualized', () => ({
     rowCount,
     rowRenderer,
     onRowsRendered,
+    className,
   }: {
     rowCount: number;
     rowRenderer: (p: {
@@ -33,12 +34,13 @@ jest.mock('react-virtualized', () => ({
       style: object;
     }) => React.ReactNode;
     onRowsRendered?: (p: { startIndex: number; stopIndex: number }) => void;
+    className?: string;
   }) => {
     // expose the near-bottom trigger for the pagination test
     (globalThis as Record<string, unknown>).__triggerRowsRendered = () =>
       onRowsRendered?.({ startIndex: 0, stopIndex: rowCount - 1 });
     return (
-      <div data-testid="virtual-list">
+      <div data-testid="virtual-list" className={className}>
         {Array.from({ length: rowCount }, (_, i) =>
           rowRenderer({ index: i, key: String(i), parent: {}, style: {} }),
         )}
@@ -52,7 +54,16 @@ jest.mock('~/data-provider', () => ({ useMessagesInfiniteQuery: jest.fn() }));
 jest.mock('~/Providers', () => ({ useFileMapContext: () => ({}) }));
 jest.mock('@librechat/client', () => ({
   Spinner: () => <div data-testid="spinner" />,
+  /* The shared panel empty state, with the glyph dropped: what this route's tests
+     read is the line it carries. */
+  EmptyState: ({ title, description }: { title?: string; description?: string }) => (
+    <div>
+      {title != null && <p>{title}</p>}
+      {description != null && <p>{description}</p>}
+    </div>
+  ),
   useToastContext: () => ({ showToast: jest.fn() }),
+  useRemScale: () => 1,
 }));
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -60,6 +71,8 @@ jest.mock('~/hooks', () => ({
   useElementSize: () => ({ ref: () => {}, width: 800, height: 600 }),
 }));
 jest.mock('~/store', () => ({ __esModule: true, default: { search: 'search-atom' } }));
+/** The row hosts import the whole message renderer; `SearchMessage` is stubbed below. */
+jest.mock('~/components/Chat/Messages/hosts', () => ({}));
 jest.mock('~/components/Chat/Messages/SearchMessage', () => ({
   __esModule: true,
   default: ({ message }: { message: { text: string } }) => (
@@ -67,7 +80,10 @@ jest.mock('~/components/Chat/Messages/SearchMessage', () => ({
   ),
 }));
 jest.mock('~/utils', () => ({ cn: (...a: unknown[]) => a.filter(Boolean).join(' ') }));
-jest.mock('jotai', () => ({ useAtomValue: () => 'text-base' }));
+jest.mock('jotai', () => ({
+  ...jest.requireActual<typeof import('jotai')>('jotai'),
+  useAtomValue: () => 'text-base',
+}));
 jest.mock('~/store/fontSize', () => ({ fontSizeAtom: {} }));
 
 const mockUseRecoilValue = useRecoilValue as jest.Mock;
@@ -99,9 +115,15 @@ describe('Search route', () => {
   it('renders result rows when data is present', () => {
     mockUseRecoilValue.mockReturnValue(searchState());
     mockUseQuery.mockReturnValue(queryResult());
-    render(<Search />);
+    const { container } = render(<Search />);
     expect(screen.getByText('row one')).toBeInTheDocument();
     expect(screen.queryByTestId('spinner')).not.toBeInTheDocument();
+    expect(screen.getByTestId('virtual-list')).toHaveClass(
+      'focus-visible:ring-2',
+      'focus-visible:ring-ring-primary',
+    );
+    expect(container.firstElementChild).toHaveClass('bg-surface-canvas');
+    expect(container.querySelector('.bg-gradient-to-t')).toHaveClass('from-surface-canvas');
   });
 
   it('keeps results mounted while typing (does NOT flash the full spinner)', () => {
@@ -142,11 +164,14 @@ describe('Search route', () => {
     expect(screen.queryByText('com_ui_nothing_found')).not.toBeInTheDocument();
   });
 
-  it('renders nothing when there is no query and the user is idle', () => {
-    mockUseRecoilValue.mockReturnValue(searchState({ debouncedQuery: '' }));
+  /** Standing on the results route with nothing searched for: a blank page reads as
+   *  a failure, so the route says what it is waiting for. */
+  it('invites a query when there is none and the user is idle', () => {
+    mockUseRecoilValue.mockReturnValue(searchState({ query: '', debouncedQuery: '' }));
     mockUseQuery.mockReturnValue(queryResult({ data: undefined }));
-    const { container } = render(<Search />);
-    expect(container).toBeEmptyDOMElement();
+    render(<Search />);
+    expect(screen.getByText('com_ui_search_a_message')).toBeInTheDocument();
+    expect(screen.queryByTestId('spinner')).not.toBeInTheDocument();
   });
 
   it('shows the spinner during the initial debounce (query typed, not yet debounced)', () => {
@@ -156,6 +181,25 @@ describe('Search route', () => {
     mockUseQuery.mockReturnValue(queryResult({ data: undefined }));
     render(<Search />);
     expect(screen.getByTestId('spinner')).toBeInTheDocument();
+  });
+
+  it('states the result count above the list, once', () => {
+    mockUseRecoilValue.mockReturnValue(searchState());
+    mockUseQuery.mockReturnValue(queryResult());
+    render(<Search />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_result_found');
+    /** The visible line IS the live region: a second, off-screen copy would have a
+     *  screen reader announce the count twice. */
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('marks the count as partial while more pages remain', () => {
+    mockUseRecoilValue.mockReturnValue(searchState());
+    mockUseQuery.mockReturnValue(queryResult({ hasNextPage: true }));
+    render(<Search />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_results_found_more');
   });
 
   it('announces empty results through a live region', () => {

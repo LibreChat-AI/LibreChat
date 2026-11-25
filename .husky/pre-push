@@ -1,0 +1,11 @@
+#!/bin/sh
+[ -n "$CI" ] && exit 0
+
+# Git exports GIT_DIR and friends to hooks, and every child inherits them: a
+# check that creates a scratch repository would commit into this one instead.
+unset $(git rev-parse --local-env-vars)
+
+# The static checks, slow tier included, against the exact commits being
+# pushed. Refuses a push it cannot verify (a commit other than HEAD, or a
+# worktree with uncommitted changes) instead of checking the wrong content.
+node scripts/pre-push.mts "$@" || exit 1

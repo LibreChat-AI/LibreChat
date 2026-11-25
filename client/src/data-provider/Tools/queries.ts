@@ -41,17 +41,25 @@ export const useGetToolCalls = <TData = t.ToolCallResults>(
   );
 };
 
+type MCPConnectionObservation = t.MCPConnectionStatusResponse & { readStartedAt?: number };
+
 export const useMCPConnectionStatusQuery = (
-  config?: UseQueryOptions<t.MCPConnectionStatusResponse>,
-): QueryObserverResult<t.MCPConnectionStatusResponse> => {
-  return useQuery<t.MCPConnectionStatusResponse>(
+  config?: UseQueryOptions<MCPConnectionObservation>,
+): QueryObserverResult<MCPConnectionObservation> => {
+  return useQuery<MCPConnectionObservation>(
     [QueryKeys.mcpConnectionStatus],
-    () => dataService.getMCPConnectionStatus(),
+    async () => {
+      const readStartedAt = performance.now();
+      const response = await dataService.getMCPConnectionStatus();
+      return { ...response, readStartedAt };
+    },
     {
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
-      refetchOnMount: false,
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+      refetchOnMount: true,
       staleTime: 10000, // 10 seconds
+      refetchInterval: false,
+      refetchIntervalInBackground: false,
       ...config,
     },
   );

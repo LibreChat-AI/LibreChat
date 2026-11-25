@@ -1,5 +1,5 @@
 const { logger } = require('@librechat/data-schemas');
-const { encrypt, decrypt } = require('@librechat/api');
+const { encryptCredential, decryptCredential } = require('@librechat/api');
 const { findOnePluginAuth, updatePluginAuth, deletePluginAuth } = require('~/models');
 
 /**
@@ -42,44 +42,23 @@ const getUserPluginAuthValue = async (userId, authField, throwError = true, plug
     const pluginAuth = await findOnePluginAuth(searchParams);
     if (!pluginAuth) {
       const pluginInfo = pluginKey ? ` for plugin ${pluginKey}` : '';
-      throw new Error(`No plugin auth ${authField} found for user ${userId}${pluginInfo}`);
+      const error = new Error(`No plugin auth ${authField} found for user ${userId}${pluginInfo}`);
+      error.code = 'PLUGIN_AUTH_NOT_FOUND';
+      throw error;
     }
 
-    const decryptedValue = await decrypt(pluginAuth.value);
+    const decryptedValue = await decryptCredential(pluginAuth.value);
     return decryptedValue;
   } catch (err) {
     if (!throwError) {
       return null;
     }
-    logger.error('[getUserPluginAuthValue]', err);
+    if (err?.code !== 'PLUGIN_AUTH_NOT_FOUND') {
+      logger.error('[getUserPluginAuthValue]', err);
+    }
     throw err;
   }
 };
-
-// const updateUserPluginAuth = async (userId, authField, pluginKey, value) => {
-//   try {
-//     const encryptedValue = encrypt(value);
-
-//     const pluginAuth = await PluginAuth.findOneAndUpdate(
-//       { userId, authField },
-//       {
-//         $set: {
-//           value: encryptedValue,
-//           pluginKey
-//         }
-//       },
-//       {
-//         new: true,
-//         upsert: true
-//       }
-//     );
-
-//     return pluginAuth;
-//   } catch (err) {
-//     logger.error('[getUserPluginAuthValue]', err);
-//     return err;
-//   }
-// };
 
 /**
  *
@@ -88,12 +67,13 @@ const getUserPluginAuthValue = async (userId, authField, throwError = true, plug
  * @param {string} authField
  * @param {string} pluginKey
  * @param {string} value
+ * @param {'v3' | 'legacy'} [writeFormat] - `credentials.writeFormat` from the app config
  * @returns {Promise<IPluginAuth>}
  * @throws {Error}
  */
-const updateUserPluginAuth = async (userId, authField, pluginKey, value) => {
+const updateUserPluginAuth = async (userId, authField, pluginKey, value, writeFormat) => {
   try {
-    const encryptedValue = await encrypt(value);
+    const encryptedValue = await encryptCredential(value, writeFormat);
     return await updatePluginAuth({
       userId,
       authField,

@@ -50,6 +50,7 @@ describe('rum bootstrap', () => {
       attributes: {
         assetUrl: '/assets/app.js?token=secret',
         tagName: 'SCRIPT',
+        clientBuildId: 'unknown',
       },
     });
   });

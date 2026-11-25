@@ -9,64 +9,94 @@ const {
   sanitizeFileForTransmit,
   extractFileContext,
   getReferencedQuotes,
+  applyTurnDelivery,
   encodeAndFormatAudios,
   encodeAndFormatVideos,
   getTransactionsConfig,
   encodeAndFormatDocuments,
+  replayMessageAttachments,
   getLangfuseTraceMessageFields,
+  isContentFilterError,
+  assertModelBoundProviderContent,
+  reportLocatorTraversalFailure,
+  collectModelBoundHistoricalFileIdState,
+  projectModelBoundSourceFiles,
+  scopeHistoricalReplay,
+  withoutUnsentFiles,
+  isModelBoundAttachmentFile,
+  isToolOwnedAttachment,
+  withBalanceReservations,
+  findCheckpointSummaryPart,
+  getSummaryPartText,
+  resolveCheckpointMessage,
+  runAfterSeed,
+  saveTurnConversation,
+  seedTurnConversation,
+  announceReply,
+  needsRetentionConversation,
+  getConversationWriteContext,
+  savePrivateTextMessage,
+  stampPrivateTextMessage,
+  deferPrivateTextStart,
+  requirePrivateTextPersistence,
+  rejectPrivateTextAdmission,
+  bindPrivateTextPersistenceAbort,
+  persistedReasoningOverrideFields,
+  skillMessageFields,
+  isTemporaryTurn,
+  loadHistoryRows,
+  stampMessageTrigger,
 } = require('@librechat/api');
 const {
   Constants,
   FileSources,
   Tools,
+  ErrorTypes,
   ContentTypes,
-  excludedKeys,
+  isCompactedLeaf,
   EModelEndpoint,
-  mergeFileConfig,
   isParamEndpoint,
   isAgentsEndpoint,
-  isEphemeralAgentId,
   supportsBalanceCheck,
   isBedrockDocumentType,
-  getEndpointFileConfig,
+  HITL_MESSAGE_FILTER_FIELDS,
   stripReasoningLabelMetadata,
+  resolveTurnLLMDeliveryPath,
+  resolveUseResponsesApi,
 } = require('librechat-data-provider');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { logViolation } = require('~/cache');
-const TextStream = require('./TextStream');
 const db = require('~/models');
 
-const collectHistoricalFileRefs = (message) => {
-  const refs = [];
-  if (Array.isArray(message.files)) {
-    refs.push(...message.files);
-  }
-  if (Array.isArray(message.attachments)) {
-    refs.push(...message.attachments);
-  }
-  /** Steer parts carry their own attachment refs inside assistant content;
-   *  collecting them here folds the steer replay stamp's lookup into this
-   *  single per-turn query (see `stampSteerPartMedia`). */
-  if (Array.isArray(message.content)) {
-    for (const part of message.content) {
-      if (part?.type === ContentTypes.STEER && Array.isArray(part.files)) {
-        refs.push(...part.files);
-      }
+const mergeUserSubmittedPaths = (...pathLists) => [
+  ...new Set(
+    pathLists
+      .flat()
+      .filter((path) => typeof path === 'string' && path.startsWith('/') && path.length <= 2048),
+  ),
+];
+const hitlMessageFilterFields = new Set(HITL_MESSAGE_FILTER_FIELDS);
+const mergeUserSubmittedMessageFieldPaths = (...entryLists) => {
+  const entries = [];
+  const seen = new Set();
+  for (const entry of entryLists.flat()) {
+    if (
+      entry == null ||
+      typeof entry.path !== 'string' ||
+      !entry.path.startsWith('/') ||
+      entry.path.length > 2048 ||
+      !hitlMessageFilterFields.has(entry.field)
+    ) {
+      continue;
     }
-  }
-  return refs;
-};
-
-const collectHistoricalFileIds = (messages) => {
-  const fileIds = new Set();
-  for (const message of messages) {
-    for (const ref of collectHistoricalFileRefs(message)) {
-      if (ref?.file_id) {
-        fileIds.add(ref.file_id);
-      }
+    const key = `${entry.field}:${entry.path}`;
+    if (seen.has(key)) {
+      continue;
     }
+    seen.add(key);
+    entries.push(entry);
   }
-  return Array.from(fileIds);
+  return entries;
 };
 
 const buildOwnerFileFilter = (fileIds, user) => {
@@ -82,6 +112,14 @@ const buildOwnerFileFilter = (fileIds, user) => {
     filter.tenantId = user.tenantId;
   }
   return filter;
+};
+
+const getOwnerHistoricalFiles = async (fileIds, user) => {
+  const fileFilter = buildOwnerFileFilter(fileIds, user);
+  if (!fileFilter) {
+    return [];
+  }
+  return (await db.getFiles(fileFilter, {}, {})) ?? [];
 };
 
 const TOOL_ATTACHMENT_KEYS = [
@@ -198,14 +236,85 @@ class BaseClient {
     this.currentMessages = [];
     /** @type {import('librechat-data-provider').VisionModes | undefined} */
     this.visionMode;
-    /** @type {import('librechat-data-provider').FileConfig | undefined} */
-    this._mergedFileConfig;
-    /** @type {import('librechat-data-provider').EndpointFileConfig | undefined} */
-    this._endpointFileConfig;
   }
 
   setOptions() {
     throw new Error("Method 'setOptions' must be implemented.");
+  }
+
+  getModelBoundStoredMessages(messages) {
+    return withoutUnsentFiles(messages, {
+      resendFiles: this.options.resendFiles,
+      excluded: this.options.excludedFiles,
+    });
+  }
+
+  /** @param {TMessage[]} messages */
+  setModelBoundStoredMessages(messages) {
+    this.modelBoundStoredMessages = [...(messages ?? [])];
+  }
+
+  getModelBoundFileProjection() {
+    return projectModelBoundSourceFiles({
+      messageFilesBySourceMessageId: this.message_file_map,
+      sourceMessages: this.modelBoundStoredMessages,
+      steerFileIdsBySourceMessageId: this.modelBoundSteerFileIdsBySourceMessageId,
+      replayHistoricalFiles: this.options.resendFiles !== false,
+      historicalFiles: this.authorizedHistoricalFiles,
+      processedCurrentFiles: Array.isArray(this.options.attachments)
+        ? this.options.attachments
+        : [],
+      canonicalCurrentFiles: Array.isArray(this.modelBoundCurrentFiles)
+        ? this.modelBoundCurrentFiles
+        : [],
+      initiallyOverflowed: this.modelBoundHistoricalFileIdsOverflowed === true,
+    });
+  }
+
+  /** Optional pre-build guard for policies that cover restored history
+   * independently of the final provider selection. */
+  assertStoredModelBoundContent() {}
+
+  /** Agent runs can defer the parent write until their first exact model
+   * boundary is admitted. Generic clients preserve the historical eager
+   * persistence behavior. */
+  shouldDeferUserMessagePersistence() {
+    return false;
+  }
+
+  /** Whether a deferred parent write may still create a new conversation's row up front, so
+   * the conversation lists can return it while the run is in flight. */
+  shouldSeedDeferredConversation() {
+    return false;
+  }
+
+  /** Returns the request-scoped deferred parent-write controller, when any. */
+  getModelBoundUserMessagePersistence() {
+    return this.modelBoundUserMessagePersistence;
+  }
+
+  /**
+   * Generic clients return their selected model payload from `buildMessages`.
+   * AgentClient overrides this because its SDK performs pruning later and
+   * enforces the same projection at the actual chat-model callback instead.
+   *
+   * @param {string | Array<Record<string, unknown>>} payload
+   */
+  assertBuiltModelBoundContent(payload) {
+    const messages = Array.isArray(payload)
+      ? payload
+      : [{ role: 'user', content: payload, isCreatedByUser: true, isUserSubmitted: true }];
+    const fileProjection = this.getModelBoundFileProjection();
+    assertModelBoundProviderContent({
+      onTraversalFailure: reportLocatorTraversalFailure,
+      filters: this.options.req?.config?.filters,
+      legacyPii: this.options.req?.config?.messageFilter?.pii,
+      providerMessages: messages,
+      storedMessages: this.modelBoundStoredMessages,
+      fileIdsBySourceMessageId: fileProjection.fileIdsBySourceMessageId,
+      resolvedFiles: fileProjection.resolvedFiles,
+      sourceFileProjectionOverflowed: fileProjection.overflowed,
+    });
   }
 
   async getCompletion() {
@@ -303,11 +412,6 @@ class BaseClient {
     throw new Error('Subclasses must implement getBuildMessagesOptions');
   }
 
-  async generateTextStream(text, onProgress, options = {}) {
-    const stream = new TextStream(text, options);
-    await stream.processTextStream(onProgress);
-  }
-
   /**
    * @returns {[string|undefined, string|undefined]}
    */
@@ -339,6 +443,10 @@ class BaseClient {
 
     const [overrideConvoId, overrideUserMessageId] = this.processOverideIds();
     const { isEdited, isContinued } = opts;
+    if (opts.isCompaction === true) {
+      /** The leaf stands in for the user message and is already persisted. */
+      this.skipSaveUserMessage = true;
+    }
     const user = opts.user ?? null;
     this.user = user;
     const saveOptions = this.getSaveOptions();
@@ -347,16 +455,22 @@ class BaseClient {
     const conversationId = requestConvoId ?? crypto.randomUUID();
     const parentMessageId = opts.parentMessageId ?? Constants.NO_PARENT;
     const userMessageId =
-      overrideUserMessageId ?? opts.overrideParentMessageId ?? crypto.randomUUID();
-    let responseMessageId = opts.responseMessageId ?? crypto.randomUUID();
+      opts.preallocatedUserMessageId ??
+      overrideUserMessageId ??
+      opts.overrideParentMessageId ??
+      crypto.randomUUID();
+    let responseMessageId =
+      opts.responseMessageId ?? opts.preallocatedResponseMessageId ?? crypto.randomUUID();
     let head = isEdited ? responseMessageId : parentMessageId;
     this.currentMessages = (await this.loadHistory(conversationId, head)) ?? [];
     this.conversationId = conversationId;
 
     if (isEdited && !isContinued) {
-      responseMessageId = crypto.randomUUID();
+      responseMessageId = opts.preallocatedResponseMessageId ?? crypto.randomUUID();
       head = responseMessageId;
       this.currentMessages[this.currentMessages.length - 1].messageId = head;
+    } else if (opts.preallocatedResponseMessageId != null) {
+      responseMessageId = opts.preallocatedResponseMessageId;
     }
 
     if (opts.isRegenerate && responseMessageId.endsWith('_')) {
@@ -379,14 +493,75 @@ class BaseClient {
   }
 
   createUserMessage({ messageId, parentMessageId, conversationId, text }) {
-    return {
+    return stampMessageTrigger(this.options?.req, {
       messageId,
       parentMessageId,
       conversationId,
       sender: 'User',
       text,
       isCreatedByUser: true,
+      ...(this.options?.req?._agentEventTriggerProjection != null && {
+        subagentTriggerProjection: this.options.req._agentEventTriggerProjection,
+      }),
+    });
+  }
+
+  /**
+   * The message a compaction turn hangs off: the branch's leaf, presented in
+   * the user-message slot so the response parents onto it and every consumer
+   * of `userMessage` (progress, job metadata, the abort path) keeps working.
+   * Identity fields only: the row stays in history untouched, and the object
+   * mirrored into job metadata must not carry the leaf's full content.
+   * @param {string} parentMessageId
+   * @returns {TMessage}
+   */
+  getCompactionAnchor(parentMessageId) {
+    const leaf = this.currentMessages[this.currentMessages.length - 1];
+    if (leaf == null || leaf.messageId !== parentMessageId) {
+      throw Object.assign(new Error('The message to compact up to was not found.'), {
+        statusCode: 404,
+        code: 'COMPACTION_ANCHOR_NOT_FOUND',
+      });
+    }
+    if (isCompactedLeaf(leaf)) {
+      /** Typed so a stream that already started renders localized copy. */
+      throw Object.assign(
+        new Error(
+          JSON.stringify({
+            type: ErrorTypes.COMPACTION_SKIPPED,
+            reason: 'nothing_to_summarize',
+          }),
+        ),
+        { statusCode: 409, code: 'NOTHING_TO_COMPACT' },
+      );
+    }
+    return {
+      messageId: leaf.messageId,
+      parentMessageId: leaf.parentMessageId,
+      conversationId: leaf.conversationId,
+      isCreatedByUser: leaf.isCreatedByUser === true,
+      text: '',
     };
+  }
+
+  /**
+   * The message the turn hangs off: a fresh user message, the edited message
+   * already in history, or (for a compaction) the branch's leaf.
+   * @returns {TMessage}
+   */
+  resolveStartUserMessage({ opts, message, userMessageId, parentMessageId, conversationId }) {
+    if (opts.isCompaction) {
+      return this.getCompactionAnchor(parentMessageId);
+    }
+    if (opts.isEdited) {
+      return this.currentMessages[this.currentMessages.length - 2];
+    }
+    return this.createUserMessage({
+      messageId: userMessageId,
+      parentMessageId,
+      conversationId,
+      text: message,
+    });
   }
 
   async handleStartMethods(message, opts) {
@@ -402,14 +577,16 @@ class BaseClient {
     } = await this.setMessageOptions(opts);
     this.options.startupTelemetry?.mark('history_loaded');
 
-    const userMessage = opts.isEdited
-      ? this.currentMessages[this.currentMessages.length - 2]
-      : this.createUserMessage({
-          messageId: userMessageId,
-          parentMessageId,
-          conversationId,
-          text: message,
-        });
+    const userMessage = stampPrivateTextMessage(
+      this.options.req,
+      this.resolveStartUserMessage({
+        opts,
+        message,
+        userMessageId,
+        parentMessageId,
+        conversationId,
+      }),
+    );
 
     /**
      * Attach quoted excerpts (the "Add to chat" selections from `req.body.quotes`)
@@ -419,12 +596,28 @@ class BaseClient {
      * merged into the model-facing text later, per message, in `buildMessages`,
      * keeping the stored `text` clean while the count stays consistent.
      */
-    if (!opts.isEdited) {
+    if (!opts.isEdited && !opts.isCompaction) {
       const referencedQuotes = getReferencedQuotes(this.options.req?.body?.quotes);
       if (referencedQuotes != null) {
         userMessage.quotes = referencedQuotes;
       }
     }
+
+    Object.assign(
+      userMessage,
+      skillMessageFields({
+        manualSkills: this.options.req?.body?.manualSkills,
+        alwaysApplySkillPrimes: this.options.agent?.alwaysApplySkillPrimes,
+        isEdited: opts.isEdited,
+        isCompaction: opts.isCompaction,
+        skipSaveUserMessage: this.skipSaveUserMessage,
+      }),
+      persistedReasoningOverrideFields({
+        rawReasoningOverride: this.options.req?.body?.reasoningOverride,
+        isEdited: opts.isEdited,
+        isCompaction: opts.isCompaction,
+      }),
+    );
 
     if (typeof opts?.getReqData === 'function') {
       opts.getReqData({
@@ -435,10 +628,13 @@ class BaseClient {
       });
     }
 
-    if (typeof opts?.onStart === 'function') {
-      const isNewConvo = !requestConvoId && parentMessageId === Constants.NO_PARENT;
-      opts.onStart(userMessage, responseMessageId, isNewConvo);
-    }
+    this.privateTextStart = deferPrivateTextStart(
+      this.options.req,
+      opts?.onStart,
+      userMessage,
+      responseMessageId,
+      !requestConvoId && parentMessageId === Constants.NO_PARENT,
+    );
 
     return {
       ...opts,
@@ -556,9 +752,24 @@ class BaseClient {
   }
 
   async sendMessage(message, opts = {}) {
+    return withBalanceReservations((balanceReservations) =>
+      this.sendReservedMessage(message, opts, balanceReservations),
+    );
+  }
+
+  /**
+   * @param {string} message
+   * @param {Record<string, unknown>} opts
+   * @param {BalanceReservations} balanceReservations - Holds the balance reservation admitting
+   * this message; released once its usage is recorded, and by `sendMessage` on any other exit.
+   */
+  async sendReservedMessage(message, opts, balanceReservations) {
     const appConfig = this.options.req?.config;
     /** @type {Promise<TMessage>} */
     let userMessagePromise;
+    /** @type {{ promise: Promise<unknown>, isPending: () => boolean, start: () => Promise<unknown>, cancel: () => Promise<unknown> } | undefined} */
+    let userMessagePersistence;
+    this.modelBoundUserMessagePersistence = undefined;
     const { user, head, isEdited, conversationId, responseMessageId, saveOptions, userMessage } =
       await this.handleStartMethods(message, opts);
 
@@ -594,8 +805,10 @@ class BaseClient {
           const text = editedContent[type];
           if (index >= 0 && index < latestMessage.content.length) {
             const contentPart = latestMessage.content[index];
+            let didApplyEdit = false;
             if (type === ContentTypes.THINK && contentPart.type === ContentTypes.THINK) {
               contentPart[ContentTypes.THINK] = text;
+              didApplyEdit = true;
               delete contentPart.reasoning_label;
               delete contentPart.reasoning_label_step_id;
               delete contentPart.reasoning_label_attempts;
@@ -604,12 +817,19 @@ class BaseClient {
               delete contentPart.reasoning_label_status;
             } else if (type === ContentTypes.TEXT && contentPart.type === ContentTypes.TEXT) {
               contentPart[ContentTypes.TEXT] = text;
+              didApplyEdit = true;
+            }
+            if (didApplyEdit) {
+              latestMessage.userSubmittedPaths = mergeUserSubmittedPaths(
+                latestMessage.userSubmittedPaths,
+                [`/content/${index}/${type}`],
+              );
             }
           }
         }
       }
       this.continued = true;
-    } else {
+    } else if (opts.isCompaction !== true) {
       this.currentMessages.push(userMessage);
     }
 
@@ -619,19 +839,39 @@ class BaseClient {
      */
     const parentMessageId = isEdited ? head : userMessage.messageId;
     this.parentMessageId = parentMessageId;
+    const modelBoundStoredMessages = this.getModelBoundStoredMessages(this.currentMessages);
+    this.setModelBoundStoredMessages(modelBoundStoredMessages);
+    this.assertStoredModelBoundContent();
+    this.modelBoundCurrentFiles = Array.isArray(this.options.attachments)
+      ? [...this.options.attachments]
+      : [];
+    if (this.options.resendFiles !== false && this.authorizedHistoricalFiles == null) {
+      const historicalFileState = collectModelBoundHistoricalFileIdState(modelBoundStoredMessages);
+      this.modelBoundHistoricalFileIdsOverflowed ||= historicalFileState.overflowed;
+      const files = this.resolveTurnAttachments(
+        await getOwnerHistoricalFiles(historicalFileState.fileIds, this.options.req?.user),
+      );
+      this.authorizedHistoricalFiles = new Map(
+        files
+          .filter((file) => typeof file?.file_id === 'string' && file.file_id.length > 0)
+          .map((file) => [file.file_id, file]),
+      );
+    }
     let {
       prompt: payload,
       tokenCountMap,
       promptTokens,
     } = await this.buildMessages(
-      this.currentMessages,
+      modelBoundStoredMessages,
       parentMessageId,
       this.getBuildMessagesOptions(opts),
       opts,
     );
+    this.assertBuiltModelBoundContent(payload);
     this.options.startupTelemetry?.mark('messages_built');
 
-    if (tokenCountMap && tokenCountMap[userMessage.messageId]) {
+    /** A compaction anchor is the persisted leaf, whose own count must stay. */
+    if (tokenCountMap && tokenCountMap[userMessage.messageId] && opts.isCompaction !== true) {
       userMessage.tokenCount = tokenCountMap[userMessage.messageId];
       logger.debug('[BaseClient] userMessage', {
         messageId: userMessage.messageId,
@@ -649,46 +889,81 @@ class BaseClient {
         }
         delete userMessage.image_urls;
       }
-      /**
-       * Persist the user's manual skill picks onto the user message so the
-       * frontend `SkillPills` component can render them in history
-       * after reload. UI-only metadata — the runtime skill resolution
-       * pipeline reads the top-level `req.body.manualSkills` separately.
-       * Filter is defense-in-depth on top of Mongoose schema validation:
-       * keeps the DB row free of empty/non-string entries even if a
-       * crafted payload slips past schema checks upstream.
-       */
-      const rawManualSkills = this.options.req?.body?.manualSkills;
-      if (Array.isArray(rawManualSkills) && rawManualSkills.length > 0) {
-        const skills = rawManualSkills.filter((s) => typeof s === 'string' && s.length > 0);
-        if (skills.length > 0) {
-          userMessage.manualSkills = skills;
-        }
-      }
-      /**
-       * Persist the names of skills auto-primed this turn via `always-apply`
-       * frontmatter so `SkillPills` can render pinned-variant badges
-       * on the user bubble that survive reload and history render. Frozen
-       * at turn time (not reconstructed from `Skill.alwaysApply` at render
-       * time) because the flag is mutable — historical turns must keep
-       * their audit trail even if an admin flips `alwaysApply` off later.
-       */
-      const alwaysApplySkillPrimes = this.options.agent?.alwaysApplySkillPrimes;
-      if (Array.isArray(alwaysApplySkillPrimes) && alwaysApplySkillPrimes.length > 0) {
-        const names = alwaysApplySkillPrimes
-          .map((p) => p?.name)
-          .filter((n) => typeof n === 'string' && n.length > 0);
-        if (names.length > 0) {
-          userMessage.alwaysAppliedSkills = names;
-        }
-      }
-      userMessagePromise = this.saveMessageToDatabase(userMessage, saveOptions, user).catch(
-        (err) => {
+      const startUserMessagePersistence = () => {
+        this.savedMessageIds.add(userMessage.messageId);
+        return this.saveMessageToDatabase(userMessage, saveOptions, user).catch((err) => {
           logger.error('[BaseClient] Failed to save user message:', err);
           return {};
-        },
-      );
-      this.savedMessageIds.add(userMessage.messageId);
+        });
+      };
+      if (this.shouldDeferUserMessagePersistence()) {
+        let state = 'pending';
+        let startPersistence = startUserMessagePersistence;
+        if (!this.skipSaveConvo && this.shouldSeedDeferredConversation()) {
+          const seed = seedTurnConversation(
+            db,
+            this.getTurnConversationFields(
+              this.options,
+              userMessage.conversationId,
+              saveOptions,
+              'api/app/clients/BaseClient.js - sendMessage #seedConversation',
+            ),
+          );
+          startPersistence = runAfterSeed(seed, startUserMessagePersistence);
+        }
+        let resolvePersistence;
+        let removeAbortListener = () => {};
+        const persistencePromise = new Promise((resolve) => {
+          resolvePersistence = resolve;
+        });
+        const start = () => {
+          if (state !== 'pending') {
+            return persistencePromise;
+          }
+          state = 'started';
+          removeAbortListener();
+          const startDeferredPersistence = startPersistence;
+          startPersistence = undefined;
+          try {
+            Promise.resolve(startDeferredPersistence?.()).then(resolvePersistence, () =>
+              resolvePersistence({}),
+            );
+          } catch (error) {
+            logger.error('[BaseClient] Failed to start deferred user-message persistence:', error);
+            resolvePersistence({});
+          }
+          return persistencePromise;
+        };
+        const cancel = () => {
+          if (state !== 'pending') {
+            return persistencePromise;
+          }
+          state = 'cancelled';
+          removeAbortListener();
+          startPersistence = undefined;
+          /** Resolve with a non-persisted sentinel. The subagent task store
+           * validates the result and fails child creation closed, while the
+           * request's policy error remains the only surfaced rejection. */
+          resolvePersistence({});
+          return persistencePromise;
+        };
+        userMessagePersistence = Object.freeze({
+          promise: persistencePromise,
+          isPending: () => state === 'pending',
+          start,
+          cancel,
+        });
+        removeAbortListener = bindPrivateTextPersistenceAbort(
+          this.options.req,
+          this.abortController?.signal,
+          start,
+          cancel,
+        );
+        this.modelBoundUserMessagePersistence = userMessagePersistence;
+        userMessagePromise = persistencePromise;
+      } else {
+        userMessagePromise = startUserMessagePersistence();
+      }
       if (typeof opts?.getReqData === 'function') {
         opts.getReqData({
           userMessagePromise,
@@ -698,35 +973,58 @@ class BaseClient {
 
     const balanceConfig = getBalanceConfig(appConfig);
     const transactionsConfig = getTransactionsConfig(appConfig);
-    if (
-      balanceConfig?.enabled &&
-      supportsBalanceCheck[this.options.endpointType ?? this.options.endpoint]
-    ) {
-      await checkBalance(
-        {
-          req: this.options.req,
-          res: this.options.res,
-          txData: {
-            user: this.user,
-            tokenType: 'prompt',
-            amount: promptTokens,
-            endpoint: this.options.endpoint,
-            model: this.modelOptions?.model ?? this.model,
-            endpointTokenConfig: this.options.endpointTokenConfig,
+    let completionResult;
+    try {
+      if (
+        balanceConfig?.enabled &&
+        supportsBalanceCheck[this.options.endpointType ?? this.options.endpoint]
+      ) {
+        const balanceAdmission = checkBalance(
+          {
+            req: this.options.req,
+            res: this.options.res,
+            txData: {
+              user: this.user,
+              tokenType: 'prompt',
+              amount: promptTokens,
+              endpoint: this.options.endpoint,
+              model: this.modelOptions?.model ?? this.model,
+              endpointTokenConfig: this.options.endpointTokenConfig,
+            },
           },
-        },
-        {
-          logViolation,
-          getMultiplier: db.getMultiplier,
-          findBalanceByUser: db.findBalanceByUser,
-          createAutoRefillTransaction: db.createAutoRefillTransaction,
-          balanceConfig,
-          upsertBalanceFields: db.upsertBalanceFields,
-        },
-      );
-    }
+          {
+            logViolation,
+            getMultiplier: db.getMultiplier,
+            reserveBalance: db.reserveBalance,
+            renewBalanceReservation: db.renewBalanceReservation,
+            releaseBalanceReservation: db.releaseBalanceReservation,
+            balanceConfig,
+          },
+        );
+        await balanceReservations.track(balanceAdmission);
+      }
 
-    const { completion, metadata } = await this.sendCompletion(payload, opts);
+      completionResult = await this.sendCompletion(payload, opts);
+    } catch (error) {
+      rejectPrivateTextAdmission(this.options.req);
+      if (userMessagePersistence?.isPending()) {
+        if (isContentFilterError(error)) {
+          userMessagePersistence.cancel();
+        } else {
+          userMessagePersistence.start();
+        }
+      }
+      throw error;
+    }
+    /** A safe no-model completion (or a runtime that cannot expose the
+     * admission callback) must not leave the parent-write gate pending. */
+    await requirePrivateTextPersistence(
+      this.options.req,
+      () => (userMessagePersistence != null ? userMessagePersistence.start() : userMessagePromise),
+      this.privateTextStart,
+    );
+    userMessagePersistence?.start();
+    const { completion, metadata } = completionResult;
     if (this.abortController) {
       this.abortController.requestCompleted = true;
     }
@@ -734,7 +1032,9 @@ class BaseClient {
     const isAgentResponse =
       this.clientName === EModelEndpoint.agents || isAgentsEndpoint(this.options.endpoint);
     const langfuseTraceFields = isAgentResponse
-      ? await getLangfuseTraceMessageFields(appConfig, responseMessageId)
+      ? await getLangfuseTraceMessageFields(appConfig, responseMessageId, {
+          isTemporary: isTemporaryTurn(this.options.req),
+        })
       : undefined;
 
     /** @type {TMessage} */
@@ -753,6 +1053,8 @@ class BaseClient {
       ...(this.metadata ?? {}),
       metadata: Object.keys(metadata ?? {}).length > 0 ? metadata : undefined,
     };
+    let editedSourceMessage;
+    let editedSourceContentLength = 0;
 
     if (typeof completion === 'string') {
       responseMessage.text = completion;
@@ -770,6 +1072,8 @@ class BaseClient {
         if (!latestMessage?.content) {
           responseMessage.content = completion;
         } else {
+          editedSourceMessage = latestMessage;
+          editedSourceContentLength = latestMessage.content.length;
           const existingContent = [...latestMessage.content];
           const { type: editedType } = opts.editedContent;
           responseMessage.content = this.mergeEditedContent(
@@ -781,6 +1085,53 @@ class BaseClient {
       }
     } else if (Array.isArray(completion)) {
       responseMessage.text = completion.join('');
+    }
+
+    if (Array.isArray(responseMessage.content)) {
+      const userSubmittedPaths = [];
+      const userSubmittedMessageFieldPaths = [];
+      for (let index = 0; index < responseMessage.content.length; index++) {
+        if (responseMessage.content[index]?.type === ContentTypes.STEER) {
+          userSubmittedPaths.push(`/content/${index}`);
+        }
+      }
+      if (editedSourceMessage != null) {
+        userSubmittedPaths.push(
+          ...(editedSourceMessage.userSubmittedPaths ?? []).filter((path) => {
+            const match = /^\/content\/(\d+)(?:\/|$)/.exec(path);
+            return match != null && Number(match[1]) < editedSourceContentLength;
+          }),
+        );
+        userSubmittedMessageFieldPaths.push(
+          ...(editedSourceMessage.userSubmittedMessageFieldPaths ?? []).filter((entry) => {
+            const match = /^\/content\/(\d+)(?:\/|$)/.exec(entry?.path);
+            return match != null && Number(match[1]) < editedSourceContentLength;
+          }),
+        );
+        if (editedSourceMessage.isUserSubmitted === true) {
+          for (let index = 0; index < editedSourceContentLength; index++) {
+            userSubmittedPaths.push(`/content/${index}`);
+          }
+        }
+        const editedIndex = opts.editedContent?.index;
+        const editedType = opts.editedContent?.type;
+        if (
+          Number.isInteger(editedIndex) &&
+          editedIndex >= 0 &&
+          editedIndex < editedSourceContentLength &&
+          (editedType === ContentTypes.TEXT || editedType === ContentTypes.THINK)
+        ) {
+          userSubmittedPaths.push(`/content/${editedIndex}/${editedType}`);
+        }
+      }
+      if (userSubmittedPaths.length > 0) {
+        responseMessage.userSubmittedPaths = mergeUserSubmittedPaths(userSubmittedPaths);
+      }
+      if (userSubmittedMessageFieldPaths.length > 0) {
+        responseMessage.userSubmittedMessageFieldPaths = mergeUserSubmittedMessageFieldPaths(
+          userSubmittedMessageFieldPaths,
+        );
+      }
     }
 
     if (tokenCountMap && this.recordTokenUsage && this.getTokenCountForResponse) {
@@ -818,12 +1169,14 @@ class BaseClient {
         completionTokens,
       });
     }
+    await balanceReservations.release();
 
     if (userMessagePromise) {
       await userMessagePromise;
     }
 
     if (
+      opts.isCompaction !== true &&
       this.contextMeta?.calibrationRatio > 0 &&
       this.contextMeta.calibrationRatio !== 1 &&
       userMessage.tokenCount > 0
@@ -885,7 +1238,21 @@ class BaseClient {
   async loadHistory(conversationId, parentMessageId = null) {
     logger.debug('[BaseClient] Loading history:', { conversationId, parentMessageId });
 
-    const messages = (await db.getMessages({ conversationId, user: this.user })) ?? [];
+    /** No message has the root sentinel as its id, so the chain walk from it is empty. */
+    if (parentMessageId === Constants.NO_PARENT) {
+      return [];
+    }
+
+    const messages = await loadHistoryRows({
+      getMessages: db.getMessages,
+      user: this.user,
+      conversationId,
+      parentMessageId,
+      request: this.options?.req,
+    });
+    /** A client that reads beyond the walk below (which stops at a checkpoint
+     *  summary) receives every row of the branch here, back to its root; the rest keep nothing. */
+    this.onHistoryLoaded?.(messages);
 
     if (messages.length === 0) {
       return [];
@@ -901,46 +1268,48 @@ class BaseClient {
       parentMessageId,
       mapMethod,
     });
+    if (this.shouldSummarize) {
+      for (let i = _messages.length - 1; i >= 0; i--) {
+        const msg = _messages[i];
+        if (!msg) {
+          continue;
+        }
 
-    _messages = await this.addPreviousAttachments(_messages);
+        const summaryBlock = findCheckpointSummaryPart(msg.content);
+        if (summaryBlock) {
+          this.previous_summary = {
+            ...msg,
+            summary: getSummaryPartText(summaryBlock),
+            summaryTokenCount: summaryBlock.tokenCount,
+          };
+          break;
+        }
 
-    if (!this.shouldSummarize) {
-      return _messages;
-    }
-
-    for (let i = _messages.length - 1; i >= 0; i--) {
-      const msg = _messages[i];
-      if (!msg) {
-        continue;
+        if (msg.summary) {
+          this.previous_summary = msg;
+          break;
+        }
       }
 
-      const summaryBlock = BaseClient.findSummaryContentBlock(msg);
-      if (summaryBlock) {
-        this.previous_summary = {
-          ...msg,
-          summary: BaseClient.getSummaryText(summaryBlock),
-          summaryTokenCount: summaryBlock.tokenCount,
-        };
-        break;
-      }
-
-      if (msg.summary) {
-        this.previous_summary = msg;
-        break;
-      }
-    }
-
-    if (this.previous_summary) {
-      const { messageId, summary, tokenCount, summaryTokenCount } = this.previous_summary;
-      logger.debug('[BaseClient] Previous summary:', {
-        messageId,
-        summary,
-        tokenCount,
-        summaryTokenCount,
+      _messages = this.constructor.getMessagesForConversation({
+        messages,
+        parentMessageId,
+        mapMethod,
+        summary: true,
       });
+
+      if (this.previous_summary) {
+        const { messageId, summary, tokenCount, summaryTokenCount } = this.previous_summary;
+        logger.debug('[BaseClient] Previous summary:', {
+          messageId,
+          summary,
+          tokenCount,
+          summaryTokenCount,
+        });
+      }
     }
 
-    return _messages;
+    return this.addPreviousAttachments(_messages);
   }
 
   /**
@@ -964,12 +1333,14 @@ class BaseClient {
     }
 
     const hasAddedConvo = options?.req?.body?.addedConvo != null;
-    const reqCtx = {
-      userId: options?.req?.user?.id,
-      isTemporary: options?.req?.body?.isTemporary,
-      interfaceConfig: options?.req?.config?.interfaceConfig,
-    };
-    const savedMessage = await db.saveMessage(
+    const req = options?.req;
+    if (needsRetentionConversation(req)) {
+      req.resolvedConversation = await db.getConvo(req.user.id, message.conversationId);
+    }
+    const reqCtx = getConversationWriteContext(req);
+    const savedMessage = await savePrivateTextMessage(
+      db.saveMessage,
+      req,
       reqCtx,
       {
         ...message,
@@ -981,71 +1352,78 @@ class BaseClient {
       { context: 'api/app/clients/BaseClient.js - saveMessageToDatabase #saveMessage' },
     );
 
+    /** Only a reply that is actually in the message history may light an indicator: a write
+     *  that resolved empty (duplicate-key recovery that could not re-read the row) would
+     *  otherwise announce a reply nobody can open. */
+    const persistedReply = savedMessage != null && message.isCreatedByUser === false;
+
     if (this.skipSaveConvo) {
+      /* The secondary response of an override pair persists its message but deliberately skips
+         the conversation-field save, so the stamp below is never reached. The reply still has
+         to light the indicator: the primary response's stamp is older whenever this one
+         finishes later, and absent altogether when the primary failed. Best effort, because a
+         missed indicator must not fail a reply that is already persisted. */
+      /* `user` is the same id the message was just saved under; `reqCtx` carries an empty
+         string when no request object is present, which the direct-save paths do not
+         guarantee, so the fallback turns on truthiness rather than on nullishness. */
+      await announceReply(db, {
+        userId: reqCtx.userId || user || this.user,
+        conversationId: message.conversationId,
+        reply: {
+          messageId: persistedReply ? savedMessage.messageId : undefined,
+          content: message.content,
+          text: message.text,
+          attachments: message.attachments,
+          isTemporary: reqCtx.isTemporary,
+        },
+        context: 'BaseClient - skipped conversation save',
+      });
       return { message: savedMessage };
     }
 
-    const fieldsToKeep = {
-      conversationId: message.conversationId,
-      endpoint: options.endpoint,
-      endpointType: options.endpointType,
-      ...endpointOptions,
-    };
-    const conversationCreatedAt = options?.req?.conversationCreatedAt;
-    const createdAtOnInsert =
-      conversationCreatedAt != null ? new Date(conversationCreatedAt) : undefined;
-    const validCreatedAtOnInsert =
-      createdAtOnInsert && !Number.isNaN(createdAtOnInsert.getTime())
-        ? createdAtOnInsert
-        : undefined;
-
-    const req = options?.req;
-    const skippedExistingConvoLookup = this.fetchedConvo === true;
-    const hasResolvedConversation =
-      req != null && Object.prototype.hasOwnProperty.call(req, 'resolvedConversation');
-    let existingConvo = null;
-    if (!skippedExistingConvoLookup && hasResolvedConversation) {
-      existingConvo = req.resolvedConversation;
-    } else if (!skippedExistingConvoLookup) {
-      existingConvo = await db.getConvo(req?.user?.id, message.conversationId);
-    }
-    if (hasResolvedConversation) {
-      delete req.resolvedConversation;
-    }
-    const shouldSetCreatedAtOnInsert = !skippedExistingConvoLookup && existingConvo == null;
-
-    const unsetFields = {};
-    const exceptions = new Set(['spec', 'iconURL']);
-    const hasNonEphemeralAgent =
-      isAgentsEndpoint(options.endpoint) &&
-      endpointOptions?.agent_id &&
-      !isEphemeralAgentId(endpointOptions.agent_id);
-    if (hasNonEphemeralAgent) {
-      exceptions.add('model');
-    }
-    if (existingConvo != null) {
-      this.fetchedConvo = true;
-      for (const key in existingConvo) {
-        if (!key) {
-          continue;
-        }
-        if (excludedKeys.has(key) && !exceptions.has(key)) {
-          continue;
-        }
-
-        if (endpointOptions?.[key] === undefined) {
-          unsetFields[key] = 1;
-        }
-      }
-    }
-
-    const conversation = await db.saveConvo(reqCtx, fieldsToKeep, {
-      context: 'api/app/clients/BaseClient.js - saveMessageToDatabase #saveConvo',
-      unsetFields,
-      createdAtOnInsert: shouldSetCreatedAtOnInsert ? validCreatedAtOnInsert : undefined,
+    const { conversation, initialized } = await saveTurnConversation(db, {
+      ...this.getTurnConversationFields(
+        options,
+        message.conversationId,
+        endpointOptions,
+        'api/app/clients/BaseClient.js - saveMessageToDatabase #saveConvo',
+      ),
+      ctx: reqCtx,
+      initialized: this.fetchedConvo === true,
+      savedMessageId: savedMessage?._id,
+      reply: persistedReply
+        ? {
+            messageId: savedMessage.messageId,
+            content: message.content,
+            text: message.text,
+            attachments: message.attachments,
+          }
+        : undefined,
     });
+    if (initialized) {
+      this.fetchedConvo = true;
+    }
 
     return { message: savedMessage, conversation };
+  }
+
+  /**
+   * The conversation fields a turn's writes share.
+   * @param {Object} options - The client options snapshot.
+   * @param {string} conversationId
+   * @param {Partial<TConversation>} endpointOptions
+   * @param {string} context - Names the write in the save log.
+   */
+  getTurnConversationFields(options, conversationId, endpointOptions, context) {
+    return {
+      req: options.req,
+      conversationId,
+      endpoint: options.endpoint,
+      endpointType: options.endpointType,
+      endpointOptions,
+      agentId: options.agent?.id,
+      context,
+    };
   }
 
   /**
@@ -1054,34 +1432,6 @@ class BaseClient {
    */
   async updateMessageInDatabase(message) {
     await db.updateMessage(this.options?.req?.user?.id, message);
-  }
-
-  /** Extracts text from a summary block (handles both legacy `text` field and new `content` array format). */
-  static getSummaryText(summaryBlock) {
-    if (Array.isArray(summaryBlock.content)) {
-      return summaryBlock.content.map((b) => b.text ?? '').join('');
-    }
-    if (typeof summaryBlock.content === 'string') {
-      return summaryBlock.content;
-    }
-    return summaryBlock.text ?? '';
-  }
-
-  /** Finds the last summary content block in a message's content array (last-summary-wins). */
-  static findSummaryContentBlock(message) {
-    if (!Array.isArray(message?.content)) {
-      return null;
-    }
-    let lastSummary = null;
-    for (const part of message.content) {
-      if (
-        part?.type === ContentTypes.SUMMARY &&
-        BaseClient.getSummaryText(part).trim().length > 0
-      ) {
-        lastSummary = part;
-      }
-    }
-    return lastSummary;
   }
 
   /**
@@ -1093,6 +1443,7 @@ class BaseClient {
    * - The message's 'role' is set to 'system'.
    * - The message's 'text' is set to its 'summary'.
    * - If the message has a 'summaryTokenCount', the message's 'tokenCount' is set to 'summaryTokenCount'.
+   * - A message with a summary content block keeps its content from that block on, for the SDK formatter to promote.
    * The traversal stops at the message with the 'summary' property.
    *
    * Each message object should have an 'id' or 'messageId' property and may have a 'parentMessageId' property.
@@ -1122,15 +1473,19 @@ class BaseClient {
     const orderedMessages = [];
     let currentMessageId = parentMessageId;
     const visitedMessageIds = new Set();
+    const messagesById = new Map();
+    for (const msg of messages) {
+      const messageId = msg.messageId ?? msg.id;
+      if (!messagesById.has(messageId)) {
+        messagesById.set(messageId, msg);
+      }
+    }
 
     while (currentMessageId) {
       if (visitedMessageIds.has(currentMessageId)) {
         break;
       }
-      const message = messages.find((msg) => {
-        const messageId = msg.messageId ?? msg.id;
-        return messageId === currentMessageId;
-      });
+      const message = messagesById.get(currentMessageId);
 
       visitedMessageIds.add(currentMessageId);
 
@@ -1138,35 +1493,13 @@ class BaseClient {
         break;
       }
 
-      let resolved = message;
-      let hasSummary = false;
-      if (summary) {
-        const summaryBlock = BaseClient.findSummaryContentBlock(message);
-        if (summaryBlock) {
-          const summaryText = BaseClient.getSummaryText(summaryBlock);
-          resolved = {
-            ...message,
-            role: 'system',
-            content: [{ type: ContentTypes.TEXT, text: summaryText }],
-            tokenCount: summaryBlock.tokenCount,
-          };
-          hasSummary = true;
-        } else if (message.summary) {
-          resolved = {
-            ...message,
-            role: 'system',
-            content: [{ type: ContentTypes.TEXT, text: message.summary }],
-            tokenCount: message.summaryTokenCount ?? message.tokenCount,
-          };
-          hasSummary = true;
-        }
-      }
-
+      const checkpoint = summary ? resolveCheckpointMessage(message) : null;
+      const resolved = checkpoint ?? message;
       const shouldMap = mapMethod != null && (mapCondition != null ? mapCondition(resolved) : true);
       const processedMessage = shouldMap ? mapMethod(resolved) : resolved;
       orderedMessages.push(processedMessage);
 
-      if (hasSummary) {
+      if (checkpoint) {
         break;
       }
 
@@ -1358,15 +1691,26 @@ class BaseClient {
     return await this.sendCompletion(payload, opts);
   }
 
-  async addDocuments(message, attachments) {
+  /** Whether this turn talks to the Responses API, which is what lets Azure carry a
+   *  document natively. A saved agent holds it in its parameters and a plain conversation
+   *  in its model options, and both readers of it have been wrong by consulting one. */
+  usesResponsesApi() {
+    return resolveUseResponsesApi(
+      this.options.agent?.model_parameters?.useResponsesApi,
+      this.modelOptions?.useResponsesApi,
+    );
+  }
+
+  async addDocuments(message, attachments, onMissingFile) {
     const documentResult = await encodeAndFormatDocuments(
       this.options.req,
       attachments,
       {
         provider: this.options.agent?.provider ?? this.options.endpoint,
         endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
-        useResponsesApi: this.options.agent?.model_parameters?.useResponsesApi,
+        useResponsesApi: this.usesResponsesApi(),
         model: this.modelOptions?.model ?? this.model,
+        onMissingFile,
       },
       getStrategyFunctions,
     );
@@ -1377,13 +1721,14 @@ class BaseClient {
     return documentResult.files;
   }
 
-  async addVideos(message, attachments) {
+  async addVideos(message, attachments, onMissingFile) {
     const videoResult = await encodeAndFormatVideos(
       this.options.req,
       attachments,
       {
         provider: this.options.agent?.provider ?? this.options.endpoint,
         endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
+        onMissingFile,
       },
       getStrategyFunctions,
     );
@@ -1392,13 +1737,14 @@ class BaseClient {
     return videoResult.files;
   }
 
-  async addAudios(message, attachments) {
+  async addAudios(message, attachments, onMissingFile) {
     const audioResult = await encodeAndFormatAudios(
       this.options.req,
       attachments,
       {
         provider: this.options.agent?.provider ?? this.options.endpoint,
         endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
+        onMissingFile,
       },
       getStrategyFunctions,
     );
@@ -1414,9 +1760,10 @@ class BaseClient {
    * @param {MongoFile[]} attachments - Array of file attachments
    * @returns {Promise<void>}
    */
-  async addFileContextToMessage(message, attachments) {
+  async addFileContextToMessage(message, attachments, fileConsumers) {
+    const textAttachments = this.getTextContextAttachments(attachments, fileConsumers);
     const fileContext = await extractFileContext({
-      attachments,
+      attachments: textAttachments,
       req: this.options?.req,
       tokenCountFn: (text) => countTokens(text),
     });
@@ -1426,7 +1773,29 @@ class BaseClient {
     }
   }
 
-  async processAttachments(message, attachments) {
+  getTextContextAttachments(attachments, fileConsumers) {
+    return attachments.filter((file) => {
+      const deliveryPath = this.getAttachmentDeliveryPath(file, fileConsumers);
+      /* Records predating delivery paths keep legacy extraction. Current routing is
+       * authoritative for inferred uploads, so native provider bytes are not also
+       * injected as extracted text after a provider handoff. */
+      return deliveryPath == null || deliveryPath === 'text';
+    });
+  }
+
+  /** The turn's view of stored records, applied before admission at every load. */
+  resolveTurnAttachments(files, fileConsumers = this.options.agent?.fileConsumers) {
+    return applyTurnDelivery(files, {
+      routing: this.options.agent?.deliveryRouting,
+      consumers: fileConsumers,
+    });
+  }
+
+  getAttachmentDeliveryPath(file, fileConsumers = this.options.agent?.fileConsumers) {
+    return resolveTurnLLMDeliveryPath(this.options.agent?.deliveryRouting, file, fileConsumers);
+  }
+
+  async processAttachments(message, attachments, fileConsumers, onMissingFile) {
     const categorizedAttachments = {
       images: [],
       videos: [],
@@ -1435,20 +1804,15 @@ class BaseClient {
     };
 
     const allFiles = [];
-
     const provider = this.options.agent?.provider ?? this.options.endpoint;
     const isBedrock = provider === EModelEndpoint.bedrock;
+    const deliveryRouting = this.options.agent?.deliveryRouting;
 
-    if (!this._mergedFileConfig) {
-      this._mergedFileConfig = mergeFileConfig(this.options.req?.config?.fileConfig);
-      const endpoint = this.options.agent?.endpoint ?? this.options.endpoint;
-      this._endpointFileConfig = getEndpointFileConfig({
-        fileConfig: this._mergedFileConfig,
-        endpoint,
-        endpointType: this.options.endpointType,
-      });
-    }
-
+    /* The stored path records what upload time inferred from the endpoint it saw, and this
+     * turn may be running somewhere else: audio stored as `provider` under Google reaches
+     * an encoder that emits nothing for OpenAI, delivering neither media nor text. An
+     * explicit chooser decision is the user's and survives, and a record predating the
+     * field keeps its legacy handling. */
     for (const file of attachments) {
       /** @type {FileSources} */
       const source = file.source ?? FileSources.local;
@@ -1456,12 +1820,15 @@ class BaseClient {
         allFiles.push(file);
         continue;
       }
-      if (
-        file.embedded === true ||
-        file.metadata?.codeEnvRef != null ||
-        file.metadata?.codeEnvRefs != null ||
-        file.metadata?.fileIdentifier != null
-      ) {
+      const deliveryPath = this.getAttachmentDeliveryPath(file, fileConsumers);
+      if (deliveryPath === 'text' || deliveryPath === 'none') {
+        allFiles.push(file);
+        continue;
+      }
+      /* An explicit `provider` path is authoritative: lazy provisioning stamps
+       * `embedded`/`codeEnvRef` on files that are still meant for the model, so the
+       * legacy tool-provisioning exclusion only applies to records without one. */
+      if (deliveryPath !== 'provider' && isToolOwnedAttachment(file)) {
         allFiles.push(file);
         continue;
       }
@@ -1482,9 +1849,11 @@ class BaseClient {
         allFiles.push(file);
       } else if (
         file.type &&
-        this._mergedFileConfig &&
-        this._endpointFileConfig?.supportedMimeTypes &&
-        this._mergedFileConfig.checkType(file.type, this._endpointFileConfig.supportedMimeTypes)
+        deliveryRouting?.endpointConfig.supportedMimeTypes &&
+        deliveryRouting.fileConfig.checkType(
+          file.type,
+          deliveryRouting.endpointConfig.supportedMimeTypes,
+        )
       ) {
         categorizedAttachments.documents.push(file);
         allFiles.push(file);
@@ -1493,16 +1862,16 @@ class BaseClient {
 
     const [imageFiles] = await Promise.all([
       categorizedAttachments.images.length > 0
-        ? this.addImageURLs(message, categorizedAttachments.images)
+        ? this.addImageURLs(message, categorizedAttachments.images, onMissingFile)
         : Promise.resolve([]),
       categorizedAttachments.documents.length > 0
-        ? this.addDocuments(message, categorizedAttachments.documents)
+        ? this.addDocuments(message, categorizedAttachments.documents, onMissingFile)
         : Promise.resolve([]),
       categorizedAttachments.videos.length > 0
-        ? this.addVideos(message, categorizedAttachments.videos)
+        ? this.addVideos(message, categorizedAttachments.videos, onMissingFile)
         : Promise.resolve([]),
       categorizedAttachments.audios.length > 0
-        ? this.addAudios(message, categorizedAttachments.audios)
+        ? this.addAudios(message, categorizedAttachments.audios, onMissingFile)
         : Promise.resolve([]),
     ]);
 
@@ -1543,20 +1912,78 @@ class BaseClient {
       }
     }
 
-    const historicalFileIds = collectHistoricalFileIds(_messages);
-    const fileFilter = buildOwnerFileFilter(historicalFileIds, this.options.req?.user);
+    const historicalFileState = collectModelBoundHistoricalFileIdState(_messages);
+    this.modelBoundHistoricalFileIdsOverflowed ||= historicalFileState.overflowed;
     const authorizedFilesById = new Map();
-    if (fileFilter) {
-      const files = (await db.getFiles(fileFilter, {}, {})) ?? [];
-      for (const file of files) {
-        if (file?.file_id) {
-          authorizedFilesById.set(file.file_id, file);
+    const files = this.resolveTurnAttachments(
+      await getOwnerHistoricalFiles(historicalFileState.fileIds, this.options.req?.user),
+    );
+    const nonSteerReplayFileIds = collectModelBoundHistoricalFileIdState(
+      _messages.map((message) => ({
+        files: message.files,
+        content: Array.isArray(message.content)
+          ? message.content.filter((part) => part?.type !== ContentTypes.STEER)
+          : message.content,
+      })),
+    ).fileIds.filter((fileId) => !contextSeen.has(fileId));
+    const steerReplayFileIds = [];
+    for (const message of _messages) {
+      if (!Array.isArray(message?.content)) {
+        continue;
+      }
+      for (const part of message.content) {
+        if (part?.type !== ContentTypes.STEER || !Array.isArray(part.files)) {
+          continue;
+        }
+        for (const file of part.files) {
+          if (typeof file?.file_id === 'string' && file.file_id.length > 0) {
+            steerReplayFileIds.push(file.file_id);
+          }
         }
       }
     }
+    for (const file of files) {
+      if (file?.file_id) {
+        authorizedFilesById.set(file.file_id, file);
+      }
+    }
+    /** Files the conversation leaves out are not replayed, and so count toward no limit. */
+    const replay = scopeHistoricalReplay({
+      fileIds: nonSteerReplayFileIds,
+      steerFileIds: steerReplayFileIds,
+      excluded: this.options.excludedFiles,
+    });
+    let admittedHistoricalFileIds = replay.admitted;
+    if (typeof this.assertHistoricalAttachmentLimits === 'function') {
+      const admittedHistoricalFiles = await this.assertHistoricalAttachmentLimits(
+        [...replay.fileIds, ...replay.steerFileIds]
+          .map((fileId) => authorizedFilesById.get(fileId))
+          .filter((file) => file != null && isModelBoundAttachmentFile(file)),
+      );
+      admittedHistoricalFileIds = new Set(
+        (admittedHistoricalFiles ?? []).map((file) => file?.file_id).filter(Boolean),
+      );
+    }
+    this.modelBoundHistoricalSteerFiles = replay.steerFileIds
+      .map((fileId) => authorizedFilesById.get(fileId))
+      .filter(
+        (file) =>
+          file != null &&
+          isModelBoundAttachmentFile(file) &&
+          (!admittedHistoricalFileIds || admittedHistoricalFileIds.has(file.file_id)),
+      );
     /** Owner-scoped docs for THIS turn, including steer-part refs — the steer
      *  replay stamp consumes this instead of issuing a second query. */
     this.authorizedHistoricalFiles = authorizedFilesById;
+    this.authorizedHistoricalReplayFiles = new Map(
+      files
+        .filter(
+          (file) =>
+            file?.file_id &&
+            (!admittedHistoricalFileIds || admittedHistoricalFileIds.has(file.file_id)),
+        )
+        .map((file) => [file.file_id, file]),
+    );
 
     /**
      *
@@ -1577,7 +2004,10 @@ class BaseClient {
             continue;
           }
           const authorizedFile = authorizedFilesById.get(file.file_id);
-          if (authorizedFile) {
+          if (
+            authorizedFile &&
+            (!admittedHistoricalFileIds || admittedHistoricalFileIds.has(file.file_id))
+          ) {
             contextFiles.push(authorizedFile);
             contextSeen.add(file.file_id);
           }
@@ -1608,12 +2038,15 @@ class BaseClient {
         return message;
       }
 
-      await Promise.all([
-        this.addFileContextToMessage(message, contextFiles),
-        this.processAttachments(message, contextFiles),
-      ]);
-
-      this.message_file_map[message.messageId] = contextFiles;
+      const processedFileIds = await replayMessageAttachments({
+        message,
+        addFileContext: () => this.addFileContextToMessage(message, contextFiles),
+        processAttachments: (onMissingFile) =>
+          this.processAttachments(message, contextFiles, undefined, onMissingFile),
+      });
+      this.message_file_map[message.messageId] = contextFiles.filter(
+        (file) => processedFileIds.has(file?.file_id) && isModelBoundAttachmentFile(file),
+      );
       return message;
     };
 

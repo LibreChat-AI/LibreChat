@@ -1,0 +1,61 @@
+const { createScheduleMCPPreflight } = require('@librechat/api');
+const { CacheKeys } = require('librechat-data-provider');
+const { getMCPManager, getMCPServersRegistry, getFlowStateManager } = require('~/config');
+const { getAppConfig } = require('~/server/services/Config/app');
+const { getModelsConfig } = require('~/server/controllers/ModelController');
+const { getGraphApiToken } = require('~/server/services/GraphTokenService');
+const { exchangeOboToken } = require('~/server/services/OboTokenService');
+const { createOboTrustChecker } = require('~/server/services/OboPolicyService');
+const { getLogStores } = require('~/cache');
+const methods = require('~/models');
+
+/** What a readiness check reads and connects with, whoever's run it is for. */
+const readinessDeps = {
+  getRoleByName: methods.getRoleByName,
+  resolveAgentGraphAccess: methods.resolveAgentGraphAccess,
+  getAgentGraphNodes: methods.getAgentGraphNodes,
+  getModelsConfig: (user) => getModelsConfig({ user }),
+  getUser: (id) => methods.findUser({ _id: id }),
+  getAppConfig,
+  ensureConfigServers: (config, limit) =>
+    getMCPServersRegistry().ensureConfigServers(config, limit),
+  getServerConfigs: (userId, config, role) =>
+    getMCPServersRegistry().getAllServerConfigs(userId, config, role),
+  findPluginAuthsByKeys: methods.findPluginAuthsByKeys,
+  connect: (connectionOptions) =>
+    getMCPManager().getConnection({
+      ...connectionOptions,
+      flowManager: getFlowStateManager(getLogStores(CacheKeys.FLOWS)),
+      tokenMethods: {
+        findToken: methods.findToken,
+        updateToken: methods.updateToken,
+        createToken: methods.createToken,
+        deleteTokens: methods.deleteTokens,
+      },
+      graphTokenResolver: getGraphApiToken,
+      oboTokenResolver: exchangeOboToken,
+      oboTrustChecker: createOboTrustChecker(),
+    }),
+};
+
+/**
+ * Builds the schedule MCP preflight with an optional host-owned renewable
+ * credential resolver. The default application has no durable upstream
+ * credential source and therefore remains fail-closed for unattended OBO.
+ *
+ * @param {object} [options]
+ * @param {import('@librechat/api').HostUpstreamTokenProviderResolver} [options.resolveUpstreamTokenProvider]
+ * @param {import('@librechat/api').ScheduledMCPBearerHost} [options.scheduledBearerHost]
+ */
+function createMCPPreflight(options = {}) {
+  return createScheduleMCPPreflight({
+    ...readinessDeps,
+    resolveUpstreamTokenProvider: options.resolveUpstreamTokenProvider,
+    scheduledBearerHost: options.scheduledBearerHost,
+    execution: require('./consent').execution,
+  });
+}
+
+module.exports = createMCPPreflight();
+module.exports.createMCPPreflight = createMCPPreflight;
+module.exports.readinessDeps = readinessDeps;

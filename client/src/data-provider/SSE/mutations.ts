@@ -1,34 +1,11 @@
 import { useMutation } from '@tanstack/react-query';
 import { apiBaseUrl, EModelEndpoint } from 'librechat-data-provider';
-import type { Agents, TMessage, TEphemeralAgent, TPendingSteer } from 'librechat-data-provider';
+import type { Agents, TMessage, TEphemeralAgent, CodeApprovalMode } from 'librechat-data-provider';
+import type { AbortStreamParams, AbortStreamResponse } from '@librechat/chat/react';
+import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { postGenerationRequest } from './protocol';
 
-export interface AbortStreamParams {
-  /** The stream ID to abort (if known) */
-  streamId?: string;
-  /** The conversation ID to abort (backend will look up the job) */
-  conversationId?: string;
-  /** Exact generation epoch returned by start/status. Prevents a stale tab
-   * from aborting a newer turn that reused the conversation-scoped stream id. */
-  generationCreatedAt?: number;
-}
-
-export interface AbortStreamResponse {
-  generationProtocolVersion?: number;
-  success: boolean;
-  aborted?: string;
-  /** Stop lost to an ordinary terminal transition; no abort FINAL was emitted. */
-  settled?: boolean;
-  code?: 'RUN_ALREADY_SETTLED' | string;
-  streamId?: string;
-  terminalStatus?: 'complete' | 'error' | 'aborted';
-  error?: string;
-  /** The worker stopped, but its terminal state could not be made durable.
-   * The client must not infer a safe queue-drain boundary from this ACK. */
-  persistenceFailed?: boolean;
-  /** Steers that never reached an injection boundary; restored as queued chips. */
-  pendingSteers?: TPendingSteer[];
-}
+export type { AbortStreamParams, AbortStreamResponse } from '@librechat/chat/react';
 
 /**
  * Abort an ongoing generation stream.
@@ -48,12 +25,13 @@ export const abortStream = async (params: AbortStreamParams): Promise<AbortStrea
 };
 
 /**
- * React Query mutation hook for aborting a generation stream.
+ * React Query mutation hook for aborting a generation stream, through the host's transport.
  * Use this when the user explicitly clicks the stop button.
  */
 export function useAbortStreamMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: abortStream,
+    mutationFn: transport.abort,
   });
 }
 
@@ -65,8 +43,10 @@ export function useAbortStreamMutation() {
  */
 export interface ResumeAgentFields {
   conversationId: string;
-  /** Exact paused generation being resumed. */
-  generationCreatedAt: number;
+  /** Exact paused generation being resumed. Optional: when the client has not
+   *  observed the epoch, the server resolves against its authoritative job and
+   *  still fences on `actionId`. */
+  generationCreatedAt?: number;
   endpoint?: EModelEndpoint | string | null;
   endpointType?: EModelEndpoint | string | null;
   agent_id?: string | null;
@@ -171,6 +151,10 @@ export interface SteerMessageParams {
   text: string;
   /** Attachment refs steered with the message (already uploaded). */
   files?: TMessage['files'];
+  /** Quoted excerpts steered with the message ("Add to chat" selections). The
+   *  server normalizes them like a normal send's quotes and merges them into
+   *  the model-bound turn at the injection boundary. */
+  quotes?: string[];
   /**
    * Ask the server to seal the live model stream at the next provider-safe
    * boundary rather than waiting for a tool step. Never a rejection reason:
@@ -178,6 +162,11 @@ export interface SteerMessageParams {
    * `preempt: false`, which relabels the chip instead of erroring.
    */
   preempt?: boolean;
+  /** Lets the server promote this steer to a durable queued turn if the run ends
+   *  without applying it; the FINAL event then reports it in `promotedSteers`. */
+  promoteLeftover?: boolean;
+  /** Sent with `promoteLeftover`: the code approval mode a promoted turn starts under. */
+  codeApprovalMode?: CodeApprovalMode;
 }
 
 /** Successful steer ACK: the server queued the message for mid-run injection. */
@@ -190,6 +179,10 @@ export interface SteerMessageResponse {
   /** Whether the seal request was actually armed; see {@link SteerMessageParams.preempt}. */
   preempt?: boolean;
   preemptRevision?: number;
+  /** Echoed when the durable item carries the sent quotes. Absent on a
+   *  pre-quotes server (which 202s while dropping them) — the client then
+   *  re-stages the excerpts as composer chips instead of losing them. */
+  quotesAccepted?: boolean;
   /** Receipt replay after this item already left the durable queue. */
   settled?: boolean;
   /** Settled specifically by terminal drain; restore as a queued follow-up. */
@@ -212,10 +205,12 @@ export const steerMessage = async (params: SteerMessageParams): Promise<SteerMes
   );
 };
 
-/** React Query mutation hook for steering; the injection arrives on the SSE. */
+/** React Query mutation hook for steering, through the host's transport; the injection
+ *  arrives on the SSE. */
 export function useSteerMessageMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: steerMessage,
+    mutationFn: transport.steer,
   });
 }
 
@@ -247,8 +242,9 @@ export const cancelSteerMessage = async (
 };
 
 export function useCancelSteerMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: cancelSteerMessage,
+    mutationFn: transport.cancelSteer,
   });
 }
 
@@ -280,7 +276,8 @@ export const armSteerMessage = async (params: ArmSteerParams): Promise<ArmSteerR
 };
 
 export function useArmSteerMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: armSteerMessage,
+    mutationFn: transport.armSteer,
   });
 }

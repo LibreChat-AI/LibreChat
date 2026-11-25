@@ -1,134 +1,109 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import { Constants, ContentTypes } from 'librechat-data-provider';
+import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import Part from '../Part';
 
-jest.mock('../Parts', () => ({
-  ImageGen: () => <div data-testid="image-gen" />,
-  ExecuteCode: () => <div data-testid="execute-code" />,
-  AgentUpdate: () => <div data-testid="agent-update" />,
-  EmptyText: () => <div data-testid="empty-text" />,
-  Reasoning: () => <div data-testid="reasoning" />,
-  Summary: () => <div data-testid="summary" />,
-  Text: ({ text }: { text?: string }) => <div data-testid="text">{text}</div>,
-  SkillCall: () => <div data-testid="skill-call" />,
-  ReadFileCall: () => <div data-testid="read-file-call" />,
-  FileAuthoringCall: ({ toolName }: { toolName: string }) => (
-    <div data-testid="file-authoring-call" data-tool-name={toolName} />
+/** An error part is the chat package's card now; this stands in for its module. */
+jest.mock('@librechat/chat/dist/components/errors/ErrorMessage.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/errors/ErrorMessage.cjs'),
+  __esModule: true,
+  default: ({ text }: { text: string }) => <div data-testid="error-message">{text}</div>,
+}));
+jest.mock('~/components/Messages/Content/Error/register', () => ({}));
+/** The paused question and the approval controls are the chat package's; the app supplies only
+ *  how they resume, so they stand in by their package module here. */
+jest.mock('@librechat/chat/dist/components/approval/hosted.cjs', () => ({
+  HostedQuestion: ({ actionId, question }: { actionId: string; question?: string }) => (
+    <div data-testid="ask-user-question" data-action-id={actionId}>
+      {question}
+    </div>
   ),
-  BashCall: ({ commandField }: { commandField?: string }) => (
-    <div data-testid="bash-call" data-command-field={commandField ?? 'command'} />
+  HostedToolApproval: ({ toolCallId }: { toolCallId: string }) => (
+    <div data-testid="tool-approval" data-tool-call-id={toolCallId} />
   ),
-  SubagentCall: () => <div data-testid="subagent-call" />,
 }));
-
-jest.mock('../MessageContent', () => ({
-  ErrorMessage: () => <div data-testid="error-message" />,
+/** Web search is the chat package's card now; this stands in for its module. */
+jest.mock('@librechat/chat/dist/components/parts/WebSearch.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/WebSearch.cjs'),
+  WebSearchCall: () => <div data-testid="web-search" />,
 }));
-
-jest.mock('../RetrievalCall', () => ({
+/** The subagent card is the chat package's now; this stands in for its module. */
+jest.mock('@librechat/chat/dist/components/parts/SubagentCall.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/SubagentCall.cjs'),
   __esModule: true,
-  default: () => <div data-testid="retrieval-call" />,
+  default: ({ toolCallId }: { toolCallId: string }) => (
+    <div data-testid="subagent-call" data-tool-call-id={toolCallId} />
+  ),
+}));
+jest.mock('../toolCallSlots', () => ({}));
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
 }));
 
-jest.mock('../AgentHandoff', () => ({
-  __esModule: true,
-  default: () => <div data-testid="agent-handoff" />,
-}));
+const asPart = (part: Record<string, unknown>) => part as unknown as TMessageContentParts;
 
-jest.mock('../CodeAnalyze', () => ({
-  __esModule: true,
-  default: () => <div data-testid="code-analyze" />,
-}));
-
-jest.mock('../Container', () => ({
-  __esModule: true,
-  default: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
-}));
-
-jest.mock('../WebSearch', () => ({
-  __esModule: true,
-  default: () => <div data-testid="web-search" />,
-}));
-
-jest.mock('../ToolCall', () => ({
-  __esModule: true,
-  default: () => <div data-testid="tool-call" />,
-}));
-
-jest.mock('../Image', () => ({
-  __esModule: true,
-  default: () => <div data-testid="image" />,
-}));
-
-jest.mock('~/utils', () => ({
-  getCachedPreview: jest.fn(),
-}));
-
-const renderPart = (part: TMessageContentParts) =>
-  render(<Part part={part} isSubmitting={false} showCursor={false} isCreatedByUser={false} />);
-
-const toolCallPart = (name: string, args = '{"code":"echo hi"}'): TMessageContentParts =>
-  ({
+const call = (name: string, toolCall: Record<string, unknown> = {}) =>
+  asPart({
     type: ContentTypes.TOOL_CALL,
     [ContentTypes.TOOL_CALL]: {
       id: 'call_1',
       name,
-      args,
-      output: 'hi',
+      args: '{}',
+      output: 'done',
       progress: 1,
+      ...toolCall,
     },
-  }) as unknown as TMessageContentParts;
-
-describe('Part tool renderer selection', () => {
-  it('routes bash PTC tool calls through the BashCall renderer', () => {
-    renderPart(toolCallPart(Constants.BASH_PROGRAMMATIC_TOOL_CALLING));
-
-    expect(screen.getByTestId('bash-call')).toHaveAttribute('data-command-field', 'code');
-    expect(screen.queryByTestId('execute-code')).not.toBeInTheDocument();
   });
 
-  it('routes default run_tools_with_code PTC calls through the BashCall renderer', () => {
-    renderPart(toolCallPart(Constants.PROGRAMMATIC_TOOL_CALLING));
+const draw = (part: TMessageContentParts) =>
+  render(<Part part={part} isSubmitting={false} showCursor={false} isCreatedByUser={false} />);
 
-    expect(screen.getByTestId('bash-call')).toHaveAttribute('data-command-field', 'code');
-    expect(screen.queryByTestId('execute-code')).not.toBeInTheDocument();
+describe('the app’s part renderers, over the chat package’s', () => {
+  it('draws an error part with the package’s error message, from whichever field holds the text', () => {
+    const { unmount } = draw(asPart({ type: ContentTypes.ERROR, [ContentTypes.ERROR]: 'bad' }));
+    expect(screen.getByTestId('error-message')).toHaveTextContent('bad');
+    unmount();
+    draw(asPart({ type: ContentTypes.ERROR, text: { value: 'worse' } }));
+    expect(screen.getByTestId('error-message')).toHaveTextContent('worse');
   });
 
-  it('keeps Python PTC calls on the ExecuteCode renderer', () => {
-    renderPart(
-      toolCallPart(Constants.PROGRAMMATIC_TOOL_CALLING, '{"lang":"py","code":"print(1)"}'),
+  it('claims a paused question for the package’s ask card', () => {
+    draw(
+      asPart({
+        type: 'ask_user_question',
+        ask_user_question: { actionId: 'action-1', question: 'Which?' },
+      }),
     );
-
-    expect(screen.getByTestId('execute-code')).toBeInTheDocument();
-    expect(screen.queryByTestId('bash-call')).not.toBeInTheDocument();
+    const card = screen.getByTestId('ask-user-question');
+    expect(card).toHaveAttribute('data-action-id', 'action-1');
+    expect(card).toHaveTextContent('Which?');
   });
 
-  it('routes create_file calls through the file-authoring renderer', () => {
-    renderPart(
-      toolCallPart('create_file', '{"file_path":"skills/demo/SKILL.md","content":"# Demo"}'),
-    );
-
-    expect(screen.getByTestId('file-authoring-call')).toHaveAttribute(
-      'data-tool-name',
-      'create_file',
-    );
-    expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
+  it('draws a subagent call and a web search with the package’s cards', () => {
+    const { unmount } = draw(call(Constants.SUBAGENT as string));
+    expect(screen.getByTestId('subagent-call')).toHaveAttribute('data-tool-call-id', 'call_1');
+    unmount();
+    draw(call(Tools.web_search));
+    expect(screen.getByTestId('web-search')).toBeInTheDocument();
   });
 
-  it('routes edit_file calls through the file-authoring renderer', () => {
-    renderPart(
-      toolCallPart(
-        'edit_file',
-        '{"file_path":"skills/demo/SKILL.md","old_text":"Demo","new_text":"Updated"}',
-      ),
-    );
+  it('puts approval controls under any tool call that is paused with nothing to show yet', () => {
+    draw(call(Tools.web_search, { output: '', approval: { actionId: 'a1' } }));
+    expect(screen.getByTestId('web-search')).toBeInTheDocument();
+    expect(screen.getByTestId('tool-approval')).toHaveAttribute('data-tool-call-id', 'call_1');
+  });
 
-    expect(screen.getByTestId('file-authoring-call')).toHaveAttribute(
-      'data-tool-name',
-      'edit_file',
-    );
-    expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
+  it('shows no approval controls once the call has output, or when it never paused', () => {
+    const { unmount } = draw(call(Tools.web_search, { approval: { actionId: 'a1' } }));
+    expect(screen.queryByTestId('tool-approval')).not.toBeInTheDocument();
+    unmount();
+    draw(call(Tools.web_search, { output: '' }));
+    expect(screen.queryByTestId('tool-approval')).not.toBeInTheDocument();
+  });
+
+  it('leaves every other part to the chat package', () => {
+    draw(asPart({ type: ContentTypes.ACTIVITY_LABEL, [ContentTypes.ACTIVITY_LABEL]: 'Searched' }));
+    expect(screen.getByText('Searched')).toBeInTheDocument();
   });
 });

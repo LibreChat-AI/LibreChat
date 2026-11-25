@@ -1,5 +1,6 @@
 import type { IndexSpecification } from 'mongodb';
 import type { Connection } from 'mongoose';
+import { buildIndexWithRetry } from '~/utils/retry';
 
 interface AuthorityIndexDefinition {
   collection: string;
@@ -36,9 +37,11 @@ export async function createMCPAuthorityLookupIndexes(
 ): Promise<readonly string[]> {
   const created: string[] = [];
   for (const definition of AUTHORITY_INDEXES) {
-    const name = await connection
-      .db!.collection(definition.collection)
-      .createIndex(definition.keys, { name: definition.name });
+    const collection = connection.db!.collection(definition.collection);
+    const name = await buildIndexWithRetry(
+      () => collection.createIndex(definition.keys, { name: definition.name }),
+      `createIndex(${definition.collection}.${definition.name})`,
+    );
     created.push(name);
   }
   return created;

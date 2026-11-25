@@ -1,0 +1,1 @@
+export const CODE_API_RATE_LIMIT_WAIT_DEFAULT_MS: number = 20_000;

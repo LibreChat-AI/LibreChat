@@ -1,5 +1,13 @@
 import { GraphEvents } from '@librechat/agents';
-import { ContentTypes, StepTypes } from 'librechat-data-provider';
+import {
+  StepTypes,
+  ContentTypes,
+  flushOpaqueReasoning,
+  isOpaqueReasoning,
+  advanceOpaqueReasoning,
+  OPAQUE_REASONING_START,
+} from 'librechat-data-provider';
+import type { OpaqueReasoningCursor } from 'librechat-data-provider';
 import type { EventHandler } from '@librechat/agents';
 import type { LooseContentPart } from '~/agents/activityLabels/wiring';
 
@@ -39,6 +47,14 @@ export interface ReasoningLabelAttemptEvent {
   submittedChars: number;
 }
 
+/** Clears a title the client already holds for a step that keeps its identity. */
+export interface ReasoningLabelResetEvent {
+  index: number;
+  stepId: string;
+  previousStepId: string;
+  attempts: number;
+}
+
 export interface ReasoningLabelHostDeps {
   minChars?: number;
   updateChars?: number;
@@ -53,6 +69,7 @@ export interface ReasoningLabelHostDeps {
   getStepIndex: (stepId: string) => number | undefined;
   emitAttemptEvent: (event: ReasoningLabelAttemptEvent) => Promise<unknown>;
   emitLabelEvent: (event: ReasoningLabelEvent) => Promise<unknown>;
+  emitResetEvent?: (event: ReasoningLabelResetEvent) => Promise<unknown>;
   trackPendingFill: (fillDone: Promise<void>) => void;
   isClosed?: () => boolean;
   generateLabel: (payload: GenerateReasoningLabelPayload) => Promise<GeneratedReasoningLabel>;
@@ -76,8 +93,13 @@ interface ReasoningStepState {
   stepId: string;
   agentId?: string;
   index?: number;
+  /** Readable reasoning only; encoded provider payloads never enter it. */
   text: string;
+  /** Settled readable characters only, so encoded payloads never advance the gates. */
   totalChars: number;
+  /** Trailing run not yet classified as a word or a payload; it joins `text`
+   *  once a later character settles it. */
+  cursor: OpaqueReasoningCursor;
   label?: string;
   labelStatus?: ReasoningLabelStatus;
   revision: number;
@@ -101,6 +123,7 @@ const MAX_TRACKED_REASONING_CHARS = 8_000;
  * completion rewrite; a smaller tail only upgrades the current status. */
 const FINAL_UPDATE_CHAR_LIMIT = 120;
 const OUTPUT_CHAR_LIMIT = 120;
+const THINK_TAGS = /<\/?think>/g;
 const REQUEST_TIMEOUT_MS = 12_000;
 
 function textValue(value: unknown): string {
@@ -390,9 +413,16 @@ export function createReasoningLabelWiring(deps: ReasoningLabelHostDeps): Reason
     }
 
     clearTimer(state);
+    const visibleReasoning = state.text.trim();
+    if (!visibleReasoning) {
+      if (state.pendingFinal) {
+        state.pendingFinal = false;
+        markComplete(state);
+      }
+      return;
+    }
     const status: ReasoningLabelStatus = state.pendingFinal ? 'complete' : 'streaming';
     state.pendingFinal = false;
-    const visibleReasoning = state.text.trim();
     state.submittedChars = state.totalChars;
     state.lastSubmittedAt = now();
     generated += 1;
@@ -494,6 +524,14 @@ export function createReasoningLabelWiring(deps: ReasoningLabelHostDeps): Reason
     }
     state.closed = true;
     clearTimer(state);
+    /** The stream is over, so a short undecided tail was a final word; a
+     *  longer one is the unfinished start of a payload. */
+    const word = flushOpaqueReasoning(state.cursor);
+    if (word) {
+      state.text = appendBoundedReasoning(state.text, word);
+      state.totalChars += word.length;
+    }
+    state.cursor = OPAQUE_REASONING_START;
     schedule(state, true);
   };
 
@@ -531,11 +569,28 @@ export function createReasoningLabelWiring(deps: ReasoningLabelHostDeps): Reason
     const part = index != null ? deps.getContentParts()[index] : undefined;
     const ownsExistingStep =
       part?.type === ContentTypes.THINK && part.reasoning_label_step_id === step.id;
+    /** Replayed through the stream filter so a payload that was still
+     *  undecided at the snapshot keeps its cursor and is dropped once the
+     *  continuation classifies it, instead of settling as readable text. */
+    const resumed = ownsExistingStep
+      ? advanceOpaqueReasoning(
+          OPAQUE_REASONING_START,
+          textValue(part?.think).replace(THINK_TAGS, ''),
+        )
+      : { readable: '', cursor: OPAQUE_REASONING_START };
+    const existingText = resumed.readable;
+    /** A title on a step whose reasoning is entirely an encoded payload can
+     *  only describe that payload (labeled before payloads were skipped), so it
+     *  is not carried forward where a short readable continuation would
+     *  revive it. */
+    const staleLabel =
+      ownsExistingStep &&
+      typeof part.reasoning_label === 'string' &&
+      isOpaqueReasoning(textValue(part.think));
     const existingLabel =
-      ownsExistingStep && typeof part.reasoning_label === 'string'
+      ownsExistingStep && !staleLabel && typeof part.reasoning_label === 'string'
         ? part.reasoning_label
         : undefined;
-    const existingText = ownsExistingStep ? textValue(part?.think) : '';
     const persistedSubmittedChars =
       ownsExistingStep && typeof part.reasoning_label_submitted_chars === 'number'
         ? Math.min(part.reasoning_label_submitted_chars, existingText.trim().length)
@@ -554,6 +609,7 @@ export function createReasoningLabelWiring(deps: ReasoningLabelHostDeps): Reason
       ...(index != null && { index }),
       text: appendBoundedReasoning('', existingText),
       totalChars: existingText.trim().length,
+      cursor: resumed.cursor,
       ...(existingLabel != null && { label: existingLabel }),
       ...(existingLabel != null && {
         labelStatus: part?.reasoning_label_status === 'complete' ? 'complete' : 'streaming',
@@ -572,19 +628,37 @@ export function createReasoningLabelWiring(deps: ReasoningLabelHostDeps): Reason
         delete part.reasoning_label_revision;
         delete part.reasoning_label_status;
         delete part.reasoning_label_submitted_chars;
+      } else if (staleLabel) {
+        delete part.reasoning_label;
+        delete part.reasoning_label_status;
       }
       Object.assign(part, {
         reasoning_label_step_id: step.id,
         reasoning_label_attempts: generated,
       });
     }
+    if (staleLabel && index != null && deps.emitResetEvent != null) {
+      /** The resumed client still renders the snapshot's title; the step keeps
+       *  its identity, so only an explicit reset clears it. */
+      const resetTask = Promise.resolve(
+        deps.emitResetEvent({
+          index,
+          stepId: step.id,
+          previousStepId: step.id,
+          attempts: generated,
+        }),
+      )
+        .then(() => undefined)
+        .catch(() => undefined);
+      deps.trackPendingFill(resetTask);
+    }
     schedule(state);
   };
 
   const appendDelta = (data: unknown): void => {
     const event = data as { id?: string };
-    const text = deltaText(data);
-    if (!event.id || !text) {
+    const rawText = deltaText(data);
+    if (!event.id || !rawText) {
       return;
     }
     const state = steps.get(event.id);
@@ -607,6 +681,11 @@ export function createReasoningLabelWiring(deps: ReasoningLabelHostDeps): Reason
             }
           : {}),
       });
+    }
+    const { readable: text, cursor } = advanceOpaqueReasoning(state.cursor, rawText);
+    state.cursor = cursor;
+    if (!text) {
+      return;
     }
     state.text = appendBoundedReasoning(state.text, text);
     state.totalChars += text.length;

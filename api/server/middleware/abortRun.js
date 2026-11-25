@@ -1,4 +1,4 @@
-const { sendEvent } = require('@librechat/api');
+const { sendEvent, getTransactionsConfig } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys, RunStatus, isUUID } = require('librechat-data-provider');
 const { initializeClient } = require('~/server/services/Endpoints/assistants');
@@ -66,6 +66,7 @@ async function abortRun(req, res) {
       model: run.model,
       user: req.user.id,
       conversationId,
+      transactions: getTransactionsConfig(req.config),
     });
   } catch (error) {
     logger.error('[abortRun] Error fetching or processing run', error);

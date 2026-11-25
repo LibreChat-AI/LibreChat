@@ -1,6 +1,5 @@
 import { useEffect } from 'react';
 import { useRecoilState } from 'recoil';
-import TagManager from 'react-gtm-module';
 import { installCloudFrontImageRetry } from '@librechat/client';
 import {
   getTokenHeader,
@@ -10,10 +9,11 @@ import {
   resolveModelSpecEndpoint,
 } from 'librechat-data-provider';
 import type { TStartupConfig, TUser } from 'librechat-data-provider';
-import { useMCPToolsQuery, useMCPServersQuery } from '~/data-provider';
 import { cleanupTimestampedStorage } from '~/utils/timestamps';
 import useSpeechSettingsInit from './useSpeechSettingsInit';
-import { useHasAccess } from '~/hooks';
+import { useHasAccess, useCatalogReady } from '~/hooks';
+import { useMCPServersQuery } from '~/data-provider';
+import { setDocumentTitle } from '~/utils';
 import store from '~/store';
 
 export default function useAppStartup({
@@ -30,18 +30,10 @@ export default function useAppStartup({
   });
 
   useSpeechSettingsInit(!!user);
-  const { data: loadedServers, isLoading: serversLoading } = useMCPServersQuery({
-    enabled: canUseMcp,
-  });
-
-  useMCPToolsQuery({
-    enabled:
-      canUseMcp &&
-      !serversLoading &&
-      !!loadedServers &&
-      Object.keys(loadedServers).length > 0 &&
-      !!user,
-  });
+  /** Server metadata may warm after first paint because it powers lightweight
+   * navigation affordances. Tool discovery stays owned by visible MCP consumers. */
+  const mcpServersReady = useCatalogReady('mcpServers');
+  useMCPServersQuery({ enabled: canUseMcp && mcpServersReady });
 
   /** Clean up old localStorage entries on startup */
   useEffect(() => {
@@ -54,7 +46,7 @@ export default function useAppStartup({
     if (!appTitle) {
       return;
     }
-    document.title = appTitle;
+    setDocumentTitle(appTitle, true);
     localStorage.setItem(LocalStorageKeys.APP_TITLE, appTitle);
   }, [startupConfig]);
 
@@ -87,13 +79,4 @@ export default function useAppStartup({
   useEffect(() => {
     return installCloudFrontImageRetry(startupConfig, { getAuthorizationHeader: getTokenHeader });
   }, [startupConfig]);
-
-  useEffect(() => {
-    if (startupConfig?.analyticsGtmId != null && typeof window.google_tag_manager === 'undefined') {
-      const tagManagerArgs = {
-        gtmId: startupConfig.analyticsGtmId,
-      };
-      TagManager.initialize(tagManagerArgs);
-    }
-  }, [startupConfig?.analyticsGtmId]);
 }

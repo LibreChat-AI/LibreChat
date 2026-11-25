@@ -1,4 +1,5 @@
 const FacebookStrategy = require('passport-facebook').Strategy;
+const { createOAuthStateStore } = require('@librechat/api');
 const socialLogin = require('./socialLogin');
 
 const getProfileDetails = ({ profile }) => ({
@@ -22,9 +23,13 @@ const getFacebookConfig = (callbackURL) => ({
   profileFields: ['id', 'email', 'name'],
 });
 
-const facebookStrategy = () =>
+/** @param {Omit<import('@librechat/api').OAuthStateStoreOptions, 'provider'>} stateOptions */
+const facebookStrategy = (stateOptions) =>
   new FacebookStrategy(
-    getFacebookConfig(`${process.env.DOMAIN_SERVER}${process.env.FACEBOOK_CALLBACK_URL}`),
+    {
+      ...getFacebookConfig(`${process.env.DOMAIN_SERVER}${process.env.FACEBOOK_CALLBACK_URL}`),
+      store: createOAuthStateStore({ ...stateOptions, provider: 'facebook' }),
+    },
     facebookLogin,
   );
 

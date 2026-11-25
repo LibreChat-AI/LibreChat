@@ -9,8 +9,19 @@ import type {
 } from '@librechat/agents';
 import type { SteerQueueItem } from '~/stream/interfaces/IJobStore';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { getReferencedQuotes, mergeQuotedText } from '~/utils';
 
 type SteerDrainOutput = HookOutputByEvent['PostToolBatch'];
+export type TerminalSteerHookInput = Omit<HookInputByEvent['Stop'], 'hook_event_name'> & {
+  hook_event_name: 'StopFinalize';
+  continuationBudgetRemaining: number;
+  continuationPlanned: boolean;
+  continuationPrevented: boolean;
+};
+export type TerminalSteerHook = (
+  input: TerminalSteerHookInput,
+  signal: AbortSignal,
+) => HookOutputByEvent['Stop'] | Promise<HookOutputByEvent['Stop']>;
 
 /**
  * Whether the installed `@librechat/agents` supports the FULL steering
@@ -69,11 +80,13 @@ export interface SteerDrainHookOptions {
    * never dropped because an attachment could not be encoded.
    */
   buildMedia?: (item: SteerQueueItem) => Promise<SteerMediaResult | undefined>;
+  /** Repairs the durable steer part when media degrades to text-only. */
+  onMediaError?: (item: SteerQueueItem, error: unknown) => void | Promise<void>;
 }
 
 /**
- * Shared drain body for BOTH injection boundaries (PostToolBatch and
- * PreemptBoundary) — the provider-safety argument rests on the two sites
+ * Shared drain body for all injection boundaries (PostToolBatch,
+ * PreemptBoundary, and terminal Stop) — the provider-safety argument rests on each site
  * emitting identical `InjectedMessage` shapes, so they must share one body.
  *
  * Every part is durably applied before ANY slow media encoding begins. A
@@ -86,8 +99,12 @@ export interface SteerDrainHookOptions {
  * preempt request for them must clear even on the failure path, or a
  * satisfied preempt could seal a later, unrelated stretch of generation.
  */
-async function drainAndBuildInjections(opts: SteerDrainHookOptions): Promise<InjectedMessage[]> {
-  const { streamId, jobCreatedAt, applySteer, buildMedia } = opts;
+async function drainAndBuildInjections(
+  opts: SteerDrainHookOptions,
+  claim: () => Promise<SteerQueueItem[]> = () =>
+    GenerationJobManager.steering.drain(opts.streamId, opts.jobCreatedAt),
+): Promise<InjectedMessage[]> {
+  const { streamId, jobCreatedAt, applySteer, buildMedia, onMediaError } = opts;
   // The replacement guard lives INSIDE the store's atomic drain: a separate
   // check-then-drain could still consume a replacement job's queue if
   // createJob landed between the two steps.
@@ -98,7 +115,7 @@ async function drainAndBuildInjections(opts: SteerDrainHookOptions): Promise<Inj
    * survive.
    */
   const armedBeforeDrain = GenerationJobManager.getArmedPreemptIds(streamId, jobCreatedAt);
-  const steers = await GenerationJobManager.steering.drain(streamId, jobCreatedAt);
+  const steers = await claim();
   if (steers.length === 0) {
     /**
      * Nothing to inject. The snapshotted ids point at steers that have
@@ -166,11 +183,24 @@ async function drainAndBuildInjections(opts: SteerDrainHookOptions): Promise<Inj
             `[steering] Failed to encode steer media for ${streamId} steer=${item.steerId}; injecting text only:`,
             error,
           );
+          try {
+            await onMediaError?.(item, error);
+          } catch (repairError) {
+            logger.error(
+              `[steering] Failed to repair text-only steer persistence for ${streamId} steer=${item.steerId}:`,
+              repairError,
+            );
+          }
         }
       }
+      /** The media path already merged quotes into its text part; the plain
+       *  path (no files, or a degraded encode) merges here so the excerpts
+       *  reach the model exactly like `prependQuotes` on a normal turn. */
+      const quotes = getReferencedQuotes(item.quotes);
+      const textContent = quotes != null ? mergeQuotedText(item.text, quotes) : item.text;
       injectedMessages.push({
         role: 'user' as const,
-        content: (media?.content ?? item.text) as InjectedMessage['content'],
+        content: (media?.content ?? textContent) as InjectedMessage['content'],
         source: 'steer' as const,
       });
     }
@@ -256,14 +286,78 @@ export function createSteerPreemptBoundaryHook(
 }
 
 /**
+ * Serialized terminal steering boundary. StopFinalize runs after ordinary
+ * Stop hooks have folded, so the store can atomically claim queued steers,
+ * keep admission open for a continuation another hook already planned, or
+ * seal admission so every later steer POST becomes an ordinary user turn.
+ */
+export function createSteerTerminalContinuationHook(
+  opts: SteerDrainHookOptions,
+): TerminalSteerHook {
+  return async (input: TerminalSteerHookInput): Promise<HookOutputByEvent['Stop']> => {
+    if (input.agentId != null) {
+      return { decision: 'continue' };
+    }
+    const allowClaim =
+      input.continuationBudgetRemaining > 0 &&
+      input.stopReason == null &&
+      !input.continuationPrevented;
+    const injectedMessages = await drainAndBuildInjections(opts, async () => {
+      const admission = await GenerationJobManager.steering.admitTerminal(
+        opts.streamId,
+        {
+          allowClaim,
+          keepOpenWhenEmpty: allowClaim && input.continuationPlanned,
+        },
+        opts.jobCreatedAt,
+      );
+      return admission.outcome === 'claimed' ? admission.items : [];
+    });
+    if (injectedMessages.length === 0) {
+      return { decision: 'continue' };
+    }
+    return { decision: 'block', injectedMessages };
+  };
+}
+
+/**
  * The run's `RunConfig.preemption` — a level-triggered O(1) poll over the
  * job's armed preempt requests, exactly as the SDK contract requires: it
  * keeps returning true until the boundary drain (either boundary) clears the
  * request via `noteSteersRemoved`. Never consumes on read.
+ *
+ * `subscribe` adds the wake channel the poll alone cannot cover. The SDK only
+ * reads `shouldPreempt` per streamed chunk, so an interrupt armed while the
+ * model is silent — or while it streams reasoning that will never become
+ * sealable — would otherwise wait for the entire turn and land as a terminal
+ * continuation. Woken, the SDK discards the unstarted turn and re-issues it
+ * with the steer appended. The callback is a hint only; the poll above stays
+ * the authority, so the level-triggered contract is unchanged.
+ *
+ * Fenced on `jobCreatedAt` for the same reason every other preempt entry point
+ * is: a run wired to a generation that has since been replaced must not be
+ * woken by the replacement's arms.
  */
-export function createSteerPreemptPoll(streamId: string): StreamPreemption {
+export interface SteerPreemption extends StreamPreemption {
+  /** Restrict owner-recorded capability before a provider-hosted tool can start. */
+  disable: () => Promise<void>;
+}
+
+export function createSteerPreemptPoll(streamId: string, jobCreatedAt?: number): SteerPreemption {
+  let enabled = true;
   return {
-    shouldPreempt: () => GenerationJobManager.isPreemptRequested(streamId),
+    shouldPreempt: () => enabled && GenerationJobManager.isPreemptRequested(streamId),
+    disable: async () => {
+      enabled = false;
+      await GenerationJobManager.updateMetadata(streamId, { preemptCapable: false }, jobCreatedAt);
+      if (jobCreatedAt != null) {
+        await GenerationJobManager.rearmQueuedPreempts(streamId, jobCreatedAt);
+      }
+    },
+    ...(isSteerPreemptRestartSupported() && {
+      subscribe: (wake: () => void) =>
+        GenerationJobManager.subscribePreempt(streamId, wake, jobCreatedAt),
+    }),
   };
 }
 
@@ -276,4 +370,25 @@ export function createSteerPreemptPoll(streamId: string): StreamPreemption {
 export function isSteerPreemptSupported(): boolean {
   const sdk = agentsSdk as { HOOK_PREEMPT_BOUNDARY_CAPABLE?: boolean };
   return isSteeringSupported() && sdk.HOOK_PREEMPT_BOUNDARY_CAPABLE === true;
+}
+
+/**
+ * Whether the installed SDK can honor a preempt on a turn that has produced
+ * nothing to keep — discarding the in-flight model call and re-issuing it
+ * rather than waiting for a sealable chunk that a silent or thinking turn
+ * never reaches.
+ *
+ * A THIRD probe, separate from `isSteerPreemptSupported()`, because the two
+ * differ in exactly the window users reach for an interrupt most. An SDK with
+ * only the seal path still accepts the request and still labels the chip
+ * "interrupting" — it simply cannot act until the model starts writing.
+ */
+export function isSteerPreemptRestartSupported(): boolean {
+  const sdk = agentsSdk as { HOOK_PREEMPT_RESTART_CAPABLE?: boolean };
+  return isSteerPreemptSupported() && sdk.HOOK_PREEMPT_RESTART_CAPABLE === true;
+}
+
+export function isSteerTerminalContinuationSupported(): boolean {
+  const sdk = agentsSdk as { HOOK_STOP_CONTINUATION_CAPABLE?: boolean };
+  return isSteeringSupported() && sdk.HOOK_STOP_CONTINUATION_CAPABLE === true;
 }

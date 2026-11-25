@@ -1,4 +1,4 @@
-/* eslint jest/no-standalone-expect: ["error", { "additionalTestBlockFunctions": ["testRedis"] }] */
+/* eslint jest/no-standalone-expect: ["error", { "additionalTestBlockFunctions": ["testRedis", "testRedis.each"] }] */
 import type { Redis, Cluster } from 'ioredis';
 import type { emitChunkWithReceipt as EmitChunkWithReceipt } from '~/stream/internal/chunkPublication';
 import type { ServerSentEvent } from '~/types';
@@ -11,12 +11,12 @@ jest.spyOn(console, 'log').mockImplementation();
  * Integration tests for streaming-delta coalescing (STREAM_DELTA_COALESCE_MS > 0).
  *
  * Coalescing batches eligible delta publications (and their durable appends) into
- * one windowed frame while preserving per-event sequences, barrier ordering,
+ * one Redis request with legacy frames while preserving per-event sequences, barrier ordering,
  * terminal flushing, and the generation fence.
  *
  * Run with: USE_REDIS=true npx jest deltaCoalescing.stream_integration
  */
-describe('Delta coalescing integration', () => {
+describe.each([undefined, '25'])('Delta coalescing integration (window %s)', (windowMs) => {
   let originalEnv: NodeJS.ProcessEnv;
   let ioredisClient: Redis | Cluster | null = null;
   const testPrefix = 'DeltaCoalescing-Integration-Test';
@@ -28,7 +28,11 @@ describe('Delta coalescing integration', () => {
     process.env.USE_REDIS = process.env.USE_REDIS ?? 'true';
     process.env.REDIS_URI = process.env.REDIS_URI ?? 'redis://127.0.0.1:6379';
     process.env.REDIS_KEY_PREFIX = testPrefix;
-    process.env.STREAM_DELTA_COALESCE_MS = '25';
+    if (windowMs === undefined) {
+      delete process.env.STREAM_DELTA_COALESCE_MS;
+    } else {
+      process.env.STREAM_DELTA_COALESCE_MS = windowMs;
+    }
 
     jest.resetModules();
     const redisModule = await import('~/cache/redisClients');
@@ -98,7 +102,7 @@ describe('Delta coalescing integration', () => {
   }
 
   testRedis(
-    'delivers a coalesced window as individually sequenced chunks in order',
+    'publishes a window in one EVAL as legacy chunks readable without batch support',
     async () => {
       const { RedisEventTransport, emitChunkWithReceipt } = await importFreshTransportModules();
       const subscriber = (ioredisClient as Redis).duplicate();
@@ -107,10 +111,15 @@ describe('Delta coalescing integration', () => {
 
       const received: unknown[] = [];
       const rawSubscriber = (ioredisClient as Redis).duplicate();
-      const rawFrames: Array<{ type: string; count?: number }> = [];
+      const rawFrames: Array<{ type: string; seq: number; data: { data: { i: number } } }> = [];
+      const legacyReceived: number[] = [];
       rawSubscriber.on('message', (_channel: string, message: string) => {
-        const parsed = JSON.parse(message) as { type: string; events?: unknown[] };
-        rawFrames.push({ type: parsed.type, count: parsed.events?.length });
+        const parsed = JSON.parse(message) as (typeof rawFrames)[number];
+        rawFrames.push(parsed);
+        /** A pre-batching subscriber only recognizes the individual chunk envelope. */
+        if (parsed.type === 'chunk') {
+          legacyReceived.push(parsed.data.data.i);
+        }
       });
       await rawSubscriber.subscribe(`stream:{${streamId}}:events`);
 
@@ -119,6 +128,7 @@ describe('Delta coalescing integration', () => {
       });
       await subscription.ready;
 
+      const evalSpy = jest.spyOn(ioredisClient!, 'eval');
       const receipts = await Promise.all(
         Array.from({ length: 5 }, (_, i) =>
           emitChunkWithReceipt(
@@ -131,7 +141,10 @@ describe('Delta coalescing integration', () => {
         ),
       );
 
-      await waitFor(() => received.length === 5);
+      await waitFor(() => received.length === 5 && rawFrames.length === 5);
+      expect(evalSpy).toHaveBeenCalledTimes(1);
+      evalSpy.mockRestore();
+      expect(legacyReceived).toEqual([0, 1, 2, 3, 4]);
       expect(received.map((event) => (event as { data: { i: number } }).data.i)).toEqual([
         0, 1, 2, 3, 4,
       ]);
@@ -140,9 +153,8 @@ describe('Delta coalescing integration', () => {
       for (let i = 1; i < sequences.length; i++) {
         expect(sequences[i]).toBe(sequences[0] + i);
       }
-      const batchFrames = rawFrames.filter((frame) => frame.type === 'chunk_batch');
-      expect(batchFrames).toHaveLength(1);
-      expect(batchFrames[0].count).toBe(5);
+      expect(rawFrames.map((frame) => frame.type)).toEqual(Array(5).fill('chunk'));
+      expect(rawFrames.map((frame) => frame.seq)).toEqual(sequences);
 
       subscription.unsubscribe();
       transport.destroy();
@@ -150,6 +162,170 @@ describe('Delta coalescing integration', () => {
     },
     15000,
   );
+
+  testRedis.each([
+    { name: 'below byte cap, untagged', offset: -1, tagged: false, count: 2, character: 'x' },
+    { name: 'at byte cap, untagged', offset: 0, tagged: false, count: 2, character: 'x' },
+    { name: 'above byte cap, untagged', offset: 1, tagged: false, count: 2, character: 'x' },
+    { name: 'below byte cap, tagged', offset: -1, tagged: true, count: 2, character: 'x' },
+    { name: 'at byte cap, tagged', offset: 0, tagged: true, count: 2, character: 'x' },
+    { name: 'above byte cap, tagged', offset: 1, tagged: true, count: 2, character: 'x' },
+    { name: 'below byte cap, non-ASCII', offset: -1, tagged: true, count: 2, character: '雪' },
+    { name: 'at event cap', offset: -1000, tagged: true, count: 64, character: 'x' },
+  ])(
+    'aligns append and publication flushes $name',
+    async ({ offset, tagged, count, character }) => {
+      const { RedisEventTransport, emitChunkWithReceipt } = await importFreshTransportModules();
+      const { RedisJobStore } = await import('../implementations/RedisJobStore');
+      const { MAX_COALESCED_BYTES, MAX_COALESCED_EVENTS } = await import('../internal/coalescing');
+      const store = new RedisJobStore(ioredisClient!);
+      const transport = new RedisEventTransport(
+        ioredisClient!,
+        (ioredisClient as Redis).duplicate(),
+      );
+      const reader = (ioredisClient as Redis).duplicate();
+      const streamId = `coalesce-boundary-${Date.now()}`;
+      const job = await store.createJob(streamId, 'user-1', streamId);
+      await reader.ping();
+      const generationId = tagged ? job.createdAt : undefined;
+      const eventWithText = (text: string) => ({ event: 'on_message_delta', data: { text } });
+      const targetSize = MAX_COALESCED_BYTES + offset;
+      const emptySize = JSON.stringify(eventWithText('')).length;
+      const baseSize = Math.floor(targetSize / count);
+      const events = Array.from({ length: count }, (_, index) =>
+        eventWithText(
+          character.repeat(
+            (index === count - 1 ? targetSize - baseSize * (count - 1) : baseSize) - emptySize,
+          ),
+        ),
+      );
+      expect(events.reduce((size, event) => size + JSON.stringify(event).length, 0)).toBe(
+        targetSize,
+      );
+      const immediate = targetSize >= MAX_COALESCED_BYTES || count >= MAX_COALESCED_EVENTS;
+      const evalSpy = jest.spyOn(ioredisClient!, 'eval');
+      const appends: Array<Promise<boolean>> = [];
+      const publications: Array<ReturnType<typeof emitChunkWithReceipt>> = [];
+
+      /** Freeze only timers: real Redis I/O continues, while scheduler speed cannot
+       * conceal one coalescer flushing before the other's window expires. */
+      jest.useFakeTimers({
+        doNotFake: [
+          'Date',
+          'hrtime',
+          'nextTick',
+          'performance',
+          'queueMicrotask',
+          'setImmediate',
+          'clearImmediate',
+        ],
+      });
+      try {
+        for (const event of events) {
+          appends.push(
+            store.appendChunk(streamId, event, generationId, undefined, { coalesce: true }),
+          );
+          publications.push(
+            emitChunkWithReceipt(transport, streamId, event, generationId, { coalesce: true }),
+          );
+        }
+        /** Append script has eight keys; publication has three. Both must issue on
+         * the same boundary, with durable append first, or neither may issue yet. */
+        expect(evalSpy.mock.calls.map((call) => call[1])).toEqual(immediate ? [8, 3] : []);
+        if (!immediate) {
+          expect(await reader.xlen(`stream:{${streamId}}:chunks`)).toBe(0);
+          expect(await reader.get(`stream:{${streamId}}:seq`)).toBeNull();
+          await jest.advanceTimersByTimeAsync(25);
+        }
+        expect(await Promise.all(appends)).toEqual(Array(count).fill(true));
+        expect(await Promise.all(publications)).toEqual(Array.from({ length: count }, (_, i) => i));
+        expect(evalSpy.mock.calls.map((call) => call[1])).toEqual([8, 3]);
+
+        /** A different connection reads only durable Redis state, never the owner's
+         * local pending buffer. Its log and publication frontier must agree. */
+        const entries = await reader.xrange(`stream:{${streamId}}:chunks`, '-', '+');
+        expect(
+          entries.map(([, fields]) => JSON.parse(fields[fields.indexOf('event') + 1])),
+        ).toEqual(events);
+        expect(await reader.get(`stream:{${streamId}}:seq`)).toBe(String(count));
+        await jest.advanceTimersByTimeAsync(25);
+        expect(evalSpy).toHaveBeenCalledTimes(2);
+      } finally {
+        evalSpy.mockRestore();
+        transport.destroy();
+        await store.destroy();
+        reader.disconnect();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  testRedis('preserves JSON payloads and generation tags in coalesced legacy frames', async () => {
+    const { RedisEventTransport, emitChunkWithReceipt } = await importFreshTransportModules();
+    const { RedisJobStore } = await import('../implementations/RedisJobStore');
+    const store = new RedisJobStore(ioredisClient!);
+    const streamId = `coalesce-json-${Date.now()}`;
+    const job = await store.createJob(streamId, 'user-1', streamId);
+    const rawSubscriber = (ioredisClient as Redis).duplicate();
+    const transport = new RedisEventTransport(ioredisClient!, (ioredisClient as Redis).duplicate());
+    const frames: Array<{ type: string; seq: number; data?: object | null; generationId: number }> =
+      [];
+    rawSubscriber.on('message', (_channel: string, message: string) => {
+      frames.push(JSON.parse(message) as (typeof frames)[number]);
+    });
+    await rawSubscriber.subscribe(`stream:{${streamId}}:events`);
+    const payloads = [
+      { arrays: [[], [null, []]], precise: 1.2345678901234567, text: '雪 "quoted" \n' },
+      null,
+      undefined,
+    ];
+    const receipts = await Promise.all(
+      payloads.map((payload) =>
+        emitChunkWithReceipt(transport, streamId, payload, job.createdAt, { coalesce: true }),
+      ),
+    );
+    await waitFor(() => frames.length === payloads.length);
+    expect(frames).toEqual(
+      payloads.map((data, index) => ({
+        type: 'chunk',
+        seq: receipts[index],
+        generationId: job.createdAt,
+        ...(data !== undefined && { data }),
+      })),
+    );
+    expect(frames[2]).not.toHaveProperty('data');
+    rawSubscriber.disconnect();
+    transport.destroy();
+    await store.destroy();
+  });
+
+  testRedis('still receives chunk_batch frames from existing opt-in producers', async () => {
+    const { RedisEventTransport } = await importFreshTransportModules();
+    const transport = new RedisEventTransport(ioredisClient!, (ioredisClient as Redis).duplicate());
+    const streamId = `coalesce-older-producer-${Date.now()}`;
+    const received: unknown[] = [];
+    let done = false;
+    const subscription = transport.subscribe(streamId, {
+      onChunk: (event) => received.push(event),
+      onDone: () => {
+        done = true;
+      },
+    });
+    await subscription.ready;
+    const events = [{ delta: 'first' }, { delta: 'second' }];
+    await ioredisClient!.publish(
+      `stream:{${streamId}}:events`,
+      JSON.stringify({ type: 'chunk_batch', baseSeq: 0, events }),
+    );
+    await ioredisClient!.publish(
+      `stream:{${streamId}}:events`,
+      JSON.stringify({ type: 'done', seq: 2, data: { final: true } }),
+    );
+    await waitFor(() => done);
+    expect(received).toEqual(events);
+    subscription.unsubscribe();
+    transport.destroy();
+  });
 
   testRedis(
     'a non-coalescable publication is a barrier that preserves emission order',
@@ -506,11 +682,12 @@ describe('Delta coalescing integration', () => {
       await manager.emitChunk(streamId, {
         event: 'on_run_step_completed',
         data: {
-          id: 'step-1',
-          runId: 'run-1',
-          index: 0,
-          stepDetails: { type: 'message_creation' },
-          result: { id: 'step-1' },
+          result: {
+            id: 'step-1',
+            runId: 'run-1',
+            index: 0,
+            stepDetails: { type: 'message_creation' },
+          },
         },
       });
 

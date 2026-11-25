@@ -1,12 +1,14 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type * as t from '~/types';
+import { createTokenModel } from '~/models/token';
 import { createTokenMethods } from './token';
-import tokenSchema from '~/schema/token';
+import logger from '~/config/winston';
 
 /** Mocking logger */
 jest.mock('~/config/winston', () => ({
   error: jest.fn(),
+  warn: jest.fn(),
   info: jest.fn(),
   debug: jest.fn(),
 }));
@@ -21,7 +23,7 @@ beforeAll(async () => {
   await mongoose.connect(mongoUri);
 
   /** Register models */
-  Token = mongoose.models.Token || mongoose.model<t.IToken>('Token', tokenSchema);
+  Token = createTokenModel(mongoose);
 
   /** Initialize methods */
   methods = createTokenMethods(mongoose);
@@ -29,11 +31,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(async () => {
   await mongoose.connection.dropDatabase();
+  methods = createTokenMethods(mongoose);
 });
 
 describe('Token Methods - Detailed Tests', () => {
@@ -530,6 +533,106 @@ describe('Token Methods - Detailed Tests', () => {
       expect(updated).toBeDefined();
       expect(updated?.email).toBe('changed@example.com');
       expect(updated!.expiresAt.getTime()).toBe(originalExpiresAt);
+    });
+  });
+
+  describe('replaceTokenIfCurrent', () => {
+    test('allows only one concurrent insert into an empty scope', async () => {
+      const userId = new mongoose.Types.ObjectId();
+      const scope = `email_change:${userId.toString()}`;
+      const candidates = [
+        {
+          userId,
+          type: 'email_change',
+          email: 'first@example.com',
+          token: 'first-token',
+          expiresIn: 900,
+        },
+        {
+          userId,
+          type: 'email_change',
+          email: 'second@example.com',
+          token: 'second-token',
+          expiresIn: 900,
+        },
+      ];
+
+      const results = await Promise.all(
+        candidates.map((candidate) => methods.replaceTokenIfCurrent(scope, null, candidate)),
+      );
+
+      expect([...results].sort()).toEqual([false, true]);
+      const winner = candidates[results.indexOf(true)];
+      const pending = await Token.findOne({ scope }).lean();
+      expect(pending?.token).toBe(winner.token);
+      expect(pending?.email).toBe(winner.email);
+      expect(await Token.countDocuments({ scope })).toBe(1);
+    });
+
+    test('allows only one concurrent replacement of the observed token', async () => {
+      const userId = new mongoose.Types.ObjectId();
+      const scope = `email_change:${userId.toString()}`;
+      await methods.replaceTokenIfCurrent(scope, null, {
+        userId,
+        type: 'email_change',
+        email: 'existing@example.com',
+        token: 'existing-token',
+        expiresIn: 900,
+      });
+
+      const candidates = [
+        {
+          userId,
+          type: 'email_change',
+          email: 'first@example.com',
+          token: 'first-token',
+          expiresIn: 900,
+        },
+        {
+          userId,
+          type: 'email_change',
+          email: 'second@example.com',
+          token: 'second-token',
+          expiresIn: 900,
+        },
+      ];
+      const results = await Promise.all(
+        candidates.map((candidate) =>
+          methods.replaceTokenIfCurrent(scope, 'existing-token', candidate),
+        ),
+      );
+
+      expect([...results].sort()).toEqual([false, true]);
+      const winner = candidates[results.indexOf(true)];
+      const pending = await Token.findOne({ scope }).lean();
+      expect(pending?.token).toBe(winner.token);
+      expect(pending?.email).toBe(winner.email);
+    });
+
+    test('preserves the current token when the expected token is stale', async () => {
+      const userId = new mongoose.Types.ObjectId();
+      const scope = `email_change:${userId.toString()}`;
+      await methods.replaceTokenIfCurrent(scope, null, {
+        userId,
+        type: 'email_change',
+        email: 'current@example.com',
+        token: 'current-token',
+        expiresIn: 900,
+      });
+
+      await expect(
+        methods.replaceTokenIfCurrent(scope, 'stale-token', {
+          userId,
+          type: 'email_change',
+          email: 'replacement@example.com',
+          token: 'replacement-token',
+          expiresIn: 900,
+        }),
+      ).resolves.toBe(false);
+
+      const pending = await Token.findOne({ scope }).lean();
+      expect(pending?.token).toBe('current-token');
+      expect(pending?.email).toBe('current@example.com');
     });
   });
 
@@ -1103,5 +1206,110 @@ describe('Token Methods - Detailed Tests', () => {
         expect(remaining).toHaveLength(0);
       });
     });
+  });
+});
+
+describe('Token email normalization', () => {
+  const userId = new mongoose.Types.ObjectId();
+
+  const createFor = (email: string) =>
+    methods.createToken({
+      userId,
+      email,
+      token: 'hashed-token-value',
+      expiresIn: 3600,
+    });
+
+  it('stores the email normalized so reads can find it again', async () => {
+    await createFor('User@Example.COM');
+
+    const stored = await Token.findOne({ userId });
+    expect(stored?.email).toBe('user@example.com');
+  });
+
+  it('trims surrounding whitespace on write', async () => {
+    await createFor('  spaced@example.com  ');
+
+    const stored = await Token.findOne({ userId });
+    expect(stored?.email).toBe('spaced@example.com');
+  });
+
+  it('finds a token created with mixed case, whatever case the lookup uses', async () => {
+    await createFor('User@Example.COM');
+
+    for (const lookup of ['User@Example.COM', 'user@example.com', 'USER@EXAMPLE.COM']) {
+      const found = await methods.findToken({ token: 'hashed-token-value', email: lookup });
+      expect(found).not.toBeNull();
+    }
+  });
+
+  it('finds a token created with padding when the lookup is clean', async () => {
+    await createFor('  spaced@example.com  ');
+
+    const found = await methods.findToken({
+      token: 'hashed-token-value',
+      email: 'spaced@example.com',
+    });
+
+    expect(found).not.toBeNull();
+  });
+
+  it('deletes a token created with mixed case', async () => {
+    await createFor('User@Example.COM');
+
+    const result = await methods.deleteTokens({ email: 'user@example.com' });
+
+    expect(result.deletedCount).toBe(1);
+    expect(await Token.countDocuments({ userId })).toBe(0);
+  });
+
+  it('leaves a token written without an email alone', async () => {
+    await methods.createToken({
+      userId,
+      token: 'no-email-token',
+      expiresIn: 3600,
+    });
+
+    const stored = await Token.findOne({ userId });
+    expect(stored?.email).toBeUndefined();
+  });
+
+  it('leaves an explicitly null email as null, which the read side matches on', async () => {
+    /** `TokenCreateData.email` is `string | undefined`, so a null is only reachable by
+     *  writing the model directly — but `findToken` and `deleteTokens` both branch on
+     *  `email === null`, so the setters must not coerce it into something else. */
+    await Token.create({
+      userId,
+      email: null,
+      token: 'null-email-token',
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 3600000),
+    });
+
+    const stored = await Token.findOne({ userId });
+    expect(stored?.email).toBeNull();
+
+    const found = await methods.findToken({ token: 'null-email-token', email: null });
+    expect(found).not.toBeNull();
+  });
+});
+
+describe('token method failure logging', () => {
+  it('logs only the error type when a lookup fails and still rethrows', async () => {
+    const failure = new Error('E11000 duplicate key leak@example.com');
+    const spy = jest.spyOn(Token, 'findOne').mockImplementationOnce(() => {
+      throw failure;
+    });
+    (logger.debug as jest.Mock).mockClear();
+
+    await expect(methods.findToken({ email: 'leak@example.com' })).rejects.toBe(failure);
+
+    expect(logger.debug).toHaveBeenCalledWith('An error occurred while finding token', {
+      type: 'Error',
+    });
+    expect(JSON.stringify((logger.debug as jest.Mock).mock.calls)).not.toContain(
+      'leak@example.com',
+    );
+    spy.mockRestore();
   });
 });

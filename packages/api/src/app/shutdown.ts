@@ -22,8 +22,15 @@ type ShutdownTask = {
 const tasks: ShutdownTask[] = [];
 let nextRegistrationOrder = 0;
 let isShuttingDown = false;
+let shutdownController = new AbortController();
+
+/** Cancels fail-closed dependency waits when process shutdown begins. */
+export function getShutdownSignal(): AbortSignal {
+  return shutdownController.signal;
+}
 let httpServer: Server | null = null;
 let forceExitTimer: NodeJS.Timeout | null = null;
+let shutdownStartedAt: number | null = null;
 
 /**
  * Register a cleanup task for graceful shutdown. Post-drain is the default phase.
@@ -44,6 +51,48 @@ export function registerShutdownTask(
 }
 
 /** Whether graceful shutdown has started, for admission paths that must fail closed. */
+/**
+ * Milliseconds left before graceful shutdown force-exits, or `null` when not shutting down.
+ * Lets a shutdown task spend the budget it actually has instead of guessing at a fixed cutoff.
+ */
+/**
+ * Milliseconds since graceful shutdown began, or `null` when not shutting down. For a task whose
+ * real deadline is imposed from outside this process — a cluster primary that force-exits the
+ * whole group on its own timer — this is what lets it measure against that deadline instead.
+ */
+export function getShutdownElapsedMs(): number | null {
+  if (shutdownStartedAt == null) {
+    return null;
+  }
+  return Math.max(0, Date.now() - shutdownStartedAt);
+}
+
+export function getRemainingShutdownMs(): number | null {
+  if (shutdownStartedAt == null) {
+    return null;
+  }
+  return Math.max(0, SHUTDOWN_TIMEOUT_MS - (Date.now() - shutdownStartedAt));
+}
+
+export function getClusterShutdownBudgetMs({
+  deadlineAt,
+  forceExitMs,
+  remainingMs = getRemainingShutdownMs(),
+  elapsedMs = getShutdownElapsedMs(),
+  now = Date.now(),
+}: {
+  deadlineAt: number | null;
+  forceExitMs: number;
+  remainingMs?: number | null;
+  elapsedMs?: number | null;
+  now?: number;
+}): number | null {
+  if (remainingMs == null || elapsedMs == null) {
+    return null;
+  }
+  return Math.min(remainingMs, deadlineAt == null ? forceExitMs - elapsedMs : deadlineAt - now);
+}
+
 export function isShutdownInProgress(): boolean {
   return isShuttingDown;
 }
@@ -73,6 +122,8 @@ export function __resetShutdownStateForTests(): void {
   tasks.length = 0;
   nextRegistrationOrder = 0;
   isShuttingDown = false;
+  shutdownController = new AbortController();
+  shutdownStartedAt = null;
   httpServer = null;
   /** A drain that never settles leaves this armed. It is `unref`'d, so it does
    *  not hold the process open — but it does fire if anything else keeps the
@@ -81,7 +132,7 @@ export function __resetShutdownStateForTests(): void {
   clearForceExitTimer();
 }
 
-async function runShutdownTasks(phase: ShutdownPhase): Promise<void> {
+async function runShutdownTasks(phase: ShutdownPhase): Promise<boolean> {
   const orderedTasks = tasks
     .filter((task) => task.phase === phase)
     .sort(
@@ -89,14 +140,17 @@ async function runShutdownTasks(phase: ShutdownPhase): Promise<void> {
         right.priority - left.priority || left.registrationOrder - right.registrationOrder,
     );
 
+  let failed = false;
   for (const task of orderedTasks) {
     try {
       logger.info(`Running ${phase} shutdown task: ${task.name}`);
       await task.fn();
     } catch (err) {
+      failed = true;
       logger.error(`Shutdown task "${task.name}" failed:`, err);
     }
   }
+  return failed;
 }
 
 function clearForceExitTimer(): void {
@@ -111,6 +165,8 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     return;
   }
   isShuttingDown = true;
+  shutdownController.abort();
+  shutdownStartedAt = Date.now();
   logger.info(`Received ${signal}, draining HTTP server...`);
 
   /** Owned locally so a late `finally` from a superseded drain cannot clear the
@@ -130,9 +186,9 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
       exitCode = 1;
     });
 
-    await runShutdownTasks('pre-drain');
+    if (await runShutdownTasks('pre-drain')) exitCode = 1;
     await serverClosePromise;
-    await runShutdownTasks('post-drain');
+    if (await runShutdownTasks('post-drain')) exitCode = 1;
   } finally {
     clearTimeout(forceExit);
     if (forceExitTimer === forceExit) {

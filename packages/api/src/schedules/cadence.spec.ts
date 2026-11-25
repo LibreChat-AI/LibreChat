@@ -1,17 +1,25 @@
-import type { TScheduleCadence } from 'librechat-data-provider';
+import { SCHEDULE_CRON_MAX_LENGTH, nextRunInstants } from 'librechat-data-provider';
+import type { TScheduleCadence, TStructuredCadence } from 'librechat-data-provider';
 import {
   cadenceToCron,
   computeNextRunAt,
   isValidTimezone,
   scheduleJitterMs,
   cadenceIntervalMinutes,
+  isValidCronExpression,
   SCHEDULE_JITTER_WINDOW_MS,
 } from './cadence';
 
 const NEW_YORK = 'America/New_York';
+/** The only zone that shifts two hours, which is where the allowance comes from. */
+const TROLL = 'Antarctica/Troll';
 
-function cadence(overrides: Partial<TScheduleCadence>): TScheduleCadence {
+function cadence(overrides: Partial<TStructuredCadence>): TScheduleCadence {
   return { frequency: 'daily', hour: 0, minute: 0, ...overrides };
+}
+
+function cronCadence(expression: string): TScheduleCadence {
+  return { frequency: 'cron', expression };
 }
 
 function wallClock(date: Date, timeZone: string): string {
@@ -318,5 +326,139 @@ describe('cadenceIntervalMinutes', () => {
     expect(cadenceIntervalMinutes(cadence({ frequency: 'weekly', daysOfWeek: [0, 6] }))).toBe(
       24 * 60 - 120,
     );
+  });
+});
+
+describe('cron cadence', () => {
+  it('compiles to the expression verbatim', () => {
+    expect(cadenceToCron(cronCadence('0 9,17 * * 1-5'))).toBe('0 9,17 * * 1-5');
+  });
+
+  it('computes the next run from a cron expression', () => {
+    const next = computeNextRunAt({
+      cadence: cronCadence('0 9 * * *'),
+      timezone: NEW_YORK,
+      scheduleId: 'cron-next',
+      after: new Date('2026-03-01T00:00:00Z'),
+      disableJitter: true,
+    });
+    expect(next).not.toBeNull();
+    expect(wallClock(next as Date, NEW_YORK)).toBe('Sun 2026-03-01 09:00');
+  });
+
+  it('reports the tightest gap so a dense expression fails the floor', () => {
+    expect(cadenceIntervalMinutes(cronCadence('* * * * *'))).toBe(1);
+    expect(cadenceIntervalMinutes(cronCadence('*/30 * * * *'))).toBe(30);
+  });
+
+  it('matches the structured values for the equivalent expressions', () => {
+    // an expression a user could type instead of picking the preset must not be
+    // rejected by a floor the preset passes
+    expect(cadenceIntervalMinutes(cronCadence('0 * * * *'))).toBe(
+      cadenceIntervalMinutes(cadence({ frequency: 'hourly' })),
+    );
+    expect(cadenceIntervalMinutes(cronCadence('0 9 * * *'))).toBe(
+      cadenceIntervalMinutes(cadence({ frequency: 'daily', hour: 9 })),
+    );
+    expect(cadenceIntervalMinutes(cronCadence('0 9 * * 1-5'))).toBe(
+      cadenceIntervalMinutes(cadence({ frequency: 'weekdays', hour: 9 })),
+    );
+  });
+
+  it('fails closed on an expression the engine cannot fire', () => {
+    // 0 means "violates every floor", so an unfireable expression cannot be saved
+    expect(cadenceIntervalMinutes(cronCadence('not a cron'))).toBe(0);
+    // syntactically valid, but February never has a 30th
+    expect(cadenceIntervalMinutes(cronCadence('0 9 30 2 *'))).toBe(0);
+  });
+
+  it('measures the gap spring-forward compresses rather than the nominal one', () => {
+    // Midnight to noon is 11 real hours on the day America/New_York springs forward.
+    // Probed without the zone it reads as 12, and a floor set between the two would
+    // admit a schedule that genuinely breaks it once a year.
+    expect(cadenceIntervalMinutes(cronCadence('0 0,12 * * *'), NEW_YORK)).toBe(11 * 60);
+    expect(cadenceIntervalMinutes(cronCadence('0 0,12 * * *'), 'UTC')).toBe(12 * 60);
+    // 01:00 and 03:00 are an hour apart on that day, not two.
+    expect(cadenceIntervalMinutes(cronCadence('0 1,3 * * *'), NEW_YORK)).toBe(60);
+  });
+
+  it('keeps an hourly expression at 60 minutes in a DST zone', () => {
+    // croner repeats (Troll even reverses) the folded instant at spring-forward.
+    // Counted as a gap it reads as 0 or less and rejects every hourly cron there.
+    for (const zone of [NEW_YORK, 'UTC', 'Europe/Berlin', 'Australia/Sydney', TROLL]) {
+      expect(cadenceIntervalMinutes(cronCadence('0 * * * *'), zone)).toBe(60);
+    }
+  });
+
+  it('previews a spring-forward fold as one occurrence, not two', () => {
+    // croner folds the skipped 2:00 onto 3:00 on the day America/New_York springs
+    // forward, emitting the same instant twice. That is one firing (the engine's
+    // unique-occurrence index counts it that way), and a preview keyed by instant
+    // would render duplicate rows.
+    jest.useFakeTimers().setSystemTime(new Date('2027-03-13T12:00:00Z'));
+    try {
+      const runs = nextRunInstants(cronCadence('0 2,3 * * *'), NEW_YORK, 6);
+      const instants = runs.map((run) => run.getTime());
+      expect(new Set(instants).size).toBe(instants.length);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('measures a transition that lands on the preceding UTC date', () => {
+    // Australia/Sydney turns over at 16:00 UTC the day BEFORE the local date it
+    // belongs to, so a scan rounded forward to the anchor's own UTC day excluded it
+    // and the gap it compressed went unmeasured. 2027-10-03 is that day locally.
+    jest.useFakeTimers().setSystemTime(new Date('2027-10-01T00:00:00Z'));
+    try {
+      const straddling = cronCadence('0 0,12 * * *');
+      expect(cadenceIntervalMinutes(straddling, 'Australia/Sydney')).toBe(11 * 60);
+      expect(cadenceIntervalMinutes(straddling, 'UTC')).toBe(12 * 60);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('refuses the seconds and year forms croner would otherwise accept', () => {
+    // Five fields only. A seconds field promises a precision the engine does not keep
+    // (a thirty-second tick plus up to two minutes of jitter), and a pinned year makes
+    // a cadence that runs out, which every "no next occurrence" reader treats as a
+    // cadence it cannot read.
+    expect(isValidCronExpression('0 9 * * 1-5')).toBe(true);
+    expect(isValidCronExpression('0 0 9 * * 1-5')).toBe(false);
+    expect(isValidCronExpression('0 0 9 * * 1-5 2027')).toBe(false);
+    // croner's shorthand aliases are the same promise in fewer characters.
+    expect(isValidCronExpression('@daily')).toBe(false);
+  });
+
+  it('accepts an expression only when it can actually match', () => {
+    expect(isValidCronExpression('0 0 29 2 *')).toBe(true);
+    // syntactically valid, but February never has a 30th: nothing would ever fire
+    expect(isValidCronExpression('0 9 30 2 *')).toBe(false);
+    expect(isValidCronExpression('not a cron')).toBe(false);
+    // croner accepts an unusable timezone and only throws when it computes with it
+    expect(isValidCronExpression('0 9 * * *', 'Not/AZone')).toBe(false);
+  });
+
+  it('refuses an expression longer than the schema stores', () => {
+    // A parseable expression over the cap is not "valid but large": the payload
+    // schema refuses it, so accepting it here left the dialog offering a Create the
+    // API answers 400 to, surfaced as a bare "something went wrong".
+    const minutes = Array.from({ length: 60 }, (_, minute) => minute).join(',');
+    const hours = Array.from({ length: 24 }, (_, hour) => hour).join(',');
+    const days = Array.from({ length: 31 }, (_, day) => day + 1).join(',');
+    const padded = `${minutes} ${hours} ${days} * *`;
+    expect(padded.length).toBeGreaterThan(SCHEDULE_CRON_MAX_LENGTH);
+    expect(isValidCronExpression(padded)).toBe(false);
+    // the same shape inside the cap still parses
+    expect(`${minutes} * * * *`.length).toBeLessThanOrEqual(SCHEDULE_CRON_MAX_LENGTH);
+    expect(isValidCronExpression(`${minutes} * * * *`)).toBe(true);
+  });
+
+  it('validates expressions with the parser the engine fires from', () => {
+    expect(isValidCronExpression('0 9,17 * * *')).toBe(true);
+    expect(isValidCronExpression('0 0 1 * *')).toBe(true);
+    expect(isValidCronExpression('nonsense')).toBe(false);
+    expect(isValidCronExpression('99 * * * *')).toBe(false);
   });
 });

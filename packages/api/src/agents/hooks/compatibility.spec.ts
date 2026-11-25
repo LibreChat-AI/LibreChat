@@ -357,16 +357,20 @@ describe('planPluginHooks', () => {
     const plan = planPluginHooks(
       document({
         UserPromptExpansion: [{ hooks: [{ type: 'command', command: 'banner' }] }],
+        StopFinalize: [{ hooks: [{ type: 'command', command: 'intercept-finalization' }] }],
         Stop: [{ hooks: [{ type: 'prompt', prompt: 'Verify completion' }] }],
       }),
       commandCapabilities,
     );
 
-    expect(plan.summary).toEqual({ declared: 2, ready: 0, unsupported: 2 });
+    expect(plan.summary).toEqual({ declared: 3, ready: 0, unsupported: 3 });
     expect(plan.entries[0].issues).toEqual([
       expect.objectContaining({ code: 'unsupported_event' }),
     ]);
     expect(plan.entries[1].issues).toEqual([
+      expect.objectContaining({ code: 'unsupported_event' }),
+    ]);
+    expect(plan.entries[2].issues).toEqual([
       expect.objectContaining({ code: 'unsupported_handler' }),
     ]);
   });

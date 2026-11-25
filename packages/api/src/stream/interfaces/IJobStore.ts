@@ -1,8 +1,90 @@
-import type { Agents, TFile, TPendingSteer } from 'librechat-data-provider';
-import type { StandardGraph } from '@librechat/agents';
+import type {
+  Agents,
+  TFile,
+  TPendingSteer,
+  TMessageTrigger,
+  UserSubmittedMessageFieldPath,
+} from 'librechat-data-provider';
+import type {
+  IAgentEventActorContextMeta,
+  ICompactionSemanticIndexProjection,
+} from '@librechat/data-schemas';
+import type {
+  CodeApprovalMode,
+  ScheduleMCPOutcome,
+  ScheduledMCPIdentity,
+} from 'librechat-data-provider';
+import type { RunStep, StandardGraph } from '@librechat/agents';
+import type { AgentEventDetachedTerminalEvidence } from '~/agents/triggers/types';
+import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
+import type { ReplayLimits, ReplayPublication } from '../internal/replay';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
+import type { RedisFinalizationRecovery } from '../redisOutage';
 import type { RecoveredSteerPayload } from '../SteerRecovery';
+import type { AuthoredSkillBinding } from '~/agents/authored';
+import type { RunTrigger } from '~/agents/authority/trigger';
+import type { MCPRuntimeRequestBody } from '~/mcp/types';
+
+/**
+ * Detached Event Actor execution guarantee advertised by a generation store.
+ *
+ * `process_local` keeps the lifecycle coherent while this process is alive.
+ * `distributed` additionally permits restart recovery and replica handoff.
+ * Absence means the store cannot host detached Event Actor actions.
+ */
+export type DetachedAgentEventActionStoreMode = 'process_local' | 'distributed';
+
+/**
+ * Rewrites string-enum members to their literal values, recursively. The SDK and
+ * data-provider declare nominally distinct enums (`ContentTypes`, `StepTypes`, ...)
+ * with identical string values; erasing that nominality is what lets the two run-step
+ * contracts be compared structurally.
+ */
+type WireShape<T> = T extends string
+  ? `${T}`
+  : T extends readonly (infer U)[]
+    ? WireShape<U>[]
+    : T extends object
+      ? { [K in keyof T]: WireShape<T[K]> }
+      : T;
+
+type StaticAssert<T extends true> = T;
+
+/**
+ * Compile-time proof that the SDK run step and the wire contract (`Agents.RunStep`)
+ * agree structurally once enum nominality is erased: any added, removed, retyped, or
+ * newly optional SDK field fails these assertions, so drift cannot silently enter
+ * resume state through `toWireRunSteps`.
+ *
+ * `summary.content` is the one deliberately unchecked field: the SDK reuses its full
+ * `MessageContentComplex` union there, while the wire contract narrows it to the plain
+ * text blocks summarization actually emits. That narrowing is the single semantic
+ * judgment this conversion vouches for.
+ */
+type _WireRunStepContractHolds = StaticAssert<
+  WireShape<Omit<RunStep, 'summary'>> extends WireShape<Omit<Agents.RunStep, 'summary'>>
+    ? true
+    : false
+>;
+
+type _WireSummaryContractHolds = StaticAssert<
+  WireShape<Omit<NonNullable<RunStep['summary']>, 'content'>> extends WireShape<
+    Omit<NonNullable<Agents.RunStep['summary']>, 'content'>
+  >
+    ? true
+    : false
+>;
+
+/**
+ * Run steps living on the SDK graph serialize to exactly the wire shape
+ * `Agents.RunStep` describes; the assertion is safe because
+ * `_WireRunStepContractHolds` above proves the contracts identical modulo the
+ * nominally-split enums, which share their string values at runtime.
+ */
+export function toWireRunSteps(steps: readonly RunStep[]): Agents.RunStep[] {
+  return steps as Agents.RunStep[];
+}
 
 /**
  * A pause owner has this long to durably persist the interrupted turn before
@@ -12,6 +94,15 @@ import type { RecoveredSteerPayload } from '../SteerRecovery';
  */
 export const PAUSE_PERSISTENCE_TIMEOUT_MS = 30_000;
 export const PAUSE_PERSISTENCE_TIMEOUT_ERROR = 'Paused response persistence timed out';
+/** Maximum time a terminal provider owner may remain undrained before its
+ * process is treated as lost. Terminal host settlement retains the last
+ * durable evidence through this grace period, then releases the lane from a
+ * crashed owner instead of refreshing its fence forever. A replacement
+ * generation gives a terminal predecessor's drain the same period, counted
+ * from the predecessor's `completedAt` when its receipt carries one and from
+ * the start of the handoff otherwise, then starts. Neither applies to a
+ * schedule-owned generation, which waits for a confirmed owner termination. */
+export const PROVIDER_DRAIN_TIMEOUT_MS = 30_000;
 
 /**
  * Job status enum.
@@ -26,9 +117,13 @@ export type JobStatus = 'running' | 'complete' | 'error' | 'aborted' | 'requires
  * Missing markers on pre-rollout records are interpreted as protocol v1. */
 export type GenerationProtocolVersion = 1 | 2;
 
-/**
- * Serializable job data - no object references, suitable for Redis/external storage
- */
+/** Read-only durable evidence, without attaching a runtime or recovering a slow save. */
+export type GenerationSettlementState = Pick<
+  SerializableJobData,
+  'createdAt' | 'status' | 'terminalPersistencePending'
+>;
+
+/** Serializable job data without object references, suitable for external storage. */
 export interface SerializableJobData {
   streamId: string;
   userId: string;
@@ -36,14 +131,26 @@ export interface SerializableJobData {
   status: JobStatus;
   createdAt: number;
   generationProtocolVersion?: GenerationProtocolVersion;
-  /** Saver-level checkpoint scope for this exact generation. New jobs use
-   * their final store-assigned epoch; LangGraph still sees an empty root
+  /** Saver-level checkpoint scope for this exact generation. New jobs use a
+   * globally unique opaque identity; LangGraph still sees an empty root
    * `checkpoint_ns`, which the saver adapter maps to this storage scope.
    * Legacy paused jobs omit it and use the historical unscoped storage. */
   checkpointNamespace?: string;
+  responseCheckpointConfigJSON?: string;
   completedAt?: number;
   conversationId?: string;
   error?: string;
+
+  /** Durable, non-sensitive identity and one-shot outcome for an early replay
+   * buffer overflow. This lets another replica account for recovery. */
+  earlyBufferOverflow?: EarlyBufferOverflowState;
+
+  /** Generation-level first subscriber claim shared across replicas. */
+  firstSubscriberAttachedAt?: number;
+  /** Expiring local subscriber-group leases (in-memory store only). */
+  activeSubscriberLeases?: Record<string, number>;
+  /** Generation-wide durable chunk frontier maintained by the store. */
+  durableEventCount?: number;
 
   /** Stable identity of the HTTP submission that created this generation.
    * Internal-only: lets an expired idempotency lease recognize the same live
@@ -61,6 +168,7 @@ export interface SerializableJobData {
     parentMessageId?: string;
     conversationId?: string;
     text?: string;
+    privacyRevision?: string;
     /** Quoted excerpts referenced on this turn, carried so resumable/aborted
      *  reconstructions of the user message keep their `MessageQuotes`. */
     quotes?: string[];
@@ -70,10 +178,32 @@ export interface SerializableJobData {
     /** Uploaded files for the turn, carried so a HITL resume sources them from the job
      *  rather than a user DB row whose save can still be racing the approval prompt. */
     files?: unknown[];
+    /** What started the turn, when no person sent it: the row a resumed stream rebuilds
+     *  is recognized by it, as the stored row is. */
+    trigger?: TMessageTrigger;
   };
 
   /** Response message ID for reconnection */
   responseMessageId?: string;
+
+  /** Whether this generation replaces an existing assistant branch. */
+  isRegenerate?: boolean;
+  /** Whether this generation is a manual context compaction; the abort paths
+   * read it to stamp the stopped row with the compaction's identity. */
+  compact?: boolean;
+  /** Exact normalized MCP placeholder identity for this turn. */
+  mcpRequestBody?: MCPRuntimeRequestBody;
+  /** Exact assistant-message fields authored by the user during this running job. */
+  userSubmittedPaths?: string[];
+  /** Exact request-only message fields embedded at caller-authored paths. */
+  userSubmittedMessageFieldPaths?: UserSubmittedMessageFieldPath[];
+  /** Provenance that the latest approval claim replaced. Until that resume's provider
+   * segment starts, its decision is not in the job's content, so an abort publishes
+   * these paths instead of the claimed ones. */
+  preResumeProvenance?: Pick<
+    SerializableJobData,
+    'userSubmittedPaths' | 'userSubmittedMessageFieldPaths'
+  >;
 
   /**
    * Whether this run has activity labels enabled (per-endpoint
@@ -91,8 +221,14 @@ export interface SerializableJobData {
    * the discovered tool schemas.
    */
   discoveredTools?: string[];
+  /** Skill identities authored by this generation, reauthorized on resume. */
+  authoredSkills?: AuthoredSkillBinding[];
   /** Bounded collector state for continuing a phase across HITL resume. */
   activityPhaseSnapshot?: ActivityPhaseSnapshot;
+  /** Exact bounded compaction guidance captured atomically with a HITL pause. */
+  compactionSemanticIndex?: ICompactionSemanticIndexProjection;
+  /** Calibration and fading state captured atomically with a HITL pause, so a resume seeds its rebuilt pruner from the same tier. */
+  contextMeta?: IAgentEventActorContextMeta;
   /**
    * Whether the replica that OWNS this generation can seal mid-stream
    * (`PreemptBoundary` wiring). Recorded at createJob because the steer route
@@ -101,6 +237,24 @@ export interface SerializableJobData {
    * preempt shipped, which reads as incapable: the honest outcome.
    */
   preemptCapable?: boolean;
+  /**
+   * Transient owner assertion that this replica's drain merges
+   * `SteerQueueItem.quotes` into the injected turn. Never stored as-is:
+   * createJob and `ApprovalLifecycle.resolve` translate it into
+   * `steerQuotesExecutionId` bound to the asserting owner's execution.
+   */
+  steerQuotesCapable?: boolean;
+  /**
+   * The `providerExecutionId` of the owner that asserted quote capability.
+   * Valid only while it equals the LIVE `providerExecutionId`: a legacy
+   * replica winning a HITL resume rewrites the execution id but cannot know
+   * this field, so its stale assertion self-invalidates — which a bare
+   * boolean could not do (an old resume patch omits rather than clears it).
+   * The fenced enqueue evaluates the equality atomically and strips
+   * `item.quotes` on mismatch, keeping the persisted item and the
+   * `quotesAccepted` echo honest; the client re-stages dropped excerpts.
+   */
+  steerQuotesExecutionId?: string;
 
   /** Explicitly false until the provider-owning replica has installed its
    * generation-fenced abort subscription. Missing is conservative legacy
@@ -110,6 +264,12 @@ export interface SerializableJobData {
   /** Opaque identity of the currently executing provider segment. A HITL resume
    * replaces it so an earlier paused segment cannot acknowledge the new run. */
   providerExecutionId?: string;
+  /** Durable evidence that the current provider owner crossed its start CAS.
+   * Unlike `providerDrained`, this identity survives terminal drain so host
+   * compensation can distinguish a projected-but-never-started resume. */
+  providerExecutionStartedId?: string;
+  /** Winning start attempt within a provider segment; written only by the start CAS. */
+  providerExecutionOwnerId?: string;
   /** False while the identified provider segment can still mutate user data;
    * true before provider startup and after the owner has fully unwound. */
   providerDrained?: boolean;
@@ -123,14 +283,20 @@ export interface SerializableJobData {
   /** Whether sync has been sent to a client */
   syncSent: boolean;
 
+  /** The trigger that started the run. See `GenerationJobMetadata.trigger`. */
+  trigger?: RunTrigger;
   /** Trusted schedule identity copied atomically into the generation job. */
   scheduleId?: string;
   scheduledFor?: string;
   scheduleConfigRevision?: number;
   scheduleManual?: boolean;
+  /** Original schedule root for a legacy completion, never occurrence bookkeeping. */
+  scheduleMCPCompletion?: ScheduledMCPIdentity;
   /** Terminal outcome evidence retained when the schedule row could not be updated. */
   scheduleOutcome?: 'success' | 'error' | 'interrupted' | 'skipped_balance';
   scheduleOutcomeError?: string;
+  /** Safe invocation denial retained until schedule settlement, never tool arguments. */
+  scheduleMCPFailure?: ScheduleMCPOutcome;
   preserveForScheduleReconcile?: boolean;
   /**
    * A terminal transition (currently approval expiry) still owes a durable host
@@ -140,6 +306,14 @@ export interface SerializableJobData {
    * no action clears it immediately on its no-op success, so nothing accumulates.
    */
   terminalHostActionPending?: boolean;
+  /** Redis-only durable marker for a detached Event Actor completion hook.
+   * Capable stores expose it through `terminalHostActionPending` as well, but
+   * keep the persisted field distinct so legacy reconciliation cannot index or
+   * claim the completion through the ordinary terminal-action lane. */
+  detachedAgentEventTerminalHostActionPending?: boolean;
+  /** Logical terminal state hidden behind a versioned fail-closed shell while
+   * a detached Event Actor host action remains unacknowledged. */
+  detachedAgentEventTerminalStatus?: Extract<JobStatus, 'complete' | 'aborted' | 'error'>;
   /**
    * Last time a cleanup pass enumerated this pending host action for retry. Retention is
    * measured from this rather than `completedAt`, so evidence survives as long as some
@@ -155,6 +329,8 @@ export interface SerializableJobData {
    * response / pruning HITL state. No normal terminal payload may be exposed
    * while true. */
   terminalPersistencePending?: boolean;
+  /** Server-enrolled external journal owns final publication and barrier release. */
+  terminalPersistenceOwner?: 'external';
   /** Crash-recovery deadline basis for `terminalPersistencePending`. */
   terminalPersistenceStartedAt?: number;
 
@@ -189,6 +365,30 @@ export interface SerializableJobData {
    * resume request can't be trusted to re-send the flag.
    */
   isTemporary?: boolean;
+  /** Server-established first turn; absence does not authorize a draft projection. */
+  isNewConversation?: boolean;
+  /** Original server-authenticated retention deadline, serialized across replicas. */
+  retentionExpiresAt?: string;
+  agentEventDeliveryKey?: string;
+  /** Original actor invocation when an internal completion delivery owns this generation. */
+  agentEventInvocationKey?: string;
+  /** Original actor invocation generation retained across completion HITL resumes. */
+  agentEventInvocationGenerationCreatedAt?: number;
+  /** This generation must resume on a durable detached-action producer. */
+  agentEventDetachedActionProducerRequired?: boolean;
+  /** Durable retry payload captured before detached terminal evidence is written to Mongo. */
+  agentEventDetachedTerminalEvidence?: AgentEventDetachedTerminalEvidence;
+  /** Trusted actor binding copied from the authenticated delivery envelope. */
+  agentEventBindingId?: string;
+  /** The background subagent task this generation streams; set only by the task store. */
+  subagentTaskId?: string;
+  /** The conversation that dispatched that task. */
+  subagentParentConversationId?: string;
+  agentEventExpectedAction?: import('~/agents/triggers/types').AgentTriggerExpectedAction;
+  /** Versioned pointer to the canonical signed Conversation suspension. */
+  agentEventSuspension?: import('~/agents/triggers/types').AgentEventSuspensionProjection;
+  /** Exact durable legacy-turn fence carried across a HITL pause/resume. */
+  agentEventLegacyTurnToken?: string;
 
   /**
    * Set when status is `requires_action`. Describes the human review the
@@ -227,14 +427,20 @@ export interface SerializableJobData {
   steersClosed?: boolean;
 }
 
+/** Narrows an owner's active jobs, such as to the ones a client lists as chats. */
+export type ActiveJobFilter = (job: SerializableJobData) => boolean;
+
 /** Exact active hash replaced by one atomic job creation. Built-in stores keep
  * this as non-enumerable transaction metadata; Redis also retains a private
  * receipt in the replacement hash so a committed create with a lost reply can
- * reconstruct it without exposing it through normal job serialization. */
+ * reconstruct it without exposing it through normal job serialization.
+ * `completedAt` is absent for a predecessor that was not terminal and on
+ * receipts written before the field existed. */
 export type ReplacedGeneration = Pick<
   SerializableJobData,
   | 'createdAt'
   | 'status'
+  | 'completedAt'
   | 'conversationId'
   | 'providerAbortReady'
   | 'providerExecutionId'
@@ -290,29 +496,79 @@ export class JobPredecessorMismatchError extends Error {
   }
 }
 
+/** Thrown by `createJob` when the owner's account deletion began before the job could be admitted. */
+export class GenerationAdmissionDeniedError extends Error {
+  readonly code = 'ACCOUNT_DELETION_IN_PROGRESS';
+  readonly status = 409;
+
+  constructor() {
+    super('Account deletion is in progress');
+    this.name = 'GenerationAdmissionDeniedError';
+  }
+}
+
+/** Thrown by `createJob` when the account admission check itself failed; carries no lookup diagnostics. */
+export class GenerationAdmissionUnavailableError extends Error {
+  readonly code = 'GENERATION_ADMISSION_UNAVAILABLE';
+  readonly status = 503;
+
+  constructor() {
+    super('Generation admission could not be verified');
+    this.name = 'GenerationAdmissionUnavailableError';
+  }
+}
+
 export type JobMetadataPatch = Partial<
   Pick<
     SerializableJobData,
     | 'responseMessageId'
+    | 'isRegenerate'
+    | 'compact'
+    | 'mcpRequestBody'
+    | 'userSubmittedPaths'
+    | 'userSubmittedMessageFieldPaths'
     | 'sender'
     | 'conversationId'
     | 'userMessage'
     | 'endpoint'
+    | 'terminalPersistenceOwner'
     | 'iconURL'
     | 'model'
     | 'agent_id'
     | 'isTemporary'
+    | 'isNewConversation'
+    | 'retentionExpiresAt'
+    | 'responseCheckpointConfigJSON'
+    | 'agentEventDeliveryKey'
+    | 'agentEventInvocationKey'
+    | 'agentEventInvocationGenerationCreatedAt'
+    | 'agentEventDetachedActionProducerRequired'
+    | 'agentEventDetachedTerminalEvidence'
+    | 'agentEventBindingId'
+    | 'subagentTaskId'
+    | 'subagentParentConversationId'
+    | 'agentEventExpectedAction'
+    | 'agentEventSuspension'
+    | 'agentEventLegacyTurnToken'
+    | 'trigger'
     | 'scheduleId'
     | 'scheduledFor'
     | 'scheduleConfigRevision'
     | 'scheduleManual'
+    | 'scheduleMCPCompletion'
     | 'scheduleOutcome'
     | 'scheduleOutcomeError'
+    | 'scheduleMCPFailure'
     | 'preserveForScheduleReconcile'
     | 'promptTokens'
     | 'discoveredTools'
+    | 'authoredSkills'
     | 'activityPhaseSnapshot'
+    | 'compactionSemanticIndex'
+    | 'contextMeta'
     | 'preemptCapable'
+    | 'steerQuotesCapable'
+    | 'steerQuotesExecutionId'
     | 'providerExecutionId'
     | 'providerDrained'
     | 'generationProtocolVersion'
@@ -357,6 +613,10 @@ export interface SteerQueueItem {
    *  drain re-fetches each file by id scoped to the run's user and encodes
    *  fresh, so nothing here is trusted beyond identifying the file. */
   files?: Partial<TFile>[];
+  /** Quoted excerpts steered with the message, normalized at admission
+   *  (`getReferencedQuotes`). Kept separate from `text` so the persisted
+   *  steer part stays clean; merged into the model-bound turn at injection. */
+  quotes?: string[];
   /** The steer asked to seal the live model stream at the next provider-safe
    *  boundary instead of waiting for a tool step. Durable so a parked,
    *  claimed, or replayed chip keeps its "interrupting" label. */
@@ -365,6 +625,14 @@ export interface SteerQueueItem {
    * so an older cross-replica arm cannot resurrect after the disarm, while a
    * later explicit arm with a newer revision remains valid. */
   preemptRevision?: number;
+  /** The sending client adopts a server-promoted queued turn in place of its
+   *  chip, so a run that ends without applying this steer may promote it to a
+   *  durable queued turn instead of handing it back for a tab-local queue. */
+  promoteLeftover?: true;
+  /** The sender's code approval mode, kept for a promoted turn only: a durable
+   *  queued turn must start under the mode the sender's own queue row would
+   *  have carried, not the deployment default. */
+  codeApprovalMode?: CodeApprovalMode;
 }
 
 /** Durable acknowledgement keyed by `clientSteerId`. It outlives the queue
@@ -372,7 +640,16 @@ export interface SteerQueueItem {
  * the same instruction twice after drain, terminal cleanup, or replacement. */
 export interface SteerReceipt {
   clientSteerId: string;
+  /** Quote-INDEPENDENT content hash (text/files/preempt) — the one shape every
+   * replica version computes, so lost-ACK retries replay across a rolling
+   * deploy in both directions. */
   fingerprint: string;
+  /** Identity of the REQUESTED quotes (pre any owner-capability strip),
+   * recorded beside the fingerprint so quote-aware readers enforce quote
+   * identity without making the fingerprint unreadable to legacy admission.
+   * Absent on receipts written by pre-quotes replicas or for quote-less
+   * requests. */
+  requestedQuotesFingerprint?: string;
   userId: string;
   tenantId?: string;
   agentId?: string;
@@ -391,9 +668,23 @@ export interface SteerReceipt {
   /** `recovered` means one recovery surface already claimed a leftover. A
    * later retry is settled without re-queuing the same follow-up. */
   state: 'queued' | 'claimed' | 'delivered' | 'leftover' | 'recovered' | 'cancelled';
+  /** Set with `recovered` when the leftover was handed to this durable queued
+   * turn, so that turn's admission can tell its own hand-off from a recovery
+   * that consumed the words elsewhere. */
+  promotedTurnId?: string;
 }
 
-export type SteerReceiptInput = Omit<SteerReceipt, 'item' | 'position' | 'state'>;
+export type SteerReceiptInput = Omit<
+  SteerReceipt,
+  'item' | 'position' | 'state' | 'promotedTurnId'
+>;
+
+/** Outcome of handing a terminal leftover to a durable queued turn:
+ * - `promoted`: this turn owns the words (now, or from an earlier hand-off)
+ * - `refused`: another surface owns them (discarded, recovered, or leased)
+ * - `unparked`: the receipt is a leftover but its parked copy is gone
+ * - `missing`: no receipt for the steer survives */
+export type SteerPromotionOutcome = 'promoted' | 'refused' | 'unparked' | 'missing';
 export type SteerEnqueueReceiptResult = SteerReceipt | SteerEnqueueResult | number;
 
 /** Capability-normalized atomic enqueue result for callers without a stable
@@ -401,6 +692,15 @@ export type SteerEnqueueReceiptResult = SteerReceipt | SteerEnqueueResult | numb
 export interface SteerEnqueueResult {
   item: SteerQueueItem;
   position: number;
+}
+
+export type TerminalSteerAdmissionResult =
+  | { outcome: 'claimed'; items: SteerQueueItem[] }
+  | { outcome: 'open' | 'sealed' | 'unavailable' };
+
+export interface TerminalSteerAdmissionPolicy {
+  allowClaim: boolean;
+  keepOpenWhenEmpty: boolean;
 }
 
 export type SteerEnqueueVersionedResult = SteerEnqueueResult | number;
@@ -447,6 +747,17 @@ export const STEER_ENQUEUE_QUEUE_FULL = -2;
  * so idempotency evidence is never evicted inside its recovery window. */
 export const STEER_ENQUEUE_RECEIPT_FULL = -3;
 
+/** The store rejected a status CAS because its atomic deadline had elapsed. */
+export class JobStatusTransitionDeadlineError extends Error {
+  readonly notAfterMs: number;
+
+  constructor(notAfterMs: number) {
+    super('The status transition deadline elapsed before the transition could commit');
+    this.name = 'JobStatusTransitionDeadlineError';
+    this.notAfterMs = notAfterMs;
+  }
+}
+
 /**
  * Arguments for an atomic {@link IJobStore.transitionStatus} compare-and-set.
  */
@@ -471,6 +782,16 @@ export interface JobStatusTransition {
    * the same stream ID.
    */
   expectCreatedAt?: number;
+  /** Fence an old provider segment after the same generation has resumed. */
+  expectProviderExecutionId?: string;
+  /** Allow the Redis store to resume this exact persistence-owning terminal CAS. */
+  redisRecovery?: RedisFinalizationRecovery;
+  /**
+   * Additional guard: reject the transition when the store's clock has reached
+   * this absolute deadline. The comparison is part of the same atomic operation
+   * as the status change, so queueing or storage latency cannot publish stale state.
+   */
+  notAfterMs?: number;
   /** Extend all current steer receipts in the SAME atomic step as this
    * transition. Used by running→requires_action so no enqueue can land between
    * a pre-pause TTL pass and the status CAS. */
@@ -502,6 +823,8 @@ export interface IdempotencyClaimValue {
    * already-started/cleaned generation and can never be taken over as an
    * abandoned pre-create lease. */
   startedAt?: number;
+  /** Recovery closed an unpublished claim without admitting a generation. */
+  recoveryFence?: true;
 }
 
 /** Result of an atomic {@link IJobStore.claimIdempotencyKey} attempt. */
@@ -568,6 +891,10 @@ export interface UsageMetadata {
   input_token_details?: {
     /** Tokens written to cache */
     cache_creation?: number;
+    /** Subset of `cache_creation` written to Anthropic's 1-hour cache (see `getModelEndUsage`) */
+    cache_creation_1h?: number;
+    /** Subset of `cache_creation` written to OpenAI's 12-hour cache */
+    cache_creation_12h?: number;
     /** Tokens read from cache */
     cache_read?: number;
     /** OpenAI GPT-5.6+ cache-write tokens (billed above the input rate) */
@@ -597,6 +924,8 @@ export interface UsageMetadata {
   output_token_details?: {
     /** Reasoning/thinking tokens generated as chain-of-thought (o1, Gemini thinking, etc.) */
     reasoning?: number;
+    /** Alternate provider/runtime alias for reasoning tokens. */
+    reasoning_tokens?: number;
     audio?: number;
   };
 }
@@ -673,6 +1002,8 @@ export interface ResumeState {
     data?: unknown;
     [key: string]: unknown;
   }>;
+  /** Pending MCP authorization prompts projected from durable stream state. */
+  pendingOAuthPrompts?: Agents.PendingMCPOAuthPrompt[];
 }
 
 /**
@@ -683,7 +1014,32 @@ export interface ResumeState {
  * the additional {@link IJobStoreV2} capabilities before accepting a custom
  * store at runtime.
  */
+/** Captured stale provider identity. Recovery requires positive host termination proof. */
+export interface ScheduleProviderOwner {
+  streamId: string;
+  createdAt: number;
+  providerExecutionId: string;
+  scheduleId: string;
+  scheduledFor: string;
+  userId: string;
+  tenantId: string | null;
+  lastActiveAt: number;
+}
+
+export interface ScheduleCleanupScope {
+  scheduleId?: string;
+  userId?: string;
+}
+
 export interface IJobStore {
+  readonly detachedAgentEventActionStoreMode?: DetachedAgentEventActionStoreMode;
+  /** Receipt evidence survives loss of the generation worker; absent is volatile. */
+  readonly durableScheduleReceipts?: boolean;
+
+  /** Synchronous exact-epoch notification after a retained stale transition.
+   * Cancellation is not drain acknowledgement; provider owners still record drain. */
+  setStaleGenerationHandler?(handler?: (streamId: string, createdAt: number) => void): void;
+
   initialize(): Promise<void>;
 
   createJob(
@@ -709,6 +1065,15 @@ export interface IJobStore {
   ): Promise<IdempotencyClaimResult>;
   releaseIdempotencyKey(key: string): Promise<void>;
 
+  /** Read-only existence probe used to identify a confirmed retry before
+   * request-rate admission. Optional stores keep the conservative behavior
+   * where every request remains subject to the limiter. */
+  hasIdempotencyKey?(key: string): Promise<boolean>;
+
+  /** Read-only claim receipt used by durable source reconcilers. Optional
+   * stores fall back to inspecting the current generation only. */
+  getIdempotencyClaim?(key: string): Promise<IdempotencyClaimValue | null>;
+
   deleteJob(streamId: string, expectedCreatedAt?: number): Promise<boolean>;
   hasJob(streamId: string): Promise<boolean>;
   getRunningJobs(): Promise<SerializableJobData[]>;
@@ -720,26 +1085,68 @@ export interface IJobStore {
    * retry the host adapter after a restart / on another replica, even though the job is
    * no longer in the requires_action index. */
   getTerminalHostActionJobs?(): Promise<SerializableJobData[]>;
+  /** Generation-scoped schedule settlement outbox, including already-bookkept runs. */
+  getScheduleReconcileJobs?(limit: number): Promise<SerializableJobData[]>;
+  /** Independent of active Mongo runs. Missing capability cannot certify cleanup. */
+  hasScheduleCleanupObligation?(scope: ScheduleCleanupScope): Promise<boolean>;
+  /** Used only after trusted host process-loss confirmation; status/epoch/segment/liveness CAS. */
+  recoverScheduleProviderOwnerLoss?(owner: ScheduleProviderOwner): Promise<boolean>;
+  /** Enumerates detached Event Actor completion generations from a versioned
+   * retry lane known only to capable consumers. Redis keeps this lane separate
+   * from `getTerminalHostActionJobs` so a rolling-deployment replica that only
+   * understands the legacy job identity can never claim it. */
+  getDetachedAgentEventTerminalHostActionJobs?(): Promise<SerializableJobData[]>;
   /** Clears the pending-host-action marker once the adapter acknowledges success.
    * Identity-fenced on `expectedCreatedAt` so a replacement generation at the same
    * streamId is never cleared through its predecessor. */
   clearTerminalHostAction?(streamId: string, expectedCreatedAt?: number): Promise<void>;
   cleanup(): Promise<number>;
   recordActivity?(streamId: string, expectedCreatedAt?: number): void;
+  /** Refreshes a running generation's idle clock and storage lifetimes without an event.
+   * False when the epoch is not current or the job is not running. */
+  touchJob?(streamId: string, expectedCreatedAt: number): Promise<boolean>;
   getJobCount(): Promise<number>;
   getJobCountByStatus(status: JobStatus): Promise<number>;
   destroy(): Promise<void>;
-  getActiveJobIdsByUser(userId: string, tenantId?: string): Promise<string[]>;
+  getActiveJobIdsByUser(
+    userId: string,
+    tenantId?: string,
+    accept?: ActiveJobFilter,
+  ): Promise<string[]>;
+
+  /** Complete owner cleanup query, including terminal host work and legacy-index recovery.
+   * Managers retain the global-index fallback for older third-party stores. */
+  getCleanupJobIdsByUser?(userId: string, tenantId?: string): Promise<string[]>;
+
+  /** Enumerates every extant job in the owner's retained index, including a
+   * stale paused generation that account deletion must erase before its worker
+   * finalizes it. Optional custom stores fall back to cleanup-blocking jobs. */
+  getRetainedJobIdsByUser?(userId: string, tenantId?: string): Promise<string[]>;
   setGraph(streamId: string, graph: StandardGraph, expectedCreatedAt?: number): void;
   setContentParts(
     streamId: string,
     contentParts: Agents.MessageContentComplex[],
     expectedCreatedAt?: number,
   ): void;
+  /**
+   * A synchronous copy of the content array `setContentParts` registered on this replica, or
+   * null when this replica does not host the run. A store that only ever returns copies from
+   * `getContentParts` has no need for it.
+   */
+  copyHostContent?(
+    streamId: string,
+    expectedCreatedAt?: number,
+  ): Agents.MessageContentComplex[] | null;
   getContentParts(
     streamId: string,
     expectedCreatedAt?: number,
-  ): Promise<{ content: Agents.MessageContentComplex[] } | null>;
+    options?: { durableOnly?: boolean },
+  ): Promise<{
+    content: Agents.MessageContentComplex[];
+    reconstructedEventCount?: number;
+    durableEventCount?: number;
+  } | null>;
+
   getRunSteps(streamId: string, expectedCreatedAt?: number): Promise<Agents.RunStep[]>;
 
   /** Legacy stores returned `void`; v2 stores return whether the epoch-fenced
@@ -787,6 +1194,10 @@ export interface IJobStore {
  * generation startup.
  */
 export interface IJobStoreV2 extends IJobStore {
+  /** Opt-in contract: status transitions atomically enforce expectProviderExecutionId. */
+  readonly providerGuardedStatusTransitions?: true;
+  readonly providerStartOwnership?: true;
+  readonly providerTerminalPersistence?: true;
   /** Initialize the store (e.g., connect to Redis, start cleanup intervals) */
   initialize(): Promise<void>;
 
@@ -834,6 +1245,7 @@ export interface IJobStoreV2 extends IJobStore {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    terminalPersistencePending?: true,
   ): Promise<boolean>;
 
   /** Activates the provider only while its exact generation is still running. */
@@ -841,6 +1253,7 @@ export interface IJobStoreV2 extends IJobStore {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    ownerId?: string,
   ): Promise<boolean>;
 
   /** Includes terminal jobs whose provider still owns user-data writes. */
@@ -853,6 +1266,8 @@ export interface IJobStoreV2 extends IJobStore {
     streamId: string,
     expectedCreatedAt: number,
     finalEvent: string,
+    /** Redis may replay the result only for this exact persistence attempt. */
+    attemptId?: string,
   ): Promise<boolean>;
 
   /**
@@ -1010,9 +1425,14 @@ export interface IJobStoreV2 extends IJobStore {
    * Also performs self-healing cleanup of stale entries.
    *
    * @param userId - The user ID to query
+   * @param accept - Leaves out the active jobs it returns false for
    * @returns Array of conversation IDs with active jobs
    */
-  getActiveJobIdsByUser(userId: string, tenantId?: string): Promise<string[]>;
+  getActiveJobIdsByUser(
+    userId: string,
+    tenantId?: string,
+    accept?: ActiveJobFilter,
+  ): Promise<string[]>;
 
   // ===== Content State Methods =====
   // These methods manage volatile content state tied to each job.
@@ -1058,9 +1478,57 @@ export interface IJobStoreV2 extends IJobStore {
   getContentParts(
     streamId: string,
     expectedCreatedAt?: number,
+    options?: { durableOnly?: boolean },
   ): Promise<{
     content: Agents.MessageContentComplex[];
+    reconstructedEventCount?: number;
+    durableEventCount?: number;
   } | null>;
+
+  /** Atomically records the only recovery outcome for one overflow identity. */
+  settleEarlyBufferRecovery(
+    streamId: string,
+    expectedCreatedAt: number,
+    overflowId: string,
+    settlement: Pick<
+      EarlyBufferOverflowState,
+      'recoveryMethod' | 'recoveryOutcome' | 'recoveryCompletedAt' | 'recoveryFailureReason'
+    >,
+  ): Promise<boolean>;
+
+  /** Atomically replaces an unresolved pending overflow marker with its
+   * finalized durable frontier. A concurrent recovery settlement wins over
+   * this owner-side finalization. */
+  finalizeEarlyBufferOverflow(
+    streamId: string,
+    expectedCreatedAt: number,
+    overflowId: string,
+    overflow: EarlyBufferOverflowState,
+  ): Promise<boolean>;
+
+  /** Whether this generation has admitted any subscriber on any replica. */
+  hasSubscriberAttached(streamId: string, expectedCreatedAt: number): Promise<boolean>;
+
+  /** Atomically claims the first subscriber for one generation epoch. */
+  claimFirstSubscriber(
+    streamId: string,
+    expectedCreatedAt: number,
+    attachedAt: number,
+    subscriberId: string,
+    leaseExpiresAt: number,
+  ): Promise<boolean>;
+
+  detachSubscriber(
+    streamId: string,
+    expectedCreatedAt: number,
+    subscriberId: string,
+  ): Promise<void>;
+
+  hasActiveSubscriber(
+    streamId: string,
+    expectedCreatedAt: number,
+    observedAt: number,
+  ): Promise<boolean>;
 
   /**
    * Get run steps for a job (for resume state).
@@ -1199,6 +1667,21 @@ export interface IJobStoreV2 extends IJobStore {
   ): Promise<boolean>;
 
   /**
+   * Terminal admission fence. When `allowClaim` and queued work are both
+   * present, atomically claim the FIFO batch while leaving admission open for
+   * the continued run. Otherwise atomically close admission so a racing steer
+   * is rejected and remains an ordinary follow-up, unless
+   * `keepOpenWhenEmpty` proves another folded Stop hook already planned a
+   * continuation. V1 generations always seal because they lack
+   * crash-recoverable claimed-steer receipts.
+   */
+  admitTerminalSteers(
+    streamId: string,
+    policy: TerminalSteerAdmissionPolicy,
+    expectedCreatedAt?: number,
+  ): Promise<TerminalSteerAdmissionResult>;
+
+  /**
    * Atomically CLOSE the queue to new steers, then take all queued items
    * FIFO. Used by the terminal paths (final event, abort) so a steer POST
    * racing finalization can never be 202-ACKed after the last drain and then
@@ -1309,8 +1792,44 @@ export interface IJobStoreV2 extends IJobStore {
     expectedGenerationCreatedAt?: number,
   ): Promise<boolean>;
 
+  /** Owner-gated hand-off of one terminal leftover to the durable queued turn
+   * `queuedTurnId`. Atomically removes it from the parked payload and marks its
+   * receipt `recovered` (stamped with the turn), so neither status recovery nor
+   * a lost-ACK retry can queue the same words again. Idempotent for the same
+   * turn; refuses a receipt from another generation, owner, or state, and an
+   * item leased by a live recovery generation. */
+  promoteSteerLeftover(
+    streamId: string,
+    steerId: string,
+    ownerUserId: string,
+    ownerTenantId: string | undefined,
+    generationCreatedAt: number,
+    queuedTurnId: string,
+  ): Promise<SteerPromotionOutcome>;
+
   /** Drop any queued steers (terminal cleanup backstop). */
   clearSteers(streamId: string): Promise<void>;
+}
+
+export type GenerationTerminalEventType = 'done' | 'error';
+
+/** A terminal publication lost the generation fence to a replacement. This is
+ * an expected safety outcome: the successor owns all further stream output. */
+export class GenerationPublicationFencedError extends Error {
+  readonly code = 'GENERATION_PUBLICATION_FENCED';
+
+  constructor(
+    readonly eventType: GenerationTerminalEventType,
+    readonly streamId: string,
+    readonly generationId?: number,
+  ) {
+    super(
+      eventType === 'done'
+        ? 'Generation DONE publication was fenced by a replacement'
+        : 'Generation error publication was fenced by a replacement',
+    );
+    this.name = 'GenerationPublicationFencedError';
+  }
 }
 
 /**
@@ -1330,6 +1849,8 @@ export interface IEventTransport {
     handlers: {
       /** `generationId` identifies the immutable generation that emitted the chunk. */
       onChunk: (event: unknown, generationId?: number) => void;
+      /** One ordered snapshot before live delivery, only for replay subscriptions. */
+      onReplay?: (events: unknown[]) => void;
       /** `generationId` identifies the immutable generation that emitted the done event. */
       onDone?: (event: unknown, generationId?: number) => void;
       /** `generationId` identifies the immutable generation that emitted the error. */
@@ -1338,8 +1859,18 @@ export interface IEventTransport {
     options?: {
       /** Hold sequenced events until syncReorderBuffer establishes the replay frontier. */
       deferSequenceDelivery?: boolean;
+      /** Per-viewer bounded replay; does not rewind other subscribers. */
+      replay?: ReplayLimits;
+      /** After opening a fresh Pub/Sub channel, atomically capture its sequence frontier
+       * and fence delivery so synchronization cannot lose an attachment-time frame. */
+      captureSequenceFrontier?: boolean;
     },
-  ): { unsubscribe: () => void; ready?: Promise<void> };
+  ): {
+    unsubscribe: () => void;
+    ready?: Promise<void>;
+    /** Synchronize only the transport state captured by this concrete subscription. */
+    syncReorderBuffer?: () => void | Promise<void>;
+  };
 
   /**
    * Publish a chunk event.
@@ -1347,6 +1878,20 @@ export interface IEventTransport {
    * advance a subscriber to the exact ordering frontier.
    */
   emitChunk(streamId: string, event: unknown, generationId?: number): void | Promise<void | number>;
+
+  /** Retain an observational chunk even with no viewers, then publish it atomically. */
+  emitReplayableChunk?(
+    streamId: string,
+    event: unknown,
+    limits: ReplayLimits,
+    publication?: ReplayPublication,
+  ): Promise<void>;
+  emitReplayableDone?(
+    streamId: string,
+    event: unknown,
+    limits: ReplayLimits,
+    publication?: ReplayPublication,
+  ): Promise<void>;
 
   /**
    * Publish a done event - returns Promise in Redis mode for ordered delivery.
@@ -1359,6 +1904,12 @@ export interface IEventTransport {
    * `generationId` is optional for compatibility with legacy, untagged publishers.
    */
   emitError(streamId: string, error: string, generationId?: number): void | Promise<void>;
+
+  /** Optional live-view demand marker used by observational streams that do not replay. */
+  renewDemand?(streamId: string, ttlMs: number): void | Promise<void>;
+
+  /** Returns whether at least one live viewer recently renewed demand for this stream. */
+  hasDemand?(streamId: string): boolean | Promise<boolean>;
 
   /**
    * Publish an abort signal to all replicas (Redis mode).
@@ -1381,6 +1932,7 @@ export interface IEventTransport {
     streamId: string,
     generationId: number,
     providerExecutionId: string,
+    redisRecovery?: RedisFinalizationRecovery,
   ): Promise<boolean>;
   hasProviderDrain?(
     streamId: string,

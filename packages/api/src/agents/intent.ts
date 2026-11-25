@@ -118,16 +118,6 @@ export function hasIntentArg(args: unknown): boolean {
   return obj != null && INTENT_ARG in obj;
 }
 
-/** Reads the model-authored intent from tool-call args (handles stringified args). */
-export function readIntentArg(args: unknown): string | undefined {
-  const value = coerceArgsObject(args)?.[INTENT_ARG];
-  if (typeof value !== 'string') {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed === '' ? undefined : trimmed;
-}
-
 /**
  * Returns the args without the injected `intent` key so a tool that did not
  * declare the parameter never receives it. Parses stringified JSON object
@@ -412,7 +402,11 @@ export function sanitizeIntentLabels(params: {
   capabilityEnabled: boolean;
   /** Capability marker → registered definition names, from `initializeAgent`. */
   capabilityToolNames?: CapabilityToolNames;
-}): { toolDefinitions: LCTool[] } {
+}): {
+  toolDefinitions: LCTool[];
+  semanticIntentToolNames: string[];
+  semanticIntentBlockedToolNames: string[];
+} {
   const { toolRegistry, toolOptions, capabilityEnabled, capabilityToolNames } = params;
   const defs = params.toolDefinitions ?? [];
   const shouldStrip = (name: string): boolean =>
@@ -422,11 +416,22 @@ export function sanitizeIntentLabels(params: {
       : true;
 
   let changed = false;
+  const semanticIntentToolNames = new Set<string>();
+  const semanticIntentBlockedToolNames = new Set<string>();
+  const projectSemanticTrust = (def: LCTool): void => {
+    if (isIntentLabelProperty(def.parameters?.properties?.[INTENT_ARG])) {
+      semanticIntentToolNames.add(def.name);
+      return;
+    }
+    semanticIntentBlockedToolNames.add(def.name);
+  };
   const nextDefs = defs.map((def) => {
     if (!shouldStrip(def.name)) {
+      projectSemanticTrust(def);
       return def;
     }
     const stripped = removeIntentParam(def);
+    projectSemanticTrust(stripped);
     if (stripped !== def) {
       changed = true;
       const registryEntry = toolRegistry?.get(def.name);
@@ -439,15 +444,21 @@ export function sanitizeIntentLabels(params: {
   if (toolRegistry) {
     for (const [name, entry] of toolRegistry) {
       if (!shouldStrip(name)) {
+        projectSemanticTrust(entry);
         continue;
       }
       const stripped = removeIntentParam(entry);
+      projectSemanticTrust(stripped);
       if (stripped !== entry) {
         toolRegistry.set(name, stripped);
       }
     }
   }
-  return { toolDefinitions: changed ? nextDefs : defs };
+  return {
+    toolDefinitions: changed ? nextDefs : defs,
+    semanticIntentToolNames: Array.from(semanticIntentToolNames),
+    semanticIntentBlockedToolNames: Array.from(semanticIntentBlockedToolNames),
+  };
 }
 
 /**

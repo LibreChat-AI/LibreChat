@@ -6,6 +6,7 @@ import type { VerifyToolAuthResponse } from 'librechat-data-provider';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { useVerifyAgentToolAuth, useGetStartupConfig } from '~/data-provider';
 import useLocalStorage from '~/hooks/useLocalStorageAlt';
+import { setFileSearchChoice } from '~/utils/choices';
 import { setTimestamp } from '~/utils/timestamps';
 import { ephemeralAgentByConvoId } from '~/store';
 
@@ -68,14 +69,15 @@ export function useToolToggle({
     return toolValue === true;
   }, [toolValue]);
 
-  // Sync to localStorage with timestamps when ephemeralAgent changes
+  // Timestamp changes to this tool, not unrelated fields on the agent.
+  const storedToolValue = ephemeralAgent?.[toolKey];
   useEffect(() => {
-    const value = ephemeralAgent?.[toolKey];
+    const value = storedToolValue;
     if (value !== undefined) {
       localStorage.setItem(storageKey, JSON.stringify(value));
       setTimestamp(storageKey);
     }
-  }, [ephemeralAgent, toolKey, storageKey]);
+  }, [storedToolValue, storageKey]);
 
   /** Admin-configured default: pin this tool when its key is listed in `defaultPinnedTools`.
    *  Only seeds the initial state — a user's stored pin preference always takes precedence. */
@@ -134,6 +136,9 @@ export function useToolToggle({
         return;
       }
 
+      if (localStorageKey === LocalStorageKeys.LAST_FILE_SEARCH_TOGGLE_) {
+        setFileSearchChoice(key, typeof value === 'string' ? value.length > 0 : value);
+      }
       // Update ephemeralAgent (localStorage will sync automatically via effect)
       setEphemeralAgent((prev) => ({
         ...(prev || {}),
@@ -154,6 +159,7 @@ export function useToolToggle({
       toolKey,
       storageContextKey,
       localStorageKey,
+      key,
     ],
   );
 
@@ -162,17 +168,37 @@ export function useToolToggle({
     [handleChange],
   );
 
-  return {
-    toggleState: toolValue, // Return the actual value from ephemeralAgent
-    handleChange,
-    isToolEnabled,
-    toolValue,
-    setToggleState: (value: ToolValue) => handleChange({ value }), // Adapter for direct setting
-    ephemeralAgent,
-    debouncedChange,
-    setEphemeralAgent,
-    authData: authQuery?.data,
-    isPinned,
-    setIsPinned,
-  };
+  const setToggleState = useCallback((value: ToolValue) => handleChange({ value }), [handleChange]);
+
+  /* Memoized because `BadgeRowContext` puts six of these in a context value that
+     the composer palette derives its whole catalog from: a fresh object here on
+     every render made that value change on every keystroke, whatever the
+     provider did about it. */
+  return useMemo(
+    () => ({
+      toggleState: toolValue, // Return the actual value from ephemeralAgent
+      handleChange,
+      isToolEnabled,
+      toolValue,
+      setToggleState, // Adapter for direct setting
+      ephemeralAgent,
+      debouncedChange,
+      setEphemeralAgent,
+      authData: authQuery?.data,
+      isPinned,
+      setIsPinned,
+    }),
+    [
+      toolValue,
+      handleChange,
+      isToolEnabled,
+      setToggleState,
+      ephemeralAgent,
+      debouncedChange,
+      setEphemeralAgent,
+      authQuery?.data,
+      isPinned,
+      setIsPinned,
+    ],
+  );
 }

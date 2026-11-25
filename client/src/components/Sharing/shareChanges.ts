@@ -46,9 +46,23 @@ export function computeShareChanges(
   // Diff over the de-duplicated map values so a principal that appears more than once
   // in the input (possible while the add/dedupe path still keys on idOnTheSource) is
   // never emitted multiple times.
-  const updated = [...allSharesMap.values()].filter((share) => {
+  const updated = [...allSharesMap.values()].flatMap((share) => {
     const original = originalSharesMap.get(principalKey(share));
-    return !original || original.accessRoleId !== share.accessRoleId;
+    if (!original) {
+      return [share];
+    }
+
+    const roleChanged = original.accessRoleId !== share.accessRoleId;
+    const insightsChanged = original.viewInsights !== share.viewInsights;
+    if (!roleChanged && !insightsChanged) {
+      return [];
+    }
+    if (insightsChanged) {
+      return [share];
+    }
+
+    const { viewInsights: _preserved, ...roleUpdate } = share;
+    return [roleUpdate];
   });
 
   const removed = [...originalSharesMap.values()].filter(

@@ -8,13 +8,14 @@
  * endpoint config. Those options carry the template's `baseURL`
  * (http://127.0.0.1:8889/v1), so a real server on that port serves label
  * calls — and only label calls — with no production seam. Every mock endpoint
- * sets `titleConvo: false`, so nothing else lands here.
+ * disables titles except the dedicated title-ownership endpoints.
  *
  * Beyond returning a label it RECORDS each request, which is what lets a spec
  * assert the prompt contract (that the register and the tool OUTPUTS actually
  * reached the model) rather than just that some text rendered.
  */
 const http = require('http');
+const { keepIdleConnections } = require('./keepalive');
 
 const PORT = Number(process.env.E2E_LABEL_PORT) || 8889;
 const PHASE_PROMPT_MARKER = 'Summarize what this phase of an agent run accomplished';
@@ -28,9 +29,12 @@ const DEFAULT_BEHAVIOR = {
   phaseLabel: null,
   labelsByPrompt: {},
   delayMs: 0,
+  hold: false,
+  holdModel: null,
 };
 let behavior = { ...DEFAULT_BEHAVIOR };
 let labelCount = 0;
+const heldResponses = new Set();
 
 function readBody(req) {
   return new Promise((resolve) => {
@@ -106,9 +110,12 @@ function sendStream(res, model, label) {
     created: 0,
     model,
   };
-  res.write(
-    `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: label }, finish_reason: null }] })}\n\n`,
-  );
+  const parts = Array.isArray(label) ? label : [label];
+  for (const [index, content] of parts.entries()) {
+    res.write(
+      `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { ...(index === 0 && { role: 'assistant' }), content }, finish_reason: null }] })}\n\n`,
+    );
+  }
   res.write(
     `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 42, completion_tokens: 7, total_tokens: 49 } })}\n\n`,
   );
@@ -131,7 +138,17 @@ const server = http.createServer(async (req, res) => {
   }
 
   /** Specs reset between cases so counts and prompts stay per-test. */
+  if (req.method === 'POST' && url.pathname === '/__e2e/release') {
+    behavior.hold = false;
+    for (const release of heldResponses) release();
+    heldResponses.clear();
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
   if (req.method === 'POST' && url.pathname === '/__e2e/reset') {
+    for (const release of heldResponses) release();
+    heldResponses.clear();
     requests.length = 0;
     labelCount = 0;
     behavior = { ...DEFAULT_BEHAVIOR };
@@ -150,12 +167,17 @@ const server = http.createServer(async (req, res) => {
     const body = await readBody(req);
     labelCount += 1;
     const prompt = flattenPrompt(body.messages);
-    requests.push({
+    const recorded = {
       model: body.model,
       stream: body.stream === true,
       prompt,
       messages: body.messages ?? [],
-    });
+      completed: false,
+    };
+    requests.push(recorded);
+    if (behavior.hold && (!behavior.holdModel || behavior.holdModel === body.model)) {
+      await new Promise((resolve) => heldResponses.add(resolve));
+    }
 
     if (behavior.delayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, behavior.delayMs));
@@ -168,6 +190,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     /** Whitespace-only output must fill null, leaving the block unlabeled. */
+    const lastUser = flattenPrompt(
+      (body.messages ?? []).filter((message) => message.role === 'user').slice(-1),
+    );
+    const assistantFixture = lastUser.includes('E2E_ASSISTANT_OUTPUT:')
+      ? lastUser.includes('withhold')
+        ? ['Do not send this private ', 'phrase example.']
+        : ['This is an ', 'approved answer.']
+      : undefined;
     const promptLabel = Object.entries(behavior.labelsByPrompt ?? {}).find(([needle]) =>
       prompt.includes(needle),
     )?.[1];
@@ -179,8 +209,9 @@ const server = http.createServer(async (req, res) => {
           behavior.label ??
           `E2E activity label ${labelCount}`);
 
+    recorded.completed = true;
     if (body.stream === true) {
-      sendStream(res, body.model, label);
+      sendStream(res, body.model, assistantFixture ?? label);
       return;
     }
     sendJson(res, 200, completionPayload(body.model, label));
@@ -190,6 +221,7 @@ const server = http.createServer(async (req, res) => {
   sendJson(res, 404, { error: { message: `Unhandled ${req.method} ${url.pathname}` } });
 });
 
+keepIdleConnections(server);
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`[e2e] fake label server listening on http://127.0.0.1:${PORT}`);
 });

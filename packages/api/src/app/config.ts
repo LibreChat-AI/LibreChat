@@ -4,7 +4,12 @@ import {
   removeNullishValues,
   normalizeEndpointName,
 } from 'librechat-data-provider';
-import type { TCustomConfig, TEndpoint, TTransactionsConfig } from 'librechat-data-provider';
+import type {
+  TEndpoint,
+  TCustomConfig,
+  EndpointsDropParamsMap,
+  TTransactionsConfig,
+} from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import { resolveCustomEndpointSecrets } from '~/admin/secrets';
 import { isEnabled } from '~/utils';
@@ -69,3 +74,43 @@ export const getCustomEndpointConfig = ({
   );
   return endpointConfig && resolveCustomEndpointSecrets(endpointConfig);
 };
+
+/**
+ * Builds a map of normalized endpoint name -> dropParams for the endpoint shapes that
+ * support per-endpoint dropParams: array-configured `custom` endpoints map directly to
+ * their dropParams, while `azureOpenAI` maps to a per-model lookup (model name ->
+ * dropParams) built from `modelGroupMap`/`groupMap`, mirroring the per-request group
+ * resolution in `initializeOpenAI` so a parameter dropped for one group doesn't hide it
+ * for models in another group.
+ */
+export function getEndpointsDropParamsMap(
+  endpoints: AppConfig['endpoints'],
+): EndpointsDropParamsMap {
+  const result: EndpointsDropParamsMap = {};
+  if (!endpoints) {
+    return result;
+  }
+
+  endpoints[EModelEndpoint.custom]?.forEach((endpoint) => {
+    if (endpoint?.dropParams && endpoint.dropParams.length > 0) {
+      result[normalizeEndpointName(endpoint.name ?? '')] = endpoint.dropParams;
+    }
+  });
+
+  const azureConfig = endpoints[EModelEndpoint.azureOpenAI];
+  if (azureConfig?.groupMap && azureConfig?.modelGroupMap) {
+    const { groupMap, modelGroupMap } = azureConfig;
+    const modelDropParams: Record<string, string[]> = {};
+    Object.entries(modelGroupMap).forEach(([modelName, modelConfig]) => {
+      const dropParams = modelConfig && groupMap[modelConfig.group]?.dropParams;
+      if (dropParams && dropParams.length > 0) {
+        modelDropParams[modelName] = dropParams;
+      }
+    });
+    if (Object.keys(modelDropParams).length > 0) {
+      result[normalizeEndpointName(EModelEndpoint.azureOpenAI)] = modelDropParams;
+    }
+  }
+
+  return result;
+}

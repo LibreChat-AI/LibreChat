@@ -9,7 +9,10 @@ const LIMITS: ScheduleLimits = {
   maxPerUser: 10,
   minIntervalMinutes: 60,
   autoDisableAfterFailures: 5,
+  admissionConcurrency: 20,
   fireConcurrency: 5,
+  mcpPreflightConcurrency: 3,
+  mcpPreflightTimeoutMs: 300_000,
   requireProject: false,
 };
 
@@ -78,6 +81,7 @@ function makeDeps(
     getLimits: async () => LIMITS,
     getUserContext: async () => OWNER,
     isOutOfBalance: async () => false,
+    preflightMCP: jest.fn().mockResolvedValue([]),
     agentAccess: async () => 'ok',
     hasScheduleAccess: async () => true,
     resolveFiles: async () => [],
@@ -85,9 +89,10 @@ function makeDeps(
     getTriggerDelivery: async () => null,
     runInTenantContext: (_user, fn) => fn(),
     getJobStatus: async () => null,
-    abortScheduledJob: async () => undefined,
+    abortScheduledJob: async () => true,
     clearReconciledJob: async () => undefined,
     isOwnerDeleting: async () => false,
+    isTermsBlocked: async () => false,
     isGloballyDisabled: async () => false,
     countActiveRunsGlobal: async () => 0,
     withGlobalCapacitySlot: (_cap: number, claim: (slot: number) => Promise<unknown>) => claim(0),
@@ -113,6 +118,24 @@ afterEach(() => jest.restoreAllMocks());
 
 /** Overdue past MISFIRE_GRACE_MS (15m), so the tick skips it forward instead of firing. */
 const staleAt = () => new Date(Date.now() - 20 * 60_000);
+
+describe('armed-engine retained-job recovery', () => {
+  it('uses the host erasure acknowledgement barrier instead of raw storage erasure', async () => {
+    const methods = makeMethods(makeClaimedSchedule());
+    methods.getDeletingSchedules.mockResolvedValue([{ id: 'deleting' }] as never);
+    const eraseSettledSchedule = jest.fn(async () => false);
+    await reconcileOnce(makeDeps(methods, { eraseSettledSchedule }));
+    expect(eraseSettledSchedule).toHaveBeenCalledWith('deleting');
+    expect(methods.eraseScheduleIfDrained).not.toHaveBeenCalled();
+  });
+
+  it('retries held-job settlement independently of active and unbookkept Mongo rows', async () => {
+    const methods = makeMethods(makeClaimedSchedule());
+    const reconcileRetainedJobs = jest.fn(async () => undefined);
+    await reconcileOnce(makeDeps(methods, { reconcileRetainedJobs }));
+    expect(reconcileRetainedJobs).toHaveBeenCalled();
+  });
+});
 
 describe('runTick misfire skip-forward', () => {
   it('advances a stale occurrence to the next future one', async () => {
@@ -175,6 +198,71 @@ describe('runTick misfire skip-forward', () => {
 });
 
 describe('runTick error handling', () => {
+  it('uses readiness admission capacity independently of generation capacity', async () => {
+    const schedules = Array.from({ length: 6 }, (_, index) =>
+      makeClaimedSchedule({
+        id: `sched-${index}`,
+        user: `user-${index}` as never,
+        claimToken: `ct-${index}`,
+        leaseBy: `inst-${index}`,
+      }),
+    );
+    const methods = makeMethods(schedules[0]);
+    const claims: Array<FireableSchedule | null> = [...schedules, null];
+    methods.claimDueSchedule.mockImplementation(async () => claims.shift() ?? null);
+    methods.countActiveRuns.mockResolvedValue(5);
+    const getUserContext = jest.fn(async () => null);
+
+    await tickOnce(
+      makeDeps(methods, {
+        getLimits: async () => ({ ...LIMITS, admissionConcurrency: 6, fireConcurrency: 1 }),
+        getUserContext,
+      }),
+    );
+
+    expect(getUserContext).toHaveBeenCalledTimes(6);
+    expect(methods.countActiveRuns).not.toHaveBeenCalled();
+  });
+
+  it('starts later admissions while an earlier schedule is still in preflight', async () => {
+    const first = makeClaimedSchedule();
+    const second = makeClaimedSchedule({
+      id: 'sched-2',
+      user: 'user-2' as never,
+      claimToken: 'ct-2',
+      leaseBy: 'inst-2',
+    });
+    const methods = makeMethods(first);
+    const claims = [first, second, null];
+    methods.claimDueSchedule.mockImplementation(async () => claims.shift() ?? null);
+    let releaseFirst!: () => void;
+    const firstPreflight = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let markSecondStarted!: () => void;
+    const secondStarted = new Promise<void>((resolve) => {
+      markSecondStarted = resolve;
+    });
+    const getUserContext = jest.fn(
+      async (userId: Parameters<ScheduleEngineDeps['getUserContext']>[0]) => {
+        if (String(userId) === 'user-1') {
+          await firstPreflight;
+        } else {
+          markSecondStarted();
+        }
+        return null;
+      },
+    );
+    const engine = startScheduleEngine(makeDeps(methods, { getUserContext }));
+
+    const tick = engine.runTick();
+    await secondStarted;
+    expect(getUserContext).toHaveBeenCalledWith('user-2');
+    releaseFirst();
+    await expect(tick).resolves.toBe(0);
+    engine.stop();
+  });
+
   it('retains the due occurrence when a preflight query throws', async () => {
     const schedule = makeClaimedSchedule();
     const methods = makeMethods(schedule);
@@ -271,6 +359,46 @@ describe('reconciliation consults the durable trigger delivery', () => {
     );
   });
 
+  it('replays admission-only MCP evidence without consulting a generation job', async () => {
+    const methods = makeMethods(makeClaimedSchedule());
+    (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([
+      {
+        ...joblessRun(YOUNG()),
+        admissionOnly: true,
+        error: 'mcp_configuration_missing',
+        mcp: [
+          {
+            server: 'Notion',
+            agentId: 'research-agent',
+            status: 'mcp_configuration_missing',
+          },
+        ],
+      },
+    ]);
+    const getJobStatus = jest.fn(async () => {
+      throw new Error('admission-only rows have no job');
+    });
+
+    await tickOnce(makeDeps(methods, { getJobStatus }));
+
+    expect(getJobStatus).not.toHaveBeenCalled();
+    expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scheduleId: 's1',
+        status: 'error',
+        error: 'mcp_configuration_missing',
+        clearConversationId: true,
+        mcp: [
+          {
+            server: 'Notion',
+            agentId: 'research-agent',
+            status: 'mcp_configuration_missing',
+          },
+        ],
+      }),
+    );
+  });
+
   it('does NOT orphan a PENDING delivery past the cutoff (Retry-After may still fire it)', async () => {
     const methods = await runReconcile(joblessRun(OLD()), async () => ({ status: 'pending' }));
     expect(methods.recordRunOutcome).not.toHaveBeenCalled();
@@ -283,6 +411,11 @@ describe('reconciliation consults the durable trigger delivery', () => {
 
   it('does NOT orphan a STAGING delivery past the cutoff', async () => {
     const methods = await runReconcile(joblessRun(OLD()), async () => ({ status: 'staging' }));
+    expect(methods.recordRunOutcome).not.toHaveBeenCalled();
+  });
+
+  it('does NOT orphan a BATCHED delivery past the cutoff', async () => {
+    const methods = await runReconcile(joblessRun(OLD()), async () => ({ status: 'batched' }));
     expect(methods.recordRunOutcome).not.toHaveBeenCalled();
   });
 
@@ -419,6 +552,7 @@ describe('bookkeeping replay rotation', () => {
       user: 'u1',
       status: 'success',
       conversationId: 'convo-crashed',
+      mcp: [{ server: 'Notion', agentId: 'research-agent', status: 'ready' }],
     };
     (methods.getUnbookkeptRuns as jest.Mock).mockResolvedValue([unbookkept]);
     const clearReconciledJob = jest.fn(async () => undefined);
@@ -426,7 +560,10 @@ describe('bookkeeping replay rotation', () => {
     await reconcileOnce(makeDeps(methods, { clearReconciledJob }));
 
     expect(methods.finalizeBookkeeping).toHaveBeenCalledWith(
-      expect.objectContaining({ scheduleId: 'sched-crashed' }),
+      expect.objectContaining({
+        scheduleId: 'sched-crashed',
+        mcp: [{ server: 'Notion', agentId: 'research-agent', status: 'ready' }],
+      }),
     );
     expect(clearReconciledJob).toHaveBeenCalledWith('convo-crashed', {
       scheduleId: 'sched-crashed',
@@ -614,7 +751,7 @@ describe('reconciliation preserves the intended outcome', () => {
     firedAt: new Date(Date.now() - 60 * 60_000),
   });
   const retainedComplete =
-    (extra: Record<string, string> = {}) =>
+    (extra: Partial<import('./types').JobState> = {}) =>
     async () => ({
       status: 'complete',
       scheduleId: 'sched-1',
@@ -628,6 +765,60 @@ describe('reconciliation preserves the intended outcome', () => {
    * `success` from it turned a transient outcome-write failure into a reset of the very
    * streaks that drive insufficient_balance and too_many_failures auto-disable.
    */
+  it('does not copy denial evidence from a replacement occurrence at the same stream', async () => {
+    const methods = makeMethods(makeClaimedSchedule());
+    (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([unsettledRun()]);
+    const failure = {
+      server: '',
+      reason: 'tool_policy_denied' as const,
+      status: 'mcp_permission_denied' as const,
+      automaticReplay: false as const,
+    };
+    await tickOnce(
+      makeDeps(methods, {
+        getJobStatus: async () => ({
+          status: 'complete',
+          scheduleId: 'other',
+          scheduledFor: scheduledFor.toISOString(),
+          scheduleMCPFailure: failure,
+        }),
+      }),
+    );
+    expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'interrupted' }),
+    );
+    expect(methods.recordRunOutcome).not.toHaveBeenCalledWith(
+      expect.objectContaining({ mcp: expect.anything() }),
+    );
+  });
+
+  it('passes job-retained MCP denial evidence to crash-recovery settlement', async () => {
+    const methods = makeMethods(makeClaimedSchedule());
+    (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([unsettledRun()]);
+    const failure = {
+      server: '',
+      agentId: 'child',
+      reason: 'tool_policy_denied' as const,
+      status: 'mcp_permission_denied' as const,
+      recovery: 'configure' as const,
+      automaticReplay: false as const,
+    };
+    await tickOnce(
+      makeDeps(methods, {
+        getJobStatus: async () => ({
+          status: 'complete',
+          scheduleId: 'sched-1',
+          scheduledFor: scheduledFor.toISOString(),
+          scheduleMCPFailure: failure,
+        }),
+        clearReconciledJob: async () => undefined,
+      }),
+    );
+    expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ mcp: [failure] }),
+    );
+  });
+
   it('recovers a balance refusal as skipped_balance, not success', async () => {
     const methods = makeMethods(makeClaimedSchedule());
     (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([unsettledRun()]);
@@ -721,6 +912,61 @@ describe('reconciliation preserves the intended outcome', () => {
 
   // The stamp crosses a serialization boundary, and recordRunOutcome would reject a
   // status outside its union: degrade to success rather than fail the recovery write.
+  it.each(['requires_action', 'aborted', 'complete', 'error'] as const)(
+    'retains job-only bearer denial through %s recovery before clearing evidence',
+    async (status) => {
+      const methods = makeMethods(makeClaimedSchedule());
+      (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([unsettledRun()]);
+      const denial = {
+        server: 'Files',
+        status: 'mcp_reauth_required',
+        reason: 'consent_revoked',
+        recovery: 'authorize',
+        automaticReplay: false,
+        detail: 'unattended_auth_required',
+      };
+      const clearReconciledJob = jest.fn(async () => undefined);
+      await reconcileOnce(
+        makeDeps(methods, {
+          getJobStatus: retainedComplete({
+            status,
+            scheduleOutcomeError: `mcp_reauth_required: ${JSON.stringify([denial])}`,
+          }),
+          clearReconciledJob,
+        }),
+      );
+      expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error', mcp: [denial] }),
+      );
+      expect(clearReconciledJob).toHaveBeenCalled();
+      expect(methods.recordRunOutcome.mock.invocationCallOrder[0]).toBeLessThan(
+        clearReconciledJob.mock.invocationCallOrder[0],
+      );
+    },
+  );
+
+  it.each(['terminalPersistencePending', 'providerDrained'] as const)(
+    'defers denial settlement while %s blocks pause cleanup',
+    async (fence) => {
+      const methods = makeMethods(makeClaimedSchedule());
+      (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([unsettledRun()]);
+      const clearReconciledJob = jest.fn(async () => undefined);
+      await reconcileOnce(
+        makeDeps(methods, {
+          getJobStatus: retainedComplete({
+            status: 'requires_action',
+            [fence]: fence === 'terminalPersistencePending',
+            scheduleOutcomeError:
+              'mcp_reauth_required: [{"server":"Files","status":"mcp_reauth_required","detail":"unattended_auth_required","reason":"consent_revoked"}]',
+          }),
+          clearReconciledJob,
+        }),
+      );
+      expect(methods.recordRunOutcome).not.toHaveBeenCalled();
+      expect(clearReconciledJob).not.toHaveBeenCalled();
+    },
+  );
+
   it('degrades an unrecognized stamp to success', async () => {
     const methods = makeMethods(makeClaimedSchedule());
     (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([unsettledRun()]);

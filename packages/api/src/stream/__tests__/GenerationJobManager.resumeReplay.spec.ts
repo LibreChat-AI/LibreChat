@@ -1,9 +1,16 @@
+import { StepEvents } from 'librechat-data-provider';
 import type { StandardGraph } from '@librechat/agents';
 import type { Agents } from 'librechat-data-provider';
 import type { ServerSentEvent } from '~/types';
+import {
+  getSourceKey,
+  getScheduleSource,
+  restoreExecutionContext,
+} from '~/agents/authority/context';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
+import { createToolTimingTracker } from '~/agents/toolTiming';
 
 jest.spyOn(console, 'log').mockImplementation();
 
@@ -67,9 +74,66 @@ describe('GenerationJobManager resume replay events', () => {
     manager = undefined;
   });
 
+  test('projects regeneration ownership into resume state', async () => {
+    manager = createInMemoryManager();
+    const streamId = `regenerate-resume-${Date.now()}`;
+    await manager.createJob(streamId, 'user-1', streamId, {
+      initialMetadata: {
+        responseMessageId: 'edited-response',
+        isRegenerate: true,
+      },
+    });
+
+    await expect(manager.getResumeState(streamId)).resolves.toMatchObject({
+      responseMessageId: 'edited-response',
+      isRegenerate: true,
+    });
+  });
+
+  test('replays bounded first-fragment and dispatch evidence without tool arguments', async () => {
+    manager = createInMemoryManager();
+    const streamId = `tool-timing-resume-${Date.now()}`;
+    await manager.createJob(streamId, 'user-1', streamId);
+    const first = {
+      event: StepEvents.ON_TOOL_PREPARATION,
+      data: {
+        id: 'step-1',
+        index: 0,
+        observed_at: 100,
+      },
+    };
+    const named = {
+      event: StepEvents.ON_TOOL_PREPARATION,
+      data: {
+        id: 'step-1',
+        index: 0,
+        toolCallId: 'call-1',
+        observed_at: 200,
+      },
+    };
+    const dispatched = {
+      event: StepEvents.ON_TOOL_CALLS_DISPATCHED,
+      data: {
+        dispatched_at: 500,
+        toolCalls: [{ id: 'call-1', name: 'query', stepId: 'step-1' }],
+      },
+    };
+    for (const event of [first, named, dispatched, named]) await manager.emitChunk(streamId, event);
+    const state = await manager.getResumeState(streamId);
+    expect(state?.replayEvents).toEqual([first, named, dispatched]);
+    expect(JSON.stringify(state?.replayEvents)).not.toContain('args');
+    const rebuilt = createToolTimingTracker(state?.replayEvents ?? []);
+    rebuilt.completed('step-1', 'call-1', 560);
+    expect(rebuilt.take('call-1', 'step-1')).toEqual({
+      toolPreparationDurationMs: 400,
+      toolExecutionDurationMs: 60,
+    });
+  });
+
   test('includes OAuth run step and delta replay events in resume state', async () => {
     manager = createInMemoryManager();
     const streamId = `oauth-delta-resume-${Date.now()}`;
+    const expiresAt = Date.now() + 60_000;
     await manager.createJob(streamId, 'user-1', streamId);
 
     const runStepEvent = {
@@ -92,7 +156,7 @@ describe('GenerationJobManager resume replay events', () => {
           type: 'tool_calls',
           tool_calls: [{ name: 'oauth_mcp_Google-Workspace', args: '' }],
           auth: 'https://auth.example.com/oauth',
-          expires_at: 1780791946,
+          expires_at: expiresAt,
         },
       },
     } satisfies ServerSentEvent;
@@ -125,6 +189,36 @@ describe('GenerationJobManager resume replay events', () => {
     const resumeState = await manager.getResumeState(streamId);
 
     expect(resumeState?.replayEvents).toEqual([runStepEvent, authEvent]);
+    expect(resumeState?.pendingOAuthPrompts).toEqual([
+      {
+        stepId: 'step-oauth',
+        runId: 'USE_PRELIM_RESPONSE_MESSAGE_ID',
+        index: 0,
+        toolCallId: 'call-oauth',
+        toolName: 'oauth_mcp_Google-Workspace',
+        authURL: 'https://auth.example.com/oauth',
+        expiresAt,
+      },
+    ]);
+
+    await manager.emitChunk(streamId, {
+      event: 'on_run_step_completed',
+      data: {
+        result: {
+          id: 'step-oauth',
+          index: 0,
+          tool_call: {
+            id: 'call-oauth',
+            name: 'oauth_mcp_Google-Workspace',
+            output: 'OAuth authentication completed',
+          },
+        },
+      },
+    });
+
+    await expect(manager.getResumeState(streamId)).resolves.toMatchObject({
+      pendingOAuthPrompts: undefined,
+    });
   });
 
   test('retains emitted run steps when the live graph is unavailable during resume', async () => {
@@ -568,4 +662,65 @@ describe('GenerationJobManager resume replay events', () => {
     expect(resumeState?.replayEvents).toHaveLength(events.length);
     expect(resumeState?.replayEvents).toEqual(expect.arrayContaining(events));
   });
+});
+
+it('projects private completion authority for a freshly reconstructed approval job', async () => {
+  const store = new InMemoryJobStore();
+  const manager = createManagerWithStore(store);
+  const identity = {
+    scheduleId: 'schedule',
+    ownerId: 'owner',
+    tenantId: 'tenant',
+    agentId: 'original-root',
+    invocationMode: 'delegated' as const,
+  };
+  try {
+    const job = await manager.createJob('completion', 'owner', 'completion', {
+      initialMetadata: { scheduleMCPCompletion: identity },
+    });
+    const rebuilt = await manager.getJob('completion');
+    expect(rebuilt?.metadata.scheduleMCPCompletion).toEqual(identity);
+    expect(rebuilt?.metadata.scheduleId).toBeUndefined();
+    expect(rebuilt?.createdAt).toBe(job.createdAt);
+  } finally {
+    await manager.destroy();
+  }
+});
+
+it('projects the trigger that started a run for a freshly reconstructed approval job', async () => {
+  const store = new InMemoryJobStore();
+  const manager = createManagerWithStore(store);
+  const trigger = {
+    subject: { kind: 'key' as const, id: 'key-1' },
+    delivery: {
+      key: 'trigger_abc',
+      event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+    },
+  };
+  try {
+    await manager.createJob('triggered', 'owner', 'triggered', {
+      initialMetadata: { agent_id: 'root-agent', trigger },
+    });
+    await manager.createJob('untriggered', 'owner', 'untriggered', {
+      initialMetadata: { agent_id: 'root-agent', scheduleId: 'schedule', scheduleManual: true },
+    });
+    const rebuilt = await manager.getJob('triggered');
+    expect(rebuilt?.metadata.trigger).toEqual(trigger);
+    expect(
+      getSourceKey(restoreExecutionContext({ user: { id: 'owner' } }, rebuilt?.metadata)),
+    ).toBe('key-1');
+    // A job saved with schedule fields alone restores as a scheduled run, as it always has.
+    const legacy = await manager.getJob('untriggered');
+    expect(legacy?.metadata).not.toHaveProperty('trigger', expect.anything());
+    expect(
+      getScheduleSource(restoreExecutionContext({ user: { id: 'owner' } }, legacy?.metadata)),
+    ).toEqual({ id: 'schedule', manual: true, resumed: true });
+    // The patch path carries it the same way.
+    await manager.updateMetadata('untriggered', { trigger: { delivery: trigger.delivery } });
+    expect((await manager.getJob('untriggered'))?.metadata.trigger).toEqual({
+      delivery: trigger.delivery,
+    });
+  } finally {
+    await manager.destroy();
+  }
 });

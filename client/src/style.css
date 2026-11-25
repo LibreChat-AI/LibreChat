@@ -1,86 +1,60 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+/* Semantic colors live in the component library, in CSS, so one file feeds this app, the published
+ * package and @shadcn/lint's token checking. Imported from source rather than from the built
+ * package so a lint or CI run needs no prior build. */
+@import '../../packages/client/src/theme/tokens.css';
+/* The chat components' own hand-written rules, which ship with the package as
+ * `@librechat/chat/style.css`. Imported from source for the same reason as the tokens. */
+@import '../../packages/chat/src/style.css';
+@config '../tailwind.config.cjs';
 
-.message-render {
-  scroll-margin-top: 4rem;
+/* Close the legacy palette scales only inside this repository. */
+@theme inline {
+  --color-gray-*: initial;
+  --color-green-*: initial;
+}
+
+/* Tailwind v4 changed two preflight defaults this app was built against. Each rule below
+ * restores the v3 default rather than adopting the new one, so the upgrade carries no visual
+ * change; drop one only as a deliberate design decision.
+ *   - border-color: v3 used gray-200, v4 uses currentColor.
+ *   - ::placeholder: v3 used gray-400, v4 uses currentColor at 50% opacity.
+ * Both read the repository compatibility palette through `theme()` instead of pinning a hex here.
+ * `button { cursor: pointer }` below already covers v4's third change. */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: theme(colors.gray.200);
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: theme(colors.gray.400);
+  }
 }
 
 /* Custom Variables */
 :root {
-  --white: 255 255 255;
-  --black: 0 0 0;
-  --gray-20: 236 236 241;
-  --gray-50: 247 247 248;
-  --gray-100: 236 236 236;
-  --gray-200: 227 227 227;
-  --gray-300: 205 205 205;
-  --gray-400: 153 150 150;
-  --gray-500: 89 89 89;
-  --gray-600: 66 66 66;
-  --gray-650: 57 57 57;
-  --gray-700: 47 47 47;
-  --gray-800: 33 33 33;
-  --gray-850: 23 23 23;
-  --gray-875: 18 18 18;
-  --gray-900: 13 13 13;
-  --green-50: 236 253 245;
-  --green-100: 209 250 229;
-  --green-200: 167 243 208;
-  --green-300: 110 231 183;
-  --green-400: 52 211 153;
-  --green-500: 16 185 129;
-  --green-600: 5 150 105;
-  --green-700: 4 120 87;
-  --green-800: 6 95 70;
-  --green-900: 6 78 59;
-  --green-950: 2 44 34;
-  --red-50: 254 242 242;
-  --red-100: 254 226 226;
-  --red-200: 254 202 202;
-  --red-300: 252 165 165;
-  --red-400: 248 113 113;
-  --red-500: 239 68 68;
-  --red-600: 220 38 38;
-  --red-700: 185 28 28;
-  --red-800: 153 27 27;
-  --red-900: 127 29 29;
-  --red-950: 69 10 10;
-  --amber-50: 255 251 235;
-  --amber-100: 254 243 199;
-  --amber-200: 253 230 138;
-  --amber-300: 252 211 77;
-  --amber-400: 251 191 36;
-  --amber-500: 245 158 11;
-  --amber-600: 217 119 6;
-  --amber-700: 180 83 9;
-  --amber-800: 146 64 14;
-  --amber-900: 120 53 15;
-  --amber-950: 69 26 3;
-  --blue-50: 239 246 255;
-  --blue-100: 219 234 254;
-  --blue-200: 191 219 254;
-  --blue-300: 147 197 253;
-  --blue-400: 96 165 250;
-  --blue-500: 59 130 246;
-  --blue-600: 37 99 235;
-  --blue-700: 29 78 216;
-  --blue-800: 30 64 175;
-  --blue-900: 30 58 138;
-  --blue-950: 23 37 84;
-  --brand-purple: 126 34 206;
-  --gizmo-gray-500: 153 153 153;
-  --gizmo-gray-600: 102 102 102;
-  --gizmo-gray-950: 15 15 15;
   --font-size-xs: 0.75rem;
   --font-size-sm: 0.875rem;
   --font-size-base: 1rem;
   --font-size-lg: 1.125rem;
   --font-size-xl: 1.25rem;
   --markdown-font-size: 1rem;
+  --ui-scale: 1;
 }
 
-/* transitions-dev tokens — semantic names shared by every t-* class below. */
+/* Every size in the app is expressed in rem, so scaling the root font size scales
+   the whole interface. A percentage keeps the reader's own browser font-size
+   preference intact instead of pinning the root to a fixed pixel value. */
+html {
+  font-size: calc(100% * var(--ui-scale));
+}
+
+/* transitions-dev tokens: semantic names shared by every t-* class below. */
 :root {
   --resize-dur: 300ms;
   --resize-ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -96,7 +70,7 @@
   --avatar-ease-out: cubic-bezier(0.34, 3.85, 0.64, 1);
 }
 
-/* Icon swap — cross-fade two icons sharing a slot. */
+/* Icon swap: cross-fade two icons sharing a slot. */
 .t-icon-swap {
   position: relative;
   display: inline-grid;
@@ -128,7 +102,7 @@
   }
 }
 
-/* Avatar group hover — distance-falloff lift on a horizontal row. */
+/* Avatar group hover: distance-falloff lift on a horizontal row. */
 .t-avatar {
   transform-origin: center;
   transform: translateY(var(--shift, 0px)) scale(var(--scale-active, 1));
@@ -146,270 +120,115 @@
   }
 }
 
-html {
-  --brand-purple: 126 34 206;
-  --presentation: var(--white);
-  --text-primary: var(--gray-800);
-  --text-secondary: var(--gray-600);
-  --text-secondary-alt: var(--gray-500);
-  --text-tertiary: var(--gray-500);
-  --text-warning: var(--amber-700);
-  --text-destructive: var(--red-600);
-  --link: var(--blue-600);
-  --link-hover: var(--blue-700);
-  --link-visited: 147 51 234;
-  --accent-primary: 18 110 107;
-  --accent-primary-hover: 10 79 83;
-  --ring-primary: var(--gray-500);
-  --header-primary: var(--white);
-  --header-hover: var(--gray-50);
-  --header-button-hover: var(--gray-50);
-  --surface-active: var(--gray-100);
-  --surface-active-alt: var(--gray-200);
-  --surface-hover: var(--gray-200);
-  --surface-hover-alt: var(--gray-300);
-  --surface-composer-hover: var(--gray-200);
-  --surface-primary: var(--white);
-  --surface-primary-alt: var(--gray-50);
-  --surface-primary-contrast: var(--gray-100);
-  --surface-secondary: var(--gray-50);
-  --surface-secondary-alt: var(--gray-200);
-  --surface-tertiary: var(--gray-100);
-  --surface-tertiary-alt: var(--white);
-  --surface-dialog: var(--white);
-  --surface-overlay: var(--gray-500);
-  --surface-submit: var(--green-700);
-  --surface-submit-hover: var(--green-800);
-  --surface-destructive: var(--red-700);
-  --surface-destructive-hover: var(--red-800);
-  --surface-chat: var(--white);
-  --surface-code: var(--surface-primary-alt);
-  --surface-qr: var(--white);
-  --border-light: var(--gray-200);
-  --border-light-alpha: 1;
-  --border-medium-alt: var(--gray-300);
-  --border-medium: var(--gray-300);
-  --border-medium-alpha: 1;
-  --border-heavy: var(--gray-400);
-  --border-heavy-alpha: 1;
-  --border-xheavy: var(--gray-500);
-  --border-xheavy-alpha: 1;
-  --border-destructive: var(--red-600);
-  --status-success: var(--green-700);
-  --status-success-subtle: var(--green-50);
-  --status-success-border: var(--green-300);
-  --status-success-strong: 2 133 94;
-  --status-info: var(--blue-600);
-  --status-info-subtle: var(--blue-50);
-  --status-info-border: var(--blue-300);
-  --status-info-strong: var(--gray-500);
-  --status-warning: var(--amber-700);
-  --status-warning-subtle: var(--amber-50);
-  --status-warning-border: var(--amber-300);
-  --status-warning-strong: 199 82 9;
-  --status-error: var(--red-700);
-  --status-error-subtle: var(--red-50);
-  --status-error-border: var(--red-300);
-  --status-error-strong: 224 47 31;
-  --status-neutral: var(--gray-600);
-  --status-neutral-subtle: var(--gray-100);
-  --status-neutral-border: var(--gray-300);
-  --text-on-status: var(--white);
-
-  /* Categorical series scale — slot order is the CVD-safety mechanism */
-  --series-1: 5 110 189;
-  --series-2: 233 86 13;
-  --series-3: 0 148 142;
-  --series-4: 182 123 5;
-  --series-5: 216 90 142;
-  --series-6: 126 35 205;
-  --series-7: 1 131 1;
-
-  --surface-inverted: var(--gray-850);
-  --surface-inverted-hover: var(--gray-700);
-  --text-inverted: var(--white);
-  --surface-fixed: var(--white);
-  --surface-fixed-hover: var(--gray-100);
-  --text-fixed: var(--gray-800);
-  --radius: 0.5rem;
-  --theme-control-radius: 0.75rem;
-  --theme-round-control-radius: 9999px;
-  --theme-surface-radius: 1rem;
-  --theme-large-surface-radius: 1.5rem;
-  --theme-control-height: 2.25rem;
-  --theme-space-compact: 0.375rem;
-  --theme-space-normal: 0.75rem;
-  --theme-font-family: Inter, sans-serif;
-  --theme-elevation-surface: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
-  --theme-motion-fast: 150ms;
-  --theme-motion-normal: 200ms;
-  --switch-unchecked: 0 0% 58%;
+/* High contrast appearance modes.
+ *
+ * Every `IThemeRGB` token is delivered by the theme registry as an inline custom
+ * property on <html> (see packages/data-provider/src/themes/highContrast.ts), so
+ * this block only covers what the token layer cannot reach: the CSS-only
+ * variables and hard-coded literals elsewhere in this stylesheet. Every ratio
+ * quoted below is measured against the mode's own canvas, pure white or pure
+ * black. */
+/* +1 in LTR, -1 in RTL: lets a keyframe mirror its horizontal travel. */
+:root {
+  --dir-sign: 1;
 }
-.dark {
-  --brand-purple: 171 104 255;
-  --presentation: var(--gray-800);
-  --text-primary: var(--gray-100);
-  --text-secondary: var(--gray-300);
-  --text-secondary-alt: var(--gray-400);
-  --text-tertiary: var(--gray-400);
-  --text-warning: var(--amber-500);
-  --text-destructive: var(--red-400);
-  --link: var(--blue-400);
-  --link-hover: var(--blue-300);
-  --link-visited: 192 132 252;
-  --accent-primary: 65 167 157;
-  --accent-primary-hover: 109 200 185;
-  --header-primary: var(--gray-700);
-  --header-hover: var(--gray-600);
-  --header-button-hover: var(--gray-700);
-  --surface-active: var(--gray-500);
-  --surface-active-alt: var(--gray-700);
-  --surface-hover: var(--gray-650);
-  --surface-hover-alt: var(--gray-600);
-  --surface-composer-hover: var(--gray-600);
-  --surface-primary: var(--gray-900);
-  --surface-primary-alt: var(--gray-850);
-  --surface-primary-contrast: var(--gray-850);
-  --surface-secondary: var(--gray-800);
-  --surface-secondary-alt: var(--gray-800);
-  --surface-tertiary: var(--gray-700);
-  --surface-tertiary-alt: var(--gray-700);
-  --surface-dialog: var(--gray-875);
-  --surface-overlay: 0 0 0;
-  --surface-submit: var(--green-700);
-  --surface-submit-hover: var(--green-800);
-  --surface-destructive: var(--red-800);
-  --surface-destructive-hover: var(--red-900);
-  --surface-chat: var(--gray-700);
-  --surface-code: var(--presentation);
-  --surface-qr: var(--white);
-  --border-light: var(--gray-700);
-  --border-medium-alt: var(--gray-600);
-  --border-medium: var(--gray-600);
-  --border-heavy: var(--gray-500);
-  --border-xheavy: var(--gray-400);
-  --border-destructive: var(--red-500);
-  --status-success: var(--green-300);
-  --status-success-subtle: var(--green-950);
-  --status-success-border: var(--green-800);
-  --status-success-strong: var(--green-800);
-  --status-info: var(--blue-300);
-  --status-info-subtle: var(--blue-950);
-  --status-info-border: var(--blue-800);
-  --status-info-strong: var(--gray-600);
-  --status-warning: var(--amber-300);
-  --status-warning-subtle: var(--amber-950);
-  --status-warning-border: var(--amber-800);
-  --status-warning-strong: var(--amber-800);
-  --status-error: var(--red-300);
-  --status-error-subtle: var(--red-950);
-  --status-error-border: var(--red-800);
-  --status-error-strong: var(--red-800);
-  --status-neutral: var(--gray-300);
-  --status-neutral-subtle: var(--gray-800);
-  --status-neutral-border: var(--gray-700);
-  --text-on-status: var(--white);
-
-  /* Categorical series scale — same hues, stepped for the dark surface */
-  --series-1: 9 140 238;
-  --series-2: 217 87 35;
-  --series-3: 6 158 152;
-  --series-4: 200 133 12;
-  --series-5: 213 82 130;
-  --series-6: 171 104 254;
-  --series-7: 80 167 49;
-
-  --surface-inverted: var(--white);
-  --surface-inverted-hover: var(--gray-100);
-  --text-inverted: var(--gray-850);
-  --surface-fixed: var(--white);
-  --surface-fixed-hover: var(--gray-100);
-  --text-fixed: var(--gray-800);
-  --switch-unchecked: 0 0% 40%;
-}
-.gizmo {
-  --text-primary: var(--gizmo-gray-950);
-  --text-secondary: var(--gizmo-gray-600);
-  --text-tertiary: var(--gizmo-gray-500);
-  --surface-primary: var(--white);
-  --surface-secondary: var(--gray-50);
-  --surface-tertiary: var(--gray-100);
-  --border-light: 0 0 0;
-  --border-light-alpha: 0.1;
-  --border-medium: 0 0 0;
-  --border-medium-alpha: 0.15;
-  --border-heavy: 0 0 0;
-  --border-heavy-alpha: 0.2;
-  --border-xheavy: 0 0 0;
-  --border-xheavy-alpha: 0.25;
-}
-.gizmo.dark {
-  --text-primary: var(--gray-100);
-  --text-secondary: var(--gray-300);
-  --text-tertiary: var(--gizmo-gray-500);
-  --surface-primary: var(--gray-900);
-  --surface-secondary: var(--gray-800);
-  --surface-tertiary: var(--gray-700);
-  --border-light: 217 217 227;
-  --border-medium: 217 217 227;
-  --border-heavy: 217 217 227;
-  --border-xheavy: 217 217 227;
+[dir='rtl'] {
+  --dir-sign: -1;
 }
 
-.text-token-text-primary {
-  color: #171717;
+html.high-contrast {
+  /* A 0.5rem bar is a small target to hit and a thin thing to see. */
+  --scrollbar-size: 0.75rem;
+}
+html.high-contrast ::-webkit-scrollbar-thumb {
+  /* The 10%-alpha thumb is invisible against a pure black or white canvas. */
+  background-color: rgb(var(--border-heavy));
+}
+html.high-contrast ::-webkit-scrollbar-track {
+  border: 1px solid rgb(var(--border-light));
+}
+html.high-contrast * {
+  scrollbar-color: rgb(var(--border-heavy)) rgb(var(--surface-primary));
+}
+/* Controls that halve their own ring (`focus-visible:ring-text-primary/50` on the
+ * composer's collapse, tools, attach-file and attach-file-menu buttons,
+ * `focus:ring-text-primary/20` in `defaultTextProps`) keep it at full strength
+ * here. v4 has no ring-opacity variable — the slash bakes the alpha into
+ * `--tw-ring-color` as a `color-mix(...)` — so restoring full strength means
+ * re-declaring the colour rather than resetting an opacity.
+ *
+ * Matched by the class the caller wrote, not by `*`: a control that names its own
+ * ring colour means it, and `ring-current` on the toast close button is the ink
+ * that contrasts with a status fill, where `--text-primary` would be black on
+ * the light fills and white on the dark ones. The `:focus-visible` rule below
+ * carries the mode's 3px perimeter for everything either way. */
+html.high-contrast [class*='ring-text-primary/'] {
+  --tw-ring-color: rgb(var(--text-primary));
+}
+/* `.dark body`/`.dark html` pin the page to #212121, which would leave a
+ * near-black canvas behind the pure black surfaces. */
+html.high-contrast,
+html.high-contrast body,
+html.high-contrast.dark,
+html.high-contrast.dark body {
+  background-color: rgb(var(--surface-primary));
+}
+/* Selection is otherwise left to the UA's system colours, which no theme
+ * controls. Inverting the canvas guarantees 21:1 for the selected run. */
+html.high-contrast ::selection {
+  background-color: rgb(var(--text-primary));
+  color: rgb(var(--surface-primary));
+}
+/* WCAG 2.4.13 wants a 2px perimeter as the floor; a contrast mode should exceed
+ * it. The global rule and the keyboard-modality rule for text fields sit at 2px. */
+html.high-contrast :focus-visible,
+html.high-contrast.dark :focus-visible {
+  outline: 3px solid rgb(var(--focus-outline));
+  outline-offset: 2px;
+}
+/* Selection perimeters and placeholder ink used to live here, but they complete
+ * the exported palettes rather than this app: a package primitive rendered by
+ * an external consumer of `ThemeProvider` needs them too, and the published
+ * stylesheet is built only from package-owned CSS. They now ship from
+ * `packages/client/src/theme/highContrast.css`, which `main.jsx` pulls in with
+ * `@librechat/client/style.css`. What stays below is genuinely SPA-only. */
+html[data-input-modality='keyboard'].high-contrast
+  :where(
+    input:not([type]),
+    input:is(
+      [type='text'],
+      [type='search'],
+      [type='email'],
+      [type='password'],
+      [type='url'],
+      [type='tel'],
+      [type='number'],
+      [type='date'],
+      [type='datetime-local'],
+      [type='month'],
+      [type='week'],
+      [type='time']
+    ),
+    textarea
+  ):not(.lc-field):focus-visible {
+  outline: 3px solid rgb(var(--focus-control)) !important;
+  outline-offset: 2px !important;
+}
+/* `.btn-neutral` (the Builder's Knowledge, Code Files and Assistant selectors
+ * and the delete trigger) predates the token layer and hard-codes its edge,
+ * label and hover fill. On white, `rgba(0, 0, 0, 0.1)` and #ececf1 sit at 1.1:1
+ * and 1.05:1; on black, #424242 sits at 2.09:1 for both the edge and the hover
+ * fill. All four are under the 3:1 non-text floor, which leaves the control
+ * boundary and its hover state unreadable. */
+html.high-contrast .btn-neutral,
+html.high-contrast.dark .btn-neutral {
+  background-color: rgb(var(--surface-primary));
+  border-color: rgb(var(--border-medium));
   color: rgb(var(--text-primary));
 }
-.text-token-text-secondary {
-  color: #565869;
-  color: rgb(var(--text-secondary));
-}
-.text-token-text-tertiary {
-  color: #8e8ea0;
-  color: rgb(var(--text-tertiary));
-}
-
-.icon-sm {
-  stroke-width: 2;
-  height: 1rem;
-  width: 1rem;
-}
-.icon-md,
-.icon-md-heavy {
-  stroke-width: 1.5;
-  height: 1.125rem;
-  width: 1.125rem;
-}
-.icon-md-heavy {
-  stroke-width: 2.5;
-}
-.icon-lg {
-  stroke-width: 1.5;
-  height: 1.5rem;
-  width: 1.5rem;
-}
-.icon-xl {
-  stroke-width: 1.5;
-  height: 1.75rem;
-  width: 1.75rem;
-}
-.icon-2xl {
-  stroke-width: 1.5;
-  height: 2rem;
-  width: 2rem;
-}
-.border-token-border-light {
-  border-color: #ececf1;
-  border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));
-}
-
-.border-token-border-medium {
-  border-color: #d9d9e3;
-  border-color: rgb(var(--border-medium) / var(--border-medium-alpha, 1));
-}
-
-.bg-token-surface-secondary {
-  background-color: rgb(var(--surface-secondary));
+html.high-contrast .btn-neutral:hover,
+html.high-contrast.dark .btn-neutral:hover {
+  background-color: rgb(var(--surface-hover));
 }
 
 .ellipsis {
@@ -418,139 +237,63 @@ html {
   text-overflow: ellipsis;
 }
 
-@font-face {
-  font-display: swap;
-  font-family: Inter;
-  font-style: normal;
-  font-weight: 400;
-  src: url('$fonts/Inter-Regular.woff2') format('woff2');
-  size-adjust: 94%;
+/* v4 puts every utility in `@layer utilities`, and an unlayered declaration outranks a
+ * layered one whatever its specificity. The rules below are element and bare-pseudo
+ * resets that utilities beat under v3 by being classes; each is layered so it keeps
+ * losing to a utility. A rule that is meant to beat utilities stays unlayered
+ * (`.dark :focus-visible`, the `code, pre` font reset). */
+@layer base {
+  select {
+    --tw-shadow: 0 0 transparent;
+    -webkit-appearance: none;
+    appearance: none;
+    background-image:
+      linear-gradient(
+        to top right,
+        transparent calc(50% - 0.056em),
+        currentColor calc(50% - 0.056em),
+        currentColor calc(50% + 0.056em),
+        transparent calc(50% + 0.056em)
+      ),
+      linear-gradient(
+        to bottom right,
+        transparent calc(50% - 0.056em),
+        currentColor calc(50% - 0.056em),
+        currentColor calc(50% + 0.056em),
+        transparent calc(50% + 0.056em)
+      );
+    background-position:
+      right calc(0.5rem + 0.75em) center,
+      right calc(0.5rem + 0.45em) center;
+    background-repeat: no-repeat;
+    background-size: 0.3em 0.3em;
+    padding-inline-end: 2.5rem;
+    background-color: rgb(var(--select-fill));
+    border-color: rgb(var(--select-edge));
+    border-radius: 0;
+    border-width: 1px;
+    font-size: 1rem;
+    line-height: 1.5rem;
+  }
+  [dir='rtl'] select {
+    background-position:
+      left calc(0.5rem + 0.45em) center,
+      left calc(0.5rem + 0.75em) center;
+  }
 }
 
-@font-face {
-  font-display: swap;
-  font-family: Inter;
-  font-style: italic;
-  font-weight: 400;
-  src: url('$fonts/Inter-Italic.woff2') format('woff2');
-  size-adjust: 94%;
-}
-
-@font-face {
-  font-display: swap;
-  font-family: Inter;
-  font-style: normal;
-  font-weight: 500;
-  src: url('$fonts/Inter-SemiBold.woff2') format('woff2');
-  size-adjust: 94%;
-}
-
-@font-face {
-  font-display: swap;
-  font-family: Inter;
-  font-style: italic;
-  font-weight: 500;
-  src: url('$fonts/Inter-SemiBoldItalic.woff2') format('woff2');
-  size-adjust: 94%;
-}
-
-@font-face {
-  font-display: swap;
-  font-family: Inter;
-  font-style: normal;
-  font-weight: 600;
-  src: url('$fonts/Inter-Bold.woff2') format('woff2');
-  size-adjust: 94%;
-}
-
-@font-face {
-  font-display: swap;
-  font-family: Inter;
-  font-style: italic;
-  font-weight: 600;
-  src: url('$fonts/Inter-BoldItalic.woff2') format('woff2');
-  size-adjust: 94%;
-}
-
-@font-face {
-  font-display: swap;
-  font-family: Roboto Mono;
-  font-style: normal;
-  font-weight: 400;
-  src: url('$fonts/roboto-mono-latin-400-normal.woff2') format('woff2');
-}
-
-@font-face {
-  font-display: swap;
-  font-family: Roboto Mono;
-  font-style: normal;
-  font-weight: 700;
-  src: url('$fonts/roboto-mono-latin-700-normal.woff2') format('woff2');
-}
-
-@font-face {
-  font-display: swap;
-  font-family: Roboto Mono;
-  font-style: italic;
-  font-weight: 400;
-  src: url('$fonts/roboto-mono-latin-400-italic.woff2') format('woff2');
-}
-
-select {
-  --tw-shadow: 0 0 transparent;
-  -webkit-appearance: none;
-  appearance: none;
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%238e8ea0' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3E%3C/svg%3E");
-  background-position: right 0.5rem center;
-  background-repeat: no-repeat;
-  background-size: 1.5em 1.5em;
-  padding-right: 2.5rem;
-  background-color: #fff;
-  border-color: #8e8ea0;
-  border-radius: 0;
-  border-width: 1px;
-  font-size: 1rem;
-  line-height: 1.5rem;
-}
-
-.overflow-y-auto {
-  overflow-y: overlay;
-}
-
-.overflow-x-auto {
-  overflow-x: overlay;
-}
-
-.reset-rc-number-input input {
-  width: 100%;
-  border: none !important;
-  background: transparent;
-}
-
-.reset-rc-number-input-text-right input {
-  text-align: right;
-}
-
-.hidden {
-  display: none;
+/* Forced colors computes `background-image` to none unless it holds a `url()`, which
+ * removes the gradient arrow; hand the indicator back to the browser. */
+@media (forced-colors: active) {
+  select {
+    -webkit-appearance: menulist;
+    appearance: menulist;
+  }
 }
 
 p > small {
   opacity: 0;
   animation: fadein 3s forwards;
-}
-
-.fade-in {
-  animation: fadeInWithOutTranslate 0.3s ease-in-out;
-}
-
-@keyframes fadeInWithOutTranslate {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
 }
 
 @keyframes fadein {
@@ -564,585 +307,35 @@ p > small {
   }
 }
 
-blockquote,
-dd,
-dl,
-fieldset,
-figure,
-h1,
-h2,
-h3,
-h4,
-h5,
-h6,
-hr,
-p,
-pre {
-  margin: 0;
-}
-
-/* Show the message time when the row is hovered. Tailwind group-hover
-   loses to `[@media(hover:hover)]:opacity-0` (same specificity, :where()).
-
-   Keyboard focus reveals it too, but only `:focus-visible`: a pointer that
-   clicks a tool card or an expand toggle inside the row leaves focus sitting
-   there, and plain `:focus-within` would pin the time open long after the
-   pointer moved away.
-
-   The condition matches the row itself as well as its descendants, because
-   `MessageNav` focuses the row through `tabindex="-1"` and `:has()` never
-   matches its own subject. Text-entry controls are excluded, because they
-   match `:focus-visible` on a plain mouse click. See `revealOnRowHoverClasses`
-   in `components/Chat/Messages/styles.ts` for the full reasoning. */
-@media (hover: hover) {
-  .message-render .message-timestamp {
-    opacity: 0;
-  }
-
-  .message-render:hover .message-timestamp,
-  .message-render:focus-visible .message-timestamp,
-  .message-render:has(:focus-visible:not(:is(input, textarea, [contenteditable])))
-    .message-timestamp {
-    opacity: 1;
+@layer base {
+  blockquote,
+  dd,
+  dl,
+  fieldset,
+  figure,
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  hr,
+  p,
+  pre {
+    margin: 0;
   }
 }
 
-/* Scroll-to-bottom: fade and rise on the same path. No scale. */
-/* Inertness during the transition is owned by the button's `interactive` prop,
-   not by these classes: the wrapper is already inert, and a descendant that
-   opts back into pointer events stays hit-testable however its parent paints. */
-.scroll-animation-enter {
-  opacity: 0;
-  transform: translateY(8px);
-}
-
-.scroll-animation-enter-active {
-  opacity: 1;
-  transform: translateY(0);
-  transition:
-    opacity var(--resize-dur) var(--resize-ease),
-    transform var(--resize-dur) var(--resize-ease);
-}
-
-.scroll-animation-enter-done {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.scroll-animation-exit {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.scroll-animation-exit-active {
-  opacity: 0;
-  transform: translateY(8px);
-  transition:
-    opacity 180ms cubic-bezier(0.4, 0, 1, 1),
-    transform 180ms cubic-bezier(0.4, 0, 1, 1);
-}
-
-.scroll-animation-exit-done {
-  display: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .scroll-animation-enter,
-  .scroll-animation-exit,
-  .scroll-animation-exit-active {
-    transform: none;
+/* Tailwind 3 gave every button a pointer cursor and Tailwind 4 leaves the
+ * platform default, so this shim is what keeps the affordance. It belongs in
+ * `base`: unlayered it would outrank every utility in the sheet, and
+ * `cursor-default` on a trigger or `disabled:cursor-not-allowed` on a
+ * disabled button would stop meaning anything. */
+@layer base {
+  [role='button'],
+  button {
+    cursor: pointer;
   }
-
-  .scroll-animation-enter-active,
-  .scroll-animation-exit-active {
-    transition: opacity 150ms ease;
-  }
-}
-
-.prose {
-  color: var(--tw-prose-body);
-  max-width: 65ch;
-  font-size: var(--markdown-font-size, var(--font-size-base));
-  line-height: calc(
-    22px * var(--markdown-font-size, var(--font-size-base)) / var(--font-size-base)
-  );
-}
-
-.prose :where([class~='lead']):not(:where([class~='not-prose'] *)) {
-  color: var(--tw-prose-lead);
-  font-size: 1.25em;
-  line-height: 1.3;
-  margin-bottom: 1.2em;
-  margin-top: 1.2em;
-}
-.prose :where(a):not(:where([class~='not-prose'] *)) {
-  color: var(--tw-prose-links);
-  font-weight: 500;
-  text-decoration: underline;
-}
-.prose :where(strong):not(:where([class~='not-prose'] *)) {
-  color: var(--tw-prose-bold);
-  font-weight: 600;
-}
-.prose :where(a strong):not(:where([class~='not-prose'] *)) {
-  color: inherit;
-}
-.prose :where(blockquote strong):not(:where([class~='not-prose'] *)) {
-  color: inherit;
-}
-.prose :where(thead th strong):not(:where([class~='not-prose'] *)) {
-  color: inherit;
-}
-.prose :where(ul > li):not(:where([class~='not-prose'] *))::marker {
-  color: var(--tw-prose-bullets);
-}
-.prose :where(hr):not(:where([class~='not-prose'] *)) {
-  border-color: var(--tw-prose-hr);
-  border-top-width: 1px;
-  margin-bottom: 0.8em;
-  margin-top: 0.8em;
-}
-.prose :where(blockquote):not(:where([class~='not-prose'] *)) {
-  border-left-color: var(--tw-prose-quote-borders);
-  border-left-width: 0.25rem;
-  color: var(--tw-prose-quotes);
-  font-style: italic;
-  font-style: normal;
-  font-weight: 500;
-  margin-bottom: 1.6em;
-  margin-top: 1.6em;
-  padding-left: 1em;
-  quotes: '\201C' '\201D' '\2018' '\2019';
-}
-.prose :where(blockquote p:first-of-type):not(:where([class~='not-prose'] *)):before {
-  content: open-quote;
-}
-.prose :where(blockquote p:last-of-type):not(:where([class~='not-prose'] *)):after {
-  content: close-quote;
-}
-.prose :where(h1):not(:where([class~='not-prose'] *)) {
-  color: var(--tw-prose-headings);
-  font-size: 2.25em;
-  font-weight: 800;
-  line-height: 1;
-  margin-bottom: 0.4em;
-  margin-top: 0.6em;
-}
-.prose :where(h1 strong):not(:where([class~='not-prose'] *)) {
-  color: inherit;
-  font-weight: 900;
-}
-.prose :where(h2):not(:where([class~='not-prose'] *)) {
-  color: var(--tw-prose-headings);
-  font-size: 1.5em;
-  font-weight: 700;
-  line-height: 1.1;
-  margin-bottom: 0.4em;
-  margin-top: 0.8em;
-}
-.prose :where(h2 strong):not(:where([class~='not-prose'] *)) {
-  color: inherit;
-  font-weight: 800;
-}
-.prose :where(h3):not(:where([class~='not-prose'] *)) {
-  color: var(--tw-prose-headings);
-  font-size: 1.25em;
-  font-weight: 600;
-  line-height: 1.3;
-  margin-bottom: 0.3em;
-  margin-top: 0.6em;
-}
-.prose :where(h3 strong):not(:where([class~='not-prose'] *)) {
-  color: inherit;
-  font-weight: 700;
-}
-.prose :where(h4):not(:where([class~='not-prose'] *)) {
-  color: var(--tw-prose-headings);
-  font-weight: 600;
-  line-height: 1.2;
-  margin-bottom: 0.3em;
-  margin-top: 0.5em;
-}
-.prose :where(h4 strong):not(:where([class~='not-prose'] *)) {
-  color: inherit;
-  font-weight: 700;
-}
-.prose :where(img):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 2em;
-  margin-top: 2em;
-}
-.prose :where(figure > *):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 0;
-  margin-top: 0;
-}
-.prose :where(figcaption):not(:where([class~='not-prose'] *)) {
-  color: var(--tw-prose-captions);
-  font-size: 0.875em;
-  line-height: 1.2;
-  margin-top: 0.8571429em;
-}
-.prose :where(code):not(:where([class~='not-prose'] *)) {
-  color: var(--tw-prose-code);
-  font-size: 0.875em;
-  font-weight: 600;
-  background-color: rgb(var(--gray-200));
-  padding: 0.125rem 0.25rem;
-  border-radius: 0.35rem;
-}
-.dark .prose :where(code):not(:where([class~='not-prose'] *)):not(:where(pre *)) {
-  background-color: rgb(var(--gray-600));
-}
-.prose :where(a code):not(:where([class~='not-prose'] *)) {
-  color: inherit;
-}
-.prose :where(h1 code):not(:where([class~='not-prose'] *)) {
-  color: inherit;
-}
-.prose :where(h2 code):not(:where([class~='not-prose'] *)) {
-  color: inherit;
-  font-size: 0.875em;
-}
-.prose :where(h3 code):not(:where([class~='not-prose'] *)) {
-  color: inherit;
-  font-size: 0.9em;
-}
-.prose :where(h4 code):not(:where([class~='not-prose'] *)) {
-  color: inherit;
-}
-.prose :where(blockquote code):not(:where([class~='not-prose'] *)) {
-  color: inherit;
-}
-.prose :where(thead th code):not(:where([class~='not-prose'] *)) {
-  color: inherit;
-}
-.prose :where(pre):not(:where([class~='not-prose'] *)) {
-  background-color: transparent;
-  border-radius: 0.75rem;
-  color: currentColor;
-  font-size: 0.875em;
-  font-weight: 400;
-  line-height: 1.4;
-  margin: 0;
-  overflow-x: auto;
-  padding: 0;
-}
-.prose :where(pre code):not(:where([class~='not-prose'] *)) {
-  background-color: transparent;
-  border-radius: 0;
-  border-width: 0;
-  color: inherit;
-  font-family: inherit;
-  font-size: inherit;
-  font-weight: inherit;
-  line-height: inherit;
-  padding: 0;
-}
-.prose :where(pre code):not(:where([class~='not-prose'] *)):before {
-  content: none;
-}
-.prose :where(pre code):not(:where([class~='not-prose'] *)):after {
-  content: none;
-}
-.prose :where(table):not(:where([class~='not-prose'] *)) {
-  font-size: 0.875em;
-  line-height: 1.4;
-  margin-bottom: 2em;
-  margin-top: 2em;
-  table-layout: auto;
-  text-align: left;
-  width: 100%;
-}
-.prose :where(thead):not(:where([class~='not-prose'] *)) {
-  border-bottom-color: var(--tw-prose-th-borders);
-  border-bottom-width: 1px;
-}
-.prose :where(thead th):not(:where([class~='not-prose'] *)) {
-  color: var(--tw-prose-headings);
-  font-weight: 600;
-  padding-bottom: 0.5714286em;
-  padding-left: 0.5714286em;
-  padding-right: 0.5714286em;
-  vertical-align: bottom;
-}
-.prose :where(tbody tr):not(:where([class~='not-prose'] *)) {
-  border-bottom-color: var(--tw-prose-td-borders);
-  border-bottom-width: 1px;
-}
-.prose :where(tbody tr:last-child):not(:where([class~='not-prose'] *)) {
-  border-bottom-width: 0;
-}
-.prose :where(tbody td):not(:where([class~='not-prose'] *)) {
-  vertical-align: baseline;
-}
-.prose :where(tfoot):not(:where([class~='not-prose'] *)) {
-  border-top-color: var(--tw-prose-th-borders);
-  border-top-width: 1px;
-}
-.prose :where(tfoot td):not(:where([class~='not-prose'] *)) {
-  vertical-align: top;
-}
-.prose {
-  --tw-prose-body: #424242;
-  --tw-prose-headings: #111827;
-  --tw-prose-lead: #4b5563;
-  --tw-prose-links: #0066cc;
-  --tw-prose-bold: #111827;
-  --tw-prose-counters: #6b7280;
-  --tw-prose-bullets: #d1d5db;
-  --tw-prose-hr: #cdcdcd;
-  --tw-prose-quotes: #111827;
-  --tw-prose-quote-borders: #e5e7eb;
-  --tw-prose-captions: #6b7280;
-  --tw-prose-code: #111827;
-  --tw-prose-pre-code: #e5e7eb;
-  --tw-prose-pre-bg: #1f2937;
-  --tw-prose-th-borders: #d1d5db;
-  --tw-prose-td-borders: #e5e7eb;
-  --tw-prose-invert-body: #d1d5db;
-  --tw-prose-invert-headings: #fff;
-  --tw-prose-invert-lead: #9ca3af;
-  --tw-prose-invert-links: #fff;
-  --tw-prose-invert-bold: #fff;
-  --tw-prose-invert-counters: #9ca3af;
-  --tw-prose-invert-bullets: #4b5563;
-  --tw-prose-invert-hr: #424242;
-  --tw-prose-invert-quotes: #f3f4f6;
-  --tw-prose-invert-quote-borders: #424242;
-  --tw-prose-invert-captions: #9ca3af;
-  --tw-prose-invert-code: #fff;
-  --tw-prose-invert-pre-code: #d1d5db;
-  --tw-prose-invert-pre-bg: rgba(0, 0, 0, 0.5);
-  --tw-prose-invert-th-borders: #4b5563;
-  --tw-prose-invert-td-borders: #424242;
-  font-size: 1rem;
-  line-height: 1.4;
-}
-.prose :where(p):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 1.25em;
-  margin-top: 1.25em;
-}
-.prose :where(video):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 2em;
-  margin-top: 2em;
-}
-.prose :where(figure):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 2em;
-  margin-top: 2em;
-}
-.prose :where(li):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 0.5em;
-  margin-top: 0.5em;
-}
-.prose :where(ul > li):not(:where([class~='not-prose'] *)) {
-  padding-left: 0.375em;
-}
-.prose :where(.prose > ul > li p):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 0.75em;
-  margin-top: 0.75em;
-}
-.prose :where(.prose > ul > li > :first-child):not(:where([class~='not-prose'] *)) {
-  margin-top: 0;
-}
-.prose :where(.prose > ul > li > :last-child):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 1.25em;
-}
-.prose :where(hr + *):not(:where([class~='not-prose'] *)) {
-  margin-top: 0;
-}
-.prose :where(h2 + *):not(:where([class~='not-prose'] *)) {
-  margin-top: 0;
-}
-.prose :where(h3 + *):not(:where([class~='not-prose'] *)) {
-  margin-top: 0;
-}
-.prose :where(h4 + *):not(:where([class~='not-prose'] *)) {
-  margin-top: 0;
-}
-/* Ensure symmetrical spacing around hr */
-.prose :where(* + hr):not(:where([class~='not-prose'] *)) {
-  margin-top: 0.8em;
-}
-.prose :where(hr + h1, hr + h2, hr + h3, hr + h4):not(:where([class~='not-prose'] *)) {
-  margin-top: 0.4em;
-}
-.prose :where(thead th:first-child):not(:where([class~='not-prose'] *)) {
-  padding-left: 0;
-}
-.prose :where(thead th:last-child):not(:where([class~='not-prose'] *)) {
-  padding-right: 0;
-}
-.prose :where(tbody td, tfoot td):not(:where([class~='not-prose'] *)) {
-  padding: 0.5714286em;
-}
-.prose :where(tbody td:first-child, tfoot td:first-child):not(:where([class~='not-prose'] *)) {
-  padding-left: 0;
-}
-.prose :where(tbody td:last-child, tfoot td:last-child):not(:where([class~='not-prose'] *)) {
-  padding-right: 0;
-}
-.prose :where(.prose > :first-child):not(:where([class~='not-prose'] *)) {
-  margin-top: 0;
-}
-.prose :where(.prose > :last-child):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 0;
-}
-.prose-sm :where(.prose > ul > li p):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 0.5714286em;
-  margin-top: 0.5714286em;
-}
-.prose-sm :where(.prose > ul > li > :first-child):not(:where([class~='not-prose'] *)) {
-  margin-top: 1.1428571em;
-}
-.prose-sm :where(.prose > ul > li > :last-child):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 1.1428571em;
-}
-.prose-sm :where(.prose > :first-child):not(:where([class~='not-prose'] *)) {
-  margin-top: 0;
-}
-.prose-sm :where(.prose > :last-child):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 0;
-}
-.prose :where(ul > li):has(input[type='checkbox']):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 0;
-  margin-top: 0;
-}
-.prose :where(ul > li):has(input[type='checkbox']) p:not(:where([class~='not-prose'] *)) {
-  margin-bottom: 0;
-  margin-top: 0;
-}
-
-code,
-pre {
-  font-family:
-    Consolas,
-    Söhne Mono,
-    Monaco,
-    Andale Mono,
-    Ubuntu Mono,
-    monospace !important;
-}
-code.language-text,
-code.language-txt,
-code.language-plaintext,
-code.language-markdown,
-code.language-md {
-  white-space: pre-wrap !important;
-}
-code.hljs,
-code[class*='language-'],
-pre[class*='language-'] {
-  word-wrap: normal;
-  background: none;
-  color: rgb(var(--gray-800));
-  -webkit-hyphens: none;
-  hyphens: none;
-  font-size: 0.85rem;
-  line-height: 1.5;
-  tab-size: 4;
-  text-align: left;
-  white-space: pre;
-  word-break: normal;
-  word-spacing: normal;
-}
-pre[class*='language-'] {
-  border-radius: 0.3em;
-  overflow: auto;
-}
-:not(pre) > code.hljs,
-:not(pre) > code[class*='language-'] {
-  border-radius: 0.3em;
-  padding: 0.1em;
-  white-space: normal;
-}
-.hljs-comment {
-  color: rgb(var(--gray-500));
-}
-.hljs-meta {
-  color: rgb(var(--gray-600));
-}
-.hljs-built_in,
-.hljs-class .hljs-title {
-  color: #9a6700;
-}
-.hljs-doctag,
-.hljs-formula,
-.hljs-keyword,
-.hljs-literal {
-  color: #0550ae;
-}
-.hljs-addition,
-.hljs-attribute,
-.hljs-meta-string,
-.hljs-regexp,
-.hljs-string {
-  color: #0a7b62;
-}
-.hljs-attr,
-.hljs-number,
-.hljs-selector-attr,
-.hljs-selector-class,
-.hljs-selector-pseudo,
-.hljs-template-variable,
-.hljs-type,
-.hljs-variable {
-  color: #9a2f6a;
-}
-.hljs-bullet,
-.hljs-link,
-.hljs-selector-id,
-.hljs-symbol,
-.hljs-title {
-  color: #b42318;
-}
-.dark code.hljs,
-.dark code[class*='language-'],
-.dark pre[class*='language-'] {
-  color: #fff;
-}
-.dark .hljs-comment {
-  color: hsla(0, 0%, 100%, 0.5);
-}
-.dark .hljs-meta {
-  color: hsla(0, 0%, 100%, 0.6);
-}
-.dark .hljs-built_in,
-.dark .hljs-class .hljs-title {
-  color: #e9950c;
-}
-.dark .hljs-doctag,
-.dark .hljs-formula,
-.dark .hljs-keyword,
-.dark .hljs-literal {
-  color: #2e95d3;
-}
-.dark .hljs-addition,
-.dark .hljs-attribute,
-.dark .hljs-meta-string,
-.dark .hljs-regexp,
-.dark .hljs-string {
-  color: #00a67d;
-}
-.dark .hljs-attr,
-.dark .hljs-number,
-.dark .hljs-selector-attr,
-.dark .hljs-selector-class,
-.dark .hljs-selector-pseudo,
-.dark .hljs-template-variable,
-.dark .hljs-type,
-.dark .hljs-variable {
-  color: #df3079;
-}
-.dark .hljs-bullet,
-.dark .hljs-link,
-.dark .hljs-selector-id,
-.dark .hljs-symbol,
-.dark .hljs-title {
-  color: #f22c3d;
-}
-
-[role='button'],
-button {
-  cursor: pointer;
 }
 
 .btn {
@@ -1178,68 +371,13 @@ button {
   cursor: not-allowed;
   opacity: 0.5;
 }
-.btn-primary {
-  --tw-bg-opacity: 1;
-  --tw-text-opacity: 1;
-  background-color: rgba(16, 163, 127, var(--tw-bg-opacity));
-  color: rgba(255, 255, 255, var(--tw-text-opacity));
-}
-.btn-primary:hover {
-  --tw-bg-opacity: 1;
-  background-color: rgba(26, 127, 100, var(--tw-bg-opacity));
-}
-.btn-primary:focus {
-  --tw-ring-offset-shadow: var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width)
-    var(--tw-ring-offset-color);
-  --tw-ring-shadow: var(--tw-ring-inset) 0 0 0 calc(2px + var(--tw-ring-offset-width))
-    var(--tw-ring-color);
-  --tw-ring-offset-width: 2px;
-  box-shadow:
-    var(--tw-ring-offset-shadow),
-    var(--tw-ring-shadow),
-    0 0 transparent;
-  box-shadow:
-    var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow, 0 0 transparent);
-}
-.btn-primary.focus-visible {
-  --tw-ring-opacity: 1;
-  --tw-ring-color: rgba(25, 195, 125, var(--tw-ring-opacity));
-}
-.btn-primary:focus-visible {
-  --tw-ring-opacity: 1;
-  --tw-ring-color: rgba(25, 195, 125, var(--tw-ring-opacity));
-}
-.btn-primary:disabled:hover {
-  --tw-bg-opacity: 1;
-  background-color: rgba(16, 163, 127, var(--tw-bg-opacity));
-}
-.btn-secondary {
-  --tw-border-opacity: 1;
-  --tw-bg-opacity: 1;
-  --tw-text-opacity: 1;
-  background-color: transparent;
-  background-color: rgba(16, 163, 156, var(--tw-bg-opacity));
-  color: rgba(255, 255, 255, var(--tw-text-opacity));
-}
-.btn-secondary:hover {
-  --tw-bg-opacity: 1;
-  border-color: rgba(0, 0, 0, 0.1);
-  color: rgba(64, 65, 79, var(--tw-text-opacity));
-  background-color: rgba(236, 236, 241, var(--tw-bg-opacity));
-}
-.dark .btn-secondary:hover {
-  --tw-bg-opacity: 1;
-  border-color: rgba(8, 82, 78, var(--tw-border-opacity));
-  color: rgba(255, 255, 240, var(--tw-text-opacity));
-  background-color: rgba(8, 82, 78, var(--tw-bg-opacity));
-}
 .btn-neutral {
   --tw-bg-opacity: 1;
   --tw-text-opacity: 1;
   background-color: rgb(var(--surface-secondary));
-  border-color: rgba(0, 0, 0, 0.1);
+  border-color: rgb(var(--button-neutral-border) / var(--theme-button-neutral-border-opacity, 0.1));
   border-width: 1px;
-  color: rgba(64, 65, 79, var(--tw-text-opacity));
+  color: rgb(var(--button-neutral-text) / var(--tw-text-opacity));
   font-size: 0.875rem;
   line-height: 1.25rem;
   transition: all 0.1s ease-in-out;
@@ -1247,7 +385,7 @@ button {
 
 .btn-neutral:hover {
   --tw-bg-opacity: 1;
-  background-color: rgba(236, 236, 241, var(--tw-bg-opacity));
+  background-color: rgb(var(--button-neutral-hover) / var(--tw-bg-opacity));
 }
 
 .btn-neutral:focus {
@@ -1256,17 +394,16 @@ button {
 }
 
 .dark .btn-neutral {
-  --tw-border-opacity: 1;
   --tw-bg-opacity: 1;
   --tw-text-opacity: 1;
   background-color: transparent;
-  border-color: rgba(66, 66, 66, var(--tw-border-opacity));
-  color: rgba(255, 255, 240, var(--tw-text-opacity));
+  border-color: rgb(var(--button-neutral-border) / var(--theme-button-neutral-border-opacity, 1));
+  color: rgb(var(--button-neutral-text) / var(--tw-text-opacity));
 }
 
 .dark .btn-neutral:hover {
   --tw-bg-opacity: 1;
-  background-color: rgba(66, 66, 66, var(--tw-bg-opacity));
+  background-color: rgb(var(--button-neutral-hover) / var(--tw-bg-opacity));
 }
 
 .dark .btn-neutral:focus {
@@ -1290,38 +427,17 @@ button {
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(0, 0, 0, 0.1);
+  background-color: rgb(var(--scrollbar-thumb) / var(--scrollbar-thumb-alpha));
   border-radius: 9999px;
 }
 
 .dark ::-webkit-scrollbar-thumb {
-  background-color: hsla(0, 0%, 100%, 0.1);
+  background-color: rgb(var(--scrollbar-thumb) / var(--scrollbar-thumb-alpha));
 }
 
 ::-webkit-scrollbar-track {
   background-color: transparent;
   border-radius: 9999px;
-}
-
-.markdown-table-wrapper {
-  -webkit-overflow-scrolling: touch;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  padding-bottom: 0.25rem;
-  scrollbar-color: rgb(var(--border-medium) / var(--border-medium-alpha, 1)) transparent;
-  scrollbar-width: thin;
-}
-
-.markdown-table-wrapper::-webkit-scrollbar {
-  height: 0.5rem;
-}
-
-.markdown-table-wrapper::-webkit-scrollbar-thumb {
-  background-color: rgb(var(--border-medium) / var(--border-medium-alpha, 1));
-}
-
-.markdown-table-wrapper::-webkit-scrollbar-thumb:hover {
-  background-color: rgb(var(--border-heavy) / var(--border-heavy-alpha, 1));
 }
 
 /* Show scrollbar only on hover */
@@ -1349,22 +465,16 @@ html {
   height: 100%;
 }
 
-/* Scoped to the drawer-gesture breakpoint (useSidebarState's 768px): on small
-   screens the app never scrolls at the root, so chaining out of nested
-   scrollers has nothing legitimate to reach — this kills Chrome Android's
-   pull-to-refresh and horizontal overscroll gliding into browser navigation.
-   Desktop keeps native trackpad back/forward and refresh gestures. */
-@media (max-width: 768px) {
-  body,
-  html {
-    overscroll-behavior: none;
-  }
-}
-
-.dark body,
-.dark html {
-  --tw-bg-opacity: 1;
-  background-color: rgba(23, 23, 23, var(--tw-bg-opacity));
+/* Scoped to drawer mode rather than a fixed viewport width: that breakpoint is
+   scale-aware and a media query cannot read the scaled root font size, so Root
+   stamps this attribute from the same predicate. In drawer mode the app never
+   scrolls at the root, so chaining out of nested scrollers has nothing legitimate
+   to reach: this kills Chrome Android's pull-to-refresh and horizontal overscroll
+   gliding into browser navigation. Desktop keeps native trackpad back/forward
+   and refresh gestures. */
+html[data-drawer-nav],
+html[data-drawer-nav] body {
+  overscroll-behavior: none;
 }
 
 #__next,
@@ -1372,147 +482,8 @@ html {
   height: 100%;
 }
 
-.markdown {
-  max-width: none;
-  font-size: var(--markdown-font-size, var(--font-size-base));
-  line-height: calc(
-    22px * var(--markdown-font-size, var(--font-size-base)) / var(--font-size-base)
-  );
-}
-
-.markdown h1 {
-  font-size: calc(var(--markdown-font-size) * 1.75);
-}
-.markdown h2 {
-  font-size: calc(var(--markdown-font-size) * 1.5);
-}
-
-.markdown h2 {
-  margin-bottom: 0.4rem;
-  margin-top: 0.8rem;
-}
-
-.markdown h3 {
-  font-weight: 600;
-  font-size: calc(var(--markdown-font-size) * 1.25);
-}
-
-.markdown h3,
-.markdown h4 {
-  margin-bottom: 0.3rem;
-  margin-top: 0.6rem;
-}
-
-.markdown h4 {
-  font-weight: 400;
-  font-size: calc(var(--markdown-font-size) * 1.1);
-}
-
-.markdown h5 {
-  font-weight: 600;
-  font-size: var(--markdown-font-size);
-}
-
-.markdown blockquote {
-  --tw-border-opacity: 1;
-  border-color: rgb(var(--gray-400));
-  border-left-width: 2px;
-  line-height: 1rem;
-  padding-left: 1rem;
-}
-
-.markdown table {
-  --tw-border-spacing-x: 0px;
-  --tw-border-spacing-y: 0px;
-  border-collapse: separate;
-  border-spacing: var(--tw-border-spacing-x) var(--tw-border-spacing-y);
-  width: 100%;
-}
-
-.markdown th {
-  background-color: rgba(236, 236, 241, 0.2);
-  border-bottom-width: 1px;
-  border-left-width: 1px;
-  border-top-width: 1px;
-  padding: 0.25rem 0.75rem;
-}
-
-.markdown th:first-child {
-  border-top-left-radius: 0.375rem;
-}
-
-.markdown th:last-child {
-  border-right-width: 1px;
-  border-color: #d1d5db;
-  border-top-right-radius: 0.375rem;
-}
-
-.markdown td {
-  border-bottom-width: 1px;
-  border-left-width: 1px;
-  padding: 0.25rem 0.75rem;
-}
-
-.markdown td:last-child {
-  border-right-width: 1px;
-}
-
-.markdown tbody tr:last-child td:first-child {
-  border-bottom-left-radius: 0.375rem;
-}
-
-.markdown tbody tr:last-child td:last-child {
-  border-bottom-right-radius: 0.375rem;
-}
-
-.markdown a {
-  text-decoration-line: underline;
-  text-underline-offset: 2px;
-}
-
-.truncate {
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.text-ellipsis,
-.truncate {
-  text-overflow: ellipsis;
-}
-
 .group:hover .group-hover\:visible {
   visibility: visible;
-}
-.group:hover .group-hover\:from-\[\#2A2B32\] {
-  --tw-gradient-from: #2a2b32;
-  --tw-gradient-to: rgba(42, 43, 50, 0);
-  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
-}
-.group:hover .group-hover\:text-gray-500 {
-  --tw-text-opacity: 1;
-  color: rgba(142, 142, 160, var(--tw-text-opacity));
-}
-.group:hover .group-hover\:text-gray-700 {
-  --tw-text-opacity: 1;
-  color: rgba(64, 65, 79, var(--tw-text-opacity));
-}
-.dark .dark\:prose-invert {
-  --tw-prose-body: var(--tw-prose-invert-body);
-  --tw-prose-headings: var(--tw-prose-invert-headings);
-  --tw-prose-lead: var(--tw-prose-invert-lead);
-  --tw-prose-links: var(--tw-prose-invert-links);
-  --tw-prose-bold: var(--tw-prose-invert-bold);
-  --tw-prose-counters: var(--tw-prose-invert-counters);
-  --tw-prose-bullets: var(--tw-prose-invert-bullets);
-  --tw-prose-hr: var(--tw-prose-invert-hr);
-  --tw-prose-quotes: var(--tw-prose-invert-quotes);
-  --tw-prose-quote-borders: var(--tw-prose-invert-quote-borders);
-  --tw-prose-captions: var(--tw-prose-invert-captions);
-  --tw-prose-code: var(--tw-prose-invert-code);
-  --tw-prose-pre-code: var(--tw-prose-invert-pre-code);
-  --tw-prose-pre-bg: var(--tw-prose-invert-pre-bg);
-  --tw-prose-th-borders: var(--tw-prose-invert-th-borders);
-  --tw-prose-td-borders: var(--tw-prose-invert-td-borders);
 }
 
 @-webkit-keyframes spin {
@@ -1527,125 +498,18 @@ html {
     transform: rotate(1turn);
   }
 }
-.animate-spin {
-  -webkit-animation: spin 1s linear infinite;
-  animation: spin 1s linear infinite;
-}
 
-.grow {
-  flex-grow: 1;
-}
-
-.transform {
-  -webkit-transform: translate(var(--tw-translate-x), var(--tw-translate-y))
-    rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y))
-    scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
-  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate))
-    skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x))
-    scaleY(var(--tw-scale-y));
-}
 body,
 html {
   height: 100%;
 }
 .dark body,
 .dark html {
-  --tw-bg-opacity: 1;
-  background-color: rgba(33, 33, 33, var(--tw-bg-opacity));
+  background-color: rgb(var(--page-canvas));
 }
 #__next,
 #root {
   height: 100%;
-}
-
-.markdown {
-  max-width: none;
-}
-.markdown h1,
-.markdown h2 {
-  font-weight: 600;
-}
-.markdown h2 {
-  margin-bottom: 0.4rem;
-  margin-top: 0.8rem;
-}
-.markdown h3 {
-  font-weight: 600;
-}
-.markdown h3,
-.markdown h4 {
-  margin-bottom: 0.3rem;
-  margin-top: 0.6rem;
-}
-.markdown h4 {
-  font-weight: 400;
-}
-.markdown h5 {
-  font-weight: 600;
-}
-.markdown blockquote {
-  --tw-border-opacity: 1;
-  border-color: rgb(var(--gray-300));
-  border-left-width: 2px;
-  line-height: 1rem;
-  padding-left: 1rem;
-}
-.dark .markdown blockquote {
-  border-color: rgb(var(--gray-600));
-}
-.markdown table {
-  --tw-border-spacing-x: 0px;
-  --tw-border-spacing-y: 0px;
-  border-collapse: separate;
-  border-spacing: var(--tw-border-spacing-x) var(--tw-border-spacing-y);
-  width: 100%;
-  border-color: rgb(var(--gray-300));
-}
-.markdown th {
-  background-color: rgb(var(--gray-100));
-  border-bottom-width: 1px;
-  border-left-width: 1px;
-  border-top-width: 1px;
-  border-color: rgb(var(--gray-300));
-  padding: 0.25rem 0.75rem;
-  font-weight: 600;
-}
-.dark .markdown th {
-  border-color: rgb(var(--gray-600));
-  background-color: rgb(var(--gray-600));
-}
-.markdown th:first-child {
-  border-top-left-radius: 0.75rem;
-}
-.markdown th:last-child {
-  border-right-width: 1px;
-  border-top-right-radius: 0.75rem;
-}
-.markdown td {
-  border-bottom-width: 1px;
-  border-left-width: 1px;
-  border-color: rgb(var(--gray-300));
-  padding: 0.25rem 0.75rem;
-}
-.markdown td:last-child {
-  border-right-width: 1px;
-  border-color: rgb(var(--gray-300));
-}
-.dark .markdown td {
-  border-color: rgb(var(--gray-600));
-}
-.dark .markdown td:last-child {
-  border-color: rgb(var(--gray-600));
-}
-.markdown tbody tr:last-child td:first-child {
-  border-bottom-left-radius: 0.75rem;
-}
-.markdown tbody tr:last-child td:last-child {
-  border-bottom-right-radius: 0.75rem;
-}
-.markdown a {
-  text-decoration-line: underline;
-  text-underline-offset: 2px;
 }
 .hidden-visibility {
   visibility: hidden;
@@ -1669,8 +533,8 @@ html {
 }
 .toast-root .alert-root {
   box-shadow:
-    0 0 1px rgba(67, 90, 111, 0.3),
-    0 5px 8px -4px rgba(67, 90, 111, 0.3);
+    0 0 1px rgb(var(--toast-edge) / 0.3),
+    0 5px 8px -4px rgb(var(--toast-edge) / 0.3);
   flex-shrink: 0;
   pointer-events: all;
 }
@@ -1714,53 +578,11 @@ html {
   }
 }
 
-/* Pre-response dot: enters on the streamed-text fade curve, then breathes
-   on opacity — replaces the legacy scale throb so waiting and text arrival
-   share one motion language.
-
-   Custom CSS exception: this indicator is a `::after` pseudo-element on the
-   `.result-thinking` hook, shown only while an ancestor carries `.submitting`
-   and the hook itself is `:empty`. No `@librechat/client` primitive can
-   express "render only while an ancestor is in state X and I have no
-   children" — a component would have to own that state, which the streaming
-   markdown path deliberately keeps in the DOM so the dot costs no React
-   renders per token. Scoped to the one selector, colored from
-   `--text-primary` so both themes follow, and disabled under
-   prefers-reduced-motion. */
-@keyframes lc-dot-breathe {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.3;
-  }
-}
-.submitting .result-thinking:empty:last-child:after {
-  animation:
-    lc-fade-in 250ms ease-out both,
-    lc-dot-breathe 1.5s ease-in-out 250ms infinite;
-  background-color: rgb(var(--text-primary));
-  border-radius: 50%;
-  content: ' ';
-  display: block;
-  height: 12px;
-  position: absolute;
-  top: -11px;
-  width: 12px;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .submitting .result-thinking:empty:last-child:after {
-    animation: none;
-  }
-}
-
-.shadow-stroke {
+.avatar-stroke {
   position: relative;
 }
-.shadow-stroke:after {
-  --tw-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.1);
+.avatar-stroke:after {
+  --tw-shadow: inset 0 0 0 1px rgb(var(--stroke-ink) / var(--stroke-ink-alpha));
   --tw-shadow-colored: inset 0 0 0 1px var(--tw-shadow-color);
   border-radius: 9999px;
   bottom: 0;
@@ -1770,8 +592,8 @@ html {
   right: 0;
   top: 0;
 }
-.dark .shadow-stroke:after,
-.shadow-stroke:after {
+.dark .avatar-stroke:after,
+.avatar-stroke:after {
   box-shadow:
     0 0 transparent,
     0 0 transparent,
@@ -1780,9 +602,18 @@ html {
     var(--tw-ring-offset-shadow, 0 0 transparent), var(--tw-ring-shadow, 0 0 transparent),
     var(--tw-shadow);
 }
-.dark .shadow-stroke:after {
-  --tw-shadow: inset 0 0 0 1px hsla(0, 0%, 100%, 0.3);
+.dark .avatar-stroke:after {
+  --tw-shadow: inset 0 0 0 1px rgb(var(--stroke-ink) / var(--stroke-ink-alpha));
   --tw-shadow-colored: inset 0 0 0 1px var(--tw-shadow-color);
+}
+
+/* Auto-height reveals over a grid (rows 0fr to 1fr) share the resize tween with
+ * `Collapse`, `McpOAuthDialog`, `MCPToolItem` and `McpSection`; pair with
+ * `motion-reduce:transition-none`. */
+@utility resize-rows {
+  transition-property: grid-template-rows;
+  transition-duration: var(--resize-dur);
+  transition-timing-function: var(--resize-ease);
 }
 
 .assistant-item {
@@ -1790,7 +621,7 @@ html {
 }
 
 .assistant-item:after {
-  --tw-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+  --tw-shadow: inset 0 0 0 1px rgb(var(--black) / 0.25);
   --tw-shadow-colored: inset 0 0 0 1px var(--tw-shadow-color);
   border-radius: 9999px;
   bottom: 0;
@@ -1809,286 +640,8 @@ html {
 }
 
 .dark .assistant-item:after {
-  --tw-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+  --tw-shadow: inset 0 0 0 1px rgb(var(--black) / 0.25);
   --tw-shadow-colored: inset 0 0 0 0 1px var(--tw-shadow-color);
-}
-
-.result-streaming > :not(ol):not(ul):not(pre):last-child:after,
-.result-streaming > pre:last-child code:after {
-  display: inline-block;
-  content: '⬤';
-  width: 12px;
-  height: 12px;
-  font-family:
-    system-ui,
-    Inter,
-    Söhne Circle,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Ubuntu,
-    Cantarell,
-    Noto Sans,
-    sans-serif;
-  line-height: normal;
-  margin-left: 0.25rem;
-  vertical-align: middle;
-  font-size: 0.5rem;
-}
-
-@supports (selector(:has(*))) {
-  .result-streaming > :is(ul, ol):last-child > li:last-child:not(:has(> :is(ul, ol, pre))):after {
-    content: '⬤';
-    font-family:
-      system-ui,
-      Inter,
-      Söhne Circle,
-      -apple-system,
-      Segoe UI,
-      Roboto,
-      Ubuntu,
-      Cantarell,
-      Noto Sans,
-      sans-serif;
-    line-height: normal;
-    margin-left: 0.25rem;
-    vertical-align: middle;
-    font-size: 0.5rem;
-    display: inline-block;
-    width: 12px;
-    height: 12px;
-  }
-}
-
-@supports not (selector(:has(*))) {
-  .result-streaming > ol:last-child > li:last-child:after,
-  .result-streaming > ul:last-child > li:last-child:after {
-    content: '⬤';
-    font-family:
-      system-ui,
-      Inter,
-      Söhne Circle,
-      -apple-system,
-      Segoe UI,
-      Roboto,
-      Ubuntu,
-      Cantarell,
-      Noto Sans,
-      sans-serif;
-    line-height: normal;
-    margin-left: 0.25rem;
-    vertical-align: middle;
-    font-size: 0.5rem;
-    display: inline-block;
-    width: 12px;
-    height: 12px;
-  }
-
-  .result-streaming > ol:last-child > li:last-child > :is(ul, ol, pre) ~ :after,
-  .result-streaming > ul:last-child > li:last-child > :is(ul, ol, pre) ~ :after {
-    display: none;
-  }
-
-  .result-streaming > ol:last-child > li:last-child > pre:last-child code:after,
-  .result-streaming > ul:last-child > li:last-child > pre:last-child code:after {
-    display: inline-block;
-  }
-}
-
-/* Remove cursors when streaming is complete */
-.result-streaming:not(.submitting) :is(ul, ol) li:after {
-  display: none !important;
-}
-
-/* Smooth streaming: one-shot fade-in on newly streamed words.
-   Duration must match FADE_DURATION_MS in Chat/Messages/Content/animate.tsx */
-@keyframes lc-fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-[data-lc-fade] {
-  animation: lc-fade-in 250ms ease-out both;
-  animation-delay: var(--lc-delay, 0ms);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  [data-lc-fade] {
-    animation: none;
-  }
-}
-
-.webkit-dark-styles,
-.webkit-dark-styles:focus {
-  background-clip: content-box;
-  -webkit-box-shadow: 0 0 0 50vh #fff inset;
-}
-
-.dark .webkit-dark-styles,
-.dark .webkit-dark-styles:focus {
-  -webkit-text-fill-color: #fff;
-  background-clip: content-box;
-  -webkit-box-shadow: 0 0 0 50vh #0d0d0d inset;
-}
-
-/* Ordered Listing */
-.prose :where(ol[type='A']):not(:where([class~='not-prose'] *)) {
-  list-style-type: upper-alpha;
-}
-.prose :where(ol[type='a']):not(:where([class~='not-prose'] *)) {
-  list-style-type: lower-alpha;
-}
-.prose :where(ol[type='A s']):not(:where([class~='not-prose'] *)) {
-  list-style-type: upper-alpha;
-}
-.prose :where(ol[type='a s']):not(:where([class~='not-prose'] *)) {
-  list-style-type: lower-alpha;
-}
-.prose :where(ol[type='I']):not(:where([class~='not-prose'] *)) {
-  list-style-type: upper-roman;
-}
-.prose :where(ol[type='i']):not(:where([class~='not-prose'] *)) {
-  list-style-type: lower-roman;
-}
-.prose :where(ol[type='I s']):not(:where([class~='not-prose'] *)) {
-  list-style-type: upper-roman;
-}
-.prose :where(ol[type='i s']):not(:where([class~='not-prose'] *)) {
-  list-style-type: lower-roman;
-}
-.prose :where(ol[type='1']):not(:where([class~='not-prose'] *)) {
-  list-style-type: decimal;
-}
-.prose :where(.prose > ol > li > :first-child):not(:where([class~='not-prose'] *)) {
-  margin-top: 0;
-}
-.prose :where(.prose > ol > li > :last-child):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 1.25em;
-}
-.prose :where(ul ul, ul ol, ol ul, ol ol):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 0.75em;
-  margin-top: 0.75em;
-}
-.prose-sm :where(.prose > ol > li > :first-child):not(:where([class~='not-prose'] *)) {
-  margin-top: 1.1428571em;
-}
-.prose-sm :where(.prose > ol > li > :last-child):not(:where([class~='not-prose'] *)) {
-  margin-bottom: 1.1428571em;
-}
-
-/* Base styles for lists */
-.prose ol,
-.prose ul,
-.markdown ol,
-.markdown ul {
-  list-style-position: outside;
-  margin-top: 1em;
-  margin-bottom: 1em;
-  padding-left: 1em;
-}
-
-.prose li,
-.markdown li {
-  margin-bottom: 0.5em;
-  margin-top: 0.5em;
-}
-
-/* Ordered lists */
-.prose ol,
-.markdown ol {
-  list-style-type: decimal;
-}
-
-.prose ol > li,
-.markdown ol > li {
-  position: relative;
-  padding-left: 0.375em;
-}
-
-.prose ol > li::marker,
-.markdown ol > li::marker {
-  color: var(--tw-prose-counters);
-  font-weight: 400;
-}
-
-/* Nested ordered lists */
-.prose ol ol,
-.markdown ol ol {
-  list-style-type: lower-alpha;
-}
-
-.prose ol ol ol,
-.markdown ol ol ol {
-  list-style-type: lower-roman;
-}
-
-/* Unordered lists */
-.prose ul,
-.markdown ul {
-  list-style-type: disc;
-}
-
-.prose ul > li,
-.markdown ul > li {
-  padding-left: 0.375em;
-}
-
-.prose ul > li::marker,
-.markdown ul > li::marker {
-  color: var(--tw-prose-bullets);
-}
-
-/* Nested unordered lists */
-.prose ul ul,
-.markdown ul ul {
-  list-style-type: disc;
-}
-
-.prose ul ul > li::marker,
-.markdown ul ul > li::marker {
-  color: var(--tw-prose-bullets);
-  font-size: 0.8em;
-}
-
-.prose ul ul ul,
-.markdown ul ul ul {
-  list-style-type: square;
-}
-
-.prose ul ul ul > li::marker,
-.markdown ul ul ul > li::marker {
-  color: var(--tw-prose-bullets);
-  font-size: 0.7em;
-}
-
-/* Nested lists */
-.prose ol ol,
-.prose ul ul,
-.prose ul ol,
-.prose ol ul,
-.markdown ol ol,
-.markdown ul ul,
-.markdown ul ol,
-.markdown ol ul {
-  margin-top: 0.75em;
-  margin-bottom: 0.75em;
-}
-
-.prose > ul > li > *:last-child,
-.prose > ol > li > *:last-child,
-.markdown > ul > li > *:last-child,
-.markdown > ol > li > *:last-child {
-  margin-bottom: 1.25em;
-}
-
-/* Ensure proper marker color */
-.prose li::marker,
-.markdown li::marker {
-  color: currentColor;
 }
 
 /* Keyframes */
@@ -2136,7 +689,9 @@ html {
   transform-origin: 50% 50%;
 }
 
-.message-content,
+/* The message editor reads as the message it edits does. `.message-content` carries the same three
+ * declarations in @librechat/client (theme/prose.css), after the `.prose` and `.markdown` rules
+ * it has to follow. */
 .message-editor-text {
   font-size: var(--markdown-font-size, var(--font-size-base));
   line-height: 1.6;
@@ -2148,63 +703,40 @@ html {
   font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base)));
 }
 
+/* iOS zooms into a focused field under 16px and the installed PWA never zooms back out. */
+@media (any-pointer: coarse) {
+  .message-editor-text {
+    font-size: max(16px, var(--markdown-font-size, var(--font-size-base)));
+  }
+}
+
 .message-content pre {
   font-size: var(--markdown-font-size, var(--font-size-base));
-}
-
-.code-analyze-block pre code,
-.code-analyze-block .overflow-y-auto code {
-  font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base)));
-}
-
-.code-analyze-block pre,
-.code-analyze-block .overflow-y-auto {
-  font-size: var(--markdown-font-size, var(--font-size-base));
-}
-
-.tool-status-text {
-  font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base)));
-  line-height: calc(1.25 * 0.9 * var(--markdown-font-size, var(--font-size-base)));
-}
-
-.progress-text-wrapper {
-  font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base)));
-  line-height: calc(1.25 * 0.9 * var(--markdown-font-size, var(--font-size-base)));
-}
-
-.progress-text-content {
-  font-size: inherit;
-  line-height: inherit;
-}
-
-.progress-text-wrapper button {
-  font-size: inherit;
-  line-height: inherit;
 }
 
 .tooltip {
   z-index: 150;
   cursor: pointer;
-  border-radius: 0.275rem;
-  background-color: rgb(var(--surface-primary));
-  padding-top: 0.25rem;
-  padding-bottom: 0.25rem;
-  padding-left: 0.5rem;
-  padding-right: 0.5rem;
-  font-size: 1rem;
-  line-height: 1.5rem;
-  color: black;
-  box-shadow: 0 2px 4px 0 rgb(0 0 0 / 0.25);
+  border-radius: var(--theme-tooltip-radius, 0.275rem);
+  background-color: rgb(var(--surface-tooltip, var(--surface-primary)));
+  padding-top: var(--theme-tooltip-padding-y, 0.25rem);
+  padding-bottom: var(--theme-tooltip-padding-y, 0.25rem);
+  padding-inline-start: var(--theme-tooltip-padding-x, 0.5rem);
+  padding-inline-end: var(--theme-tooltip-padding-x, 0.5rem);
+  font-size: var(--theme-tooltip-text-size, 1rem);
+  line-height: 1.5;
+  color: rgb(var(--text-tooltip, var(--text-primary)));
+  box-shadow: var(--theme-tooltip-shadow, 0 2px 4px 0 rgb(var(--black) / 0.25));
 }
 
 .tooltip:where(.dark, .dark *) {
-  background-color: rgb(var(--surface-primary));
-  color: white;
-  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.35);
+  box-shadow: var(--theme-tooltip-shadow, 0 1px 2px 0 rgb(var(--black) / 0.35));
 }
 
-:focus {
-  outline: none;
+@layer base {
+  :focus {
+    outline: none;
+  }
 }
 
 html[data-input-modality='pointer']
@@ -2249,18 +781,28 @@ html[data-input-modality='keyboard']
     ),
     textarea
   ):not(.lc-field):focus-visible {
-  outline: 2px solid rgb(var(--text-primary)) !important;
-  outline-offset: 2px !important;
+  outline: var(--theme-focus-ring-width, 2px) solid rgb(var(--focus-control)) !important;
+  outline-offset: var(--theme-focus-ring-offset, 2px) !important;
 }
 
-:focus-visible {
-  outline: 2px solid #000;
-  outline-offset: 2px;
+/* The focus outline is the theme's `focus-outline` role: black and white in the
+ * default theme, and whatever a theme names, or its `ring-primary` when it names
+ * only that (see `resolveTheme`). Its width and offset are the `focusRingWidth`
+ * and `focusRingOffset` roles, 2px each by default. The contrast modes keep their
+ * own 3px rule. */
+@layer base {
+  :focus-visible {
+    outline: var(--theme-focus-ring-width, 2px) solid rgb(var(--focus-outline));
+    outline-offset: var(--theme-focus-ring-offset, 2px);
+  }
 }
 
-.dark :focus-visible {
-  outline: 2px solid #fff;
-  outline-offset: 2px;
+/* A control that declares its own focus outline utility (`focus-visible:outline-hidden`,
+ * `focus-visible:outline-2 focus-visible:outline-focus-subtle`) keeps it: this rule is unlayered,
+ * so it would otherwise outrank every outline utility and repaint the global role over them. */
+.dark :focus-visible:not([class*='focus-visible:outline-'], [class*='focus:outline-']) {
+  outline: var(--theme-focus-ring-width, 2px) solid rgb(var(--focus-outline));
+  outline-offset: var(--theme-focus-ring-offset, 2px);
 }
 
 .popover-ui {
@@ -2269,16 +811,19 @@ html[data-input-modality='keyboard']
   flex-direction: column;
   overflow: auto;
   overscroll-behavior: contain;
-  border-radius: 0.7rem;
+  border-radius: var(--theme-menu-radius, 0.7rem);
   border-width: 1px;
   border-style: solid;
-  border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));
-  background-color: rgb(var(--surface-primary));
+  border-color: rgb(var(--border-menu) / var(--border-menu-alpha, var(--border-light-alpha, 1)));
+  background-color: rgb(var(--surface-popover));
   padding: 0.5rem;
   color: rgb(var(--text-primary));
-  box-shadow:
-    0 10px 15px -3px rgb(0 0 0 / 0.1),
-    0 4px 6px -4px rgb(0 0 0 / 0.1);
+  /* The `menuShadow` role, whose light default is this literal. */
+  box-shadow: var(
+    --theme-menu-shadow,
+    0 10px 15px -3px rgb(var(--black) / 0.1),
+    0 4px 6px -4px rgb(var(--black) / 0.1)
+  );
   transform-origin: var(--popover-transform-origin, top);
   opacity: 0;
   transition-property: opacity, scale;
@@ -2286,7 +831,7 @@ html[data-input-modality='keyboard']
   transition-duration: 150ms;
   scale: 0.95;
   margin-top: 4px;
-  margin-right: -2px;
+  margin-inline-end: -2px;
 }
 
 .popover-animate {
@@ -2303,16 +848,18 @@ html[data-input-modality='keyboard']
 
 .popover-ui:focus-visible,
 .popover-ui[data-focus-visible] {
-  outline: var(--bg-surface-hover);
+  outline: 2px solid rgb(var(--focus-control));
   outline-offset: -1px;
 }
 
 .popover-ui:where(.dark, .dark *) {
-  background-color: rgb(var(--surface-secondary));
+  background-color: rgb(var(--surface-popover));
   color: rgb(var(--text-secondary));
-  box-shadow:
-    0 10px 15px -3px rgb(0 0 0 / 0.25),
-    0 4px 6px -4px rgb(0 0 0 / 0.1);
+  box-shadow: var(
+    --theme-menu-shadow,
+    0 10px 15px -3px rgb(var(--black) / 0.25),
+    0 4px 6px -4px rgb(var(--black) / 0.1)
+  );
 }
 
 .select-item {
@@ -2321,7 +868,7 @@ html[data-input-modality='keyboard']
   scroll-margin: 0.5rem;
   align-items: center;
   gap: 0.5rem;
-  border-radius: 0.5rem;
+  border-radius: var(--theme-radius-lg, 0.5rem);
   padding: 0.5rem;
   outline: none !important;
 }
@@ -2346,6 +893,15 @@ html[data-input-modality='keyboard']
   margin-top: 0;
 }
 .popover-ui.popover-from-left[data-enter] {
+  translate: 0 0;
+}
+[dir='rtl'] .popover-ui.popover-from-left,
+.popover-ui.popover-from-left:dir(rtl) {
+  transform-origin: right;
+  translate: 0.5rem 0;
+}
+[dir='rtl'] .popover-ui.popover-from-left[data-enter],
+.popover-ui.popover-from-left[data-enter]:dir(rtl) {
   translate: 0 0;
 }
 
@@ -2377,6 +933,15 @@ html[data-input-modality='keyboard']
   opacity: 1;
   transform: scale(1) translateX(0);
 }
+[dir='rtl'] .animate-popover-left,
+.animate-popover-left:dir(rtl) {
+  transform-origin: right;
+  transform: scale(0.95) translateX(0.5rem);
+}
+[dir='rtl'] .animate-popover-left[data-enter],
+.animate-popover-left[data-enter]:dir(rtl) {
+  transform: scale(1) translateX(0);
+}
 
 /* Corners */
 .animate-popover-top-left {
@@ -2391,12 +956,14 @@ html[data-input-modality='keyboard']
   opacity: 1;
   transform: scale(1) translate(0, 0);
 }
-
-/** Note: ensure KaTeX can spread across visible space */
-.message-content pre:has(> span.katex) {
-  overflow: visible !important;
-  height: auto !important;
-  max-height: none !important;
+[dir='rtl'] .animate-popover-top-left,
+.animate-popover-top-left:dir(rtl) {
+  transform-origin: top right;
+  transform: scale(0.95) translate(0.5rem, -0.5rem);
+}
+[dir='rtl'] .animate-popover-top-left[data-enter],
+.animate-popover-top-left[data-enter]:dir(rtl) {
+  transform: scale(1) translate(0, 0);
 }
 
 /** AnimatedSearchInput style */
@@ -2416,10 +983,6 @@ html[data-input-modality='keyboard']
 .animate-gradient-x {
   background-size: 200% 200%;
   animation: gradient-x 15s ease infinite;
-}
-
-.animate-pulse-slow {
-  animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
 @keyframes fadeIn {
@@ -2465,45 +1028,35 @@ html[data-input-modality='keyboard']
   transition: transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
 
-@keyframes shimmer {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
-  }
-}
-
-.shimmer {
-  display: inline-block;
-  position: relative;
-  background: linear-gradient(
-    90deg,
-    rgb(33, 33, 33) 25%,
-    rgba(129, 130, 134, 0.18) 50%,
-    rgb(33, 33, 33) 75%
-  );
-  background-size: 200% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: shimmer 4s linear infinite;
-}
-
-.dark .shimmer {
-  background: linear-gradient(
-    90deg,
-    rgba(255, 255, 255, 0.8) 25%,
-    rgba(179, 179, 179, 0.25) 50%,
-    rgba(255, 255, 255, 0.8) 75%
-  );
-  background-size: 200% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: shimmer 4s linear infinite;
-}
-
 .sharepoint-picker-bg {
   background-color: rgb(var(--surface-dialog));
+}
+
+/* ask_user_question popover <-> chat-card morph (view transition) */
+::view-transition-group(ask-question),
+::view-transition-old(ask-question),
+::view-transition-new(ask-question),
+::view-transition-group(ask-question-chevron),
+::view-transition-old(ask-question-chevron),
+::view-transition-new(ask-question-chevron) {
+  animation-duration: 280ms;
+  animation-timing-function: cubic-bezier(0.32, 0.72, 0.22, 1);
+}
+
+/* The move control's chevron is its own group, so the morph also turns it
+   (down in the composer, up in the chat): the group interpolates the icon's
+   rotate-180. Above its card, below the composer like the card itself. */
+::view-transition-group(ask-question-chevron) {
+  z-index: 1;
+}
+
+/* The composer keeps its own snapshot group stacked above the morphing
+   question card, so the card travels behind the ChatForm, not over it. */
+::view-transition-group(chat-form) {
+  z-index: 2;
+}
+
+/* react-virtualized writes an inline `direction: ltr` on its scroll container; only !important beats an inline style, and without it every virtualized list stays LTR in an RTL UI. */
+.ReactVirtualized__Grid {
+  direction: inherit !important;
 }

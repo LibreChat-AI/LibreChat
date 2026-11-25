@@ -1,7 +1,15 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { dataService, MutationKeys, PermissionBits, QueryKeys } from 'librechat-data-provider';
+import {
+  dataService,
+  MutationKeys,
+  PermissionBits,
+  QueryKeys,
+  hasSubagentReference,
+  pruneSubagentReferences,
+} from 'librechat-data-provider';
 import type { QueryClient, UseMutationResult } from '@tanstack/react-query';
 import type * as t from 'librechat-data-provider';
+import { getAgentListQueryData, setAgentListQueryData } from './queries';
 
 /**
  * AGENTS
@@ -9,6 +17,8 @@ import type * as t from 'librechat-data-provider';
 export const allAgentViewAndEditQueryKeys: t.AgentListParams[] = [
   { requiredPermission: PermissionBits.VIEW },
   { requiredPermission: PermissionBits.EDIT },
+  { requiredPermission: PermissionBits.VIEW, mine: 1 },
+  { requiredPermission: PermissionBits.EDIT, mine: 1 },
 ];
 
 const edgeEndpointIncludesAgent = (endpoint: string | string[], agentId: string): boolean =>
@@ -28,6 +38,31 @@ const hasEdgeWithAgent = (data: unknown, agentId: string): boolean => {
         edgeEndpointIncludesAgent(edge.to, agentId),
     )
   );
+};
+
+const pruneEdgeEndpoint = (
+  endpoint: t.GraphEdge['from'],
+  agentId: string,
+): t.GraphEdge['from'] | null => {
+  if (Array.isArray(endpoint)) {
+    const retained = endpoint.filter((id) => id !== agentId);
+    return retained.length > 0 ? retained : null;
+  }
+  return endpoint === agentId ? null : endpoint;
+};
+
+/** Mirrors the server's deletion cleanup so cached execution graphs stop referencing the
+ * deleted agent immediately, before the authoritative refetch completes. */
+const pruneAgentEdges = (agent: t.Agent, agentId: string): t.Agent => {
+  if (!hasEdgeWithAgent(agent, agentId)) {
+    return agent;
+  }
+  const edges = (agent.edges ?? []).flatMap((edge) => {
+    const from = pruneEdgeEndpoint(edge.from, agentId);
+    const to = pruneEdgeEndpoint(edge.to, agentId);
+    return from == null || to == null ? [] : [{ ...edge, from, to }];
+  });
+  return { ...agent, edges };
 };
 
 /**
@@ -55,9 +90,9 @@ export const useCreateAgentMutation = (
     onSuccess: (newAgent, variables, context) => {
       ((keys: t.AgentListParams[]) => {
         keys.forEach((key) => {
-          const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
+          const listRes = getAgentListQueryData(queryClient, [QueryKeys.agents, key]);
           if (!listRes) {
-            return options?.onSuccess?.(newAgent, variables, context);
+            return;
           }
           /** The create succeeded, so the caller can edit it. Mutation responses carry no
            *  `isEditable`; without this the cached row loses the field the list sets. */
@@ -66,7 +101,7 @@ export const useCreateAgentMutation = (
             ...JSON.parse(JSON.stringify(listRes.data)),
           ];
 
-          queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
+          setAgentListQueryData(queryClient, [QueryKeys.agents, key], {
             ...listRes,
             data: currentAgents,
           });
@@ -101,13 +136,13 @@ export const useUpdateAgentMutation = (
       onSuccess: (updatedAgent, variables, context) => {
         ((keys: t.AgentListParams[]) => {
           keys.forEach((key) => {
-            const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
+            const listRes = getAgentListQueryData(queryClient, [QueryKeys.agents, key]);
 
             if (!listRes) {
-              return options?.onSuccess?.(updatedAgent, variables, context);
+              return;
             }
 
-            queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
+            setAgentListQueryData(queryClient, [QueryKeys.agents, key], {
               ...listRes,
               data: listRes.data.map((agent) => {
                 if (agent.id === variables.agent_id) {
@@ -146,37 +181,73 @@ export const useDeleteAgentMutation = (
     {
       onMutate: (variables) => options?.onMutate?.(variables),
       onError: (error, variables, context) => options?.onError?.(error, variables, context),
-      onSuccess: (_data, variables, context) => {
+      onSuccess: (_data, variables) => {
+        const removed = new Set([variables.agent_id]);
+        const referencesAgent = (data: unknown): boolean => {
+          if (!data || typeof data !== 'object') {
+            return false;
+          }
+          const agent = data as Partial<t.Agent>;
+          return (
+            hasEdgeWithAgent(agent, variables.agent_id) ||
+            agent.agent_ids?.includes(variables.agent_id) === true ||
+            hasSubagentReference(agent.subagents, removed)
+          );
+        };
+        const pruneReferences = (agent: t.Agent): t.Agent => {
+          if (!referencesAgent(agent)) {
+            return agent;
+          }
+          return {
+            ...pruneAgentEdges(agent, variables.agent_id),
+            ...(agent.agent_ids != null && {
+              agent_ids: agent.agent_ids.filter((id) => !removed.has(id)),
+            }),
+            ...(agent.subagents != null && {
+              subagents: pruneSubagentReferences(agent.subagents, removed),
+            }),
+          };
+        };
         const data = ((keys: t.AgentListParams[]) => {
           let data: t.Agent[] = [];
           keys.forEach((key) => {
-            const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
+            const listRes = getAgentListQueryData(queryClient, [QueryKeys.agents, key]);
 
             if (!listRes) {
-              return options?.onSuccess?.(_data, variables, context);
+              return;
             }
 
-            data = listRes.data.filter((agent) => agent.id !== variables.agent_id);
+            const remainingAgents = listRes.data
+              .filter((agent) => agent.id !== variables.agent_id)
+              .map(pruneReferences);
 
-            queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
+            setAgentListQueryData(queryClient, [QueryKeys.agents, key], {
               ...listRes,
-              data,
+              data: remainingAgents,
             });
+            // Filtered lists are updated, but never drive post-delete selection.
+            if (key.mine !== 1) {
+              data = remainingAgents;
+            }
           });
           return data;
         })(allAgentViewAndEditQueryKeys);
 
         queryClient.removeQueries([QueryKeys.agent, variables.agent_id]);
         queryClient.removeQueries([QueryKeys.agent, variables.agent_id, 'expanded']);
-        /** Deletion removes the agent from every edge endpoint server-side. Expanded queries
-         * opt out of refetch-on-mount, so refresh every cached graph known to reference it. */
+        /** Mirror server cleanup while affected agent details refetch. */
         queryClient.invalidateQueries({
           queryKey: [QueryKeys.agent],
-          predicate: (query) =>
-            query.queryKey[2] === 'expanded' &&
-            hasEdgeWithAgent(query.state.data, variables.agent_id),
+          predicate: (query) => referencesAgent(query.state.data),
           refetchType: 'all',
         });
+        queryClient.setQueriesData<t.Agent>(
+          {
+            queryKey: [QueryKeys.agent],
+            predicate: (query) => referencesAgent(query.state.data),
+          },
+          (agent) => (agent ? pruneReferences(agent) : agent),
+        );
         invalidateAgentMarketplaceQueries(queryClient);
 
         return options?.onSuccess?.(_data, variables, data);
@@ -201,12 +272,12 @@ export const useDuplicateAgentMutation = (
       onSuccess: ({ agent, actions }, variables, context) => {
         ((keys: t.AgentListParams[]) => {
           keys.forEach((key) => {
-            const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
+            const listRes = getAgentListQueryData(queryClient, [QueryKeys.agents, key]);
             if (listRes) {
               /** Duplicating grants the caller ownership, so the new row is editable.
                *  The response omits list-only `isEditable`; see `mergeAgentListRow`. */
               const currentAgents = [{ ...agent, isEditable: true }, ...listRes.data];
-              queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
+              setAgentListQueryData(queryClient, [QueryKeys.agents, key], {
                 ...listRes,
                 data: currentAgents,
               });
@@ -245,12 +316,12 @@ export const useUploadAgentAvatarMutation = (
     onSuccess: (updatedAgent, variables, context) => {
       ((keys: t.AgentListParams[]) => {
         keys.forEach((key) => {
-          const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
+          const listRes = getAgentListQueryData(queryClient, [QueryKeys.agents, key]);
           if (!listRes) {
             return;
           }
 
-          queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
+          setAgentListQueryData(queryClient, [QueryKeys.agents, key], {
             ...listRes,
             data: listRes.data.map((agent) => {
               if (agent.id === variables.agent_id) {
@@ -296,12 +367,12 @@ export const useUpdateAgentAction = (
       const updatedAgent = updateAgentActionResponse[0];
       ((keys: t.AgentListParams[]) => {
         keys.forEach((key) => {
-          const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
+          const listRes = getAgentListQueryData(queryClient, [QueryKeys.agents, key]);
 
           if (!listRes) {
-            return options?.onSuccess?.(updateAgentActionResponse, variables, context);
+            return;
           }
-          queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
+          setAgentListQueryData(queryClient, [QueryKeys.agents, key], {
             ...listRes,
             data: listRes.data.map((agent) => {
               if (agent.id === variables.agent_id) {
@@ -367,7 +438,7 @@ export const useDeleteAgentAction = (
       });
       ((keys: t.AgentListParams[]) => {
         keys.forEach((key) => {
-          queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], (prev) => {
+          setAgentListQueryData(queryClient, [QueryKeys.agents, key], (prev) => {
             if (!prev) {
               return prev;
             }
@@ -434,10 +505,10 @@ export const useRevertAgentVersionMutation = (
 
         ((keys: t.AgentListParams[]) => {
           keys.forEach((key) => {
-            const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
+            const listRes = getAgentListQueryData(queryClient, [QueryKeys.agents, key]);
 
             if (listRes) {
-              queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
+              setAgentListQueryData(queryClient, [QueryKeys.agents, key], {
                 ...listRes,
                 data: listRes.data.map((agent) => {
                   if (agent.id === variables.agent_id) {

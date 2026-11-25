@@ -7,7 +7,8 @@ const {
   generateAdminExchangeCode,
 } = require('@librechat/api');
 const { syncUserEntraGroupMemberships } = require('~/server/services/PermissionService');
-const { setAuthTokens, setOpenIDAuthTokens } = require('~/server/services/AuthService');
+const { setAuthTokens } = require('~/server/services/AuthService');
+const { sendOpenIDAuthResponse } = require('~/server/services/OpenIDRefreshRecovery');
 const getLogStores = require('~/cache/getLogStores');
 const { checkBan } = require('~/server/middleware');
 const { generateToken } = require('~/models');
@@ -65,7 +66,7 @@ function createOAuthHandler(redirectUri = domains.client) {
           expiresAt,
         );
         callbackUrl.searchParams.set('code', exchangeCode);
-        logger.info(`[OAuth] Admin panel redirect with exchange code for user: ${req.user.email}`);
+        logger.info(`[OAuth] Admin panel redirect with exchange code for user: ${req.user._id}`);
         return res.redirect(callbackUrl.toString());
       }
 
@@ -76,12 +77,24 @@ function createOAuthHandler(redirectUri = domains.client) {
         isEnabled(process.env.OPENID_REUSE_TOKENS) === true
       ) {
         await syncUserEntraGroupMemberships(req.user, req.user.tokenset.access_token);
-        setOpenIDAuthTokens(req.user.tokenset, req, res, {
-          userId: req.user._id.toString(),
-          tenantId: req.user.tenantId,
+        await sendOpenIDAuthResponse({
+          tokenset: req.user.tokenset,
+          user: req.user,
+          existingRefreshToken: req.user.tokenset.refresh_token,
+          openidSubject: req.user.openidId,
+          openidIssuer: req.user.openidIssuer,
+          discardSessionTokens: true,
+          req,
+          res,
         });
       } else {
         await setAuthTokens(req.user._id, res, null, req);
+        if (
+          req.user.provider === 'openid' &&
+          isEnabled(process.env.OPENID_USE_END_SESSION_ENDPOINT)
+        ) {
+          req.session.openidLogoutIdToken = req.user.tokenset?.id_token;
+        }
       }
       res.redirect(redirectUri);
     } catch (err) {

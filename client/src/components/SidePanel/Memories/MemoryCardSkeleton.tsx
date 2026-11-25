@@ -1,11 +1,11 @@
 import { Skeleton } from '@librechat/client';
 
-/** Mirrors MemoryCard: key + token pill on the first row, value + date on the second */
+/** Mirrors MemoryCard: key + agent badge on the first row, value + date on the second */
 export default function MemoryCardSkeleton({ count = 6 }: { count?: number }) {
   return (
     <div className="flex flex-col gap-2" aria-hidden="true">
       {Array.from({ length: count }, (_, i) => (
-        <div key={i} className="rounded-lg border border-border-light px-3 py-2.5">
+        <div key={i} className="rounded-lg px-3 py-2.5">
           <div className="flex items-center gap-2">
             <Skeleton className="h-4 w-32 rounded" />
             <Skeleton className="h-4 w-16 rounded-full" />

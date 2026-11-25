@@ -1,14 +1,13 @@
 import { createContext, useContext, ReactNode, Context } from 'react';
 import { JSX } from 'react/jsx-runtime';
-import type { TShowToast } from '~/common';
 import useToast from '~/hooks/useToast';
 
 type ToastContextType = {
-  showToast: ({ message, severity, showIcon, duration }: TShowToast) => void;
+  showToast: ReturnType<typeof useToast>['showToast'];
 };
 
 export const ToastContext: Context<ToastContextType> = createContext<ToastContextType>({
-  showToast: () => ({}),
+  showToast: () => undefined,
 });
 
 export function useToastContext(): ToastContextType {

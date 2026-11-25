@@ -1,16 +1,38 @@
 import { logger } from '@librechat/data-schemas';
-import { ResourceType, PermissionBits, hasPermissions } from 'librechat-data-provider';
-import type { Request, Response, NextFunction } from 'express';
-import type { IUser } from '@librechat/data-schemas';
+import {
+  ResourceType,
+  PermissionBits,
+  hasPermissions,
+  TWO_FACTOR_ENROLLMENT_REQUIRED_CODE,
+} from 'librechat-data-provider';
+import type { Request, Response, NextFunction, RequestHandler } from 'express';
+import type { IUser, AgentApiKeyBinding } from '@librechat/data-schemas';
 import type { Types } from 'mongoose';
+import { isTwoFactorEnrollmentRequired } from '~/auth/twoFactor';
 import { getRemoteAgentPermissions } from './service';
+import { getSafeErrorMetadata } from '~/utils/errors';
 
 export interface ApiKeyAuthDependencies {
   validateAgentApiKey: (apiKey: string) => Promise<{
     userId: Types.ObjectId;
     keyId: Types.ObjectId;
+    binding?: AgentApiKeyBinding;
+  } | null>;
+  validateBoundAgentApiKey?: (apiKey: string) => Promise<{
+    userId: string;
+    keyId: string;
+    binding: AgentApiKeyBinding;
   } | null>;
   findUser: (query: { _id: string | Types.ObjectId }) => Promise<IUser | null>;
+  isPrincipalActive: (userId: string) => Promise<boolean>;
+  enrollmentRequired?: typeof isTwoFactorEnrollmentRequired;
+  /** Required for any bound key. Missing or unknown grant handlers deny access. */
+  authorizeBinding?: (input: {
+    keyId: string;
+    binding: AgentApiKeyBinding;
+    user: IUser;
+    request: Request;
+  }) => Promise<boolean>;
 }
 
 export interface RemoteAgentAccessDependencies {
@@ -27,13 +49,17 @@ export interface RemoteAgentAccessDependencies {
 
 export interface ApiKeyAuthRequest extends Request {
   user?: IUser & { id: string };
-  apiKeyId?: Types.ObjectId;
+  apiKeyId?: string;
+  /** Set for a key issued to an integration. Such a key is not the owner's personal key. */
+  apiKeyBound?: boolean;
 }
 
 export interface RemoteAgentAccessRequest extends ApiKeyAuthRequest {
   agent?: { _id: Types.ObjectId; [key: string]: unknown };
   agentPermissions?: number;
 }
+
+type AgentIdResolver = (req: RemoteAgentAccessRequest) => string | undefined;
 
 export function createRequireApiKeyAuth(deps: ApiKeyAuthDependencies) {
   return async (
@@ -66,7 +92,9 @@ export function createRequireApiKeyAuth(deps: ApiKeyAuthDependencies) {
     }
 
     try {
-      const keyValidation = await deps.validateAgentApiKey(apiKey);
+      const keyValidation =
+        (await deps.validateAgentApiKey(apiKey)) ??
+        (deps.authorizeBinding ? await deps.validateBoundAgentApiKey?.(apiKey) : null);
 
       if (!keyValidation) {
         return res.status(401).json({
@@ -78,7 +106,11 @@ export function createRequireApiKeyAuth(deps: ApiKeyAuthDependencies) {
         });
       }
 
-      const user = await deps.findUser({ _id: keyValidation.userId });
+      const userId = keyValidation.userId.toString();
+      const [user, principalActive] = await Promise.all([
+        deps.findUser({ _id: keyValidation.userId }),
+        deps.isPrincipalActive(userId),
+      ]);
 
       if (!user) {
         return res.status(401).json({
@@ -91,12 +123,49 @@ export function createRequireApiKeyAuth(deps: ApiKeyAuthDependencies) {
       }
 
       user.id = (user._id as Types.ObjectId).toString();
+      if (
+        keyValidation.binding &&
+        !(await deps.authorizeBinding?.({
+          keyId: String(keyValidation.keyId),
+          binding: keyValidation.binding,
+          user,
+          request: req,
+        }))
+      ) {
+        return res.status(403).json({
+          error: {
+            message: 'API key authority is unavailable',
+            type: 'permission_error',
+            code: 'api_key_authority_changed',
+          },
+        });
+      }
+      if (!principalActive) {
+        return res.status(409).json({
+          error: {
+            message: 'Account deletion is in progress',
+            type: 'invalid_request_error',
+            code: 'account_deletion_in_progress',
+          },
+        });
+      }
+      /** A key outlives the enforcement switch, so it waits on enrollment like the owner's session. */
+      if ((deps.enrollmentRequired ?? isTwoFactorEnrollmentRequired)(user)) {
+        return res.status(403).json({
+          error: {
+            message: 'Two-factor authentication must be enabled for this account',
+            type: 'permission_error',
+            code: TWO_FACTOR_ENROLLMENT_REQUIRED_CODE,
+          },
+        });
+      }
       req.user = user as IUser & { id: string };
-      req.apiKeyId = keyValidation.keyId;
+      req.apiKeyId = String(keyValidation.keyId);
+      if (keyValidation.binding) req.apiKeyBound = true;
 
       next();
     } catch (error) {
-      logger.error('[requireApiKeyAuth] Error validating API key:', error);
+      logger.error('[requireApiKeyAuth] Error validating API key:', getSafeErrorMetadata(error));
       return res.status(500).json({
         error: {
           message: 'Internal server error during authentication',
@@ -108,35 +177,37 @@ export function createRequireApiKeyAuth(deps: ApiKeyAuthDependencies) {
   };
 }
 
-export function createCheckRemoteAgentAccess(deps: RemoteAgentAccessDependencies) {
-  return async (
-    req: RemoteAgentAccessRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<Response | undefined> => {
-    const agentId = req.body?.model || req.params?.model;
+function createAgentAccessMiddleware(
+  deps: RemoteAgentAccessDependencies,
+  resolveAgentId: AgentIdResolver,
+): RequestHandler {
+  return async (baseReq, res, next): Promise<void> => {
+    const req = baseReq as RemoteAgentAccessRequest;
+    const agentId = resolveAgentId(req);
 
-    if (!agentId) {
-      return res.status(400).json({
+    if (typeof agentId !== 'string' || agentId.trim() === '') {
+      res.status(400).json({
         error: {
           message: 'Model (agent ID) is required',
           type: 'invalid_request_error',
           code: 'missing_model',
         },
       });
+      return;
     }
 
     try {
       const agent = await deps.getAgent({ id: agentId });
 
       if (!agent) {
-        return res.status(404).json({
+        res.status(404).json({
           error: {
             message: `Agent not found: ${agentId}`,
             type: 'invalid_request_error',
             code: 'model_not_found',
           },
         });
+        return;
       }
 
       const userId = req.user?.id || '';
@@ -144,13 +215,14 @@ export function createCheckRemoteAgentAccess(deps: RemoteAgentAccessDependencies
       const permissions = await getRemoteAgentPermissions(deps, userId, req.user?.role, agent._id);
 
       if (!hasPermissions(permissions, PermissionBits.VIEW)) {
-        return res.status(403).json({
+        res.status(403).json({
           error: {
             message: `No remote access to agent: ${agentId}`,
             type: 'permission_error',
             code: 'access_denied',
           },
         });
+        return;
       }
 
       req.agent = agent;
@@ -159,7 +231,7 @@ export function createCheckRemoteAgentAccess(deps: RemoteAgentAccessDependencies
       next();
     } catch (error) {
       logger.error('[checkRemoteAgentAccess] Error checking agent access:', error);
-      return res.status(500).json({
+      res.status(500).json({
         error: {
           message: 'Internal server error while checking agent access',
           type: 'server_error',
@@ -168,4 +240,12 @@ export function createCheckRemoteAgentAccess(deps: RemoteAgentAccessDependencies
       });
     }
   };
+}
+
+export function createCheckRemoteAgentAccess(deps: RemoteAgentAccessDependencies): RequestHandler {
+  return createAgentAccessMiddleware(deps, (req) => req.body?.model || req.params?.model);
+}
+
+export function createCheckAgentTriggerAccess(deps: RemoteAgentAccessDependencies): RequestHandler {
+  return createAgentAccessMiddleware(deps, (req) => req.body?.target?.agentId);
 }

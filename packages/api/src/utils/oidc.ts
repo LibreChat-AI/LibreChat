@@ -1,5 +1,7 @@
+import jwt from 'jsonwebtoken';
 import { logger } from '@librechat/data-schemas';
 import type { IUser, OIDCTokens } from '@librechat/data-schemas';
+import { OPENID_EXPIRY_BUFFER_SECONDS } from '~/oauth/expiry';
 
 export interface OpenIDTokenInfo {
   accessToken?: string;
@@ -28,6 +30,8 @@ export const OPENID_TOKEN_FIELDS = [
   'EXPIRES_AT',
 ] as const;
 
+export type OpenIDTokenField = (typeof OPENID_TOKEN_FIELDS)[number];
+
 /**
  * Placeholder for Microsoft Graph API access token.
  * This placeholder is resolved asynchronously via OBO (On-Behalf-Of) flow
@@ -36,13 +40,207 @@ export const OPENID_TOKEN_FIELDS = [
 export const GRAPH_TOKEN_PLACEHOLDER = '{{LIBRECHAT_GRAPH_ACCESS_TOKEN}}';
 
 /**
+ * The subset of OpenID placeholders that cannot resolve without a usable token
+ * set. Identity metadata (`USER_ID`, `USER_EMAIL`, `USER_NAME`) comes from the
+ * user document and `EXPIRES_AT` is only ever a hint, so those must keep their
+ * pre-existing literal-then-strip behaviour when the token set is invalid
+ * rather than raising re-auth. Non-global so `exec` stays stateless, and
+ * unknown names are excluded so a typo stays literal and diagnosable.
+ */
+export const OPENID_CREDENTIAL_PLACEHOLDER_PATTERN: RegExp =
+  /\{\{LIBRECHAT_OPENID_(?:ACCESS_TOKEN|ID_TOKEN|TOKEN)\}\}/;
+
+/**
+ * Whether a value names a credential LibreChat fills in for each user: an OpenID token, or the
+ * Microsoft Graph token the OBO flow obtains. Identity and request placeholders are not.
+ */
+export function hasUserCredentialPlaceholder(value: string): boolean {
+  return (
+    OPENID_CREDENTIAL_PLACEHOLDER_PATTERN.test(value) || value.includes(GRAPH_TOKEN_PLACEHOLDER)
+  );
+}
+
+/**
  * Default Microsoft Graph API scopes for OBO token exchange.
  * Can be overridden via GRAPH_API_SCOPES environment variable.
  */
 export const DEFAULT_GRAPH_SCOPES = 'https://graph.microsoft.com/.default';
 
-/** Shared with AuthController's OpenID session reuse check: a token within the buffer would expire in transit and 401 downstream */
-export const OPENID_EXPIRY_BUFFER_SECONDS = 30;
+/** Claims consulted when deciding whether a verified JWT is an access token rather than an ID token. */
+export interface JwtTypeClaims {
+  aud?: string | string[];
+  scp?: unknown;
+  scope?: unknown;
+  at_hash?: unknown;
+  c_hash?: unknown;
+}
+
+/** The configured audiences a verified JWT is weighed against. */
+export interface AccessTokenAudiences {
+  /** Audiences that name a protected resource rather than the OIDC client. */
+  resources?: ReadonlySet<string>;
+  /** The OIDC client id, so an `aud` that still names it is not read as resource-bound. */
+  clientId?: string;
+}
+
+/** RFC 9068 media type for a JWT access token, as it appears in the `typ` header (compared case-insensitively). */
+const ACCESS_TOKEN_JWT_TYPES = new Set(['at+jwt', 'application/at+jwt']);
+
+function decodeJwtHeaderType(token: string): string | undefined {
+  try {
+    const header = JSON.parse(Buffer.from(token.split('.')[0], 'base64').toString());
+    return typeof header?.typ === 'string' ? header.typ.toLowerCase() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function audienceList(aud: string | string[] | undefined): string[] {
+  if (typeof aud === 'string') {
+    return [aud];
+  }
+  return Array.isArray(aud) ? aud : [];
+}
+
+/**
+ * Decides whether a verified bearer JWT is an OAuth 2.0 access token, so it may stand in for a
+ * stored access token. Passing this strategy's audience check does not settle the question: an
+ * OIDC ID token is minted for the client id and satisfies the same check, and using one as the
+ * On-Behalf-Of assertion is rejected by the IdP (Entra answers `AADSTS240002`).
+ *
+ * Only two signals distinguish the two by specification rather than by provider convention:
+ * - an RFC 9068 `at+jwt` header type, which is defined for access tokens alone;
+ * - an `aud` that omits the OIDC client id, which OIDC Core §2 requires every ID token to carry,
+ *   so a token without it cannot be an ID token for this deployment.
+ *
+ * Claim presence is deliberately not proof on its own. Providers add claims freely in both
+ * directions — Keycloak has emitted `nonce` and `auth_time` in access tokens, and maps `scope`
+ * into ID tokens — so `scp`/`scope` only qualifies a token whose audience has already ruled out
+ * an ID token. While the client id is in `aud` the token may be either, and it fails closed.
+ *
+ * `at_hash` and `c_hash` veto regardless, since they exist only to bind an ID token to its
+ * companion access token or code.
+ */
+export function isAccessTokenJwt(
+  token: string | undefined,
+  claims: JwtTypeClaims | undefined,
+  audiences?: AccessTokenAudiences,
+): boolean {
+  if (!token || !claims) {
+    return false;
+  }
+
+  if (claims.at_hash != null || claims.c_hash != null) {
+    return false;
+  }
+
+  const headerType = decodeJwtHeaderType(token);
+  if (headerType != null && ACCESS_TOKEN_JWT_TYPES.has(headerType)) {
+    return true;
+  }
+
+  /** Without a configured client id the audience can rule nothing out, so nothing but `at+jwt` qualifies */
+  if (audiences?.clientId == null) {
+    return false;
+  }
+
+  const tokenAudiences = audienceList(claims.aud);
+  if (tokenAudiences.includes(audiences.clientId)) {
+    return false;
+  }
+
+  if (audiences.resources?.size) {
+    if (tokenAudiences.some((audience) => audiences.resources!.has(audience))) {
+      return true;
+    }
+  }
+
+  return claims.scp != null || claims.scope != null;
+}
+
+/** Every audience the OpenID bearer verifier accepts: the client id plus each `OPENID_AUDIENCE` entry. */
+export function getOpenIDBearerAudiences(clientId?: string, audience?: string): string[] {
+  const configured = (audience ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return [...new Set([clientId, ...configured].filter((value): value is string => Boolean(value)))];
+}
+
+function decodeJwtClaims(token: string): jwt.JwtPayload | undefined {
+  const decoded = jwt.decode(token);
+  return decoded && typeof decoded === 'object' ? decoded : undefined;
+}
+
+/**
+ * Whether claims name an audience the OpenID bearer verifier accepts. An access token minted for
+ * another resource (Entra issues Microsoft Graph tokens to sign-in clients by default) is still
+ * time-valid, yet the verifier rejects it, so handing it out as the app token makes every protected
+ * request answer 401 and the client refresh in a loop. With no configured audience the verifier
+ * checks none, and neither does this.
+ */
+export function hasOpenIDBearerAudience(
+  claims: JwtTypeClaims | undefined,
+  audiences: readonly string[],
+): boolean {
+  if (!audiences.length) {
+    return true;
+  }
+  return audienceList(claims?.aud).some((audience) => audiences.includes(audience));
+}
+
+/**
+ * The access token as the app auth fallback, unless it is a JWT whose `aud` provably names none of
+ * the verifier's audiences. Opaque tokens keep the legacy fallback, since nothing can be read from them.
+ */
+export function getOpenIDAppAccessToken(
+  accessToken: string | undefined,
+  audiences: readonly string[],
+): string | undefined {
+  if (!accessToken) {
+    return undefined;
+  }
+  const claims = decodeJwtClaims(accessToken);
+  if (!claims || hasOpenIDBearerAudience(claims, audiences)) {
+    return accessToken;
+  }
+  return undefined;
+}
+
+export type ReusableOpenIDBearer = { token: string; type: 'id_token' | 'access_token' };
+
+/**
+ * Picks a cached session token the app can hand out again without an IdP refresh: the ID token,
+ * then the access token, each only while it outlives `expiryBufferSeconds`. The access token also
+ * has to carry an audience the bearer verifier accepts; otherwise the caller refreshes instead.
+ * Decode only: the tokens come from the trusted server-side session.
+ */
+export function selectReusableOpenIDBearer(
+  tokens: { idToken?: string; accessToken?: string } | undefined,
+  options: { audiences: readonly string[]; expiryBufferSeconds: number; nowSeconds?: number },
+): ReusableOpenIDBearer | null {
+  const now = options.nowSeconds ?? Math.floor(Date.now() / 1000);
+  const candidates: ReusableOpenIDBearer[] = [];
+  if (tokens?.idToken) {
+    candidates.push({ token: tokens.idToken, type: 'id_token' });
+  }
+  if (tokens?.accessToken) {
+    candidates.push({ token: tokens.accessToken, type: 'access_token' });
+  }
+
+  for (const candidate of candidates) {
+    const claims = decodeJwtClaims(candidate.token);
+    if (typeof claims?.exp !== 'number' || claims.exp <= now + options.expiryBufferSeconds) {
+      continue;
+    }
+    if (candidate.type === 'access_token' && !hasOpenIDBearerAudience(claims, options.audiences)) {
+      continue;
+    }
+    return candidate;
+  }
+
+  return null;
+}
 
 /**
  * Signals that the stored OpenID credentials cannot satisfy a placeholder, so the user must
@@ -148,9 +346,15 @@ export function isOpenIDTokenValid(tokenInfo: OpenIDTokenInfo | null): boolean {
   return true;
 }
 
+/**
+ * @param fields Restricts which placeholders may resolve. Callers holding a token set whose
+ * access token is unusable pass `['ID_TOKEN']`, so the ID token resolves on its own expiry while
+ * every other placeholder keeps its literal-then-strip behaviour.
+ */
 export function processOpenIDPlaceholders(
   value: string,
   tokenInfo: OpenIDTokenInfo | null,
+  fields: readonly OpenIDTokenField[] = OPENID_TOKEN_FIELDS,
 ): string {
   if (!tokenInfo || typeof value !== 'string') {
     return value;
@@ -158,7 +362,7 @@ export function processOpenIDPlaceholders(
 
   let processedValue = value;
 
-  for (const field of OPENID_TOKEN_FIELDS) {
+  for (const field of fields) {
     const placeholder = `{{LIBRECHAT_OPENID_${field}}}`;
     if (!processedValue.includes(placeholder)) {
       continue;
@@ -198,26 +402,10 @@ export function processOpenIDPlaceholders(
   }
 
   const genericPlaceholder = '{{LIBRECHAT_OPENID_TOKEN}}';
-  if (processedValue.includes(genericPlaceholder)) {
+  if (fields.includes('ACCESS_TOKEN') && processedValue.includes(genericPlaceholder)) {
     const replacementValue = tokenInfo.accessToken || '';
     processedValue = processedValue.replace(new RegExp(genericPlaceholder, 'g'), replacementValue);
   }
 
   return processedValue;
-}
-
-export function createBearerAuthHeader(tokenInfo: OpenIDTokenInfo | null): string {
-  if (!tokenInfo || !tokenInfo.accessToken) {
-    return '';
-  }
-
-  return `Bearer ${tokenInfo.accessToken}`;
-}
-
-export function isOpenIDAvailable(): boolean {
-  const openidClientId = process.env.OPENID_CLIENT_ID;
-  const openidClientSecret = process.env.OPENID_CLIENT_SECRET;
-  const openidIssuer = process.env.OPENID_ISSUER;
-
-  return !!(openidClientId && openidClientSecret && openidIssuer);
 }

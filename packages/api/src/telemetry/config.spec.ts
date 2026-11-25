@@ -5,6 +5,9 @@ describe('getTelemetryConfig', () => {
     const config = getTelemetryConfig({});
 
     expect(config.enabled).toBe(false);
+    expect(config.tracingEnabled).toBe(false);
+    expect(config.logsEnabled).toBe(false);
+    expect(config.logsLevel).toBe('info');
     expect(config.sdkDisabled).toBe(false);
     expect(config.serviceName).toBe('librechat');
     expect(config.healthPath).toBe('/health');
@@ -17,13 +20,30 @@ describe('getTelemetryConfig', () => {
     expect(getTelemetryConfig({ OTEL_TRACING_ENABLED: 'false' }).enabled).toBe(false);
   });
 
-  it('lets OTEL_SDK_DISABLED override tracing enablement', () => {
+  it('enables logs only when OTEL_LOGS_ENABLED is true', () => {
+    const config = getTelemetryConfig({ OTEL_LOGS_ENABLED: 'true' });
+
+    expect(config.enabled).toBe(true);
+    expect(config.logsEnabled).toBe(true);
+    expect(config.tracingEnabled).toBe(false);
+    expect(getTelemetryConfig({ OTEL_LOGS_ENABLED: 'false' }).logsEnabled).toBe(false);
+  });
+
+  it('normalizes OTEL_LOGS_LEVEL', () => {
+    expect(getTelemetryConfig({ OTEL_LOGS_LEVEL: ' Warn ' }).logsLevel).toBe('warn');
+    expect(getTelemetryConfig({ OTEL_LOGS_LEVEL: '  ' }).logsLevel).toBe('info');
+  });
+
+  it('lets OTEL_SDK_DISABLED override tracing and logs enablement', () => {
     const config = getTelemetryConfig({
+      OTEL_LOGS_ENABLED: 'true',
       OTEL_SDK_DISABLED: 'true',
       OTEL_TRACING_ENABLED: 'true',
     });
 
     expect(config.enabled).toBe(false);
+    expect(config.tracingEnabled).toBe(false);
+    expect(config.logsEnabled).toBe(false);
     expect(config.sdkDisabled).toBe(true);
   });
 
@@ -43,6 +63,22 @@ describe('getTelemetryConfig', () => {
     });
 
     expect(config.serviceVersion).toBe('0.8.5');
+  });
+
+  it('reports the baked BUILD_COMMIT ahead of the package version', () => {
+    const commit = 'f177bed1757c1b7a4e2bd2a7d1c7a3d0e9a6b5c4';
+
+    expect(
+      getTelemetryConfig({ BUILD_COMMIT: ` ${commit} `, npm_package_version: '0.8.5' })
+        .serviceVersion,
+    ).toBe(commit);
+    expect(
+      getTelemetryConfig({ BUILD_COMMIT: commit, OTEL_SERVICE_VERSION: '1.2.3' }).serviceVersion,
+    ).toBe('1.2.3');
+    expect(
+      getTelemetryConfig({ BUILD_COMMIT: '  ', npm_package_version: '0.8.5' }).serviceVersion,
+    ).toBe('0.8.5');
+    expect(getTelemetryConfig({}).serviceVersion).toBeUndefined();
   });
 
   it('enables ioredis instrumentation only when explicitly configured', () => {

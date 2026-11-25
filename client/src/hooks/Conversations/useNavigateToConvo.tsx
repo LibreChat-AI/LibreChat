@@ -1,7 +1,8 @@
 import { useCallback } from 'react';
-import { useSetRecoilState } from 'recoil';
 import { useNavigate } from 'react-router-dom';
-import { useQueryClient } from '@tanstack/react-query';
+import { useSetAtom, getDefaultStore } from 'jotai';
+import { submissionByIndex } from '@librechat/chat/react';
+import { useQueryClient, isCancelledError } from '@tanstack/react-query';
 import {
   QueryKeys,
   Constants,
@@ -21,10 +22,13 @@ import {
   getDefaultEndpoint,
   buildDefaultConvo,
   requestChatFocus,
+  conversationTarget,
+  hasRetiredSavedSpec,
   isNotFoundError,
   updateConvoInAllQueries,
   logger,
 } from '~/utils';
+import { navigationGenerationAtom } from '~/store/navigation';
 import { useApplyModelSpecEffects } from '~/hooks/Agents';
 import { startupConfigKey } from '~/data-provider';
 import store from '~/store';
@@ -65,11 +69,21 @@ const currentRoute = () => window.location.pathname + window.location.search;
  * subsumes the other — the generation says "a newer intent replaced this one",
  * the route says "the user left by some means this hook never saw".
  *
- * Module-scoped for the same reason the route is read from the browser: every
- * sidebar row mounts its own `useNavigateToConvo`, so a ref would be private
- * to the row that was clicked and blind to the click that superseded it.
+ * Lives in `navigationGenerationAtom` (`~/store/navigation`), not a hook-local
+ * ref, for the same reason the route is read from the browser: every sidebar
+ * row mounts its own `useNavigateToConvo`, so a ref would be private to the
+ * row that was clicked and blind to the click that superseded it. The same
+ * atom lets a component outside this hook — a prompt card or the slash
+ * command, cancelling its own pending Langfuse resolve — treat a navigation
+ * that has only just started as supersession too, before the target
+ * conversation commits and its own identity changes.
  */
-let navigationGeneration = 0;
+const bumpNavigationGeneration = () => {
+  const defaultStore = getDefaultStore();
+  const generation = defaultStore.get(navigationGenerationAtom) + 1;
+  defaultStore.set(navigationGenerationAtom, generation);
+  return generation;
+};
 
 /**
  * Records that the user has asked for a different conversation, so a first
@@ -87,7 +101,7 @@ let navigationGeneration = 0;
  * is not.
  */
 export const supersedeNavigation = () => {
-  navigationGeneration++;
+  bumpNavigationGeneration();
 };
 
 const useNavigateToConvo = (index = 0) => {
@@ -95,7 +109,7 @@ const useNavigateToConvo = (index = 0) => {
   const queryClient = useQueryClient();
   const clearAllConversations = store.useClearConvoState();
   const applyModelSpecEffects = useApplyModelSpecEffects();
-  const setSubmission = useSetRecoilState(store.submissionByIndex(index));
+  const setSubmission = useSetAtom(submissionByIndex(index));
   const { hasSetConversation, setConversation: setConvo } = store.useSetConversationAtom(index);
 
   const setConversation = useCallback(
@@ -144,36 +158,47 @@ const useNavigateToConvo = (index = 0) => {
    * never left. The refreshed record is read by the next switch to this
    * conversation, which is where a cached record is consumed.
    */
-  const refreshConversationRecord = async (conversationId: string) => {
+  const refreshConversationRecord = async (conversationId: string, cached: TConversation) => {
+    const key = [QueryKeys.conversation, conversationId];
     try {
-      const data = await fetchConversationRecord(conversationId);
+      // Fetch without publishing first. A turn can commit a different target
+      // into the detail cache while this request is in flight.
+      const response = await dataService.getConversationById(conversationId);
+      if (queryClient.getQueryData<TConversation>(key) !== cached) {
+        return;
+      }
+      let data: TConversation = response;
+      if (response.targetResolutionFailed) {
+        const { targetResolutionFailed: _, ...stored } = response;
+        const endpoints = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
+        const keepTarget =
+          stored.spec &&
+          stored.spec === cached.spec &&
+          stored.endpoint &&
+          cached.endpoint &&
+          endpoints?.[cached.endpoint] &&
+          !endpoints[stored.endpoint];
+        data = keepTarget ? { ...stored, ...conversationTarget(cached) } : stored;
+      }
+      queryClient.setQueryData(key, data);
       logger.log('conversation', 'Refreshed cached conversation record', data);
-      /** The sidebar row overlays this record on the next switch, and the row
-       * projection carries `endpoint`, `model` and `spec` — so leaving the list
-       * untouched would let a row from before an edit made elsewhere reinstate
-       * the old setting on every switch until the list itself refetches, which
-       * is the opposite of what this refresh is for.
-       *
-       * Only those three fields. This response is a snapshot from before the
-       * user could touch anything, and the list is where renaming, pinning and
-       * sharing land — writing it wholesale would undo a rename that completed
-       * while this was in flight, which is the same stale-snapshot-over-live-
-       * state mistake this refresh stopped making against the conversation
-       * atom. No list mutation touches these three. */
+      // Refresh only the routing fields so a stale row cannot undo a target change
+      // on the next switch or overwrite a concurrent rename or pin.
       updateConvoInAllQueries(queryClient, conversationId, (row) => ({
         ...row,
-        endpoint: data.endpoint,
-        model: data.model,
-        spec: data.spec,
+        ...conversationTarget(data),
       }));
     } catch (error) {
+      if (isCancelledError(error)) {
+        return;
+      }
       logger.error('conversation', 'Error refreshing conversation record on navigation', error);
       /** Only a conversation that is confirmed GONE invalidates what is on
        * screen. The messages query is already mounted by now, so dropping its
        * cache on a transient failure would cancel an in-flight history fetch
        * (or discard one that already succeeded) with no route change left to
        * remount it, blanking a transcript that was fine. */
-      if (isNotFoundError(error)) {
+      if (isNotFoundError(error) && queryClient.getQueryData<TConversation>(key) === cached) {
         queryClient.removeQueries([QueryKeys.messages, conversationId]);
       }
     }
@@ -185,10 +210,14 @@ const useNavigateToConvo = (index = 0) => {
    * prompt prefix, sampling params, tools or files. Landing the route on that
    * would expose a usable composer whose sends silently carry default
    * settings, so this path keeps the pre-existing behavior and moves the route
-   * once the real record is in hand. Every later switch to this conversation
-   * takes the instant path above.
+   * once the real record is in hand. A retired sidebar target can also need
+   * a refresh before opening when the cache has no usable replacement.
    */
-  const navigateWithRecord = async (conversation: TConversation, generation: number) => {
+  const navigateWithRecord = async (
+    conversation: TConversation,
+    generation: number,
+    cachedConvo?: TConversation,
+  ) => {
     const conversationId = conversation.conversationId;
     if (!conversationId) {
       return;
@@ -205,13 +234,26 @@ const useNavigateToConvo = (index = 0) => {
       record = await fetchConversationRecord(conversationId);
       logger.log('conversation', 'Fetched fresh conversation data', record);
     } catch (error) {
-      logger.error('conversation', 'Error fetching conversation data on navigation', error);
-      /** Nothing is mounted for this conversation yet, so clearing a warm
-       * cache here still predates the route change: the target mounts a fresh
-       * query rather than rendering contents that may no longer exist. */
-      queryClient.removeQueries([QueryKeys.messages, conversationId]);
+      if (isCancelledError(error)) {
+        const committed = queryClient.getQueryData<TConversation>([
+          QueryKeys.conversation,
+          conversationId,
+        ]);
+        if (!committed) {
+          return;
+        }
+        record = committed;
+      } else {
+        logger.error('conversation', 'Error fetching conversation data on navigation', error);
+        if (cachedConvo && !isNotFoundError(error)) {
+          record = { ...cachedConvo, ...conversation };
+        } else {
+          queryClient.removeQueries([QueryKeys.messages, conversationId]);
+        }
+      }
     }
-    if (generation !== navigationGeneration || currentRoute() !== routeAtStart) {
+    const isSuperseded = generation !== getDefaultStore().get(navigationGenerationAtom);
+    if (isSuperseded || currentRoute() !== routeAtStart) {
       logger.log('conversation', 'Discarding superseded navigation', conversationId);
       return;
     }
@@ -234,14 +276,14 @@ const useNavigateToConvo = (index = 0) => {
     hasSetConversation.current = true;
     /** Claim this click's place in the order before any await, so a request
      * still in flight for an earlier one cannot land on top of it. */
-    const generation = ++navigationGeneration;
+    const generation = bumpNavigationGeneration();
     setSubmission(null);
 
     let convo = { ...conversation };
     const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
-    if (!convo.endpoint || !endpointsConfig?.[convo.endpoint]) {
+    const retiredSpec = hasRetiredSavedSpec(convo, endpointsConfig);
+    if (!retiredSpec && (!convo.endpoint || !endpointsConfig?.[convo.endpoint])) {
       /* undefined/removed endpoint edge case */
-      const modelsConfig = queryClient.getQueryData<TModelsConfig>([QueryKeys.models]);
       const defaultEndpoint = getDefaultEndpoint({
         convoSetup: conversation,
         endpointsConfig,
@@ -252,7 +294,9 @@ const useNavigateToConvo = (index = 0) => {
         conversation.endpointType = endpointType;
       }
 
-      const models = modelsConfig?.[defaultEndpoint ?? ''] ?? [];
+      const models = queryClient.getQueryData<TModelsConfig>([QueryKeys.models, defaultEndpoint])?.[
+        defaultEndpoint ?? ''
+      ];
 
       const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, defaultEndpoint);
       convo = buildDefaultConvo({
@@ -293,9 +337,22 @@ const useNavigateToConvo = (index = 0) => {
         QueryKeys.conversation,
         convo.conversationId,
       ]);
-      queryClient.invalidateQueries([QueryKeys.conversation, convo.conversationId]);
-      if (!cachedConvo) {
-        navigateWithRecord(convo, generation);
+      queryClient.invalidateQueries({
+        queryKey: [QueryKeys.conversation, convo.conversationId],
+        exact: true,
+        refetchType: 'none',
+      });
+      // A retired row cannot supply the target, but a compatible cached detail
+      // can still open immediately and revalidate in the background.
+      const recoveredTarget =
+        retiredSpec &&
+        cachedConvo?.spec === convo.spec &&
+        cachedConvo?.endpoint &&
+        endpointsConfig?.[cachedConvo.endpoint]
+          ? conversationTarget(cachedConvo)
+          : undefined;
+      if (!cachedConvo || (retiredSpec && !recoveredTarget)) {
+        navigateWithRecord(convo, generation, cachedConvo);
         return;
       }
       /** Route and conversation state change together, in the click's own
@@ -305,9 +362,9 @@ const useNavigateToConvo = (index = 0) => {
        * (prompt prefix, sampling params, files) survives, and this is the last
        * write this navigation makes — what the user sees now is what a send
        * will carry until they change it themselves. */
-      applyConversation({ ...cachedConvo, ...convo });
+      applyConversation({ ...cachedConvo, ...convo, ...recoveredTarget });
       navigate(`/c/${convo.conversationId}`);
-      refreshConversationRecord(convo.conversationId);
+      refreshConversationRecord(convo.conversationId, cachedConvo);
     } else {
       setConversation(convo);
       requestChatFocus();

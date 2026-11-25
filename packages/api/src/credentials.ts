@@ -1,6 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import {
+  finishWindowsPrivateRepair,
+  publishWindowsPrivateFile,
+  readWindowsPrivateFile,
+} from './utils/windowsPrivate';
 
 export const credentialNames = [
   'CREDS_KEY',
@@ -11,7 +16,7 @@ export const credentialNames = [
 
 export type CredentialName = (typeof credentialNames)[number];
 
-export type CredentialSource = 'environment' | 'temporary' | 'legacy-default';
+export type CredentialSource = 'environment' | 'temporary';
 
 export interface CredentialRuntimeState {
   filePath: string;
@@ -33,6 +38,7 @@ interface CredentialFileResult {
   values: Partial<Record<CredentialName, string>>;
   exists: boolean;
   readable: boolean;
+  digest?: string;
 }
 
 type CredentialFileWriteResult = 'written' | 'exists' | 'failed';
@@ -56,6 +62,18 @@ const legacyCredentialFingerprints: Partial<Record<CredentialName, string[]>> = 
   JWT_REFRESH_SECRET: ['282ad5f60261639fefed381976b4d0dde52eab5527a1ab2ec75d5be1efa1165b'],
 };
 
+const legacyJwtCredentialNames = new Set<CredentialName>(['JWT_SECRET', 'JWT_REFRESH_SECRET']);
+
+function rejectLegacyJwtCredential(name: CredentialName, value: string): void {
+  if (!legacyJwtCredentialNames.has(name) || !isLegacyCredential(name, value)) {
+    return;
+  }
+
+  throw new Error(
+    `[credentials] ${name} uses a retired default value. Configure a unique replacement before starting LibreChat.`,
+  );
+}
+
 function getRuntimeState(): CredentialRuntimeState | undefined {
   const runtime = globalThis as typeof globalThis &
     Record<symbol, CredentialRuntimeState | undefined>;
@@ -70,7 +88,14 @@ function setRuntimeState(state: CredentialRuntimeState): void {
 
 function getCredentialPath(): string {
   const configuredPath = process.env[tempCredentialPathEnvironment]?.trim();
-  return path.resolve(configuredPath || path.join(process.cwd(), '.env.temp'));
+  const file = path.resolve(configuredPath || path.join(process.cwd(), '.env.temp'));
+  if (process.platform !== 'win32') return file;
+  try {
+    return path.join(fs.realpathSync.native(path.dirname(file)), path.basename(file));
+  } catch {
+    // A new path may not have a parent yet. Canonicalize it after mkdir before publishing.
+    return file;
+  }
 }
 
 function parseCredentialFile(contents: string): Partial<Record<CredentialName, string>> {
@@ -91,10 +116,25 @@ function parseCredentialFile(contents: string): Partial<Record<CredentialName, s
 
 function readCredentialFile(filePath: string): CredentialFileResult {
   try {
+    let contents: string;
+    let digest: string | undefined;
+    if (process.platform === 'win32') {
+      if (isProtectedEnvironmentPath(filePath))
+        return { values: {}, exists: true, readable: false };
+      const stat = fs.lstatSync(filePath);
+      if (!stat.isFile() || stat.nlink !== 1) throw new Error('Not a single-link credential file.');
+      const bytes = readWindowsPrivateFile(filePath);
+      if (!bytes) return { values: {}, exists: false, readable: true };
+      contents = bytes.toString('utf8');
+      if (filePath.endsWith('.lock')) digest = sha256(bytes);
+    } else {
+      contents = fs.readFileSync(filePath, 'utf8');
+    }
     return {
-      values: parseCredentialFile(fs.readFileSync(filePath, 'utf8')),
+      values: parseCredentialFile(contents),
       exists: true,
       readable: true,
+      digest,
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -134,7 +174,8 @@ function generateCredential(name: CredentialName): string {
 }
 
 function isProtectedEnvironmentPath(filePath: string): boolean {
-  const basename = path.basename(path.resolve(filePath));
+  const filename = path.basename(path.resolve(filePath));
+  const basename = process.platform === 'win32' ? filename.toLowerCase() : filename;
   return basename === '.env' || basename === '.env.example';
 }
 
@@ -146,11 +187,58 @@ function serializeCredentialFile(values: Partial<Record<CredentialName, string>>
   ].join('\n');
 }
 
-function hasUsableCredentialValues(filePath: string, names: CredentialName[]): boolean {
-  const file = readCredentialFile(filePath);
+function hasUsableValues(file: CredentialFileResult, names: CredentialName[]): boolean {
   return (
     file.readable && names.every((name) => isUsableTemporaryCredential(name, file.values[name]))
   );
+}
+
+function sha256(contents: string | Buffer): string {
+  return crypto.createHash('sha256').update(contents).digest('hex');
+}
+
+function writeWindowsCredentialFile(
+  filePath: string,
+  temporaryPath: string,
+  contents: string,
+  overwrite: boolean,
+  generatedNames: CredentialName[],
+): CredentialFileWriteResult {
+  if (!overwrite) return publishWindowsPrivateFile(temporaryPath, filePath, contents);
+
+  // Use a no-replace move instead of creating a second link to a credential inode.
+  const lockPath = `${filePath}.lock`;
+  const ownsLock = publishWindowsPrivateFile(temporaryPath, lockPath, contents) === 'written';
+  let ownDigest = ownsLock ? sha256(contents) : undefined;
+  try {
+    const candidate = ownsLock ? undefined : readCredentialFile(lockPath);
+    const final = readCredentialFile(filePath);
+    if (!final.readable) return 'failed';
+    if (hasUsableValues(final, generatedNames)) return 'exists';
+
+    const digest =
+      ownDigest ??
+      (candidate && hasUsableValues(candidate, generatedNames) ? candidate.digest : undefined);
+    if (digest) {
+      try {
+        if (finishWindowsPrivateRepair(lockPath, digest, filePath) && ownsLock) {
+          ownDigest = undefined;
+          return 'written';
+        }
+      } catch {
+        // Another process may have read or promoted the same candidate first.
+      }
+    }
+    return hasUsableValues(readCredentialFile(filePath), generatedNames) ? 'exists' : 'failed';
+  } finally {
+    if (ownDigest) {
+      try {
+        finishWindowsPrivateRepair(lockPath, ownDigest);
+      } catch {
+        // A protected repair candidate can be adopted on a later startup.
+      }
+    }
+  }
 }
 
 function writeCredentialFile(
@@ -167,8 +255,20 @@ function writeCredentialFile(
   const lockPath = `${filePath}.lock`;
   let ownsLock = false;
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(temporaryPath, serializeCredentialFile(values), { mode: 0o600 });
+    const contents = serializeCredentialFile(values);
+    const parent = path.dirname(filePath);
+    fs.mkdirSync(parent, { recursive: true });
+    if (process.platform === 'win32') {
+      const canonicalParent = fs.realpathSync.native(parent);
+      return writeWindowsCredentialFile(
+        path.join(canonicalParent, path.basename(filePath)),
+        path.join(canonicalParent, path.basename(temporaryPath)),
+        contents,
+        overwrite,
+        generatedNames,
+      );
+    }
+    fs.writeFileSync(temporaryPath, contents, { mode: 0o600 });
 
     if (overwrite) {
       try {
@@ -179,17 +279,17 @@ function writeCredentialFile(
           throw error;
         }
 
-        if (hasUsableCredentialValues(lockPath, generatedNames)) {
+        if (hasUsableValues(readCredentialFile(lockPath), generatedNames)) {
           try {
             fs.renameSync(lockPath, filePath);
           } catch {
             // The lock owner may have already promoted the same credential values.
           }
         }
-        return hasUsableCredentialValues(filePath, generatedNames) ? 'exists' : 'failed';
+        return hasUsableValues(readCredentialFile(filePath), generatedNames) ? 'exists' : 'failed';
       }
 
-      if (hasUsableCredentialValues(filePath, generatedNames)) {
+      if (hasUsableValues(readCredentialFile(filePath), generatedNames)) {
         return 'exists';
       }
       fs.renameSync(temporaryPath, filePath);
@@ -209,10 +309,12 @@ function writeCredentialFile(
   } catch {
     return 'failed';
   } finally {
-    try {
-      fs.unlinkSync(temporaryPath);
-    } catch {
-      // The temporary path is absent after a successful rename.
+    if (process.platform !== 'win32') {
+      try {
+        fs.unlinkSync(temporaryPath);
+      } catch {
+        // The temporary path is absent after a successful rename.
+      }
     }
     if (ownsLock) {
       try {
@@ -225,6 +327,8 @@ function writeCredentialFile(
 }
 
 function hardenCredentialFile(filePath: string): void {
+  // Windows hardens and verifies the open file before reading it.
+  if (process.platform === 'win32') return;
   try {
     fs.chmodSync(filePath, 0o600);
   } catch {
@@ -248,6 +352,8 @@ function adoptCredentialFile(
     if (!isUsableTemporaryCredential(name, value)) {
       return false;
     }
+
+    rejectLegacyJwtCredential(name, value);
   }
 
   for (const name of names) {
@@ -265,8 +371,25 @@ export function bootstrapCredentials(): CredentialRuntimeState {
     return existingState;
   }
 
+  // Validate explicit credentials before generating or adopting any missing values.
+  for (const name of ['CREDS_KEY', 'CREDS_IV'] as const) {
+    const value = process.env[name];
+    if (isConfiguredCredential(value) && !isUsableTemporaryCredential(name, value)) {
+      const bytes = name === 'CREDS_KEY' ? 32 : 16;
+      throw new Error(
+        `[credentials] ${name} must be exactly ${bytes * 2} hexadecimal characters (${bytes} bytes). ` +
+          'Refusing startup to prevent weak encryption or late crypto failures. ' +
+          'Restore the original credential if it protects existing data; plan a controlled migration before rotating it.',
+      );
+    }
+  }
+
   const filePath = getCredentialPath();
-  const file = readCredentialFile(filePath);
+  const file: CredentialFileResult =
+    process.platform === 'win32' &&
+    credentialNames.every((name) => isConfiguredCredential(process.env[name]))
+      ? { values: {}, exists: false, readable: true }
+      : readCredentialFile(filePath);
   const sources = {} as Record<CredentialName, CredentialSource>;
   const generated: CredentialName[] = [];
   const loadedFromFile: CredentialName[] = [];
@@ -276,13 +399,15 @@ export function bootstrapCredentials(): CredentialRuntimeState {
   for (const name of credentialNames) {
     const environmentValue = process.env[name];
     if (isConfiguredCredential(environmentValue)) {
-      sources[name] = isLegacyCredential(name, environmentValue) ? 'legacy-default' : 'environment';
+      rejectLegacyJwtCredential(name, environmentValue);
+      sources[name] = 'environment';
       continue;
     }
 
     missingFromEnvironment.push(name);
     const fileValue = file.values[name];
     if (isUsableTemporaryCredential(name, fileValue)) {
+      rejectLegacyJwtCredential(name, fileValue);
       process.env[name] = fileValue;
       sources[name] = 'temporary';
       loadedFromFile.push(name);
@@ -358,10 +483,7 @@ export function getCredentialRuntimeState(): CredentialRuntimeState | undefined 
 }
 
 function fingerprintCredential(value: string | undefined): string {
-  return crypto
-    .createHash('sha256')
-    .update(value ?? '')
-    .digest('hex');
+  return sha256(value ?? '');
 }
 
 export function getCredentialFingerprints(

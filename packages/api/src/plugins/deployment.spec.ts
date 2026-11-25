@@ -58,16 +58,17 @@ afterEach(async () => {
 
 describe('resolveDeploymentPluginDirectory', () => {
   it('defaults to plugin/ under the project root', () => {
-    const resolved = resolveDeploymentPluginDirectory({ projectRoot: '/srv/app', env: {} });
-    expect(resolved).toEqual({ directory: '/srv/app/plugin', explicitlyConfigured: false });
+    const resolved = resolveDeploymentPluginDirectory({ projectRoot: base, env: {} });
+    expect(resolved).toEqual({ directory: pluginsDir, explicitlyConfigured: false });
   });
 
   it('honors an absolute configured directory', () => {
+    const directory = path.join(base, 'configured-plugins');
     const resolved = resolveDeploymentPluginDirectory({
-      projectRoot: '/srv/app',
-      env: { [DEPLOYMENT_PLUGINS_DIR_ENV]: '/mnt/plugins' },
+      projectRoot: base,
+      env: { [DEPLOYMENT_PLUGINS_DIR_ENV]: directory },
     });
-    expect(resolved).toEqual({ directory: '/mnt/plugins', explicitlyConfigured: true });
+    expect(resolved).toEqual({ directory, explicitlyConfigured: true });
   });
 });
 

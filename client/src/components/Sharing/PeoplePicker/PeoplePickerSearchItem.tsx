@@ -1,4 +1,5 @@
 import React, { forwardRef } from 'react';
+import { SeriesLabel } from '@librechat/client';
 import { PrincipalType } from 'librechat-data-provider';
 import type { TPrincipal } from 'librechat-data-provider';
 import PrincipalAvatar from '~/components/Sharing/PrincipalAvatar';
@@ -20,27 +21,27 @@ const PeoplePickerSearchItem = forwardRef<HTMLDivElement, PeoplePickerSearchItem
     const displayName = name || localize('com_ui_unknown');
     const subtitle = email || `${type} (${principal.source || 'local'})`;
 
-    /** Get badge styling based on type */
+    /** Semantic series slots rather than palette hues, so the dot moves with the theme. */
     const getBadgeConfig = () => {
       switch (type) {
         case PrincipalType.USER:
           return {
-            className: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300',
+            hue: 1 as const,
             label: localize('com_ui_user'),
           };
         case PrincipalType.GROUP:
           return {
-            className: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
+            hue: 7 as const,
             label: localize('com_ui_group'),
           };
         case PrincipalType.ROLE:
           return {
-            className: 'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300',
+            hue: 6 as const,
             label: localize('com_ui_role'),
           };
         default:
           return {
-            className: 'bg-surface-tertiary text-text-secondary',
+            hue: undefined,
             label: type,
           };
       }
@@ -61,19 +62,14 @@ const PeoplePickerSearchItem = forwardRef<HTMLDivElement, PeoplePickerSearchItem
         <PrincipalAvatar principal={principal} size="md" />
 
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium text-text-primary">{displayName}</div>
-          <div className="truncate text-xs text-text-secondary">{subtitle}</div>
+          <div className="text-text-primary truncate text-sm font-medium">{displayName}</div>
+          <div className="text-text-secondary truncate text-xs">{subtitle}</div>
         </div>
 
-        <div className="flex-shrink-0">
-          <span
-            className={cn(
-              'inline-flex items-center rounded-full px-2 py-1 text-xs font-medium',
-              badgeConfig.className,
-            )}
-          >
+        <div className="shrink-0">
+          <SeriesLabel hue={badgeConfig.hue} className="text-xs font-medium">
             {badgeConfig.label}
-          </span>
+          </SeriesLabel>
         </div>
       </div>
     );

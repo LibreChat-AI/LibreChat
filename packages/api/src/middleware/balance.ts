@@ -1,4 +1,5 @@
 import { logger } from '@librechat/data-schemas';
+import { isBalanceRefillDue } from 'librechat-data-provider';
 import type {
   IBalanceUpdate,
   BalanceConfig,
@@ -18,8 +19,15 @@ export interface BalanceMiddlewareOptions {
     tenantId?: string;
     refresh?: boolean;
   }) => Promise<AppConfig>;
-  findBalanceByUser: (userId: string) => Promise<IBalance | null>;
-  upsertBalanceFields: (userId: string, fields: IBalanceUpdate) => Promise<IBalance | null>;
+  findBalanceByUser: (
+    userId: string,
+    options?: { applyReset?: boolean },
+  ) => Promise<IBalance | null>;
+  upsertBalanceFields: (
+    userId: string,
+    fields: IBalanceUpdate,
+    insertOnly?: IBalanceUpdate,
+  ) => Promise<IBalance | null>;
 }
 
 type BalanceLocals = {
@@ -72,13 +80,27 @@ export function buildBalanceUpdateFields(
     updateFields.tokenCredits = config.startBalance;
   }
 
+  if (updateFields.tokenCredits != null) {
+    const grantedAt = userRecord?.lastRefill ?? new Date();
+    updateFields.allotment = updateFields.tokenCredits;
+    updateFields.allottedAt = grantedAt;
+    if (!userRecord?.lastRefill) {
+      updateFields.lastRefill = grantedAt;
+    }
+  }
+
   const isAutoRefillConfigValid =
     config.autoRefillEnabled &&
     config.refillIntervalValue != null &&
     config.refillIntervalUnit != null &&
-    config.refillAmount != null;
+    config.refillAmount != null &&
+    ((config.refillMode !== 'reset' && config.refillAnchor == null) ||
+      (Number.isInteger(config.refillIntervalValue) && config.refillIntervalValue > 0));
 
   if (!isAutoRefillConfigValid) {
+    if (userRecord?.autoRefillEnabled === true) {
+      updateFields.autoRefillEnabled = false;
+    }
     return updateFields;
   }
 
@@ -94,16 +116,47 @@ export function buildBalanceUpdateFields(
     updateFields.refillIntervalUnit = config.refillIntervalUnit;
   }
 
+  const refillMode = config.refillMode ?? 'add';
+  if ((userRecord?.refillMode ?? 'add') !== refillMode) {
+    updateFields.refillMode = refillMode;
+  }
+
   if (userRecord?.refillAmount !== config.refillAmount) {
     updateFields.refillAmount = config.refillAmount;
   }
 
+  // A policy built without a record carries the anchor even when cleared, so it can clear one.
+  const refillAnchor = config.refillAnchor ?? null;
+  if (userRecord == null || (userRecord.refillAnchor ?? null) !== refillAnchor) {
+    updateFields.refillAnchor = refillAnchor;
+  }
+
   // Initialize lastRefill if it's missing when auto-refill is enabled
   if (config.autoRefillEnabled && !userRecord?.lastRefill) {
-    updateFields.lastRefill = new Date();
+    updateFields.lastRefill ??= new Date();
   }
 
   return updateFields;
+}
+
+const AUTO_REFILL_FIELDS = [
+  'refillIntervalValue',
+  'refillIntervalUnit',
+  'refillAmount',
+  'refillAnchor',
+] as const;
+
+/** A balance record as the client reads it: no document id, and no refill schedule without
+ *  auto-refill. `lastRefill` stays, since it places a stored allotment in its period. */
+export function toBalanceResponse(record: Record<string, unknown>): Record<string, unknown> {
+  const { _id: _, ...result } = record;
+  if (result.autoRefillEnabled === true) {
+    return result;
+  }
+  for (const field of AUTO_REFILL_FIELDS) {
+    delete result[field];
+  }
+  return result;
 }
 
 /**
@@ -124,9 +177,11 @@ export function createSetBalanceConfig({
     try {
       const balanceLocals = res.locals as BalanceLocals;
       const user = req.user as IUser & { _id: string | ObjectId };
+      /** Login routes carry a lean user document, which has `_id` but no `id` */
+      const principalId = user?.id ?? user?._id?.toString();
       const appConfig = await getAppConfig({
         role: user?.role,
-        userId: user?.id,
+        userId: principalId,
         tenantId: user?.tenantId,
       });
       const balanceConfig = getBalanceConfig(appConfig);
@@ -143,11 +198,28 @@ export function createSetBalanceConfig({
       }
       const userId = typeof user._id === 'string' ? user._id : user._id.toString();
       await runBalanceUpdate(userId, async () => {
-        const userBalanceRecord = await findBalanceByUser(userId);
+        const userBalanceRecord = await findBalanceByUser(userId, { applyReset: false });
         const updateFields = buildBalanceUpdateFields(balanceConfig, userBalanceRecord, userId);
 
         if (Object.keys(updateFields).length === 0) {
-          balanceLocals.balanceData = userBalanceRecord;
+          balanceLocals.balanceData =
+            balanceConfig.autoRefillEnabled === true &&
+            userBalanceRecord?.refillMode === 'reset' &&
+            isBalanceRefillDue(userBalanceRecord, new Date())
+              ? await findBalanceByUser(userId)
+              : userBalanceRecord;
+          return;
+        }
+
+        if (userBalanceRecord == null) {
+          // The grant tuple is insert-only so a racing creator keeps its own period and allotment.
+          const { tokenCredits, allotment, allottedAt, lastRefill, ...syncFields } = updateFields;
+          balanceLocals.balanceData = await upsertBalanceFields(userId, syncFields, {
+            tokenCredits,
+            allotment,
+            allottedAt,
+            lastRefill,
+          });
           return;
         }
 

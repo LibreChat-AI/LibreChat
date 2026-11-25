@@ -41,6 +41,38 @@ export function collectToolResourceFileIds(
 }
 
 /**
+ * Converts client-hydrated file objects into identifiers and removes the
+ * untrusted object payloads. Runtime file records must always be reloaded from
+ * canonical storage after the normal ownership checks.
+ */
+export function normalizeToolResourceFiles(
+  tool_resources: AgentToolResources | undefined | null,
+): AgentToolResources | undefined | null {
+  if (!tool_resources) {
+    return tool_resources;
+  }
+  for (const key of TOOL_RESOURCE_KEYS) {
+    const resource = tool_resources[key];
+    if (!resource) {
+      continue;
+    }
+    const ids = new Set(Array.isArray(resource.file_ids) ? resource.file_ids : []);
+    if (Array.isArray(resource.files)) {
+      for (const file of resource.files) {
+        if (typeof file?.file_id === 'string') {
+          ids.add(file.file_id);
+        }
+      }
+    }
+    if (ids.size > 0 || Array.isArray(resource.file_ids)) {
+      resource.file_ids = Array.from(ids);
+    }
+    delete resource.files;
+  }
+  return tool_resources;
+}
+
+/**
  * Removes the given file_ids from every tool_resource category on the provided
  * tool_resources object. Mutates in place and also returns the same reference
  * for convenience. Returns the count of removed references.

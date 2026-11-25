@@ -7,6 +7,8 @@ import type {
   SubagentTaskSnapshot,
 } from '@librechat/agents';
 import type { Cluster, Redis } from 'ioredis';
+import type { ActivitySnapshot } from './digest';
+import { snapshotActivity, snapshotActivitySummary } from './digest';
 import { createConcurrencyLimiter } from '~/utils/promise';
 
 const PROTOCOL_VERSION = 1;
@@ -36,6 +38,7 @@ const MAX_PROGRESS_LABEL_CHARS = 1_024;
 /** Bounds the model-facing task list, per owner reply and across the merged result. */
 export const MAX_TASK_SNAPSHOTS = 200;
 const MAX_CANCEL_THREAD_IDS = 200;
+const MAX_REMOVED_CONVERSATION_IDS = MAX_CANCEL_THREAD_IDS + 1;
 /** Matches the deletion drain so bounded fan-out stays well inside the lease TTL. */
 const ROUTING_FANOUT_CONCURRENCY = 32;
 /** Contains every bounded response even when JSON escapes each retained character. */
@@ -97,7 +100,13 @@ type RoutedRequest = RoutedRequestBase &
         invocationId: string;
       }
     | { operation: 'list' }
-    | { operation: 'cancel'; threadIds: string[] | null }
+    | {
+        operation: 'cancel';
+        threadIds: string[] | null;
+        /** Rows already committed as deleted by the requester. Owners must drop
+         * receipt retry work for these exact conversations after cancellation. */
+        removedConversationIds?: string[];
+      }
   );
 
 type RoutedRequestPayload =
@@ -110,7 +119,12 @@ type RoutedRequestPayload =
       invocationId: string;
     }
   | { operation: 'list'; scopeId: string }
-  | { operation: 'cancel'; scopeId: string; threadIds: string[] | null };
+  | {
+      operation: 'cancel';
+      scopeId: string;
+      threadIds: string[] | null;
+      removedConversationIds?: string[];
+    };
 
 interface RoutedResponse {
   version: typeof PROTOCOL_VERSION;
@@ -172,9 +186,16 @@ export interface SubagentTaskControlHandler {
     taskId: string,
     command: SubagentTaskControlCommand,
     invocationId: string,
-  ): SubagentTaskControlResult;
+  ): Promise<SubagentTaskControlResult> | SubagentTaskControlResult;
   list(scopeId: string): SubagentTaskSnapshot[];
-  cancelScope(scopeId: string, threadIds: string[] | null): number;
+  /** Receipt retry work can outlive the SDK task/result buckets. Keep its owner
+   * addressable so deletion can revoke work whose durable target was removed. */
+  retainsTaskOwnership(scopeId: string, taskId: string): boolean;
+  cancelScope(
+    scopeId: string,
+    threadIds: string[] | null,
+    removedConversationIds?: string[],
+  ): number;
 }
 
 /** Optional host transport for reaching the process that owns a live child task. */
@@ -190,7 +211,11 @@ export interface SubagentTaskControlTransport {
     invocationId: string,
   ): Promise<SubagentTaskControlResult | undefined>;
   list(scopeId: string): Promise<SubagentTaskSnapshot[]>;
-  cancelScope(scopeId: string, threadIds: string[] | null): Promise<number>;
+  cancelScope(
+    scopeId: string,
+    threadIds: string[] | null,
+    removedConversationIds?: string[],
+  ): Promise<number>;
   destroy(): Promise<void>;
 }
 
@@ -235,8 +260,13 @@ function truncateMiddle(value: string, maxChars: number): string {
   return `${value.slice(0, head)}${marker}${value.slice(value.length - (available - head))}`;
 }
 
-function boundedSnapshot(snapshot: SubagentTaskSnapshot): SubagentTaskSnapshot {
+/** Progress decorations are re-validated on every hop, so a peer cannot widen them. */
+function boundedSnapshot(snapshot: SubagentTaskSnapshot): ActivitySnapshot {
+  const activity = snapshotActivity(snapshot);
+  const activitySummary = snapshotActivitySummary(snapshot);
   return {
+    ...(activity == null ? {} : { activity }),
+    ...(activitySummary == null ? {} : { activitySummary }),
     taskId: truncateMiddle(snapshot.taskId, MAX_TASK_ID_CHARS),
     ...(snapshot.threadId == null
       ? {}
@@ -325,7 +355,13 @@ function boundedControlResult(result: SubagentTaskControlResult): SubagentTaskCo
   };
 }
 
-async function waitForRedisConnectionReady(client: RedisClient): Promise<void> {
+async function waitForRedisConnectionReady(
+  client: RedisClient,
+  signal: AbortSignal,
+): Promise<void> {
+  if (signal.aborted) {
+    throw new SubagentTaskOwnerUnavailableError();
+  }
   if (client.status == null || client.status === 'ready') {
     return;
   }
@@ -337,6 +373,7 @@ async function waitForRedisConnectionReady(client: RedisClient): Promise<void> {
       clearTimeout(timeout);
       client.off('ready', onReady);
       client.off('end', onEnd);
+      signal.removeEventListener('abort', onEnd);
     };
     const onReady = () => {
       cleanup();
@@ -351,11 +388,14 @@ async function waitForRedisConnectionReady(client: RedisClient): Promise<void> {
       reject(new SubagentTaskOwnerUnavailableError());
     }, DEFAULT_READY_TIMEOUT_MS);
     timeout.unref?.();
+    signal.addEventListener('abort', onEnd, { once: true });
     client.once('ready', onReady);
     client.once('end', onEnd);
     /** Close the status-check/listener-registration race: ioredis may become ready
      * synchronously between the check above and installing these listeners. */
-    if (client.status === 'ready') {
+    if (signal.aborted) {
+      onEnd();
+    } else if (client.status === 'ready') {
       onReady();
     } else if (client.status === 'end') {
       onEnd();
@@ -367,9 +407,10 @@ async function waitForRedisConnectionReady(client: RedisClient): Promise<void> {
 
 async function waitForRedisReady(
   client: RedisClient,
+  signal: AbortSignal,
   options: { eagerClusterMasters?: boolean } = {},
 ): Promise<void> {
-  await waitForRedisConnectionReady(client);
+  await waitForRedisConnectionReady(client, signal);
   if (options.eagerClusterMasters !== true || !client.isCluster) {
     return;
   }
@@ -377,8 +418,39 @@ async function waitForRedisReady(
    * fail-fast publisher cannot admit requests until every possible write target is
    * connected; otherwise the first command to a cold shard would be rejected. */
   await Promise.all(
-    (client as Cluster).nodes('master').map((node) => waitForRedisConnectionReady(node)),
+    (client as Cluster).nodes('master').map((node) => waitForRedisConnectionReady(node, signal)),
   );
+}
+
+/** Bounds the initial SUBSCRIBE acknowledgement and cancels it with its owner. */
+async function waitForRedisSubscription(
+  operation: Promise<unknown>,
+  signal: AbortSignal,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', onAbort);
+    };
+    const onAbort = (): void => {
+      cleanup();
+      reject(new SubagentTaskOwnerUnavailableError());
+    };
+    const timeout = setTimeout(onAbort, DEFAULT_READY_TIMEOUT_MS);
+    timeout.unref?.();
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      () => {
+        cleanup();
+        resolve();
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      },
+    );
+    if (signal.aborted) onAbort();
+  });
 }
 
 function isSnapshot(value: unknown): value is SubagentTaskSnapshot {
@@ -547,6 +619,7 @@ function parseRequest(value: unknown): RoutedRequest | undefined {
     taskId?: unknown;
     command?: unknown;
     threadIds?: unknown;
+    removedConversationIds?: unknown;
     invocationId?: unknown;
     expiresAt?: unknown;
   };
@@ -579,6 +652,14 @@ function parseRequest(value: unknown): RoutedRequest | undefined {
     if (candidate.threadIds !== null && !isCancelThreadIds(candidate.threadIds)) {
       return undefined;
     }
+    if (
+      candidate.removedConversationIds !== undefined &&
+      (!Array.isArray(candidate.removedConversationIds) ||
+        candidate.removedConversationIds.length > MAX_REMOVED_CONVERSATION_IDS ||
+        !candidate.removedConversationIds.every((id) => isBoundedString(id, MAX_THREAD_ID_CHARS)))
+    ) {
+      return undefined;
+    }
     return {
       version: PROTOCOL_VERSION,
       kind: 'request',
@@ -588,6 +669,9 @@ function parseRequest(value: unknown): RoutedRequest | undefined {
       operation: 'cancel',
       scopeId: candidate.scopeId,
       threadIds: candidate.threadIds,
+      ...(candidate.removedConversationIds === undefined
+        ? {}
+        : { removedConversationIds: candidate.removedConversationIds }),
     };
   }
   if (!isBoundedString(candidate.taskId, MAX_TASK_ID_CHARS)) {
@@ -692,7 +776,9 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
   private registrationHeartbeat?: ReturnType<typeof setInterval>;
   private registrationRefresh?: Promise<void>;
   private destroyed = false;
+  private readonly lifecycle = new AbortController();
 
+  /** Borrows the publisher; owns the dedicated subscriber and its pending waits. */
   constructor(
     private readonly publisher: RedisClient,
     private readonly subscriber: RedisClient,
@@ -722,13 +808,22 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
     /** The publisher fails fast instead of queueing commands, so opening HTTP
      * admission before it is ready would turn healthy startup lag into false
      * `unavailable` results. Both dedicated connections are part of readiness. */
-    await Promise.all([
-      waitForRedisReady(this.publisher, { eagerClusterMasters: true }),
-      waitForRedisReady(this.subscriber),
-    ]);
-    this.subscriber.on('message', this.onMessage);
-    this.ready = this.subscriber.subscribe(this.channel(this.instanceId)).then(() => undefined);
-    await this.ready;
+    try {
+      await Promise.all([
+        waitForRedisReady(this.publisher, this.lifecycle.signal, { eagerClusterMasters: true }),
+        waitForRedisReady(this.subscriber, this.lifecycle.signal),
+      ]);
+      if (this.destroyed) throw new SubagentTaskOwnerUnavailableError();
+      this.subscriber.on('message', this.onMessage);
+      this.ready = waitForRedisSubscription(
+        this.subscriber.subscribe(this.channel(this.instanceId)),
+        this.lifecycle.signal,
+      );
+      await this.requireReady();
+    } catch (error) {
+      await this.destroy();
+      throw error;
+    }
   }
 
   async registerTask(scopeId: string, taskId: string, ttlMs: number): Promise<void> {
@@ -852,7 +947,11 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
    * predicate to its complete local task set, so deletion never depends on the
    * bounded model-facing list and cannot miss a task beyond that cap.
    */
-  async cancelScope(scopeId: string, threadIds: string[] | null): Promise<number> {
+  async cancelScope(
+    scopeId: string,
+    threadIds: string[] | null,
+    removedConversationIds: string[] = [],
+  ): Promise<number> {
     this.assertScope(scopeId);
     if (threadIds != null && threadIds.length === 0) {
       return 0;
@@ -880,11 +979,24 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
     }
     const cancelSlot = createConcurrencyLimiter(ROUTING_FANOUT_CONCURRENCY);
     const requests: Array<Promise<unknown>> = [];
+    const allTargetThreadIds = threadIds == null ? null : new Set(threadIds);
     for (const ownerId of owners) {
       for (const batch of batches) {
+        const batchThreadIds = batch == null ? null : new Set(batch);
+        const removedForBatch = removedConversationIds.filter(
+          (conversationId) =>
+            allTargetThreadIds == null ||
+            !allTargetThreadIds.has(conversationId) ||
+            batchThreadIds?.has(conversationId) === true,
+        );
         requests.push(
           cancelSlot(() =>
-            this.sendRequest(ownerId, { operation: 'cancel', scopeId, threadIds: batch }),
+            this.sendRequest(ownerId, {
+              operation: 'cancel',
+              scopeId,
+              threadIds: batch,
+              ...(removedForBatch.length === 0 ? {} : { removedConversationIds: removedForBatch }),
+            }),
           ),
         );
       }
@@ -904,6 +1016,8 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
       return;
     }
     this.destroyed = true;
+    this.lifecycle.abort();
+    this.handler = undefined;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.retry);
       clearTimeout(pending.timeout);
@@ -920,12 +1034,15 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
       this.registrationHeartbeat = undefined;
     }
     this.subscriber.off('message', this.onMessage);
-    await this.subscriber.unsubscribe(this.channel(this.instanceId)).catch(() => undefined);
     this.subscriber.disconnect();
   }
 
   private readonly onMessage = (channel: string, message: string): void => {
-    if (channel !== this.channel(this.instanceId) || message.length > MAX_ROUTED_MESSAGE_CHARS) {
+    if (
+      this.destroyed ||
+      channel !== this.channel(this.instanceId) ||
+      message.length > MAX_ROUTED_MESSAGE_CHARS
+    ) {
       return;
     }
     let parsed: unknown;
@@ -968,6 +1085,7 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
   }
 
   private async handleRequest(request: RoutedRequest): Promise<void> {
+    if (this.destroyed) return;
     if (Date.now() > request.expiresAt + REQUEST_CLOCK_SKEW_MS) {
       /** The caller stopped waiting for this long ago and has been told it was
        * unavailable, so applying it now would steer a child it believes untouched. */
@@ -1014,16 +1132,28 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
           truncated: tasks.length > bounded.length,
         };
       } else if (request.operation === 'cancel') {
-        result = { cancelled: handler.cancelScope(request.scopeId, request.threadIds) };
+        result = {
+          cancelled: handler.cancelScope(
+            request.scopeId,
+            request.threadIds,
+            request.removedConversationIds,
+          ),
+        };
       } else if (request.operation === 'claim') {
         const claim = boundedClaim(handler.claim(request.scopeId, request.taskId));
         replayable = consumesResult(claim);
         result = claim;
       } else {
         result = boundedControlResult(
-          handler.control(request.scopeId, request.taskId, request.command, request.invocationId),
+          await handler.control(
+            request.scopeId,
+            request.taskId,
+            request.command,
+            request.invocationId,
+          ),
         );
       }
+      if (this.destroyed) return;
       const serializedResult = JSON.stringify(result);
       /** Retaining the result rather than the envelope lets a later caller retry,
        * which carries its own correlation id, recover a response it never received. */
@@ -1032,6 +1162,7 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
       }
       serialized = successResponse(request.requestId, serializedResult);
     } catch (error) {
+      if (this.destroyed) return;
       logger.error('[subagentTaskRouting] Owner failed to process a routed command', error);
       serialized = failureResponse(request.requestId);
     }
@@ -1236,6 +1367,7 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
   }
 
   private async publish(channel: string, value: string): Promise<number> {
+    if (this.destroyed) throw new SubagentTaskOwnerUnavailableError();
     const delivered = await this.publisher.publish(channel, value);
     return typeof delivered === 'number' ? delivered : 0;
   }
@@ -1281,7 +1413,8 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
        * address outlives the task itself until the result is acknowledged. */
       if (
         localTaskIds.has(taskId) ||
-        this.claimReplays.entries.has(this.claimReplayKey(scopeId, taskId))
+        this.claimReplays.entries.has(this.claimReplayKey(scopeId, taskId)) ||
+        handler.retainsTaskOwnership(scopeId, taskId)
       ) {
         retained.push(registration);
         continue;
@@ -1380,5 +1513,6 @@ export class RedisSubagentTaskControlTransport implements SubagentTaskControlTra
       throw new SubagentTaskOwnerUnavailableError();
     }
     await this.ready;
+    if (this.destroyed) throw new SubagentTaskOwnerUnavailableError();
   }
 }

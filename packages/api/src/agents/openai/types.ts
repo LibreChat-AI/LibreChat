@@ -51,6 +51,8 @@ export interface ChatMessage {
  * OpenAI chat completion request
  */
 export interface ChatCompletionRequest {
+  /** LibreChat extension: observe completed server tools without requesting client execution. */
+  include?: 'server_tool_results'[];
   /** Agent ID to invoke (maps to model in OpenAI spec) */
   model: string;
   /** Conversation messages */
@@ -80,6 +82,12 @@ export interface ChatCompletionRequest {
 /**
  * Token usage information
  */
+export interface CompletionUsageTotals {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
 export interface CompletionUsage {
   prompt_tokens: number;
   completion_tokens: number;
@@ -88,6 +96,24 @@ export interface CompletionUsage {
   completion_tokens_details?: {
     reasoning_tokens?: number;
   };
+  /** LibreChat extension for parent, handoff, and summarization model calls. */
+  primary?: CompletionUsageTotals;
+  /** LibreChat extension for isolated subagent child model calls. */
+  subagent?: CompletionUsageTotals;
+}
+
+/** A completed server execution, distinct from an actionable client tool_call. */
+export interface ServerToolResult {
+  call_id: string;
+  name: string;
+  arguments: string;
+  output: string;
+}
+
+export interface ServerToolResultFields {
+  tool_results: ServerToolResult[];
+  /** Projection budget exhausted: these records are not a complete audit log. */
+  tool_results_incomplete?: true;
 }
 
 /**
@@ -100,6 +126,8 @@ export interface ChatCompletionChoice {
     content: string | null;
     /** Reasoning/thinking content (OpenRouter convention) */
     reasoning?: string | null;
+    tool_results?: ServerToolResult[];
+    tool_results_incomplete?: true;
     tool_calls?: ToolCall[];
   };
   finish_reason: 'stop' | 'length' | 'tool_calls' | 'content_filter' | null;
@@ -128,6 +156,8 @@ export interface ChatCompletionChunkChoice {
     content?: string | null;
     /** Reasoning/thinking content (OpenRouter convention) */
     reasoning?: string | null;
+    tool_results?: Array<ServerToolResult & { index: number }>;
+    tool_results_incomplete?: true;
     tool_calls?: Array<{
       index: number;
       id?: string;
@@ -155,13 +185,6 @@ export interface ChatCompletionChunk {
 }
 
 /**
- * SSE event wrapper for streaming
- */
-export interface SSEEvent {
-  data: ChatCompletionChunk | '[DONE]';
-}
-
-/**
  * Context for building OpenAI responses
  */
 export interface OpenAIResponseContext {
@@ -171,14 +194,6 @@ export interface OpenAIResponseContext {
   model: string;
   /** Created timestamp */
   created: number;
-}
-
-/**
- * Aggregated content for building final response
- */
-export interface AggregatedContent {
-  text: string;
-  toolCalls: ToolCall[];
 }
 
 /**

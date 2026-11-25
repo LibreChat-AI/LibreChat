@@ -40,9 +40,6 @@ function jobHashFromCreationCall(call: unknown[]): Record<string, string> {
       String(fields[index * 2 + 1]),
     ]),
   );
-  if (hash.generationProtocolVersion === '2') {
-    hash.checkpointNamespace = hash.createdAt;
-  }
   return hash;
 }
 
@@ -87,6 +84,7 @@ describe('RedisJobStore', () => {
     expect(script).toContain('HGET", KEYS[1], "status") ~= "running"');
     expect(script).toContain('HGET", KEYS[1], "providerDrained") ~= "1"');
     expect(script).toContain('HSET", KEYS[1], "providerDrained", "0"');
+    expect(script).toContain('"providerExecutionStartedId", ARGV[2]');
     expect([keyCount, jobKey, createdAt, providerExecutionId]).toEqual([
       1,
       'stream:{stream-provider-begin}:job',
@@ -136,7 +134,7 @@ describe('RedisJobStore', () => {
       'redis.call("SET", KEYS[8], currentCreatedAt, "EX", ttl + generationEpochGraceTtl)',
     );
     expect(script.indexOf('local ownerUserId')).toBeLessThan(
-      script.indexOf('redis.call("EXPIRE", KEYS[1], ttl)'),
+      script.indexOf('expireScheduleJob(KEYS[1], ttl)'),
     );
     expect(script).toContain('if currentTtl > ttl then ttl = currentTtl');
     expect([
@@ -200,9 +198,9 @@ describe('RedisJobStore', () => {
       }),
     ).resolves.toBe(false);
 
-    // ARGV[4] is the terminal job TTL. The persistence owner/recovery path
+    // ARGV[5] is the terminal job TTL. The persistence owner/recovery path
     // gets five minutes even when ordinary completed records are immediate.
-    expect(evalTransition.mock.calls[0][15]).toBe('300');
+    expect(evalTransition.mock.calls.find((call) => call[1] === 10)?.[16]).toBe('300');
   });
 
   test('retains the generation epoch beyond the paused job TTL', async () => {
@@ -219,13 +217,13 @@ describe('RedisJobStore', () => {
       expectCreatedAt: 123456,
     });
 
-    const transitionCall = evalTransition.mock.calls[0];
+    const transitionCall = evalTransition.mock.calls.find((call) => call[1] === 10)!;
     expect(transitionCall[0]).toContain(
       'redis.call("SET", KEYS[8], currentCreatedAt, "EX", ttl + generationEpochGraceTtl)',
     );
-    expect(transitionCall[15]).toBe('4621');
-    expect(transitionCall[16]).toBe('0');
-    expect(transitionCall[20]).toBe('300');
+    expect(transitionCall[16]).toBe('4621');
+    expect(transitionCall[17]).toBe('0');
+    expect(transitionCall[21]).toBe('300');
   });
 
   test('seeds the guarded epoch when reaping a legacy job without a marker', async () => {
@@ -306,7 +304,8 @@ describe('RedisJobStore', () => {
     expect(lrange).not.toHaveBeenCalled();
   });
 
-  test('writes initial metadata in the atomic job creation', async () => {
+  const retentionDeadlines = ['2030-01-01T00:00:00.000Z', '', 'invalid'];
+  test.each(retentionDeadlines)('round-trips job metadata %p', async (retentionExpiresAt) => {
     const evalJobCreation = jest
       .fn()
       .mockImplementation((...args: unknown[]) => ['', '', args[Number(args[1]) + 3]]);
@@ -327,22 +326,73 @@ describe('RedisJobStore', () => {
         parentMessageId: 'parent-1',
       },
       responseMessageId: 'response-1',
+      mcpRequestBody: {
+        messageId: 'response-1',
+        conversationId: 'overridden-conversation',
+        parentMessageId: 'response-1',
+      },
       sender: 'Agent',
       endpoint: 'agents',
       iconURL: 'https://example.com/icon.png',
       model: 'test-model',
       agent_id: 'agent-1',
+      compact: true,
       isTemporary: false,
+      isNewConversation: false,
+      retentionExpiresAt,
+      responseCheckpointConfigJSON: '{"type":"mongo","checkpointCollectionName":"responses"}',
+      agentEventDeliveryKey: 'completion-delivery-1',
+      agentEventInvocationKey: 'original-delivery-1',
+      agentEventInvocationGenerationCreatedAt: 987654,
+      agentEventDetachedActionProducerRequired: true,
       scheduleId: 'schedule-1',
+      scheduleMCPCompletion: {
+        scheduleId: 'original-schedule',
+        ownerId: 'user-1',
+        tenantId: null,
+        agentId: 'original-root',
+        invocationMode: 'delegated',
+      },
       scheduledFor: '2026-08-17T12:00:00.000Z',
       scheduleConfigRevision: 4,
       scheduleManual: false,
       scheduleOutcome: 'interrupted',
       scheduleOutcomeError: 'Schedule deleted',
+      scheduleMCPFailure: {
+        server: '',
+        agentId: 'child',
+        reason: 'tool_policy_denied',
+        status: 'mcp_permission_denied',
+        recovery: 'configure',
+        automaticReplay: false,
+      },
       preserveForScheduleReconcile: true,
       promptTokens: 0,
       discoveredTools: [],
+      authoredSkills: [
+        { agentId: 'a', name: 'new-skill', id: '507f1f77bcf86cd799439011', primed: true },
+      ],
+      contextMeta: {
+        calibrationRatio: 1.25,
+        encoding: 'claude',
+        fading: { v: 1, budgetTokens: 50_000, masked: true },
+        fadingTiers: [{ agentId: 'agent-123', v: 1, budgetTokens: 50_000, masked: true }],
+      },
+      compactionSemanticIndex: {
+        version: 1,
+        entries: [
+          {
+            type: 'activity_phase',
+            sourceMessageId: 'assistant-history',
+            sourceContentIndex: 1,
+            revision: 1,
+            status: 'committed',
+            text: 'Verified the release state',
+          },
+        ],
+      },
       preemptCapable: true,
+      steerQuotesExecutionId: 'exec-1',
       generationProtocolVersion: 2,
       resolvedAskUserQuestions: [
         {
@@ -365,8 +415,13 @@ describe('RedisJobStore', () => {
      * degrading to ordinary steering in every Redis deployment.
      */
     expect(job.preemptCapable).toBe(true);
+    /** The abort paths read this flag from a reloaded job, so it has to
+     *  survive the Redis round trip for a stopped compaction to be stamped. */
+    expect(job.compact).toBe(true);
+    expect(job.steerQuotesExecutionId).toBe('exec-1');
     expect(job.generationProtocolVersion).toBe(2);
-    expect(job.checkpointNamespace).toBe(String(job.createdAt));
+    expect(job.checkpointNamespace).toEqual(expect.any(String));
+    expect(job.checkpointNamespace).not.toBe(String(job.createdAt));
     expect(job.resolvedAskUserQuestions).toEqual([
       {
         request: { question: 'Deploy where?' },
@@ -389,21 +444,66 @@ describe('RedisJobStore', () => {
         parentMessageId: 'parent-1',
       },
       responseMessageId: 'response-1',
+      agentEventDeliveryKey: 'completion-delivery-1',
+      agentEventInvocationKey: 'original-delivery-1',
+      agentEventInvocationGenerationCreatedAt: 987654,
+      agentEventDetachedActionProducerRequired: true,
+      mcpRequestBody: {
+        messageId: 'response-1',
+        conversationId: 'overridden-conversation',
+        parentMessageId: 'response-1',
+      },
       sender: 'Agent',
       endpoint: 'agents',
       iconURL: 'https://example.com/icon.png',
       model: 'test-model',
       agent_id: 'agent-1',
       isTemporary: false,
+      isNewConversation: false,
+      retentionExpiresAt,
+      responseCheckpointConfigJSON: '{"type":"mongo","checkpointCollectionName":"responses"}',
       scheduleId: 'schedule-1',
+      scheduleMCPCompletion: {
+        scheduleId: 'original-schedule',
+        ownerId: 'user-1',
+        tenantId: null,
+        agentId: 'original-root',
+        invocationMode: 'delegated',
+      },
       scheduledFor: '2026-08-17T12:00:00.000Z',
       scheduleConfigRevision: 4,
       scheduleManual: false,
       scheduleOutcome: 'interrupted',
       scheduleOutcomeError: 'Schedule deleted',
+      scheduleMCPFailure: {
+        server: '',
+        agentId: 'child',
+        reason: 'tool_policy_denied',
+        status: 'mcp_permission_denied',
+        recovery: 'configure',
+        automaticReplay: false,
+      },
       preserveForScheduleReconcile: true,
       promptTokens: 0,
       discoveredTools: [],
+      authoredSkills: [
+        { agentId: 'a', name: 'new-skill', id: '507f1f77bcf86cd799439011', primed: true },
+      ],
+      contextMeta: {
+        calibrationRatio: 1.25,
+        encoding: 'claude',
+        fading: { v: 1, budgetTokens: 50_000, masked: true },
+        fadingTiers: [{ agentId: 'agent-123', v: 1, budgetTokens: 50_000, masked: true }],
+      },
+      compactionSemanticIndex: {
+        version: 1,
+        entries: [
+          expect.objectContaining({
+            type: 'activity_phase',
+            text: 'Verified the release state',
+          }),
+        ],
+      },
       resolvedAskUserQuestions: [
         {
           request: { question: 'Deploy where?' },
@@ -423,17 +523,36 @@ describe('RedisJobStore', () => {
     expect(storedFields).toMatchObject({
       conversationId: 'conversation-1',
       responseMessageId: 'response-1',
+      mcpRequestBody: JSON.stringify({
+        messageId: 'response-1',
+        conversationId: 'overridden-conversation',
+        parentMessageId: 'response-1',
+      }),
       agent_id: 'agent-1',
       isTemporary: '0',
+      isNewConversation: '0',
+      retentionExpiresAt,
+      responseCheckpointConfigJSON: '{"type":"mongo","checkpointCollectionName":"responses"}',
       scheduleId: 'schedule-1',
       scheduledFor: '2026-08-17T12:00:00.000Z',
       scheduleConfigRevision: '4',
       scheduleManual: '0',
       scheduleOutcome: 'interrupted',
       scheduleOutcomeError: 'Schedule deleted',
+      scheduleMCPFailure: JSON.stringify({
+        server: '',
+        agentId: 'child',
+        reason: 'tool_policy_denied',
+        status: 'mcp_permission_denied',
+        recovery: 'configure',
+        automaticReplay: false,
+      }),
       preserveForScheduleReconcile: '1',
       promptTokens: '0',
       discoveredTools: '[]',
+      authoredSkills: JSON.stringify([
+        { agentId: 'a', name: 'new-skill', id: '507f1f77bcf86cd799439011', primed: true },
+      ]),
       resolvedAskUserQuestions: JSON.stringify([
         {
           request: { question: 'Deploy where?' },
@@ -475,6 +594,99 @@ describe('RedisJobStore', () => {
       streamId: 'stream-malformed-answer',
       resolvedAskUserQuestions: undefined,
     });
+  });
+
+  test('restores detached terminal outbox evidence from Redis', async () => {
+    const evidence = {
+      version: 1 as const,
+      deliveryKey: 'trigger-1',
+      generationCreatedAt: 100,
+      taskId: 'task-1',
+      idempotencyKey: 'a'.repeat(64),
+      status: 'succeeded' as const,
+      result: 'accepted',
+      observedAt: 150,
+    };
+    const redis = {
+      isCluster: true,
+      hgetall: jest.fn().mockResolvedValue({
+        streamId: 'stream-detached-terminal',
+        userId: 'user-1',
+        status: 'complete',
+        createdAt: '100',
+        syncSent: '0',
+        agentEventDetachedTerminalEvidence: JSON.stringify(evidence),
+      }),
+    } as unknown as Cluster;
+    const store = new RedisJobStore(redis);
+
+    await expect(store.getJob('stream-detached-terminal')).resolves.toMatchObject({
+      agentEventDetachedTerminalEvidence: evidence,
+    });
+  });
+
+  describe('the trigger that started a run', () => {
+    const trigger = {
+      subject: { kind: 'key' as const, id: 'key-1' },
+      delivery: {
+        key: 'trigger_abc',
+        event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+      },
+    };
+    const stored = (fields: Record<string, string>) =>
+      new RedisJobStore({
+        isCluster: true,
+        hgetall: jest.fn().mockResolvedValue({
+          streamId: 'stream-trigger',
+          userId: 'user-1',
+          status: 'requires_action',
+          createdAt: '100',
+          syncSent: '0',
+          ...fields,
+        }),
+      } as unknown as Cluster);
+
+    test('is written as one hash field and read back', async () => {
+      const evalJobCreation = jest
+        .fn()
+        .mockImplementation((...args: unknown[]) => ['', '', args[Number(args[1]) + 3]]);
+      const store = new RedisJobStore({
+        isCluster: true,
+        eval: evalJobCreation,
+        hgetall: jest.fn(() => jobHashFromCreationCall(evalJobCreation.mock.calls[0])),
+        sadd: jest.fn().mockResolvedValue(1),
+        srem: jest.fn().mockResolvedValue(1),
+        expire: jest.fn().mockResolvedValue(1),
+      } as unknown as Cluster);
+
+      const job = await store.createJob('stream-trigger', 'user-1', 'conversation-1', undefined, {
+        trigger,
+      });
+
+      expect(jobHashFromCreationCall(evalJobCreation.mock.calls[0]).trigger).toBe(
+        JSON.stringify(trigger),
+      );
+      expect(job.trigger).toEqual(trigger);
+      await expect(store.getJob('stream-trigger')).resolves.toMatchObject({ trigger });
+    });
+
+    test('is absent on a job saved without it, whose schedule fields read as before', async () => {
+      const job = await stored({ scheduleId: 'schedule-1', scheduleManual: '1' }).getJob(
+        'stream-trigger',
+      );
+
+      expect(job).toMatchObject({ scheduleId: 'schedule-1', scheduleManual: true });
+      expect(job?.trigger).toBeUndefined();
+    });
+
+    test.each(['null', '"key-1"', '{', '{"subject":{"kind":"user","id":"owner"}}'])(
+      'is never read as an ordinary job when it is malformed: %s',
+      async (value) => {
+        await expect(stored({ trigger: value }).getJob('stream-trigger')).rejects.toThrow(
+          'run_trigger_invalid',
+        );
+      },
+    );
   });
 
   test('atomically resets predecessor state when creating a replacement', async () => {
@@ -522,7 +734,7 @@ describe('RedisJobStore', () => {
     expect(script).toContain(
       'if previousCreatedAt and previousCreatedAt >= createdAt then createdAt = previousCreatedAt + 1 end',
     );
-    expect(script).toContain('"checkpointNamespace", tostring(createdAt)');
+    expect(script).not.toContain('"checkpointNamespace", tostring(createdAt)');
     expect(script).toContain('redis.call("DEL", KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5])');
     expect(script).toContain(
       'redis.call("SET", KEYS[7], tostring(createdAt), "EX", ttl + generationEpochGraceTtl)',
@@ -598,6 +810,25 @@ describe('RedisJobStore', () => {
     );
   });
 
+  test('copies the content of a hosted run without touching Redis', async () => {
+    const redis = { isCluster: true, eval: jest.fn() } as unknown as Cluster;
+    const store = new RedisJobStore(redis);
+    const live = [{ type: 'text', text: 'one ' }];
+    store.setContentParts('stream-host-copy', live as never, 101);
+
+    const copy = store.copyHostContent('stream-host-copy', 101);
+    /** The run keeps writing; the copy holds what it had at the call. */
+    live[0] = { type: 'text', text: 'one two ' };
+
+    expect(copy).toEqual([{ type: 'text', text: 'one ' }]);
+    await expect(store.getContentParts('stream-host-copy', 101)).resolves.toEqual({
+      content: [{ type: 'text', text: 'one two ' }],
+    });
+    expect(store.copyHostContent('stream-host-copy', 100)).toBeNull();
+    expect(store.copyHostContent('stream-not-hosted')).toBeNull();
+    expect(redis.eval).not.toHaveBeenCalled();
+  });
+
   test('guards local content caches by creation epoch', async () => {
     const evalRedis = jest.fn().mockResolvedValue(false);
     const redis = {
@@ -661,20 +892,20 @@ describe('RedisJobStore', () => {
     ]);
   });
 
-  test('parallelizes Redis Cluster membership bookkeeping with ordered user TTL', async () => {
+  test('parallelizes Redis Cluster membership bookkeeping with atomic owner registration', async () => {
     const evalResult = createDeferred<number>();
     const runningMembership = createDeferred<number>();
     const requiresActionRemoval = createDeferred<number>();
     const terminalHostActionRemoval = createDeferred<number>();
-    const userMembership = createDeferred<number>();
-    const userExpiry = createDeferred<number>();
+    const detachedTerminalHostActionRemoval = createDeferred<number>();
+    const ownerRegistration = createDeferred<number>();
     const started: string[] = [];
 
-    const expire = jest.fn(() => {
-      started.push('user_expiry');
-      return userExpiry.promise;
-    });
-    const evalJobCreation = jest.fn(() => {
+    const evalJobCreation = jest.fn((_script: string, keyCount: number) => {
+      if (keyCount === 1) {
+        started.push('owner');
+        return ownerRegistration.promise;
+      }
       started.push('job');
       return evalResult.promise;
     });
@@ -686,19 +917,21 @@ describe('RedisJobStore', () => {
           started.push('running');
           return runningMembership.promise;
         }
-        started.push('user');
-        return userMembership.promise;
+        throw new Error(`Unexpected SADD key: ${key}`);
       }),
       srem: jest.fn((key: string) => {
         if (key === 'stream:requires_action') {
           started.push('requires_action');
           return requiresActionRemoval.promise;
         }
+        if (key === 'stream:agent_event_detached:terminal_host_action:v1') {
+          started.push('detached_terminal_host_action');
+          return detachedTerminalHostActionRemoval.promise;
+        }
         started.push('terminal_host_action');
         return terminalHostActionRemoval.promise;
       }),
       hgetall: jest.fn(() => jobHashFromCreationCall(evalJobCreation.mock.calls[0])),
-      expire,
     } as unknown as Cluster;
     const store = new RedisJobStore(redis, { userJobsSetTtl: 60 });
 
@@ -710,27 +943,19 @@ describe('RedisJobStore', () => {
 
     expect(started).toEqual(['job']);
     evalResult.resolve(1);
-    await waitFor(() => started.length === 5);
-
-    expect(started).toEqual(['job', 'running', 'requires_action', 'terminal_host_action', 'user']);
-    expect(settled).toBe(false);
-    expect(expire).not.toHaveBeenCalled();
-
-    userMembership.resolve(1);
-    await waitFor(() => expire.mock.calls.length === 1);
+    await waitFor(() => started.length === 6);
 
     expect(started).toEqual([
       'job',
       'running',
       'requires_action',
       'terminal_host_action',
-      'user',
-      'user_expiry',
+      'detached_terminal_host_action',
+      'owner',
     ]);
-    expect(expire).toHaveBeenCalledWith('stream:user:{user-1}:jobs', 60);
     expect(settled).toBe(false);
 
-    userExpiry.resolve(1);
+    ownerRegistration.resolve(1);
     await Promise.resolve();
     expect(settled).toBe(false);
 
@@ -739,6 +964,10 @@ describe('RedisJobStore', () => {
     expect(settled).toBe(false);
 
     terminalHostActionRemoval.resolve(1);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    detachedTerminalHostActionRemoval.resolve(1);
     await Promise.resolve();
     expect(settled).toBe(false);
 
@@ -791,8 +1020,13 @@ describe('RedisJobStore', () => {
     });
     const redis = {
       isCluster: true,
-      eval: jest.fn(async () => {
-        durableHash = { ...durableHash, status: 'requires_action' };
+      eval: jest.fn(async (_script: string, keyCount: number, ...args: string[]) => {
+        if (keyCount === 10) {
+          durableHash = { ...durableHash, status: 'requires_action' };
+        } else {
+          const [ownerKey, streamId] = args;
+          await sadd(ownerKey, streamId);
+        }
         return 1;
       }),
       hgetall,
@@ -898,7 +1132,7 @@ describe('RedisJobStore', () => {
     ]);
   });
 
-  test('guards run-step saves with the expected epoch and active status inside Redis Lua', async () => {
+  test('guards run-step saves with the expected epoch and pending host-action window inside Redis Lua', async () => {
     const evalCommand = jest.fn().mockResolvedValue(0);
     const redis = {
       isCluster: true,
@@ -913,6 +1147,11 @@ describe('RedisJobStore', () => {
     expect(saveCall[0]).toContain('currentCreatedAt ~= ARGV[3]');
     expect(saveCall[0]).toContain('currentStatus ~= "running"');
     expect(saveCall[0]).toContain('currentStatus ~= "requires_action"');
+    expect(saveCall[0]).toContain('detachedAgentEventTerminalHostActionPending');
+    expect(saveCall[0]).toContain('and not terminalHostActionPending');
+    expect(saveCall[0]).toContain(
+      'currentStatus == "requires_action" or terminalHostActionPending',
+    );
     expect(saveCall.slice(1)).toEqual([
       2,
       'stream:{stream-runstep-guarded}:runsteps',
@@ -921,6 +1160,212 @@ describe('RedisJobStore', () => {
       '1500',
       '100',
     ]);
+  });
+
+  test('arms terminal host-action discovery before committing the terminal hash', async () => {
+    const evalTransition = jest.fn().mockResolvedValue(1);
+    const sadd = jest.fn().mockResolvedValue(1);
+    const redis = {
+      isCluster: true,
+      eval: evalTransition,
+      sadd,
+      srem: jest.fn().mockResolvedValue(1),
+      expire: jest.fn().mockResolvedValue(1),
+      hgetall: jest
+        .fn()
+        .mockResolvedValueOnce({
+          streamId: 'stream-host-action-prearm',
+          userId: 'user-1',
+          status: 'running',
+          createdAt: '100',
+          syncSent: '0',
+        })
+        .mockResolvedValue({
+          streamId: 'stream-host-action-prearm',
+          userId: 'user-1',
+          status: 'complete',
+          createdAt: '100',
+          completedAt: '200',
+          terminalHostActionPending: '1',
+          syncSent: '0',
+        }),
+    } as unknown as Cluster;
+    const store = new RedisJobStore(redis);
+
+    await expect(
+      store.transitionStatus('stream-host-action-prearm', {
+        from: 'running',
+        to: 'complete',
+        expectCreatedAt: 100,
+        patch: { completedAt: 200, terminalHostActionPending: true },
+      }),
+    ).resolves.toBe(true);
+
+    expect(sadd.mock.calls[0]).toEqual([
+      'stream:terminal_host_action',
+      '["stream-host-action-prearm",100]',
+    ]);
+    expect(sadd.mock.invocationCallOrder[0]).toBeLessThan(
+      evalTransition.mock.invocationCallOrder[0],
+    );
+    const transitionCall = evalTransition.mock.calls.find((call) => call[1] === 10)!;
+    expect(transitionCall[16]).toBe('86400');
+    expect(transitionCall[18]).toBe('86400');
+    expect(transitionCall[19]).toBe('86400');
+  });
+
+  test('pre-arms detached completion recovery outside the legacy terminal index', async () => {
+    const evalTransition = jest.fn().mockResolvedValue(1);
+    const sadd = jest.fn().mockResolvedValue(1);
+    const detachedIdentity = {
+      agentEventDeliveryKey: 'completion-delivery',
+      agentEventInvocationKey: 'original-invocation',
+      agentEventInvocationGenerationCreatedAt: '90',
+    };
+    const redis = {
+      isCluster: true,
+      eval: evalTransition,
+      sadd,
+      srem: jest.fn().mockResolvedValue(1),
+      expire: jest.fn().mockResolvedValue(1),
+      hgetall: jest
+        .fn()
+        .mockResolvedValueOnce({
+          streamId: 'stream-detached-host-action',
+          userId: 'user-1',
+          status: 'running',
+          createdAt: '100',
+          syncSent: '0',
+          ...detachedIdentity,
+        })
+        .mockResolvedValue({
+          streamId: 'stream-detached-host-action',
+          userId: 'user-1',
+          status: 'complete',
+          createdAt: '100',
+          completedAt: '200',
+          detachedAgentEventTerminalHostActionPending: '1',
+          syncSent: '0',
+          ...detachedIdentity,
+        }),
+    } as unknown as Cluster;
+    const store = new RedisJobStore(redis);
+
+    await expect(
+      store.transitionStatus('stream-detached-host-action', {
+        from: 'running',
+        to: 'complete',
+        expectCreatedAt: 100,
+        patch: { completedAt: 200, terminalHostActionPending: true },
+      }),
+    ).resolves.toBe(true);
+
+    expect(sadd.mock.calls[0]).toEqual([
+      'stream:agent_event_detached:terminal_host_action:v1',
+      '["stream-detached-host-action",100]',
+    ]);
+    expect(sadd.mock.calls).not.toContainEqual([
+      'stream:terminal_host_action',
+      '["stream-detached-host-action",100]',
+    ]);
+    const transitionCall = evalTransition.mock.calls.find((call) => call[1] === 10)!;
+    expect(transitionCall).toContain('status');
+    expect(transitionCall).toContain('detached_terminal_pending_v1');
+    expect(transitionCall).toContain('detachedAgentEventTerminalStatus');
+    expect(transitionCall).toContain('complete');
+  });
+
+  test('retains an exact detached recovery hint until its terminal CAS is visible', async () => {
+    const member = '["stream-detached-prearm-race",100]';
+    const detachedIdentity = {
+      agentEventDeliveryKey: 'completion-delivery',
+      agentEventInvocationKey: 'original-invocation',
+      agentEventInvocationGenerationCreatedAt: '90',
+    };
+    const srem = jest.fn().mockResolvedValue(1);
+    const redis = {
+      isCluster: true,
+      eval: jest.fn().mockResolvedValue(1),
+      smembers: jest.fn().mockResolvedValue([member]),
+      srem,
+      sadd: jest.fn().mockResolvedValue(1),
+      expire: jest.fn().mockResolvedValue(1),
+      hgetall: jest
+        .fn()
+        .mockResolvedValueOnce({
+          streamId: 'stream-detached-prearm-race',
+          userId: 'user-1',
+          status: 'running',
+          createdAt: '100',
+          syncSent: '0',
+          ...detachedIdentity,
+        })
+        .mockResolvedValueOnce({
+          streamId: 'stream-detached-prearm-race',
+          userId: 'user-1',
+          status: 'detached_terminal_pending_v1',
+          detachedAgentEventTerminalStatus: 'complete',
+          detachedAgentEventTerminalHostActionPending: '1',
+          createdAt: '100',
+          completedAt: '200',
+          syncSent: '0',
+          ...detachedIdentity,
+        }),
+    } as unknown as Cluster;
+    const store = new RedisJobStore(redis);
+
+    await expect(store.getDetachedAgentEventTerminalHostActionJobs()).resolves.toEqual([]);
+    expect(srem).not.toHaveBeenCalledWith(
+      'stream:agent_event_detached:terminal_host_action:v1',
+      member,
+    );
+    await expect(store.getDetachedAgentEventTerminalHostActionJobs()).resolves.toEqual([
+      expect.objectContaining({
+        streamId: 'stream-detached-prearm-race',
+        terminalHostActionPending: true,
+      }),
+    ]);
+  });
+
+  test('acknowledges evidence TTLs without removing a successor retry member', async () => {
+    const evalClear = jest.fn().mockResolvedValue(1);
+    const srem = jest.fn().mockResolvedValue(1);
+    const redis = {
+      isCluster: true,
+      eval: evalClear,
+      srem,
+      hgetall: jest.fn().mockResolvedValue({}),
+    } as unknown as Cluster;
+    const store = new RedisJobStore(redis, {
+      completedTtl: 300,
+      chunksAfterCompleteTtl: 7,
+      runStepsAfterCompleteTtl: 11,
+    });
+
+    await store.clearTerminalHostAction('stream-host-action-clear', 100);
+
+    expect(evalClear).toHaveBeenCalledWith(
+      expect.stringContaining('expireScheduleJob(KEYS[1], tonumber(ARGV[2]))'),
+      3,
+      'stream:{stream-host-action-clear}:job',
+      'stream:{stream-host-action-clear}:chunks',
+      'stream:{stream-host-action-clear}:runsteps',
+      '100',
+      '300',
+      '7',
+      '11',
+    );
+    expect(evalClear.mock.calls[0][0]).toContain(
+      'redis.call("HSET", KEYS[1], "status", detachedStatus)',
+    );
+    expect(srem).toHaveBeenCalledWith(
+      'stream:terminal_host_action',
+      '["stream-host-action-clear",100]',
+    );
+    expect(srem).not.toHaveBeenCalledWith(
+      'stream:terminal_host_action',
+      '["stream-host-action-clear",101]',
+    );
   });
 
   test('guards asynchronous content cleanup against a replacement epoch', async () => {
@@ -999,5 +1444,167 @@ describe('RedisJobStore', () => {
 
     await expect(store.getContentParts('stream-memory-content')).resolves.toBeNull();
     expect(store.getCollectedUsage('stream-memory-content')).toEqual([]);
+  });
+});
+
+it('routes schedule cleanup reads across Cluster slots without unsafe cross-node pipelines', async () => {
+  const redis = {
+    isCluster: true,
+    sscan: jest.fn().mockResolvedValue(['0', ['["first",1]', '["second",2]']]),
+    hmget: jest
+      .fn()
+      .mockResolvedValueOnce(['1', 'schedule', 'foreign', '1', '0', '1'])
+      .mockResolvedValueOnce(['2', 'schedule', 'owner', '1', '0', '1']),
+    pipeline: jest.fn(),
+  } as unknown as Cluster;
+  const store = new RedisJobStore(redis);
+  await expect(store.hasScheduleCleanupObligation({ userId: 'owner' })).resolves.toBe(true);
+  expect(redis.pipeline).not.toHaveBeenCalled();
+  expect(redis.hmget).toHaveBeenCalledTimes(2);
+});
+
+it('does not treat a stale cleanup hint as a successor obligation or a failed read as absence', async () => {
+  const redis = {
+    isCluster: true,
+    sscan: jest.fn().mockResolvedValue(['0', ['["stream",1]']]),
+    hmget: jest.fn().mockResolvedValue(['2', 'schedule', 'owner', '1', '0', '1']),
+  } as unknown as Cluster;
+  const store = new RedisJobStore(redis);
+  await expect(store.hasScheduleCleanupObligation({ scheduleId: 'schedule' })).resolves.toBe(false);
+  jest.mocked(redis.hmget).mockRejectedValue(new Error('Unavailable'));
+  await expect(store.hasScheduleCleanupObligation({ userId: 'owner' })).rejects.toThrow(
+    'Unavailable',
+  );
+});
+
+it('confirms initial retention in Cluster membership before returning a created generation', async () => {
+  const create = jest
+    .fn()
+    .mockImplementation((...args: unknown[]) => ['', '', args[Number(args[1]) + 3]]);
+  const redis = {
+    isCluster: true,
+    eval: create,
+    hgetall: jest.fn(() => jobHashFromCreationCall(create.mock.calls[0])),
+    sadd: jest.fn().mockResolvedValue(1),
+    srem: jest.fn().mockResolvedValue(1),
+  } as unknown as Cluster;
+  const store = new RedisJobStore(redis);
+  const job = await store.createJob('initial-cluster', 'owner', 'initial-cluster', undefined, {
+    preserveForScheduleReconcile: true,
+  });
+  expect(redis.sadd).toHaveBeenCalledWith(
+    'stream:schedule_reconcile:v1',
+    JSON.stringify([job.streamId, job.createdAt]),
+  );
+  expect(create.mock.calls[0][0]).toContain('expireScheduleJob(KEYS[1], ttl)');
+});
+
+it('withholds a newly retained provider when its recovery index cannot be confirmed', async () => {
+  const create = jest
+    .fn()
+    .mockImplementation((...args: unknown[]) => ['', '', args[Number(args[1]) + 3]]);
+  const redis = {
+    isCluster: true,
+    eval: create,
+    hgetall: jest.fn(() => jobHashFromCreationCall(create.mock.calls[0])),
+    sadd: jest.fn(async (key: string) => {
+      if (key === 'stream:schedule_reconcile:v1') throw new Error('Index unavailable');
+      return 1;
+    }),
+    srem: jest.fn().mockResolvedValue(1),
+  } as unknown as Cluster;
+  const store = new RedisJobStore(redis);
+  await expect(
+    store.createJob('unexposed-retention', 'owner', undefined, undefined, {
+      preserveForScheduleReconcile: true,
+    }),
+  ).rejects.toThrow('Created job membership could not be verified');
+});
+
+describe('retained creation read repair', () => {
+  const hash = {
+    streamId: 'unindexed',
+    userId: 'owner',
+    createdAt: '100',
+    status: 'running',
+    generationProtocolVersion: '2',
+    preserveForScheduleReconcile: '1',
+    providerDrained: '1',
+  };
+  const client = (read: jest.Mock, add = jest.fn().mockResolvedValue(1)) => ({
+    isCluster: true,
+    hgetall: read,
+    sadd: add,
+    srem: jest.fn().mockResolvedValue(1),
+    eval: jest.fn().mockResolvedValue(1),
+  });
+  it('repairs a legacy orphan and stamps its exact epoch after confirming membership', async () => {
+    const redis = client(jest.fn().mockResolvedValue(hash));
+    const store = new RedisJobStore(redis as unknown as Cluster);
+    await expect(store.getJob('unindexed')).resolves.toMatchObject({
+      createdAt: 100,
+      status: 'running',
+    });
+    expect(redis.sadd).toHaveBeenCalledWith(
+      'stream:schedule_reconcile:v1',
+      JSON.stringify(['unindexed', 100]),
+    );
+    const commit = redis.eval.mock.calls.find((call) =>
+      String(call[0]).includes('__scheduleMembershipEpoch'),
+    );
+    expect(commit?.slice(1)).toEqual([1, 'stream:{unindexed}:job', '100', '']);
+    expect(commit?.[0]).toContain('"createdAt") ~= ARGV[1]');
+  });
+  it('keeps an unavailable index retryable without marking discovery confirmed', async () => {
+    const redis = client(
+      jest.fn().mockResolvedValue(hash),
+      jest.fn().mockRejectedValue(new Error('Index unavailable')),
+    );
+    const store = new RedisJobStore(redis as unknown as Cluster);
+    await expect(store.getJob('unindexed')).rejects.toThrow(
+      'Retained creation membership recovery failed',
+    );
+    expect(
+      redis.eval.mock.calls.some((call) => String(call[0]).includes('__scheduleMembershipEpoch')),
+    ).toBe(false);
+  });
+  it('repairs and stamps the successor rather than a replaced snapshot', async () => {
+    const newer = { ...hash, createdAt: '200', userId: 'successor' };
+    const redis = client(jest.fn().mockResolvedValueOnce(hash).mockResolvedValue(newer));
+    const store = new RedisJobStore(redis as unknown as Cluster);
+    await expect(store.getJob('unindexed')).resolves.toMatchObject({
+      createdAt: 200,
+      userId: 'successor',
+    });
+    expect(redis.sadd).toHaveBeenCalledWith(
+      'stream:schedule_reconcile:v1',
+      JSON.stringify(['unindexed', 200]),
+    );
+    const commits = redis.eval.mock.calls.filter((call) =>
+      String(call[0]).includes('__scheduleMembershipEpoch'),
+    );
+    expect(commits).toHaveLength(1);
+    expect(commits[0]?.slice(1)).toEqual([1, 'stream:{unindexed}:job', '200', '']);
+  });
+  it('does not confirm a newer same-epoch re-arm with an older repair snapshot', async () => {
+    const older = { ...hash, __scheduleMembershipRevision: '2' };
+    const redis = client(jest.fn().mockResolvedValue(older));
+    const store = new RedisJobStore(redis as unknown as Cluster);
+    await store.getJob('unindexed');
+    const commit = redis.eval.mock.calls.find((call) =>
+      String(call[0]).includes('__scheduleMembershipEpoch'),
+    );
+    expect(commit?.slice(1)).toEqual([1, 'stream:{unindexed}:job', '100', '2']);
+    expect(commit?.[0]).toContain('"__scheduleMembershipRevision") or "") ~= ARGV[2]');
+  });
+  it('adds no index round trip to already-confirmed retained reads', async () => {
+    const redis = client(
+      jest.fn().mockResolvedValue({ ...hash, __scheduleMembershipEpoch: '100' }),
+    );
+    const store = new RedisJobStore(redis as unknown as Cluster);
+    await expect(store.getJob('unindexed')).resolves.toMatchObject({ createdAt: 100 });
+    expect(redis.hgetall).toHaveBeenCalledTimes(1);
+    expect(redis.sadd).not.toHaveBeenCalled();
+    expect(redis.eval).not.toHaveBeenCalled();
   });
 });

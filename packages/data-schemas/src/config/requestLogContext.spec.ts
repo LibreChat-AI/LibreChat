@@ -64,6 +64,32 @@ describe('attachRequestContext', () => {
       });
     }));
 
+  it('renders tenant Langfuse connection events with identity and outcome fields', () =>
+    tenantStorage.run(context, () => {
+      const result = attachRequestContext({
+        level: 'info',
+        message: '[adminLangfuse] Connection updated',
+        event_name: 'librechat.langfuse.connection.changed',
+        tenant_id: 'tenant-123',
+        configured: true,
+        enabled: true,
+        destination: 'eu',
+        change: 'created',
+        changes: ['created'],
+        verification_result: 'success',
+      });
+
+      const rendered = formatLogContext(result);
+      expect(rendered).toContain('"event_name":"librechat.langfuse.connection.changed"');
+      expect(rendered).toContain('"tenant_id":"tenant-123"');
+      expect(rendered).toContain('"configured":true');
+      expect(rendered).toContain('"enabled":true');
+      expect(rendered).toContain('"destination":"eu"');
+      expect(rendered).toContain('"change":"created"');
+      expect(rendered).toContain('"changes":["created"]');
+      expect(rendered).toContain('"verification_result":"success"');
+    }));
+
   it('keeps application paths separate from the safe request route', () =>
     tenantStorage.run(context, () => {
       const result = attachRequestContext({
