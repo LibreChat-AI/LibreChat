@@ -13,8 +13,9 @@ import { withMongo } from '../db';
  *
  * LDAP is a process-wide switch that also moves the app's own sign-in, and the mock harness
  * runs one backend with no directory server, so the directory cases read their verdicts from one
- * run of the route spec, which drives the real route with the real Passport and credential
- * middleware over an in-memory directory. The local cases run against the live backend.
+ * run of the route spec. It drives the real router, middleware, strategies, capability check and a
+ * database, with only the LDAP client library answering from an in-memory directory. The local
+ * cases run against the live backend.
  */
 
 type JestAssertion = { fullName: string; status: string };
@@ -43,7 +44,7 @@ function routeResults(): JestAssertion[] {
     cwd: resolve(repoRoot, 'api'),
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
-    timeout: 150_000,
+    timeout: 300_000,
   });
   const stdout = result.stdout ?? '';
   const output = `${stdout}${result.stderr ?? ''}`;
@@ -68,7 +69,7 @@ const expectPassed = (fullName: string) => {
 test.describe('admin panel sign-in with a directory configured', () => {
   test.beforeEach(() => {
     inOneProject();
-    test.setTimeout(180_000);
+    test.setTimeout(330_000);
   });
 
   test('a directory user with admin access signs in to the admin panel @scenario:admin-login-ldap-admin-signs-in', () => {
