@@ -98,6 +98,44 @@ describe('agents addTitle', () => {
     expect(client.titleConvo).toHaveBeenCalledWith(expect.objectContaining({ immediate: true }));
   });
 
+  it('does not discard a healthy title after an arbitrary 45 second window', async () => {
+    jest.useFakeTimers();
+    try {
+      let resolveTitle;
+      const client = {
+        options: { titleConvo: true },
+        titleConvo: jest.fn(
+          () =>
+            new Promise((resolve) => {
+              resolveTitle = resolve;
+            }),
+        ),
+      };
+      const pending = addTitle(makeReq(), {
+        text: 'hello',
+        client,
+        conversationId: 'cid-slow-provider',
+        immediate: true,
+        convoReady: Promise.resolve(),
+      });
+
+      await jest.advanceTimersByTimeAsync(45_000);
+      expect(mockSaveConvo).not.toHaveBeenCalled();
+
+      resolveTitle('Late Title');
+      await pending;
+
+      expect(mockCacheStore.get('user-1-cid-slow-provider')).toBe('Late Title');
+      expect(mockSaveConvo).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ conversationId: 'cid-slow-provider', title: 'Late Title' }),
+        expect.objectContaining({ noUpsert: true }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('falls back to response.conversationId in legacy (final) mode', async () => {
     const client = makeClient('Legacy Title');
 
