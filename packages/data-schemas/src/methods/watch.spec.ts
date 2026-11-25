@@ -3,11 +3,13 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { Model } from 'mongoose';
 import type { WatchDraft, Watches } from './watch';
 import type { WatchRecord } from '~/models/watch';
+import { WATCH_LABEL_MAX_LENGTH, WATCH_URL_MAX_LENGTH } from '~/models/watch';
 import { runAsSystem, tenantStorage } from '~/config/tenantContext';
 import { createSubscriptions } from './subscription';
 import { createModels } from '~/models';
 import { createMethods } from './index';
 import { createWatches } from './watch';
+import logger from '~/config/winston';
 
 jest.mock('~/config/winston', () => ({
   error: jest.fn(),
@@ -54,6 +56,47 @@ const bounds = (overrides: { max?: number; ttlMs?: number; now?: Date } = {}) =>
 
 const added = (overrides: Partial<WatchDraft> = {}, user = owner, tenantId = TENANT_A) =>
   as(tenantId, async () => watches.add(user, draft(overrides), bounds()));
+
+/** Another writer's watch on its own item in `convo_1`, taking `slot` in the database. */
+const rival = (n: number, slot: number) =>
+  new Rows({
+    id: `watch_rival_${n}`,
+    user: owner,
+    conversationId: 'convo_1',
+    agentId: 'agent_1',
+    subscription: 'sub_1',
+    connection: 'conn_1',
+    item: `github:pr:900#${n}`,
+    slot,
+    label: `acme/widgets#90${n}`,
+    expiresAt: new Date(NOW.getTime() + 14 * DAY),
+  }).save();
+
+/** That writer removing its watch again, which gives its place back. */
+const gone = (n: number) => Rows.deleteOne({ id: `watch_rival_${n}` });
+
+/**
+ * Runs a rival write just before each of the store's creates reaches the database, so the
+ * unique place index refuses that create for real. A step gets the place the create is about
+ * to take; creates past the steps run untouched.
+ */
+function contend(steps: Array<(slot: number) => Promise<unknown>>) {
+  // `create` is overloaded, so the spy is typed by its variadic form and the call is passed on whole.
+  const create = Rows.create.bind(Rows) as (...args: unknown[]) => ReturnType<typeof Rows.create>;
+  const spy = jest.spyOn(Rows, 'create');
+  spy.mockImplementation(async (...args: unknown[]) => {
+    const [doc] = args as [Pick<WatchRecord, 'slot'>];
+    await steps[spy.mock.calls.length - 1]?.(doc.slot);
+    return create(...args);
+  });
+  return spy;
+}
+
+/** Each stored watch as its item and the place it holds. */
+const places = async () =>
+  (await stored())
+    .map((row) => [row.item, row.slot])
+    .sort(([a], [b]) => String(a).localeCompare(String(b)));
 
 beforeAll(async () => {
   server = await MongoMemoryServer.create();
@@ -153,6 +196,132 @@ describe('add', () => {
     expect(results.filter((result) => result.ok && result.created)).toHaveLength(1);
     expect(await stored()).toHaveLength(1);
   });
+
+  it('returns and stores no tenant or page address where there is none', async () => {
+    const result = await watches.add(owner, draft({ url: undefined }), bounds());
+    if (!result.ok) throw new Error('expected the add to succeed');
+    expect('tenantId' in result.value).toBe(false);
+    expect('url' in result.value).toBe(false);
+    const [row] = await stored();
+    expect('tenantId' in row).toBe(false);
+    expect('url' in row).toBe(false);
+  });
+
+  it('renews to the page address it is given, and keeps the stored one when given none', async () => {
+    await added();
+    const moved = 'https://github.com/acme/gadgets/pull/7';
+    const renamed = await added({ url: moved });
+    expect(renamed).toMatchObject({ ok: true, created: false, value: { url: moved } });
+    expect((await stored())[0].url).toBe(moved);
+    const bare = await added({ url: undefined });
+    expect(bare).toMatchObject({ ok: true, created: false, value: { url: moved } });
+    expect((await stored())[0].url).toBe(moved);
+  });
+
+  it('renews a watch the conversation holds even when every place is taken', async () => {
+    const first = await as(TENANT_A, async () => watches.add(owner, draft(), bounds({ max: 1 })));
+    const again = await as(TENANT_A, async () => watches.add(owner, draft(), bounds({ max: 1 })));
+    if (!first.ok || !again.ok) throw new Error('expected both to succeed');
+    expect(again.created).toBe(false);
+    expect(again.value.id).toBe(first.value.id);
+  });
+
+  it("counts only the owner's watches in that conversation against its limit", async () => {
+    await as(TENANT_A, async () => watches.add(other, draft(), bounds({ max: 1 })));
+    await as(TENANT_A, async () =>
+      watches.add(owner, draft({ conversationId: 'convo_2' }), bounds({ max: 1 })),
+    );
+    const result = await as(TENANT_A, async () => watches.add(owner, draft(), bounds({ max: 1 })));
+    expect(result).toMatchObject({ ok: true, created: true });
+    expect(await stored()).toHaveLength(3);
+  });
+
+  it('holds a lowered limit when the watches left sit on places above it', async () => {
+    const made = [];
+    for (let n = 0; n < 5; n++) {
+      made.push(await added({ item: `github:pr:101#${n}` }));
+    }
+    for (const result of made.slice(0, 3)) {
+      if (!result.ok) throw new Error('expected the add to succeed');
+      await as(TENANT_A, async () => watches.remove(result.value.id, owner));
+    }
+    const refused = await as(TENANT_A, async () =>
+      watches.add(owner, draft({ item: 'github:pr:101#9' }), bounds({ max: 2 })),
+    );
+    expect(refused).toStrictEqual({ ok: false, error: { code: 'limit' } });
+    expect(await stored()).toHaveLength(2);
+  });
+
+  it('lets a write the store cannot keep fail instead of reading it as a lost race', async () => {
+    await expect(added({ label: 'l'.repeat(WATCH_LABEL_MAX_LENGTH + 1) })).rejects.toThrow(/label/);
+    expect(await stored()).toEqual([]);
+  });
+
+  it('reads the places again after each lost race, and takes one another writer gave back', async () => {
+    const creates = contend([
+      // Another writer takes place 0 first, then place 1, giving 0 back.
+      (slot) => rival(1, slot),
+      async (slot) => {
+        await rival(2, slot);
+        await gone(1);
+      },
+    ]);
+    const result = await as(TENANT_A, async () => watches.add(owner, draft(), bounds({ max: 2 })));
+    expect(result).toMatchObject({ ok: true, created: true });
+    expect(creates).toHaveBeenCalledTimes(3);
+    expect(await places()).toEqual([
+      ['github:pr:101#7', 0],
+      ['github:pr:900#2', 1],
+    ]);
+  });
+
+  it('answers the limit once it has lost the race more times than there are places', async () => {
+    const creates = contend([
+      // Every try loses its place to another writer, who then gives the older one back.
+      (slot) => rival(1, slot),
+      async (slot) => {
+        await rival(2, slot);
+        await gone(1);
+      },
+      async (slot) => {
+        await rival(3, slot);
+        await gone(2);
+      },
+    ]);
+    const result = await as(TENANT_A, async () => watches.add(owner, draft(), bounds({ max: 2 })));
+    expect(result).toStrictEqual({ ok: false, error: { code: 'limit' } });
+    // One try per place and one more; a fourth would have found place 1 free.
+    expect(creates).toHaveBeenCalledTimes(3);
+    expect(await places()).toEqual([['github:pr:900#3', 0]]);
+  });
+
+  it('records when it was made and nothing for later writes', async () => {
+    await added();
+    await added({ label: 'acme/widgets#7 renamed' });
+    const [row] = await stored();
+    expect(row.createdAt).toBeInstanceOf(Date);
+    expect('updatedAt' in row).toBe(false);
+  });
+
+  it('builds its unique indexes where automatic indexing is off', async () => {
+    const manual = new mongoose.Mongoose();
+    manual.set('autoIndex', false);
+    await manual.connect(server.getUri(), { dbName: 'manual-watch-indexes' });
+    try {
+      await as(TENANT_A, async () => createWatches(manual).add(owner, draft(), bounds()));
+      const names = (await manual.models.AgentEventWatch.listIndexes()).map((index) => index.name);
+      expect(names).toEqual(
+        expect.arrayContaining([
+          'id_1',
+          'user_1_conversationId_1_item_1',
+          'user_1_conversationId_1_slot_1',
+        ]),
+      );
+    } finally {
+      await manual.connection.dropDatabase();
+      await manual.disconnect();
+    }
+  });
 });
 
 describe('binding and the limit', () => {
@@ -223,6 +392,19 @@ describe('reads and removal', () => {
     expect(await as(TENANT_A, async () => watches.drop(owner, 'convo_1', 'github:pr:101#7'))).toBe(
       true,
     );
+  });
+
+  it('lists by when each watch was made, not by where it is stored', async () => {
+    const first = await added();
+    await added({ item: 'github:pr:101#8', label: 'acme/widgets#8' });
+    if (!first.ok) throw new Error('expected the add to succeed');
+    // Stored first but made last: written past the model, which keeps `createdAt` fixed.
+    await Rows.collection.updateOne(
+      { id: first.value.id },
+      { $set: { createdAt: new Date(Date.now() + DAY) } },
+    );
+    const listed = await as(TENANT_A, async () => watches.list(owner, 'convo_1', NOW));
+    expect(listed.map((watch) => watch.label)).toEqual(['acme/widgets#8', 'acme/widgets#7']);
   });
 
   it("never reads another tenant's watch", async () => {
@@ -313,10 +495,28 @@ describe('cleanup with its subscription and conversation', () => {
     expect((await stored()).map((row) => row.conversationId)).toEqual(['convo_2']);
   });
 
+  it('deletes a conversation where no watch is kept, and logs no failure', async () => {
+    const models = createModels(mongoose);
+    const methods = createMethods(mongoose);
+    mongoose.deleteModel('AgentEventWatch');
+    await runAsSystem(async () =>
+      models.Conversation.create({ conversationId: 'convo_1', user: owner, endpoint: 'agents' }),
+    );
+    const result = await runAsSystem(async () =>
+      methods.deleteConvos(owner, { conversationId: 'convo_1' }),
+    );
+    expect(result.deletedCount).toBe(1);
+    expect(logger.error).not.toHaveBeenCalledWith(
+      '[deleteConvos] Watch removal deferred to expiry',
+      expect.anything(),
+    );
+  });
+
   it('declares the indexes routing, listing, uniqueness and expiry need', async () => {
     await Rows.syncIndexes();
     const indexes = await Rows.collection.indexes();
     const byName = Object.fromEntries(indexes.map((index) => [index.name, index]));
+    expect(byName['id_1']).toMatchObject({ key: { id: 1 }, unique: true });
     expect(byName['connection_1_item_1']?.key).toEqual({ connection: 1, item: 1 });
     expect(byName['user_1_conversationId_1_item_1']).toMatchObject({
       key: { user: 1, conversationId: 1, item: 1 },
@@ -325,5 +525,42 @@ describe('cleanup with its subscription and conversation', () => {
     expect(byName['user_1_conversationId_1_slot_1']).toMatchObject({ unique: true });
     expect(byName['expiresAt_1']).toMatchObject({ expireAfterSeconds: 0 });
     expect(Rows.collection.collectionName).toBe('agenteventwatches');
+  });
+});
+
+describe('the collection', () => {
+  const row = {
+    id: 'watch_1',
+    user: owner,
+    ...draft(),
+    slot: 0,
+    expiresAt: NOW,
+  };
+
+  it('accepts a whole row', async () => {
+    await expect(new Rows(row).validate()).resolves.toBeUndefined();
+  });
+
+  // The store always supplies these, so only a write that goes around it can leave one out.
+  it.each([
+    'id',
+    'user',
+    'conversationId',
+    'agentId',
+    'subscription',
+    'connection',
+    'item',
+    'slot',
+    'label',
+    'expiresAt',
+  ] as const)('refuses a row with no %s', async (field) => {
+    await expect(new Rows({ ...row, [field]: undefined }).validate()).rejects.toThrow(
+      new RegExp(`\\b${field}\\b`),
+    );
+  });
+
+  it('refuses a page address past its bound', async () => {
+    const url = `https://github.com/${'a'.repeat(WATCH_URL_MAX_LENGTH)}`;
+    await expect(new Rows({ ...row, url }).validate()).rejects.toThrow(/\burl\b/);
   });
 });

@@ -10,9 +10,11 @@ import type { Subscription } from 'librechat-data-provider';
 import type { FilterQuery, Model } from 'mongoose';
 import type { SubscriptionDraft, SubscriptionPatch, Subscriptions } from './subscription';
 import type { SubscriptionRecord } from '~/models/subscription';
+import type { WatchRecord } from '~/models/watch';
 import { _resetStrictCache } from '~/models/plugins/tenantIsolation';
 import { runAsSystem, tenantStorage } from '~/config/tenantContext';
 import { createSubscriptions } from './subscription';
+import { createWatches } from './watch';
 
 jest.mock('~/config/winston', () => ({
   error: jest.fn(),
@@ -259,6 +261,47 @@ describe('the collection', () => {
     await expect(new Rows({ ...row, [field]: undefined }).validate()).rejects.toThrow(
       new RegExp(`\\b${field}\\b`),
     );
+  });
+
+  // The server writes these from its own counts; a write around the store is held to the same.
+  const at = new Date('2026-11-25T12:00:00.000Z');
+
+  it.each<[string, Record<string, unknown>, RegExp]>([
+    ['no reason', { at, failures: 3 }, /suspended\.reason/],
+    ['a reason there is not', { reason: 'crash', at, failures: 3 }, /suspended\.reason/],
+    ['no time', { reason: 'failures', failures: 3 }, /suspended\.at/],
+    ['no failure count', { reason: 'failures', at }, /suspended\.failures/],
+  ])('refuses a suspension with %s', async (_name, suspended, path) => {
+    await expect(new Rows({ ...row, suspended }).validate()).rejects.toThrow(path);
+  });
+
+  it.each<[string, Record<string, unknown>, RegExp]>([
+    ['no hour', { runs: 1 }, /usage\.hour/],
+    ['no run count', { hour: at }, /usage\.runs/],
+  ])("refuses an hour's usage with %s", async (_name, usage, path) => {
+    await expect(new Rows({ ...row, usage }).validate()).rejects.toThrow(path);
+  });
+
+  it('refuses a negative failure streak', async () => {
+    await expect(new Rows({ ...row, failures: -1 }).validate()).rejects.toThrow(/\bfailures\b/);
+  });
+
+  it("keeps a suspension and an hour's usage as exactly the fields they hold", async () => {
+    const doc = new Rows({
+      ...row,
+      suspended: { reason: 'failures', at, failures: 3 },
+      usage: { hour: at, runs: 2 },
+    });
+    await expect(doc.validate()).resolves.toBeUndefined();
+    const { suspended, usage } = doc.toObject();
+    expect(suspended).toStrictEqual({ reason: 'failures', at, failures: 3 });
+    expect(usage).toStrictEqual({ hour: at, runs: 2 });
+  });
+
+  it('keeps event types and counted run keys as text', async () => {
+    const doc = new Rows({ ...row, events: [7], counted: [8] });
+    await expect(doc.validate()).resolves.toBeUndefined();
+    expect(doc.toObject()).toMatchObject({ events: ['7'], counted: ['8'] });
   });
 });
 
@@ -562,6 +605,29 @@ describe('remove', () => {
 
     expect(await as(TENANT_A, async () => subscriptions.remove('sub_none', owner))).toBe(false);
     expect(await stored()).toHaveLength(1);
+  });
+
+  it('deletes no watch when the owner had no such subscription', async () => {
+    const watches = createWatches(mongoose);
+    const Watched = mongoose.models.AgentEventWatch as Model<WatchRecord>;
+    await runAsSystem(async () => Watched.deleteMany({}));
+    await as(TENANT_A, async () =>
+      watches.add(
+        owner,
+        {
+          conversationId: 'convo_1',
+          agentId: 'agent_1',
+          subscription: 'sub_none',
+          connection: 'conn_1',
+          item: 'github:pr:101#7',
+          label: 'acme/widgets#7',
+        },
+        { max: 5, ttlMs: 60_000 },
+      ),
+    );
+
+    expect(await as(TENANT_A, async () => subscriptions.remove('sub_none', owner))).toBe(false);
+    expect(await runAsSystem(async () => Watched.countDocuments({}))).toBe(1);
   });
 });
 
