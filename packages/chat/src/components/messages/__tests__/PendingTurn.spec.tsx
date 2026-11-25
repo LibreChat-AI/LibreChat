@@ -50,6 +50,7 @@ function renderPendingTurn({
     <span data-testid="markdown">{content}</span>
   ),
   renderMessageIcon = jest.fn(() => <span data-testid="message-icon" />),
+  hostIcon = true,
 }: {
   revealed?: RevealedQueuedTurn | null;
   latestMessageId?: string;
@@ -59,6 +60,8 @@ function renderPendingTurn({
   enableUserMsgMarkdown?: boolean;
   renderMarkdown?: (props: { content: string }) => ReactNode;
   renderMessageIcon?: MessagesHost['renderMessageIcon'];
+  /** Whether the host draws its own icon; without one the package draws it. */
+  hostIcon?: boolean;
 } = {}) {
   const store = createStore();
   if (revealed != null) {
@@ -73,7 +76,9 @@ function renderPendingTurn({
     }),
     renderMarkdown,
   });
-  const messagesHost = createMessagesHost({ renderMessageIcon });
+  const messagesHost = createMessagesHost({
+    renderMessageIcon: hostIcon ? renderMessageIcon : undefined,
+  });
   const rendered = render(
     <JotaiProvider store={store}>
       <ChatContext.Provider
@@ -123,6 +128,13 @@ describe('PendingTurn', () => {
         isCreatedByUser: true,
       },
     });
+  });
+
+  it('draws the turn when the host names no icon of its own', () => {
+    renderPendingTurn({ revealed: reveal(), hostIcon: false });
+
+    expect(screen.getByTestId('pending-turn')).toHaveTextContent('queued follow-up');
+    expect(screen.queryByTestId('message-icon')).not.toBeInTheDocument();
   });
 
   it('uses the generic user label when names are hidden', () => {

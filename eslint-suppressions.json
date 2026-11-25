@@ -257,11 +257,6 @@
       "count": 1
     }
   },
-  "client/src/components/Endpoints/MessageEndpointIcon.tsx": {
-    "shadcn/no-restyle": {
-      "count": 3
-    }
-  },
   "client/src/components/Endpoints/MinimalIcon.tsx": {
     "shadcn/require-static-classes": {
       "count": 1
@@ -280,11 +275,6 @@
   "client/src/components/Endpoints/Settings/Examples.tsx": {
     "shadcn/no-restyle": {
       "count": 20
-    }
-  },
-  "client/src/components/Endpoints/URLIcon.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 4
     }
   },
   "client/src/components/Input/Generations/Regenerate.tsx": {

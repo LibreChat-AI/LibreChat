@@ -13,9 +13,10 @@ import type { ReactNode } from 'react';
 import type { MessageIconData } from '../../react/messages/host';
 import type { TAskFunction } from '../../core';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from './labels';
-import { MessageIconSlot, useMessagesHost } from '../../react/messages/host';
 import { ErrorSourceProvider } from '../../react/messages/error';
+import { useMessagesHost } from '../../react/messages/host';
 import { AuthorContext } from '../../react/messages/author';
+import { renderMessageIcon } from '../icons/MessageIcon';
 import { renderContentParts } from '../contentRenderer';
 import { useMessagePartsHost } from '../../react/host';
 import { getHeaderHoverLabel } from './HeaderLabel';
@@ -165,7 +166,8 @@ export default function ContentRow({
 }: ContentRowProps): ReactNode {
   const localize = useLocalize();
   const host = useMessagePartsHost();
-  const { renderMessageBody: renderBody = renderMessageBody } = useMessagesHost();
+  const { renderMessageBody: renderBody = renderMessageBody, renderMessageIcon: renderIcon } =
+    useMessagesHost();
   const showThinking = host.useShowThinking();
   const autoExpandTools = host.useAutoExpandTools();
   const isCreatedByUser = message.isCreatedByUser === true;
@@ -183,10 +185,10 @@ export default function ContentRow({
 
   const author = useMemo(
     () => ({
-      icon: <MessageIconSlot iconData={iconData} assistant={assistant} agent={agent} />,
+      icon: (renderIcon ?? renderMessageIcon)({ iconData, assistant, agent }),
       label,
     }),
-    [iconData, assistant, agent, label],
+    [renderIcon, iconData, assistant, agent, label],
   );
 
   return (

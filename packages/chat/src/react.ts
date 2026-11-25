@@ -185,6 +185,7 @@ export {
   useMessagesHost,
   MessagesHostProvider,
   setDefaultMessagesHost,
+  setDefaultMessageIcon,
   MessageIconSlot,
 } from './react/messages/host';
 export type {

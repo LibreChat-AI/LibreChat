@@ -4,6 +4,7 @@ import { useLocalize } from '@librechat/client';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactElement, RefObject } from 'react';
 import { hasRevealSuccessor, buildRevealedMessage } from '../../react/steering/useQueuedTurnReveal';
+import { renderMessageIcon as defaultRenderMessageIcon } from '../icons/MessageIcon';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from './labels';
 import { useQueuedTurnPortal } from '../composer/steering/QueuedTurnPortal';
 import { renderMarkdown as defaultRenderMarkdown } from '../renderers';
@@ -47,7 +48,7 @@ export default function PendingTurn({
     useUserTextPreferences,
     renderMarkdown = defaultRenderMarkdown,
   } = useMessagePartsHost();
-  const renderMessageIcon = useMessagesHost().renderMessageIcon;
+  const { renderMessageIcon = defaultRenderMessageIcon } = useMessagesHost();
   const user = useUser();
   const { usernameDisplay, enableUserMsgMarkdown } = useUserTextPreferences();
   const reveal = useAtomValue(revealedQueuedTurnFamily(conversationId));

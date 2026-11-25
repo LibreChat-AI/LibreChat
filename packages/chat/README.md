@@ -350,6 +350,15 @@ message needs the host's editor, `renderMessageEditor`; without one a message as
 as it is. `ContentRow` draws a message with no content parts this way too, read-only, so an app
 can draw any message with it.
 
+### Author icons
+
+A row's author icon is the package's `MessageIcon`: the image a message names by URL, the agent's
+or assistant's avatar, the endpoint's configured image, or the provider's own icon; on a prompt,
+the signed-in user's avatar (`useUser().avatar`) or their initials, and a plain glyph where no one
+is signed in. The icons a deployment configured per endpoint come from the endpoints config, which
+a host supplies with the optional `useEndpointsConfig` member of its messages host. A host with
+icons of its own names them with `renderMessageIcon`.
+
 ### An app outside LibreChat, checked
 
 [`e2e/outside-host`](../../e2e/outside-host) is such an app: a page built with plain Vite that

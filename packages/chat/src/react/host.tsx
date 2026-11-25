@@ -47,7 +47,15 @@ export type MessagePartsUserTextPreferences = {
 };
 
 /** The signed-in user as the parts label it; `undefined` on a public share. */
-export type MessagePartsUser = { id?: string; name?: string; username?: string } | undefined;
+export type MessagePartsUser =
+  | {
+      id?: string;
+      name?: string;
+      username?: string;
+      /** The user's own avatar image; without it the icon draws their initials. */
+      avatar?: string;
+    }
+  | undefined;
 
 /** Shows a transient notification. */
 export type MessagePartsToast = (toast: TShowToast) => void;

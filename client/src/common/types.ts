@@ -343,21 +343,7 @@ export type TAuthConfig = {
   optional?: boolean;
 };
 
-export type IconProps = Pick<t.TMessage, 'isCreatedByUser' | 'model'> &
-  Pick<t.TConversation, 'chatGptLabel' | 'modelLabel'> & {
-    size?: number;
-    button?: boolean;
-    iconURL?: string;
-    message?: boolean;
-    className?: string;
-    iconClassName?: string;
-    endpoint?: t.EModelEndpoint | string | null;
-    endpointType?: t.EModelEndpoint | null;
-    endpointsConfig?: t.TEndpointsConfig | null;
-    assistantName?: string;
-    agentName?: string;
-    error?: boolean;
-  };
+export type { IconProps } from '@librechat/chat/components';
 
 export type Option = Record<string, unknown> & {
   label?: string;

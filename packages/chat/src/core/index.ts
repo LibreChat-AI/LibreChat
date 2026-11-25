@@ -57,4 +57,6 @@ export * from './url';
 export * from './errors';
 export { isJson, extractJson } from './json';
 export * from './apps';
+export { isImageURL, getIconEndpoint, resolveProviderIcon } from './icons';
+export type { ProviderIconParams, ProviderIconResolution } from './icons';
 export * from './same';

@@ -33,6 +33,25 @@
   width: 2rem;
 }
 
+/* A hairline ring inside a round avatar, in the theme's stroke ink, so an image with a light edge
+   still reads as a circle. Drawn on a pseudo-element so the image itself is not resized. */
+.avatar-stroke {
+  position: relative;
+}
+.avatar-stroke::after {
+  border-radius: 9999px;
+  bottom: 0;
+  box-shadow:
+    var(--tw-ring-offset-shadow, 0 0 transparent),
+    var(--tw-ring-shadow, 0 0 transparent),
+    inset 0 0 0 1px rgb(var(--stroke-ink) / var(--stroke-ink-alpha));
+  content: '';
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+
 .tool-status-text {
   font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base, 1rem)));
   line-height: calc(1.25 * 0.9 * var(--markdown-font-size, var(--font-size-base, 1rem)));

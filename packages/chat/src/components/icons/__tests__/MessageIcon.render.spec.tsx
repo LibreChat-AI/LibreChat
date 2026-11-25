@@ -1,23 +1,21 @@
-import React from 'react';
+/** @jest-environment jsdom */
 import { render, screen } from '@testing-library/react';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { Agent } from 'librechat-data-provider';
-import type { TMessageIcon } from '~/common';
+import type { MessageIconData } from '../../../react/messages/host';
 
 jest.mock('librechat-data-provider', () => ({
   ...jest.requireActual('librechat-data-provider'),
   getEndpointField: jest.fn(() => ''),
 }));
-jest.mock('~/data-provider', () => ({
-  useGetEndpointsQuery: jest.fn(() => ({ data: {} })),
-}));
-jest.mock('~/utils', () => ({
+jest.mock('../../../core/icons', () => ({
+  ...jest.requireActual('../../../core/icons'),
   getIconEndpoint: jest.fn(() => 'agents'),
 }));
 
 const iconRenderCount = { current: 0 };
 
-jest.mock('~/components/Endpoints/ConvoIconURL', () => {
+jest.mock('../ConvoIconURL', () => {
   const ConvoIconURL = (props: Record<string, unknown>) => {
     iconRenderCount.current += 1;
     return <div data-testid="convo-icon-url" data-icon-url={props.iconURL as string} />;
@@ -25,7 +23,7 @@ jest.mock('~/components/Endpoints/ConvoIconURL', () => {
   ConvoIconURL.displayName = 'ConvoIconURL';
   return { __esModule: true, default: ConvoIconURL };
 });
-jest.mock('~/components/Endpoints/Icon', () => {
+jest.mock('../Icon', () => {
   const Icon = (props: Record<string, unknown>) => {
     iconRenderCount.current += 1;
     return <div data-testid="icon" data-icon-url={props.iconURL as string} />;
@@ -44,7 +42,7 @@ const makeAgent = (overrides?: Partial<Agent>): Agent =>
     ...overrides,
   }) as Agent;
 
-const baseIconData: TMessageIcon = {
+const baseIconData: MessageIconData = {
   endpoint: EModelEndpoint.agents,
   model: 'agent_123',
   iconURL: undefined,
@@ -121,7 +119,7 @@ describe('MessageIcon render cycles', () => {
 
   describe('simulates message lifecycle', () => {
     it('renders exactly twice during new message + streaming start: initial render + modelLabel update', () => {
-      const initialIconData: TMessageIcon = {
+      const initialIconData: MessageIconData = {
         endpoint: EModelEndpoint.agents,
         model: 'agent_123',
         iconURL: undefined,
@@ -132,7 +130,7 @@ describe('MessageIcon render cycles', () => {
 
       const { rerender } = render(<MessageIcon iconData={initialIconData} agent={agent} />);
 
-      const streamingIconData: TMessageIcon = {
+      const streamingIconData: MessageIconData = {
         ...initialIconData,
         modelLabel: 'GitHub Agent',
       };
@@ -143,7 +141,7 @@ describe('MessageIcon render cycles', () => {
     });
 
     it('does NOT re-render on subsequent streaming chunks (content changes, isSubmitting stays true)', () => {
-      const iconData: TMessageIcon = {
+      const iconData: MessageIconData = {
         endpoint: EModelEndpoint.agents,
         model: 'agent_123',
         iconURL: undefined,
@@ -163,7 +161,7 @@ describe('MessageIcon render cycles', () => {
     });
 
     it('does NOT re-render when agentsMap context updates with same agent data', () => {
-      const iconData: TMessageIcon = {
+      const iconData: MessageIconData = {
         endpoint: EModelEndpoint.agents,
         model: 'agent_123',
         iconURL: undefined,

@@ -5,7 +5,10 @@ import type { TUser } from 'librechat-data-provider';
 
 const avatarCache: Record<string, string> = {};
 
-const useAvatar = (user: TUser | undefined): string => {
+/** The fields an avatar is drawn from; a whole `TUser` qualifies. */
+export type AvatarUser = Pick<Partial<TUser>, 'name' | 'username' | 'avatar'>;
+
+const useAvatar = (user: AvatarUser | null | undefined): string => {
   return useMemo(() => {
     const { username, name } = user ?? {};
     const seed = name || username;

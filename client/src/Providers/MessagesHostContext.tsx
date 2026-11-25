@@ -26,7 +26,7 @@ import {
   useCopyMessageToClipboard,
 } from '~/hooks';
 import { useSelectedSender, useHideSelectedAuthor } from '~/components/Chat/Menus/Endpoints/shown';
-import { useForkConvoMutation, useCachedMessages } from '~/data-provider';
+import { useForkConvoMutation, useCachedMessages, useGetEndpointsQuery } from '~/data-provider';
 import EditMessage from '~/components/Chat/Messages/Content/EditMessage';
 import useConversationSeenSource from '~/hooks/Conversations/seenSource';
 import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
@@ -36,7 +36,6 @@ import { FLAT_THREAD } from '~/components/Chat/Messages/Thread/flag';
 import MessageAudio from '~/components/Chat/Messages/MessageAudio';
 import MessageUsage from '~/components/Chat/Input/TokenUsage/Turn';
 import { useAssistantsMapContext } from './AssistantsMapContext';
-import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
 import { useFileMapContext } from '~/Providers/FileMapContext';
 import Files from '~/components/Chat/Messages/Content/Files';
@@ -44,6 +43,7 @@ import { useScreenshot } from '~/hooks/ScreenshotContext';
 import { useAgentsMapContext } from './AgentsMapContext';
 import useClockFormat from '~/hooks/useClockFormat';
 import { autoScrollAtom } from '~/store/autoScroll';
+import { useShareContext } from './ShareContext';
 import store from '~/store';
 
 function useAppForkPreferences(): ForkPreferences {
@@ -139,6 +139,12 @@ function AppMessageAudio(props: MessageAudioProps) {
  *  file map, and the row pieces that still live here: the message body, wake-up card, owner's text, step
  *  limit notice, author header and the subagent activity group. Registered as the default when this module loads, so rows read it on every route, the
  *  shared view included. */
+/** The endpoints config the message icons read; a public share link has none to fetch. */
+function useEndpointsConfig() {
+  const { isSharedConvo } = useShareContext();
+  return useGetEndpointsQuery({ enabled: isSharedConvo !== true }).data;
+}
+
 export const appMessagesHost: MessagesHost = {
   useHour12: useClockFormat,
   renderFiles: (message) => <Files message={message} />,
@@ -157,7 +163,7 @@ export const appMessagesHost: MessagesHost = {
   useScreenshotTarget: () => useScreenshot().screenshotTargetRef,
   useAutoScroll: () => useAtomValue(autoScrollAtom),
   useSeenSource: useConversationSeenSource,
-  renderMessageIcon: (props) => <MessageIcon {...props} />,
+  useEndpointsConfig,
   useMaximizeChatSpace: () => useRecoilValue(store.maximizeChatSpace),
   useFlatThread: () => FLAT_THREAD,
   useHideSelectedAuthor,

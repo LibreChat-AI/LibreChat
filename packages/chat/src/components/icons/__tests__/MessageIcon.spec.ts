@@ -1,19 +1,8 @@
 import type { Agent, Assistant } from 'librechat-data-provider';
-import type { TMessageIcon } from '~/common';
-
-// Mock all module-level imports so we can import the pure arePropsEqual function
-// without pulling in React component dependencies
-jest.mock('librechat-data-provider', () => ({
-  getEndpointField: jest.fn(),
-}));
-jest.mock('~/components/Endpoints/ConvoIconURL', () => jest.fn());
-jest.mock('~/data-provider', () => ({ useGetEndpointsQuery: jest.fn(() => ({ data: {} })) }));
-jest.mock('~/utils', () => ({ getIconEndpoint: jest.fn(), logger: { log: jest.fn() } }));
-jest.mock('~/components/Endpoints/Icon', () => jest.fn());
-
+import type { MessageIconData } from '../../../react/messages/host';
 import { arePropsEqual } from '../MessageIcon';
 
-const baseIconData: TMessageIcon = {
+const baseIconData: MessageIconData = {
   endpoint: 'agents',
   model: 'agent_123',
   iconURL: '/images/avatar.png',
