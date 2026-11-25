@@ -18,6 +18,21 @@ const mockHandlers = {
   dismiss: jest.fn((req, res) => res.status(200).json({ operation: 'dismiss', id: req.params.id })),
 };
 const mockCreateHandlers = jest.fn(() => mockHandlers);
+const mockConnectionHandlers = {
+  list: jest.fn((_req, res) => res.status(200).json({ operation: 'connections.list' })),
+  install: jest.fn((_req, res) => res.status(200).json({ operation: 'connections.install' })),
+  bind: jest.fn((_req, res) => res.status(201).json({ operation: 'connections.bind' })),
+  mark: jest.fn((req, res) =>
+    res.status(200).json({ operation: 'connections.mark', id: req.params.id }),
+  ),
+  remove: jest.fn((req, res) =>
+    res.status(200).json({ operation: 'connections.remove', id: req.params.id }),
+  ),
+};
+const mockCreateConnectionHandlers = jest.fn(() => mockConnectionHandlers);
+const mockConnections = { bind: jest.fn(), get: jest.fn(), list: jest.fn() };
+const mockFetch = jest.fn();
+const mockGetAppConfig = jest.fn();
 const mockLetters = { list: jest.fn(), get: jest.fn(), requeue: jest.fn(), dismiss: jest.fn() };
 const mockRecordAuditEntry = jest.fn();
 
@@ -27,11 +42,18 @@ jest.mock('@librechat/data-schemas', () => ({
     READ_EVENTS: 'read:events',
     MANAGE_EVENTS: 'manage:events',
   },
+  createConnections: jest.fn(() => mockConnections),
 }));
 
 jest.mock('@librechat/api', () => ({
   createAdminDeadLetterHandlers: (...args) => mockCreateHandlers(...args),
+  createAdminConnectionHandlers: (...args) => mockCreateConnectionHandlers(...args),
+  createProxyAwareFetch: jest.fn(() => mockFetch),
   isAuditFailClosed: jest.fn(() => true),
+}));
+
+jest.mock('~/server/services/Config/app', () => ({
+  getAppConfig: (...args) => mockGetAppConfig(...args),
 }));
 
 jest.mock('~/server/middleware/roles/capabilities', () => ({
@@ -74,6 +96,49 @@ describe('admin event routes', () => {
       auditFailClosed: true,
     });
   });
+
+  it('builds the connection handlers from the store, the base config and the environment', async () => {
+    // Jest keeps its own module registry, so the router is evaluated afresh in an isolated one.
+    jest.isolateModules(() => require('./events'));
+
+    expect(mockCreateConnectionHandlers).toHaveBeenCalledTimes(1);
+    const [deps] = mockCreateConnectionHandlers.mock.calls[0];
+    const { env, getAppConfig, ...rest } = deps;
+    // Compared by identity, so a failure never prints the environment.
+    expect(env === process.env).toBe(true);
+    expect(rest).toEqual({
+      connections: mockConnections,
+      fetch: mockFetch,
+      recordAuditEntry: mockRecordAuditEntry,
+      auditFailClosed: true,
+    });
+    mockGetAppConfig.mockResolvedValue({ endpoints: {} });
+    await expect(getAppConfig()).resolves.toEqual({ endpoints: {} });
+    expect(mockGetAppConfig).toHaveBeenCalledWith();
+  });
+
+  it('lists connections behind admin access and the read capability', async () => {
+    const response = await request(createApp()).get('/api/admin/events/connections').expect(200);
+
+    expect(response.body).toEqual({ operation: 'connections.list' });
+    expect(middlewareCalls).toEqual(['jwt', 'access:admin', 'read:events']);
+  });
+
+  it.each([
+    ['post', '/api/admin/events/connections/install', 'install', 200],
+    ['post', '/api/admin/events/connections', 'bind', 201],
+    ['patch', '/api/admin/events/connections/conn_1', 'mark', 200],
+    ['delete', '/api/admin/events/connections/conn_1', 'remove', 200],
+  ])(
+    'gates %s %s behind admin access and the manage capability',
+    async (method, path, name, status) => {
+      await request(createApp())[method](path).expect(status);
+
+      expect(middlewareCalls).toEqual(['jwt', 'access:admin', 'manage:events']);
+      expect(mockConnectionHandlers[name]).toHaveBeenCalledTimes(1);
+      expect(mockConnectionHandlers.list).not.toHaveBeenCalled();
+    },
+  );
 
   it('lists dead letters behind admin access and the read capability', async () => {
     const response = await request(createApp()).get('/api/admin/events/dead?limit=5').expect(200);

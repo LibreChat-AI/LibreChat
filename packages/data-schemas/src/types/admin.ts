@@ -1320,6 +1320,15 @@ export const AUDIT_ACTIONS = [
    */
   'dead_letter.requeued',
   'dead_letter.dismissed',
+  /**
+   * Admin action on an install of the agent events GitHub App bound to the tenant; target
+   * `{ type: 'event_connection', id, name }`. Written `pending` before the action and again
+   * with its outcome.
+   */
+  'event_connection.bound',
+  'event_connection.suspended',
+  'event_connection.resumed',
+  'event_connection.removed',
   /** Reads of the audit log itself and retention purges. */
   'audit.read',
   'audit.exported',
@@ -1367,6 +1376,10 @@ export const AUDIT_ACTION_CATEGORY: Record<AuditAction, AuditCategory> = {
   'passkey.removed': 'auth',
   'dead_letter.requeued': 'agent_run',
   'dead_letter.dismissed': 'agent_run',
+  'event_connection.bound': 'credential',
+  'event_connection.suspended': 'credential',
+  'event_connection.resumed': 'credential',
+  'event_connection.removed': 'credential',
   'audit.read': 'audit',
   'audit.exported': 'audit',
   'audit.purged': 'audit',

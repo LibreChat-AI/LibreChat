@@ -17,6 +17,15 @@ import type {
   SetSlackWorkspaceRoute,
 } from './types/channels';
 import type {
+  ConnectionBindRequest,
+  ConnectionMarkRequest,
+  ConnectionRemoved,
+  ConnectionInstall,
+  AdminConnections,
+  ConnectionChoicesResponse,
+  AdminConnection,
+} from './types/connections';
+import type {
   ResponseReviewView,
   ResponseCancelReceipt,
   ResponseReviewDecision,
@@ -49,7 +58,6 @@ import type {
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
 import type { CodeSetupAttempt, CodeSetupApprovalRequest } from './codeSetup';
 import type { RunGrantView, ConfirmRunGrant } from './types/runGrant';
-import type { ConnectionChoicesResponse } from './types/connections';
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
@@ -1979,6 +1987,30 @@ export function requeueDeadLetter(id: string): Promise<DeadLetterRequeued> {
 
 export function dismissDeadLetter(id: string): Promise<DeadLetterDismissed> {
   return request.delete(endpoints.adminDeadLetter(id));
+}
+
+/* Connections of agent events (admin) */
+export function listEventConnections(): Promise<AdminConnections> {
+  return request.get(endpoints.adminEventConnections());
+}
+
+export function installEventConnection(): Promise<ConnectionInstall> {
+  return request.post(endpoints.adminEventConnectionInstall());
+}
+
+export function bindEventConnection(body: ConnectionBindRequest): Promise<AdminConnection> {
+  return request.post(endpoints.adminEventConnections(), body);
+}
+
+export function markEventConnection(
+  id: string,
+  body: ConnectionMarkRequest,
+): Promise<AdminConnection> {
+  return request.patch(endpoints.adminEventConnection(id), body);
+}
+
+export function removeEventConnection(id: string): Promise<ConnectionRemoved> {
+  return request.delete(endpoints.adminEventConnection(id));
 }
 
 /* Roles */

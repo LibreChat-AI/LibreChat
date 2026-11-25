@@ -673,3 +673,342 @@ describe('createApp disclosure', () => {
     expect(thrown).toBe(7);
   });
 });
+
+describe('createApp as the app itself', () => {
+  const page = { html_url: 'https://github.com/apps/example-events', slug: 'example-events' };
+  const installed = {
+    id: INSTALLATION,
+    account: { id: 9001, login: 'example-org', type: 'Organization' },
+    suspended_at: null,
+  };
+
+  it('reads the app page with the app token, not an installation token', async () => {
+    const { app, calls, exchanges } = harness({ permission: () => json(page) });
+    await expect(app.about()).resolves.toEqual({
+      ok: true,
+      value: { url: 'https://github.com/apps/example-events' },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://api.github.com/app');
+    expect(calls[0].method).toBe('GET');
+    expect(bearer(calls[0]).split('.')).toHaveLength(3);
+    expect(exchanges()).toHaveLength(0);
+  });
+
+  it.each([
+    ['another host', { html_url: 'https://example.com/apps/example-events' }],
+    ['plain HTTP', { html_url: 'http://github.com/apps/example-events' }],
+    ['a query', { html_url: 'https://github.com/apps/example-events?next=x' }],
+    ['no page', { slug: 'example-events' }],
+    ['a page that is not a URL', { html_url: 'not a url' }],
+  ])('throws an upstream failure for an app page on %s', async (_label, body) => {
+    expect.hasAssertions();
+    const { app } = harness({ permission: () => json(body) });
+    await outage(app.about(), 'upstream', 200);
+  });
+
+  it('keeps an Enterprise host with its port', async () => {
+    const { app, calls } = harness({
+      config: { host: 'git.example.com:8443' },
+      permission: () => json({ html_url: 'https://git.example.com:8443/github-apps/events/' }),
+    });
+    await expect(app.about()).resolves.toEqual({
+      ok: true,
+      value: { url: 'https://git.example.com:8443/github-apps/events' },
+    });
+    expect(calls[0].url).toBe('https://git.example.com:8443/api/v3/app');
+  });
+
+  it('reads one installation of the app: its account and whether it is suspended', async () => {
+    const { app, calls } = harness({ permission: () => json(installed) });
+    await expect(app.installation(INSTALLATION)).resolves.toEqual({
+      ok: true,
+      value: { account: { id: '9001', name: 'example-org' }, suspended: false },
+    });
+    expect(calls[0].url).toBe(`https://api.github.com/app/installations/${INSTALLATION}`);
+    const held = harness({
+      permission: () => json({ ...installed, suspended_at: '2026-11-20T00:00:00Z' }),
+    });
+    await expect(held.app.installation(INSTALLATION)).resolves.toMatchObject({
+      ok: true,
+      value: { suspended: true },
+    });
+  });
+
+  it.each([
+    [401, 'credential'],
+    [403, 'forbidden'],
+    [404, 'missing'],
+  ] as const)('answers GitHub status %i as %s', async (status, code) => {
+    const { app } = harness({ permission: () => json({ message: MARKER }, status) });
+    await expect(app.installation(INSTALLATION)).resolves.toEqual({ ok: false, error: { code } });
+    await expect(app.about()).resolves.toEqual({ ok: false, error: { code } });
+  });
+
+  it('answers a rate limit as limited with the wait GitHub asked for', async () => {
+    const { app } = harness({
+      permission: () => json({ message: MARKER }, 429, { 'retry-after': '30' }),
+    });
+    await expect(app.installation(INSTALLATION)).resolves.toEqual({
+      ok: false,
+      error: { code: 'limited', retryAfterMs: 30_000 },
+    });
+  });
+
+  it('throws an upstream failure for a server error or an account that does not read', async () => {
+    expect.hasAssertions();
+    await outage(
+      harness({ permission: () => json({ message: MARKER }, 502) }).app.installation(INSTALLATION),
+      'upstream',
+      502,
+    );
+    await outage(
+      harness({
+        permission: () => json({ ...installed, account: { id: 9001, login: '../x' } }),
+      }).app.installation(INSTALLATION),
+      'upstream',
+      200,
+    );
+    await outage(
+      harness({ permission: () => json({ id: INSTALLATION }) }).app.installation(INSTALLATION),
+      'upstream',
+      200,
+    );
+  });
+
+  it('asks nothing for an id that is not one', async () => {
+    const { app, calls } = harness();
+    for (const id of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 2]) {
+      await expect(app.installation(id)).resolves.toEqual({
+        ok: false,
+        error: { code: 'missing' },
+      });
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it('throws a key failure without asking when the key does not load', async () => {
+    const { app, calls } = harness({ config: { key: 'not a key' } });
+    await outage(app.about(), 'key');
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('createApp owns', () => {
+  const CLIENT = { id: 'Iv23.client', secret: 'client-secret-6b0e' };
+  const USER_TOKEN = 'ghu_usertoken77c4';
+  type Sent = { url: string; method: string; body: string; headers: Record<string, string> };
+
+  /** GitHub's token endpoint and the user's installations, as `answer` decides. */
+  function owner(
+    answer: (sent: Sent) => Response | Promise<Response>,
+    config: Partial<AppConfig> = {},
+  ) {
+    const sent: Sent[] = [];
+    const fetch: PullRequestFetch = async (input, init) => {
+      const entry: Sent = {
+        url: input,
+        method: init?.method ?? 'GET',
+        body: typeof init?.body === 'string' ? init.body : '',
+        headers: Object.fromEntries(new Headers(init?.headers).entries()),
+      };
+      sent.push(entry);
+      return answer(entry);
+    };
+    const app = createApp(
+      {
+        id: 'Iv1.example',
+        key: KEY,
+        host: 'github.com',
+        timeoutMs: 10_000,
+        client: CLIENT,
+        ...config,
+      },
+      { fetch, now: () => START },
+    );
+    return { app, sent };
+  }
+
+  const isToken = (sent: Sent) => sent.url.endsWith('/login/oauth/access_token');
+  const page = (url: string) => Number(new URL(url).searchParams.get('page'));
+
+  /** An account that can access `ids`, a hundred to a page. */
+  const account = (ids: number[]) => (sent: Sent) =>
+    isToken(sent)
+      ? json({ access_token: USER_TOKEN, token_type: 'bearer' })
+      : json({
+          total_count: ids.length,
+          installations: ids
+            .slice((page(sent.url) - 1) * 100, page(sent.url) * 100)
+            .map((id) => ({ id })),
+        });
+
+  it('redeems the code with the client on the app host and asks as that account', async () => {
+    const { app, sent } = owner(account([12, INSTALLATION]));
+    await expect(app.owns('code1f2e', INSTALLATION)).resolves.toEqual({ ok: true, value: true });
+    expect(sent.map((entry) => `${entry.method} ${entry.url}`)).toEqual([
+      'POST https://github.com/login/oauth/access_token',
+      'GET https://api.github.com/user/installations?per_page=100&page=1',
+    ]);
+    expect(Object.fromEntries(new URLSearchParams(sent[0].body))).toEqual({
+      client_id: CLIENT.id,
+      client_secret: CLIENT.secret,
+      code: 'code1f2e',
+    });
+    expect(sent[0].headers.accept).toBe('application/json');
+    expect(sent[1].headers.authorization).toBe(`Bearer ${USER_TOKEN}`);
+  });
+
+  it('answers no for an installation the account cannot access', async () => {
+    const { app } = owner(account([12, 13]));
+    await expect(app.owns('code1f2e', INSTALLATION)).resolves.toEqual({ ok: true, value: false });
+  });
+
+  it('reads further pages, and stops at the last one', async () => {
+    const ids = Array.from({ length: 250 }, (_, index) => 10_000 + index);
+    ids[180] = INSTALLATION;
+    let found = owner(account(ids));
+    await expect(found.app.owns('code1f2e', INSTALLATION)).resolves.toEqual({
+      ok: true,
+      value: true,
+    });
+    expect(found.sent.filter((entry) => !isToken(entry)).map((entry) => page(entry.url))).toEqual([
+      1, 2,
+    ]);
+    found = owner(account(ids.filter((id) => id !== INSTALLATION)));
+    await expect(found.app.owns('code1f2e', INSTALLATION)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+    expect(found.sent.filter((entry) => !isToken(entry))).toHaveLength(3);
+  });
+
+  it('reads at most ten pages', async () => {
+    const ids = Array.from({ length: 5_000 }, (_, index) => 10_000 + index);
+    const { app, sent } = owner(account(ids));
+    await expect(app.owns('code1f2e', INSTALLATION)).resolves.toEqual({ ok: true, value: false });
+    expect(sent.filter((entry) => !isToken(entry))).toHaveLength(10);
+  });
+
+  it('uses the Enterprise host for the token and its API for the account', async () => {
+    const { app, sent } = owner(account([INSTALLATION]), { host: 'git.example.com:8443' });
+    await app.owns('code1f2e', INSTALLATION);
+    expect(sent.map((entry) => entry.url)).toEqual([
+      'https://git.example.com:8443/login/oauth/access_token',
+      'https://git.example.com:8443/api/v3/user/installations?per_page=100&page=1',
+    ]);
+  });
+
+  it.each([
+    ['bad_verification_code', 'code'],
+    ['redirect_uri_mismatch', 'code'],
+    ['incorrect_client_credentials', 'credential'],
+  ] as const)('answers the token endpoint refusing with %s as %s', async (error, code) => {
+    const { app, sent } = owner(() => json({ error, error_description: MARKER }));
+    await expect(app.owns('code1f2e', INSTALLATION)).resolves.toEqual({
+      ok: false,
+      error: { code },
+    });
+    expect(sent).toHaveLength(1);
+  });
+
+  it('answers a rejected account token as credential and a rate limit as limited', async () => {
+    let { app } = owner((sent) =>
+      isToken(sent) ? json({ access_token: USER_TOKEN }) : json({ message: MARKER }, 401),
+    );
+    await expect(app.owns('code1f2e', INSTALLATION)).resolves.toEqual({
+      ok: false,
+      error: { code: 'credential' },
+    });
+    ({ app } = owner(() => json({ message: MARKER }, 429, { 'retry-after': '20' })));
+    await expect(app.owns('code1f2e', INSTALLATION)).resolves.toEqual({
+      ok: false,
+      error: { code: 'limited', retryAfterMs: 20_000 },
+    });
+  });
+
+  it("answers the account's installation list being limited or forbidden as GitHub said", async () => {
+    const list =
+      (status: number, headers: Record<string, string> = {}) =>
+      (sent: Sent) =>
+        isToken(sent)
+          ? json({ access_token: USER_TOKEN })
+          : json({ message: MARKER }, status, headers);
+    await expect(
+      owner(list(429, { 'retry-after': '5' })).app.owns('code1f2e', INSTALLATION),
+    ).resolves.toEqual({ ok: false, error: { code: 'limited', retryAfterMs: 5_000 } });
+    await expect(owner(list(403)).app.owns('code1f2e', INSTALLATION)).resolves.toEqual({
+      ok: false,
+      error: { code: 'forbidden' },
+    });
+  });
+
+  it('throws an outage for a server error, an unreadable token, an unreadable list or a failed request', async () => {
+    expect.hasAssertions();
+    await outage(
+      owner(() => json({ message: MARKER }, 502)).app.owns('c', INSTALLATION),
+      'upstream',
+      502,
+    );
+    await outage(
+      owner(() => json({ token_type: 'bearer' })).app.owns('c', INSTALLATION),
+      'upstream',
+      200,
+    );
+    await outage(
+      owner((sent) =>
+        isToken(sent) ? json({ access_token: USER_TOKEN }) : json({ total_count: 1 }),
+      ).app.owns('c', INSTALLATION),
+      'upstream',
+      200,
+    );
+    await outage(
+      owner(() => {
+        throw new Error(MARKER);
+      }).app.owns('c', INSTALLATION),
+      'network',
+    );
+  });
+
+  it('asks nothing without a client, for a code that does not read, or for an id that is not one', async () => {
+    const bare = owner(account([INSTALLATION]), { client: undefined });
+    await expect(bare.app.owns('code1f2e', INSTALLATION)).resolves.toEqual({
+      ok: false,
+      error: { code: 'credential' },
+    });
+    const { app, sent } = owner(account([INSTALLATION]));
+    await expect(app.owns('a code', INSTALLATION)).resolves.toEqual({
+      ok: false,
+      error: { code: 'code' },
+    });
+    await expect(app.owns('code1f2e', 0)).resolves.toEqual({
+      ok: false,
+      error: { code: 'missing' },
+    });
+    expect([...bare.sent, ...sent]).toHaveLength(0);
+  });
+
+  it("never returns or throws the account's token or the client secret", async () => {
+    const seen: unknown[] = [];
+    const answers: Array<(sent: Sent) => Response> = [
+      account([INSTALLATION]),
+      account([1]),
+      () => json({ error: 'bad_verification_code', error_description: USER_TOKEN }),
+      (sent) =>
+        isToken(sent) ? json({ access_token: USER_TOKEN }) : json({ message: USER_TOKEN }, 500),
+      () => {
+        throw new Error(`${USER_TOKEN} ${CLIENT.secret}`);
+      },
+    ];
+    for (const answer of answers) {
+      seen.push(
+        await owner(answer)
+          .app.owns('code1f2e', INSTALLATION)
+          .catch((error: unknown) => ({ ...(error as object), message: (error as Error).message })),
+      );
+    }
+    const text = JSON.stringify(seen);
+    expect(text).not.toContain(USER_TOKEN);
+    expect(text).not.toContain(CLIENT.secret);
+  });
+});
