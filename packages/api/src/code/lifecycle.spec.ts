@@ -107,6 +107,42 @@ describe('code environment lifecycle scheduler', () => {
     expect(reconcile).toHaveBeenCalledTimes(2);
   });
 
+  test('backs off to the deployment-wide ceiling instead of the default one', async () => {
+    leader.mockResolvedValue(true);
+    const reconcile = jest.fn().mockResolvedValue(true);
+
+    startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs: 600_000 }, { reconcile });
+    await jest.advanceTimersByTimeAsync(0);
+    await jest.advanceTimersByTimeAsync(120_000);
+    await jest.advanceTimersByTimeAsync(240_000);
+    expect(reconcile).toHaveBeenCalledTimes(3);
+
+    /** The third idle pass waits 480 s, past the 240 s default ceiling. */
+    await jest.advanceTimersByTimeAsync(479_999);
+    expect(reconcile).toHaveBeenCalledTimes(3);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(reconcile).toHaveBeenCalledTimes(4);
+
+    /** The next wait is held at the configured 600 s. */
+    await jest.advanceTimersByTimeAsync(599_999);
+    expect(reconcile).toHaveBeenCalledTimes(4);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(reconcile).toHaveBeenCalledTimes(5);
+    expect(reconcile.mock.calls[0][0]).not.toHaveProperty('idleCeilingMs');
+  });
+
+  test('keeps the base interval when the deployment-wide ceiling is below it', async () => {
+    leader.mockResolvedValue(true);
+    const reconcile = jest.fn().mockResolvedValue(true);
+
+    startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs: 10_000 }, { reconcile });
+    await jest.advanceTimersByTimeAsync(0);
+    for (let pass = 2; pass <= 4; pass += 1) {
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(reconcile).toHaveBeenCalledTimes(pass);
+    }
+  });
+
   test('is a no-op to start twice, and stop leaves no timer behind', async () => {
     leader.mockResolvedValue(true);
     const reconcile = jest.fn().mockResolvedValue(true);

@@ -33,6 +33,7 @@ import type { BoundAddress } from '../../app/origin';
 import { AgentTriggerDeliveryDeferredError, createAgentTriggerDeliveryEngine } from './engine';
 import { BACKGROUND_TOOL_COMPLETION_SOURCE } from '../backgroundCompletionWakeup';
 import { isShutdownInProgress, registerShutdownTask } from '../../app/shutdown';
+import { createIdleRecoveryLoop, resolveIdleCeilingMs } from '../recovery';
 import { SUBAGENT_COMPLETION_SOURCE } from '../subagentCompletionWakeup';
 import { generateAgentTriggerToken } from '../../crypto/jwt';
 import { AGENT_QUEUED_TURN_SOURCE } from '../queuedTurns';
@@ -40,7 +41,6 @@ import { prepareAgentTriggerDelivery } from './delivery';
 import { selfOriginFromAddress } from '../../app/origin';
 import { createAgentTriggerExecutionHost } from './host';
 import { parseAgentTriggerEnvelope } from './envelope';
-import { createIdleRecoveryLoop } from '../recovery';
 import { WAITING_RETRY_CAP_MS } from './backoff';
 
 /** Internal sources whose deliveries wait on a result or on their parent generation. */
@@ -60,6 +60,10 @@ export interface AgentTriggerServiceOptions {
   completionReceiptBatching?: boolean;
   address?: BoundAddress | string | null;
   deadLetterRetentionDays?: number;
+  /** The deployment-wide `eventDriven.idlePolling.maxIntervalMs`, when configured. It replaces the
+   *  delivery claim and maintenance caps below, and `queuedTurnMaxIntervalMs` where the host
+   *  starts the queued-turn loop. */
+  idleCeilingMs?: number;
   idlePolling?: {
     queuedTurnMaxIntervalMs?: number;
     maintenanceMaxIntervalMs?: number;
@@ -725,9 +729,13 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         requireDeliveryOrigin(boundOrigin);
         purgeRecoveryLoop = createIdleRecoveryLoop({
           intervalMs: purgeRecoveryIntervalMs,
-          maxIdleIntervalMs:
-            options.idlePolling?.maintenanceMaxIntervalMs ??
-            Math.max(purgeRecoveryIntervalMs, DEFAULT_PURGE_RECOVERY_MAX_IDLE_INTERVAL_MS),
+          maxIdleIntervalMs: resolveIdleCeilingMs({
+            intervalMs: purgeRecoveryIntervalMs,
+            defaultMs:
+              options.idlePolling?.maintenanceMaxIntervalMs ??
+              Math.max(purgeRecoveryIntervalMs, DEFAULT_PURGE_RECOVERY_MAX_IDLE_INTERVAL_MS),
+            ceilingMs: options.idleCeilingMs,
+          }),
           scan: recoverPurges,
           onError: (error) =>
             logger.error('[agent-triggers] durable delivery maintenance failed:', error),
@@ -738,6 +746,8 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
             'Durable agent trigger delivery cannot start during shutdown',
           );
         }
+        const deliveryCeilingMs =
+          options.idleCeilingMs ?? options.idlePolling?.deliveryMaxIntervalMs;
         deliveryEngine = createAgentTriggerDeliveryEngine(
           {
             store: createDeliveryStore(
@@ -758,9 +768,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
             ...(options.deadLetterRetentionDays != null && {
               deadLetterRetentionMs: options.deadLetterRetentionDays * 24 * 60 * 60_000,
             }),
-            ...(options.idlePolling?.deliveryMaxIntervalMs != null && {
-              maxIdleTickMs: options.idlePolling.deliveryMaxIntervalMs,
-            }),
+            ...(deliveryCeilingMs != null && { maxIdleTickMs: deliveryCeilingMs }),
           },
         );
         deliveryReady = true;

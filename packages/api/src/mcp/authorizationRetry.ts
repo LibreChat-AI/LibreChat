@@ -1,13 +1,13 @@
 import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
 import type { MCPRecoveryGenerationScope } from './catalog/recovery';
-import { createIdleRecoveryLoop } from '~/agents/recovery';
+import { createIdleRecoveryLoop, resolveIdleCeilingMs } from '~/agents/recovery';
 import { registerShutdownTask } from '~/app/shutdown';
 
 const DEFAULT_RETRY_INTERVAL_MS = 30_000;
 /** While no retry is pending the wait doubles up to this multiple of the base interval, the same
  * four-fold span the durable agent loops use. A pass that finds a record returns to the base. The
- * base interval is configurable; one ceiling shared by the always-on loops is a separate change. */
+ * deployment-wide `eventDriven.idlePolling.maxIntervalMs` replaces it while set. */
 const IDLE_BACKOFF_FACTOR = 4;
 const DEFAULT_RETRY_BATCH_SIZE = 100;
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 1_000;
@@ -52,8 +52,9 @@ export interface MCPAuthorizationFenceRetryServiceDeps {
 export interface MCPAuthorizationFenceRetryWorkerPolicy {
   /** Wait between passes while records are pending. */
   intervalMs?: number;
-  /** Longest wait while no record is pending. Defaults to four times `intervalMs`. */
-  maxIdleIntervalMs?: number;
+  /** The deployment-wide `eventDriven.idlePolling.maxIntervalMs`, when configured: the longest wait while no
+   * record is pending, in place of the default of four times `intervalMs`. */
+  idleCeilingMs?: number;
   batchSize?: number;
   attemptTimeoutMs?: number;
 }
@@ -245,7 +246,11 @@ export function createMCPAuthorizationFenceRetryService(
     retryIntervalMs = policy.intervalMs ?? DEFAULT_RETRY_INTERVAL_MS;
     loop = createIdleRecoveryLoop({
       intervalMs: retryIntervalMs,
-      maxIdleIntervalMs: policy.maxIdleIntervalMs ?? retryIntervalMs * IDLE_BACKOFF_FACTOR,
+      maxIdleIntervalMs: resolveIdleCeilingMs({
+        intervalMs: retryIntervalMs,
+        defaultMs: retryIntervalMs * IDLE_BACKOFF_FACTOR,
+        ceilingMs: policy.idleCeilingMs,
+      }),
       /** Idle only when the read found nothing pending. A record that was replayed and cleared still
        * counts as work, so the pass that confirms it gone is the first idle one. */
       scan: async () => (await runDrain()) === 0,

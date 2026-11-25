@@ -606,6 +606,27 @@ describe('schedule erasure fallback idle back-off', () => {
     sweep.stop();
   });
 
+  it.each([
+    ['above', 60 * MIN, [5, 15, 35]],
+    ['below', 8 * MIN, [5, 13, 21]],
+    ['far below', MIN, [5, 10, 15]],
+  ])(
+    'follows a deployment-wide ceiling %s the default, never waiting less than the base interval',
+    async (_name, idleCeilingMs, passMinutes) => {
+      const methods = emptyMethods();
+      const sweep = start(methods, { idleCeilingMs });
+
+      for (const [index, minute] of passMinutes.entries()) {
+        const before = index === 0 ? 0 : passMinutes[index - 1];
+        await jest.advanceTimersByTimeAsync((minute - before) * MIN - 1);
+        expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(index);
+        await jest.advanceTimersByTimeAsync(1);
+        expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(index + 1);
+      }
+      sweep.stop();
+    },
+  );
+
   it('keeps jittering every wait, the delayed first one included', async () => {
     jest.spyOn(Math, 'random').mockReturnValue(0.5);
     const methods = emptyMethods();

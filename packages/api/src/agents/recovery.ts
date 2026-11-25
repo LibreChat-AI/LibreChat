@@ -12,6 +12,23 @@ export interface IdleRecoveryLoopOptions {
   onError: (error: unknown) => void;
 }
 
+/**
+ * The longest an idle loop waits between scans. `ceilingMs` is the deployment-wide
+ * `eventDriven.idlePolling.maxIntervalMs`: while set it replaces the loop's own `defaultMs`, though never below
+ * the loop's `intervalMs`, so a low value leaves the loop at its base cadence. Unset keeps `defaultMs`.
+ */
+export function resolveIdleCeilingMs({
+  intervalMs,
+  defaultMs,
+  ceilingMs,
+}: {
+  intervalMs: number;
+  defaultMs: number;
+  ceilingMs?: number;
+}): number {
+  return ceilingMs == null ? defaultMs : Math.max(intervalMs, ceilingMs);
+}
+
 export interface IdleRecoveryLoop {
   start: () => Promise<void>;
   /** Scans at once, or right after the scan in progress, and resets the back-off. */
