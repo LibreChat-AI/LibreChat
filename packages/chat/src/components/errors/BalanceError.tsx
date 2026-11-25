@@ -1,8 +1,11 @@
-import type { ErrorRendererProps, JsonValue } from './parts';
-import { ErrorBody, ErrorDetails, formatNumber, readNumber, readString } from './parts';
-import { useBalanceDisplay } from '~/hooks/useBalanceSummary';
-import { formatBalanceAmount } from '~/utils';
-import { useLocalize } from '~/hooks';
+import { useLocalize } from '@librechat/client';
+import type { ReactNode } from 'react';
+import type { JsonValue } from '../../core/errors';
+import type { ErrorRendererProps } from './parts';
+import { formatNumber, readNumber, readString } from '../../core/errors';
+import { formatBalanceAmount } from '../../core/usage/format';
+import { useBalanceDisplay } from '../../react/errors';
+import { ErrorBody, ErrorDetails } from './parts';
 
 type GenerationRow = {
   model: string;
@@ -35,7 +38,7 @@ function readGeneration(generation: JsonValue): GenerationRow | null {
   };
 }
 
-export default function BalanceError({ json }: ErrorRendererProps) {
+export default function BalanceError({ json }: ErrorRendererProps): ReactNode {
   const localize = useLocalize();
   const { display, currency } = useBalanceDisplay();
   const balance = readNumber(json, 'balance');

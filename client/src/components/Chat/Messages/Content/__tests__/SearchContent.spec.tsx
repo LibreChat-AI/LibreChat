@@ -18,10 +18,11 @@ jest.mock('@librechat/chat/components', () => ({
   Container: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 /**
- * Stands in for the dispatcher so this spec asserts routing; its copy is `Error.spec.tsx`'s. It
- * reports both identities it could render with: the row it was handed and the surrounding source.
+ * Stands in for the chat package's dispatcher so this spec asserts routing; its copy is
+ * `Error.spec.tsx`'s. It reports both identities it could render with: the row it was handed and
+ * the surrounding source.
  */
-jest.mock('~/components/Messages/Content/Error', () => {
+jest.mock('@librechat/chat/dist/components/errors/ErrorText.cjs', () => {
   const { useErrorSource } = jest.requireActual('~/components/Messages/Content/Error/source');
   return {
     __esModule: true,

@@ -2,6 +2,7 @@ import { useContext, useRef } from 'react';
 import { useStore } from 'jotai';
 import { useRecoilCallback } from 'recoil';
 import { useToastContext } from '@librechat/client';
+import { ErrorAction, ErrorActions } from '@librechat/chat/components';
 import {
   ForkOptions,
   ContentTypes,
@@ -41,7 +42,6 @@ import { useMessageContext } from '~/Providers/MessageContext';
 import { useLocalize, useNavigateToConvo } from '~/hooks';
 import { isSubmittableMessage } from '~/utils/messages';
 import { ChatContext } from '~/Providers/ChatContext';
-import { ErrorAction, ErrorActions } from './parts';
 import store from '~/store';
 
 /** What the card says the actions do, matched to the ones it offers. */

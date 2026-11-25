@@ -1,25 +1,21 @@
+import { useLocalize } from '@librechat/client';
 import {
   ErrorTypes,
   ViolationTypes,
   isCodeWorkspaceSelectionErrorReason,
 } from 'librechat-data-provider';
+import type { ReactNode } from 'react';
 import type { ErrorRendererProps } from './parts';
-import {
-  ErrorWithDetail,
-  getProviderName,
-  readNumber,
-  readString,
-  useErrorEndpoint,
-} from './parts';
-import { codeWorkspaceErrorKeys } from '~/utils/errors';
-import { useLocalize } from '~/hooks';
+import { readNumber, readString, getProviderName, codeWorkspaceErrorKeys } from '../../core/errors';
+import { useErrorEndpoint } from '../../react/errors';
+import { ErrorWithDetail } from './parts';
 
 /**
  * Failures naming a provider, a model or a workspace selection. Each payload carries the identity
  * it is about (`info`, `reason`, `status`), so the only resolution done here is turning an
  * endpoint id into the name a reader recognizes.
  */
-export default function ModelError({ json, message }: ErrorRendererProps) {
+export default function ModelError({ json, message }: ErrorRendererProps): ReactNode {
   const localize = useLocalize();
   const { provider: conversationProvider } = useErrorEndpoint(message);
   const errorKey = readString(json, 'code') ?? readString(json, 'type');

@@ -1,97 +1,29 @@
 import { memo, Suspense, useMemo } from 'react';
-import { Thinking } from '@librechat/chat/components';
-import { Alert, DelayedRender } from '@librechat/client';
+import { DelayedRender } from '@librechat/client';
 import { Constants, parseThinkingContent } from 'librechat-data-provider';
 import {
-  EmptyText,
+  Thinking,
+  ErrorBox,
+  Container,
+  ErrorMessage,
   CollapsibleText,
   ToolCallLimitNotice,
-  Container,
 } from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageContentProps, TDisplayProps } from '~/common';
-import AttachmentRecoveryActions from '~/components/Messages/Content/Error/recovery';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
-import Error from '~/components/Messages/Content/Error';
-import { useLocalize, useOnline } from '~/hooks';
+/** Registers the key dialog and recovery actions an error draws through the host. */
+import '~/components/Messages/Content/Error/register';
+import { useLocalize } from '~/hooks';
 import MarkdownLite from './MarkdownLite';
 import EditMessage from './EditMessage';
 import Markdown from './Markdown';
 import { cn } from '~/utils';
 
-const ERROR_CONNECTION_TEXT = 'Error connecting to server, try refreshing the page.';
-const DELAYED_ERROR_TIMEOUT = 5500;
 const UNFINISHED_DELAY = 250;
 
-const LoadingFallback = () => (
-  <div className="mb-[0.625rem]">
-    <EmptyText underHeaderIcon />
-  </div>
-);
-
-const ErrorBox = ({
-  children,
-  className = '',
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) => (
-  <div
-    role="alert"
-    aria-live="assertive"
-    className={cn(
-      'border-status-error-border bg-status-error-subtle text-text-secondary rounded-xl border p-3 text-sm',
-      className,
-    )}
-  >
-    {children}
-  </div>
-);
-
-const ConnectionError = ({ message }: { message?: TMessage }) => {
-  const localize = useLocalize();
-  const online = useOnline();
-
-  return (
-    <Suspense fallback={<LoadingFallback />}>
-      <DelayedRender delay={DELAYED_ERROR_TIMEOUT}>
-        <Container message={message}>
-          {/* `text-text-secondary` overrides the variant's `text-status-error`: this card sits in
-              the transcript beside `ErrorBox`, and every other failure there states itself in the
-              ordinary copy color. The red border and fill still mark it as an error. */}
-          <Alert
-            variant="error"
-            icon={false}
-            elevation="raised"
-            className="text-text-secondary mt-2 transition-all"
-          >
-            {localize(online ? 'com_ui_error_connection' : 'com_ui_error_offline')}
-          </Alert>
-        </Container>
-      </DelayedRender>
-    </Suspense>
-  );
-};
-
-export const ErrorMessage = ({
-  text,
-  message,
-  className = '',
-}: Pick<TDisplayProps, 'text' | 'className'> & { message?: TMessage }) => {
-  if (text === ERROR_CONNECTION_TEXT) {
-    return <ConnectionError message={message} />;
-  }
-
-  return (
-    <Container message={message}>
-      <ErrorBox className={className}>
-        <Error text={text} message={message} />
-        <AttachmentRecoveryActions text={text} messageId={message?.messageId} />
-      </ErrorBox>
-    </Container>
-  );
-};
+export { ErrorMessage };
 
 export const DisplayMessage = ({ text, isCreatedByUser, message, showCursor }: TDisplayProps) => {
   const { useMessage, useUserTextPreferences } = useMessagePartsHost();
