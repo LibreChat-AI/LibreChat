@@ -31,8 +31,9 @@ function MessageEndpointIconBody(props: IconProps): ReactNode {
             width: pxToRem(size),
             height: pxToRem(size),
           }}
+          className={cn('overflow-hidden', props.className ?? '')}
         >
-          <div className={cn('h-full w-full overflow-hidden rounded-full', props.className ?? '')}>
+          <div className="h-full w-full overflow-hidden rounded-full">
             <img
               className="avatar-stroke h-full w-full object-cover"
               src={iconURL}
@@ -61,8 +62,9 @@ function MessageEndpointIconBody(props: IconProps): ReactNode {
             width: pxToRem(size),
             height: pxToRem(size),
           }}
+          className={cn('overflow-hidden', props.className ?? '')}
         >
-          <div className={cn('h-full w-full overflow-hidden rounded-full', props.className ?? '')}>
+          <div className="h-full w-full overflow-hidden rounded-full">
             <img
               className="avatar-stroke h-full w-full object-cover"
               src={iconURL}
