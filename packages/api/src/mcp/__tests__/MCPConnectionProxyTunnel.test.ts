@@ -1,36 +1,11 @@
 /**
- * Real sockets, no undici mock: the CONNECT handshake with a proxy is made by a client undici builds
- * itself, so only a request that goes through a proxy shows which timeouts that client carries.
+ * Real sockets and real modules, nothing mocked: the CONNECT handshake with a proxy is made by a
+ * client undici builds itself, so only a request that goes through a proxy shows which timeouts
+ * that client carries.
  */
 import { createServer } from 'node:net';
 import type { AddressInfo, Server, Socket } from 'node:net';
 import { MCPConnection } from '~/mcp/connection';
-
-jest.mock('@librechat/data-schemas', () => ({
-  logger: {
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn(),
-    debug: jest.fn(),
-  },
-}));
-
-jest.mock('~/auth', () => ({
-  createSSRFSafeUndiciConnect: jest.fn(() => undefined),
-  isOAuthUrlAllowed: jest.fn(() => false),
-  isSSRFTarget: jest.fn(() => false),
-  resolveHostnameSSRF: jest.fn(async () => false),
-}));
-
-jest.mock('~/mcp/mcpConfig', () => ({
-  mcpConfig: {
-    CONNECTION_CHECK_TTL: 0,
-    TOOLS_LIST_MAX_PAGES: 50,
-    TOOLS_LIST_MAX_TOOLS: 1000,
-    TOOLS_LIST_MAX_BYTES: 5 * 1024 * 1024,
-    TOOLS_LIST_TIMEOUT_MS: 30000,
-  },
-}));
 
 type PrivateConnection = {
   agents: Array<{ destroy: () => Promise<void> }>;
