@@ -34,6 +34,8 @@ export function useEventSubscriptionMutations(agentId?: string) {
     void queryClient.invalidateQueries([QueryKeys.agentEventSubscriptions, agentId]);
     // An edit can leave a grant behind, so every grant this agent's subscriptions hold is read again.
     void queryClient.invalidateQueries([QueryKeys.agentEventSubscriptionGrant]);
+    // Whether a watch is live or paused follows its subscription, so every conversation's list is read again.
+    void queryClient.invalidateQueries([QueryKeys.agentEventWatches]);
   };
   const create = useMutation(
     [MutationKeys.createAgentEventSubscription],
