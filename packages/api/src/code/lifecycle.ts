@@ -42,8 +42,9 @@ export async function reconcileCodeEnvironmentLifecycle({
   readSecret?: (name: string) => string | undefined;
   fetchImpl?: CodeBridgeFetch;
   limit?: number;
-  /** Told when a retry this pass deferred (a lease left held, a registration or a revocation put
-   * back) becomes due, so the caller can scan again then instead of after its own idle wait. */
+  /** Told when the retries this pass deferred (a lease left held, a registration or a revocation put
+   * back) become due, one time per kind, so the caller can scan again then instead of after its own
+   * idle wait. */
   onRetryAt?: (at: Date) => void;
 }): Promise<boolean> {
   return runAsSystem(async () => {
@@ -53,6 +54,11 @@ export async function reconcileCodeEnvironmentLifecycle({
     let idle = true;
     const methods = createMethods(mongoose);
     const now = new Date();
+    /** Every retry of one kind that this pass defers falls due at the same time, so the caller learns one
+     * time per kind rather than one per environment, and the scan at that time finds them all due. */
+    const registrationRetryAt = new Date(now.getTime() + REGISTRATION_RETRY_MS);
+    const revocationRetryAt = new Date(now.getTime() + REVOCATION_RETRY_MS);
+    let removalRetryAt: Date | undefined;
     const checkpoints = mongoose.connection.db!.collection<{
       _id: string;
       lastId: Types.ObjectId | null;
@@ -139,8 +145,10 @@ export async function reconcileCodeEnvironmentLifecycle({
       }
       /** The lease this pass took stays held on a failure, so the removal is retried when it expires. */
       const retryRemoval = (): void => {
-        if (environment.deletionLeaseExpiresAt != null)
-          onRetryAt?.(environment.deletionLeaseExpiresAt);
+        const expiresAt = environment.deletionLeaseExpiresAt;
+        if (expiresAt != null && (removalRetryAt == null || expiresAt > removalRetryAt)) {
+          removalRetryAt = expiresAt;
+        }
       };
       try {
         if (environment.workerPrincipal?.type === 'user') {
@@ -168,6 +176,7 @@ export async function reconcileCodeEnvironmentLifecycle({
         retryRemoval();
       }
     }
+    if (removalRetryAt != null) onRetryAt?.(removalRetryAt);
     const staleRegistration = new Date(Date.now() - REGISTRATION_STALE_MS);
     const registrationCandidates = await CodeEnvironment.find({
       setupAttemptId: { $exists: false },
@@ -224,15 +233,14 @@ export async function reconcileCodeEnvironmentLifecycle({
       ).lean<CodeEnvironmentDocument>();
       if (environment == null) continue;
       const deferRegistration = async (): Promise<void> => {
-        const retryAt = new Date(Date.now() + REGISTRATION_RETRY_MS);
         await CodeEnvironment.updateOne(
           { _id: environment._id, registrationLeaseId: leaseId },
           {
-            $set: { registrationReconcileAfter: retryAt },
+            $set: { registrationReconcileAfter: registrationRetryAt },
             $unset: { registrationLeaseId: 1, registrationLeaseExpiresAt: 1 },
           },
         );
-        onRetryAt?.(retryAt);
+        onRetryAt?.(registrationRetryAt);
       };
       const tokenEnv = environment.revocationTokenEnv;
       const token = tokenEnv != null ? readSecret(tokenEnv)?.trim() : undefined;
@@ -399,15 +407,14 @@ export async function reconcileCodeEnvironmentLifecycle({
           0,
           500,
         );
-        const retryAt = new Date(Date.now() + REVOCATION_RETRY_MS);
         await CodeEnvironment.updateOne(
           { _id: environment._id, revocationLeaseId: leaseId },
           {
-            $set: { revocationLastError: message, revocationReconcileAfter: retryAt },
+            $set: { revocationLastError: message, revocationReconcileAfter: revocationRetryAt },
             $unset: { revocationLeaseId: 1, revocationLeaseExpiresAt: 1 },
           },
         );
-        onRetryAt?.(retryAt);
+        onRetryAt?.(revocationRetryAt);
       }
     }
     return idle;
@@ -431,7 +438,7 @@ export function startCodeEnvironmentLifecycleReconciler(
     maxIdleIntervalMs: RECONCILE_MAX_IDLE_INTERVAL_MS,
     scan: async () =>
       (await isLeader())
-        ? reconcile({ ...options, onRetryAt: (at) => reconcileLoop?.hint(at) })
+        ? reconcile({ ...options, onRetryAt: (at) => reconcileLoop?.noteEligibleAt(at) })
         : false,
     onError: (error) => logger.error('[code-environments] lifecycle reconciliation failed:', error),
   });

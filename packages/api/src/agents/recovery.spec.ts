@@ -333,12 +333,12 @@ describe('durable agent idle recovery', () => {
       await loop.stop();
     });
 
-    it('still honors a time more than one interval after a waiting deadline, and an earlier one', async () => {
+    it('drops a time at or after a waiting deadline however far, and keeps an earlier one', async () => {
       const { loop, scan } = await start();
       loop.hint(new Date(Date.now() + 10_000));
-      /** 41 s is more than 30 s after the 10 s deadline, so it is kept. */
+      /** The scan at 10 s sees the same pending work, so a later time adds nothing. */
       loop.hint(new Date(Date.now() + 41_000));
-      /** 5 s comes before the 10 s deadline, so it is kept too. */
+      /** An earlier time is kept. */
       loop.hint(new Date(Date.now() + 5_000));
 
       await jest.advanceTimersByTimeAsync(4_999);
@@ -348,7 +348,19 @@ describe('durable agent idle recovery', () => {
       await jest.advanceTimersByTimeAsync(5_000);
       expect(scan).toHaveBeenCalledTimes(3);
       await jest.advanceTimersByTimeAsync(31_000);
-      expect(scan).toHaveBeenCalledTimes(4);
+      expect(scan).toHaveBeenCalledTimes(3);
+      await loop.stop();
+    });
+
+    it('is not what work that becomes due later should use: noteEligibleAt keeps every time', async () => {
+      const { loop, scan } = await start();
+      loop.noteEligibleAt(new Date(Date.now() + 10_000));
+      loop.noteEligibleAt(new Date(Date.now() + 41_000));
+
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(scan).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(31_000);
+      expect(scan).toHaveBeenCalledTimes(3);
       await loop.stop();
     });
 

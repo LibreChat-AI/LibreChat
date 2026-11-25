@@ -175,14 +175,13 @@ describe('code environment lifecycle scheduler', () => {
     expect(reconcile).toHaveBeenCalledTimes(5);
   });
 
-  test('answers a pass that defers many retries at nearly the same time with one scan', async () => {
+  test('scans at each retry time a pass reports', async () => {
     leader.mockResolvedValue(true);
     const reconcile = jest
       .fn<Promise<boolean>, [Parameters<typeof startCodeEnvironmentLifecycleReconciler>[0]]>()
       .mockImplementationOnce(async ({ onRetryAt }) => {
-        for (let retry = 0; retry < 25; retry += 1) {
-          onRetryAt?.(new Date(Date.now() + 90_000 + retry * 20));
-        }
+        onRetryAt?.(new Date(Date.now() + 90_000));
+        onRetryAt?.(new Date(Date.now() + 100_000));
         return true;
       })
       .mockResolvedValue(true);
@@ -191,10 +190,12 @@ describe('code environment lifecycle scheduler', () => {
     await jest.advanceTimersByTimeAsync(0);
     await jest.advanceTimersByTimeAsync(90_000);
     expect(reconcile).toHaveBeenCalledTimes(2);
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(reconcile).toHaveBeenCalledTimes(3);
 
-    /** The later times fall within one interval of the first, so none adds a scan of its own. */
-    await jest.advanceTimersByTimeAsync(239_000);
-    expect(reconcile).toHaveBeenCalledTimes(2);
+    /** Nothing else is due before the idle ceiling. */
+    await jest.advanceTimersByTimeAsync(200_000);
+    expect(reconcile).toHaveBeenCalledTimes(3);
   });
 
   describe('worker revocation during account deletion', () => {

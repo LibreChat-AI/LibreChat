@@ -1718,6 +1718,63 @@ describe('code environment registry', () => {
         },
       );
 
+      test('defers every revocation of one pass to the same time', async () => {
+        const owner = await createOwner('defer-shared-owner@example.com');
+        const ids = ['shared-a', 'shared-b', 'shared-c'];
+        for (const id of ids) {
+          await createEnvironment(owner._id, id, {
+            ...userWorker(owner._id, id),
+            revocationPendingAt: new Date(),
+          });
+        }
+        const onRetryAt = jest.fn();
+
+        await reconcileCodeEnvironmentLifecycle({
+          mongoose,
+          readSecret: () => 'administrator-token',
+          fetchImpl: jest.fn().mockRejectedValue(new Error('control plane unavailable')),
+          onRetryAt,
+        });
+
+        const stored = await mongoose.models.CodeEnvironment.find({
+          environmentId: { $in: ids },
+        }).lean<Array<Record<string, Date>>>();
+        const times = new Set(stored.map((item) => item.revocationReconcileAfter.getTime()));
+        expect(stored).toHaveLength(3);
+        expect(times.size).toBe(1);
+        expect(onRetryAt).toHaveBeenCalledTimes(3);
+        for (const [at] of onRetryAt.mock.calls) {
+          expect((at as Date).getTime()).toBe([...times][0]);
+        }
+      });
+
+      test('reports the latest lease expiry once for the removals a pass leaves held', async () => {
+        const owner = await createOwner('defer-removals-owner@example.com');
+        for (const id of ['removal-a', 'removal-b']) {
+          await createEnvironment(owner._id, id, {
+            ...userWorker(owner._id, id),
+            deletionStartedAt: new Date(Date.now() - 10 * 60_000),
+            deletionLeaseId: 'abandoned-removal',
+            deletionLeaseExpiresAt: new Date(Date.now() - 1_000),
+          });
+        }
+        const onRetryAt = jest.fn();
+
+        await reconcileCodeEnvironmentLifecycle({
+          mongoose,
+          readSecret: () => undefined,
+          fetchImpl: revoked(),
+          onRetryAt,
+        });
+
+        const stored = await mongoose.models.CodeEnvironment.find({
+          environmentId: { $in: ['removal-a', 'removal-b'] },
+        }).lean<Array<Record<string, Date>>>();
+        const latest = Math.max(...stored.map((item) => item.deletionLeaseExpiresAt.getTime()));
+        expect(onRetryAt).toHaveBeenCalledTimes(1);
+        expect(onRetryAt).toHaveBeenCalledWith(new Date(latest));
+      });
+
       test('reports nothing when there is nothing to retry', async () => {
         const owner = await createOwner('defer-none-owner@example.com');
         await createEnvironment(owner._id, 'defer-none');

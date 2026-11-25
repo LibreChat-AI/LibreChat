@@ -18,8 +18,9 @@ export interface IdleRecoveryLoop {
   wake: () => void;
   /** Scans no later than `at`; a time that has passed wakes the loop. Every call is honored. */
   noteEligibleAt: (at: Date) => void;
-  /** For producers that can call at a high rate: a time within one interval after a deadline still
-   * waiting is dropped, so a burst of hints costs one scan per interval instead of one each. */
+  /** For work that already exists and only needs another look by `at`: a time at or after a deadline
+   * still waiting is dropped, so a burst of hints costs one scan per interval instead of one each. Work
+   * that becomes due at a time needs `noteEligibleAt`, which honors every call. */
   hint: (at: Date) => void;
   stop: () => Promise<void>;
 }
@@ -186,14 +187,12 @@ export function createIdleRecoveryLoop({
       }
       schedule();
     },
-    /** For producers that can call at a high rate. Like `noteEligibleAt`, except that a time within one
-     * interval after a deadline still waiting is dropped: the scan at that deadline sees the work, or
-     * finds it and returns the loop to its base interval, so it reaches the later time too. A burst
-     * of hints costs one scan per interval instead of one each. */
+    /** The work this is for is already pending, so any scan that starts after the call sees it. A deadline
+     * still waiting therefore covers every later time, and dropping those keeps a burst of hints from
+     * costing a scan each. A deadline that is not for pending work must use `noteEligibleAt`. */
     hint: (at: Date): void => {
-      const time = at.getTime();
       const now = Date.now();
-      if (deadlines.some((value) => value > now && value <= time && time - value <= intervalMs)) {
+      if (deadlines.some((value) => value > now && value <= at.getTime())) {
         return;
       }
       loop.noteEligibleAt(at);
