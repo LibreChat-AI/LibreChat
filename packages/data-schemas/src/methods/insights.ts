@@ -24,6 +24,7 @@ import type {
 import type { Model, PipelineStage } from 'mongoose';
 import type { IAgent, IConversation, IMessage, IUser } from '~/types';
 import type { ITransaction } from '~/schema/transaction';
+import { readInsightsExclusions } from './insightsAttribution';
 
 export type InsightsOptions = TInsightsParams & {
   tenantId?: string;
@@ -252,8 +253,12 @@ function conversationScope(
   ];
 }
 
-function messageScope(match: Record<string, unknown>, agentIds: string[]): PipelineStage[] {
-  return [{ $match: { ...match, insightsAgentId: { $in: agentIds } } }];
+function messageScope(
+  match: Record<string, unknown>,
+  agentIds: string[],
+  excluded: Record<string, unknown>,
+): PipelineStage[] {
+  return [{ $match: { ...match, ...excluded, insightsAgentId: { $in: agentIds } } }];
 }
 
 function transactionScope(
@@ -292,12 +297,7 @@ const emptyModel = (model: string | null): TInsightsModel => ({
 });
 
 type VersionSettings = {
-  name?: unknown;
-  description?: unknown;
-  instructions?: unknown;
-  instructionsPrompt?: unknown;
-  artifacts?: unknown;
-  edges?: unknown;
+  [setting: string]: unknown;
   tools?: unknown[];
   capabilities?: unknown[];
   updatedAt?: Date | string | null;
@@ -315,26 +315,20 @@ const matchesCurrentSettings = (version: VersionSettings, current: VersionSettin
   _.isEqual(sorted(version.tools), sorted(current.tools)) &&
   _.isEqual(sorted(version.capabilities), sorted(current.capabilities));
 
-const versionProjection = {
-  _id: 0,
-  name: 1,
-  description: 1,
-  instructions: 1,
-  instructionsPrompt: 1,
-  artifacts: 1,
-  edges: 1,
-  tools: 1,
-  capabilities: 1,
-  'versions.updatedAt': 1,
-  'versions.name': 1,
-  'versions.description': 1,
-  'versions.instructions': 1,
-  'versions.instructionsPrompt': 1,
-  'versions.artifacts': 1,
-  'versions.edges': 1,
-  'versions.tools': 1,
-  'versions.capabilities': 1,
-};
+const unversioned = [
+  'id',
+  'author',
+  'authorName',
+  'is_promoted',
+  'mcpServerNames',
+  'tenantId',
+  'versions',
+];
+
+const restoredDifferences = (version: VersionSettings, current: VersionSettings) =>
+  Object.keys(version).filter(
+    (field) => field !== 'updatedAt' && !_.isEqual(version[field], current[field]),
+  ).length;
 
 async function getSavedVersions(
   mongoose: typeof import('mongoose'),
@@ -342,15 +336,26 @@ async function getSavedVersions(
   tenantId?: string,
 ): Promise<TInsightsAgentVersion[]> {
   const Agent = mongoose.models.Agent as Model<IAgent>;
+  const settings = [..._.difference(Object.keys(Agent.schema.obj), unversioned), 'capabilities'];
   const agent = await Agent.findOne(
     { id: agentId, ...tenantMatch(tenantId) },
-    versionProjection,
+    {
+      _id: 0,
+      'versions.updatedAt': 1,
+      ...Object.fromEntries(
+        settings.flatMap((field) => [
+          [field, 1],
+          [`versions.${field}`, 1],
+        ]),
+      ),
+    },
   ).lean<VersionSettings & { versions?: VersionSettings[] }>();
   if (!agent) return [];
   const versions = agent.versions ?? [];
-  const activeIndex = _.findLastIndex(versions, (version) =>
-    matchesCurrentSettings(version, agent),
+  const candidates = _.rangeRight(versions.length).filter((index) =>
+    matchesCurrentSettings(versions[index], agent),
   );
+  const activeIndex = _.minBy(candidates, (index) => restoredDifferences(versions[index], agent));
   return versions.map((snapshot, index) => {
     const date = snapshot?.updatedAt == null ? null : new Date(snapshot.updatedAt);
     return {
@@ -420,6 +425,20 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     const churnedCutoff = new Date(to.getTime() - churnedUserWindowDays * dayMs);
     const churnedActivityFrom = new Date(from.getTime() - churnedUserWindowDays * dayMs);
     const tenant = tenantMatch(options.tenantId);
+    const reported = { ...tenant, insightsAgentId: { $in: agentIds } };
+    const excluded = await readInsightsExclusions(mongoose, tenant, {
+      Message: {
+        ...reported,
+        createdAt: { $gte: showDetails ? churnedActivityFrom : from, $lte: to },
+      },
+      Transaction: {
+        ...reported,
+        createdAt: {
+          $gte: new Date(from.getTime() - replyUsageWindowMs),
+          $lte: new Date(to.getTime() + replyUsageWindowMs),
+        },
+      },
+    });
     const messageMatch = {
       ...tenant,
       user: { $nin: [null, ''] },
@@ -430,7 +449,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       $gte: from,
       $lte: to,
     });
-    const messagePipeline = messageScope(messageMatch, agentIds);
+    const messagePipeline = messageScope(messageMatch, agentIds, excluded.messages);
 
     const requestedSearch = options.search?.trim().slice(0, INSIGHTS_SEARCH_MAX_LENGTH) ?? '';
     const search =
@@ -625,6 +644,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
                 createdAt: { $gte: churnedActivityFrom, $lte: to },
               },
               agentIds,
+              excluded.messages,
             ),
             { $group: { _id: '$user', lastSeen: { $max: '$createdAt' } } },
             { $match: { lastSeen: { $gte: churnedActivityFrom, $lte: churnedCutoff } } },
@@ -633,7 +653,12 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
           ])
         : Promise.resolve([] as ChurnedUserActivity[]),
       Transaction.aggregate<ModelSpend>([
-        ...transactionScope(agentIds, options.tenantId, { $gte: from, $lte: to }),
+        ...transactionScope(
+          agentIds,
+          options.tenantId,
+          { $gte: from, $lte: to },
+          excluded.transactions,
+        ),
         {
           $group: {
             _id: {
@@ -667,6 +692,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
             tokenType: 'completion',
             context: { $in: replyUsageContexts },
             messageId: { $exists: true, $nin: [null, ''] },
+            ...excluded.transactions,
           },
         ),
         { $sort: { createdAt: 1, _id: 1 } },
@@ -833,6 +859,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
                 $or: latestConversationMatches,
               },
               agentIds,
+              excluded.messages,
             ),
             {
               $group: {
@@ -854,6 +881,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
                 $or: latestConversationMatches,
               },
               agentIds,
+              excluded.messages,
             ),
             { $sort: { createdAt: 1, _id: 1 } },
             {
@@ -866,7 +894,11 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       topUserIds.length === 0
         ? Promise.resolve([] as UserConversationCount[])
         : Message.aggregate<UserConversationCount>([
-            ...messageScope({ ...messageMatch, user: { $in: topUserIds } }, agentIds),
+            ...messageScope(
+              { ...messageMatch, user: { $in: topUserIds } },
+              agentIds,
+              excluded.messages,
+            ),
             { $group: { _id: { user: '$user', conversationId: '$conversationId' } } },
             { $group: { _id: '$_id.user', conversations: { $sum: 1 } } },
           ]),
@@ -882,6 +914,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
                 createdAt: { $lte: to },
               },
               agentIds,
+              excluded.messages,
             ),
             {
               $group: {

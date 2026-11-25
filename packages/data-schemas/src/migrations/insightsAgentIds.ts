@@ -2,6 +2,7 @@ import { Types } from 'mongoose';
 import type { AnyBulkWriteOperation, Collection, Document, IndexSpecification } from 'mongodb';
 import type { InsightsRecordIdentity } from '~/methods/insightsAttribution';
 import { resolveInsightsAttributions, insightsIdentityKey } from '~/methods/insightsAttribution';
+import { createInsightsExclusionModel } from '~/models/insightsExclusion';
 import { runAsSystem } from '~/config/tenantContext';
 import { buildIndexWithRetry } from '~/utils/retry';
 
@@ -18,11 +19,18 @@ type InsightsBackfillOptions = {
 };
 
 export async function createInsightsIndexes(mongoose: typeof import('mongoose')): Promise<void> {
-  for (const { schema, collection } of [mongoose.models.Message, mongoose.models.Transaction]) {
-    for (const [keys, { name }] of schema.indexes()) {
+  const { Message, Transaction } = mongoose.models;
+  const models = [createInsightsExclusionModel(mongoose), Message, Transaction];
+  for (const { schema, collection } of models) {
+    for (const [keys, { name, sparse, unique }] of schema.indexes()) {
       if (!name?.startsWith('insights_')) continue;
       await buildIndexWithRetry(
-        () => collection.createIndex(keys as IndexSpecification, { name }),
+        () =>
+          collection.createIndex(keys as IndexSpecification, {
+            name,
+            ...(sparse && { sparse }),
+            ...(unique && { unique: true }),
+          }),
         `createIndex(${collection.name}.${name})`,
       );
     }
@@ -53,7 +61,7 @@ export async function backfillInsightsAttribution(
     .limit(options.batchSize)
     .toArray();
   const attributions = await runAsSystem(async () =>
-    resolveInsightsAttributions(mongoose, records),
+    resolveInsightsAttributions(mongoose, records, { preview: options.apply !== true }),
   );
   const operations: AnyBulkWriteOperation<IndexedRecord>[] = [];
   for (const record of records) {

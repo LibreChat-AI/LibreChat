@@ -1,7 +1,9 @@
 import mongoose from 'mongoose';
+import { MongoServerError } from 'mongodb';
 import { RetentionMode } from 'librechat-data-provider';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { resolveInsightsAttributions, insightsIdentityKey } from './insightsAttribution';
+import { createInsightsExclusionModel } from '../models/insightsExclusion';
 import { createTransactionModel } from '../models/transaction';
 import { createConversationMethods } from './conversation';
 import { createConversationModel } from '../models/convo';
@@ -163,9 +165,9 @@ describe('within a turn', () => {
   const runTurn = (turn: () => Promise<void>) => tenantStorage.run({ userId }, turn);
   const reply = (messageId: string) =>
     messages.saveMessage({ userId }, { conversationId, messageId, isCreatedByUser: false });
-  const bill = (messageId: string) =>
+  const bill = (messageId: string, context = 'message') =>
     transactions.bulkInsertTransactions([
-      { user: userId, conversationId, messageId, tokenType: 'completion', tokenValue: -1 },
+      { user: userId, conversationId, messageId, tokenType: 'completion', tokenValue: -1, context },
     ]);
   const convert = async () => {
     await conversations.stampForcedRetention(ephemeral, { conversationId });
@@ -180,6 +182,7 @@ describe('within a turn', () => {
       user: userId,
       initial_agent_id: 'agent-a',
       codeAttachmentEpoch: 1,
+      createdAt: new Date(),
     });
   });
 
@@ -342,6 +345,196 @@ describe('within a turn', () => {
     expect(await storedHints('Transaction')).toEqual(['']);
   });
 
+  const totals = async () => {
+    const insights = createInsightsMethods(mongoose);
+    const { summary } = await insights.getInsights({ agentIds: ['agent-a'], showDetails: false });
+    return { messages: summary.totalMessages, spend: summary.spendUSD };
+  };
+
+  const exclusions = () => createInsightsExclusionModel(mongoose);
+  const expire = () =>
+    mongoose.models.Conversation.collection.deleteOne({ conversationId, user: userId });
+  const saveTemporary = async () => void (await save());
+
+  it.each([
+    ['before', 'its retention stamp', convert],
+    ['after', 'its retention stamp', convert],
+    ['before', 'its conversation save', saveTemporary],
+    ['after', 'its conversation save', saveTemporary],
+  ])(
+    'never counts a late charge saved %s its temporary chat expires, converted by %s',
+    async (order, _change, change) => {
+      await runTurn(async () => {
+        await reply('reply');
+        await bill('before');
+        await runTurn(change);
+        if (order === 'after') await expire();
+        await bill('late');
+      });
+      if (order === 'before') await expire();
+      const late = await mongoose.models.Transaction.collection.findOne({ messageId: 'late' });
+      expect(late?.insightsAgentId).toBe('agent-a');
+      expect(await totals()).toEqual({ messages: 0, spend: null });
+    },
+  );
+
+  it.each(['Message', 'Transaction'] as const)(
+    'never counts what a failed %s cleanup left behind',
+    async (model) => {
+      const failure = jest
+        .spyOn(mongoose.models[model], 'updateMany')
+        .mockRejectedValueOnce(new Error('unavailable'));
+      await runTurn(async () => {
+        await reply('reply');
+        await bill('reply');
+        await convert();
+      });
+      failure.mockRestore();
+      expect(await storedHints(model)).toEqual(['agent-a']);
+      expect(await totals()).toEqual({ messages: 0, spend: null });
+    },
+  );
+
+  it('records one exclusion per converted chat and nothing more in its later turns', async () => {
+    await runTurn(async () => {
+      await reply('reply');
+      await convert();
+      await save();
+    });
+    expect(await exclusions().countDocuments({ conversationId, user: userId })).toBe(1);
+    const writes = [
+      jest.spyOn(mongoose.models.Message, 'updateMany'),
+      jest.spyOn(mongoose.models.Transaction, 'updateMany'),
+      jest.spyOn(exclusions(), 'updateOne'),
+    ];
+    await runTurn(async () => {
+      await conversations.getConvo(userId, conversationId);
+      await reply('next');
+      await bill('next');
+      await save();
+      await convert();
+    });
+    writes.forEach((write) => expect(write).not.toHaveBeenCalled());
+    writes.forEach((write) => write.mockRestore());
+  });
+
+  it('only excludes the converted chat of its own owner', async () => {
+    const other = new mongoose.Types.ObjectId().toString();
+    await mongoose.models.Conversation.collection.insertOne({
+      conversationId,
+      user: other,
+      initial_agent_id: 'agent-a',
+      createdAt: new Date(),
+    });
+    await messages.saveMessage(
+      { userId: other },
+      { conversationId, messageId: 'other', isCreatedByUser: false },
+    );
+    await runTurn(async () => {
+      await reply('reply');
+      await runTurn(convert);
+      await reply('late');
+    });
+    expect((await totals()).messages).toBe(1);
+  });
+
+  it('still excludes a chat converted days before a late charge in the reported day', async () => {
+    const day = 24 * 60 * 60 * 1000;
+    await runTurn(async () => {
+      await reply('reply');
+      await bill('before');
+      await runTurn(convert);
+      await exclusions().updateMany({}, { $set: { createdAt: new Date(Date.now() - 3 * day) } });
+      await bill('late');
+    });
+    await expire();
+    const insights = createInsightsMethods(mongoose);
+    const { summary } = await insights.getInsights({
+      agentIds: ['agent-a'],
+      showDetails: false,
+      range: '24h',
+    });
+    expect(summary.spendUSD).toBeNull();
+  });
+
+  it('treats a concurrent conversion of the same chat as already excluded', async () => {
+    const race = jest
+      .spyOn(exclusions(), 'updateOne')
+      .mockRejectedValueOnce(
+        new MongoServerError({ message: 'E11000 duplicate key', code: 11000 }),
+      );
+    await convert();
+    race.mockRestore();
+    const stored = await mongoose.models.Conversation.collection.findOne({ conversationId });
+    expect(stored?.isTemporary).toBe(true);
+  });
+
+  it('leaves no exclusion behind when a conversion is refused', async () => {
+    await reply('reply');
+    const refused = await conversations.saveConvo(ephemeral, {
+      conversationId,
+      newConversationId: '22222222-2222-4222-8222-222222222222',
+      endpoint: 'agents',
+    });
+    expect(refused).toEqual({ message: 'Conversation ID cannot be replaced after persistence.' });
+    expect(await exclusions().countDocuments({})).toBe(0);
+    expect((await totals()).messages).toBe(1);
+  });
+
+  it('only reads the exclusions of chats in the report, by index', async () => {
+    await exclusions().collection.insertMany(
+      Array.from({ length: 300 }, (_, index) => ({
+        conversationId: `other-${index}`,
+        user: userId,
+        createdAt: new Date(),
+      })),
+    );
+    await reply('reply');
+    const reads = jest.spyOn(exclusions(), 'find');
+    expect((await totals()).messages).toBe(1);
+    const filter = reads.mock.results[0].value.getFilter();
+    reads.mockRestore();
+    expect(await exclusions().countDocuments(filter)).toBe(0);
+    const plan = await exclusions().find(filter).explain();
+    expect(JSON.stringify(plan)).toContain('"insights_exclusion"');
+  });
+
+  it('adds nothing to the reports while no chat was converted', async () => {
+    await reply('reply');
+    const aggregate = jest.spyOn(mongoose.models.Message, 'aggregate');
+    const reads = jest.spyOn(exclusions(), 'find');
+    expect((await totals()).messages).toBe(1);
+    expect(JSON.stringify(aggregate.mock.calls)).not.toContain('$nor');
+    expect(reads).not.toHaveBeenCalled();
+    [aggregate, reads].forEach((spy) => spy.mockRestore());
+  });
+
+  it('checks the chats of a large report in bounded batches', async () => {
+    await runTurn(async () => {
+      await reply('reply');
+      await convert();
+    });
+    const createdAt = new Date();
+    await mongoose.models.Message.collection.insertMany(
+      Array.from({ length: 2500 }, (_, index) => ({
+        conversationId: `chat-${index}`,
+        messageId: `chat-${index}`,
+        user: userId,
+        insightsAgentId: 'agent-a',
+        isCreatedByUser: true,
+        createdAt,
+      })),
+    );
+    const reads = jest.spyOn(exclusions(), 'find');
+    expect((await totals()).messages).toBe(2500);
+    const sizes = reads.mock.results.map(
+      ({ value }) => value.getFilter().conversationId.$in.length as number,
+    );
+    reads.mockRestore();
+    expect(sizes.length).toBeGreaterThanOrEqual(3);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(1000);
+  });
+
   it('creates a chat without an agent without updating its records', async () => {
     const { Conversation, Message, Transaction } = mongoose.models;
     await Conversation.deleteMany({});
@@ -423,7 +616,14 @@ describe('a Responses turn saved in a transaction', () => {
   });
   const bill = () =>
     transactions.bulkInsertTransactions([
-      { user: userId, conversationId, messageId: 'reply', tokenType: 'completion', tokenValue: -1 },
+      {
+        user: userId,
+        conversationId,
+        messageId: 'reply',
+        tokenType: 'completion',
+        tokenValue: -1,
+        context: 'message',
+      },
     ]);
   const counted = async (session: mongoose.ClientSession | null = null) => {
     const { Message, Transaction } = mongoose.models;
@@ -474,6 +674,9 @@ describe('a Responses turn saved in a transaction', () => {
       inspect: async (session) => {
         expect(await counted(session)).toEqual([0, 0]);
         expect(await counted()).toEqual([2, 1]);
+        const excluded = createInsightsExclusionModel(mongoose);
+        expect(await excluded.countDocuments({ conversationId }).session(session)).toBe(1);
+        expect(await excluded.countDocuments({ conversationId })).toBe(0);
       },
     });
     expect(await counted()).toEqual([0, 0]);

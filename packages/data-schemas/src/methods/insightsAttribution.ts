@@ -1,6 +1,9 @@
-import type { ClientSession, Model } from 'mongoose';
+import { MongoServerError } from 'mongodb';
+import type { ClientSession, FilterQuery, Model } from 'mongoose';
 import type { TenantContext } from '~/config/tenantContext';
 import type { IConversation } from '~/types/convo';
+import type { IMessage } from '~/types/message';
+import { createInsightsExclusionModel } from '~/models/insightsExclusion';
 import { runAfterTransaction } from '~/utils/postCommit';
 import { tenantStorage } from '~/config/tenantContext';
 import { retryWithBackoff } from '~/utils/retry';
@@ -19,6 +22,7 @@ type ConversationRoot = {
   initial_agent_id?: string | null;
   subagentThread?: object | null;
   isTemporary?: boolean | null;
+  agent_id?: unknown;
 };
 
 export function insightsIdentityKey(record: InsightsRecordIdentity): string {
@@ -43,6 +47,7 @@ function hintFor(
 async function readRoots(
   mongoose: typeof import('mongoose'),
   records: readonly InsightsRecordIdentity[],
+  { preview = false }: { preview?: boolean } = {},
 ): Promise<Map<string, string | null>> {
   const Conversation = mongoose.models.Conversation as Model<IConversation> | undefined;
   const identities = new Map<string, InsightsRecordIdentity>();
@@ -68,10 +73,16 @@ async function readRoots(
       initial_agent_id: 1,
       subagentThread: 1,
       isTemporary: 1,
+      agent_id: 1,
     },
   ).lean<ConversationRoot[]>();
   for (const conversation of conversations) {
-    roots.set(insightsIdentityKey(conversation), hintFor(conversation));
+    const { agent_id } = conversation;
+    const legacy = typeof agent_id === 'string' && agent_id.trim() !== '' ? agent_id : null;
+    roots.set(
+      insightsIdentityKey(conversation),
+      hintFor(conversation) ?? (preview ? legacy : null),
+    );
   }
   return roots;
 }
@@ -79,9 +90,10 @@ async function readRoots(
 export async function resolveInsightsAttributions(
   mongoose: typeof import('mongoose'),
   records: readonly InsightsRecordIdentity[],
+  options: { preview?: boolean } = {},
 ): Promise<Map<string, string>> {
   const result = new Map<string, string>();
-  for (const [key, hint] of await readRoots(mongoose, records)) {
+  for (const [key, hint] of await readRoots(mongoose, records, options)) {
     if (hint != null) result.set(key, hint);
   }
   return result;
@@ -213,4 +225,69 @@ export async function syncInsightsAttribution(
   } catch (error) {
     logger.error('[syncInsightsAttribution] Failed to attribute Insights records', error);
   }
+}
+
+export async function excludeFromInsights(
+  mongoose: typeof import('mongoose'),
+  { conversationId, user, tenantId }: { conversationId: string; user: string; tenantId?: string },
+  session?: ClientSession,
+): Promise<void> {
+  try {
+    await createInsightsExclusionModel(mongoose).updateOne(
+      { conversationId, user, tenantId: tenantId ?? { $exists: false } },
+      { $setOnInsert: { createdAt: new Date() } },
+      { upsert: true, session },
+    );
+  } catch (error) {
+    if (!(error instanceof MongoServerError) || error.code !== 11000) throw error;
+  }
+}
+
+const exclusionBatchSize = 1000;
+
+export async function readInsightsExclusions(
+  mongoose: typeof import('mongoose'),
+  tenant: FilterQuery<IConversation>,
+  reported: Record<'Message' | 'Transaction', FilterQuery<IMessage>>,
+): Promise<{ messages: FilterQuery<IMessage>; transactions: FilterQuery<IMessage> }> {
+  const Exclusion = createInsightsExclusionModel(mongoose);
+  if (!(await Exclusion.exists(tenant))) return { messages: {}, transactions: {} };
+  const excluded = new Map<string, { conversationId: string; user: string }>();
+  const check = async (conversationIds: string[]) => {
+    if (conversationIds.length === 0) return;
+    const found = await Exclusion.find(
+      { ...tenant, conversationId: { $in: conversationIds } },
+      { _id: 0, conversationId: 1, user: 1 },
+    ).lean();
+    for (const entry of found)
+      excluded.set(JSON.stringify([entry.conversationId, entry.user]), entry);
+  };
+  for (const [name, match] of Object.entries(reported)) {
+    let batch: string[] = [];
+    const conversations = mongoose.models[name]
+      .aggregate<{ _id: unknown }>([{ $match: match }, { $group: { _id: '$conversationId' } }])
+      .cursor({ batchSize: exclusionBatchSize });
+    for await (const { _id } of conversations) {
+      if (typeof _id === 'string') batch.push(_id);
+      if (batch.length < exclusionBatchSize) continue;
+      await check(batch);
+      batch = [];
+    }
+    await check(batch);
+  }
+  const entries = [...excluded.values()];
+  if (entries.length === 0) return { messages: {}, transactions: {} };
+  const owned = entries.filter(({ user }) => mongoose.isValidObjectId(user));
+  return {
+    messages: { $nor: entries.map(({ conversationId, user }) => ({ conversationId, user })) },
+    transactions:
+      owned.length === 0
+        ? {}
+        : {
+            $nor: owned.map(({ conversationId, user }) => ({
+              conversationId,
+              user: new mongoose.Types.ObjectId(user),
+            })),
+          },
+  };
 }

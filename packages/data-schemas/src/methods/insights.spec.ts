@@ -9,6 +9,7 @@ import { createConversationModel } from '../models/convo';
 import { createMessageModel } from '../models/message';
 import { createAgentModel } from '../models/agent';
 import { createUserModel } from '../models/user';
+import { createAgentMethods } from './agent';
 
 let mongoServer: MongoMemoryServer;
 const selectedAgents = [{ id: 'agent-a', name: 'Agent A' }];
@@ -174,6 +175,47 @@ describe('Insights methods', () => {
       );
     }
     expect(findAgent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the model', { model: 'model-old' }, { model: 'model-new' }],
+    [
+      'model parameters',
+      { model_parameters: { effort: 'low' } },
+      { model_parameters: { effort: 'high' } },
+    ],
+    ['skills', { skills_enabled: true }, { skills_enabled: false }],
+    ['subagents', { subagents: { enabled: true } }, { subagents: { enabled: false } }],
+  ])('marks the restored version when versions only differ in %s', async (_, older, newer) => {
+    const agents = createAgentMethods(mongoose, {
+      removeAllPermissions: async () => {},
+      getActions: async () => [],
+      getSoleOwnedResourceIds: async () => [],
+      getUserPrincipals: async () => [],
+      findAccessibleResources: async () => [],
+    });
+    const active = async () => {
+      const { agentVersions } = await createInsightsMethods(mongoose).getInsights({
+        agentIds: ['agent-a'],
+        showDetails: false,
+      });
+      return agentVersions?.filter((version) => version.active).map(({ version }) => version);
+    };
+    await agents.createAgent({
+      id: 'agent-a',
+      name: 'Root',
+      provider: 'openAI',
+      model: 'model',
+      author: new mongoose.Types.ObjectId(),
+      ...older,
+    });
+    expect(await active()).toEqual([1]);
+    await agents.updateAgent({ id: 'agent-a' }, newer);
+    expect(await active()).toEqual([2]);
+    await agents.revertAgentVersion({ id: 'agent-a' }, 0);
+    expect(await active()).toEqual([1]);
+    await agents.revertAgentVersion({ id: 'agent-a' }, 1);
+    expect(await active()).toEqual([2]);
   });
 
   it.each([

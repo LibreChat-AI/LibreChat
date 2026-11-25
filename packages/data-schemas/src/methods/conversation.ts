@@ -56,11 +56,15 @@ import {
   createFallbackRetentionDate,
 } from '~/utils/retention';
 import {
+  excludeFromInsights,
+  rememberInsightsRoot,
+  syncInsightsAttribution,
+} from './insightsAttribution';
+import {
   refreshChatProjectStatsForUser,
   updateChatProjectLastConversationForUser,
 } from './chatProject';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
-import { rememberInsightsRoot, syncInsightsAttribution } from './insightsAttribution';
 import { getTenantId, SYSTEM_TENANT_ID, runAsSystem } from '~/config/tenantContext';
 import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
@@ -2410,6 +2414,11 @@ export function createConversationMethods(
         { timestamps: false },
       );
       stampedDeadline ||= converted.modifiedCount > 0;
+      await excludeFromInsights(mongoose, {
+        conversationId,
+        user: userId,
+        tenantId: stored.tenantId,
+      });
       if (converted.modifiedCount > 0 && stored.tags?.length) {
         await decrementTagCounts(mongoose, userId, stored.tags);
       }
@@ -2826,6 +2835,17 @@ export function createConversationMethods(
       }
 
       const created = conversationResult.lastErrorObject?.updatedExisting === false;
+      if (converted && !created && conversation.isTemporary === true) {
+        await excludeFromInsights(
+          mongoose,
+          {
+            conversationId: conversation.conversationId,
+            user: userId,
+            tenantId: conversation.tenantId,
+          },
+          deps?.saveSession,
+        );
+      }
       if (created || conversation.isTemporary === true) {
         const saved = {
           ...(conversation.toObject() as Record<string, unknown>),

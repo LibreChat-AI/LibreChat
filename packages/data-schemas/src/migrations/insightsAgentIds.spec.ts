@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { backfillInsightsAttribution, createInsightsIndexes } from './insightsAgentIds';
+import { createInsightsExclusionModel } from '~/models/insightsExclusion';
 import { createTransactionModel } from '~/models/transaction';
 import { createInsightsMethods } from '~/methods/insights';
 import { createConversationModel } from '~/models/convo';
@@ -33,11 +34,53 @@ beforeEach(async () => {
 
 it('builds the reporting indexes a deployment without automatic indexing is missing', async () => {
   const { Message, Transaction } = mongoose.models;
-  await Promise.all([Message.collection.dropIndexes(), Transaction.collection.dropIndexes()]);
+  const exclusions = createInsightsExclusionModel(mongoose);
+  await exclusions.init();
+  await Promise.all(
+    [exclusions, Message, Transaction].map(({ collection }) => collection.dropIndexes()),
+  );
   await createInsightsIndexes(mongoose);
   await createInsightsIndexes(mongoose);
   expect(await Message.collection.indexExists('insights_root_period')).toBe(true);
   expect(await Transaction.collection.indexExists('insights_root_period')).toBe(true);
+  const installed = await exclusions.collection.indexes();
+  expect(installed.find(({ name }) => name === 'insights_exclusion')?.unique).toBe(true);
+  expect(await exclusions.collection.indexExists('insights_exclusion_period')).toBe(true);
+});
+
+it('previews in a dry run what applying will update for legacy agent chats', async () => {
+  const now = new Date();
+  await mongoose.models.Conversation.collection.insertOne({
+    conversationId: 'legacy',
+    user: owner.toString(),
+    agent_id: 'agent-a',
+    createdAt: now,
+  });
+  await mongoose.models.Message.collection.insertOne({
+    conversationId: 'legacy',
+    user: owner.toString(),
+    messageId: 'legacy-message',
+    createdAt: now,
+  });
+  await mongoose.models.Transaction.collection.insertOne({
+    conversationId: 'legacy',
+    user: owner,
+    tokenType: 'prompt',
+    tokenValue: -1,
+    createdAt: now,
+  });
+  const run = async (apply: boolean) => {
+    const updated: Record<string, number> = {};
+    for (const collection of ['conversations', 'messages', 'transactions'] as const) {
+      updated[collection] = (
+        await backfillInsightsAttribution(mongoose, { collection, batchSize: 10, apply })
+      ).updated;
+    }
+    return updated;
+  };
+  const preview = await run(false);
+  expect(preview).toEqual({ conversations: 1, messages: 1, transactions: 1 });
+  expect(await run(true)).toEqual(preview);
 });
 
 it('backfills in resumable batches, fixes legacy roots and is idempotent', async () => {
