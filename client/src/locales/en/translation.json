@@ -4251,6 +4251,7 @@
   "com_ui_events_watch_stop": "Stop watching {{0}}",
   "com_ui_events_watch_stop_error": "Could not stop watching. Try again.",
   "com_ui_events_watches": "Pull requests this conversation follows",
+  "com_ui_events_watches_error": "The pull requests this conversation follows could not be loaded.",
   "com_ui_events_watching": "Watching {{0}}",
   "com_ui_events_origin": "{{0}} on {{1}} by {{2}}",
   "com_ui_events_origin_checks": "Checks finished",

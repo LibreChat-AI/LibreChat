@@ -450,6 +450,26 @@ describe('createWatchContinueResolver', () => {
     });
   });
 
+  it('waits without spending an attempt while the last reply is still being written', async () => {
+    const watch = await stored();
+    // The first turn has claimed its terminal status, but its reply is not in the history yet.
+    const getMessages = jest.fn(async () => []);
+    await expect(
+      resolver({
+        getMessages,
+        getGenerationJob: async () => ({
+          status: 'completed',
+          metadata: { terminalPersistencePending: true },
+        }),
+      })(envelope(watch), context),
+    ).rejects.toMatchObject({
+      code: 'WATCH_CONVERSATION_BUSY',
+      retryable: true,
+      deferWithoutAttempt: true,
+    });
+    expect(getMessages).not.toHaveBeenCalled();
+  });
+
   it('refuses for good when the conversation has no reply to continue, as after its deletion', async () => {
     const watch = await stored();
     await expect(

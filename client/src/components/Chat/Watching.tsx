@@ -16,8 +16,11 @@ const pauses: Record<WatchPause, TranslationKeys> = {
   unbound: 'com_ui_events_watch_paused_unbound',
 };
 
-/** A watch that already ended is gone either way, so stopping it is not a failure. */
-const ended = (error: unknown) => isAxiosError(error) && error.response?.status === 404;
+/**
+ * A 404 is not a failure here: stopping a watch that already ended leaves it gone either way,
+ * and a server without the watch routes has no watches to list.
+ */
+const notFound = (error: unknown) => isAxiosError(error) && error.response?.status === 404;
 
 /**
  * The pull requests this conversation follows, each with a control to stop following it.
@@ -37,7 +40,8 @@ function Watching({
   });
   const id = conversationId ?? undefined;
   const routed = id != null && id !== Constants.NEW_CONVO;
-  const { data: watches, refetch } = useEventWatches(id, allowed && routed);
+  const list = useEventWatches(id, allowed && routed);
+  const { data: watches, refetch } = list;
   const stop = useStopWatch(id);
 
   /* A turn is what starts or stops a watch, so the list is read again when one ends. */
@@ -50,7 +54,32 @@ function Watching({
     }
   }, [isSubmitting, allowed, routed, refetch]);
 
-  if (!allowed || !routed || watches == null || watches.length === 0) {
+  if (!allowed || !routed) {
+    return null;
+  }
+  /* A conversation that follows pull requests must not look like one that follows none when
+     the list fails: the owner could not see or stop them. Loading and empty stay silent. */
+  if (list.isError && watches == null && !notFound(list.error)) {
+    return (
+      <div className="mx-auto flex w-full max-w-3xl items-center gap-2 px-4 pb-2 text-xs xl:max-w-4xl">
+        <p role="alert" className="text-text-destructive">
+          {localize('com_ui_events_watches_error')}
+        </p>
+        <button
+          type="button"
+          onClick={() => void refetch()}
+          disabled={list.isFetching}
+          className={cn(
+            'text-text-primary hover:bg-surface-hover focus-visible:ring-ring-primary rounded-md px-2 py-0.5 underline focus-visible:ring-2 focus-visible:outline-none disabled:opacity-50',
+            disabledInkClasses,
+          )}
+        >
+          {localize('com_ui_retry')}
+        </button>
+      </div>
+    );
+  }
+  if (watches == null || watches.length === 0) {
     return null;
   }
 
@@ -101,7 +130,7 @@ function Watching({
           );
         })}
       </ul>
-      {stop.isError && !ended(stop.error) && (
+      {stop.isError && !notFound(stop.error) && (
         <p role="alert" className="text-text-destructive mt-1 text-xs">
           {localize('com_ui_events_watch_stop_error')}
         </p>

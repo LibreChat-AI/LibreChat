@@ -109,24 +109,40 @@ describe('Watching', () => {
     ).toBeInTheDocument();
   });
 
-  it('renders nothing while loading, when nothing is followed, or when the list fails', async () => {
+  it('renders nothing while loading or when nothing is followed', async () => {
     let resolve: (value: { watches: ListedWatch[] }) => void = () => {};
     service.getAgentEventWatches.mockReturnValueOnce(
       new Promise((done) => {
         resolve = done;
       }),
     );
-    const { container, unmount } = renderWatching();
+    const { container } = renderWatching();
     expect(container).toBeEmptyDOMElement();
     resolve({ watches: [] });
     await waitFor(() => expect(service.getAgentEventWatches).toHaveBeenCalled());
     expect(container).toBeEmptyDOMElement();
-    unmount();
+  });
 
-    service.getAgentEventWatches.mockRejectedValueOnce(axiosError(500));
-    const failed = renderWatching();
-    await waitFor(() => expect(service.getAgentEventWatches).toHaveBeenCalledTimes(2));
-    expect(failed.container).toBeEmptyDOMElement();
+  it('says the list failed and offers a retry that shows the watches', async () => {
+    service.getAgentEventWatches
+      .mockRejectedValueOnce(axiosError(500))
+      .mockResolvedValueOnce({ watches: [watch()] });
+    renderWatching();
+    expect(await screen.findByRole('alert')).toHaveTextContent('com_ui_events_watches_error');
+    await userEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+    expect(
+      await screen.findByRole('button', { name: 'com_ui_events_watch_stop:acme/widgets#7' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('renders nothing against a server that has no watch routes', async () => {
+    service.getAgentEventWatches.mockRejectedValueOnce(axiosError(404));
+    const { container } = renderWatching();
+    await waitFor(() => expect(service.getAgentEventWatches).toHaveBeenCalled());
+    // Let the rejection settle into the query's error state before looking.
+    await new Promise((done) => setTimeout(done, 50));
+    expect(container).toBeEmptyDOMElement();
   });
 
   it('asks for nothing without access or outside a saved conversation', () => {

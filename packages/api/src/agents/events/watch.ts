@@ -16,6 +16,7 @@ import type {
   AgentTriggerContinuePreparation,
   AgentTriggerExecutionHostDeps,
 } from '~/agents/triggers/host';
+import type { ContinueGenerationState } from '~/agents/triggers/bindingResolver';
 import type { AgentContinueTriggerEnvelope } from '~/agents/triggers/envelope';
 import type { PullRequestFetch } from '~/pulls/shared';
 import type { App, AppConfig } from './github/app';
@@ -24,6 +25,7 @@ import type { EventConfig } from './settings';
 import type { ServerRequest } from '~/types';
 import { governs, pauseOf, WATCH_TOOL, UNWATCH_TOOL } from './controls';
 import { AgentTriggerExecutionError } from '~/agents/triggers/host';
+import { generationBusy } from '~/agents/triggers/bindingResolver';
 import { SUBSCRIPTION_SOURCE } from '~/agents/authority/context';
 import { eventSettings, watchSettings } from './settings';
 import { getSafeErrorMetadata } from '~/utils/errors';
@@ -231,7 +233,9 @@ export interface WatchContinueResolverDeps {
     select: string,
     options: { sort: Record<string, 1 | -1>; limit: number },
   ) => Promise<Array<{ messageId: string }>>;
-  getGenerationJob?: (conversationId: string) => Promise<{ status?: string } | null | undefined>;
+  getGenerationJob?: (
+    conversationId: string,
+  ) => Promise<ContinueGenerationState | null | undefined>;
 }
 
 function refused(message: string, retryable: boolean, code: string): AgentTriggerExecutionError {
@@ -298,7 +302,9 @@ export function createWatchContinueResolver(deps: WatchContinueResolverDeps): Co
       } catch {
         throw refused('Generation state is temporarily unavailable.', true, 'WATCH_UNAVAILABLE');
       }
-      if (active?.status === 'running' || active?.status === 'requires_action') {
+      // Also while the last turn has ended but its reply is not written yet: the history would
+      // hold no reply to continue, and the turn would be refused for good.
+      if (generationBusy(active)) {
         throw new AgentTriggerExecutionError(
           'The conversation is still answering an earlier turn.',
           {
