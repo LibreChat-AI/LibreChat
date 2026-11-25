@@ -11,3 +11,4 @@ export * from './policy';
 export * from './preflight';
 export * from './settle';
 export * from './limits';
+export * from './pause';

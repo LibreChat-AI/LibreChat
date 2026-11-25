@@ -1214,6 +1214,43 @@ describe("a subscription's runs on record", () => {
     expect((await stored(subscription.id))?.failures).toBeUndefined();
   });
 
+  it("keeps only a stable reason on the row, never an error's own text", async () => {
+    const subscription = await made();
+    const { req, input } = await started(subscription);
+    await host.settle({
+      request: input.req,
+      executionContext: input.executionContext,
+      status: 'error',
+      error: 'connect ECONNREFUSED SECRET-MARKER-7f3 token=abc',
+    });
+    const stored = await row(subscription, req);
+    expect(stored).toMatchObject({ status: 'error', error: 'run_failed' });
+    expect(JSON.stringify(stored)).not.toContain('SECRET-MARKER');
+  });
+
+  it('counts a replayed run once, however many runs were counted since', async () => {
+    bounds({ failures: 0 });
+    const subscription = await made();
+    const { req, input } = await started(subscription);
+    await host.settle({
+      request: input.req,
+      executionContext: input.executionContext,
+      status: 'error',
+    });
+    // Sixty newer failures push this run's key out of the subscription's remembered keys.
+    for (let i = 0; i < 60; i++) {
+      await subscriptions.tally(subscription.id, OWNER, { key: `newer-${i}`, failed: true }, 0);
+    }
+    expect(await stored(subscription.id)).toMatchObject({ failures: 61 });
+    // Its subscription step is replayed, as a sweep does for a row whose mark never landed.
+    await mongoose.models.ScheduleRun.updateOne(
+      { kind: 'subscription', deliveryKey: req.body?.clientRequestId },
+      { $set: { bookkept: false, settledAt: new Date(Date.now() - 3 * 3_600_000) } },
+    );
+    await expect(host.reconcile()).resolves.toBe(1);
+    expect(await stored(subscription.id)).toMatchObject({ failures: 61 });
+  });
+
   it('records a delivery over the hourly cap as skipped, and does not run it', async () => {
     const subscription = await subscriptions.create(OWNER, {
       ...draft,

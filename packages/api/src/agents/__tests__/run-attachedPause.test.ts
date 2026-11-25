@@ -11,6 +11,7 @@ import {
 } from '~/agents/hitl/byom';
 import { canAgentGraphPause, resolveScheduledPause } from '~/agents/hitl/admission';
 import { resolveToolApprovalPolicy } from '~/agents/hitl/policy';
+import { resolveRunPause } from '~/agents/authority/pause';
 import { createRun } from '~/agents/run';
 
 /**
@@ -381,5 +382,54 @@ describe('a scheduled run on an attached machine where no pause can be held', ()
 
     await build(agents, { hitlCapable: false, pauseGap: 'shared_store', appConfig });
     expect((await decide(captured())).decision).toBeUndefined();
+  });
+});
+
+describe("an event subscription's run, where a pause could be held", () => {
+  let create: jest.SpyInstance;
+  /** The request the trigger host makes for a delivery a subscription matched. */
+  const delivery = {
+    user: { id: 'owner-1' },
+    _isAgentTrigger: true,
+    body: {
+      agent_id: 'agent_1',
+      clientRequestId: 'delivery-1',
+      agentTrigger: {
+        version: 1,
+        event: {
+          id: 'event-1',
+          type: 'github.check_suite.completed',
+          occurredAt: 1,
+          source: { type: 'subscription', id: 'sub_1' },
+        },
+      },
+    },
+  } as never;
+
+  beforeEach(() => {
+    create = jest
+      .spyOn(Run, 'create')
+      .mockResolvedValue({ processStream: jest.fn().mockResolvedValue(undefined) } as never);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('never pauses: it starts without the wiring and refuses the call that needs approval', async () => {
+    const agents = [makeAgent({ codeExecutionContext: attachedOn('laptop', 'ask') })];
+    const { canPause } = await scheduledPause(agents);
+    const pause = await resolveRunPause({
+      req: delivery,
+      canPause,
+      sharedStore: true,
+      getCheckpointer: async () => ({}),
+    });
+    expect(canPause).toBe(true);
+    expect(pause).toEqual({ capable: false, prunes: true, missing: 'unattended' });
+
+    await build(agents, { hitlCapable: pause.capable, pauseGap: pause.missing });
+    const config = create.mock.calls[0][0] as RunConfig;
+    expect(config.humanInTheLoop).toBeUndefined();
+    const verdict = await decide(config);
+    expect(verdict.decision).toBe('deny');
+    expect(verdict.reason).toContain('needs approval');
   });
 });

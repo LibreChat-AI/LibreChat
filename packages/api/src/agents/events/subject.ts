@@ -135,6 +135,25 @@ function counted(status: string): { failed: boolean } | undefined {
   return undefined;
 }
 
+/**
+ * The stable reasons a run's row may keep, by the fixed text the chat route ends a turn with.
+ * Anything else, such as a provider's or a tool's error text, is stored as `run_failed`:
+ * the row is read by the owner, and an error's own words may carry what it was given.
+ */
+const REASONS: Readonly<Record<string, string>> = {
+  'Scheduled run was stopped': 'stopped',
+  'Scheduled run was interrupted before completion': 'preempted',
+  'Scheduled run reached its tool call limit before completion': 'step_limit',
+  'Scheduled run ended with an error response': 'error_response',
+  'Request aborted during initialization': 'initialization_aborted',
+};
+
+/** The code a run's row keeps for how it ended; nothing for a run that names no error. */
+export function runReason(error?: string): string | undefined {
+  if (!error) return undefined;
+  return REASONS[error] ?? 'run_failed';
+}
+
 /** The generation job store, asked for one conversation's current generation. */
 export interface JobSource {
   getJobStore():
@@ -183,7 +202,10 @@ export function createSubscriptionHost(deps: {
   /** The owner's access to the agent now. Only `ok` lets a run start or a grant be made. */
   access: (agentId: string, user: IUser) => Promise<AgentAccess>;
   /** The record a subscription's runs are kept in. */
-  runs: Pick<TriggerRuns, 'reserve' | 'skip' | 'pause' | 'finish' | 'settled' | 'stranded'>;
+  runs: Pick<
+    TriggerRuns,
+    'reserve' | 'skip' | 'pause' | 'finish' | 'settled' | 'stranded' | 'count'
+  >;
   /** The subscription's hourly count and failure streak. */
   usage: Pick<Subscriptions, 'take' | 'tally'>;
   /** The generation job store: which generation a run is, and whether it still runs. */
@@ -392,7 +414,10 @@ export function createSubscriptionHost(deps: {
   /** The subscription's own step for a run that ended: its failure streak, then the mark. */
   async function account(ref: RunRef, owner: string, status: string, revision?: number) {
     const count = counted(status);
-    if (count) {
+    // The row records that its run was counted, by the one writer that marks it, so a replay
+    // counts nothing however many runs were counted since. Marked first: a crash before the
+    // tally leaves the run uncounted, never counted twice.
+    if (count && (await deps.runs.count(ref))) {
       const { failures } = await settings();
       // Fenced on the revision the run started under: a run older than the owner's last edit,
       // or than turning it back on, does not count into the streak that edit started.
@@ -415,9 +440,10 @@ export function createSubscriptionHost(deps: {
       });
       return held != null;
     }
+    const reason = runReason(run.error);
     const ended = await deps.runs.finish(ref, {
       status: run.status,
-      ...(run.error && { error: run.error }),
+      ...(reason && { error: reason }),
       ...(run.conversationId && { conversationId: run.conversationId }),
       ...(run.clearConversationId && { clearConversationId: true }),
     });

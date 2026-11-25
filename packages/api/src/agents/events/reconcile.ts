@@ -1,6 +1,7 @@
 import { logger, runAsSystem } from '@librechat/data-schemas';
 import type { SubscriptionHost } from './subject';
 import type { RunSettings } from './settings';
+import { isTopologySafeToArm } from '~/schedules/topology';
 
 /** How often a pass runs: a third of the stale age, between one and ten minutes. */
 export function cadence(settings: Pick<RunSettings, 'staleMs'>): number {
@@ -23,6 +24,8 @@ export interface SubscriptionReconciler {
  */
 export function createSubscriptionReconciler(
   host: Pick<SubscriptionHost, 'reconcile' | 'bounds'>,
+  /** Whether this process can see every replica's generations, as the scheduler requires. */
+  canArm: () => boolean = isTopologySafeToArm,
 ): SubscriptionReconciler {
   let timer: NodeJS.Timeout | undefined;
   let running: Promise<unknown> | undefined;
@@ -55,6 +58,16 @@ export function createSubscriptionReconciler(
     pass,
     initialize(): void {
       if (stopped || timer) return;
+      if (!canArm()) {
+        // A peer replica's live run has no job this process can see, so a sweep here would
+        // end it as interrupted. Left to a process that can see them all.
+        logger.error(
+          "[events] subscription run reconciler NOT started: this process cannot see other replicas' " +
+            'generations. Enable a shared stream store (USE_REDIS_STREAMS), or set ' +
+            'SCHEDULES_SINGLE_PROCESS=true to assert this deployment runs exactly one replica.',
+        );
+        return;
+      }
       void next().catch(() => undefined);
     },
     async stop(): Promise<void> {

@@ -348,6 +348,13 @@ export type TriggerRuns = {
   /** Marks a run as settled with its subject, once the subject's own step has landed. */
   settled: (ref: TriggerRunRef) => Promise<void>;
   /**
+   * Claims the right to count a run into its subject's own tally, once: `true` for the one
+   * caller whose write marked the row, `false` for every later one and for a ref no row is
+   * kept under. Mark first, count after: a crash between the two leaves the run uncounted,
+   * never counted twice.
+   */
+  count: (ref: TriggerRunRef) => Promise<boolean>;
+  /**
    * A subscription's runs that someone has to finish, at most `limit` of each kind: ones still
    * active that fired before `before`, whose owner may have died, and ones that ended before
    * `before` but whose subscription's own step never landed. The least recently examined come
@@ -874,8 +881,20 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     );
   }
 
+  async function count(ref: TriggerRunRef): Promise<boolean> {
+    const at = where(ref);
+    if (at == null) return false;
+    const { modifiedCount } = await Run().updateOne(
+      { ...at, counted: { $ne: true } },
+      { $set: { counted: true } },
+      { timestamps: false },
+    );
+    return modifiedCount === 1;
+  }
+
   return {
     stranded,
+    count,
     get,
     byConversation,
     reserve,

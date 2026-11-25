@@ -142,6 +142,7 @@ export interface IScheduleRun {
    *  window so no abandoned row can starve behind a full batch of live runs. */
   reconciledAt?: Date;
   jobCreatedAt?: Date;
+  counted?: boolean;
   resumeClaimedAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;

@@ -84,7 +84,7 @@ const {
   collectAllowAlwaysAliases,
   agentRunUsesCheckpointer,
   canAgentGraphPause,
-  resolveScheduledPause,
+  resolveRunPause,
   getPluginHookSource,
   captureAgentCheckpointGeneration,
   isContentFilterError,
@@ -4553,7 +4553,7 @@ class AgentClient extends BaseClient {
        * LangGraph continuation must also use a durable shared checkpointer. Redis
        * provides the first half, while handleRunInterrupt verifies the exact durable
        * checkpoint before exposing the pause. On a topology that cannot hold a pause the
-       * run starts without the wiring (`resolveScheduledPause`), so it never reaches one. */
+       * run starts without the wiring (`resolveRunPause`), so it never reaches one. */
       /** @type {AppConfig['endpoints']['agents']} */
       const agentsEConfig = appConfig.endpoints?.[EModelEndpoint.agents];
       const topLevelAgents = [this.options.agent, ...(this.agentConfigs?.values() ?? [])];
@@ -4610,8 +4610,8 @@ class AgentClient extends BaseClient {
         agents: topLevelAgents,
         askUserQuestionAdminDisabled,
       });
-      const pause = await resolveScheduledPause({
-        scheduled: this.options.req?._isScheduledFire === true,
+      const pause = await resolveRunPause({
+        req: this.options.req,
         canPause: runCanPause,
         sharedStore: GenerationJobManager.isRedis,
         getCheckpointer: () => getAgentCheckpointer(agentsEConfig?.checkpointer),

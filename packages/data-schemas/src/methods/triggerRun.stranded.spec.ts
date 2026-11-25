@@ -158,6 +158,14 @@ describe("stranded: a subscription's runs someone has to finish", () => {
     expect(stamped.every((row) => row.reconciledAt instanceof Date)).toBe(true);
   });
 
+  it('lets one caller count a run, once, however many ask at once', async () => {
+    await started('a', minutes(1));
+    const answers = await Promise.all(Array.from({ length: 5 }, () => runs.count(ref('a'))));
+    expect(answers.filter(Boolean)).toHaveLength(1);
+    expect(await runs.count(ref('a'))).toBe(false);
+    expect(await runs.count(ref('none'))).toBe(false);
+  });
+
   it('reads at most the limit of each kind', async () => {
     for (const key of ['a', 'b', 'c']) await started(key, minutes(1));
     for (const key of ['d', 'e', 'f']) {

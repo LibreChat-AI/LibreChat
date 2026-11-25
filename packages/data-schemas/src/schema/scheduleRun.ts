@@ -166,6 +166,11 @@ const scheduleRunSchema: Schema<IScheduleRunDocument> = new Schema(
     jobCreatedAt: {
       type: Date,
     },
+    /** Set once an event subscription's run has been counted into its subscription's failure
+     *  streak, by the one writer whose conditional update set it, so a replay counts nothing. */
+    counted: {
+      type: Boolean,
+    },
     /** The schedule's configRevision at claim time. Fences terminal bookkeeping and
      *  auto-disable from owner edits/re-enables that landed after this run started. */
     configRevision: {
