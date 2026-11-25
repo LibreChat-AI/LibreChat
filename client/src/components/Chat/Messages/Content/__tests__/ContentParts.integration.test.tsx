@@ -265,6 +265,11 @@ jest.mock('@librechat/chat/dist/components/parts/ImageGen.cjs', () => ({
   __esModule: true,
   default: mockCards().ImageGen,
 }));
+jest.mock('@librechat/chat/dist/components/parts/SubagentCall.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/SubagentCall.cjs'),
+  __esModule: true,
+  default: mockCards().SubagentCall,
+}));
 jest.mock('@librechat/chat/dist/components/parts/MemoryCall.cjs', () => ({
   __esModule: true,
   default: mockCards().MemoryCall,

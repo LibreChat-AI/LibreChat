@@ -265,10 +265,12 @@ const renderers = extendPartRenderers({
 />;
 ```
 
-Three things have no card in the package yet, because LibreChat's read its own state: an error
-part, a paused question (`claim`), and the subagent tool, which draws as a generic tool card until
-a host supplies one. A web search draws the package's card, with the message's streaming results
-from `SearchContext` and the image, shopping and place strips under it.
+Two things have no card in the package yet, because LibreChat's read its own state: an error part
+and a paused question (`claim`). A web search draws the package's card, with the message's
+streaming results from `SearchContext` and the image, shopping and place strips under it. A
+subagent call draws the package's card: it finds the agent it runs as through the messages host's
+`useAgentsMap`, and the share, strings and run's files through the parts host's `useShare` and
+`useToolCallChrome`.
 
 ### A whole message
 

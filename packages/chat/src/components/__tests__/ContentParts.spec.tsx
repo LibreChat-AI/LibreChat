@@ -110,6 +110,9 @@ jest.mock('../parts/ToolCallGroup', () => ({
   ),
 }));
 
+/** Every renderer a part was offered for parts of its own, in render order. */
+const mockNestedRenderers: unknown[] = [];
+
 /** Every set of message-level MCP App attachments a part read from its context, in render order. */
 const mockSuppressedSets: unknown[] = [];
 
@@ -157,6 +160,7 @@ jest.mock('../Part', () => {
   const { SoleToolContext } = jest.requireActual<typeof import('../../react/parts/disclosure')>(
     '../../react/parts/disclosure',
   );
+  const { NestedContentContext } = jest.requireActual<typeof import('../nested')>('../nested');
   const { AppSuppressionContext } =
     jest.requireActual<typeof import('../../react/parts/apps')>('../../react/parts/apps');
   const { SubagentAttachmentsContext } = jest.requireActual<
@@ -180,6 +184,7 @@ jest.mock('../Part', () => {
       const soleTool = useContext(SoleToolContext);
       mockNestedMaps.push(useContext(SubagentAttachmentsContext));
       mockSuppressedSets.push(useContext(AppSuppressionContext));
+      mockNestedRenderers.push(useContext(NestedContentContext));
       return (
         <div
           data-testid={`real-part-${part.type}`}
@@ -1838,6 +1843,38 @@ describe('ContentParts: settled content identity across compaction', () => {
       'data-animate-entrance',
       'true',
     );
+  });
+});
+
+describe('ContentParts: parts that draw parts', () => {
+  const text = (value: string) =>
+    ({ type: ContentTypes.TEXT, text: value }) as TMessageContentParts;
+
+  it('offers its parts a renderer that draws with the same slots, one per slots object', () => {
+    const renderers = { parts: {}, tools: {} } as NonNullable<ContentPartsSlots['renderers']>;
+    const slots: ContentPartsSlots = { renderers };
+    mockNestedRenderers.length = 0;
+    const { rerender } = render(
+      <ChatContentParts {...baseProps} content={[text('hello')]} slots={slots} />,
+    );
+    rerender(<ChatContentParts {...baseProps} content={[text('hello again')]} slots={slots} />);
+
+    const offered = mockNestedRenderers.filter(Boolean);
+    expect(offered.length).toBeGreaterThan(1);
+    expect(new Set(offered).size).toBe(1);
+
+    const nested = offered[0] as (props: Omit<ContentPartsProps, 'slots'>) => React.ReactNode;
+    const { container } = render(
+      <>
+        {nested({
+          ...baseProps,
+          messageId: 'child-message',
+          content: [text('child row')],
+        })}
+      </>,
+    );
+    const child = container.querySelector(`[data-testid="real-part-${ContentTypes.TEXT}"]`);
+    expect(child).toHaveAttribute('data-host-renderers', 'true');
   });
 });
 

@@ -11,6 +11,7 @@ import type { ActivityPhaseSegment } from '../core/parts/activityLabels';
 import type { WorkspaceChangeAttachment } from '../core/attachments';
 import type { MCPAppResourceOccurrence } from '../core/apps';
 import type { RenderIdentity } from '../core/parts/identity';
+import type { NestedContentRenderer } from './nested';
 import type { PartWithIndex } from '../core/content';
 import {
   isFileOutput,
@@ -70,6 +71,7 @@ import { MediaContext } from '../react/parts/media';
 import { MessageContext } from '../react/message';
 import ToolCallGroup from './parts/ToolCallGroup';
 import ApprovalProvider from './approval/context';
+import { NestedContentContext } from './nested';
 import { useShared } from '../react/shared';
 import Container from './parts/Container';
 import AgentUpdate from './AgentUpdate';
@@ -1292,6 +1294,15 @@ export const ContentParts: NamedExoticComponent<ContentPartsProps> = memo(functi
   props: ContentPartsProps,
 ) {
   const slots = props.slots ?? NO_SLOTS;
+  /** What a part drawing parts of its own uses when the host names no renderer: this one, with
+   *  the same slots, so a subagent's row draws the way the message around it does. */
+  const nested = useMemo<NestedContentRenderer>(
+    () =>
+      function renderNested(nestedProps) {
+        return <ContentParts {...nestedProps} slots={props.slots} />;
+      },
+    [props.slots],
+  );
   const { renderApp, renderSources, renderWorkspaceChanges } = slots;
   const summarized = renderWorkspaceChanges != null;
   const useAppsEnabled = slots.useAppsEnabled ?? useAppsAllowed;
@@ -1538,34 +1549,36 @@ export const ContentParts: NamedExoticComponent<ContentPartsProps> = memo(functi
   const attachmentsByName = useMemo(() => buildAttachmentsByName(attachments), [attachments]);
   const media = useMemo(() => ({ attachmentsByName }), [attachmentsByName]);
   return (
-    <MessageContext.Provider value={messageContext}>
-      <MediaContext.Provider value={media}>
-        <ReasoningDisclosureContext.Provider value={reasoningDisclosures}>
-          <ToolDisclosureContext.Provider value={toolDisclosures}>
-            {!props.edit &&
-              renderSources != null &&
-              hasParallelLanes(props.content, props.laneGroups) && (
-                <SearchContext.Provider value={{ searchResults: props.searchResults }}>
-                  {renderSources({ messageId, conversationId: conversationId || undefined })}
-                </SearchContext.Provider>
-              )}
-            <SubagentAttachmentsContext.Provider value={nestedAttachments}>
-              {appContent ?? (
-                <AppSuppressionContext.Provider key="body-0" value={suppressedAppAttachments}>
-                  <SoleToolContext.Provider value={undefined}>
-                    <ContentPartsBody
-                      {...props}
-                      mediaScope={appRenderScope}
-                      resumeAuthors={props.resumeAuthors ?? resumeAuthors}
-                      toolCallStepOwnersById={owners}
-                    />
-                  </SoleToolContext.Provider>
-                </AppSuppressionContext.Provider>
-              )}
-            </SubagentAttachmentsContext.Provider>
-          </ToolDisclosureContext.Provider>
-        </ReasoningDisclosureContext.Provider>
-      </MediaContext.Provider>
-    </MessageContext.Provider>
+    <NestedContentContext.Provider value={nested}>
+      <MessageContext.Provider value={messageContext}>
+        <MediaContext.Provider value={media}>
+          <ReasoningDisclosureContext.Provider value={reasoningDisclosures}>
+            <ToolDisclosureContext.Provider value={toolDisclosures}>
+              {!props.edit &&
+                renderSources != null &&
+                hasParallelLanes(props.content, props.laneGroups) && (
+                  <SearchContext.Provider value={{ searchResults: props.searchResults }}>
+                    {renderSources({ messageId, conversationId: conversationId || undefined })}
+                  </SearchContext.Provider>
+                )}
+              <SubagentAttachmentsContext.Provider value={nestedAttachments}>
+                {appContent ?? (
+                  <AppSuppressionContext.Provider key="body-0" value={suppressedAppAttachments}>
+                    <SoleToolContext.Provider value={undefined}>
+                      <ContentPartsBody
+                        {...props}
+                        mediaScope={appRenderScope}
+                        resumeAuthors={props.resumeAuthors ?? resumeAuthors}
+                        toolCallStepOwnersById={owners}
+                      />
+                    </SoleToolContext.Provider>
+                  </AppSuppressionContext.Provider>
+                )}
+              </SubagentAttachmentsContext.Provider>
+            </ToolDisclosureContext.Provider>
+          </ReasoningDisclosureContext.Provider>
+        </MediaContext.Provider>
+      </MessageContext.Provider>
+    </NestedContentContext.Provider>
   );
 });

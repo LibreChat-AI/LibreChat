@@ -1,13 +1,12 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
 import { useSetAtom } from 'jotai';
 import { ChevronRight, Users } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
 import { Button, Shimmer, cn } from '@librechat/client';
 import type { PartMetadata, TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
-import type { Agent } from 'librechat-data-provider';
-import type { MessagePartMessage, MessagePartsHost, ToolCallChrome } from '../../react/host';
 import type { SubagentContentPreview } from '../../react/subagents/state';
+import type { ToolCallChrome } from '../../react/host';
 import {
   activeSubagentPanel,
   subagentProgressKey,
@@ -30,10 +29,12 @@ import { readSubagentArgs } from '../../react/subagents/prompt';
 import { PartsPreviewContext } from '../../react/parts/preview';
 import { FailedRevealContext, useFailedReveal } from './reveal';
 import { useToolCallIntent } from '../../react/parts/intent';
+import { useMessagesHost } from '../../react/messages/host';
 import { useBranchTailSelect } from '../../react/latest';
-import { renderContentParts } from '../contentRenderer';
+import { useMessageContext } from '../../react/message';
 import { useToolPreparation } from './preparation';
 import { isError } from '../../core/parts/output';
+import { NestedContentContext } from '../nested';
 import { FOLD_GLYPH_CLASS } from './rows';
 import PendingFace from './PendingFace';
 
@@ -61,15 +62,6 @@ export interface SubagentCallProps {
   subagentIdentity?: PartMetadata['subagentIdentity'];
   hideAttachments?: boolean;
 }
-
-/** App subscriptions arrive as values; render callbacks contain no card behavior. */
-export type SubagentCallContext = Pick<ToolCallChrome, 'localize' | 'renderAttachments'> &
-  Pick<MessagePartsHost, 'renderAgentIcon'> & {
-    message: Pick<MessagePartMessage, 'messageId' | 'conversationId' | 'partIndex'>;
-    isSharedConvo?: boolean;
-    shareId?: string;
-    agentsMap?: Record<string, Agent | undefined>;
-  };
 
 /** Trailing-edge refresh window for the live preview once the ticker has
  *  enough text to fill the row. Keeps long streaming lines from repainting
@@ -188,14 +180,14 @@ export default function SubagentCall({
   contentPreview,
   subagentIdentity,
   hideAttachments = false,
-  message,
-  isSharedConvo,
-  shareId,
-  localize,
-  agentsMap,
-  renderAgentIcon,
-  renderAttachments,
-}: SubagentCallProps & SubagentCallContext): ReactNode {
+}: SubagentCallProps): ReactNode {
+  const message = useMessageContext();
+  const host = useMessagePartsHost();
+  const { renderAgentIcon } = host;
+  const { isSharedConvo, shareId } = host.useShare();
+  const { localize, renderAttachments } = host.useToolCallChrome();
+  /** By id, as the message row resolves its own author; an outside host without agents has none. */
+  const agentsMap = useMessagesHost().useAgentsMap();
   const parentMessageId = message.messageId?.trim() ?? '';
   const partIndex = message.partIndex ?? 0;
   const progress = useSubagentProgress(subagentProgressKey(parentMessageId, toolCallId, partIndex));
@@ -682,6 +674,8 @@ function SubagentPreview({
   messageId: string;
 }): ReactNode {
   const host = useMessagePartsHost();
+  const nested = useContext(NestedContentContext);
+  const draw = host.renderContentParts ?? nested;
   const content = useMemo(() => [part], [part]);
   const pictureHost = useMemo(() => ({ ...host, useToolArtifactClaim: useNoClaim }), [host]);
   return (
@@ -702,7 +696,7 @@ function SubagentPreview({
         <PartsPreviewContext.Provider value={true}>
           <FailedRevealContext.Provider value={NO_REVEAL}>
             <MessagePartsHostProvider host={pictureHost}>
-              {(host.renderContentParts ?? renderContentParts)({
+              {draw?.({
                 content,
                 messageId,
                 conversationId: null,
