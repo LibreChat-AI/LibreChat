@@ -98,6 +98,8 @@ export type ChatFinalFrame = {
   runMessages?: TMessage[];
   /** `null` when an abort lands before the conversation has a title. */
   title?: string | null;
+  /** The completed follow-up may publish a replacement title for this generation. */
+  titleRetryEpoch?: number;
   aborted?: boolean;
   earlyAbort?: boolean;
   /** Steers that never reached an injection boundary, handed back as queued turns. */

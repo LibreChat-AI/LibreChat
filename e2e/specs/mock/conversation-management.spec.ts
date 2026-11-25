@@ -463,6 +463,54 @@ test.describe('conversation management', () => {
     }
   });
 
+  test('recovers a pending first-turn title on the next message', async ({ page, request }) => {
+    test.skip(process.env.E2E_TITLE_CONVO !== 'true', 'Requires the title-enabled mock profile');
+    test.setTimeout(45_000);
+    const first = uniqueLabel('pending-title');
+    const second = uniqueLabel('replacement-title');
+    const title = `Recovered ${second}`;
+    const fixture = `http://127.0.0.1:${process.env.E2E_LABEL_PORT ?? '8889'}`;
+    await request.post(`${fixture}/__e2e/reset`);
+    await request.post(`${fixture}/__e2e/behavior`, {
+      data: {
+        hold: true,
+        holdModel: 'mock-title-model',
+        label: title,
+        labelsByPrompt: {
+          [second]: title,
+          [first]: `Superseded ${first}`,
+        },
+      },
+    });
+    const requestedTitleFor = async (label: string) => {
+      const { requests } = await (await request.get(`${fixture}/__e2e/requests`)).json();
+      return requests.some(
+        (record: { model: string; prompt: string }) =>
+          record.model === 'mock-title-model' && record.prompt.includes(label),
+      );
+    };
+    try {
+      await page.goto(NEW_CHAT_PATH);
+      await selectMockEndpoint(page, { label: 'Mock Titles final', model: 'mock-titles-final' });
+      const run = await sendMessageAndWaitForCompletion(page, replyPrompt(first));
+      const { conversationId } = await run.json();
+      await expect.poll(() => requestedTitleFor(first)).toBe(true);
+      const href = new URL(`/c/${conversationId}`, page.url()).href;
+      await expect(conversationRow(page, href)).toContainText('New Chat');
+      // Reopening the chat loses the initial tab's polling state.
+      await page.reload();
+      const followUp = await sendMessageAndWaitForCompletion(page, replyPrompt(second));
+      expect((await followUp.json()).conversationId).toBe(conversationId);
+      await expect.poll(() => requestedTitleFor(second)).toBe(true);
+      await request.post(`${fixture}/__e2e/release`);
+      await expect(conversationRow(page, href)).toContainText(title, { timeout: 10_000 });
+      await expect(page).toHaveTitle(new RegExp(title));
+      await expect(page).toHaveURL(href);
+    } finally {
+      await request.post(`${fixture}/__e2e/reset`, { timeout: 2000 }).catch(() => undefined);
+    }
+  });
+
   test('adopts a newer remote rename from delayed final-title polling', async ({
     page,
     request,

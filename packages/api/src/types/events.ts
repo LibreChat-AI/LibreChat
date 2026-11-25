@@ -1,4 +1,9 @@
-import type { TPendingSteer, TPromotedSteer, ChatCreatedTurn } from 'librechat-data-provider';
+import type {
+  TPendingSteer,
+  TPromotedSteer,
+  ChatCreatedTurn,
+  ChatFinalFrame,
+} from 'librechat-data-provider';
 
 /** SSE streaming event (on_run_step, on_message_delta, etc.) */
 export type StreamEvent = {
@@ -41,7 +46,7 @@ export type FinalMessageFields = {
 };
 
 /** Terminal event emitted when generation completes or is aborted */
-export type FinalEvent = {
+export type FinalEvent = Pick<ChatFinalFrame, 'titleRetryEpoch'> & {
   final: true;
   /** The terminal status CAS committed, but its normal FINAL payload was not
    * durably published (for example, the owner crashed in that narrow window).

@@ -112,3 +112,55 @@ it('does not emit a live event when the stream closes during its epoch lookup', 
   expect(jobs.emitChunk).not.toHaveBeenCalled();
   expect(release).toHaveBeenCalledTimes(1);
 });
+
+const untitledFollowUp = {
+  isNewConvo: false,
+  parentMessageId: 'previous-answer',
+  conversation: { title: 'New Chat' },
+  followUp: {},
+} satisfies Partial<Parameters<typeof createAgentTurnTitle>[0]>;
+
+it.each<TitleTiming>(['immediate', 'final'])(
+  'retitles an untitled follow-up in %s mode',
+  async (timing) => {
+    const { turnTitle, generate, release } = setup({ ...untitledFollowUp, timing });
+    await turnTitle.prepare();
+    turnTitle.startImmediate();
+    await turnTitle.complete({ stopped: false, preempted: false });
+    expect(turnTitle.retryFrame(untitledFollowUp.conversation)).toEqual({ titleRetryEpoch: 7 });
+    expect(turnTitle.retryFrame({ title: 'New Chat', titleSetByUser: true })).toEqual({});
+    turnTitle.finish(release);
+    await turnTitle.settled();
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generate).toHaveBeenCalledWith(expect.objectContaining({ epoch: 7 }));
+  },
+);
+
+it.each<Partial<Parameters<typeof createAgentTurnTitle>[0]>>([
+  { conversation: { title: 'New Chat', titleSetByUser: true } },
+  { conversation: { title: 'Already named' } },
+  { conversation: { title: 'New Chat', isTemporary: true } },
+  { conversation: null },
+  { followUp: { isRegenerate: true } },
+  { followUp: { isCompaction: true } },
+  { followUp: { isContinued: true } },
+  { followUp: { editedContent: {} } },
+  { followUp: { isScheduledFire: true } },
+  { followUp: { isAgentTrigger: true } },
+  { followUp: { overrideConvoId: 'override' } },
+  { followUp: { setting: 'false' } },
+  { followUp: { endpointEnabled: false } },
+])('does not retry titles for %p', async (overrides) => {
+  const { turnTitle, trackTrailingAbort, generate, release } = setup({
+    ...untitledFollowUp,
+    ...overrides,
+  });
+  await turnTitle.prepare();
+  turnTitle.startImmediate();
+  await turnTitle.complete({ stopped: false, preempted: false });
+  expect(turnTitle.retryFrame(untitledFollowUp.conversation)).toEqual({});
+  turnTitle.finish(release);
+  await turnTitle.settled();
+  expect(trackTrailingAbort).not.toHaveBeenCalled();
+  expect(generate).not.toHaveBeenCalled();
+});

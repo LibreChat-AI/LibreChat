@@ -278,3 +278,35 @@ describe('useTitleGeneration — result handling', () => {
     expect(mockResetQueries).toHaveBeenCalledWith(genTitleQueryKey('conv-done404'));
   });
 });
+
+it('reopens an exhausted title poll only for a newer server attempt', () => {
+  const id = 'follow-up-title';
+  const { rerender } = renderHook(() => useTitleGeneration(true));
+  act(() => queueTitleGeneration(id, 7));
+  expect(eligibleKeys()).toEqual([JSON.stringify(genTitleQueryKey(id, 7))]);
+  mockQueriesResults = [{ isError: true, error: notFound }];
+  rerender();
+  rerender();
+  expect(isEligible(id)).toBe(false);
+  expect(eligibleKeys()).toEqual([]);
+  mockQueriesResults = [];
+  act(() => queueTitleGeneration(id, 7));
+  expect(eligibleKeys()).toEqual([]);
+  act(() => queueTitleGeneration(id, 8));
+  expect(eligibleKeys()).toEqual([JSON.stringify(genTitleQueryKey(id, 8))]);
+  mockQueriesResults = [{ isSuccess: true, data: { title: 'Recovered title' } }];
+  rerender();
+  expect(mockUpdateConvoInAllQueries).toHaveBeenCalledWith(
+    expect.anything(),
+    id,
+    expect.any(Function),
+  );
+});
+
+it('does not reopen title polling after a user rename', () => {
+  const id = 'manually-renamed';
+  renderHook(() => useTitleGeneration(true));
+  act(() => markTitleGenerationProcessed(id));
+  act(() => queueTitleGeneration(id, 8));
+  expect(eligibleKeys()).toEqual([]);
+});

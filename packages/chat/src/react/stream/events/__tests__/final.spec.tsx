@@ -98,8 +98,25 @@ function setup(initial = original as TConversation) {
     const finish = useFinalHandler({ ...context, setConversation });
     return { conversation, setConversation, finish };
   });
-  return { ...hook, setMessages, queryClient };
+  return { ...hook, setMessages, queryClient, titles: services.titles };
 }
+
+it('queues the server-announced title retry for an existing conversation', () => {
+  const { result, titles } = setup();
+  act(() =>
+    result.current.finish(
+      { ...finalFrame, conversation: original, titleRetryEpoch: 17 },
+      submission,
+    ),
+  );
+  expect(titles.queue).toHaveBeenCalledWith(original.conversationId, 17);
+});
+
+it('does not queue recovery when an existing conversation has no retry signal', () => {
+  const { result, titles } = setup();
+  act(() => result.current.finish({ ...finalFrame, conversation: original }, submission));
+  expect(titles.queue).not.toHaveBeenCalled();
+});
 
 it.each(['original submission', 'reattached stream'])(
   'keeps the next target coherent after finalizing the %s',

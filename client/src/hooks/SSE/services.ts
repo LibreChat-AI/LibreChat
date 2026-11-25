@@ -69,7 +69,7 @@ export const createConversationCache = (queryClient: QueryClient): ConversationC
 });
 
 export const appTitleServices: TitleServices = {
-  queue: (conversationId) => queueTitleGeneration(conversationId),
+  queue: queueTitleGeneration,
   markProcessed: (conversationId) => markTitleGenerationProcessed(conversationId),
   setDocumentTitle: (title) => setDocumentTitle(title),
 };
