@@ -174,6 +174,16 @@ describe('Startup readiness wiring', () => {
     }
   });
 
+  it('reads readiness checks from the raw librechat.yaml config in both server entries', () => {
+    const experimental = fs.readFileSync(path.join(__dirname, 'experimental.js'), 'utf8');
+
+    for (const contents of [source, experimental]) {
+      expect(contents).toMatch(
+        /appConfig\?\.config\?\.server\?\.readiness\?\.checks \?\? \{\s+redis: true,\s+oidc: false,\s+\}/,
+      );
+    }
+  });
+
   it('awaits the shared Redis client before startup cache access', () => {
     const redisReadyIndex = source.indexOf('await waitForKeyvRedisClient();');
     const connectDbIndex = source.indexOf('await connectDb();');

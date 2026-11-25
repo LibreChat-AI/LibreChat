@@ -270,7 +270,10 @@ const startServer = async () => {
   await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
   registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
   const appConfig = await getAppConfig({ baseOnly: true });
-  const readinessChecks = appConfig?.server?.readiness?.checks ?? { redis: true, oidc: false };
+  const readinessChecks = appConfig?.config?.server?.readiness?.checks ?? {
+    redis: true,
+    oidc: false,
+  };
   const openIdReadiness = createOpenIdReadiness(readinessChecks.oidc);
   /* One ceiling for every idle recovery loop below; each keeps its own default while it is unset. */
   const idleCeilingMs = appConfig?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs;
