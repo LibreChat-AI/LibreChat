@@ -323,3 +323,61 @@ describe('github.parse', () => {
     });
   });
 });
+
+describe('github.lifecycle', () => {
+  /** `X-GitHub-Event: installation` as GitHub documents it: the whole installation object. */
+  const installation = (action: string, id: number | string = 4400): Payload => ({
+    action,
+    installation: {
+      id,
+      app_id: 12345,
+      account: { login: 'example-org', id: 9001, type: 'Organization' },
+      target_type: 'Organization',
+    },
+    sender: { login: 'example-admin', id: 5009, type: 'User' },
+  });
+
+  it.each([
+    ['deleted', 'removed'],
+    ['suspend', 'suspended'],
+    ['unsuspend', 'restored'],
+  ])('reads %s as the install %s', (action, change) => {
+    const result = github.lifecycle(verified(bytes(installation(action)), 'installation'));
+    expect(result).toEqual({ installation: '4400', change });
+  });
+
+  it.each(['created', 'new_permissions_accepted', 'unknown'])('reads %s as no change', (action) => {
+    expect(github.lifecycle(verified(bytes(installation(action)), 'installation'))).toBeNull();
+  });
+
+  it('reads no change from a delivery of another event', () => {
+    expect(github.lifecycle(verified(bytes(reviewSubmitted()), 'pull_request_review'))).toBeNull();
+  });
+
+  it.each([
+    ['an id that is not a number', installation('deleted', '4400')],
+    ['an id of zero', installation('deleted', 0)],
+    ['an installation that is only an id', { action: 'deleted', installation: { id: 4400 } }],
+    [
+      'an installation with no account',
+      {
+        action: 'deleted',
+        installation: { id: 4400, app_id: 12345 },
+      },
+    ],
+    ['a body naming a repository', { ...installation('deleted'), repository: { id: 1 } }],
+  ])('reads no change from %s', (_name, body) => {
+    expect(github.lifecycle(verified(bytes(body), 'installation'))).toBeNull();
+  });
+
+  it('reads no change from a body that is not JSON', () => {
+    expect(github.lifecycle(verified(Buffer.from('{"action":'), 'installation'))).toBeNull();
+  });
+
+  it('throws for an object that verify did not return', () => {
+    const forged = { provider: 'github' as const, digest: 'a'.repeat(64), event: 'installation' };
+    expect(() => github.lifecycle(forged)).toThrow(
+      'Only a delivery that verify passed can be read',
+    );
+  });
+});

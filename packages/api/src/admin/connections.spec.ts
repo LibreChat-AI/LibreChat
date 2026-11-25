@@ -7,7 +7,8 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { logger, tenantStorage, createConnections } from '@librechat/data-schemas';
 import type { RecordAuditEntryInput, Connections, IUser } from '@librechat/data-schemas';
 import type { NextFunction, Request, Response } from 'express';
-import type { AdminConnectionDeps, EventsConfigSource } from './connections';
+import type { EventsConfigSource } from '~/agents/events/settings';
+import type { AdminConnectionDeps } from './connections';
 import type { PullRequestFetch } from '~/pulls/shared';
 import { createAdminConnectionHandlers, INGRESS_PATH } from './connections';
 

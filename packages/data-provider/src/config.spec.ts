@@ -1559,6 +1559,9 @@ describe('agent events config', () => {
     ['a fan-out of zero', { limits: { fanout: 0 } }],
     ['a fan-out over 100', { limits: { fanout: 101 } }],
     ['a switch that is not a boolean', { enabled: 'yes' }],
+    ['a body limit under 64 KiB', { maxBodyBytes: 65_535 }],
+    ['a body limit over 25 MiB', { maxBodyBytes: 26_214_401 }],
+    ['a fractional body limit', { maxBodyBytes: 100_000.5 }],
   ])('rejects %s', (_name, events) => {
     expect(parse(events).success).toBe(false);
   });
@@ -1569,6 +1572,8 @@ describe('agent events config', () => {
     ['the longest request timeout', { github: { ...github, requestTimeoutSeconds: 60 } }],
     ['no reuse of access answers', { github: { ...github, accessTtlSeconds: 0 } }],
     ['the longest access lifetime', { github: { ...github, accessTtlSeconds: 3600 } }],
+    ['the smallest body limit', { maxBodyBytes: 65_536 }],
+    ['the largest body limit', { maxBodyBytes: 26_214_400 }],
   ])('accepts %s', (_name, events) => {
     expect(parse(events).success).toBe(true);
   });

@@ -124,6 +124,26 @@ describe('Telemetry wiring', () => {
   });
 });
 
+describe('Agent event ingress wiring', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+
+  it('mounts signed deliveries before every body parser and the session-guarded routes', () => {
+    const ingressIndex = source.indexOf("app.use('/api/agents/events/in', routes.ingress);");
+    const jsonParserIndex = source.indexOf(
+      "app.use(excludeRumBodyParser(express.json({ limit: '3mb' })));",
+    );
+    const formParserIndex = source.indexOf(
+      "app.use(excludeRumBodyParser(express.urlencoded({ extended: true, limit: '3mb' })));",
+    );
+    const eventsIndex = source.indexOf("app.use('/api/agents/events', routes.events);");
+
+    expect(ingressIndex).toBeGreaterThan(-1);
+    expect(ingressIndex).toBeLessThan(jsonParserIndex);
+    expect(ingressIndex).toBeLessThan(formParserIndex);
+    expect(ingressIndex).toBeLessThan(eventsIndex);
+  });
+});
+
 describe('Startup readiness wiring', () => {
   const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
 

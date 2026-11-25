@@ -1,6 +1,6 @@
 import { createVerify, generateKeyPairSync } from 'node:crypto';
 import type { EventConfig } from './settings';
-import { eventSettings } from './settings';
+import { eventSettings, MAX_BODY_BYTES } from './settings';
 import { createApp } from './github/app';
 import { LIMITS } from './catalog';
 
@@ -56,8 +56,16 @@ describe('eventSettings', () => {
     );
   });
 
-  it('uses the catalog bounds when none are set', () => {
-    expect(eventSettings({ enabled: true }, env)).toEqual({ limits: LIMITS, github: null });
+  it('uses the catalog bounds and the body limit when none are set', () => {
+    expect(eventSettings({ enabled: true }, env)).toEqual({
+      limits: LIMITS,
+      maxBodyBytes: MAX_BODY_BYTES,
+      github: null,
+    });
+  });
+
+  it('takes the body limit that is set', () => {
+    expect(eventSettings({ enabled: true, maxBodyBytes: 65_536 }, env)?.maxBodyBytes).toBe(65_536);
   });
 
   it('takes each bound that is set and keeps the default for the other', () => {

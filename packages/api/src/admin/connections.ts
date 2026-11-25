@@ -14,8 +14,8 @@ import type {
 import type { Connections } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { App, AppConfig, Reply } from '~/agents/events/github/app';
+import type { EventsConfigSource } from '~/agents/events/settings';
 import type { AdminAuditEvent, RecordAuditEntry } from './audit';
-import type { EventConfig } from '~/agents/events/settings';
 import type { PullRequestFetch } from '~/pulls/shared';
 import type { ServerRequest } from '~/types/http';
 import { createApp, GitHubError } from '~/agents/events/github/app';
@@ -24,11 +24,6 @@ import { getSafeErrorMetadata } from '~/utils/errors';
 import { createAdminAuditEmitter } from './audit';
 
 type Env = Readonly<Record<string, string | undefined>>;
-
-/** The part of the deployment's configuration this reads. */
-export interface EventsConfigSource {
-  endpoints?: { agents?: { events?: Partial<EventConfig> | null } | null } | null;
-}
 
 export interface AdminConnectionDeps {
   /** The caller's tenant's connections; the store never reads or writes another tenant's. */

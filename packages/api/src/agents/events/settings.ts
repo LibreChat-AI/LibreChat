@@ -7,7 +7,20 @@ import { LIMITS } from './catalog';
 
 export type EventConfig = NonNullable<TAgentsEndpoint['events']>;
 
+/** The part of the deployment's configuration events are read from. */
+export interface EventsConfigSource {
+  endpoints?: { agents?: { events?: Partial<EventConfig> | null } | null } | null;
+}
+
 type Env = Readonly<Record<string, string | undefined>>;
+
+/**
+ * Largest webhook body accepted when none is set: 1 MiB. The largest catalog delivery is a
+ * comment or review whose text GitHub caps at 65,536 characters (at most 256 KiB as UTF-8),
+ * plus the pull request and repository objects around it, so this is about four times the
+ * biggest one. GitHub itself sends nothing over 25 MB.
+ */
+export const MAX_BODY_BYTES = 1_048_576;
 
 /** How long an answer about an account's write access is reused when none is set: 5 minutes. */
 export const ACCESS_TTL_MS = 300_000;
@@ -23,6 +36,8 @@ export interface GitHubSettings {
 
 export interface EventSettings {
   limits: Limits;
+  /** The largest webhook body read; a longer one is refused before it is parsed. */
+  maxBodyBytes: number;
   /** `null` when no app is configured, a reference does not resolve, or the host is not one. */
   github: GitHubSettings | null;
 }
@@ -78,6 +93,7 @@ export function eventSettings(
       excerpt: config.limits?.excerpt ?? LIMITS.excerpt,
       fanout: config.limits?.fanout ?? LIMITS.fanout,
     },
+    maxBodyBytes: config.maxBodyBytes ?? MAX_BODY_BYTES,
     github: resolveGitHub(config.github, env),
   };
 }

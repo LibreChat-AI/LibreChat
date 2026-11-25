@@ -22,6 +22,7 @@ const projects = require('./projects');
 const prompts = require('./prompts');
 const schedules = require('./schedules');
 const events = require('./events');
+const ingress = require('./ingress');
 const skills = require('./skills');
 const balance = require('./balance');
 const actions = require('./actions');
@@ -87,6 +88,7 @@ module.exports = {
   projects,
   schedules,
   events,
+  ingress,
   skills,
   actions,
   presets,
