@@ -2,7 +2,7 @@
 import axios, { AxiosHeaders } from 'axios';
 import type { AxiosRequestConfig, AxiosResponse } from 'axios';
 import type * as t from './types';
-import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from './config';
+import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE, AUTH_SESSION_CHECK_UNAVAILABLE } from './config';
 import { persistTwoFactorSetupToken } from './twoFactor';
 import { setTokenHeader } from './headers-helpers';
 import { getClientLimit } from './clientLimits';
@@ -71,24 +71,69 @@ async function _patch(url: string, data?: any) {
 
 const AUTH_RECOVERY_EVENT = 'authRecovery';
 const AUTH_REDIRECT_EVENT = 'authRedirectStarted';
+const AUTH_UNAVAILABLE_EVENT = 'authSessionUnavailable';
 const AUTH_REDIRECT_STORAGE_KEY = 'librechat.auth.redirect.startedAt';
 const AUTH_REDIRECT_DEDUPE_MS = 15_000;
 const TOKEN_REFRESH_BUFFER_MS = 2 * 60 * 1000;
 
-type RetryableAxiosRequestConfig = AxiosRequestConfig & { _retry?: boolean };
+type RetryableAxiosRequestConfig = AxiosRequestConfig & {
+  _retry?: boolean;
+  _managedRefresh?: boolean;
+};
 
 type AuthRecoveryState = {
   lastRedirectStartedAt: number;
   refreshPromise: Promise<string | null> | null;
+  generation: number;
 };
+
+type RefreshFailureClassification = 'unavailable' | 'denied';
+
+/** A 429 means the server could not run the check, so the session stays active. */
+const classifyRefreshFailure = (error: unknown): RefreshFailureClassification => {
+  const status = (error as { response?: { status?: unknown } } | undefined)?.response?.status;
+  const isDenial = typeof status === 'number' && status >= 400 && status < 500 && status !== 429;
+  return isDenial ? 'denied' : 'unavailable';
+};
+
+const isSessionCheckUnavailableResponse = (error: unknown): boolean => {
+  const response = (error as { response?: { status?: number; data?: unknown } } | undefined)
+    ?.response;
+  const code = (response?.data as { code?: unknown } | undefined)?.code;
+  return response?.status === 503 && code === AUTH_SESSION_CHECK_UNAVAILABLE;
+};
+
+const AUTH_SESSION_UNAVAILABLE_MARKER = '__authSessionUnavailable';
+
+type MarkedUnavailable = { [AUTH_SESSION_UNAVAILABLE_MARKER]?: true };
+
+/** Marks the original 401 so callers can distinguish it from a session denial. */
+const markAuthSessionUnavailable = <T>(target: T): T => {
+  if (target != null && typeof target === 'object') {
+    (target as MarkedUnavailable)[AUTH_SESSION_UNAVAILABLE_MARKER] = true;
+  }
+  return target;
+};
+
+const isAuthSessionUnavailableError = (error: unknown): boolean =>
+  isSessionCheckUnavailableResponse(error) ||
+  (error != null &&
+    typeof error === 'object' &&
+    (error as MarkedUnavailable)[AUTH_SESSION_UNAVAILABLE_MARKER] === true);
 
 type AuthRecoveryWindow = Window & {
   __librechatAuthRecovery?: AuthRecoveryState;
 };
 
 /** A hung refresh gates every API call through the deduped recovery promise, so it must reject. */
-const refreshToken = (retry?: boolean): Promise<t.TRefreshTokenResponse | undefined> =>
-  _post(endpoints.refreshToken(retry), undefined, { timeout: getClientLimit('refreshMs') });
+const refreshToken = (
+  retry?: boolean,
+  config?: RetryableAxiosRequestConfig,
+): Promise<t.TRefreshTokenResponse | undefined> =>
+  _post(endpoints.refreshToken(retry), undefined, {
+    timeout: getClientLimit('refreshMs'),
+    ...config,
+  });
 
 const SHARE_PAGE_PATH_REGEX = /^\/share\/[^/]+\/?$/;
 const SHARED_MESSAGES_PATH_REGEX = /^\/api\/share\/[^/]+$/;
@@ -150,8 +195,23 @@ const getAuthRecoveryState = (): AuthRecoveryState => {
   browserWindow.__librechatAuthRecovery ??= {
     lastRedirectStartedAt: 0,
     refreshPromise: null,
+    generation: 0,
   };
   return browserWindow.__librechatAuthRecovery;
+};
+
+const getAuthGeneration = (): number => getAuthRecoveryState().generation;
+
+const advanceAuthGeneration = (): number => {
+  const state = getAuthRecoveryState();
+  state.generation += 1;
+  // Joining the old refresh would treat its stale result as a denial.
+  state.refreshPromise = null;
+  return state.generation;
+};
+
+const dispatchAuthUnavailableEvent = () => {
+  window.dispatchEvent(new CustomEvent(AUTH_UNAVAILABLE_EVENT));
 };
 
 const getAuthRedirectStartedAt = () => {
@@ -298,9 +358,15 @@ const startAuthRecovery = (retryRefresh?: boolean) => {
     return state.refreshPromise;
   }
 
+  const requestGeneration = state.generation;
   dispatchAuthRecoveryEvent('started');
-  state.refreshPromise = refreshToken(retryRefresh)
+  const refreshPromise: Promise<string | null> = refreshToken(retryRefresh, {
+    _managedRefresh: true,
+  })
     .then((response) => {
+      if (state.generation !== requestGeneration) {
+        return null;
+      }
       const setupToken = getTwoFactorSetupToken(response);
       if (setupToken) {
         redirectToTwoFactorSetupOnce(setupToken);
@@ -314,11 +380,15 @@ const startAuthRecovery = (retryRefresh?: boolean) => {
       return token;
     })
     .finally(() => {
-      state.refreshPromise = null;
+      // An older refresh can settle while a newer one is still running.
+      if (state.refreshPromise === refreshPromise) {
+        state.refreshPromise = null;
+      }
       dispatchAuthRecoveryEvent('finished');
     });
 
-  return state.refreshPromise;
+  state.refreshPromise = refreshPromise;
+  return refreshPromise;
 };
 
 const redirectToLoginOnce = () => {
@@ -399,17 +469,59 @@ const shouldRefreshBeforeRequest = (url?: string) => {
   return timeUntilExpiry > 0 && timeUntilExpiry <= TOKEN_REFRESH_BUFFER_MS;
 };
 
+// An error without an HTTP response bypasses Axios's 401 recovery.
+class AuthSessionEndedError extends Error {
+  readonly code = 'AUTH_SESSION_ENDED';
+  constructor() {
+    super('Auth session ended');
+    this.name = 'AuthSessionEndedError';
+  }
+}
+
+/** Returns `null` to keep the current token. Rejects requests still using a denied token. */
+const handleProactiveRefreshFailure = (
+  error: unknown,
+  requestGeneration: number,
+  tokenAtStart: string | null,
+): string | null => {
+  const generationMatches = getAuthGeneration() === requestGeneration;
+  if (classifyRefreshFailure(error) === 'unavailable') {
+    if (generationMatches) {
+      dispatchAuthUnavailableEvent();
+    }
+    return null;
+  }
+
+  const currentToken = getBearerToken();
+  if (currentToken && currentToken !== tokenAtStart) {
+    return currentToken;
+  }
+
+  if (generationMatches) {
+    advanceAuthGeneration();
+    redirectToLoginOnce();
+  }
+  throw new AuthSessionEndedError();
+};
+
 const refreshBeforeRequest = async (url?: string) => {
   const state = getAuthRecoveryState();
+  const tokenAtStart = getBearerToken();
   if (state.refreshPromise && !isAuthRecoveryEndpoint(url)) {
-    return state.refreshPromise.catch(() => null);
+    const requestGeneration = getAuthGeneration();
+    return state.refreshPromise.catch((error) =>
+      handleProactiveRefreshFailure(error, requestGeneration, tokenAtStart),
+    );
   }
 
   if (!shouldRefreshBeforeRequest(url)) {
     return null;
   }
 
-  return startAuthRecovery(false).catch(() => null);
+  const requestGeneration = getAuthGeneration();
+  return startAuthRecovery(false).catch((error) =>
+    handleProactiveRefreshFailure(error, requestGeneration, tokenAtStart),
+  );
 };
 
 const withAuthorization = (options: RequestInit | undefined, token: string | null): RequestInit => {
@@ -475,15 +587,29 @@ async function _authenticatedFetch(url: string, options?: RequestInit): Promise<
     }
   }
 
+  const requestGeneration = getAuthGeneration();
   let refreshedToken: string | null;
   try {
     refreshedToken = await startAuthRecovery(false);
-  } catch {
+  } catch (refreshError) {
+    if (getAuthGeneration() !== requestGeneration) {
+      return response;
+    }
+    if (classifyRefreshFailure(refreshError) === 'unavailable') {
+      dispatchAuthUnavailableEvent();
+      return markAuthSessionUnavailable(response);
+    }
+    advanceAuthGeneration();
     redirectToLoginOnce();
     return response;
   }
 
+  if (getAuthGeneration() !== requestGeneration) {
+    return response;
+  }
+
   if (!refreshedToken) {
+    advanceAuthGeneration();
     redirectToLoginOnce();
     return response;
   }
@@ -532,7 +658,8 @@ if (typeof window !== 'undefined') {
         return Promise.reject(error);
       }
 
-      if (isRefreshRequest && getAuthRecoveryState().refreshPromise) {
+      // Retrying a managed refresh here can loop after its promise is cleared.
+      if (isRefreshRequest && originalRequest._managedRefresh) {
         return Promise.reject(error);
       }
 
@@ -568,6 +695,7 @@ if (typeof window !== 'undefined') {
           console.warn('401 error, refreshing token');
         }
         originalRequest._retry = true;
+        const requestGeneration = getAuthGeneration();
 
         try {
           const token = await startAuthRecovery(
@@ -575,17 +703,29 @@ if (typeof window !== 'undefined') {
             isRefreshRequest,
           );
 
+          if (getAuthGeneration() !== requestGeneration) {
+            return Promise.reject(error);
+          }
+
           if (token) {
             setRequestAuthorizationHeader(originalRequest, token);
             return await axios(originalRequest);
           }
 
+          advanceAuthGeneration();
           redirectToLoginOnce();
           return Promise.reject(error);
-        } catch {
-          /** A rejected refresh (stale/invalid session → 401/403) must route to
-           *  login just like an empty-token refresh, otherwise the original 401
-           *  surfaces to the caller (e.g. the share fork button) with no redirect. */
+        } catch (refreshError) {
+          if (getAuthGeneration() !== requestGeneration) {
+            return Promise.reject(error);
+          }
+
+          if (classifyRefreshFailure(refreshError) === 'unavailable') {
+            dispatchAuthUnavailableEvent();
+            return Promise.reject(markAuthSessionUnavailable(error));
+          }
+
+          advanceAuthGeneration();
           redirectToLoginOnce();
           return Promise.reject(error);
         }
@@ -610,4 +750,8 @@ export default {
   refreshToken,
   dispatchTokenUpdatedEvent,
   redirectIfTwoFactorSetupPayload,
+  classifyRefreshFailure,
+  isAuthSessionUnavailableError,
+  getAuthGeneration,
+  advanceAuthGeneration,
 };

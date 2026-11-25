@@ -169,3 +169,80 @@ describe('axios requests without an XSRF cookie read', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('refresh failure classification and auth generation', () => {
+  beforeEach(() => {
+    delete (window as AuthRecoveryWindow).__librechatAuthRecovery;
+  });
+
+  it('classifies a 503 carrying the session-check-unavailable code as unavailable', () => {
+    expect(
+      request.classifyRefreshFailure({
+        response: { status: 503, data: { code: 'AUTH_SESSION_CHECK_UNAVAILABLE' } },
+      }),
+    ).toBe('unavailable');
+  });
+
+  it('classifies a 503 without the code as unavailable', () => {
+    expect(request.classifyRefreshFailure({ response: { status: 503, data: {} } })).toBe(
+      'unavailable',
+    );
+  });
+
+  it('classifies a network error (no response) as unavailable', () => {
+    expect(request.classifyRefreshFailure(new Error('Network Error'))).toBe('unavailable');
+  });
+
+  it('classifies a timeout/abort (no response) as unavailable', () => {
+    expect(request.classifyRefreshFailure({ code: 'ECONNABORTED', message: 'timeout' })).toBe(
+      'unavailable',
+    );
+  });
+
+  it.each([500, 502, 504, 429])('classifies a %s response as unavailable', (status) => {
+    expect(request.classifyRefreshFailure({ response: { status } })).toBe('unavailable');
+  });
+
+  it.each([400, 401, 403, 404, 408])('classifies a %s response as denied', (status) => {
+    expect(request.classifyRefreshFailure({ response: { status } })).toBe('denied');
+  });
+
+  it('starts at generation 0 and advances by one per call', () => {
+    expect(request.getAuthGeneration()).toBe(0);
+    expect(request.advanceAuthGeneration()).toBe(1);
+    expect(request.advanceAuthGeneration()).toBe(2);
+    expect(request.getAuthGeneration()).toBe(2);
+  });
+});
+
+describe('isAuthSessionUnavailableError', () => {
+  it('recognizes a raw 503 carrying the session-check-unavailable code', () => {
+    expect(
+      request.isAuthSessionUnavailableError({
+        response: { status: 503, data: { code: 'AUTH_SESSION_CHECK_UNAVAILABLE' } },
+      }),
+    ).toBe(true);
+  });
+
+  it('does not recognize a 503 without the code', () => {
+    expect(request.isAuthSessionUnavailableError({ response: { status: 503, data: {} } })).toBe(
+      false,
+    );
+  });
+
+  it('does not recognize a plain 401', () => {
+    expect(
+      request.isAuthSessionUnavailableError({
+        response: { status: 401, data: { code: 'OPENID_SESSION_ENDED' } },
+      }),
+    ).toBe(false);
+  });
+
+  it('does not recognize a network error', () => {
+    expect(request.isAuthSessionUnavailableError(new Error('Network Error'))).toBe(false);
+  });
+
+  it('does not recognize a 500 on the request itself', () => {
+    expect(request.isAuthSessionUnavailableError({ response: { status: 500 } })).toBe(false);
+  });
+});
