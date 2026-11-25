@@ -290,7 +290,7 @@ function processUserPlaceholders(
       }
     }
 
-    value = value.replace(new RegExp(placeholder, 'g'), replacementValue);
+    value = value.replace(new RegExp(placeholder, 'g'), () => replacementValue);
   }
 
   return value;
@@ -319,7 +319,7 @@ function processBodyPlaceholders(value: string, body: RequestBody): string {
 
     const fieldValue = body[field];
     const replacementValue = fieldValue == null ? '' : String(fieldValue);
-    value = value.replace(new RegExp(placeholder, 'g'), replacementValue);
+    value = value.replace(new RegExp(placeholder, 'g'), () => replacementValue);
   }
 
   return value;
@@ -408,7 +408,7 @@ function processSingleValue({
     for (const [varName, varVal] of Object.entries(customUserVars)) {
       const escapedVarName = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const placeholderRegex = new RegExp(`\\{\\{${escapedVarName}\\}\\}`, 'g');
-      value = value.replace(placeholderRegex, varVal);
+      value = value.replace(placeholderRegex, () => varVal);
     }
   }
 

@@ -115,6 +115,64 @@ describe('encodeHeaderValue', () => {
   });
 });
 
+describe('literal placeholder values', () => {
+  const values = ['sk-abc$$def', 'A$&B', 'x$`y', "x$'y", '$1', ''];
+
+  it('preserves the credentials from #18762', () => {
+    expect(
+      resolveHeaders({
+        headers: { Authorization: 'Bearer {{MY_TOKEN}}', 'X-Tail': '{{SUFFIX}}-end' },
+        customUserVars: { MY_TOKEN: 'sk-abc$$def', SUFFIX: "x$'y" },
+      }),
+    ).toEqual({ Authorization: 'Bearer sk-abc$$def', 'X-Tail': "x$'y-end" });
+  });
+
+  it.each(values)('preserves custom header values %j', (value) => {
+    expect(
+      resolveHeaders({
+        headers: { Authorization: 'prefix-{{TOKEN}}-{{TOKEN}}-suffix' },
+        customUserVars: { TOKEN: value },
+      }),
+    ).toEqual({ Authorization: `prefix-${value}-${value}-suffix` });
+  });
+
+  it.each(values)('preserves user header values %j', (value) => {
+    expect(
+      resolveHeaders({
+        headers: { 'X-User': 'prefix-{{LIBRECHAT_USER_NAME}}-{{LIBRECHAT_USER_NAME}}-suffix' },
+        user: { name: value },
+      }),
+    ).toEqual({ 'X-User': `prefix-${value}-${value}-suffix` });
+  });
+
+  it.each(values)('preserves body header values %j', (value) => {
+    expect(
+      resolveHeaders({
+        headers: {
+          'X-Conversation': 'prefix-{{LIBRECHAT_BODY_CONVERSATIONID}}-suffix',
+        },
+        body: { conversationId: value },
+      }),
+    ).toEqual({ 'X-Conversation': `prefix-${value}-suffix` });
+  });
+
+  it.each([false, true])('preserves custom MCP values with dbSourced=%s', (dbSourced) => {
+    const value = "$$-$&-$`-$'";
+    const options: MCPOptions = {
+      type: 'stdio',
+      command: 'mcp-server',
+      customUserVars: { TOKEN: { title: 'Token', description: 'Per-user credential' } },
+      env: { TOKEN: 'prefix-{{TOKEN}}-suffix' },
+      args: ['{{TOKEN}}'],
+    };
+    expect(processMCPEnv({ options, customUserVars: { TOKEN: value }, dbSourced })).toEqual({
+      ...options,
+      env: { TOKEN: `prefix-${value}-suffix` },
+      args: [value],
+    });
+  });
+});
+
 describe('resolveHeaders', () => {
   beforeEach(() => {
     process.env.TEST_API_KEY = 'test-api-key-value';
