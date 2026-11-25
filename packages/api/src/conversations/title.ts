@@ -1,9 +1,12 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import type { AppConfig, ConversationMethods } from '@librechat/data-schemas';
 import type { Response } from 'express';
-import type { ConversationWriteContext } from './save';
+import type { ConversationWriteContext, TurnConversationRequest } from './save';
+import { allowsAssistantSideEffects } from '~/protection/assistant';
+import { resolveConversationTitle } from '~/protection/title';
 import { getOutboundTimeoutMs } from '~/utils/timeouts';
 import { getSafeErrorMetadata } from '~/utils/errors';
+import { isEnabled } from '~/utils/common';
 
 type TitleCache = {
   get: (key: string) => Promise<string | undefined>;
@@ -239,6 +242,102 @@ export async function runAgentConversationTitle({
     // Keep the positive pending signal until the result is visible to readers.
     if (pending) await titleCache.delete(pending);
   }
+}
+
+type AgentTitleRequest = Omit<TurnConversationRequest, 'config'> & {
+  user: { id: string };
+  config?: AppConfig;
+};
+
+export type AgentTitleOptions = Pick<
+  TitlePublication,
+  'epoch' | 'convoReady' | 'signal' | 'discardSignal' | 'canPublishEarly' | 'onTitleGenerated'
+> & {
+  text: string;
+  response?: { conversationId?: string | null };
+  conversationId?: string | null;
+  immediate?: boolean;
+  client: {
+    options: { titleConvo?: boolean };
+    titleConvo?: (input: {
+      text: string;
+      abortController: AbortController;
+      immediate: boolean;
+    }) => Promise<string | undefined>;
+  };
+};
+
+/** Agent endpoint adapter: admits title work and publishes only policy-approved results. */
+export function createAgentConversationTitleHandler({
+  saveConvo,
+  getConvo,
+  getCache,
+  getGenerationEpoch,
+  getEnabledSetting,
+  logger,
+}: Pick<ConversationMethods, 'saveConvo' | 'getConvo'> & {
+  getCache: () => TitleCache;
+  getGenerationEpoch: GetGenerationEpoch;
+  getEnabledSetting: () => string | boolean | undefined;
+  logger: {
+    warn: (message: string) => void;
+    error: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
+  };
+}): (req: AgentTitleRequest, options: AgentTitleOptions) => Promise<void> {
+  return async (
+    req,
+    { text, response, client, immediate = false, conversationId, ...publication },
+  ) => {
+    if (
+      !isEnabled(getEnabledSetting() ?? true) ||
+      !allowsAssistantSideEffects(req.config, client.options.titleConvo) ||
+      req.body?.isTemporary
+    )
+      return;
+
+    const convoId = conversationId ?? response?.conversationId;
+    if (!convoId) {
+      logger.warn('[addTitle] Missing conversationId; skipping title generation');
+      return;
+    }
+    const generate = client.titleConvo;
+    if (typeof generate !== 'function') return;
+    const titleCache = getCache();
+    const { epoch, signal, discardSignal } = publication;
+    try {
+      await runAgentConversationTitle({
+        appConfig: req.config,
+        titleCache,
+        key: `${req.user.id}-${convoId}`,
+        epoch,
+        signal,
+        discardSignal,
+        generate: (abortController) => generate.call(client, { text, abortController, immediate }),
+        publish: async (candidate) => {
+          const title = resolveConversationTitle({ filters: req.config?.filters, candidate });
+          if (title == null) return;
+          await publishConversationTitle(
+            { saveConvo, getConvo, titleCache, getGenerationEpoch },
+            {
+              ...publication,
+              ctx: {
+                userId: req.user.id,
+                isTemporary: req.resolvedConversation?.isTemporary ?? req.body?.isTemporary,
+                expiredAt: req.resolvedConversation?.expiredAt,
+                interfaceConfig: req.config?.interfaceConfig,
+              },
+              conversationId: convoId,
+              title,
+            },
+          );
+        },
+      });
+    } catch (error) {
+      if (!signal?.aborted && !discardSignal?.aborted) {
+        logger.error('Error generating title:', getSafeErrorMetadata(error));
+      }
+    }
+  };
 }
 
 type GeneratedTitleRequest = {

@@ -124,6 +124,8 @@ jest.mock('@librechat/api', () => ({
   })),
   createChatFinalization: (...args) =>
     jest.requireActual('@librechat/api').createChatFinalization(...args),
+  createAgentTurnTitle: (...args) =>
+    jest.requireActual('@librechat/api').createAgentTurnTitle(...args),
   filterPersistableAbortContent: (...args) => mockFilterPersistableAbortContent(...args),
   cleanupMCPRequestContextForReq: jest.fn(),
   decrementPendingRequest: (...args) => mockDecrementPendingRequest(...args),

@@ -12,5 +12,6 @@ export * from './read';
 export * from './retention';
 export * from './save';
 export * from './title';
+export * from './turnTitle';
 export * from './rename';
 export * from './metadata';
