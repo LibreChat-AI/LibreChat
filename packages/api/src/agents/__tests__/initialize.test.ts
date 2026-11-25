@@ -2939,13 +2939,18 @@ describe('initializeAgent — maxContextTokens', () => {
     expect(result.maxContextTokens).toBe(userValue);
   });
 
-  it('sets baseContextTokens to agentMaxContextNum minus maxOutputTokensNum', async () => {
-    const modelDefault = 200000;
-    const maxOutputTokens = 4096;
+  it.each`
+    scenario                          | maxContextTokens | expected
+    ${'no explicit limit'}            | ${undefined}     | ${163_488}
+    ${'zero is not a limit'}          | ${0}             | ${163_488}
+    ${'limit equals model window'}    | ${200_000}       | ${163_488}
+    ${'limit exceeds model window'}   | ${250_000}       | ${163_488}
+    ${'limit below the input budget'} | ${50_000}        | ${50_000}
+  `('sets the raw input budget with $scenario', async ({ maxContextTokens, expected }) => {
     const { agent, req, res, loadTools, db } = createMocks({
-      maxContextTokens: undefined,
-      modelDefault,
-      maxOutputTokens,
+      maxContextTokens,
+      modelDefault: 200_000,
+      maxOutputTokens: 36_512,
     });
 
     const result = await initializeAgent(
@@ -2961,7 +2966,55 @@ describe('initializeAgent — maxContextTokens', () => {
       db,
     );
 
-    expect(result.baseContextTokens).toBe(modelDefault - maxOutputTokens);
+    expect(result.baseContextTokens).toBe(expected);
+  });
+
+  it('uses the explicit window when model context is unknown', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      maxContextTokens: 200_000,
+      maxOutputTokens: 36_512,
+    });
+    mockGetModelMaxTokens.mockReturnValueOnce(undefined);
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.baseContextTokens).toBe(163_488);
+  });
+
+  it('caps the raw input budget at the provider input limit', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: Providers.GOOGLE,
+      model: 'gemini-4-hydrogen',
+      modelDefault: 1_048_576,
+      maxContextTokens: 1_000_000,
+      maxOutputTokens: 0,
+    });
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.GOOGLE]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.baseContextTokens).toBe(983_040);
   });
 
   it('clamps maxContextTokens to at least 1024 for tiny models', async () => {
