@@ -767,6 +767,9 @@ export function getOpenAILLMConfig({
   if (presence_penalty != null) {
     llmConfig.presencePenalty = presence_penalty;
   }
+  if (top_p != null && llmConfig.topP == null) {
+    llmConfig.topP = top_p;
+  }
 
   const modelKwargs: Record<string, unknown> = { ...inferenceParameters };
   let hasModelKwargs = Object.keys(modelKwargs).length > 0;

@@ -44,6 +44,38 @@ describe('getOpenAILLMConfig', () => {
       expect(result.llmConfig).toHaveProperty('presencePenalty', 0.3);
     });
 
+    it('should map top_p to topP', () => {
+      const result = getOpenAILLMConfig({
+        apiKey: 'test-api-key',
+        streaming: true,
+        endpoint: 'custom',
+        modelOptions: {
+          model: 'provider/test-model',
+          temperature: 1,
+          top_p: 0.95,
+        } as Partial<t.OpenAIParameters>,
+      });
+
+      expect(result.llmConfig).toHaveProperty('topP', 0.95);
+      expect(result.llmConfig).not.toHaveProperty('top_p');
+      expect(result.llmConfig).toHaveProperty('temperature', 1);
+    });
+
+    it('should prefer topP over top_p when both are provided', () => {
+      const result = getOpenAILLMConfig({
+        apiKey: 'test-api-key',
+        streaming: true,
+        modelOptions: {
+          model: 'provider/test-model',
+          top_p: 0.95,
+          topP: 0.8,
+        } as Partial<t.OpenAIParameters>,
+      });
+
+      expect(result.llmConfig).toHaveProperty('topP', 0.8);
+      expect(result.llmConfig).not.toHaveProperty('top_p');
+    });
+
     it('should handle max_tokens conversion to maxTokens', () => {
       const result = getOpenAILLMConfig({
         apiKey: 'test-api-key',
