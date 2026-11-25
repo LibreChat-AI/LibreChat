@@ -607,7 +607,8 @@ describe('schedule erasure fallback idle back-off', () => {
   });
 
   it.each([
-    ['above', 60 * MIN, [5, 15, 35]],
+    /** The default 20 minute cap would run the fourth pass at 55, not 75. */
+    ['above', 60 * MIN, [5, 15, 35, 75, 135, 195]],
     ['below', 8 * MIN, [5, 13, 21]],
     ['far below', MIN, [5, 10, 15]],
   ])(
