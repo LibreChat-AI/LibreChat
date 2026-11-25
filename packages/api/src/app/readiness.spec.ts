@@ -246,11 +246,11 @@ describe('worker startup readiness', () => {
     });
     readiness.markReady();
 
-    await request(app).get('/readyz').expect(503);
-    await request(app).get('/api/work').expect(503);
+    expect((await request(app).get('/readyz')).status).toBe(503);
+    expect((await request(app).get('/api/work')).status).toBe(503);
 
     openIdReadiness.markReady();
-    await request(app).get('/readyz').expect(200);
-    await request(app).get('/api/work').expect(200);
+    expect((await request(app).get('/readyz')).status).toBe(200);
+    expect((await request(app).get('/api/work')).status).toBe(200);
   });
 });
