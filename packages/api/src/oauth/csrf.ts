@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { SESSION_HINT_COOKIE, themeOwnerKey, formatSessionHint } from 'librechat-data-provider';
+import type { ProviderSessionRef } from 'librechat-data-provider';
 import type { Request, Response, NextFunction } from 'express';
 import { getOAuthCallbackUrl } from './url';
 import { isEnabled } from '~/utils/common';
@@ -136,6 +137,8 @@ export interface OpenIDMarkerCookieOptions {
   reuseTokens?: boolean;
   /** Binds the marker to the refresh token it was issued alongside. */
   refreshToken?: string | null;
+  /** The provider session this credential is bound to. */
+  providerSession?: ProviderSessionRef | null;
 }
 
 export function setOpenIDMarkerCookies(
@@ -147,6 +150,7 @@ export function setOpenIDMarkerCookies(
     refreshExpiryMs,
     reuseTokens = isEnabled(process.env.OPENID_REUSE_TOKENS),
     refreshToken,
+    providerSession,
   }: OpenIDMarkerCookieOptions,
 ): void {
   const cookieOptions = {
@@ -179,7 +183,12 @@ export function setOpenIDMarkerCookies(
     ? crypto.createHash('sha256').update(refreshToken).digest('base64url')
     : undefined;
   const signedUserId = jwt.sign(
-    { id: userId, issuedAtMs: Date.now(), ...(refreshTokenHash ? { refreshTokenHash } : {}) },
+    {
+      id: userId,
+      issuedAtMs: Date.now(),
+      ...(refreshTokenHash ? { refreshTokenHash } : {}),
+      ...(providerSession ? { providerSession } : {}),
+    },
     secret,
     { expiresIn: refreshExpirySeconds },
   );

@@ -90,6 +90,23 @@ jest.mock(
           await deps.sendEmail({ email: user.email, template: 'passwordReset.handlebars' });
         }
       }),
+      resolveOpenIDAuthTokenOptions: (optionsOrUserId, existingRefreshToken, tenantId) => {
+        if (optionsOrUserId != null && typeof optionsOrUserId === 'object') {
+          if (
+            'userId' in optionsOrUserId ||
+            'existingRefreshToken' in optionsOrUserId ||
+            'tenantId' in optionsOrUserId ||
+            'openidSubject' in optionsOrUserId ||
+            'openidIssuer' in optionsOrUserId ||
+            'providerSession' in optionsOrUserId
+          ) {
+            return optionsOrUserId;
+          }
+          return {};
+        }
+        return { userId: optionsOrUserId, existingRefreshToken, tenantId };
+      },
+      providerSessionField: (providerSession) => (providerSession ? { providerSession } : {}),
       createOpenIDSessionIdentity: jest.fn(
         ({ user, userId, openidSubject, tenantId, openidIssuer }) => {
           const normalize = (value) => {
@@ -511,6 +528,43 @@ describe('setOpenIDAuthTokens', () => {
       expect(req.session.openidTokens).not.toHaveProperty('accessTokenExpiresAt');
     });
 
+    it('persists providerSession on the session and forwards it to the marker cookie setter', () => {
+      const tokenset = {
+        id_token: 'the-id-token',
+        access_token: 'the-access-token',
+        refresh_token: 'the-refresh-token',
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+      const providerSession = {
+        issuer: 'https://issuer.example.com',
+        clientId: 'client-1',
+        sid: 'sid-1',
+      };
+
+      setOpenIDAuthTokens(tokenset, req, res, { userId: 'user-123', providerSession });
+
+      expect(req.session.openidTokens.providerSession).toEqual(providerSession);
+      expect(setOpenIDMarkerCookies).toHaveBeenCalledWith(
+        res,
+        expect.objectContaining({ providerSession }),
+      );
+    });
+
+    it('leaves providerSession off the session when omitted', () => {
+      const tokenset = {
+        id_token: 'the-id-token',
+        access_token: 'the-access-token',
+        refresh_token: 'the-refresh-token',
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(tokenset, req, res, 'user-123');
+
+      expect(req.session.openidTokens).not.toHaveProperty('providerSession');
+    });
+
     it('should return the existing unexpired session id_token when refresh omits one', () => {
       const existingIdToken = jwt.sign(
         { sub: 'user-123', exp: Math.floor(Date.now() / 1000) + 3600 },
@@ -653,6 +707,30 @@ describe('setOpenIDAuthTokens', () => {
         refreshToken: 'new-refresh-token',
         tenantId: 'tenant-a',
         previousRefreshToken: 'old-refresh-token',
+      },
+      { upsertSession, deleteSession },
+    );
+  });
+
+  it('forwards the providerSession option to the reuse-mode session store', async () => {
+    storeOpenIdSession.mockResolvedValue(true);
+    const providerSession = {
+      issuer: 'https://issuer.example.com',
+      clientId: 'client-1',
+      sid: 'sid-1',
+    };
+
+    await storeOpenIDSession('user-123', 'the-refresh-token', 'tenant-a', undefined, {
+      providerSession,
+    });
+
+    expect(storeOpenIdSession).toHaveBeenCalledWith(
+      {
+        userId: 'user-123',
+        refreshToken: 'the-refresh-token',
+        tenantId: 'tenant-a',
+        previousRefreshToken: undefined,
+        providerSession,
       },
       { upsertSession, deleteSession },
     );

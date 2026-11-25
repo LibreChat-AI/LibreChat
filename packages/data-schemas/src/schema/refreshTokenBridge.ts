@@ -25,6 +25,15 @@ const refreshTokenBridgeSchema: Schema<IRefreshTokenBridge> = new Schema<IRefres
   version: {
     type: String,
   },
+  providerSession: {
+    type: {
+      issuer: { type: String, required: true },
+      clientId: { type: String, required: true },
+      sid: { type: String, required: true },
+    },
+    required: false,
+    _id: false,
+  },
   createdAt: {
     type: Date,
     required: true,

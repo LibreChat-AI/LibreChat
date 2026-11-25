@@ -1,4 +1,5 @@
 import { SESSION_HINT_COOKIE } from 'librechat-data-provider';
+import type { ProviderSessionRef } from 'librechat-data-provider';
 import type {
   AuthIdentityContext,
   AuthIdentitySource,
@@ -23,20 +24,28 @@ import type {
   SessionOpenIDTokens,
   TokenPreference,
 } from './types';
+import type { ProviderSessionAuthorizer, ProviderSessionClaims } from './providerSession';
 import type { OpenIdSessionDeps, OpenIdSessionParams } from '~/images/session';
 import type { TokenResult } from './flight';
 import {
   OPENID_REFRESH_CANCELLED_BEFORE_GRANT,
   createOpenIDRefreshOwnershipError,
+  createOpenIDSessionEndedError,
   isOpenIDRefreshOwnershipError,
+  isOpenIDSessionEndedError,
   reloadOpenIDSessionIfPersisted,
   toOpenIDLogArgument,
 } from './errors';
+import {
+  extractProviderSessionRef,
+  mergeProviderSessionRef,
+  providerSessionCredentialExpiry,
+} from './providerSession';
 
 const PUBLICATION_WAIT_TIMEOUT_MS = 10_000;
 const PUBLICATION_WAIT_INTERVAL_MS = 250;
 
-interface OpenIDSessionRefreshDeps {
+export interface OpenIDSessionRefreshDeps {
   jwt: {
     decode: (token: string) => (Partial<OpenIDClaims> & { exp?: number }) | string | null;
     verify: (token: string, secret: string) => { id?: string; refreshTokenHash?: string } | string;
@@ -55,9 +64,7 @@ interface OpenIDSessionRefreshDeps {
     ) => Promise<OpenIDTokenSet>;
   };
   logger: OpenIDLogger;
-  defaultRefreshTokenExpiry: number;
   isEnabled: (value?: string) => boolean;
-  math: (value: string | undefined, fallback: number) => number;
   createAuthIdentityContext: (args: {
     user?: AuthIdentitySource | null;
     requestUser?: AuthIdentitySource | null;
@@ -90,6 +97,7 @@ interface OpenIDSessionRefreshDeps {
       expires: Date;
       refreshExpiryMs: number;
       refreshToken: string;
+      providerSession?: ProviderSessionRef | null;
     },
   ) => void;
   storeOpenIdSession: (data: OpenIdSessionParams, methods: OpenIdSessionDeps) => Promise<boolean>;
@@ -137,6 +145,12 @@ interface OpenIDSessionRefreshDeps {
     ownerId?: string;
     operation: (context: LeaseContext) => Promise<T>;
   }) => Promise<T>;
+  /** The refresh-token lifetime backing a provider-session grant, evaluated per call; the
+   *  caller owns `REFRESH_TOKEN_EXPIRY` and its default. Mirrors
+   *  `packages/api/src/auth/openid/recovery.ts`'s dep of the same name. */
+  getRefreshTokenExpiryMs: () => number;
+  providerSessionAuthorizer: ProviderSessionAuthorizer;
+  getProviderSessionClient: () => { issuer: string; clientId: string } | null;
 }
 
 interface MarkedOIDCTokens extends OIDCTokens {
@@ -148,6 +162,8 @@ interface MarkedOIDCTokens extends OIDCTokens {
   __flightOwnerId?: string;
   __flightCreatedAt?: number;
   __identityIdToken?: string;
+  /** The provider session this result's claims confirmed; carried for shared-flight followers. */
+  providerSession?: ProviderSessionRef;
 }
 
 interface RefreshSessionOptions {
@@ -217,9 +233,7 @@ export function createOpenIDSessionRefreshService(
     crypto,
     openIdClient,
     logger,
-    defaultRefreshTokenExpiry: DEFAULT_REFRESH_TOKEN_EXPIRY,
     isEnabled,
-    math,
     createAuthIdentityContext,
     isOpenIDSessionIdentityMatch,
     createOpenIDRefreshIdentityTuple,
@@ -245,6 +259,9 @@ export function createOpenIDSessionRefreshService(
     assertOpenIDRefreshFlightAvailable,
     assertOpenIDRefreshSessionGenerationAvailable,
     withOpenIDRefreshFlightLease,
+    getRefreshTokenExpiryMs,
+    providerSessionAuthorizer,
+    getProviderSessionClient,
   } = deps;
 
   /**
@@ -633,6 +650,29 @@ export function createOpenIDSessionRefreshService(
     return decoded as OpenIDClaims;
   }
 
+  /** Extracts the provider session a fresh grant's claims confirm, or `null` when the client
+   *  is not configured, the claims are unavailable, or `sid` is missing. */
+  function deriveProviderSessionFromClaims(
+    tokenset: OpenIDTokenSet,
+    fallbackIdToken?: string,
+  ): ProviderSessionRef | null {
+    const client = getProviderSessionClient();
+    if (!client) {
+      return null;
+    }
+    const claims = resolveRefreshIdentityClaims(tokenset, fallbackIdToken);
+    return extractProviderSessionRef(claims as ProviderSessionClaims | null, {
+      issuer: client.issuer,
+      clientId: client.clientId,
+    });
+  }
+
+  /** Horizon for a provider-session check: not the token's own expiry, but how long this
+   *  authorization should be trusted before the next grant or publication re-checks it. */
+  function providerSessionExpiry(): Date {
+    return providerSessionCredentialExpiry(new Date(), getRefreshTokenExpiryMs());
+  }
+
   function attachBrowserRefreshTokenMarker<T extends MarkedOIDCTokens | null>(
     tokens: T,
     browserRefreshToken?: string,
@@ -807,6 +847,9 @@ export function createOpenIDSessionRefreshService(
    * @param {string} [args.userId] — user._id (required for bridge verification)
    * @param {string} [args.tenantId] — user.tenantId (optional, verified on bridge lookup)
    * @param {string} [args.openidIssuer] — user.openidIssuer (optional, verified on bridge lookup)
+   * @param {ProviderSessionRef | null} [args.providerSession] — the provider-session binding this
+   * rotation is bound to; carried into the durable Session, the `openid_user_id` marker, and the
+   * recovery bridge so a later restore or `/refresh` resolves the same binding instead of `null`.
    */
   async function syncRefreshTokenCookie({
     res,
@@ -816,6 +859,7 @@ export function createOpenIDSessionRefreshService(
     userId,
     tenantId,
     openidIssuer,
+    providerSession,
     assertLeaseOwned,
   }: {
     res?: OpenIDResponse;
@@ -825,6 +869,7 @@ export function createOpenIDSessionRefreshService(
     userId?: string;
     tenantId?: string;
     openidIssuer?: string;
+    providerSession?: ProviderSessionRef | null;
     assertLeaseOwned?: LeaseAssertion;
   }): Promise<string | null> {
     if (assertLeaseOwned) {
@@ -832,10 +877,7 @@ export function createOpenIDSessionRefreshService(
     }
 
     if (canWriteRefreshTokenCookie(res)) {
-      const expiryInMilliseconds = math(
-        process.env.REFRESH_TOKEN_EXPIRY,
-        DEFAULT_REFRESH_TOKEN_EXPIRY,
-      );
+      const expiryInMilliseconds = getRefreshTokenExpiryMs();
       const expirationDate = new Date(Date.now() + expiryInMilliseconds);
       /**
        * The durable Session record is what authorizes local image access for OpenID users
@@ -853,6 +895,7 @@ export function createOpenIDSessionRefreshService(
               refreshToken: newRefreshToken,
               tenantId,
               previousRefreshToken: previousSessionRefreshToken ?? oldRefreshToken,
+              providerSession,
             },
             { upsertSession, deleteSession },
           );
@@ -867,6 +910,7 @@ export function createOpenIDSessionRefreshService(
             oldRefreshToken,
             newRefreshToken,
             bridgeIdentity: { userId, tenantId, openidIssuer },
+            providerSession,
             assertLeaseOwned,
           });
           throw error;
@@ -881,6 +925,7 @@ export function createOpenIDSessionRefreshService(
               oldRefreshToken,
               newRefreshToken,
               bridgeIdentity: userId ? { userId, tenantId, openidIssuer } : null,
+              providerSession,
             });
             throw error;
           }
@@ -904,6 +949,7 @@ export function createOpenIDSessionRefreshService(
         expires: expirationDate,
         refreshExpiryMs: expiryInMilliseconds,
         refreshToken: newRefreshToken,
+        providerSession,
       });
       return null;
     }
@@ -915,6 +961,7 @@ export function createOpenIDSessionRefreshService(
         userId,
         tenantId,
         openidIssuer,
+        providerSession: providerSession ?? undefined,
         assertLeaseOwned,
       });
       logger.debug('[OpenIDSessionRefresh] Stored refresh-token recovery bridge', {
@@ -988,11 +1035,13 @@ export function createOpenIDSessionRefreshService(
     oldRefreshToken,
     newRefreshToken,
     bridgeIdentity,
+    providerSession,
     assertLeaseOwned,
   }: {
     oldRefreshToken?: string;
     newRefreshToken?: string;
     bridgeIdentity?: RefreshTokenBridgeIdentity | null;
+    providerSession?: ProviderSessionRef | null;
     assertLeaseOwned?: LeaseAssertion;
   }): Promise<void> {
     if (!oldRefreshToken || !newRefreshToken || !bridgeIdentity?.userId) {
@@ -1007,6 +1056,7 @@ export function createOpenIDSessionRefreshService(
         tenantId: bridgeIdentity.tenantId,
         openidIssuer: bridgeIdentity.openidIssuer,
         ttl: OPENID_REFRESH_BRIDGE_GRACE_MS,
+        providerSession: providerSession ?? undefined,
         assertLeaseOwned,
       });
       logger.warn(
@@ -1042,6 +1092,17 @@ export function createOpenIDSessionRefreshService(
       return null;
     }
 
+    /** Rechecks the bound ref from the established session before the grant, never the request body/query. */
+    const boundProviderSession = sessionTokens.providerSession ?? null;
+    const preCheckOutcome = await providerSessionAuthorizer.preCheck({
+      ref: boundProviderSession,
+      subject: identityContext?.openidSubject ?? sessionTokens.openidSubject,
+      expiresAt: providerSessionExpiry(),
+    });
+    if (!preCheckOutcome.ok) {
+      throw createOpenIDSessionEndedError();
+    }
+
     const config = getOpenIdConfig();
     const refreshParams = buildOpenIDRefreshParams();
     logger.debug('[OpenIDSessionRefresh] Performing inline IdP refresh-token grant');
@@ -1058,6 +1119,29 @@ export function createOpenIDSessionRefreshService(
 
     if (!tokenset?.access_token) {
       throw new Error('IdP refresh returned no access_token');
+    }
+
+    const mode = await providerSessionAuthorizer.getMode();
+    /**
+     * Mode 'off' carries whatever ref is already bound forward unchanged: no merge against the
+     * grant's fresh claims, no conflict check, no new binding. Only `record` reconciles
+     * the bound ref against this renewal.
+     */
+    let mergedProviderSession: ProviderSessionRef | null = boundProviderSession;
+    if (mode !== 'off') {
+      /** The grant only confirms or conflicts with the bound ref here; it never establishes one. */
+      const refreshedProviderSession = deriveProviderSessionFromClaims(
+        tokenset,
+        sessionTokens.idToken,
+      );
+      const providerSessionMerge = mergeProviderSessionRef(
+        boundProviderSession,
+        refreshedProviderSession,
+      );
+      if (!providerSessionMerge.ok) {
+        throw createOpenIDSessionEndedError('OpenID provider session conflict');
+      }
+      mergedProviderSession = providerSessionMerge.ref;
     }
 
     /**
@@ -1114,6 +1198,7 @@ export function createOpenIDSessionRefreshService(
       refreshToken: nextRefreshToken,
       browserRefreshToken: willWriteRefreshTokenCookie ? nextRefreshToken : browserRefreshToken,
       lastRefreshedAt: Date.now(),
+      providerSession: mergedProviderSession ?? undefined,
     };
     if (nextAccessTokenExp != null) {
       updatedSessionTokens.accessTokenExpiresAt = nextAccessTokenExp;
@@ -1128,6 +1213,9 @@ export function createOpenIDSessionRefreshService(
       nextAccessTokenExp ?? undefined,
     );
     attachPredecessorAccessTokenMarker(resolvedTokens, sessionTokens.accessToken);
+    /** Carried so a shared-flight follower authorizes against this grant's merged ref directly,
+     *  instead of re-deriving it from claims it never had. */
+    resolvedTokens.providerSession = mergedProviderSession ?? undefined;
     const identityClaims = resolveRefreshIdentityClaims(tokenset, sessionTokens.idToken);
     if (identityClaims) {
       resolvedTokens.__identityClaims = identityClaims;
@@ -1155,12 +1243,23 @@ export function createOpenIDSessionRefreshService(
       );
     }
 
+    /** Inline renewal (no flight key): the final authorization, run before any cookie/bridge/session write. */
+    const inlineAuthOutcome = await providerSessionAuthorizer.authorize({
+      ref: mergedProviderSession,
+      subject: identityContext?.openidSubject ?? sessionTokens.openidSubject,
+      expiresAt: providerSessionExpiry(),
+      legacy: mergedProviderSession == null,
+    });
+    if (!inlineAuthOutcome.ok) {
+      throw createOpenIDSessionEndedError();
+    }
+
     /**
      * Keep the browser refresh-token cookie in sync with the session token. If headers are
      * already sent (SSE streaming), store a recovery bridge instead. Do this before the
      * session save so a transient session-store failure cannot lose an IdP-rotated token.
      */
-    let bridgeIdentity = null;
+    let bridgeIdentity: RefreshTokenBridgeIdentity | null = null;
     if (needsRefreshTokenSync) {
       bridgeIdentity = createRefreshTokenBridgeIdentity({
         user,
@@ -1178,6 +1277,7 @@ export function createOpenIDSessionRefreshService(
         userId: bridgeIdentity?.userId,
         tenantId: bridgeIdentity?.tenantId,
         openidIssuer: bridgeIdentity?.openidIssuer,
+        providerSession: mergedProviderSession,
         assertLeaseOwned,
       });
     }
@@ -1200,6 +1300,7 @@ export function createOpenIDSessionRefreshService(
           oldRefreshToken: browserRefreshToken,
           newRefreshToken: nextRefreshToken,
           bridgeIdentity,
+          providerSession: mergedProviderSession,
           assertLeaseOwned,
         });
       }
@@ -1246,6 +1347,21 @@ export function createOpenIDSessionRefreshService(
     await reloadOpenIDSessionIfPersisted(req.session);
     if (assertLeaseOwned) await assertLeaseOwned();
     const requestTokens = cloneResolvedTokens(resolvedTokens);
+
+    /** Every publisher re-authorizes the already-merged ref before writing cookies, session, or
+     *  bridge, so a provider session revoked between flights cannot slip past either path. */
+    const authorizePublicationRef = async (ref: ProviderSessionRef | null): Promise<void> => {
+      const outcome = await providerSessionAuthorizer.authorize({
+        ref,
+        subject: identityContext?.openidSubject,
+        expiresAt: providerSessionExpiry(),
+        legacy: ref == null,
+      });
+      if (!outcome.ok) {
+        throw createOpenIDSessionEndedError();
+      }
+    };
+
     if (
       req.session?.openidTokens &&
       hasSessionAdvancedPastResult(req.session.openidTokens, requestTokens, predecessorRefreshToken)
@@ -1257,6 +1373,7 @@ export function createOpenIDSessionRefreshService(
         key: req.session.openidTokens.publicationFlightKey,
         ownerId: req.session.openidTokens.publicationFlightOwnerId,
       });
+      await authorizePublicationRef(req.session.openidTokens.providerSession ?? null);
       const effectiveTokens = buildOIDCTokensFromSession(req.session.openidTokens, tokenPreference);
       attachPredecessorRefreshTokenMarker(
         effectiveTokens,
@@ -1265,6 +1382,9 @@ export function createOpenIDSessionRefreshService(
       attachPredecessorAccessTokenMarker(effectiveTokens, requestTokens.__predecessorAccessToken);
       return effectiveTokens;
     }
+
+    await authorizePublicationRef(requestTokens.providerSession ?? null);
+
     const nextRefreshToken = requestTokens.refresh_token ?? predecessorRefreshToken;
     const browserRefreshToken =
       getBrowserRefreshTokenMarker(requestTokens) ?? predecessorRefreshToken;
@@ -1285,6 +1405,7 @@ export function createOpenIDSessionRefreshService(
         userId: bridgeIdentity?.userId,
         tenantId: bridgeIdentity?.tenantId,
         openidIssuer: bridgeIdentity?.openidIssuer,
+        providerSession: requestTokens.providerSession,
         assertLeaseOwned,
       });
       if (effects && bridgeVersion && browserRefreshToken && bridgeIdentity) {
@@ -1646,6 +1767,9 @@ export function createOpenIDSessionRefreshService(
                 tenantId: recoveryBridgeIdentity.tenantId,
                 openidIssuer: recoveryBridgeIdentity.openidIssuer,
                 ttl: OPENID_REFRESH_BRIDGE_GRACE_MS,
+                /** Same ref `publishResolvedSessionTokens` will carry below, so a browser that
+                 *  recovers through this bridge instead resolves the same binding, not `null`. */
+                providerSession: resolvedTokens?.providerSession ?? undefined,
                 assertLeaseOwned,
               });
             }
@@ -1707,8 +1831,10 @@ export function createOpenIDSessionRefreshService(
               successorRefreshToken,
             );
           }
+          /** A revoked refresh or a denied publication must not leave a bridge that a later
+           *  `/refresh` could recover through. */
           if (
-            isOpenIDRefreshOwnershipError(error) &&
+            (isOpenIDRefreshOwnershipError(error) || isOpenIDSessionEndedError(error)) &&
             recoveryBridgeVersion &&
             recoveryBridgeIdentity &&
             recoveryBridgePredecessor &&
@@ -1723,7 +1849,7 @@ export function createOpenIDSessionRefreshService(
               });
             } catch (cleanupError) {
               logger.warn(
-                '[OpenIDSessionRefresh] Failed to remove the owned bridge after refresh revocation',
+                '[OpenIDSessionRefresh] Failed to remove the owned bridge after refresh revocation or denial',
                 toOpenIDLogArgument(cleanupError),
               );
             }
@@ -1843,6 +1969,7 @@ export function createOpenIDSessionRefreshService(
       refreshToken: resolvedTokens.refresh_token ?? existing.refreshToken,
       browserRefreshToken: resolvedBrowserRefreshToken ?? existing.browserRefreshToken,
       lastRefreshedAt: Date.now(),
+      providerSession: resolvedTokens.providerSession ?? existing.providerSession,
       ...(publicationGeneration
         ? {
             publicationFlightKey: publicationGeneration.key,
