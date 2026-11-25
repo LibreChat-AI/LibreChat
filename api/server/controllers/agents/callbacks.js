@@ -44,6 +44,7 @@ const {
   createToolTimingAdapter,
   stampCommandExecutor,
   writeGuarded,
+  getRemoteAgentFileUrl,
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
@@ -1411,7 +1412,7 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
                 file_id: fileMetadata.file_id,
                 filename: fileMetadata.filename,
                 type: fileMetadata.type,
-                url: fileMetadata.filepath,
+                url: getRemoteAgentFileUrl(fileMetadata.file_id),
                 width: fileMetadata.width,
                 height: fileMetadata.height,
                 tool_call_id: output.tool_call_id,

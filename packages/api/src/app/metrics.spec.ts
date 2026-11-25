@@ -42,6 +42,7 @@ describe('normalizePath', () => {
     ['/api/agents/chat/status/convo-123', '/api/agents/chat/status/#id'],
     ['/api/agents/v1/chat/completions', '/api/agents/v1/chat/completions'],
     ['/api/agents/v1/responses', '/api/agents/v1/responses'],
+    ['/api/agents/v1/files/generated-image-123/content', '/api/agents/v1/files/#id/content'],
     ['/api/assistants/507f1f77bcf86cd799439011', '/api/assistants/#id'],
     ['/api/skills/507f1f77bcf86cd799439011/files/reference.md', '/api/skills/#id/files'],
     ['/api/share/some-token-value', '/api/share/#token'],
