@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import type { TProductTrackingPolicy, TTelemetryConfig } from './config';
+import { chatBrowserFacts, chatServerFacts } from './tracking/chat';
 import { PRODUCT_TRACKING_SESSION_DEFAULTS } from './config';
+
+export type { ChatSubmissionKind, ChatBrowserFact, ChatServerFact } from './tracking/chat';
 
 /** Product events are off unless the deployment explicitly enables them. */
 export function getProductTrackingConfig(telemetry?: TTelemetryConfig): TProductTrackingPolicy {
@@ -21,6 +24,7 @@ const id = z.string().min(1).max(128);
 
 /** Browser observations never establish that a write or model execution succeeded. */
 export const browserProductFactSchema = z.discriminatedUnion('name', [
+  ...chatBrowserFacts,
   z.strictObject({
     name: z.literal('librechat.session.activity'),
     feature: z.literal('session'),
@@ -32,6 +36,7 @@ export const browserProductFactSchema = z.discriminatedUnion('name', [
 
 /** Server facts follow confirmed settings writes. */
 export const serverProductFactSchema = z.discriminatedUnion('name', [
+  ...chatServerFacts,
   z.strictObject({
     name: z.literal('librechat.langfuse.connection.updated'),
     enabled: z.boolean(),

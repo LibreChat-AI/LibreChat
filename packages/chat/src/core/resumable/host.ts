@@ -294,7 +294,7 @@ export interface ResumableEvents {
   showStartFailure: (
     submission: TSubmission,
     errorData?: unknown,
-    reason?: 'recovery_held',
+    reason?: 'recovery_held' | 'rejected' | 'unconfirmed',
   ) => void;
   /** Writes the failed turn's error card from the text (or raw error value) the server sent. */
   showError: (text: string | boolean | { message?: string }, submission: TSubmission) => void;

@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import { createSSETransport } from '@librechat/chat';
-import { EndpointURLs } from 'librechat-data-provider';
+import { EndpointURLs, getProductTrackingHeaders } from 'librechat-data-provider';
 import type { Transport } from '~/hooks/Chat/contract';
 import * as requests from '~/data-provider';
 
@@ -11,8 +11,11 @@ import * as requests from '~/data-provider';
  */
 export const defaultChatTransport: Transport = {
   stream: ({ token }) => createSSETransport({ token }),
-  start: ({ server, payload }, options) =>
-    requests.postGenerationRequest<unknown>(server, payload, options),
+  start: ({ server, payload, productTrackingContext }, options) =>
+    requests.postGenerationRequest<unknown>(server, payload, {
+      ...options,
+      headers: getProductTrackingHeaders(productTrackingContext),
+    }),
   abort: (params) => requests.abortStream(params),
   abortRun: ({ endpoint, abortKey }, { token }) =>
     fetch(`${EndpointURLs[endpoint]}/abort`, {

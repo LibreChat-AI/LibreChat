@@ -47,8 +47,13 @@ export function useLegacyStream(
   const jotaiStore = useStore();
   const setActiveRunId = useSetAtom(activeRunFamily(runIndex));
 
-  const { transport, refreshBalance, reopenTermsOnRefusal, clearComposerDrafts } =
-    useStreamHost().useLegacyServices();
+  const {
+    transport,
+    refreshBalance,
+    reopenTermsOnRefusal,
+    clearComposerDrafts,
+    onSubmissionFailure,
+  } = useStreamHost().useLegacyServices();
   const [completed, setCompleted] = useState(new Set());
   const setAbortScroll = useSetAtom(abortScrollFamily(runIndex));
   const setShowStopButton = useSetAtom(showStopButtonByIndex(runIndex));
@@ -99,6 +104,8 @@ export function useLegacyStream(
     }
 
     let currentSubmission = submission as EventSubmission;
+    let accepted = false;
+    let failedStart = false;
     /** Provider identity updates cross one boundary. Message rendering, usage,
      * content, and terminal handlers all consume the same resolved response. */
     const adoptResponse = (userMessage: Partial<TMessage>, responseMessage: Partial<TMessage>) => {
@@ -223,6 +230,9 @@ export function useLegacyStream(
     };
 
     const onEvent = (event: ChatEvent) => {
+      if (!accepted && ['created', 'sync', 'content', 'text', 'final'].includes(event.type)) {
+        accepted = true;
+      }
       switch (event.type) {
         case 'open':
           setAbortScroll(false);
@@ -296,6 +306,15 @@ export function useLegacyStream(
           return;
         }
         case 'error':
+          if (!accepted && !failedStart) {
+            failedStart = true;
+            onSubmissionFailure?.(
+              currentSubmission,
+              event.status != null && event.status >= 400 && event.status < 500
+                ? 'rejected'
+                : 'unconfirmed',
+            );
+          }
           handleError(event.data);
           return;
         case 'abort':
@@ -310,7 +329,14 @@ export function useLegacyStream(
 
     const controller = new AbortController();
     setIsSubmitting(true);
-    transport.send({ server: payloadData.server, payload }, { signal: controller.signal, onEvent });
+    transport.send(
+      {
+        server: payloadData.server,
+        payload,
+        productTrackingContext: currentSubmission.productTrackingContext,
+      },
+      { signal: controller.signal, onEvent },
+    );
 
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps

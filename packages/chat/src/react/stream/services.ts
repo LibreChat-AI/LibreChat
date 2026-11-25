@@ -142,6 +142,7 @@ export type EventTransportServices = {
  * the signed-in transport, the balance refresh after a turn and the terms check on a refusal.
  */
 export type LegacyStreamServices = {
+  onSubmissionFailure?: (submission: TSubmission, reason: 'rejected' | 'unconfirmed') => void;
   /** The signed-in user's stream transport. */
   transport: ChatTransport;
   /** Refetches the user's balance when the deployment tracks one. */

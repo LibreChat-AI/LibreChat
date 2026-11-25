@@ -3,6 +3,8 @@ import { excludedKeys, isAgentsEndpoint, isEphemeralAgentId } from 'librechat-da
 import type { AppConfig, ConversationMethods, IConversation } from '@librechat/data-schemas';
 import type { TConversation } from 'librechat-data-provider';
 import type { PersistedReply } from './announce';
+import type { ServerRequest } from '~/types';
+import { trackRequestProductFact } from '~/tracking/request';
 import { isAnnounceableReply } from './announce';
 
 type SaveConvo = ConversationMethods['saveConvo'];
@@ -14,7 +16,8 @@ type ConversationStore = Pick<ConversationMethods, 'getConvo' | 'saveConvo'>;
 export type ConversationWriteContext = Parameters<SaveConvo>[0];
 
 /** The request state a turn's conversation writes read and update. */
-export interface TurnConversationRequest {
+export interface TurnConversationRequest
+  extends Pick<ServerRequest, 'productTracker' | 'productTracking' | 'productTrackingContext'> {
   user?: { id?: string };
   body?: { isTemporary?: boolean };
   config?: { interfaceConfig?: AppConfig['interfaceConfig'] };
@@ -84,6 +87,16 @@ export function getConversationWriteContext(
   const resolved = hasResolvedConversation(req) ? req?.resolvedConversation : null;
   return {
     userId: req?.user?.id ?? '',
+    ...(req?.productTracking?.enabled === true
+      ? {
+          onCreated: (conversationId: string) =>
+            trackRequestProductFact(req, {
+              name: 'librechat.chat.conversation.started',
+              feature: 'chat',
+              conversationId,
+            }),
+        }
+      : {}),
     isTemporary:
       req?._agentEventBindingRetention?.isTemporary ??
       resolved?.isTemporary ??
