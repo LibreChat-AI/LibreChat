@@ -7,7 +7,7 @@ import { expect, test } from '@playwright/test';
 import { inOneProject, repoRoot, run } from './lint.helpers';
 
 /**
- * CI splits the mock suite across fifteen memory shards with
+ * CI splits the mock suite across twenty-five memory shards with
  * `.github/scripts/playwright-shards.mjs`, planned from the timings each run resolves once
  * for all of its shards, or from `e2e/timings.mock.json` when it has none. These scenarios
  * run the real `plan` and `record` commands, and the workflow's own hand-off steps, over
@@ -17,7 +17,7 @@ import { inOneProject, repoRoot, run } from './lint.helpers';
 
 const SCRIPT = resolve(repoRoot, '.github/scripts/playwright-shards.mjs');
 const TIMINGS = resolve(repoRoot, 'e2e/timings.mock.json');
-const SHARDS = 15;
+const SHARDS = 25;
 
 /** A `playwright test --list --reporter=json` report: tests nested in a describe per file. */
 function listing(files: Record<string, number>) {
@@ -45,7 +45,7 @@ function scratch(): string {
 
 type Plan = { shards: string[][]; estimates: number[] };
 
-/** Every shard's plan, the way the fifteen CI jobs each compute their own. */
+/** Every shard's plan, the way the twenty-five CI jobs each compute their own. */
 function planAll(
   dir: string,
   options: { files: Record<string, number>; timings: string; reserve?: string; skip?: string },
@@ -149,7 +149,7 @@ test.beforeEach(() => {
   inOneProject();
 });
 
-test('the committed timings plan fifteen memory shards close to an even split @scenario:pr-memory-shards-finish-balanced', () => {
+test('the committed timings plan twenty-five memory shards close to an even split @scenario:pr-memory-shards-finish-balanced', () => {
   const dir = scratch();
   try {
     const { files } = JSON.parse(readFileSync(TIMINGS, 'utf8')) as {
@@ -275,15 +275,15 @@ test('record times a spec at the mean of the runs that measured it @scenario:rec
     });
     const runs: Record<string, Record<string, [string, number[]][]>> = {
       'run-1': {
-        'playwright-report-memory-1-of-15': [['a.spec.ts', [10000]]],
-        'playwright-report-memory-2-of-15': [['b.spec.ts', [4000, 2000]]],
+        'playwright-report-memory-1-of-25': [['a.spec.ts', [10000]]],
+        'playwright-report-memory-2-of-25': [['b.spec.ts', [4000, 2000]]],
       },
       'run-2': {
-        'playwright-report-memory-1-of-15': [['b.spec.ts', [3000]]],
-        'playwright-report-memory-2-of-15': [['a.spec.ts', [20000]]],
+        'playwright-report-memory-1-of-25': [['b.spec.ts', [3000]]],
+        'playwright-report-memory-2-of-25': [['a.spec.ts', [20000]]],
       },
       'run-3': {
-        'playwright-report-memory-1-of-15': [['a.spec.ts', [30000]]],
+        'playwright-report-memory-1-of-25': [['a.spec.ts', [30000]]],
       },
     };
     for (const [runName, shards] of Object.entries(runs)) {
