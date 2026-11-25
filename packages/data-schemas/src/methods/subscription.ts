@@ -70,6 +70,29 @@ export type Subscriptions = {
     connection: Pick<Connection, 'id' | 'tenantId'>,
     event: string,
   ) => Promise<Subscription[]>;
+  /**
+   * Takes one run of the clock hour `at` falls in, while fewer than `perHour` were taken in it.
+   * `false` when the hour is full or the owner has no such subscription. The count restarts
+   * with each hour, so up to twice `perHour` runs can start within sixty minutes that span
+   * the turn of an hour.
+   */
+  take: (id: string, owner: string, perHour: number, at?: Date) => Promise<boolean>;
+  /**
+   * Counts a finished run into the subscription's failure streak: a success ends the streak,
+   * a failure lengthens it. Once `threshold` runs in a row have failed, the subscription is
+   * turned off with the reason and count, and `suspended` answers `true` for the run that did
+   * it. A run is counted once by its delivery key among the last runs counted, so a replayed
+   * count adds nothing, and an older run's replay neither lengthens nor ends a newer streak; the
+   * turning off is asked again on a replay, so a crash between the two is recovered. A
+   * `threshold` of 0 never turns it off.
+   */
+  tally: (
+    id: string,
+    owner: string,
+    run: { key: string; failed: boolean },
+    threshold: number,
+    at?: Date,
+  ) => Promise<{ suspended: boolean }>;
 };
 
 function view(row: SubscriptionRecord): Subscription {
@@ -89,7 +112,27 @@ function view(row: SubscriptionRecord): Subscription {
     ...(row.window != null && { window: row.window }),
     enabled: row.enabled,
     revision: row.revision,
+    ...(row.suspended != null && {
+      suspended: {
+        reason: row.suspended.reason,
+        at: new Date(row.suspended.at).toISOString(),
+        failures: row.suspended.failures,
+      },
+    }),
   };
+}
+
+/**
+ * How many runs' keys a subscription remembers as counted. A run replayed after this many
+ * newer ones were counted would be counted again; a replay arrives long before that.
+ */
+const COUNTED = 50;
+
+/** The start of the clock hour a time falls in. */
+function hourOf(at: Date): Date {
+  const hour = new Date(at.getTime());
+  hour.setUTCMinutes(0, 0, 0);
+  return hour;
 }
 
 export function createSubscriptions(mongoose: typeof import('mongoose')): Subscriptions {
@@ -145,6 +188,14 @@ export function createSubscriptions(mongoose: typeof import('mongoose')): Subscr
       if (value === null) unset[field] = 1;
       else if (value !== undefined) set[field] = value;
     }
+    /** Turning it on or off changes nothing the owner granted against. */
+    const activation =
+      Object.keys(unset).length === 0 && Object.keys(set).every((field) => field === 'enabled');
+    // An owner turning it on takes back what the server turned off, and starts the streak over.
+    if (set.enabled === true) {
+      unset.suspended = 1;
+      unset.failures = 1;
+    }
     const mine = { id, user: owner };
     const fenced = { ...mine, ...(expected !== undefined && { revision: expected }) };
     const write = (holds: Record<string, unknown>, along: Record<string, 1>) =>
@@ -154,9 +205,6 @@ export function createSubscriptions(mongoose: typeof import('mongoose')): Subscr
         { $set: set, $unset: unset, $inc: { revision: 1, ...along } },
         { new: true, runValidators: true },
       ).lean<SubscriptionRecord>();
-    /** Turning it on or off changes nothing the owner granted against. */
-    const activation =
-      Object.keys(unset).length === 0 && Object.keys(set).every((field) => field === 'enabled');
     // Both numbers move by one, so a grant made for this revision is made for the next, and
     // one already left behind stays behind. Two writes, because a path that is not there
     // cannot be moved: the first matches only a subscription that holds a grant. A grant
@@ -200,5 +248,69 @@ export function createSubscriptions(mongoose: typeof import('mongoose')): Subscr
     });
   }
 
-  return { create, get, list, update, remove, purge, match };
+  async function take(
+    id: string,
+    owner: string,
+    perHour: number,
+    at = new Date(),
+  ): Promise<boolean> {
+    if (perHour < 1) return false;
+    const hour = hourOf(at);
+    const mine = { id, user: owner };
+    // A run that finds the hour turning over while another starts it again asks once more.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // This hour's count, or a later hour's: a run admitted just before the hour turned and
+      // counted after it counts against the hour the subscription has moved on to.
+      const counted = await Model.updateOne(
+        { ...mine, 'usage.hour': { $gte: hour }, 'usage.runs': { $lt: perHour } },
+        { $inc: { 'usage.runs': 1 } },
+      );
+      if (counted.modifiedCount === 1) return true;
+      // The hour only moves forward: an earlier hour's count, or none, starts this one.
+      const started = await Model.updateOne(
+        { ...mine, $or: [{ usage: null }, { 'usage.hour': { $lt: hour } }] },
+        { $set: { usage: { hour, runs: 1 } } },
+      );
+      if (started.modifiedCount === 1) return true;
+      const now = await Model.findOne(mine, { usage: 1 }).lean<Pick<SubscriptionRecord, 'usage'>>();
+      if (now == null) return false;
+      if (now.usage != null && now.usage.hour >= hour && now.usage.runs >= perHour) return false;
+    }
+    return false;
+  }
+
+  async function tally(
+    id: string,
+    owner: string,
+    run: { key: string; failed: boolean },
+    threshold: number,
+    at = new Date(),
+  ): Promise<{ suspended: boolean }> {
+    const mine = { id, user: owner };
+    const fresh = { ...mine, counted: { $ne: run.key } };
+    // The keys of the last runs counted, newest last, so a replay of any of them adds nothing.
+    const remember = { counted: { $each: [run.key], $slice: -COUNTED } };
+    if (!run.failed) {
+      await Model.updateOne(fresh, { $push: remember, $unset: { failures: 1 } });
+      return { suspended: false };
+    }
+    await Model.updateOne(fresh, { $push: remember, $inc: { failures: 1 } });
+    if (threshold < 1) return { suspended: false };
+    // Asked whether or not the count above landed, so a replay finishes a turning off that a
+    // crash left undone. Only a subscription that is still on, and whose streak this run was
+    // the last count of, is turned off, so it happens once.
+    const row = await Model.findOne(
+      { ...mine, enabled: true, counted: run.key },
+      { failures: 1 },
+    ).lean<Pick<SubscriptionRecord, 'failures'>>();
+    const failures = row?.failures ?? 0;
+    if (failures < threshold) return { suspended: false };
+    const { modifiedCount } = await Model.updateOne(
+      { ...mine, enabled: true, counted: run.key, failures },
+      { $set: { enabled: false, suspended: { reason: 'failures', at, failures } } },
+    );
+    return { suspended: modifiedCount === 1 };
+  }
+
+  return { create, get, list, update, remove, purge, match, take, tally };
 }

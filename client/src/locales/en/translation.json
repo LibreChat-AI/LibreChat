@@ -4218,6 +4218,7 @@
   "com_ui_events_filters": "Only for",
   "com_ui_events_filters_note": "Separate values with commas. Leave a field empty to match everything.",
   "com_ui_events_grant_boundary": "Choose which tools runs started by this subscription may use, until the fixed deadline. Anything left unchecked is refused. The text that starts these runs is written by other people.",
+  "com_ui_events_suspended_failures": "Turned off after {{0}} runs in a row failed. Turn it on to try again.",
   "com_ui_events_grant_changed": "The subscription or the agent changed since you allowed tools. Review and confirm again.",
   "com_ui_events_grant_confirmed": "Tool access recorded.",
   "com_ui_events_grant_expired": "Tool access expired",

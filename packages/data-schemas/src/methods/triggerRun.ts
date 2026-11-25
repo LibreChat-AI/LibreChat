@@ -14,6 +14,7 @@ import type {
   TriggerRunClaim,
   TriggerRunPause,
   ScheduleRunRef,
+  RecordedRunRef,
   TriggerRunOrigin,
   TriggerRunBinding,
   TriggerRunDetails,
@@ -343,7 +344,29 @@ export type TriggerRuns = {
   };
   /** Marks a run as settled with its subject, once the subject's own step has landed. */
   settled: (ref: TriggerRunRef) => Promise<void>;
+  /**
+   * A subscription's runs that someone has to finish, oldest first, at most `limit` of each
+   * kind: ones still active that fired before `before`, whose owner may have died, and ones
+   * that ended before `before` but whose subscription's own step never landed. Reads every
+   * tenant's rows the caller's scope lets it read; a sweep reads them as the system.
+   */
+  stranded: (
+    kind: 'subscription',
+    before: Date,
+    limit: number,
+  ) => Promise<Array<{ ref: RecordedRunRef; run: Pick<TriggerRun, StrandedField> }>>;
 };
+
+/** What a sweep is handed of a stranded run. */
+type StrandedField = 'status' | 'owner' | 'tenantId' | 'firedAt' | 'revision' | 'conversationId';
+const STRANDED: readonly StrandedField[] = [
+  'status',
+  'owner',
+  'tenantId',
+  'firedAt',
+  'revision',
+  'conversationId',
+];
 
 export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerRuns {
   const Run = () => mongoose.models.ScheduleRun as Model<IScheduleRunDocument>;
@@ -788,7 +811,48 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     await Run().updateOne(at, { $set: { bookkept: true } });
   }
 
+  async function stranded(
+    kind: 'subscription',
+    before: Date,
+    limit: number,
+  ): Promise<Array<{ ref: RecordedRunRef; run: Pick<TriggerRun, StrandedField> }>> {
+    const select = `kind subject deliveryKey scheduledFor ${project(STRANDED, { kind })}`;
+    // Two reads, each inside an index the collection already has: active rows by status and
+    // the time they fired, ended ones by the time they settled.
+    const [active, ended] = await Promise.all([
+      Run()
+        .find({ kind, status: { $in: ACTIVE_RUN_STATUSES }, firedAt: { $lt: before } })
+        .sort({ firedAt: 1 })
+        .limit(limit)
+        .select(select)
+        .lean<Row[]>(),
+      Run()
+        .find({ kind, bookkept: false, settledAt: { $lt: before } })
+        .sort({ settledAt: 1 })
+        .limit(limit)
+        .select(select)
+        .lean<Row[]>(),
+    ]);
+    return [...active, ...ended].flatMap((row) =>
+      row.subject != null && row.deliveryKey != null && row.scheduledFor != null
+        ? [
+            {
+              ref: {
+                subject: { kind, id: row.subject },
+                delivery: {
+                  key: row.deliveryKey,
+                  event: { occurredAt: new Date(row.scheduledFor).getTime() },
+                },
+              },
+              run: view(row, STRANDED),
+            },
+          ]
+        : [],
+    );
+  }
+
   return {
+    stranded,
     get,
     byConversation,
     reserve,

@@ -133,6 +133,21 @@ describe('Events', () => {
     expect(await screen.findByText(label)).toBeInTheDocument();
   });
 
+  it('says why the server turned a subscription off, and nothing for one it did not', async () => {
+    service.getAgentEventSubscriptions.mockResolvedValue({
+      subscriptions: [
+        {
+          ...subscription,
+          enabled: false,
+          suspended: { reason: 'failures', at: '2026-11-24T10:00:00.000Z', failures: 5 },
+        },
+      ],
+    });
+    renderEvents();
+    const card = await screen.findByTestId('event-card');
+    expect(within(card).getByText('com_ui_events_suspended_failures:5')).toBeInTheDocument();
+  });
+
   it('turns a subscription off from its switch, fenced on the revision it shows', async () => {
     service.updateAgentEventSubscription.mockResolvedValue({ ...subscription, enabled: false });
     renderEvents();
