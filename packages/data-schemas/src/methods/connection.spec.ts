@@ -403,61 +403,103 @@ describe('mark', () => {
   });
 });
 
-describe('mark and remove with the time the provider was asked', () => {
+describe('record', () => {
   const T1 = new Date('2026-11-25T10:00:00.000Z');
   const T2 = new Date('2026-11-25T10:00:01.000Z');
   const T3 = new Date('2026-11-25T10:00:02.000Z');
-  const markAt = (id: string, status: 'active' | 'suspended', at: Date) =>
-    as(TENANT_A, async () => connections.mark(id, status, at));
+  const record = (id: string, state: 'active' | 'suspended' | 'removed', at: Date) =>
+    as(TENANT_A, async () => connections.record(id, state, at));
   const statusOf = async (id: string) =>
     (await as(TENANT_A, async () => connections.get(id)))?.status;
 
   it('applies the first answer to a connection that has recorded none', async () => {
     const held = await bound(TENANT_A);
 
-    expect(await markAt(held.id, 'suspended', T2)).toEqual({ ...held, status: 'suspended' });
+    expect(await record(held.id, 'suspended', T2)).toEqual({ ok: true });
+    expect(await statusOf(held.id)).toBe('suspended');
     expect((await stored())[0].stateAt).toEqual(T2);
   });
 
   it('applies a newer answer', async () => {
     const held = await bound(TENANT_A);
-    await markAt(held.id, 'suspended', T1);
+    await record(held.id, 'suspended', T1);
 
-    expect(await markAt(held.id, 'active', T2)).toEqual(held);
+    expect(await record(held.id, 'active', T2)).toEqual({ ok: true });
+    expect(await statusOf(held.id)).toBe('active');
     expect((await stored())[0].stateAt).toEqual(T2);
   });
 
-  it('changes nothing for an answer asked for before the recorded one', async () => {
+  it('refuses an older answer and says what is recorded', async () => {
     const held = await bound(TENANT_A);
-    await markAt(held.id, 'active', T3);
+    await record(held.id, 'active', T3);
 
-    expect(await markAt(held.id, 'suspended', T2)).toBeNull();
+    expect(await record(held.id, 'suspended', T2)).toEqual({
+      ok: false,
+      error: { code: 'newer', status: 'active' },
+    });
     expect(await statusOf(held.id)).toBe('active');
     expect((await stored())[0].stateAt).toEqual(T3);
   });
 
-  it('treats an answer at the recorded time as the same answer again', async () => {
+  it('refuses an answer at the recorded time, saying what is recorded', async () => {
     const held = await bound(TENANT_A);
-    await markAt(held.id, 'active', T2);
+    await record(held.id, 'active', T2);
 
-    expect(await markAt(held.id, 'suspended', T2)).toBeNull();
+    expect(await record(held.id, 'active', T2)).toEqual({
+      ok: false,
+      error: { code: 'newer', status: 'active' },
+    });
+    expect(await record(held.id, 'suspended', T2)).toEqual({
+      ok: false,
+      error: { code: 'newer', status: 'active' },
+    });
     expect(await statusOf(held.id)).toBe('active');
   });
 
   it('removes only for an answer newer than the recorded one', async () => {
     const held = await bound(TENANT_A);
-    await markAt(held.id, 'active', T2);
+    await record(held.id, 'active', T2);
 
-    expect(await as(TENANT_A, async () => connections.remove(held.id, T1))).toBe(false);
-    expect(await as(TENANT_A, async () => connections.remove(held.id, T2))).toBe(false);
+    expect(await record(held.id, 'removed', T1)).toEqual({
+      ok: false,
+      error: { code: 'newer', status: 'active' },
+    });
+    expect(await record(held.id, 'removed', T2)).toEqual({
+      ok: false,
+      error: { code: 'newer', status: 'active' },
+    });
     expect(await stored()).toHaveLength(1);
-    expect(await as(TENANT_A, async () => connections.remove(held.id, T3))).toBe(true);
+    expect(await record(held.id, 'removed', T3)).toEqual({ ok: true });
     expect(await stored()).toHaveLength(0);
   });
 
-  it('still applies a change made without a time, keeping the recorded time', async () => {
+  it('answers missing for a connection that is gone', async () => {
+    expect(await record('conn_none', 'active', T1)).toEqual({
+      ok: false,
+      error: { code: 'missing' },
+    });
     const held = await bound(TENANT_A);
-    await markAt(held.id, 'active', T2);
+    await record(held.id, 'removed', T1);
+    expect(await record(held.id, 'active', T2)).toEqual({ ok: false, error: { code: 'missing' } });
+  });
+
+  it("never reaches another tenant's connection, whatever the time", async () => {
+    const held = await bound(TENANT_A);
+
+    expect(await as(TENANT_B, async () => connections.record(held.id, 'suspended', T3))).toEqual({
+      ok: false,
+      error: { code: 'missing' },
+    });
+    expect(await as(TENANT_B, async () => connections.record(held.id, 'removed', T3))).toEqual({
+      ok: false,
+      error: { code: 'missing' },
+    });
+    expect(await statusOf(held.id)).toBe('active');
+  });
+
+  it('leaves the recorded time to the provider: an operator change keeps it', async () => {
+    const held = await bound(TENANT_A);
+    await record(held.id, 'active', T2);
 
     expect(await as(TENANT_A, async () => connections.mark(held.id, 'suspended'))).toEqual({
       ...held,
@@ -466,20 +508,14 @@ describe('mark and remove with the time the provider was asked', () => {
     expect((await stored())[0].stateAt).toEqual(T2);
   });
 
-  it("never reaches another tenant's connection, whatever the time", async () => {
-    const held = await bound(TENANT_A);
-
-    expect(await as(TENANT_B, async () => connections.mark(held.id, 'suspended', T3))).toBeNull();
-    expect(await as(TENANT_B, async () => connections.remove(held.id, T3))).toBe(false);
-    expect(await statusOf(held.id)).toBe('active');
-  });
-
   it('never returns the recorded time', async () => {
     const held = await bound(TENANT_A);
-    const marked = await markAt(held.id, 'suspended', T2);
+    await record(held.id, 'suspended', T2);
 
-    expect(marked).not.toHaveProperty('stateAt');
     expect(await as(TENANT_A, async () => connections.get(held.id))).not.toHaveProperty('stateAt');
+    expect(await as(TENANT_A, async () => connections.list())).toEqual([
+      { ...held, status: 'suspended' },
+    ]);
   });
 });
 

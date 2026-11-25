@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { logger, tenantStorage } from '@librechat/data-schemas';
-import type { Connections } from '@librechat/data-schemas';
+import type { Connections, InstallState } from '@librechat/data-schemas';
 import type { Connection } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import type { EventsConfigSource, EventSettings, GitHubSettings } from './settings';
@@ -66,7 +66,7 @@ export interface Received {
 }
 
 export interface ReceiveDeps {
-  connections: Pick<Connections, 'resolve' | 'mark' | 'remove'>;
+  connections: Pick<Connections, 'resolve' | 'record'>;
   /** The enabled subscriptions on a connection that listen for an event type. */
   match: RouteDeps['match'];
   /** The trigger service's in-process enqueue. */
@@ -78,9 +78,6 @@ export interface ReceiveDeps {
 
 /** The providers a delivery may name, by the path segment it is posted to. */
 const PROVIDERS: Readonly<Record<string, Provider>> = { github };
-
-/** What a connection was set to after the provider reported a change to its install. */
-export type InstallState = 'active' | 'suspended' | 'removed';
 
 const reply = (status: number, body: Received['body']): Received => ({ status, body });
 
@@ -170,24 +167,29 @@ export function createReceive(deps: ReceiveDeps) {
     if (connection == null) {
       return reply(202, { code: 'unbound' });
     }
-    // Taken before asking: the answer describes the install at this moment or later, so a
-    // lookup sent later can never be overwritten by one sent earlier that arrives last.
-    const at = new Date(now());
-    const answer = await app.installation(Number(lifecycle.installation));
-    if (!answer.ok && answer.error.code !== 'missing') {
-      throw new Error(`The installation lookup was refused: ${answer.error.code}`);
+    // Two lookups can be sent in the same millisecond, and then neither time is newer. A
+    // refusal that recorded a different state is settled by asking again, once.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      // Taken before asking: the answer describes the install at this moment or later, so a
+      // lookup sent later can never be overwritten by one sent earlier that arrives last.
+      const at = new Date(now());
+      const answer = await app.installation(Number(lifecycle.installation));
+      if (!answer.ok && answer.error.code !== 'missing') {
+        throw new Error(`The installation lookup was refused: ${answer.error.code}`);
+      }
+      const state = stateOf(answer);
+      const recorded = await within(connection, () =>
+        deps.connections.record(connection.id, state, at),
+      );
+      if (recorded.ok || recorded.error.code === 'missing' || recorded.error.status === state) {
+        logger.info(`[events] ${provider} install of ${connection.id} is ${state}`);
+        return reply(200, { code: 'installation', state });
+      }
     }
-    const state = stateOf(answer);
-    const applied =
-      state === 'removed'
-        ? await within(connection, () => deps.connections.remove(connection.id, at))
-        : (await within(connection, () => deps.connections.mark(connection.id, state, at))) != null;
-    logger.info(
-      applied
-        ? `[events] ${provider} install of ${connection.id} is now ${state}`
-        : `[events] ${provider} install of ${connection.id} kept a newer recorded state`,
+    logger.warn(
+      `[events] ${provider} install of ${connection.id} answered differently at the same time twice`,
     );
-    return reply(200, { code: 'installation', state });
+    return reply(503, { code: 'unavailable' });
   }
 
   return async function receive(

@@ -568,8 +568,15 @@ describe('receive', () => {
       const answers = ['suspended', 'active'] as const;
       for (const index of order) {
         held[index](answers[index]);
-        await (index === 0 ? b : a);
+        await new Promise((resolve) => setImmediate(resolve));
       }
+      // An older answer that lands last conflicts with the newer one recorded, so it asks
+      // again and is told the install's state now.
+      if (order[1] === 0) {
+        await until(3);
+        held[2]('active');
+      }
+      await Promise.all([a, b]);
       expect(await status(connection.id)).toBe('active');
     });
 
@@ -586,8 +593,10 @@ describe('receive', () => {
       held[1]('active');
       await newer;
       held[0]('suspended');
+      await until(3);
+      held[2]('active');
       const late = await older;
-      expect(late.body).toEqual({ code: 'installation', state: 'suspended' });
+      expect(late.body).toEqual({ code: 'installation', state: 'active' });
       expect(await status(connection.id)).toBe('active');
     });
 
@@ -604,8 +613,72 @@ describe('receive', () => {
       held[1]('active');
       await newer;
       held[0]('missing');
+      await until(3);
+      held[2]('active');
       await older;
       expect(await status(connection.id)).toBe('active');
+    });
+
+    /** Lookups sent so far for the install's state. */
+    const lookups = () => fetchCalls.filter((call) => /\/app\/installations\/\d+$/.test(call));
+
+    it('asks again when a lookup sent in the same millisecond recorded a different state', async () => {
+      const connection = await bind();
+      let clock = 1_000;
+      const receive = createReceive(deps({ now: () => clock }));
+      gated = true;
+      const b = post(receive, 'suspend');
+      await until(1);
+      const a = post(receive, 'unsuspend');
+      await until(2);
+      held[0]('suspended');
+      await b;
+      clock = 1_001;
+      held[1]('active');
+      await until(3);
+      held[2]('active');
+      const result = await a;
+      expect(result).toEqual({ status: 200, body: { code: 'installation', state: 'active' } });
+      expect(await status(connection.id)).toBe('active');
+      expect(lookups()).toHaveLength(3);
+    });
+
+    it('takes the same answer at the same time as done, without asking again', async () => {
+      const connection = await bind();
+      const receive = createReceive(deps({ now: () => 1_000 }));
+      gated = true;
+      const b = post(receive, 'suspend');
+      await until(1);
+      const a = post(receive, 'suspend');
+      await until(2);
+      held[0]('suspended');
+      await b;
+      held[1]('suspended');
+      expect(await a).toEqual({
+        status: 200,
+        body: { code: 'installation', state: 'suspended' },
+      });
+      expect(await status(connection.id)).toBe('suspended');
+      expect(lookups()).toHaveLength(2);
+    });
+
+    it('answers 503 when asking again still conflicts at the same time', async () => {
+      jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+      const connection = await bind();
+      const receive = createReceive(deps({ now: () => 1_000 }));
+      gated = true;
+      const b = post(receive, 'suspend');
+      await until(1);
+      const a = post(receive, 'unsuspend');
+      await until(2);
+      held[0]('suspended');
+      await b;
+      held[1]('active');
+      await until(3);
+      held[2]('active');
+      expect(await a).toEqual({ status: 503, body: { code: 'unavailable' } });
+      expect(await status(connection.id)).toBe('suspended');
+      expect(lookups()).toHaveLength(3);
     });
 
     it('asks the provider every time, never from a cache', async () => {
