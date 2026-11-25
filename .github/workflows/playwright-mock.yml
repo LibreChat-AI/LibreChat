@@ -449,6 +449,10 @@ jobs:
           E2E_SHARD_RESERVE: ${{ matrix.stream_store == 'memory' && '1:130' || '' }}
           # The run's one copy of the recorded timings; empty when `shard_timings` found none.
           E2E_SHARD_TIMINGS: ${{ needs.shard_timings.outputs.timings }}
+          # Workers for the parallel project. The nightly's full Redis shards share this step and
+          # keep one worker; the plan and the run read the same value, so the plan's estimates
+          # match what runs.
+          E2E_WORKERS: ${{ matrix.stream_store == 'memory' && '2' || '1' }}
         # Shards are planned by recorded duration, not test count: Playwright lists the suite,
         # and .github/scripts/playwright-shards.mjs assigns whole spec files longest-first to
         # the least-loaded shard, using the timings `shard_timings` resolved for this run or,
@@ -475,23 +479,23 @@ jobs:
             --shard '${{ matrix.shard }}' \
             --reserve "$E2E_SHARD_RESERVE" \
             --skip "$E2E_SKIP" \
-            --workers 2 \
+            --workers "$E2E_WORKERS" \
             --out e2e/.generated/shard-tests.txt
           # Skips or the reservation can leave a shard no files: the plan warns and writes an
           # empty list, which Playwright would fail with "No tests found". An empty suite
           # listing still fails, in the plan itself.
           #
-          # Two workers share the runner's four CPUs, each signed in as its own user. The specs
-          # that change what every worker sees (e2e/setup/serial.ts) run afterwards in a second
-          # invocation, because in one Playwright can start the first serial file while the last
-          # parallel one finishes. A shard's list may hold only one kind, so neither invocation
-          # requires tests; the second writes its report and results beside the first's, where
-          # the artifact uploads and the timings record find both, and runs whatever the first
-          # returned so a red shard still reports every failure.
+          # On a memory shard two workers share the runner's four CPUs, each signed in as its
+          # own user. The specs that change what every worker sees (e2e/setup/serial.ts) run
+          # afterwards in a second invocation, because in one Playwright can start the first
+          # serial file while the last parallel one finishes. A shard's list may hold only one
+          # kind, so neither invocation requires tests; the second writes its report and results
+          # beside the first's, where the artifact uploads and the timings record find both, and
+          # runs whatever the first returned so a red shard still reports every failure.
           if [ -s e2e/.generated/shard-tests.txt ]; then
             status=0
             npx playwright test --config=e2e/playwright.config.mock.ts --project=chrome \
-              --workers=2 --pass-with-no-tests \
+              --workers="$E2E_WORKERS" --pass-with-no-tests \
               --test-list=e2e/.generated/shard-tests.txt || status=$?
             E2E_REPORT_DIR=e2e/playwright-report/serial \
               npx playwright test --config=e2e/playwright.config.mock.ts --project=chrome-serial \

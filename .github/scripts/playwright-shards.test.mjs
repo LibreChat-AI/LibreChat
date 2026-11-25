@@ -274,7 +274,8 @@ function shardStep(shard) {
  * Runs the step as the runner's bash does, with `npx` stubbed: the listing call writes the
  * fixture, and any other call is logged as a test run and exits with `status`.
  */
-function runStep(t, { files, shard, reserve = '', skip = '', status = 0 }) {
+/** `workers` stands in for the step's `E2E_WORKERS`: 2 on a memory shard, 1 on a Redis one. */
+function runStep(t, { files, shard, reserve = '', skip = '', status = 0, workers = '2' }) {
   const dir = scratch(t);
   mkdirSync(join(dir, '.github', 'scripts'), { recursive: true });
   copyFileSync(script, join(dir, '.github', 'scripts', 'playwright-shards.mjs'));
@@ -309,6 +310,7 @@ function runStep(t, { files, shard, reserve = '', skip = '', status = 0 }) {
         E2E_SKIP: skip,
         E2E_SHARD_RESERVE: reserve,
         E2E_SHARD_TIMINGS: JSON.stringify({ files: recorded }),
+        E2E_WORKERS: workers,
       },
     },
   );
@@ -334,6 +336,10 @@ test('a shard the plan leaves empty passes without starting Playwright', (t) => 
     'playwright test --config=e2e/playwright.config.mock.ts --project=chrome --workers=2 --pass-with-no-tests --test-list=e2e/.generated/shard-tests.txt',
     'playwright test --config=e2e/playwright.config.mock.ts --project=chrome-serial --output=e2e/specs/.test-results/serial --pass-with-no-tests --test-list=e2e/.generated/shard-tests.txt',
   ]);
+
+  const redis = runStep(t, { files: pair, shard: '2/2', workers: '1' });
+  assert.equal(redis.status, 0, redis.output);
+  assert.match(redis.runs[0], /--project=chrome --workers=1 /);
 });
 
 test('a shard with files still fails when its tests fail, and an empty listing fails the plan', (t) => {

@@ -183,13 +183,22 @@ test('every shard has a unique job name and artifact namespace', () => {
 test('both suite commands consume the matrix shard, and only the parallel memory project adds workers', () => {
   const full = shards.steps.find((entry) => entry.if === "matrix.suite == 'full'");
   assert.match(full.run, /playwright-shards\.mjs plan[\s\S]*--shard '\$\{\{ matrix\.shard \}\}'/);
-  assert.match(full.run, /playwright-shards\.mjs plan[\s\S]*--workers 2/);
+  assert.match(full.run, /playwright-shards\.mjs plan[\s\S]*--workers "\$E2E_WORKERS"/);
+  /** The nightly's full Redis shards share this step and keep one worker. */
+  const workers = (store) =>
+    interpolate(full.env.E2E_WORKERS, { matrix: { stream_store: store } }, {});
+  assert.equal(workers('memory'), '2');
+  assert.equal(workers('redis'), '1');
+  const stores = new Set(
+    defaults[1].include.filter((lane) => lane.suite === 'full').map((lane) => lane.stream_store),
+  );
+  assert.deepEqual([...stores].sort(), ['memory', 'redis']);
   const runs = full.run
     .replace(/\\\n\s*/g, '')
     .split('\n')
     .filter((line) => /npx playwright test .*--test-list/.test(line));
   assert.equal(runs.length, 2);
-  assert.match(runs[0], /--project=chrome (?=.*--workers=2)/);
+  assert.match(runs[0], /--project=chrome (?=.*--workers="\$E2E_WORKERS")/);
   assert.match(runs[1], /--project=chrome-serial /);
   assert.doesNotMatch(runs[1], /--workers/);
   for (const run of runs) {
