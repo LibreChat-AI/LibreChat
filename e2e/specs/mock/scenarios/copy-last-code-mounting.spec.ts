@@ -79,7 +79,61 @@ function textAt(index: number, { latest, longEvery = 0 }: Thread): string {
  */
 async function copyLastCode(page: Page): Promise<void> {
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  /** TEMPORARY diagnostics for the two-worker CI failure; not for merge. */
+  const snapshot = () =>
+    page.evaluate(() => {
+      type Diag = { events: string[]; copies: number; start: number };
+      const w = window as unknown as { __diag?: Diag };
+      const name = (node: EventTarget | null) => {
+        const el = node as HTMLElement | null;
+        return el?.tagName
+          ? `${el.tagName}#${el.id}[${el.getAttribute('data-testid') ?? ''}]`
+          : String(node);
+      };
+      if (w.__diag == null) {
+        const diag: Diag = { events: [], copies: 0, start: performance.now() };
+        w.__diag = diag;
+        const at = () => Math.round(performance.now() - diag.start);
+        document.addEventListener(
+          'keydown',
+          (e) => diag.events.push(`${at()} keydown-capture ${e.key} on ${name(e.target)}`),
+          true,
+        );
+        window.addEventListener('keydown', (e) =>
+          diag.events.push(`${at()} keydown-bubble ${e.key} prevented=${e.defaultPrevented}`),
+        );
+        document.addEventListener(
+          'focusin',
+          (e) => diag.events.push(`${at()} focusin ${name(e.target)}`),
+          true,
+        );
+        document.addEventListener(
+          'copy',
+          () => {
+            diag.copies += 1;
+            diag.events.push(`${at()} copy`);
+          },
+          true,
+        );
+      }
+      return {
+        active: name(document.activeElement),
+        hasFocus: document.hasFocus(),
+        rows: document.getElementsByClassName('message-render').length,
+        blocks: document.querySelectorAll('.agent-turn pre code').length,
+        copies: w.__diag.copies,
+        events: [...w.__diag.events],
+      };
+    });
+  const before = await snapshot();
   await page.keyboard.press('Control+Shift+K');
+  const after = await snapshot();
+  const info = test.info();
+  const body = JSON.stringify({ worker: info.parallelIndex, before, after }, null, 2);
+  console.log(
+    `[copy-diag] ${info.title} retry=${info.retry} ${JSON.stringify({ worker: info.parallelIndex, before, after })}`,
+  );
+  await info.attach('copy-last-code diagnostics', { body, contentType: 'application/json' });
 }
 
 const mountedRows = (page: Page) =>
