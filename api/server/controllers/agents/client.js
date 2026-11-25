@@ -6116,7 +6116,6 @@ class AgentClient extends BaseClient {
    *   title derives from the user's input only (`contentParts` is empty).
    */
   async titleConvo({ text, abortController, immediate = false }) {
-    abortController.signal.throwIfAborted();
     if (!this.run) {
       if (!immediate) {
         throw new Error('Run not initialized');
@@ -6129,6 +6128,7 @@ class AgentClient extends BaseClient {
         return;
       }
     }
+    abortController.signal.throwIfAborted();
     const { handleLLMEnd, collected: collectedMetadata } = createMetadataAggregator();
     const { req, agent } = this.options;
 

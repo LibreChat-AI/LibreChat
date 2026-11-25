@@ -350,6 +350,26 @@ describe('agents addTitle', () => {
     }
   });
 
+  it('keeps the legacy deadline for inline titles with no generation epoch', async () => {
+    jest.useFakeTimers();
+    try {
+      const req = makeReq();
+      req.config.timeouts = { titleMs: 180_000 };
+      const client = makeClient();
+      client.titleConvo.mockImplementation(() => new Promise(() => {}));
+      const pending = addTitle(req, { text: 'hello', client, conversationId: 'cid' });
+      const { abortController } = client.titleConvo.mock.calls[0][0];
+      await jest.advanceTimersByTimeAsync(44_999);
+      expect(abortController.signal.aborted).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(abortController.signal.reason.name).toBe('TimeoutError');
+      expect(mockSaveConvo).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('does not save or cache a title from a generation replaced after its stream closed', async () => {
     const client = makeClient('Old Title');
     mockGetEpoch.mockResolvedValue(8);

@@ -154,7 +154,9 @@ export async function runAgentConversationTitle({
   generate: (controller: AbortController) => Promise<string | undefined>;
   publish: (title: string) => Promise<void>;
 }): Promise<void> {
-  const timeout = getOutboundTimeoutMs(appConfig, 'titleMs');
+  const titleTimeout = getOutboundTimeoutMs(appConfig, 'titleMs');
+  // Inline approval resume awaits the title before publishing FINAL. Keep its legacy bound.
+  const timeout = epoch == null ? Math.min(45_000, titleTimeout) : titleTimeout;
   const controller = new AbortController();
   const sources = [signal, discardSignal].filter((source) => source != null);
   const parent = AbortSignal.any(sources);
