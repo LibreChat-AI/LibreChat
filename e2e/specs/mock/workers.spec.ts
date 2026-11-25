@@ -1,5 +1,8 @@
+import fs from 'fs';
+import path from 'path';
 import { expect, test } from '@playwright/test';
 import { getE2EUser, storageStatePath } from '../../setup/user';
+import { serialSpecs } from '../../setup/serial';
 import { withMongo } from './db';
 
 /**
@@ -30,5 +33,25 @@ test.describe('worker accounts', () => {
 
     expect(session.user?.email).toBe(getE2EUser(test.info().parallelIndex).email);
     expect(session.user?.role).toBe(first?.role);
+  });
+});
+
+test.describe('serial specs', () => {
+  test('every spec that starts the shared management OIDC fixture runs serially', () => {
+    const dir = test.info().project.testDir;
+    const self = test.info().file;
+    const serial = new Set(serialSpecs(dir));
+    const users = fs
+      .readdirSync(dir, { recursive: true, encoding: 'utf8' })
+      .filter((file) => file.endsWith('.spec.ts'))
+      .map((file) => path.join(dir, file))
+      .filter(
+        (file) => file !== self && /\bstartManagementOidc\b/.test(fs.readFileSync(file, 'utf8')),
+      );
+
+    expect(users.length).toBeGreaterThan(1);
+    expect(users.filter((file) => !serial.has(file))).toEqual([]);
+    /** These worker-account checks only mean something beside another worker. */
+    expect(serial.has(self)).toBe(false);
   });
 });

@@ -124,7 +124,8 @@ npx playwright test --config=e2e/playwright.config.mock.ts --project=chromium-se
   (`chrome-serial` in CI): specs that spawn tooling, rewrite the server's base config, override
   config for a whole role or group, or set, reset or read a fake harness server's behavior and
   request log (label, code, RAG, assistants, git host, Flux, MCP app), which every worker's
-  requests share. `e2e/setup/serial.ts` finds them by those patterns, so a new spec that does
+  requests share, or start the management OIDC fixture, whose one port, user and tenant every
+  management spec uses. `e2e/setup/serial.ts` finds them by those patterns, so a new spec that does
   any of this is serial without being listed. A spec that touches only its user's data, a
   tenant of its own, or a throwaway account runs beside any other. With one worker the serial
   project simply runs last. With more, run the two projects as two commands, as above: in one

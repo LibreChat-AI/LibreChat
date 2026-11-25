@@ -29,6 +29,13 @@ const RULES: ReadonlyArray<{ pattern: RegExp; reason: string }> = [
       "sets, resets or reads a fake harness server's process-wide state (label, code, RAG, " +
       'assistants, git host, Flux, MCP app): its behavior and request logs serve every worker',
   },
+  {
+    pattern: /\bstartManagementOidc\(\)/,
+    reason:
+      'starts the management OIDC fixture (`e2e/setup/agent-management.ts`) on its one fixed ' +
+      'port and acts as its one user and tenant, which the other management specs create, ' +
+      'read and delete',
+  },
 ];
 
 function walk(dir: string, files: string[] = []): string[] {
