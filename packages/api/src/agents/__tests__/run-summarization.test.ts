@@ -580,12 +580,18 @@ describe('reserveRatio', () => {
       const [agent] = (await callAndCapture({
         agents: [makeAgent({ baseContextTokens, maxContextTokens })],
         summarizationConfig: { reserveRatio, provider: 'anthropic', model: 'claude' },
-      })) as AgentInputs[];
+      })) as Pick<
+        AgentInputs,
+        'maxContextTokens' | 'summarizationConfig' | 'summarizationEnabled'
+      >[];
       expect(agent.maxContextTokens).toBe(sent);
       expect(agent.summarizationEnabled).toBe(viable);
+      if (agent.maxContextTokens == null) {
+        throw new Error('Expected a context budget in the SDK input');
+      }
 
       const prune = createPruneMessages({
-        maxTokens: agent.maxContextTokens ?? NaN,
+        maxTokens: agent.maxContextTokens,
         reserveRatio: agent.summarizationConfig?.reserveRatio,
         summarizationEnabled: agent.summarizationEnabled,
         startIndex: 0,
