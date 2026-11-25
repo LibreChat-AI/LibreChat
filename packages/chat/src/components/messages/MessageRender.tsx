@@ -13,6 +13,7 @@ import { parseWakeupMessage } from '../../core/parts/wakeup';
 import { MessageContext } from '../../react/message';
 import { getHeaderHoverLabel } from './HeaderLabel';
 import useMessageActions from './useMessageActions';
+import { renderMessageBody } from './MessageBody';
 import MessageFooter from './MessageFooter';
 import HoverButtons from './HoverButtons';
 import MessageRow from './MessageRow';
@@ -240,7 +241,7 @@ const MessageRender: NamedExoticComponent<MessageRenderProps> = memo(function Me
                 display: wakeupDisplay,
                 conversationId: conversation?.conversationId,
               })
-            : host.renderMessageBody({
+            : (host.renderMessageBody ?? renderMessageBody)({
                 ask,
                 edit,
                 isLast,

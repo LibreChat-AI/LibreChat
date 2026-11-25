@@ -337,6 +337,19 @@ import { contentPartsRenderer } from '@librechat/chat/components';
 const host = { ...rest, renderContentParts: contentPartsRenderer(slots) };
 ```
 
+### A message with no content parts
+
+A prompt, and a reply stored as plain text, have no content parts: the row draws their text with
+`MessageBody`. A prompt keeps its line breaks, or renders as light markdown when the reader turned
+that on (`useUserTextPreferences`), and collapses when long if the reader asked for that; a
+reply's text is markdown, with any thinking it carries drawn apart. A failed message draws its
+error card, and a reply that stopped early says so once it is no longer generating.
+
+A host with a body of its own names it with `renderMessageBody` on the messages host. Editing a
+message needs the host's editor, `renderMessageEditor`; without one a message asked to edit reads
+as it is. `ContentRow` draws a message with no content parts this way too, read-only, so an app
+can draw any message with it.
+
 ### An app outside LibreChat, checked
 
 [`e2e/outside-host`](../../e2e/outside-host) is such an app: a page built with plain Vite that

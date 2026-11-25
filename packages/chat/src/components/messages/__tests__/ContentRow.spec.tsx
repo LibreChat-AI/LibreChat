@@ -5,6 +5,7 @@ import { render, screen, within } from '@testing-library/react';
 import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
 import type { Agent, TConversation, TMessage } from 'librechat-data-provider';
 import type { ContentPartsSlotProps, MessagePartsHost } from '../../../react/host';
+import type { MessagesHost } from '../../../react/messages/host';
 import type { ContentRowProps } from '../ContentRow';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { MessagesHostProvider } from '../../../react/messages/host';
@@ -62,6 +63,7 @@ function renderRow(
       <PartProbe />
     </MessageContext.Provider>
   )),
+  messages: Partial<MessagesHost> = {},
 ) {
   const partsHost = {
     useShowThinking: () => true,
@@ -71,6 +73,7 @@ function renderRow(
   } as MessagePartsHost;
   const messagesHost = createMessagesHost({
     renderMessageIcon: ({ iconData }) => <span data-testid="icon">{iconData?.model}</span>,
+    ...messages,
   });
   render(
     <MessagesHostProvider host={messagesHost}>
@@ -107,6 +110,36 @@ describe('ContentRow', () => {
     expect(jest.mocked(renderContentParts)).toHaveBeenCalledWith(
       expect.objectContaining({ messageId: 'assistant-1', content: reply.content }),
     );
+  });
+
+  it('draws a message with no content parts as its text, read-only', () => {
+    jest.mocked(renderContentParts).mockClear();
+    const prompt = {
+      ...reply,
+      isCreatedByUser: true,
+      text: 'Line one\nLine two',
+      content: undefined,
+    };
+    const hostRenderer = renderRow(
+      { message: prompt as TMessage, edit: true },
+      {
+        useMessage: () => ({ messageId: 'user-1' }),
+        useSmoothStreaming: () => false,
+        useUserTextPreferences: () => ({
+          enableUserMsgMarkdown: false,
+          collapseLongUserMessages: false,
+          usernameDisplay: false,
+        }),
+      },
+      undefined,
+      { renderMessageBody: undefined },
+    );
+
+    expect(hostRenderer).not.toHaveBeenCalled();
+    expect(jest.mocked(renderContentParts)).not.toHaveBeenCalled();
+    const body = document.querySelector('.message-content');
+    expect(body?.textContent).toBe('Line one\nLine two');
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   });
 
   it('leaves the package renderer alone when the host names its own', () => {

@@ -26,8 +26,8 @@ import {
   useCopyMessageToClipboard,
 } from '~/hooks';
 import { useSelectedSender, useHideSelectedAuthor } from '~/components/Chat/Menus/Endpoints/shown';
-import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import { useForkConvoMutation, useCachedMessages } from '~/data-provider';
+import EditMessage from '~/components/Chat/Messages/Content/EditMessage';
 import useConversationSeenSource from '~/hooks/Conversations/seenSource';
 import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
 import { useOptionalMessagesOperations } from './MessagesViewContext';
@@ -163,7 +163,7 @@ export const appMessagesHost: MessagesHost = {
   useHideSelectedAuthor,
   useSelectedSender,
   useAgentsMap: useAgentsMapContext,
-  renderMessageBody: (props) => <MessageContent {...props} />,
+  renderMessageEditor: (props) => <EditMessage {...props} />,
   renderWakeup: (props) => <Wakeup {...props} />,
   renderPrivateText: (props) => <PrivateText {...props} />,
   renderActivity: (props) => <EventSubagentActivityGroup {...props} />,

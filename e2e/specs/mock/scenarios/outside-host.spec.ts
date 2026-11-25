@@ -59,9 +59,6 @@ const elements =
     ((difference.kind === 'missing' && (named.missing ?? []).includes(difference.key)) ||
       (difference.kind === 'extra' && (named.extra ?? []).includes(difference.key)));
 
-/** The key of each fixture's prompt, the one paragraph its bubble holds. */
-const promptOf = (fixture: string): string => `p:${String(FIXTURES[fixture]?.messages[0]?.text)}`;
-
 /** Each property of a style difference, as `[property, LibreChat, outside]`. */
 const changes = (difference: Difference): Array<[string, string, string]> =>
   (difference.detail ?? '').split('; ').map((change) => {
@@ -81,15 +78,6 @@ const SIZES = ['font-size', 'line-height', 'border-top-left-radius', 'padding-to
 
 /** What the package cannot draw today. Delete an entry when the change it names lands. */
 const GAPS: Gap[] = [
-  {
-    id: 'text-only-body',
-    why: 'A message with no content parts, which is every user prompt, is drawn by the messages host slot `renderMessageBody`. The package has no default for it, so an outside app shows an empty bubble. Closed by a default body in the package.',
-    matches: (difference) =>
-      difference.row === 0 &&
-      difference.part === 'body' &&
-      difference.kind === 'missing' &&
-      difference.key === promptOf(difference.fixture),
-  },
   {
     id: 'message-icon',
     why: "The author line's icon is the messages host slot `renderMessageIcon`, which draws nothing by default. Closed by a default icon from the endpoint and model.",

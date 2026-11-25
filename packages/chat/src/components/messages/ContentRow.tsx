@@ -11,17 +11,24 @@ import type {
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { MessageIconData } from '../../react/messages/host';
+import type { TAskFunction } from '../../core';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from './labels';
+import { MessageIconSlot, useMessagesHost } from '../../react/messages/host';
 import { ErrorSourceProvider } from '../../react/messages/error';
-import { MessageIconSlot } from '../../react/messages/host';
 import { AuthorContext } from '../../react/messages/author';
 import { renderContentParts } from '../contentRenderer';
 import { useMessagePartsHost } from '../../react/host';
 import { getHeaderHoverLabel } from './HeaderLabel';
+import { renderMessageBody } from './MessageBody';
 import MessageFooter from './MessageFooter';
 import MessageRow from './MessageRow';
 
-/** A message row whose body is its content parts: what the app's row hooks resolved for it. */
+/**
+ * A message row whose body is its content parts: what the app's row hooks resolved for it. A
+ * message with no content parts, such as a prompt, draws its text with the messages host's body
+ * (the package's `MessageBody` by default), read-only: editing one needs the chat's `ask`, which
+ * the thread's own row supplies.
+ */
 export type ContentRowProps = {
   message: TMessage;
   conversation: TConversation | null;
@@ -66,6 +73,10 @@ export type ContentRowProps = {
   /** A message-level outcome drawn after the content. */
   notice?: ReactNode;
 };
+
+/** A row drawn outside the chat's context cannot resubmit; its text body is read-only. */
+const noAsk: TAskFunction = () => undefined;
+const noSiblings = (): void => undefined;
 
 /** Whether a response came from the conversation's own selection: the saved agent the selector
  *  shows, or, with no saved agent, the spec or endpoint and model it runs, under the sender that
@@ -154,6 +165,7 @@ export default function ContentRow({
 }: ContentRowProps): ReactNode {
   const localize = useLocalize();
   const host = useMessagePartsHost();
+  const { renderMessageBody: renderBody = renderMessageBody } = useMessagesHost();
   const showThinking = host.useShowThinking();
   const autoExpandTools = host.useAutoExpandTools();
   const isCreatedByUser = message.isCreatedByUser === true;
@@ -215,27 +227,42 @@ export default function ContentRow({
       <AuthorContext.Provider value={author}>
         <ErrorSourceProvider message={message}>
           {body ??
-            (host.renderContentParts ?? renderContentParts)({
-              edit,
-              isLast,
-              enterEdit,
-              siblingIdx,
-              attachments,
-              searchResults,
-              isSubmitting,
-              isLatestMessage,
-              isCreatedByUser,
-              renderOwnerId,
-              createdAt,
-              showThinking,
-              authorHeader: isCreatedByUser || authorHidden ? undefined : authorHeader,
-              setSiblingIdx,
-              messageId: message.messageId,
-              manualSkills: message.manualSkills,
-              foldLiveActivity: !autoExpandTools,
-              conversationId: conversation?.conversationId ?? null,
-              content: message.content ?? [],
-            })}
+            (message.content == null
+              ? renderBody({
+                  ask: noAsk,
+                  edit: false,
+                  isLast,
+                  text: message.text || '',
+                  message,
+                  enterEdit,
+                  error: message.error === true,
+                  isSubmitting,
+                  unfinished: message.unfinished === true,
+                  isCreatedByUser,
+                  siblingIdx: siblingIdx ?? 0,
+                  setSiblingIdx: setSiblingIdx ?? noSiblings,
+                })
+              : (host.renderContentParts ?? renderContentParts)({
+                  edit,
+                  isLast,
+                  enterEdit,
+                  siblingIdx,
+                  attachments,
+                  searchResults,
+                  isSubmitting,
+                  isLatestMessage,
+                  isCreatedByUser,
+                  renderOwnerId,
+                  createdAt,
+                  showThinking,
+                  authorHeader: isCreatedByUser || authorHidden ? undefined : authorHeader,
+                  setSiblingIdx,
+                  messageId: message.messageId,
+                  manualSkills: message.manualSkills,
+                  foldLiveActivity: !autoExpandTools,
+                  conversationId: conversation?.conversationId ?? null,
+                  content: message.content,
+                }))}
         </ErrorSourceProvider>
       </AuthorContext.Provider>
       {notice}
