@@ -5,7 +5,7 @@ const {
   createSubscriptions,
 } = require('@librechat/data-schemas');
 const { createWatchToolHost, createProxyAwareFetch } = require('@librechat/api');
-const { getAppConfig } = require('~/server/services/Config/app');
+const { getAppConfig } = require('~/server/services/Config');
 
 // Thin wiring over the TypeScript implementation in packages/api: the `watch` and `unwatch`
 // tools a conversation's agent is offered when its owner's subscription allows following.
