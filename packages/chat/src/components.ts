@@ -38,6 +38,14 @@ export { default as Summary } from './components/Summary';
 export { default as EmptyText } from './components/EmptyText';
 export { default as AgentUpdate } from './components/AgentUpdate';
 export { default as CollapsibleText } from './components/CollapsibleText';
+export { default as MessageIcon, renderMessageIcon } from './components/icons/MessageIcon';
+export { default as AuthorIcon } from './components/icons/Icon';
+export { default as ConvoIconURL } from './components/icons/ConvoIconURL';
+export { default as MessageEndpointIcon } from './components/icons/MessageEndpointIcon';
+export { URLIcon } from './components/icons/URLIcon';
+export type { IconProps } from './components/icons/types';
+export type { URLIconProps } from './components/icons/URLIcon';
+export type { ConvoIconURLProps } from './components/icons/ConvoIconURL';
 export {
   MessageBody,
   DisplayMessage,

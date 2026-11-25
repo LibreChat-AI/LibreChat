@@ -4,9 +4,12 @@ import { cn } from '~/utils';
 export default function AssistantIcon({
   className = '',
   size = '1em',
+  tone = 'secondary',
 }: {
   className?: string;
   size?: string | number;
+  /** `tertiary` for a placeholder that stands in for a missing avatar. */
+  tone?: 'secondary' | 'tertiary';
 }): JSX.Element {
   const unit = 24;
   const height = size;
@@ -21,7 +24,11 @@ export default function AssistantIcon({
       strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={cn('text-text-secondary h-2/3 w-2/3', className)}
+      className={cn(
+        tone === 'tertiary' ? 'text-text-tertiary' : 'text-text-secondary',
+        'h-2/3 w-2/3',
+        className,
+      )}
       xmlns="http://www.w3.org/2000/svg"
       aria-hidden="true"
     >

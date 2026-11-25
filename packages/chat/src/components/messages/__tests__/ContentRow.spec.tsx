@@ -112,6 +112,14 @@ describe('ContentRow', () => {
     );
   });
 
+  it('draws the package’s author icon when the host names none', () => {
+    renderRow({}, { useUser: () => undefined }, undefined, { renderMessageIcon: undefined });
+
+    expect(screen.queryByTestId('icon')).not.toBeInTheDocument();
+    const heading = screen.getByRole('heading', { level: 2, hidden: true });
+    expect(heading.querySelector('svg, img')).not.toBeNull();
+  });
+
   it('draws a message with no content parts as its text, read-only', () => {
     jest.mocked(renderContentParts).mockClear();
     const prompt = {

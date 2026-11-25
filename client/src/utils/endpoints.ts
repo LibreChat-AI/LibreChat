@@ -701,21 +701,7 @@ export function normalizeStartupConfigModelSpecs(config: t.TStartupConfig): t.TS
   return { ...config, modelSpecs: { ...modelSpecs, list: normalized } };
 }
 
-/** Gets the default frontend-facing endpoint, dependent on iconURL definition.
- *
- * If the iconURL is defined in the endpoint config, use it, otherwise use the endpoint
- */
-export function getIconEndpoint({
-  endpointsConfig,
-  iconURL,
-  endpoint,
-}: {
-  endpointsConfig?: t.TEndpointsConfig;
-  iconURL?: string | null;
-  endpoint?: string | null;
-}) {
-  return (endpointsConfig?.[iconURL ?? ''] ? (iconURL ?? endpoint) : endpoint) ?? '';
-}
+export { getIconEndpoint } from '@librechat/chat';
 
 export const getEntity = ({
   endpoint,

@@ -8,13 +8,6 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { agentAuthor, useParentAuthor, TaskContentScopeContext } from '@librechat/chat/react';
 import type { ChildActivity } from '@librechat/chat/react';
 
-jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
-  __esModule: true,
-  default: ({ iconData }: { iconData?: { modelLabel?: string } }) => (
-    <span data-testid="app-message-icon">{iconData?.modelLabel}</span>
-  ),
-}));
-
 const mockReadControl = jest.fn();
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -89,18 +82,19 @@ describe('app host registration', () => {
   });
 
   it('renders subagent authors through the app hosts the entry registers', () => {
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <ParentAuthor />
-        {agentAuthor(undefined, 'Child agent').icon}
-      </QueryClientProvider>,
+    /** The icon is the chat package's, which reads the app's endpoints config through the host. */
+    const { container } = render(
+      <RecoilRoot>
+        <QueryClientProvider client={new QueryClient()}>
+          <ParentAuthor />
+          {agentAuthor(undefined, 'Child agent').icon}
+        </QueryClientProvider>
+      </RecoilRoot>,
     );
 
     expect(screen.getByTestId('parent-name')).toHaveTextContent('Parent agent');
-    expect(screen.getAllByTestId('app-message-icon').map((node) => node.textContent)).toEqual([
-      'Parent agent',
-      'Child agent',
-    ]);
+    /** Neither author has an avatar, so each draws the agents glyph. */
+    expect(container.querySelectorAll('svg.lucide-feather')).toHaveLength(2);
   });
 
   describe('subagent transcripts', () => {

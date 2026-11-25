@@ -316,6 +316,7 @@ export default [
           allow: [
             // client/src/style.css and the library's component CSS
             'icon-*',
+            'avatar-stroke',
             'hover-button',
             'toast-root',
             'alert-root',

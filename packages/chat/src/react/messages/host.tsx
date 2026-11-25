@@ -8,6 +8,7 @@ import type {
   TAttachment,
   TConversation,
   SearchResultData,
+  TEndpointsConfig,
   TForkConvoRequest,
   TUpdateFeedbackRequest,
   TUpdateFeedbackResponse,
@@ -250,8 +251,17 @@ export interface MessagesHost {
   /** Writes feedback on one message of a conversation. */
   useMessageFeedback: (conversationId: string, messageId: string) => MessageFeedbackWrite;
 
-  /** Renders a message author's icon with the app's endpoint and avatar icons. */
-  renderMessageIcon: (props: MessageIconProps) => ReactNode;
+  /**
+   * Renders a message author's icon, for a host with icons of its own. Without it a row draws the
+   * package's `MessageIcon`: the author's avatar, the endpoint's configured image, or the
+   * provider's icon.
+   */
+  renderMessageIcon?: (props: MessageIconProps) => ReactNode;
+  /**
+   * The endpoints config, for the icons a deployment configured per endpoint (`iconURL`) and the
+   * provider each custom endpoint names. Without it an icon comes from the message itself.
+   */
+  useEndpointsConfig?: () => TEndpointsConfig | null | undefined;
   /** Whether rows drop the reading-width cap and fill the pane. */
   useMaximizeChatSpace: () => boolean;
   /** Whether the thread renders as a flat row list. The flat renderer is the default;
@@ -333,7 +343,6 @@ const fallbackHost: MessagesHost = {
   useGetAddedConvo: () => noAddedConvo,
   useStreamedAttachments: () => undefined,
   useMessageFeedback: () => noFeedback,
-  renderMessageIcon: () => null,
   useMaximizeChatSpace: () => false,
   useFlatThread: () => true,
   useHideSelectedAuthor: () => false,
@@ -346,6 +355,17 @@ const fallbackHost: MessagesHost = {
 };
 
 const MessagesHostContext = createContext<MessagesHost | null>(null);
+
+let defaultMessageIcon: ((props: MessageIconProps) => ReactNode) | null = null;
+
+/**
+ * Registers the icon a row draws when its host names none. The package's `MessageIcon` registers
+ * itself when the components entry loads, so this layer, which draws no UI of its own, can still
+ * fall back to it.
+ */
+export function setDefaultMessageIcon(render: (props: MessageIconProps) => ReactNode): void {
+  defaultMessageIcon = render;
+}
 
 let defaultHost: MessagesHost = fallbackHost;
 
@@ -371,11 +391,6 @@ export function MessagesHostProvider({
 /** The host of the nearest provider, else the registered default, else the fallback. */
 export function useMessagesHost(): MessagesHost {
   return useContext(MessagesHostContext) ?? defaultHost;
-}
-
-/** A message author's icon, drawn by the host's slot. */
-export function MessageIconSlot(props: MessageIconProps): ReactNode {
-  return useMessagesHost().renderMessageIcon(props);
 }
 
 /** A row's read-aloud control, drawn by the host's slot. */
@@ -407,3 +422,9 @@ export const MessageUsageSlot: NamedExoticComponent<MessageUsageProps> = memo(
   },
   isSameUsage,
 );
+
+/** A message author's icon: the host's own, or the package's registered `MessageIcon`. */
+export function MessageIconSlot(props: MessageIconProps): ReactNode {
+  const render = useMessagesHost().renderMessageIcon ?? defaultMessageIcon;
+  return render == null ? null : render(props);
+}

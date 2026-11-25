@@ -31,10 +31,17 @@ jest.mock('@librechat/client', () => ({
   useLocalize: () => (key: string) => (key === 'com_ui_subagent_actor' ? 'Agent' : key),
 }));
 
-/** The author glyph reduced to whose face it is. */
-jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
-  __esModule: true,
-  default: ({ agent, iconData }: { agent?: { name?: string }; iconData: { iconURL?: string } }) => (
+/** The author glyph reduced to whose face it is. A wake-up row's author icon is drawn by the
+ *  chat package's icon slot; this stands in for that slot. */
+jest.mock('@librechat/chat/dist/react/messages/host.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/react/messages/host.cjs'),
+  MessageIconSlot: ({
+    agent,
+    iconData,
+  }: {
+    agent?: { name?: string };
+    iconData: { iconURL?: string };
+  }) => (
     <span data-testid="author-face" data-agent={agent?.name ?? ''} data-icon={iconData.iconURL} />
   ),
 }));

@@ -171,6 +171,21 @@ describe('MessagesView default thread', () => {
     expect(rows()).toEqual(['u1', 'a1']);
   });
 
+  it('draws a reply’s author icon with the package’s icon when the host names none', () => {
+    renderThread(
+      {
+        messages: [
+          message('u1', ROOT),
+          message('a1', 'u1', { endpoint: 'openAI', model: 'gpt-4o' }),
+        ],
+      },
+      createHost({ renderMessageIcon: undefined }),
+    );
+    expect(
+      within(row('a1')).getByRole('heading', { hidden: true }).querySelector('svg, img'),
+    ).not.toBeNull();
+  });
+
   it('draws a prompt with the package’s body when the host names none', () => {
     renderThread(
       { messages: [message('u1', ROOT, { text: 'What changed?\nAnd why?' })] },

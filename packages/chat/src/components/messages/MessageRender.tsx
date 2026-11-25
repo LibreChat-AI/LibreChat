@@ -6,10 +6,11 @@ import type { TMessageProps, TMessageChatContext } from '../../react/messages/ty
 import type { MessageIconData } from '../../react/messages/host';
 import { areMessageFieldsEqual, isSameTailRelation } from '../../react/messages/equal';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from './labels';
-import { MessageIconSlot, useMessagesHost } from '../../react/messages/host';
 import useContentMetadata from '../../react/messages/useContentMetadata';
 import { useUserTurnAuthor } from '../../react/messages/author';
 import { parseWakeupMessage } from '../../core/parts/wakeup';
+import { useMessagesHost } from '../../react/messages/host';
+import { renderMessageIcon } from '../icons/MessageIcon';
 import { MessageContext } from '../../react/message';
 import { getHeaderHoverLabel } from './HeaderLabel';
 import useMessageActions from './useMessageActions';
@@ -171,11 +172,9 @@ const MessageRender: NamedExoticComponent<MessageRenderProps> = memo(function Me
       message={wakeupDisplay != null ? undefined : msg}
       id={msg.messageId}
       icon={
-        authored != null ? (
-          authored.icon
-        ) : (
-          <MessageIconSlot iconData={iconData} assistant={assistant} agent={agent} />
-        )
+        authored != null
+          ? authored.icon
+          : (host.renderMessageIcon ?? renderMessageIcon)({ iconData, assistant, agent })
       }
       label={authored != null ? authored.label : (messageLabel ?? '')}
       showAuthor={authored != null}

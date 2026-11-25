@@ -79,15 +79,6 @@ const SIZES = ['font-size', 'line-height', 'border-top-left-radius', 'padding-to
 /** What the package cannot draw today. Delete an entry when the change it names lands. */
 const GAPS: Gap[] = [
   {
-    id: 'message-icon',
-    why: "The author line's icon is the messages host slot `renderMessageIcon`, which draws nothing by default. Closed by a default icon from the endpoint and model.",
-    matches: (difference) =>
-      difference.row === 1 &&
-      difference.part === 'header' &&
-      difference.key === 'icon' &&
-      difference.kind === 'missing',
-  },
-  {
     id: 'inherited-text-color',
     why: "Text that names no color of its own inherits it from the page. LibreChat's page sets the primary text color; `.librechat` does not, so a tool row, a reasoning header or a status line is black on an outside page. Closed by giving `.librechat` the text color in `standalone.css`, or by the README telling the app to.",
     matches: (difference) =>
