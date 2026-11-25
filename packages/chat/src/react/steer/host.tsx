@@ -1,6 +1,8 @@
 import { createContext, useContext } from 'react';
 import type {
   TConversation,
+  ChatBrowserFact,
+  ProductTracker,
   TAgentQueuedTurnReceipt,
   TEnqueueAgentQueuedTurnRequest,
 } from 'librechat-data-provider';
@@ -79,6 +81,8 @@ export type QueuedTurnCache = {
  * its own query cache, router or store without the package reaching into any of them.
  */
 export interface SteerHost {
+  /** Captures explicit composer intent through the host analytics adapter. */
+  useProductTracking?: () => ProductTracker<ChatBrowserFact>;
   /** Posts a steer into the running generation. */
   useSteerMessage(): (
     request: ChatSteerRequest,

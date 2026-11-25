@@ -27,6 +27,7 @@ import useComposerTake from '../composer';
 
 const conversationId = 'paste-fallback-conversation';
 const reasoningStateKey = conversationId;
+const serverRequestId = '5b3f9f4e-2c1a-4d8e-9a7b-6c5d4e3f2a1b';
 const pastedText = '  exact local paste\r\n```\n`````\n ';
 
 const pending = (): ExtendedFile => ({
@@ -110,15 +111,16 @@ function setupSteering({
   const clearFilesToDelete = jest.fn();
   const discardFiles = jest.fn();
   const submitSteer = jest.fn<ReturnType<SubmitSteer>, Parameters<SubmitSteer>>(() => accepted);
-  const enqueue = jest.fn<
-    ReturnType<QueueEnqueue['enqueue']>,
-    Parameters<QueueEnqueue['enqueue']>
-  >();
+  const enqueue = jest.fn<ReturnType<QueueEnqueue['enqueue']>, Parameters<QueueEnqueue['enqueue']>>(
+    () => serverRequestId,
+  );
   const takeComposerDraft = jest.fn();
   const armDrainAfterAbort = jest.fn();
   const stopGenerating = jest.fn();
   const notify = jest.fn();
+  const trackProduct = jest.fn();
   const host = createHost(withCancellation ? cancelUploads : undefined, clearFilesToDelete, notify);
+  host.useProductTracking = () => trackProduct;
   const { result } = renderHook(
     () => {
       const composer = useComposerTake({
@@ -129,6 +131,7 @@ function setupSteering({
         discardFiles,
       });
       return useDuringRunActions({
+        conversationId,
         composerDisabledRef: { current: false },
         filesLoading,
         canSteer,
@@ -156,6 +159,7 @@ function setupSteering({
   );
   return {
     actions: result.current,
+    trackProduct,
     notify,
     files: () => currentFiles,
     store,
@@ -187,6 +191,41 @@ beforeEach(() => {
 });
 
 describe('during-run pasted text fallback', () => {
+  it('records a server-queued send once with the request ID the server receives', () => {
+    const setup = setupSteering({ files: new Map(), effectiveAction: 'queue' });
+    act(() => {
+      expect(setup.actions.queueFromComposer('private queued text')).toBe(true);
+    });
+    expect(setup.enqueue.mock.calls[0][1]?.clientRequestId).toBeUndefined();
+    expect(setup.trackProduct).toHaveBeenCalledTimes(1);
+    expect(setup.trackProduct).toHaveBeenCalledWith({
+      name: 'librechat.chat.message.submitted',
+      feature: 'chat',
+      kind: 'send',
+      conversationId,
+      submissionId: serverRequestId,
+    });
+    expect(JSON.stringify(setup.trackProduct.mock.calls)).not.toContain('private queued text');
+  });
+
+  it('leaves a locally queued send to the normal send path', () => {
+    const setup = setupSteering({ files: new Map(), effectiveAction: 'queue' });
+    setup.enqueue.mockReturnValue(undefined);
+    act(() => {
+      expect(setup.actions.queueFromComposer('local queued text')).toBe(true);
+    });
+    expect(setup.enqueue).toHaveBeenCalledTimes(1);
+    expect(setup.trackProduct).not.toHaveBeenCalled();
+  });
+
+  it('does not record refused composer submissions', () => {
+    const setup = setupSteering({ filesLoading: true });
+    act(() => {
+      expect(setup.actions.queueFromComposer('blocked')).toBe(false);
+    });
+    expect(setup.trackProduct).not.toHaveBeenCalled();
+  });
+
   it.each(['steer', 'queue', 'interrupt'] as const)(
     'accepts a paste-only draft through %s without waiting for its upload',
     (effectiveAction) => {
