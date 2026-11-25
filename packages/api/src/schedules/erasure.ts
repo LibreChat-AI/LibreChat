@@ -12,10 +12,15 @@ import {
   retainedOutcome,
   RESUME_HANDOFF_STALE_MS,
 } from './types';
+import { createIdleRecoveryLoop } from '~/agents/recovery';
 import { registerShutdownTask } from '~/app/shutdown';
 
 const SWEEP_MS = 5 * 60_000;
 const SWEEP_JITTER_MS = 30_000;
+/** While a sweep finds nothing the wait doubles up to this ceiling, the same four-fold span the
+ *  durable agent loops use. A sweep that finds work returns the loop to the base interval. Fixed for
+ *  now: one configurable ceiling shared by the always-on loops is a separate change. */
+const SWEEP_MAX_IDLE_MS = 4 * SWEEP_MS;
 const SWEEP_BATCH = 100;
 /** Runs with no readable job older than this are presumed owner-dead (matches the
  *  engine reconciler's orphan cutoff). */
@@ -35,12 +40,16 @@ const TERMINAL_JOB_OUTCOMES: Record<string, 'success' | 'error' | 'interrupted' 
 export interface ScheduleErasureSweep {
   stop: () => void;
   sweep: () => Promise<void>;
+  /** A local delete left a `deleting` row behind: sweep again after one base interval instead of
+   *  waiting out an idle back-off. Best effort, and local to this process. */
+  hint: () => void;
 }
 
 export interface ScheduleErasureDeps {
   abortScheduledJob: ScheduleEngineDeps['abortScheduledJob'];
-  /** Retries held job outcomes even after the run's Mongo bookkeeping committed. */
-  reconcileRetainedJobs?: () => Promise<void>;
+  /** Retries held job outcomes even after the run's Mongo bookkeeping committed. Resolves how many
+   *  retained jobs it examined, so the sweep can tell an empty outbox from a busy one. */
+  reconcileRetainedJobs?: () => Promise<number | void>;
   eraseSettledSchedule?: ScheduleEngineDeps['eraseSettledSchedule'];
   methods: Pick<
     ScheduleMethods,
@@ -300,7 +309,7 @@ async function settleFromObservedJob(
  * no-auto-disable policy; a durable MCP configuration receipt still disables via the
  * run-row transition, including when a retained job originally ended as a success.
  */
-async function settleStrandedRuns(deps: ScheduleErasureDeps): Promise<void> {
+async function settleStrandedRuns(deps: ScheduleErasureDeps): Promise<number> {
   const runs = await deps.methods.getRunsForReconciliation(
     new Date(Date.now() - STRANDED_RUN_MIN_AGE_MS),
     SWEEP_BATCH,
@@ -370,10 +379,11 @@ async function settleStrandedRuns(deps: ScheduleErasureDeps): Promise<void> {
       logger.warn(`[schedules] stranded-run settle failed for ${run.scheduleId}:`, err);
     }
   }
+  return runs.length;
 }
 
 /** Replays a crashed permanent-MCP terminal projection where no engine is armed. */
-async function replayUnbookkeptMCPRuns(deps: ScheduleErasureDeps): Promise<void> {
+async function replayUnbookkeptMCPRuns(deps: ScheduleErasureDeps): Promise<number> {
   const runs = await deps.methods.getUnbookkeptRuns(
     new Date(Date.now() - STRANDED_RUN_MIN_AGE_MS),
     SWEEP_BATCH,
@@ -397,6 +407,7 @@ async function replayUnbookkeptMCPRuns(deps: ScheduleErasureDeps): Promise<void>
     }
   }
   await deps.methods.markRunsReconciled(runs);
+  return runs.length;
 }
 
 /**
@@ -412,18 +423,29 @@ async function replayUnbookkeptMCPRuns(deps: ScheduleErasureDeps): Promise<void>
  * This is deliberately NOT the engine: it never claims, leases, fires or advances.
  * Every convergence write is idempotent and guarded by the run or schedule's current
  * state, so concurrent clustered sweepers can re-drive cleanup safely.
+ *
+ * It sweeps every five minutes while there is anything to converge and backs off to twenty
+ * while there is not. A delete that leaves its row behind calls `hint()`, so a local leftover
+ * is still revisited within one base interval.
  */
 export function startScheduleErasureSweep(deps: ScheduleErasureDeps): ScheduleErasureSweep {
-  let stopped = false;
-  let timer: NodeJS.Timeout | undefined;
-
-  async function sweep(): Promise<void> {
+  /**
+   * One pass. Resolves true only when it confirmed there was nothing to do: no retained job, no
+   * `deleting` schedule, no started or paused run old enough to examine, no unbookkept run, and no
+   * step failed. A run still in flight is inspected and left alone, but catching one that died is
+   * what the sweep is for, so it keeps the base interval, as does a failed step.
+   */
+  async function pass(): Promise<boolean> {
+    let idle = true;
     try {
       await runAsSystem(async () => {
-        await deps
-          .reconcileRetainedJobs?.()
-          .catch((error) => logger.warn('[schedules] retained job recovery failed:', error));
+        const retained = await deps.reconcileRetainedJobs?.().catch((error) => {
+          logger.warn('[schedules] retained job recovery failed:', error);
+          idle = false;
+        });
+        if (typeof retained === 'number' && retained > 0) idle = false;
         const deleting = await deps.methods.getDeletingSchedules(SWEEP_BATCH);
+        if (deleting.length > 0) idle = false;
         for (const schedule of deleting) {
           await settleAbandonedRuns(deps, schedule.id).catch((err) => {
             logger.warn(`[schedules] abandoned-run pass failed for ${schedule.id}:`, err);
@@ -440,44 +462,54 @@ export function startScheduleErasureSweep(deps: ScheduleErasureDeps): ScheduleEr
         // cannot re-fill it every sweep and starve the rows behind them.
         await deps.methods
           .markEraseAttempted(deleting.map((schedule) => schedule.id))
-          .catch((err) => logger.warn('[schedules] failed to stamp erase attempts:', err));
+          .catch((err) => {
+            logger.warn('[schedules] failed to stamp erase attempts:', err);
+            idle = false;
+          });
         // Live schedules too: converge reservations left stranded by a retained terminal
         // job or a dead delivery, so neither can hold a global capacity slot — and no
         // generation evidence can outlive its run — where no engine is armed.
-        await settleStrandedRuns(deps).catch((err) =>
-          logger.warn('[schedules] stranded-run convergence pass failed:', err),
-        );
-        await replayUnbookkeptMCPRuns(deps).catch((err) =>
-          logger.warn('[schedules] MCP bookkeeping replay pass failed:', err),
-        );
+        const stranded = await settleStrandedRuns(deps).catch((err) => {
+          logger.warn('[schedules] stranded-run convergence pass failed:', err);
+          idle = false;
+          return 0;
+        });
+        if (stranded > 0) idle = false;
+        const unbookkept = await replayUnbookkeptMCPRuns(deps).catch((err) => {
+          logger.warn('[schedules] MCP bookkeeping replay pass failed:', err);
+          idle = false;
+          return 0;
+        });
+        if (unbookkept > 0) idle = false;
       });
     } catch (err) {
       logger.error('[schedules] erasure sweep failed:', err);
+      return false;
     }
+    return idle;
   }
 
-  function schedule(): void {
-    if (stopped) {
-      return;
-    }
-    // Jittered so replicas of a clustered deployment do not sweep in lockstep.
-    const delay = SWEEP_MS + Math.floor(Math.random() * SWEEP_JITTER_MS);
-    timer = setTimeout(() => {
-      void sweep().finally(schedule);
-    }, delay);
-    timer.unref?.();
+  async function sweep(): Promise<void> {
+    await pass();
   }
 
-  schedule();
+  // The first sweep comes one jittered interval after start, as before; the jitter also keeps
+  // replicas of a clustered deployment from sweeping in lockstep once they back off.
+  const loop = createIdleRecoveryLoop({
+    intervalMs: SWEEP_MS,
+    maxIdleIntervalMs: SWEEP_MAX_IDLE_MS,
+    jitterMs: SWEEP_JITTER_MS,
+    initialDelayMs: SWEEP_MS,
+    scan: pass,
+    onError: (error) => logger.error('[schedules] erasure sweep failed:', error),
+  });
+  void loop.start();
 
   const engineSweep: ScheduleErasureSweep = {
     sweep,
+    hint: () => loop.hint(new Date(Date.now() + SWEEP_MS)),
     stop: () => {
-      stopped = true;
-      if (timer) {
-        clearTimeout(timer);
-        timer = undefined;
-      }
+      void loop.stop();
     },
   };
 

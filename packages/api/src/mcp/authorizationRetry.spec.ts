@@ -1,3 +1,4 @@
+import { logger } from '@librechat/data-schemas';
 import type {
   MCPAuthorizationFenceRetryRecord,
   MCPAuthorizationFenceRetryStorage,
@@ -51,7 +52,10 @@ function createHarness() {
 }
 
 describe('MCP authorization fence retry service', () => {
-  afterEach(() => jest.useRealTimers());
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
 
   it('clears only the marker version created by that publisher', async () => {
     const { records, service, storage } = createHarness();
@@ -105,10 +109,15 @@ describe('MCP authorization fence retry service', () => {
     await service.stop();
   });
 
-  it('uses the configured cadence and registers clean shutdown', async () => {
+  it('uses the configured cadence while a record is pending and registers clean shutdown', async () => {
     jest.useFakeTimers();
+    jest.spyOn(logger, 'warn').mockImplementation(() => logger);
     const { registerShutdown, service, storage } = createHarness();
-    service.start(jest.fn().mockResolvedValue(undefined), { intervalMs: 2_500, batchSize: 3 });
+    await service.persist(scope);
+    service.start(jest.fn().mockRejectedValue(new Error('cache unavailable')), {
+      intervalMs: 2_500,
+      batchSize: 3,
+    });
     await service.drain();
     (storage.list as jest.Mock).mockClear();
 
@@ -120,6 +129,162 @@ describe('MCP authorization fence retry service', () => {
       expect.any(Function),
     );
     await service.stop();
+  });
+
+  describe('idle back-off', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+      jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    });
+    afterEach(() => jest.restoreAllMocks());
+
+    it('backs off while nothing is pending and returns to the base interval on work', async () => {
+      const { records, service, storage } = createHarness();
+      const invalidate = jest.fn().mockResolvedValue(undefined);
+      service.start(invalidate, { intervalMs: 2_500 });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(storage.list).toHaveBeenCalledTimes(1);
+
+      /** Each empty pass doubles the wait, up to four times the base interval. */
+      await jest.advanceTimersByTimeAsync(4_999);
+      expect(storage.list).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(storage.list).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(9_999);
+      expect(storage.list).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(storage.list).toHaveBeenCalledTimes(3);
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(storage.list).toHaveBeenCalledTimes(4);
+
+      /** Another replica persists a marker: it is found at the next scheduled pass, replayed, and
+       * the pass that follows is back on the base interval. */
+      await storage.upsert({
+        scope,
+        tenantId: 'tenant-a',
+        version: 'other-replica',
+        now: new Date(),
+      });
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(storage.list).toHaveBeenCalledTimes(5);
+      expect(invalidate).toHaveBeenCalledWith(scope);
+      expect(records.size).toBe(0);
+      await jest.advanceTimersByTimeAsync(2_499);
+      expect(storage.list).toHaveBeenCalledTimes(5);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(storage.list).toHaveBeenCalledTimes(6);
+      await service.stop();
+    });
+
+    it('stays on the base interval while a record keeps failing', async () => {
+      const { service, storage } = createHarness();
+      await service.persist(scope);
+      service.start(jest.fn().mockRejectedValue(new Error('cache unavailable')), {
+        intervalMs: 2_500,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      for (let pass = 2; pass <= 5; pass += 1) {
+        await jest.advanceTimersByTimeAsync(2_500);
+        expect(storage.list).toHaveBeenCalledTimes(pass);
+      }
+      await service.stop();
+    });
+
+    it('honors an explicit idle ceiling', async () => {
+      const { service, storage } = createHarness();
+      service.start(jest.fn().mockResolvedValue(undefined), {
+        intervalMs: 1_000,
+        maxIdleIntervalMs: 1_500,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      await jest.advanceTimersByTimeAsync(1_500);
+      expect(storage.list).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(1_500);
+      expect(storage.list).toHaveBeenCalledTimes(3);
+      await service.stop();
+    });
+
+    it('logs an unreadable batch and retries at the base interval instead of backing off', async () => {
+      const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+      const { service, storage } = createHarness();
+      const failure = new Error('mongo unavailable');
+      (storage.list as jest.Mock).mockRejectedValueOnce(failure);
+      service.start(jest.fn().mockResolvedValue(undefined), { intervalMs: 2_500 });
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(warn).toHaveBeenCalledWith(
+        '[MCP authorization] Could not read durable generation retries',
+        failure,
+      );
+      await jest.advanceTimersByTimeAsync(2_500);
+      expect(storage.list).toHaveBeenCalledTimes(2);
+      await service.stop();
+    });
+
+    it('looks again one base interval after a marker is persisted, even while backed off', async () => {
+      const { records, service, storage } = createHarness();
+      const invalidate = jest.fn().mockResolvedValue(undefined);
+      service.start(invalidate, { intervalMs: 2_500 });
+      await jest.advanceTimersByTimeAsync(0);
+      (storage.list as jest.Mock).mockClear();
+
+      /** The loop is now waiting 5 s; a publisher that fails to clear its marker is due sooner. */
+      await service.persist(scope);
+      await jest.advanceTimersByTimeAsync(2_499);
+      expect(storage.list).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(storage.list).toHaveBeenCalledTimes(1);
+      expect(invalidate).toHaveBeenCalledWith(scope);
+      expect(records.size).toBe(0);
+      await service.stop();
+    });
+
+    it('costs one read per base interval however often markers are persisted and cleared', async () => {
+      const { service, storage } = createHarness();
+      const invalidate = jest.fn().mockResolvedValue(undefined);
+      service.start(invalidate, { intervalMs: 30_000 });
+      await jest.advanceTimersByTimeAsync(0);
+
+      /** A publication every second for 90 s, each cleared at once: nothing is ever left to replay. */
+      for (let second = 0; second < 90; second += 1) {
+        await service.clear(scope, await service.persist(scope));
+        await jest.advanceTimersByTimeAsync(1_000);
+      }
+
+      /** Reads at 0, 30, 60 and 90 s, as the fixed timer made them, not one per publication. */
+      expect(storage.list).toHaveBeenCalledTimes(4);
+      expect(invalidate).not.toHaveBeenCalled();
+      await service.stop();
+    });
+
+    it('finds nothing to replay when the publisher cleared its marker in time', async () => {
+      const { service, storage } = createHarness();
+      const invalidate = jest.fn().mockResolvedValue(undefined);
+      service.start(invalidate, { intervalMs: 2_500 });
+      await jest.advanceTimersByTimeAsync(0);
+      (storage.list as jest.Mock).mockClear();
+
+      await service.clear(scope, await service.persist(scope));
+      await jest.advanceTimersByTimeAsync(2_500);
+
+      expect(storage.list).toHaveBeenCalledTimes(1);
+      expect(invalidate).not.toHaveBeenCalled();
+      await service.stop();
+    });
+
+    it('leaves no timer behind after stop, and ignores markers persisted afterwards', async () => {
+      const { service, storage } = createHarness();
+      service.start(jest.fn().mockResolvedValue(undefined), { intervalMs: 2_500 });
+      await jest.advanceTimersByTimeAsync(0);
+      await service.stop();
+      (storage.list as jest.Mock).mockClear();
+
+      await service.persist(scope);
+      await jest.advanceTimersByTimeAsync(600_000);
+
+      expect(storage.list).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    });
   });
 
   it('times out and defers a failed oldest record so later retries are not starved', async () => {
