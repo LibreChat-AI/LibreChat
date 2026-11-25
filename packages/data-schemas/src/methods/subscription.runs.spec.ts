@@ -195,6 +195,20 @@ describe('tally: the failure streak', () => {
     expect(counted[counted.length - 1]).toBe('k59');
   });
 
+  it('counts nothing for a run of a revision the owner has since moved past', async () => {
+    const { id } = await made();
+    await as(() => subscriptions.update(id, owner, { enabled: false }));
+    await as(() => subscriptions.update(id, owner, { enabled: true }));
+    expect(
+      await as(() => subscriptions.tally(id, owner, { key: 'old', failed: true, revision: 0 }, 1)),
+    ).toEqual({ suspended: false });
+    expect(await row(id)).toMatchObject({ enabled: true });
+    expect((await row(id))?.failures).toBeUndefined();
+    expect(
+      await as(() => subscriptions.tally(id, owner, { key: 'new', failed: true, revision: 2 }, 1)),
+    ).toEqual({ suspended: true });
+  });
+
   it('turns a subscription off once, not again on a later failure', async () => {
     const { id } = await made();
     await as(() => subscriptions.tally(id, owner, failed('d1'), 1, later(1)));

@@ -136,6 +136,8 @@ function counted(status: string): { failed: boolean } | undefined {
 export interface SubscriptionHost extends Pick<Adapter, 'resolve'> {
   /** Records how a turn of a subscription's run ended. */
   settle: NonNullable<Adapter['settle']>;
+  /** The deployment's bounds on a subscription's runs, as its config now sets them. */
+  bounds: () => Promise<RunSettings>;
   /**
    * Finishes the subscription runs nobody else will: an active run whose generation is gone,
    * ended as interrupted, and an ended run whose subscription step never landed. Run as the
@@ -357,11 +359,14 @@ export function createSubscriptionHost(deps: {
   }
 
   /** The subscription's own step for a run that ended: its failure streak, then the mark. */
-  async function account(ref: RunRef, owner: string, status: string) {
+  async function account(ref: RunRef, owner: string, status: string, revision?: number) {
     const count = counted(status);
     if (count) {
       const { failures } = await settings();
-      await deps.usage.tally(ref.subject.id, owner, { key: ref.delivery.key, ...count }, failures);
+      // Fenced on the revision the run started under: a run older than the owner's last edit,
+      // or than turning it back on, does not count into the streak that edit started.
+      const run = { key: ref.delivery.key, ...count, ...(revision != null && { revision }) };
+      await deps.usage.tally(ref.subject.id, owner, run, failures);
     }
     await deps.runs.settled(ref);
   }
@@ -384,7 +389,7 @@ export function createSubscriptionHost(deps: {
       ...(run.clearConversationId && { clearConversationId: true }),
     });
     if (ended == null) return false;
-    await account(ref, owner, ended.status);
+    await account(ref, owner, ended.status, ended.revision);
     return true;
   }
 
@@ -402,7 +407,7 @@ export function createSubscriptionHost(deps: {
           if (ended == null) continue;
         }
         const active = run.status === 'started' || run.status === 'requires_action';
-        await account(ref as RunRef, run.owner, active ? 'interrupted' : run.status);
+        await account(ref as RunRef, run.owner, active ? 'interrupted' : run.status, run.revision);
         finished++;
       } catch {
         // One row that cannot be finished now is left for the next pass; the rest go on.
@@ -417,6 +422,7 @@ export function createSubscriptionHost(deps: {
     ...(preflight && { preflight }),
     settle,
     reconcile,
+    bounds: settings,
     async resolve(input) {
       const subscriptionId = named(input);
       if (subscriptionId == null) return;

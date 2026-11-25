@@ -112,6 +112,7 @@ const {
   stopChannelCleanup,
 } = require('./services/Channels');
 const { resumeAgentEventDetachedAction } = require('./services/Agents/detachedActionResume');
+const subscriptionRuns = require('./services/Events/reconcile');
 const { initializeScheduleEngine, recordExpiredScheduleApproval } = require('./services/Schedules');
 const { jwtLogin, ldapLogin, passportLogin } = require('~/strategies');
 const { startExpiredFileSweep } = require('./services/Files/process');
@@ -608,6 +609,8 @@ const startServer = async () => {
         idleCeilingMs,
       });
       const scheduleEngineArmed = (await initializeScheduleEngine({ idleCeilingMs })) != null;
+      subscriptionRuns.initialize();
+      registerShutdownTask('subscription runs', subscriptionRuns.stop, { priority: 100 });
       await initializeChannelFeedback();
       registerShutdownTask('channel feedback export', stopChannelFeedback, { priority: 100 });
       registerShutdownTask('channel authority cleanup', stopChannelCleanup, { priority: 100 });

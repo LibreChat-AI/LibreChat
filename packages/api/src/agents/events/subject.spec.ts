@@ -1164,6 +1164,35 @@ describe("a subscription's runs on record", () => {
     }
   });
 
+  it('refuses every delivery against the indexes this release builds at startup', async () => {
+    const ScheduleRun = mongoose.models.ScheduleRun;
+    await ScheduleRun.collection.dropIndexes();
+    // What the server builds: every index the schema declares, the two legacy ones included.
+    await ScheduleRun.createIndexes();
+    host = build();
+    try {
+      const subscription = await made();
+      const req = delivery(subscription.id);
+      expect(await refusal(inputFor(req))).toBe('blocked');
+      expect(await row(subscription, req)).toBeNull();
+      expect(await ScheduleRun.countDocuments({ kind: 'subscription' })).toBe(0);
+    } finally {
+      await legacy(false);
+    }
+  });
+
+  it("does not count a run older than the owner's turning it back on", async () => {
+    bounds({ failures: 1 });
+    const subscription = await made();
+    const { input } = await started(subscription);
+    // While the run is under way the owner turns it off and on again: a new streak.
+    await subscriptions.update(subscription.id, OWNER, { enabled: false });
+    await subscriptions.update(subscription.id, OWNER, { enabled: true });
+    await host.settle({ executionContext: input.executionContext, status: 'error' });
+    expect(await stored(subscription.id)).toMatchObject({ enabled: true });
+    expect((await stored(subscription.id))?.failures).toBeUndefined();
+  });
+
   it('records a delivery over the hourly cap as skipped, and does not run it', async () => {
     const subscription = await subscriptions.create(OWNER, {
       ...draft,
@@ -1211,7 +1240,7 @@ describe("a subscription's runs on record", () => {
       status: 'success',
       conversationId: 'conversation-1',
     });
-    expect(await stored(subscription.id)).toMatchObject({ counted: req.body?.clientRequestId });
+    expect(await stored(subscription.id)).toMatchObject({ counted: [req.body?.clientRequestId] });
   });
 
   it('turns the subscription off after enough runs in a row fail', async () => {

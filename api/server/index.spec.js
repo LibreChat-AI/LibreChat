@@ -41,6 +41,10 @@ jest.mock('~/server/services/Agents/triggers', () => ({
   initializeAgentTriggerService: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('~/server/services/Events/reconcile', () => ({
+  initialize: jest.fn(),
+  stop: jest.fn().mockResolvedValue(undefined),
+}));
 jest.mock('~/server/services/Schedules', () => ({
   initializeScheduleEngine: jest.fn().mockResolvedValue(undefined),
 }));
