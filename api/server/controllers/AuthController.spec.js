@@ -73,6 +73,27 @@ jest.mock('~/server/services/OpenIDRefreshFlight', () => ({
 jest.mock('~/server/services/OpenIDSessionRefresh', () => ({
   refreshOpenIDSession: jest.fn(),
 }));
+const mockAuthorizeProviderSession = jest.fn().mockResolvedValue({ ok: true });
+const mockEstablishProviderSession = jest.fn().mockResolvedValue({ ok: true });
+const mockPreCheckProviderSession = jest.fn().mockResolvedValue({ ok: true });
+const mockGetModeProviderSession = jest.fn().mockResolvedValue('record');
+/** No client configured by default: `deriveProviderSessionFromClaims` short-circuits to `null`, so refresh proceeds without a provider-session check. */
+const mockGetProviderSessionClient = jest.fn(() => null);
+jest.mock('~/server/services/ProviderSession', () => ({
+  getProviderSessionAuthorizer: jest.fn(() => ({
+    establish: mockEstablishProviderSession,
+    authorize: mockAuthorizeProviderSession,
+    preCheck: mockPreCheckProviderSession,
+    getMode: mockGetModeProviderSession,
+  })),
+  providerSessionAuthorizer: {
+    establish: mockEstablishProviderSession,
+    authorize: mockAuthorizeProviderSession,
+    preCheck: mockPreCheckProviderSession,
+    getMode: mockGetModeProviderSession,
+  },
+  getProviderSessionClient: mockGetProviderSessionClient,
+}));
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
   OPENID_EXPIRY_BUFFER_SECONDS: 30,
@@ -138,6 +159,7 @@ const {
   buildOpenIDRefreshParams,
   generateTwoFactorSetupToken,
   isTwoFactorEnrollmentRequired,
+  ProviderSessionUnavailableError,
 } = require('@librechat/api');
 const {
   graphTokenController,
@@ -2794,6 +2816,88 @@ describe('refreshController – LibreChat path', () => {
 
     expect(generateTwoFactorSetupToken).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  /** Confirms `createLocalRefreshHandler` is wired with the real `authorizeProviderSession`. */
+  describe('provider-session recheck on local refresh', () => {
+    const providerSession = {
+      issuer: 'https://issuer.example.com',
+      clientId: 'client-1',
+      sid: 'sid-1',
+    };
+
+    it('authorizes the bound provider session before minting new tokens', async () => {
+      const expiration = new Date(Date.now() + 60_000);
+      findSession.mockResolvedValue({ _id: 'session-id', expiration, providerSession });
+      getUserById.mockResolvedValue({
+        _id: 'local-user-id',
+        provider: 'local',
+        email: 'local@example.com',
+      });
+
+      await refreshController(req, res);
+
+      expect(mockAuthorizeProviderSession).toHaveBeenCalledWith({
+        ref: providerSession,
+        expiresAt: expiration,
+        legacy: false,
+      });
+      expect(setAuthTokens).toHaveBeenCalled();
+    });
+
+    it('ends the session and returns 401 when the bound provider session was revoked', async () => {
+      const expiration = new Date(Date.now() + 60_000);
+      findSession.mockResolvedValue({ _id: 'session-id', expiration, providerSession });
+      getUserById.mockResolvedValue({
+        _id: 'local-user-id',
+        provider: 'local',
+        email: 'local@example.com',
+      });
+      mockAuthorizeProviderSession.mockResolvedValueOnce({
+        ok: false,
+        code: 'OPENID_SESSION_ENDED',
+      });
+
+      await refreshController(req, res);
+
+      expect(deleteSession).toHaveBeenCalledWith({ sessionId: 'session-id' });
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.send).toHaveBeenCalledWith({ code: 'OPENID_SESSION_ENDED' });
+      expect(setAuthTokens).not.toHaveBeenCalled();
+    });
+
+    it('returns 503 without clearing the session when the provider-session check is unavailable', async () => {
+      const expiration = new Date(Date.now() + 60_000);
+      findSession.mockResolvedValue({ _id: 'session-id', expiration, providerSession });
+      getUserById.mockResolvedValue({
+        _id: 'local-user-id',
+        provider: 'local',
+        email: 'local@example.com',
+      });
+      mockAuthorizeProviderSession.mockRejectedValueOnce(new ProviderSessionUnavailableError());
+
+      await refreshController(req, res);
+
+      expect(deleteSession).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.send).toHaveBeenCalledWith({ code: 'AUTH_SESSION_CHECK_UNAVAILABLE' });
+      expect(setAuthTokens).not.toHaveBeenCalled();
+    });
+
+    it('does not check sessions that predate provider-session tracking and are not OpenID-flavored', async () => {
+      const expiration = new Date(Date.now() + 60_000);
+      findSession.mockResolvedValue({ _id: 'session-id', expiration });
+      getUserById.mockResolvedValue({
+        _id: 'local-user-id',
+        provider: 'local',
+        email: 'local@example.com',
+      });
+
+      await refreshController(req, res);
+
+      expect(mockAuthorizeProviderSession).not.toHaveBeenCalled();
+      expect(setAuthTokens).toHaveBeenCalled();
+    });
   });
 
   /**

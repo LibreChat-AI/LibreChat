@@ -673,7 +673,9 @@ const setCloudFrontAuthCookies = (req, res, user, options = {}) => {
  * @param {ServerResponse} res
  * @param {ISession | null} [_session=null]
  * @param {ServerRequest | null} [req=null]
- * @param {Object} [options={}] - `authMethod` applies only when a new Session doc is created.
+ * @param {Object} [options={}] - `providerSession`/`authMethod` apply only when a new Session doc
+ *   is created.
+ * @param {import('librechat-data-provider').ProviderSessionRef} [options.providerSession]
  * @param {import('@librechat/data-schemas').AuthMethod} [options.authMethod]
  * @returns
  */
@@ -683,18 +685,24 @@ const setAuthTokens = async (userId, res, _session = null, req = null, options =
     let refreshToken;
     let refreshTokenExpires;
     const expiresIn = math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY);
+    const user = await getUserById(userId);
 
     if (session && session._id && session.expiration != null) {
       refreshTokenExpires = session.expiration.getTime();
       refreshToken = await generateRefreshToken(session);
     } else {
-      const result = await createSession(userId, { expiresIn, authMethod: options.authMethod });
+      // `createSession` (packages/data-schemas) only sets `providerSession`/`authMethod` on the
+      // Session doc when they are truthy, so an undefined value here is a no-op.
+      const result = await createSession(userId, {
+        expiresIn,
+        providerSession: options.providerSession,
+        authMethod: options.authMethod,
+      });
       session = result.session;
       refreshToken = result.refreshToken;
       refreshTokenExpires = session.expiration.getTime();
     }
 
-    const user = await getUserById(userId);
     const sessionExpiry = math(process.env.SESSION_EXPIRY, DEFAULT_SESSION_EXPIRY);
     const token = await generateToken(user, sessionExpiry);
 
