@@ -529,6 +529,7 @@ jobs:
         with:
           name: playwright-test-results-${{ matrix.artifact }}
           path: e2e/specs/.test-results/**
+          include-hidden-files: true
           retention-days: 7
           if-no-files-found: ignore
 
@@ -561,6 +562,7 @@ jobs:
         with:
           name: playwright-title-ownership-${{ matrix.artifact }}
           path: e2e/specs/.test-results/title-ownership/**
+          include-hidden-files: true
           retention-days: 7
           if-no-files-found: ignore
 
@@ -731,6 +733,7 @@ jobs:
         with:
           name: playwright-mcp-list-changed-results-${{ matrix.replicas }}-replicas
           path: e2e/specs/.test-results/**
+          include-hidden-files: true
           retention-days: 7
           if-no-files-found: ignore
 
@@ -825,6 +828,7 @@ jobs:
             e2e/.generated/mcp-apps-result-*.json
           retention-days: 7
           if-no-files-found: warn
+          include-hidden-files: true
 
       - name: Upload MCP Apps traces and screenshots
         if: failure()
@@ -834,6 +838,7 @@ jobs:
         with:
           name: playwright-mcp-apps-results
           path: e2e/specs/.test-results/mcp-apps-*/**
+          include-hidden-files: true
           retention-days: 7
           if-no-files-found: ignore
 
