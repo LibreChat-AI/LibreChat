@@ -66,6 +66,7 @@ import type { Callbacks } from '@langchain/core/callbacks/manager';
 import type { TerminalSteerHook, SteerPreemption } from '~/agents/steering/runtime';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
 import type { ModelErrorTrackerCallback } from '~/agents/failures/tracker';
+import type { ProductTrackingRequest, ProductChildRuns } from './product';
 import type { ToolInputValidationError } from '~/agents/toolValidation';
 import type { RunGrantExecution } from '~/agents/authority/execution';
 import type { RunGrantPolicyError } from '~/agents/authority/policy';
@@ -80,7 +81,6 @@ import type { MCPToolAlias } from '~/tools/classification';
 import type { ReviewedToolApprovals } from './hitl/modes';
 import type { SubagentUsageEvent } from '~/agents/usage';
 import type { ProvisionState } from '~/agents/resources';
-import type { ProductTrackingRequest } from './product';
 import type { SdkModelHost } from './remoteSdk/builder';
 import type { RunFileSession } from './files/session';
 import type { SdkAgentRuntimeLoader } from './sdk';
@@ -95,6 +95,14 @@ import {
   createAttachedCodeEnvironmentPolicyHook,
   resolveAttachedCodeApprovalMode,
 } from '~/agents/hitl/byom';
+import {
+  createProductModelCallback,
+  createProductEventHandlers,
+  createProductRemoteModelHandlers,
+  createProductAgentLifecycle,
+  observeProductRun,
+  observeProductRunSetup,
+} from './product';
 import {
   CHECK_BACKGROUND_TASK_NAME,
   registerBackgroundTaskTool,
@@ -119,12 +127,6 @@ import {
   resolveSubagentMaxTurns,
   resolveRecursionLimit,
 } from '~/agents/config';
-import {
-  createProductModelCallback,
-  createProductRemoteModelHandlers,
-  observeProductRun,
-  observeProductRunSetup,
-} from './product';
 import {
   isSteeringSupported,
   isSteerPreemptSupported,
@@ -2593,6 +2595,8 @@ async function buildRun({
     subagents: resolveSubagents(agent.subagents, appConfig?.endpoints?.agents?.capabilities),
   }));
   const resolvedRunId = runId ?? randomUUID();
+  const productAgents = createProductAgentLifecycle(productTrackingRequest);
+  const productChildRuns: ProductChildRuns = new Map();
   const registration = resolveSdkAgentBinding(
     agents,
     appConfig?.endpoints?.agents,
@@ -2775,6 +2779,8 @@ async function buildRun({
       productTrackingRequest,
       productContext,
       signal,
+      isSubagent ? undefined : productAgents,
+      isSubagent ? productChildRuns : undefined,
     );
     const agentModelCallbacks = productModelCallback
       ? [...(modelCallbacks ?? []), productModelCallback]
@@ -2786,6 +2792,8 @@ async function buildRun({
         usage_type: 'summarization',
       },
       signal,
+      isSubagent ? undefined : productAgents,
+      isSubagent ? productChildRuns : undefined,
     );
     const summaryModelCallbacks = productSummaryCallback
       ? [...(modelCallbacks ?? []), productSummaryCallback]
@@ -3390,7 +3398,7 @@ async function buildRun({
     preemption = undefined;
   }
   const toolHandler = customHandlers?.[GraphEvents.ON_TOOL_EXECUTE];
-  const runHandlers =
+  const executionHandlers =
     toolHandler != null && preemption != null && isSteerPreemptSupported()
       ? {
           ...customHandlers,
@@ -3409,6 +3417,12 @@ async function buildRun({
     model: agents[0]?.model_parameters?.model ?? agents[0]?.model ?? undefined,
     provider: agents[0]?.provider,
   };
+  const runHandlers = createProductEventHandlers(
+    executionHandlers,
+    productTrackingRequest,
+    productHandlerContext,
+    productChildRuns,
+  );
   const runConfig = {
     runId: resolvedRunId,
     graphConfig,
@@ -3419,6 +3433,7 @@ async function buildRun({
             runHandlers,
             productTrackingRequest,
             productHandlerContext,
+            productAgents,
           )
         : runHandlers,
     ...(protection != null && { providerTextProtection: protection }),
@@ -3574,6 +3589,7 @@ async function buildRun({
       provider: agents[0]?.provider,
     },
     signal,
+    productAgents,
   );
 }
 

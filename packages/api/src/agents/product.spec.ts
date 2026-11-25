@@ -2,10 +2,13 @@ import { Constants, GraphEvents } from '@librechat/agents';
 import { AIMessage } from '@librechat/agents/langchain/messages';
 import { serverProductFactSchema } from 'librechat-data-provider';
 import type { ChatGeneration } from '@langchain/core/outputs';
-import type { ProductTrackingRequest } from './product';
+import type { ProductTrackingRequest, ProductChildRuns } from './product';
 import {
   createProductModelCallback,
+  createProductToolObserver,
+  createProductEventHandlers,
   createProductRemoteModelHandlers,
+  createProductAgentLifecycle,
   observeProductRun,
   observeProductRunSetup,
 } from './product';
@@ -106,9 +109,32 @@ describe('product execution facts', () => {
     expect(JSON.stringify(track.mock.calls)).not.toContain('private');
   });
 
+  it('keeps tool results and errors out of facts and excludes runtime skills', async () => {
+    const { req, track } = request();
+    const observe = createProductToolObserver(req);
+    const identity = { toolCallId: 'tool-call', toolName: 'query', mode: 'programmatic' as const };
+    const result = { isError: true, content: 'private result' };
+    expect(await observe(identity, async () => result)).toBe(result);
+    expect(track.mock.calls[1][0]).toMatchObject({
+      name: 'librechat.chat.tool.finished',
+      outcome: 'failed',
+    });
+    const failure = new Error('private error');
+    await expect(
+      observe(identity, async () => {
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
+    expect(JSON.stringify(track.mock.calls)).not.toContain('private');
+    track.mockClear();
+    await observe({ ...identity, toolName: Constants.SKILL_TOOL }, async () => 'loaded');
+    expect(track).not.toHaveBeenCalled();
+  });
+
   it('does not treat a paused run as a response completion; resume finishes once', async () => {
     const { req, track } = request();
     let interrupted = true;
+    const agents = createProductAgentLifecycle(req);
     const run = observeProductRun(
       {
         processStream: async () => 'result',
@@ -118,15 +144,69 @@ describe('product execution facts', () => {
       req,
       context,
       new AbortController().signal,
+      agents,
     );
+    agents.start(context);
+    agents.start(context);
     await run.processStream();
-    expect(track).not.toHaveBeenCalled();
+    expect(track.mock.calls.map(([fact]) => fact.name)).toEqual(['librechat.chat.agent.invoked']);
     interrupted = false;
     await run.processStream();
     await run.processStream();
     expect(track.mock.calls.map(([fact]) => fact.name)).toEqual([
+      'librechat.chat.agent.invoked',
       'librechat.chat.response.finished',
+      'librechat.chat.agent.finished',
     ]);
+  });
+
+  it('preserves nested run identity and forwards existing handlers', async () => {
+    const { req, track } = request();
+    const handle = jest.fn();
+    const handlers = createProductEventHandlers(
+      { [GraphEvents.ON_SUBAGENT_UPDATE]: { handle } },
+      req,
+      context,
+    )!;
+    const child = {
+      runId: 'generation',
+      subagentRunId: 'child-run',
+      subagentAgentId: 'agent_child',
+      subagentType: 'test',
+      timestamp: 'now',
+      phase: 'start' as const,
+    };
+    await handlers[GraphEvents.ON_SUBAGENT_UPDATE].handle(GraphEvents.ON_SUBAGENT_UPDATE, child);
+    await handlers[GraphEvents.ON_SUBAGENT_UPDATE].handle(GraphEvents.ON_SUBAGENT_UPDATE, {
+      ...child,
+      phase: 'stop',
+    });
+    expect(handle).toHaveBeenCalledTimes(2);
+    expect(track.mock.calls[1][0]).toMatchObject({
+      runId: 'child-run',
+      parentRunId: 'generation',
+      agentId: 'agent_child',
+      outcome: 'completed',
+    });
+  });
+  it('keeps parallel participants open and does not attribute root failure to them', () => {
+    const { req, track } = request();
+    const agents = createProductAgentLifecycle(req);
+    agents.start(context);
+    agents.start(context);
+    agents.start({ ...context, agentId: 'agent_second' });
+    agents.start(context);
+    agents.finish('failed');
+    const starts = track.mock.calls
+      .map(([fact]) => fact)
+      .filter((fact) => fact.name.endsWith('invoked'));
+    const ends = track.mock.calls
+      .map(([fact]) => fact)
+      .filter((fact) => fact.name.endsWith('finished'));
+    expect(starts).toHaveLength(2);
+    expect(new Set(starts.map((fact) => fact.agentInvocationId)).size).toBe(2);
+    expect(ends).toEqual([]);
+    expect(starts[0]).not.toHaveProperty('parentCallId');
   });
 
   it('observes a remote resume even when it bypasses processStream', async () => {
@@ -151,7 +231,8 @@ describe('product execution facts', () => {
 
   it('tracks a remote model result without retaining its content', async () => {
     const { req, track } = request();
-    const handlers = createProductRemoteModelHandlers(undefined, req, context)!;
+    const agents = createProductAgentLifecycle(req);
+    const handlers = createProductRemoteModelHandlers(undefined, req, context, agents)!;
     await handlers[GraphEvents.CHAT_MODEL_END].handle(
       GraphEvents.CHAT_MODEL_END,
       {
@@ -162,7 +243,7 @@ describe('product execution facts', () => {
       },
       { ls_model_name: 'remote-model', [Constants.INVOKED_PROVIDER]: 'openAI' },
     );
-    expect(track.mock.calls[0][0]).toMatchObject({
+    expect(track.mock.calls[1][0]).toMatchObject({
       name: 'librechat.chat.model.usage.recorded',
       input_tokens: 2,
       model: 'custom',
@@ -201,6 +282,76 @@ describe('product execution facts', () => {
     ).rejects.toBe(abort.signal.reason);
     expect(track.mock.calls[0][0]).toMatchObject({ outcome: 'cancelled' });
   });
+  it('attributes child model calls to observed child runs rather than the root hook scope', async () => {
+    const { req, track } = request();
+    const children: ProductChildRuns = new Map();
+    const handlers = createProductEventHandlers(undefined, req, context, children)!;
+    await handlers[GraphEvents.ON_SUBAGENT_UPDATE].handle(GraphEvents.ON_SUBAGENT_UPDATE, {
+      runId: 'generation',
+      parentRunId: 'middle-child',
+      subagentRunId: 'nested-child',
+      subagentAgentId: 'agent_nested',
+      subagentType: 'test',
+      timestamp: 'now',
+      phase: 'start',
+    });
+    const callback = createProductModelCallback(
+      req,
+      {
+        conversationId: context.conversationId,
+        agentId: 'agent_nested',
+        usage_type: 'subagent',
+      },
+      new AbortController().signal,
+      undefined,
+      children,
+    )!;
+    await callback.handleChatModelStart?.(
+      { id: [], lc: 1, type: 'not_implemented' },
+      [],
+      'nested-model-call',
+      undefined,
+      undefined,
+      undefined,
+      { messageId: 'nested-child', run_id: 'generation', agentId: 'agent_nested' },
+    );
+    await callback.handleLLMEnd?.(
+      {
+        generations: [
+          [
+            generation(
+              new AIMessage({
+                content: '',
+                usage_metadata: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+              }),
+            ),
+          ],
+        ],
+      },
+      'nested-model-call',
+    );
+    expect(track.mock.calls[1][0]).toMatchObject({
+      runId: 'nested-child',
+      parentRunId: 'middle-child',
+      callId: 'nested-model-call',
+      input_tokens: 3,
+    });
+    await callback.handleChatModelStart?.(
+      { id: [], lc: 1, type: 'not_implemented' },
+      [],
+      'summary-call',
+      undefined,
+      undefined,
+      undefined,
+      { messageId: 'generation', run_id: 'generation' },
+    );
+    await callback.handleLLMEnd?.(
+      { generations: [[generation(new AIMessage(''))]] },
+      'summary-call',
+    );
+    expect(track.mock.calls[2][0].runId).toBeUndefined();
+    expect(track.mock.calls[2][0].parentRunId).toBeUndefined();
+  });
   it.each([false, true])(
     'waits for the outer resume boundary before reporting completion (cleanup failure: %s)',
     async (cleanupFails) => {
@@ -227,6 +378,29 @@ describe('product execution facts', () => {
       });
     },
   );
+
+  it('keeps a proven parent when a child callback has no child run identity', async () => {
+    const { req, track } = request();
+    const callback = createProductModelCallback(
+      req,
+      { parentRunId: 'known-parent', agentId: 'agent_child', usage_type: 'subagent' },
+      new AbortController().signal,
+      undefined,
+      new Map(),
+    )!;
+    await callback.handleChatModelStart?.(
+      { id: [], lc: 1, type: 'not_implemented' },
+      [],
+      'call',
+      undefined,
+      undefined,
+      undefined,
+      { run_id: 'root-hook-scope' },
+    );
+    await callback.handleLLMEnd?.({ generations: [[generation(new AIMessage(''))]] }, 'call');
+    expect(track.mock.calls[0][0].runId).toBeUndefined();
+    expect(track.mock.calls[0][0].parentRunId).toBe('known-parent');
+  });
 });
 
 it('records a halted run as incomplete, not failed', async () => {
@@ -249,10 +423,12 @@ it('records a halted run as incomplete, not failed', async () => {
 
 it('keeps execution correlation without ephemeral labels, custom models or provider names', async () => {
   const { req, track } = request();
+  const agents = createProductAgentLifecycle(req);
   const callback = createProductModelCallback(
     req,
     { ...context, agentId: 'private-endpoint__private-model___private-customer' },
     new AbortController().signal,
+    agents,
   )!;
   await callback.handleChatModelStart?.(
     { id: [], lc: 1, type: 'not_implemented' },
@@ -271,15 +447,17 @@ it('keeps execution correlation without ephemeral labels, custom models or provi
     { generations: [[generation(new AIMessage('private-completion'))]] },
     'correlated-call',
   );
-  expect(track).toHaveBeenCalledTimes(1);
+  agents.finish('completed');
+  expect(track).toHaveBeenCalledTimes(3);
   const facts = track.mock.calls.map(([fact]) => fact);
-  expect(facts[0]).toMatchObject({
+  expect(facts[1]).toMatchObject({
     runId: context.runId,
     callId: 'correlated-call',
     parentCallId: 'parent-call',
     model: 'custom',
     provider: 'custom',
   });
+  expect(facts[0].agentInvocationId).toBe(facts[2].agentInvocationId);
   for (const fact of facts) {
     expect(fact.agentId).toBeUndefined();
     expect(fact).not.toHaveProperty('messageId');
