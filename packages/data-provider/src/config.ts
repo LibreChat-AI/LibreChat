@@ -2474,6 +2474,11 @@ export const agentsEndpointSchema = baseEndpointSchema
               requestTimeoutSeconds: z.number().int().min(1).max(60).optional(),
             })
             .optional(),
+          /** How long a subscription's check that an MCP server is ready is reused for the same
+           *  owner, server and server settings, in seconds; 0 checks on every delivery. A failed
+           *  check is never reused, and a call that finds the owner's sign-in rejected drops it.
+           *  Default 300. */
+          readyTtlSeconds: z.number().int().min(0).max(3600).optional(),
         })
         .optional(),
       /** Header pull request chip: finds the pull request for the branch a conversation's code

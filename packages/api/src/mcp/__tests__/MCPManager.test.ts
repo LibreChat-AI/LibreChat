@@ -1075,6 +1075,60 @@ describe('MCPManager', () => {
       expect(request).not.toHaveBeenCalled();
     });
 
+    it("tells the run's subject when the server rejects the owner's sign-in, and not otherwise", async () => {
+      const { fixture, request } = await setupScheduled();
+      const rejected = jest.fn();
+      const manager = new MCPManager();
+      const connection = {
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+        isConnected: jest.fn().mockResolvedValue(true),
+        setRequestHeaders: jest.fn(),
+        fetchToolsSnapshot: jest.fn().mockResolvedValue({ tools: [readTool], complete: true }),
+        timeout: 30_000,
+        client: fakeClient(request, { tools: {} }),
+      } as unknown as MCPConnection;
+      jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
+      const call = () =>
+        manager.callTool({
+          user: fixture.user,
+          serverName: 'warehouse',
+          serverConfig: fixture.config,
+          toolName: 'query',
+          provider: 'openai',
+          flowManager: {} as Parameters<MCPManager['callTool']>[0]['flowManager'],
+          scheduledMCPInvocation: { ...fixture.invocation('root'), rejected },
+        });
+      await call();
+      expect(rejected).not.toHaveBeenCalled();
+      request.mockRejectedValue(Object.assign(new Error('HTTP 401'), { status: 401 }));
+      await expect(call()).rejects.toMatchObject({ failure: { reason: 'credential_rejected' } });
+      expect(rejected).toHaveBeenCalledWith('warehouse');
+    });
+
+    it("tells the run's subject when an unattended call meets a sign-in prompt", async () => {
+      const { fixture } = await setupScheduled();
+      const rejected = jest.fn();
+      const manager = new MCPManager();
+      jest.spyOn(manager, 'getConnection').mockImplementation(async (options) => {
+        await options.oauthStart?.('https://resource.example/authorize');
+        options.signal?.throwIfAborted();
+        throw new Error('unreachable');
+      });
+      await expect(
+        manager.callTool({
+          user: fixture.user,
+          serverName: 'warehouse',
+          serverConfig: fixture.config,
+          toolName: 'query',
+          provider: 'openai',
+          flowManager: {} as Parameters<MCPManager['callTool']>[0]['flowManager'],
+          scheduledMCPInvocation: { ...fixture.invocation('root'), rejected },
+          unattended: true,
+        }),
+      ).rejects.toThrow();
+      expect(rejected).toHaveBeenCalledWith('warehouse');
+    });
+
     it('never automatically replays a protected call after resource bearer rejection', async () => {
       const { request, call } = await setupScheduled();
       request.mockRejectedValue(Object.assign(new Error('HTTP 401'), { status: 401 }));

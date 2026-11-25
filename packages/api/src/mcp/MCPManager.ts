@@ -258,10 +258,13 @@ export class MCPManager extends UserConnectionManager {
   private guardUnattended(
     callerSignal: AbortSignal | undefined,
     logPrefix: string,
+    /** Also told, once, that the server asked for a sign-in nobody can give. */
+    onSignInRequired?: () => void,
   ): { signal: AbortSignal; oauthStart: t.OAuthStartHandler; oauthEnd: undefined } {
-    const { signal, oauthStart, leave } = guardUnattendedOAuth(callerSignal, () =>
-      logger.warn(`${logPrefix} Sign-in required on an unattended run; not prompting`),
-    );
+    const { signal, oauthStart, leave } = guardUnattendedOAuth(callerSignal, () => {
+      logger.warn(`${logPrefix} Sign-in required on an unattended run; not prompting`);
+      onSignInRequired?.();
+    });
     this.unattendedCallers.set(signal, leave);
     return { signal, oauthStart, oauthEnd: undefined };
   }
@@ -1585,8 +1588,10 @@ Please follow these instructions when using tools from the respective MCP server
       scheduledMCPInvocation != null && scheduledMCPInvocation.enrolled !== false;
     const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
     const logPrefix = userId ? `[MCP][User: ${userId}][${serverName}]` : `[MCP][${serverName}]`;
+    /** The run's subject stops trusting what it knew of this server for the owner. */
+    const rejected = () => scheduledMCPInvocation?.rejected?.(serverName);
     if (unattended) {
-      const guard = this.guardUnattended(options?.signal, logPrefix);
+      const guard = this.guardUnattended(options?.signal, logPrefix, rejected);
       ({ oauthStart, oauthEnd } = guard);
       options = { ...options, signal: guard.signal };
     }
@@ -2317,6 +2322,7 @@ Please follow these instructions when using tools from the respective MCP server
           logger.debug(`${logPrefix}[${toolName}] Tool call cancelled by user abort`);
           throw error;
         }
+        if (error instanceof MCPAuthenticationRejectedError) rejected();
         if (enforceSchedule && error instanceof MCPAuthenticationRejectedError) {
           throw new RunGrantPolicyError(
             'credential_rejected',

@@ -4,9 +4,15 @@ import {
   SUBSCRIPTION_APPROVAL_REASON,
   DEFAULT_RUN_GRANT_LIFETIME_HOURS,
 } from 'librechat-data-provider';
-import type { SubscriptionIdentity, Subscription, Connection } from 'librechat-data-provider';
+import type {
+  ScheduleMCPOutcome,
+  SubscriptionIdentity,
+  Subscription,
+  Connection,
+} from 'librechat-data-provider';
 import type { RunGrantStorage, IUser } from '@librechat/data-schemas';
 import type { RunGrantExecutionFactory, PolicyWording } from '~/agents/authority/execution';
+import type { PreflightDeps, PreflightOptions } from '~/agents/authority/preflight';
 import type { SubjectAdapter, SubjectInput } from '~/agents/authority/subject';
 import type { RunGrantService } from '~/agents/authority/service';
 import type { RunGrantOfferDeps } from '~/agents/authority/offer';
@@ -15,7 +21,9 @@ import type { AgentAccess } from '~/schedules/access';
 import { createRunGrantExecution } from '~/agents/authority/execution';
 import { createRunGrantService } from '~/agents/authority/service';
 import { RunGrantPolicyError } from '~/agents/authority/policy';
+import { createPreflight } from '~/agents/authority/preflight';
 import { createRunGrantOffer } from '~/agents/authority/offer';
+import { createReadyCache } from '~/agents/authority/ready';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { checkAccess } from '~/middleware/access';
 
@@ -58,10 +66,25 @@ export function subscriptionSubject(
   };
 }
 
+/** How long a subscription reuses a check that an MCP server is ready, when nothing sets it. */
+export const DEFAULT_READY_TTL_SECONDS = 300;
+
+/**
+ * Whether the MCP servers a subscription's run would use are ready, for its owner and under
+ * its grant. Resolves with every server ready; throws `PreflightError` naming those that are not.
+ */
+export type SubscriptionPreflight = (
+  agentId: string,
+  principal: { readonly id: string; readonly tenantId?: string },
+  options: Omit<PreflightOptions<SubscriptionIdentity>, 'identity'> & { subscriptionId: string },
+) => Promise<ScheduleMCPOutcome[]>;
+
 export interface SubscriptionHost extends Pick<Adapter, 'resolve'> {
   /** What the owner may allow the subscription's runs, and the grant they made. */
   service: RunGrantService<SubscriptionIdentity>;
   execution: RunGrantExecutionFactory<SubscriptionIdentity>;
+  /** Present when the host was given what a readiness check needs. */
+  preflight?: SubscriptionPreflight;
 }
 
 /**
@@ -94,7 +117,19 @@ export function createSubscriptionHost(deps: {
   getMaxLifetimeHours?: (user: IUser) => Promise<number>;
   /** The owner and whether they may run the agent are supplied by this host. */
   enrollment: Omit<RunGrantOfferDeps, 'findUser' | 'canUseRoot' | 'canUseMCP'>;
+  /** What checking that the servers a run needs are ready reads and connects with. */
+  readiness?: Omit<PreflightDeps<SubscriptionIdentity>, 'execution'>;
 }): SubscriptionHost {
+  // Ready listings this process reuses for subscriptions alone: schedules and keys keep none.
+  // How long one is reused is the deployment's `endpoints.agents.events.readyTtlSeconds`, which
+  // only librechat.yaml sets, read from the base configuration for every check.
+  const ready = createReadyCache({
+    ttlMs: async () => {
+      const config = await deps.enrollment.getAppConfig({ baseOnly: true });
+      const seconds = config?.endpoints?.agents?.events?.readyTtlSeconds;
+      return (seconds ?? DEFAULT_READY_TTL_SECONDS) * 1000;
+    },
+  });
   const loadOwner = async (
     identity: Pick<SubscriptionIdentity, 'ownerId' | 'tenantId'>,
     findUser = deps.findUser,
@@ -207,11 +242,30 @@ export function createSubscriptionHost(deps: {
     // A background task's completion turn finds the subscription by the trigger the task kept.
     detaches: true,
     wording: SUBSCRIPTION_WORDING,
+    // A call the server refused for the owner's sign-in: that server is checked afresh next time.
+    rejected: (identity, server) => ready.forget(identity.ownerId, server),
   });
+  const check =
+    deps.readiness &&
+    createPreflight<SubscriptionIdentity>({ ...deps.readiness, execution }, {}, ready);
+  const preflight: SubscriptionPreflight | undefined =
+    check &&
+    ((agentId, principal, { subscriptionId, ...options }) =>
+      check(agentId, principal, {
+        ...options,
+        identity: {
+          subscriptionId,
+          ownerId: principal.id,
+          tenantId: principal.tenantId ?? null,
+          agentId,
+          invocationMode: 'delegated',
+        },
+      }));
 
   return {
     service,
     execution,
+    ...(preflight && { preflight }),
     async resolve(input) {
       const subscriptionId = named(input);
       if (subscriptionId == null) return;
