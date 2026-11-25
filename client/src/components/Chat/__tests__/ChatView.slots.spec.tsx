@@ -78,6 +78,7 @@ jest.mock('~/hooks', () => ({
   useAddedResponse: () => ({}),
 }));
 
+jest.mock('../Watching', () => ({ __esModule: true, default: () => null }));
 jest.mock('../Presentation', () => ({
   __esModule: true,
   default: ({ children }: { children: React.ReactNode }) => {

@@ -196,6 +196,7 @@ export enum MutationKeys {
   createAgentEventSubscription = 'createAgentEventSubscription',
   updateAgentEventSubscription = 'updateAgentEventSubscription',
   deleteAgentEventSubscription = 'deleteAgentEventSubscription',
+  deleteAgentEventWatch = 'deleteAgentEventWatch',
   confirmAgentEventSubscriptionGrant = 'confirmAgentEventSubscriptionGrant',
   revokeAgentEventSubscriptionGrant = 'revokeAgentEventSubscriptionGrant',
   deleteAgentApiKey = 'deleteAgentApiKey',

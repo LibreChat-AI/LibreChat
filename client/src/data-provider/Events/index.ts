@@ -7,6 +7,7 @@ import type {
   ConfirmRunGrant,
   Subscription,
   RunGrantView,
+  Watch,
 } from 'librechat-data-provider';
 
 /** The caller's event subscriptions on one agent. Idle until the agent is saved. */
@@ -78,4 +79,26 @@ export function useEventGrantMutations(id: string) {
     { onSettled: refresh },
   );
   return { confirm, revoke };
+}
+
+/** The pull requests a conversation follows. Read again on focus, since a run may add one. */
+export function useEventWatches(conversationId?: string, enabled = true) {
+  return useQuery<Watch[]>(
+    [QueryKeys.agentEventWatches, conversationId],
+    () => dataService.getAgentEventWatches(conversationId ?? '').then((res) => res.watches),
+    { enabled: enabled && Boolean(conversationId), retry: false, refetchOnWindowFocus: true },
+  );
+}
+
+export function useStopWatch(conversationId?: string) {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.deleteAgentEventWatch],
+    (id: string) => dataService.deleteAgentEventWatch(id),
+    {
+      onSettled: () => {
+        void queryClient.invalidateQueries([QueryKeys.agentEventWatches, conversationId]);
+      },
+    },
+  );
 }

@@ -34,6 +34,7 @@ import WelcomeBackdrop from './Backdrop';
 import ChatForm from './Input/ChatForm';
 import { TraceSurface } from './Trace';
 import Lia from '~/components/Lia';
+import Watching from './Watching';
 import AskHost from './AskHost';
 import Landing from './Landing';
 import Header from './Header';
@@ -135,6 +136,7 @@ function ChatViewScreen({
       renderComposer={({ isLanding, footerBelow, project: composerProject, placeholder }) => (
         /* Typing a first message is the cue that the list is next. */
         <div className="contents" onFocusCapture={warmMessages}>
+          {!isLanding && <Watching conversationId={conversationId} isSubmitting={isSubmitting} />}
           <ChatForm
             index={index}
             routePending={routePending}

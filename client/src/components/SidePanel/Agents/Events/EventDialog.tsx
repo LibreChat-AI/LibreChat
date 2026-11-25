@@ -60,7 +60,7 @@ export function filtersFrom(
   return Object.keys(filters).length ? filters : null;
 }
 
-type Fields = Pick<Subscription, 'events' | 'prompt' | 'actors' | 'bots'> & {
+type Fields = Pick<Subscription, 'events' | 'prompt' | 'actors' | 'bots' | 'watch'> & {
   filters: SubscriptionFilters | null;
 };
 
@@ -73,6 +73,7 @@ export function changes(current: Subscription, next: Fields): Partial<Fields> | 
   if (current.prompt !== next.prompt) patch.prompt = next.prompt;
   if (current.actors !== next.actors) patch.actors = next.actors;
   if (current.bots !== next.bots) patch.bots = next.bots;
+  if (current.watch !== next.watch) patch.watch = next.watch;
   if (!same(current.filters, next.filters)) patch.filters = next.filters;
   return Object.keys(patch).length ? patch : null;
 }
@@ -103,6 +104,7 @@ export default function EventDialog({
   const [prompt, setPrompt] = useState(subscription?.prompt ?? '');
   const [actors, setActors] = useState<SubscriptionActors>(subscription?.actors ?? 'write');
   const [bots, setBots] = useState(subscription?.bots ?? false);
+  const [watch, setWatch] = useState(subscription?.watch ?? false);
   const [filters, setFilters] = useState<Record<FilterKey, string>>(() => ({
     repositories: shown(subscription?.filters?.repositories),
     branches: shown(subscription?.filters?.branches),
@@ -127,6 +129,7 @@ export default function EventDialog({
       prompt: prompt.trim(),
       actors,
       bots,
+      watch,
     };
     const onSuccess = () => onOpenChange(false);
     if (subscription) {
@@ -252,6 +255,17 @@ export default function EventDialog({
                 />
                 <Label id={`${id}-bots-label`} htmlFor={`${id}-bots`} className="text-sm">
                   {localize('com_ui_events_bots')}
+                </Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id={`${id}-watch`}
+                  checked={watch}
+                  aria-labelledby={`${id}-watch-label`}
+                  onCheckedChange={(checked) => setWatch(checked === true)}
+                />
+                <Label id={`${id}-watch-label`} htmlFor={`${id}-watch`} className="text-sm">
+                  {localize('com_ui_events_allow_watch')}
                 </Label>
               </div>
             </div>

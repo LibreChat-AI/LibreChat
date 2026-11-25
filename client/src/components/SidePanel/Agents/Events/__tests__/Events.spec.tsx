@@ -214,6 +214,7 @@ describe('Events', () => {
         actors: 'write',
         bots: false,
         filters: { branches: ['main', 'release'] },
+        watch: false,
       }),
     );
     // Saving the subscription is not saving the agent around it.
@@ -227,6 +228,7 @@ describe('changes', () => {
     prompt: subscription.prompt,
     actors: subscription.actors,
     bots: subscription.bots,
+    watch: subscription.watch,
     filters: null,
   };
 
@@ -242,6 +244,8 @@ describe('changes', () => {
     expect(
       changes({ ...subscription, filters: { labels: ['bug'] } }, { ...fields, filters: null }),
     ).toEqual({ filters: null });
+    // Letting the agent watch is an activation edit: it travels alone.
+    expect(changes(subscription, { ...fields, watch: true })).toEqual({ watch: true });
   });
 });
 
