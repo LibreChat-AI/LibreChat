@@ -25,8 +25,19 @@ export interface Watch {
   expiresAt: string;
 }
 
+/**
+ * Why a stored watch continues nothing for now: its subscription is off, no longer allows
+ * watching, or no longer governs it (another agent, connection or owner, or gone).
+ */
+export type WatchPause = 'subscription_off' | 'watching_off' | 'unbound';
+
+/** A watch as its owner lists it: `paused` is absent while events still continue it. */
+export interface ListedWatch extends Watch {
+  paused?: WatchPause;
+}
+
 export interface WatchesResponse {
-  watches: Watch[];
+  watches: ListedWatch[];
 }
 
 /** Stable codes a watch route answers a failure with. */

@@ -1,4 +1,4 @@
-import type { Subscription, Watch } from 'librechat-data-provider';
+import type { Subscription, Watch, WatchPause } from 'librechat-data-provider';
 
 /** The tool that has the conversation follow a pull request. */
 export const WATCH_TOOL = 'watch';
@@ -13,22 +13,35 @@ export const UNWATCH_TOOL = 'unwatch';
 export const WATCH_TOOLS: readonly string[] = [WATCH_TOOL, UNWATCH_TOOL];
 
 /**
- * True when the subscription still lets the watch continue its conversation: the same one,
- * on, still allowing watching, and the same owner, agent, connection and tenant. Read where
- * an event is routed and again when its turn is dispatched.
+ * Why the subscription does not let the watch continue its conversation now, or `undefined`
+ * when it does: it must be the same one, for the same owner, agent, connection and tenant
+ * (`unbound` otherwise), on (`subscription_off`), and still allow watching (`watching_off`).
+ */
+export function pauseOf(
+  watch: Watch,
+  subscription: Subscription | null | undefined,
+): WatchPause | undefined {
+  if (
+    subscription == null ||
+    subscription.id !== watch.subscription ||
+    subscription.user !== watch.user ||
+    subscription.agentId !== watch.agentId ||
+    subscription.connection !== watch.connection ||
+    (subscription.tenantId ?? null) !== (watch.tenantId ?? null)
+  )
+    return 'unbound';
+  if (!subscription.enabled) return 'subscription_off';
+  if (!subscription.watch) return 'watching_off';
+  return undefined;
+}
+
+/**
+ * True when the subscription still lets the watch continue its conversation. Read where an
+ * event is routed, again when its turn is dispatched, and where the owner lists the watch.
  */
 export function governs(
   watch: Watch,
   subscription: Subscription | null | undefined,
 ): subscription is Subscription {
-  return (
-    subscription != null &&
-    subscription.id === watch.subscription &&
-    subscription.enabled &&
-    subscription.watch &&
-    subscription.user === watch.user &&
-    subscription.agentId === watch.agentId &&
-    subscription.connection === watch.connection &&
-    (subscription.tenantId ?? null) === (watch.tenantId ?? null)
-  );
+  return pauseOf(watch, subscription) === undefined;
 }

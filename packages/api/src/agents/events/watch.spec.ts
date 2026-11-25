@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createModels, createWatches } from '@librechat/data-schemas';
-import type { Subscription, Watch } from 'librechat-data-provider';
+import type { ListedWatch, Subscription, Watch } from 'librechat-data-provider';
 import type { Watches, IUser } from '@librechat/data-schemas';
 import type { AgentContinueTriggerEnvelope } from '~/agents/triggers/envelope';
 import type { AgentTriggerDispatchContext } from '~/agents/triggers/dispatch';
@@ -508,10 +508,51 @@ describe('createWatchHandlers', () => {
     return added.value;
   }
 
+  const live = { get: jest.fn(async () => subscription()) };
+
+  it.each([
+    ['live', {}, undefined],
+    ['subscription_off', { enabled: false }, 'subscription_off'],
+    ['watching_off', { watch: false }, 'watching_off'],
+    ['unbound', { agentId: 'agent_other' }, 'unbound'],
+  ])('lists a watch as %s from its subscription as it stands', async (_label, edit, paused) => {
+    await stored();
+    const get = jest.fn(async () => subscription(edit));
+    const handlers = createWatchHandlers({ watches, subscriptions: { get } });
+    const ok = response();
+    await handlers.list(request({ query: { conversationId: CONVO } }), ok.api as never);
+    const [listed] = (ok.res.body as { watches: ListedWatch[] }).watches;
+    expect(listed.paused).toBe(paused);
+    expect(get).toHaveBeenCalledWith('sub_1', OWNER);
+  });
+
+  it('lists a watch whose subscription is gone as unbound, reading each subscription once', async () => {
+    await stored();
+    await watches.add(
+      OWNER,
+      {
+        conversationId: CONVO,
+        agentId: AGENT,
+        subscription: 'sub_1',
+        connection: 'conn_1',
+        item: 'github:pr:700100#43',
+        label: 'example-org/widgets#43',
+      },
+      { max: 5, ttlMs: 60_000 },
+    );
+    const get = jest.fn(async () => null);
+    const handlers = createWatchHandlers({ watches, subscriptions: { get } });
+    const ok = response();
+    await handlers.list(request({ query: { conversationId: CONVO } }), ok.api as never);
+    const listed = (ok.res.body as { watches: ListedWatch[] }).watches;
+    expect(listed.map((watch) => watch.paused)).toEqual(['unbound', 'unbound']);
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
   it("lists the caller's watches on a conversation and refuses a missing conversation id", async () => {
     await stored();
     await stored(OTHER);
-    const handlers = createWatchHandlers({ watches });
+    const handlers = createWatchHandlers({ watches, subscriptions: live });
     const ok = response();
     await handlers.list(request({ query: { conversationId: CONVO } }), ok.api as never);
     expect((ok.res.body as { watches: Watch[] }).watches.map((watch) => watch.user)).toEqual([
@@ -525,7 +566,7 @@ describe('createWatchHandlers', () => {
   it("removes the caller's watch and answers another's as not found", async () => {
     const theirs = await stored(OTHER);
     const mine = await stored();
-    const handlers = createWatchHandlers({ watches });
+    const handlers = createWatchHandlers({ watches, subscriptions: live });
     const refused = response();
     await handlers.remove(request({ params: { id: theirs.id } }), refused.api as never);
     expect(refused.res).toMatchObject({ statusCode: 404, body: { code: 'watch_not_found' } });
@@ -537,6 +578,7 @@ describe('createWatchHandlers', () => {
 
   it('answers a store failure with a stable code and no error text', async () => {
     const handlers = createWatchHandlers({
+      subscriptions: live,
       watches: {
         ...watches,
         list: async () => {

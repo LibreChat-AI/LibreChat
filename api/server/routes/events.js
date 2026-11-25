@@ -38,7 +38,10 @@ const handlers = createSubscriptionHandlers({
   grants: () => require('~/server/services/Events/subject').service,
 });
 
-const watches = createWatchHandlers({ watches: createWatches(mongoose) });
+const watches = createWatchHandlers({
+  watches: createWatches(mongoose),
+  subscriptions: createSubscriptions(mongoose),
+});
 
 router.get('/connections', checkUse, handlers.connections);
 router.get('/subscriptions', checkUse, handlers.list);

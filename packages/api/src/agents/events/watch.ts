@@ -2,7 +2,13 @@ import { z } from 'zod';
 import { logger } from '@librechat/data-schemas';
 import { Constants } from 'librechat-data-provider';
 import { tool } from '@librechat/agents/langchain/tools';
-import type { Connection, Subscription, Watch, WatchErrorCode } from 'librechat-data-provider';
+import type {
+  Connection,
+  ListedWatch,
+  Subscription,
+  Watch,
+  WatchErrorCode,
+} from 'librechat-data-provider';
 import type { Watches, Subscriptions, Connections, IUser } from '@librechat/data-schemas';
 import type { GenericTool } from '@librechat/agents';
 import type { Response } from 'express';
@@ -16,16 +22,16 @@ import type { App, AppConfig } from './github/app';
 import type { WatchSettings } from './settings';
 import type { EventConfig } from './settings';
 import type { ServerRequest } from '~/types';
+import { governs, pauseOf, WATCH_TOOL, UNWATCH_TOOL } from './controls';
 import { AgentTriggerExecutionError } from '~/agents/triggers/host';
 import { SUBSCRIPTION_SOURCE } from '~/agents/authority/context';
-import { governs, WATCH_TOOL, UNWATCH_TOOL } from './controls';
 import { eventSettings, watchSettings } from './settings';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { GitHubError } from './github/app';
 import { createApp } from './github/app';
 import { itemKey } from './item';
 
-export { governs, WATCH_TOOL, UNWATCH_TOOL, WATCH_TOOLS } from './controls';
+export { governs, pauseOf, WATCH_TOOL, UNWATCH_TOOL, WATCH_TOOLS } from './controls';
 
 /** A pull request a person or an agent named: its repository as `owner/name`, and its number. */
 export interface PullRequestRef {
@@ -413,6 +419,8 @@ export interface WatchHandlers {
  */
 export function createWatchHandlers(deps: {
   watches: Pick<Watches, 'list' | 'get' | 'remove'>;
+  /** Each listed watch's governing subscription, so a paused one is not shown as live. */
+  subscriptions: Pick<Subscriptions, 'get'>;
 }): WatchHandlers {
   const handler =
     (operation: (req: ServerRequest & { user: IUser }, res: Response) => Promise<void>) =>
@@ -440,9 +448,20 @@ export function createWatchHandlers(deps: {
       )
         throw new WatchRequestRefusal('watch_invalid');
       const tenantId = req.user.tenantId ?? null;
-      const watches = (await deps.watches.list(req.user.id, conversationId)).filter(
+      const owned = (await deps.watches.list(req.user.id, conversationId)).filter(
         (watch) => (watch.tenantId ?? null) === tenantId,
       );
+      // One read per governing subscription, however many watches name it.
+      const ids = Array.from(new Set(owned.map((watch) => watch.subscription)));
+      const governing = new Map(
+        await Promise.all(
+          ids.map(async (id) => [id, await deps.subscriptions.get(id, req.user.id)] as const),
+        ),
+      );
+      const watches: ListedWatch[] = owned.map((watch) => {
+        const paused = pauseOf(watch, governing.get(watch.subscription));
+        return paused == null ? watch : { ...watch, paused };
+      });
       res.json({ watches });
     }),
     remove: handler(async (req, res) => {
