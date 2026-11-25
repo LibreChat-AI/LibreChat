@@ -38,6 +38,13 @@ export { default as Summary } from './components/Summary';
 export { default as EmptyText } from './components/EmptyText';
 export { default as AgentUpdate } from './components/AgentUpdate';
 export { default as CollapsibleText } from './components/CollapsibleText';
+export {
+  MessageBody,
+  DisplayMessage,
+  UnfinishedMessage,
+  renderMessageBody,
+} from './components/messages/MessageBody';
+export type { DisplayMessageProps } from './components/messages/MessageBody';
 export type {
   PartProps,
   ContentPart,

@@ -266,8 +266,16 @@ export interface MessagesHost {
   useSelectedSender: (conversation: TConversation | null) => string | undefined;
   /** The agents the viewer can see by id, or `undefined` until they load. */
   useAgentsMap: () => Record<string, Agent | undefined> | undefined;
-  /** Renders a row's text body when it has no content parts. */
-  renderMessageBody: (props: MessageBodySlotProps) => ReactNode;
+  /**
+   * Renders a row's body when it has no content parts, for a host with a body of its own. Without
+   * it a row draws the package's `MessageBody`.
+   */
+  renderMessageBody?: (props: MessageBodySlotProps) => ReactNode;
+  /**
+   * Renders the editor of a message being edited, in place of its body. Without it a message
+   * asked to edit reads as it is.
+   */
+  renderMessageEditor?: (props: MessageBodySlotProps) => ReactNode;
   /** Renders the card of a wake-up turn a background task posted. */
   renderWakeup: (props: WakeupSlotProps) => ReactNode;
   /** Renders the owner's original text of a message stored with a privacy revision. */
@@ -331,7 +339,6 @@ const fallbackHost: MessagesHost = {
   useHideSelectedAuthor: () => false,
   useSelectedSender: () => undefined,
   useAgentsMap: () => undefined,
-  renderMessageBody: () => null,
   renderWakeup: () => null,
   renderPrivateText: () => null,
   renderActivity: () => null,

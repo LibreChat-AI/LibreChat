@@ -171,6 +171,16 @@ describe('MessagesView default thread', () => {
     expect(rows()).toEqual(['u1', 'a1']);
   });
 
+  it('draws a prompt with the package’s body when the host names none', () => {
+    renderThread(
+      { messages: [message('u1', ROOT, { text: 'What changed?\nAnd why?' })] },
+      createHost({ renderMessageBody: undefined }),
+    );
+    const body = row('u1').querySelector('.message-content');
+    expect(body?.textContent).toBe('What changed?\nAnd why?');
+    expect(body).toHaveClass('whitespace-pre-wrap');
+  });
+
   it('renders the recursive tree when the flat thread is off', () => {
     renderThread({
       flatThread: false,
