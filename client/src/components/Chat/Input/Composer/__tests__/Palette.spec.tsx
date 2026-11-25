@@ -132,6 +132,7 @@ function renderPalette(
     onCancel?: () => void;
     anchorBottom?: number | (() => number);
     anchor?: HTMLElement;
+    keyboard?: boolean;
   } = {},
 ) {
   const anchorRef = { current: over.anchor ?? document.createElement('div') };
@@ -167,7 +168,11 @@ function renderPalette(
       </div>
     </RecoilRoot>,
   );
-  fireEvent.click(screen.getByTestId('composer-palette-button'));
+  const trigger = screen.getByTestId('composer-palette-button');
+  if (over.keyboard) {
+    fireEvent.keyDown(trigger, { key: 'Enter' });
+  }
+  fireEvent.click(trigger);
   return { ...view, liftStore };
 }
 
@@ -555,9 +560,9 @@ describe('Palette', () => {
       return { anchor, field };
     };
 
-    it('returns a keyboard close to the message field', async () => {
+    it('focuses search on a keyboard open and returns to the message field on Escape', async () => {
       const { anchor, field } = composer();
-      renderPalette({ anchor });
+      renderPalette({ anchor, keyboard: true });
       const input = await screen.findByTestId('composer-palette-search');
       await waitFor(() => expect(document.activeElement).toBe(input));
 
