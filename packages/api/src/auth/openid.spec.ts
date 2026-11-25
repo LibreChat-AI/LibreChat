@@ -10,6 +10,7 @@ import {
   getOpenIdEmail,
   getOpenIdIssuer,
   createOpenIDUser,
+  isOpenIdIssuerMatch,
   normalizeOpenIdIssuer,
 } from './openid';
 import { recordOpenIDUserLookup } from '~/app/metrics';
@@ -43,6 +44,52 @@ describe('normalizeOpenIdIssuer', () => {
     expect(
       normalizeOpenIdIssuer('https://issuer.example.com/realm/.well-known/openid-configuration'),
     ).toBe('https://issuer.example.com/realm');
+  });
+});
+
+describe('isOpenIdIssuerMatch', () => {
+  it('matches after normalization, ignoring a trailing slash', () => {
+    expect(isOpenIdIssuerMatch('https://issuer.example.com', 'https://issuer.example.com/')).toBe(
+      true,
+    );
+  });
+
+  it('matches a {tenantid} template against a concrete tenant segment', () => {
+    expect(
+      isOpenIdIssuerMatch(
+        'https://login.microsoftonline.com/{tenantid}/v2.0',
+        'https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0',
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects a template match with an extra path segment', () => {
+    expect(
+      isOpenIdIssuerMatch(
+        'https://login.microsoftonline.com/{tenantid}/v2.0',
+        'https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/extra/v2.0',
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects a template match against a different host', () => {
+    expect(
+      isOpenIdIssuerMatch(
+        'https://login.microsoftonline.com/{tenantid}/v2.0',
+        'https://attacker.example.com/11111111-2222-3333-4444-555555555555/v2.0',
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects a non-template mismatch', () => {
+    expect(isOpenIdIssuerMatch('https://issuer.example.com', 'https://other.example.com')).toBe(
+      false,
+    );
+  });
+
+  it('rejects when either issuer is missing', () => {
+    expect(isOpenIdIssuerMatch(undefined, 'https://issuer.example.com')).toBe(false);
+    expect(isOpenIdIssuerMatch('https://issuer.example.com', undefined)).toBe(false);
   });
 });
 
