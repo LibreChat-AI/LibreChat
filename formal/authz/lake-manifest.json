@@ -1,0 +1,8 @@
+{
+  "version": "1.3.0",
+  "packagesDir": ".lake/packages",
+  "packages": [],
+  "name": "authz",
+  "lakeDir": ".lake",
+  "fixedToolchain": false
+}

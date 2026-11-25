@@ -24,6 +24,7 @@ on:
       - 'client/public/mcp-sandbox.html'
       - 'e2e/setup/fake-model.js'
       - 'vendor/code/**'
+      - 'formal/authz/vectors/**'
       - '!**.md'
   pull_request:
     paths:
@@ -43,6 +44,7 @@ on:
       - 'client/public/mcp-sandbox.html'
       - 'e2e/setup/fake-model.js'
       - 'vendor/code/**'
+      - 'formal/authz/vectors/**'
       - '!**.md'
   # The merge queue tests the commit about to land on dev. It has no path filter and no
   # selection: every job below runs in full.

@@ -1,0 +1,13 @@
+name = "authz"
+version = "0.1.0"
+defaultTargets = ["Authz", "authz_vectors"]
+
+[leanOptions]
+warningAsError = true
+
+[[lean_lib]]
+name = "Authz"
+
+[[lean_exe]]
+name = "authz_vectors"
+root = "Main"
