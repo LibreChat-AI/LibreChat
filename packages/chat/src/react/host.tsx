@@ -16,6 +16,8 @@ import type { TShowToast } from '@librechat/client';
 import type { PluggableList } from 'unified';
 import type { ErrorEnvironment, ErrorSource } from '../core/errors';
 import type { CurrencyConfig } from '../core/usage/format';
+import type { ApprovalResumeHost } from './approval';
+import type { AskCardMode } from './parts/ask';
 import type { PtcTrace } from '../core/ptc';
 
 /** The message a part renders in, as its host reports it. */
@@ -345,6 +347,20 @@ export interface MessagePartsHost {
    * the reader opens the card. Without it a previewed call says its content could not be loaded.
    */
   useToolCallPart?: ToolContentQuery;
+  /**
+   * A hook that returns how a paused tool call or question in the calling message resumes the run:
+   * the conversation's fields and the requests that send a decision or an answer. Called by the
+   * approval controls and the question card. Without it, or when it returns `null`, they use an
+   * `ApprovalResumeHostProvider` above them; with neither, they render disabled and say the request
+   * cannot be answered from here.
+   */
+  useApprovalResumeHost?: () => ApprovalResumeHost | null;
+  /**
+   * A hook that shares a paused question with the host's composer, for a host whose composer can
+   * take the question over. Called with the conversation of the calling message. Without it the
+   * question is answered in its card only.
+   */
+  useAskAnswerMode?: (conversationId: string | null | undefined) => AskCardMode;
   /**
    * The host's additions to a reply's markdown, or nothing. Called while rendering, so it must
    * return the same object until the additions change. The lighter renderer for cards and the

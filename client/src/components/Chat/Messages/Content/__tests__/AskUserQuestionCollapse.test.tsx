@@ -44,6 +44,13 @@ jest.mock('~/components/Chat/Messages/Content/ApprovalContext', () => ({
   useApprovalContext: () => ({ getAskAnswerDraft: () => '', setAskAnswerDraft: jest.fn() }),
   useAskSubmitStatus: () => ({ getAskStatus: () => 'idle' }),
   useResumeSubmit: () => ({ submitAskAnswer: jest.fn() }),
+  /** The card resumes through this host; the package keeps the draft and the status. */
+  useChatApprovalHost: () => ({
+    readFields: () => ({ conversationId: 'conversation-1' }),
+    submitToolApproval: jest.fn(),
+    submitAskAnswer: jest.fn(),
+    readMessages: () => null,
+  }),
 }));
 jest.mock('~/Providers', () => ({ useOptionalChatFormContext: () => null }));
 

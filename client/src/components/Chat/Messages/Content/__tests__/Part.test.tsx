@@ -11,17 +11,15 @@ jest.mock('@librechat/chat/dist/components/errors/ErrorMessage.cjs', () => ({
   default: ({ text }: { text: string }) => <div data-testid="error-message">{text}</div>,
 }));
 jest.mock('~/components/Messages/Content/Error/register', () => ({}));
-jest.mock('../AskUserQuestion', () => ({
-  __esModule: true,
-  default: ({ actionId, question }: { actionId: string; question?: string }) => (
+/** The paused question and the approval controls are the chat package's; the app supplies only
+ *  how they resume, so they stand in by their package module here. */
+jest.mock('@librechat/chat/dist/components/approval/hosted.cjs', () => ({
+  HostedQuestion: ({ actionId, question }: { actionId: string; question?: string }) => (
     <div data-testid="ask-user-question" data-action-id={actionId}>
       {question}
     </div>
   ),
-}));
-jest.mock('../ToolApproval', () => ({
-  __esModule: true,
-  default: ({ toolCallId }: { toolCallId: string }) => (
+  HostedToolApproval: ({ toolCallId }: { toolCallId: string }) => (
     <div data-testid="tool-approval" data-tool-call-id={toolCallId} />
   ),
 }));
@@ -70,7 +68,7 @@ describe('the app’s part renderers, over the chat package’s', () => {
     expect(screen.getByTestId('error-message')).toHaveTextContent('worse');
   });
 
-  it('claims a paused question for the app’s ask card', () => {
+  it('claims a paused question for the package’s ask card', () => {
     draw(
       asPart({
         type: 'ask_user_question',

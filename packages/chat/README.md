@@ -265,12 +265,30 @@ const renderers = extendPartRenderers({
 />;
 ```
 
-One thing has no card in the package yet, because LibreChat's reads its own state: a paused
-question (`claim`). An error part draws the package's `ErrorMessage`; see [Errors](#errors). A web
-search draws the package's card, with the message's streaming results from `SearchContext` and the
-image, shopping and place strips under it. A subagent call draws the package's card: it finds the
-agent it runs as through the messages host's `useAgentsMap`, and the share, strings and run's
-files through the parts host's `useShare` and `useToolCallChrome`.
+An error part draws the package's `ErrorMessage`; see [Errors](#errors). A web search draws the
+package's card, with the message's streaming results from `SearchContext` and the image, shopping
+and place strips under it. A subagent call draws the package's card: it finds the agent it runs as
+through the messages host's `useAgentsMap`, and the share, strings and run's files through the
+parts host's `useShare` and `useToolCallChrome`. A paused question and the approval controls are
+the package's too; see [Paused runs](#paused-runs).
+
+### Paused runs
+
+A run that pauses for the reader draws its own controls: a paused question claims its part and is
+answered in its card, and a tool call paused for approval gets approve, reject, edit and respond
+controls under whatever card draws it. The answer resumes the run through an
+`ApprovalResumeHost`: the conversation's fields and the requests that send a decision or an answer.
+A host supplies it with the optional `useApprovalResumeHost` member of its parts host, or with an
+`ApprovalResumeHostProvider` above the messages:
+
+```tsx
+const host = { ...rest, useApprovalResumeHost: () => resumeHost };
+```
+
+Without either, the controls still draw, disabled, and say the request cannot be answered from
+there. A host whose composer can take a question over adds `useAskAnswerMode(conversationId)`;
+without it a question is answered in its card. `ToolApproval` and `PausedQuestion` are exported
+for a host that draws a pause elsewhere, such as a review panel.
 
 ### A whole message
 
