@@ -409,6 +409,7 @@ describe('record', () => {
   const T3 = new Date('2026-11-25T10:00:02.000Z');
   const record = (id: string, state: 'active' | 'suspended' | 'removed', at: Date) =>
     as(TENANT_A, async () => connections.record(id, state, at));
+  type Held = Awaited<ReturnType<typeof bound>>;
   const statusOf = async (id: string) =>
     (await as(TENANT_A, async () => connections.get(id)))?.status;
 
@@ -495,6 +496,88 @@ describe('record', () => {
       error: { code: 'missing' },
     });
     expect(await statusOf(held.id)).toBe('active');
+  });
+
+  describe("among the tenant's other connections", () => {
+    // The one named sits between two others by insertion, creation time and id, so a read or
+    // write that lost the id would reach a neighbour, whichever order it scanned in.
+    let older: Held;
+    let held: Held;
+    let newer: Held;
+
+    const named = async (installation: string, id: string, createdAt: string) => {
+      const connection = await bound(TENANT_A, install({ installation }));
+      await Connection.collection.updateOne(
+        { id: connection.id },
+        { $set: { id, createdAt: new Date(createdAt) } },
+      );
+      return { ...connection, id };
+    };
+
+    beforeEach(async () => {
+      older = await named('1000', 'conn_a', '2026-01-01T00:00:00Z');
+      held = await named('1001', 'conn_b', '2026-01-02T00:00:00Z');
+      newer = await named('1002', 'conn_c', '2026-01-03T00:00:00Z');
+    });
+
+    const untouched = async () => {
+      const rows = await stored();
+      for (const other of [older, newer]) {
+        const row = rows.find((candidate) => candidate.id === other.id);
+        expect(row?.status).toBe('active');
+        expect(row?.stateAt).toBeUndefined();
+      }
+    };
+
+    it('changes the status and time of the connection named and no other', async () => {
+      expect(await record(held.id, 'suspended', T2)).toEqual({ ok: true });
+
+      const row = (await stored()).find((candidate) => candidate.id === held.id);
+      expect(row?.status).toBe('suspended');
+      expect(row?.stateAt).toEqual(T2);
+      await untouched();
+    });
+
+    it('removes the connection named and no other', async () => {
+      expect(await record(held.id, 'removed', T2)).toEqual({ ok: true });
+
+      expect((await stored()).map((row) => row.id)).toEqual([older.id, newer.id]);
+      await untouched();
+    });
+
+    it("refuses with the named connection's own status, not a neighbour's", async () => {
+      await record(held.id, 'suspended', T3);
+      expect(await statusOf(held.id)).toBe('suspended');
+
+      expect(await record(held.id, 'active', T2)).toEqual({
+        ok: false,
+        error: { code: 'newer', status: 'suspended' },
+      });
+      expect(await record(held.id, 'removed', T2)).toEqual({
+        ok: false,
+        error: { code: 'newer', status: 'suspended' },
+      });
+      await untouched();
+    });
+
+    it('answers missing for an id nothing has, though the tenant has others', async () => {
+      expect(await record('conn_none', 'active', T3)).toEqual({
+        ok: false,
+        error: { code: 'missing' },
+      });
+      await untouched();
+    });
+  });
+
+  it('refuses a status there is not, and records nothing', async () => {
+    const held = await bound(TENANT_A);
+
+    await expect(
+      as(TENANT_A, async () => connections.record(held.id, 'paused' as 'active', T2)),
+    ).rejects.toThrow(/status/);
+    const [row] = await stored();
+    expect(row.status).toBe('active');
+    expect(row.stateAt).toBeUndefined();
   });
 
   it('leaves the recorded time to the provider: an operator change keeps it', async () => {
