@@ -42,9 +42,9 @@ const named = (name: string): boolean =>
 
 /**
  * Names the package's source uses that the app's stylesheets still have rules for. Each is a
- * difference an app outside LibreChat would see (the sizes of a code block under
- * `message-content`), or
- * a word that only reads like a class in a string here (`css`, `nav`, `config`). The list may
+ * difference an app outside LibreChat would see, or a word that only reads like a class in a
+ * string here (`css`, `nav`, `config`); `whitespace-pre-wrap` is a utility the app's own links
+ * rule also names, kept for the app's other paragraphs. The list may
  * only shrink: moving the rules into a shipped stylesheet takes a name off, and a new name on
  * it means a component leans on the app's stylesheet again.
  */
@@ -56,7 +56,6 @@ const APP_STYLED = [
   'gray',
   'group',
   'high-contrast',
-  'message-content',
   'nav',
   'tooltip',
   'whitespace-pre-wrap',

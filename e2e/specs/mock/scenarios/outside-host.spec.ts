@@ -73,9 +73,6 @@ const restyles = (difference: Difference, properties: string[]): boolean =>
   (difference.changed ?? []).length > 0 &&
   (difference.changed ?? []).every((property) => properties.includes(property));
 
-/** What follows a font size: a smaller font gives a smaller line, radius and padding. */
-const SIZES = ['font-size', 'line-height', 'border-top-left-radius', 'padding-top', 'padding-left'];
-
 /** What the package cannot draw today. Delete an entry when the change it names lands. */
 const GAPS: Gap[] = [
   {
@@ -86,32 +83,6 @@ const GAPS: Gap[] = [
       difference.part === 'header' &&
       difference.key === 'icon' &&
       difference.kind === 'missing',
-  },
-  {
-    id: 'inherited-text-color',
-    why: "Text that names no color of its own inherits it from the page. LibreChat's page sets the primary text color; `.librechat` does not, so a tool row, a reasoning header or a status line is black on an outside page. Closed by giving `.librechat` the text color in `standalone.css`, or by the README telling the app to.",
-    matches: (difference) =>
-      restyles(difference, ['color', 'border-top-color']) &&
-      changes(difference).every(
-        ([, before, after]) => before === 'rgb(33, 33, 33)' && after === 'rgb(0, 0, 0)',
-      ),
-  },
-  {
-    id: 'reply-code-and-math-size',
-    why: "A reply's code block and display math are sized by rules in `client/src/style.css` (`.message-content pre`, `.message-content pre code`) that no package ships, so outside LibreChat they set at 14px where LibreChat sets 16px. Closed by moving those rules into `@librechat/client`'s prose stylesheet.",
-    matches: (difference) =>
-      difference.fixture === 'prose' &&
-      (difference.scope === 'code' || difference.scope === 'math') &&
-      restyles(difference, SIZES) &&
-      changes(difference).every(([, before, after]) => parseFloat(after) < parseFloat(before)),
-  },
-  {
-    id: 'reply-link-style',
-    why: "A link in a reply is weight 700 and rgb(0, 102, 204) in LibreChat, weight 500 and rgb(37, 99, 235) outside: `standalone.css` compiles the typography plugin's own link rule, which LibreChat's stylesheet overrides. Closed by shipping LibreChat's link rule with the prose stylesheet.",
-    matches: (difference) =>
-      difference.fixture === 'prose' &&
-      difference.scope === 'link' &&
-      restyles(difference, ['font-weight', 'color']),
   },
   {
     id: 'run-code',
