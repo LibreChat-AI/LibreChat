@@ -609,6 +609,46 @@ describe('MCPManager', () => {
 
       expect(result).toBe('');
     });
+
+    it('should fall back to live user connection instructions when serverInstructions is true', async () => {
+      (mockRegistryInstance.getAllServerConfigs as jest.Mock).mockResolvedValue({
+        oauthServer: {
+          type: 'streamable-http',
+          url: 'https://example.com/mcp',
+          serverInstructions: true,
+        },
+      });
+
+      const manager = await MCPManager.createInstance(newMCPServersConfig());
+      const internals = manager as unknown as {
+        userConnections: Map<string, Map<string, MCPConnection>>;
+      };
+      const mockConnection = {
+        client: {
+          getInstructions: jest.fn().mockReturnValue('Use OAuth MCP carefully'),
+        },
+      } as unknown as MCPConnection;
+      internals.userConnections.set(
+        'user-1',
+        new Map([[JSON.stringify(['oauthServer', 'standard']), mockConnection]]),
+      );
+
+      const result = await manager.formatInstructionsForContext(
+        ['oauthServer'],
+        undefined,
+        { id: 'user-1' } as unknown as Parameters<typeof manager.formatInstructionsForContext>[2],
+      );
+
+      expect(result).toContain('## oauthServer MCP Server Instructions');
+      expect(result).toContain('Use OAuth MCP carefully');
+
+      const otherUserResult = await manager.formatInstructionsForContext(
+        ['oauthServer'],
+        undefined,
+        { id: 'user-2' } as unknown as Parameters<typeof manager.formatInstructionsForContext>[2],
+      );
+      expect(otherUserResult).toBe('');
+    });
   });
 
   describe('getServerToolFunctions', () => {
