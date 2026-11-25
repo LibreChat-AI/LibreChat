@@ -1,5 +1,5 @@
 import { HttpsProxyAgent } from 'https-proxy-agent';
-import { Agent, EnvHttpProxyAgent, ProxyAgent } from 'undici';
+import { Agent, EnvHttpProxyAgent, Pool, ProxyAgent } from 'undici';
 import type { AxiosRequestConfig, AxiosProxyConfig } from 'axios';
 import type { Dispatcher } from 'undici';
 
@@ -67,6 +67,24 @@ function getDispatcherOptionsKey(options: DispatcherTimeoutOptions): string {
   return `${options.bodyTimeout ?? ''}|${options.headersTimeout ?? ''}`;
 }
 
+/** How long undici's own client waits for a proxy to answer CONNECT unless it is told otherwise. */
+const TUNNEL_HEADERS_TIMEOUT_MS = 300_000;
+
+/**
+ * `ProxyAgent` opens each CONNECT tunnel through a client it builds from `{ connect }` alone, so
+ * `headersTimeout` bounds the request inside the tunnel but not the handshake with the proxy. A
+ * proxy that accepts the connection and never answers then holds the handshake open for undici's
+ * 300 s default, however short the timeout configured for the request. This gives that client the
+ * configured headers timeout. It only tightens the handshake: a disabled or longer timeout keeps
+ * the default, so a hung proxy never waits longer than it did before.
+ */
+export function getTunnelOptions({
+  headersTimeout,
+}: DispatcherTimeoutOptions): Pick<ProxyAgent.Options, 'clientFactory'> {
+  if (!headersTimeout || headersTimeout >= TUNNEL_HEADERS_TIMEOUT_MS) return {};
+  return { clientFactory: (origin, opts) => new Pool(origin, { ...opts, headersTimeout }) };
+}
+
 export function getDirectDispatcher(options: DispatcherTimeoutOptions = {}): Dispatcher {
   options = pickDispatcherTimeouts(options);
   const key = getDispatcherOptionsKey(options);
@@ -89,7 +107,11 @@ export function getEnvProxyDispatcher(
   const cached = envProxyDispatchers.get(key);
   if (cached) return cached;
 
-  const dispatcher = new EnvHttpProxyAgent({ ...proxyConfig, ...options });
+  const dispatcher = new EnvHttpProxyAgent({
+    ...proxyConfig,
+    ...options,
+    ...getTunnelOptions(options),
+  });
   envProxyDispatchers.set(key, dispatcher);
   return dispatcher;
 }
@@ -106,7 +128,7 @@ function getExplicitProxyDispatcher(
   const dispatcher =
     Object.keys(options).length === 0
       ? new ProxyAgent(proxyUrl)
-      : new ProxyAgent({ uri: proxyUrl, ...options });
+      : new ProxyAgent({ uri: proxyUrl, ...options, ...getTunnelOptions(options) });
   explicitDispatchers.set(key, dispatcher);
   return dispatcher;
 }
