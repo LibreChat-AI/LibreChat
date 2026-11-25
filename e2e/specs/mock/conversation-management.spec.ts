@@ -383,14 +383,15 @@ test.describe('conversation management', () => {
           });
         }
         await expect.poll(async () => !!(await titleRequest())).toBe(true);
-        const published = page.waitForResponse(
-          (response) =>
-            new URL(response.url()).pathname.startsWith('/api/convos/gen_title/') &&
-            response.status() === 200,
-          { timeout: 30000 },
-        );
+        // A local rename stops the page's poll. Read the published result separately.
+        const authorization = await renameResponse.request().headerValue('authorization');
+        if (!authorization) throw new Error('Expected an authenticated rename request');
         await request.post(`${fixture}/__e2e/release`);
-        expect((await (await published).json()).title).toBe(renamedTitle);
+        const published = await page.request.get(`/api/convos/gen_title/${conversationId}`, {
+          headers: { authorization },
+        });
+        expect(published.ok()).toBeTruthy();
+        expect(await published.json()).toMatchObject({ title: renamedTitle, titleSetByUser: true });
         await expect.poll(async () => (await titleRequest())?.completed === true).toBe(true);
         await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
           timeout: 30000,
