@@ -3,6 +3,7 @@ import { SquareSlash } from 'lucide-react';
 import { replaceSpecialVars } from 'librechat-data-provider';
 import type { TPromptGroup } from 'librechat-data-provider';
 import { useLocalize, useAuthContext, usePromptContent } from '~/hooks';
+import { getProductPromptReference } from '~/hooks/Prompts/reference';
 import LangfusePromptMeta from './LangfusePromptMeta';
 import PromptDetailHeader from './PromptDetailHeader';
 import PromptResolvedBody from './PromptResolvedBody';
@@ -69,6 +70,7 @@ const PromptDetails = ({
       {showActions && (
         <PromptActions
           group={group}
+          promptReference={getProductPromptReference(group, resolved)}
           promptText={mainText}
           isLoading={isLoading}
           hasError={hasError}
