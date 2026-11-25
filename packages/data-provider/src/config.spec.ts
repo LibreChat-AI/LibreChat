@@ -1549,6 +1549,9 @@ describe('agent events config', () => {
     ['a host with a path', { github: { ...github, host: 'github.example.com/api' } }],
     ['a request timeout of zero', { github: { ...github, requestTimeoutSeconds: 0 } }],
     ['a request timeout over a minute', { github: { ...github, requestTimeoutSeconds: 61 } }],
+    ['a negative access lifetime', { github: { ...github, accessTtlSeconds: -1 } }],
+    ['an access lifetime over an hour', { github: { ...github, accessTtlSeconds: 3601 } }],
+    ['a fractional access lifetime', { github: { ...github, accessTtlSeconds: 1.5 } }],
     ['an excerpt under 16 characters', { limits: { excerpt: 15 } }],
     ['an excerpt over 65,536 characters', { limits: { excerpt: 65_537 } }],
     ['a fractional excerpt', { limits: { excerpt: 100.5 } }],
@@ -1563,6 +1566,8 @@ describe('agent events config', () => {
     ['the smallest bounds', { limits: { excerpt: 16, fanout: 1 } }],
     ['the largest bounds', { limits: { excerpt: 65_536, fanout: 100 } }],
     ['the longest request timeout', { github: { ...github, requestTimeoutSeconds: 60 } }],
+    ['no reuse of access answers', { github: { ...github, accessTtlSeconds: 0 } }],
+    ['the longest access lifetime', { github: { ...github, accessTtlSeconds: 3600 } }],
   ])('accepts %s', (_name, events) => {
     expect(parse(events).success).toBe(true);
   });

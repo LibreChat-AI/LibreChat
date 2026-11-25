@@ -9,11 +9,16 @@ export type EventConfig = NonNullable<TAgentsEndpoint['events']>;
 
 type Env = Readonly<Record<string, string | undefined>>;
 
-/** The GitHub App's resolved credentials. Never log or return either field. */
+/** How long an answer about an account's write access is reused when none is set: 5 minutes. */
+export const ACCESS_TTL_MS = 300_000;
+
+/** The GitHub App's resolved credentials. Never log or return `app.key` or `secret`. */
 export interface GitHubSettings {
   app: AppConfig;
   /** The app's webhook secret, which `github.verify` checks deliveries against. */
   secret: string;
+  /** How long an answer about an account's write access is reused; 0 asks every time. */
+  accessTtlMs: number;
 }
 
 export interface EventSettings {
@@ -47,7 +52,13 @@ function resolveGitHub(config: EventConfig['github'], env: Env): GitHubSettings 
   const clientSecret =
     config.clientSecret == null ? null : resolveTokenReference(config.clientSecret, env);
   const client = clientId && clientSecret ? { id: clientId, secret: clientSecret } : undefined;
-  return { app: { id, key: pem(key), host, timeoutMs, ...(client && { client }) }, secret };
+  const accessTtlMs =
+    config.accessTtlSeconds == null ? ACCESS_TTL_MS : config.accessTtlSeconds * 1000;
+  return {
+    app: { id, key: pem(key), host, timeoutMs, ...(client && { client }) },
+    secret,
+    accessTtlMs,
+  };
 }
 
 /**
