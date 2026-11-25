@@ -2593,8 +2593,8 @@ class AgentClient extends BaseClient {
     const tokenCountMap = {};
     const memoryPayload = [];
     let hasFileContext = false;
-    /** A row carries an outside event: the memory payload is built from copies without it. */
-    let hasEvent = false;
+    /** Some row's model copy holds text the memory agent must not read (`appendEvent`). */
+    let needsMemoryCopy = false;
     let promptTokenTotal = 0;
     const encoding = this.getEncoding();
     /**
@@ -2660,10 +2660,8 @@ class AgentClient extends BaseClient {
         prependQuotes(formattedMessage, message.quotes);
       }
 
-      /** What an event a subscription matched was about, as labelled data after its prompt.
-       * Not on the memory copy: outside text must not become a remembered fact. */
-      const evented = appendEvent(formattedMessage, message.trigger);
-      hasEvent ||= evented;
+      const added = appendEvent(formattedMessage, message.trigger);
+      needsMemoryCopy ||= added.memoryCopy;
 
       /**
        * An attachment-only turn whose files reach the model out-of-band (file
@@ -2701,7 +2699,7 @@ class AgentClient extends BaseClient {
         !hasDbTokenCount ||
         (this.isVisionModel && (message.image_urls || message.files)) ||
         (Array.isArray(message.quotes) && message.quotes.length > 0) ||
-        evented;
+        added.recount;
 
       let canonicalTokenCount = hasDbTokenCount ? dbTokenCount : 0;
       if (needsCanonicalTokenCount) {
@@ -2881,7 +2879,7 @@ class AgentClient extends BaseClient {
     }
     /** After the steer stamp, which adds replayed steers' documents of its own. */
     dedupeDocumentNames(payload, agentsById.values());
-    if (hasFileContext || hasEvent) {
+    if (hasFileContext || needsMemoryCopy) {
       for (let i = 0; i < orderedMessages.length; i++) {
         memoryPayload.push(
           memoryFormattedMessages[i] ?? buildMemoryFormattedMessage(orderedMessages[i]),
@@ -2907,7 +2905,7 @@ class AgentClient extends BaseClient {
         });
       }
     }
-    this.memoryPayload = hasFileContext || hasEvent ? memoryPayload : null;
+    this.memoryPayload = hasFileContext || needsMemoryCopy ? memoryPayload : null;
     messages = orderedMessages;
     promptTokens = promptTokenTotal;
 

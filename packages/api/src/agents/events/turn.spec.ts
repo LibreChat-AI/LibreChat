@@ -169,7 +169,7 @@ describe('appendEvent', () => {
 
   it('appends the event after the prompt of a string message', () => {
     const message = { role: 'user', content: 'Review the change.' };
-    expect(appendEvent(message, event)).toBe(true);
+    expect(appendEvent(message, event)).toEqual({ recount: true, memoryCopy: true });
     expect(message.content.startsWith('Review the change.\n\nThis turn was started by')).toBe(true);
   });
 
@@ -179,7 +179,7 @@ describe('appendEvent', () => {
       { type: 'image_url', image_url: { url: 'data:x' } },
     ];
     const message = { role: 'user', content: parts };
-    expect(appendEvent(message, event)).toBe(true);
+    expect(appendEvent(message, event)).toEqual({ recount: true, memoryCopy: true });
     expect(message.content).not.toBe(parts);
     expect(parts[0].text).toBe('Review the change.');
     expect((message.content[0] as { text: string }).text).toContain('Event data (JSON):');
@@ -198,8 +198,8 @@ describe('appendEvent', () => {
         event: { type: 'schedule.occurrence', occurredAt: '2025-11-24T16:00:00.000Z' },
         subject: { kind: 'schedule', id: 'sch_1' },
       }),
-    ).toBe(false);
-    expect(appendEvent(message, undefined)).toBe(false);
+    ).toEqual({ recount: false, memoryCopy: false });
+    expect(appendEvent(message, undefined)).toEqual({ recount: false, memoryCopy: false });
     expect(message.content).toBe('Run the report.');
   });
 });

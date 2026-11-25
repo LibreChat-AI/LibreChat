@@ -196,24 +196,40 @@ function appendContextText(
   );
 }
 
+/** What a message needs from the caller once its own context was added to the model's copy. */
+export interface AddedContext {
+  /** The model's copy holds more than the stored text: a token count stored from the text
+   *  alone undercounts it, so the message is counted again from the model's copy. */
+  recount: boolean;
+  /** The model's copy holds text the memory agent must not read: the memory payload is built
+   *  from separate copies without it. */
+  memoryCopy: boolean;
+}
+
+const NONE: AddedContext = Object.freeze({ recount: false, memoryCopy: false });
+const EVENT: AddedContext = Object.freeze({ recount: true, memoryCopy: true });
+
 /**
  * Appends what an outside event was about to the first message of the turn an event
  * subscription started, after the subscription's prompt, as labelled data (`describeEvent`).
  * Applied to that message on every turn that reads it, as quotes are, so the model keeps the
  * event when the run continues or its owner replies later. The stored text stays the prompt,
- * which is what the conversation shows. True when it appended: a token count stored from the
- * text alone leaves the event out, so the caller counts the message again.
+ * which is what the conversation shows.
+ *
+ * Returns what the caller must do about it: count the message again, since a count stored
+ * from the text leaves the event out, and give the memory agent copies without it, since
+ * outside text must not become a remembered fact about the user. Nothing for any other message.
  */
 export function appendEvent(
   formattedMessage: FormattedMessageWithContent,
   trigger?: TMessage['trigger'] | null,
-): boolean {
+): AddedContext {
   const block = describeEvent(trigger);
   if (block == null) {
-    return false;
+    return NONE;
   }
   appendContextText(formattedMessage, block);
-  return true;
+  return EVENT;
 }
 
 export function prependFileContext(
