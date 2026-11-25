@@ -1,5 +1,5 @@
 import { DEFAULT_REFRESH_TOKEN_EXPIRY, runAsSystem } from '@librechat/data-schemas';
-import type { ISession, DeleteSessionParams } from '@librechat/data-schemas';
+import type { ISession, AuthMethod, DeleteSessionParams } from '@librechat/data-schemas';
 import { math } from '~/utils/math';
 
 export interface OpenIdSessionParams {
@@ -13,11 +13,13 @@ export interface OpenIdSessionDeps {
   upsertSession: (
     userId: string,
     refreshToken: string,
-    options: { expiration: Date; tenantId?: string },
+    options: { expiration: Date; tenantId?: string; authMethod?: AuthMethod },
   ) => Promise<ISession>;
   deleteSession: (params: DeleteSessionParams) => Promise<{ deletedCount?: number }>;
 }
 
+/** Every Session this writes comes from an OpenID login or its refresh-token rotation, so it
+ *  records `authMethod: 'openid'` itself; each rotation upserts a new Session doc. */
 export async function storeOpenIdSession(
   params: OpenIdSessionParams,
   deps: OpenIdSessionDeps,
@@ -32,6 +34,7 @@ export async function storeOpenIdSession(
     deps.upsertSession(params.userId, refreshToken, {
       expiration: new Date(Date.now() + expiresIn),
       tenantId: params.tenantId,
+      authMethod: 'openid',
     }),
   );
   const previousRefreshToken = params.previousRefreshToken;

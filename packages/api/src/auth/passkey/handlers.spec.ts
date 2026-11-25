@@ -981,6 +981,7 @@ describe('passkey sign-in', () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(req.user?._id?.toString()).toBe(user._id.toString());
+    expect(req.authMethod).toBe('passkey');
     const stored = await methods.findPasskeyByCredentialId('cred-1');
     expect(stored?.counter).toBe(1);
     expect(stored?.lastUsedAt).toBeInstanceOf(Date);
