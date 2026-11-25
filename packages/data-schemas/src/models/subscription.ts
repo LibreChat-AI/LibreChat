@@ -25,8 +25,8 @@ export interface SubscriptionRecord extends Omit<Subscription, 'user' | 'suspend
   suspended?: Omit<SubscriptionSuspension, 'at'> & { at: Date };
   /** How many of its runs have failed in a row. Absent before the first failure. */
   failures?: number;
-  /** The delivery key of the last run counted into `failures`, so a replayed count is not added twice. */
-  counted?: string;
+  /** The delivery keys of the last runs counted into `failures`, so a replay is not counted twice. */
+  counted?: string[];
   /** Runs started in the clock hour that began at `hour`. Absent before the first run. */
   usage?: { hour: Date; runs: number };
   /**
@@ -95,7 +95,7 @@ export function createAgentEventSubscriptionModel(
         default: undefined,
       },
       failures: { type: Number, min: 0 },
-      counted: String,
+      counted: { type: [String], default: undefined },
       usage: {
         type: new Schema(
           { hour: { type: Date, required: true }, runs: { type: Number, required: true, min: 0 } },

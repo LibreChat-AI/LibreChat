@@ -81,7 +81,8 @@ export type Subscriptions = {
    * Counts a finished run into the subscription's failure streak: a success ends the streak,
    * a failure lengthens it. Once `threshold` runs in a row have failed, the subscription is
    * turned off with the reason and count, and `suspended` answers `true` for the run that did
-   * it. A run is counted once by its delivery key, so a replayed count adds nothing, and the
+   * it. A run is counted once by its delivery key among the last runs counted, so a replayed
+   * count adds nothing, and an older run's replay neither lengthens nor ends a newer streak; the
    * turning off is asked again on a replay, so a crash between the two is recovered. A
    * `threshold` of 0 never turns it off.
    */
@@ -120,6 +121,12 @@ function view(row: SubscriptionRecord): Subscription {
     }),
   };
 }
+
+/**
+ * How many runs' keys a subscription remembers as counted. A run replayed after this many
+ * newer ones were counted would be counted again; a replay arrives long before that.
+ */
+const COUNTED = 50;
 
 /** The start of the clock hour a time falls in. */
 function hourOf(at: Date): Date {
@@ -252,19 +259,22 @@ export function createSubscriptions(mongoose: typeof import('mongoose')): Subscr
     const mine = { id, user: owner };
     // A run that finds the hour turning over while another starts it again asks once more.
     for (let attempt = 0; attempt < 3; attempt++) {
+      // This hour's count, or a later hour's: a run admitted just before the hour turned and
+      // counted after it counts against the hour the subscription has moved on to.
       const counted = await Model.updateOne(
-        { ...mine, 'usage.hour': hour, 'usage.runs': { $lt: perHour } },
+        { ...mine, 'usage.hour': { $gte: hour }, 'usage.runs': { $lt: perHour } },
         { $inc: { 'usage.runs': 1 } },
       );
       if (counted.modifiedCount === 1) return true;
+      // The hour only moves forward: an earlier hour's count, or none, starts this one.
       const started = await Model.updateOne(
-        { ...mine, 'usage.hour': { $ne: hour } },
+        { ...mine, $or: [{ usage: null }, { 'usage.hour': { $lt: hour } }] },
         { $set: { usage: { hour, runs: 1 } } },
       );
       if (started.modifiedCount === 1) return true;
       const now = await Model.findOne(mine, { usage: 1 }).lean<Pick<SubscriptionRecord, 'usage'>>();
       if (now == null) return false;
-      if (now.usage?.hour?.getTime() === hour.getTime() && now.usage.runs >= perHour) return false;
+      if (now.usage != null && now.usage.hour >= hour && now.usage.runs >= perHour) return false;
     }
     return false;
   }
@@ -278,11 +288,13 @@ export function createSubscriptions(mongoose: typeof import('mongoose')): Subscr
   ): Promise<{ suspended: boolean }> {
     const mine = { id, user: owner };
     const fresh = { ...mine, counted: { $ne: run.key } };
+    // The keys of the last runs counted, newest last, so a replay of any of them adds nothing.
+    const remember = { counted: { $each: [run.key], $slice: -COUNTED } };
     if (!run.failed) {
-      await Model.updateOne(fresh, { $set: { counted: run.key }, $unset: { failures: 1 } });
+      await Model.updateOne(fresh, { $push: remember, $unset: { failures: 1 } });
       return { suspended: false };
     }
-    await Model.updateOne(fresh, { $set: { counted: run.key }, $inc: { failures: 1 } });
+    await Model.updateOne(fresh, { $push: remember, $inc: { failures: 1 } });
     if (threshold < 1) return { suspended: false };
     // Asked whether or not the count above landed, so a replay finishes a turning off that a
     // crash left undone. Only a subscription that is still on, and whose streak this run was

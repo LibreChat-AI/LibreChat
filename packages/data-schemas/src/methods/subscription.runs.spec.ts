@@ -99,6 +99,15 @@ describe('take: the runs of one clock hour', () => {
     expect((await row(id))?.usage).toEqual({ hour, runs: 4 });
   });
 
+  it('counts a run admitted before the hour turned against the hour it is counted in', async () => {
+    const { id } = await made();
+    await as(() => subscriptions.take(id, owner, 2, later(61)));
+    // Admitted at 10:59, counted after 11:01 was: the count stays in the 11:00 hour.
+    expect(await as(() => subscriptions.take(id, owner, 2, later(59)))).toBe(true);
+    expect((await row(id))?.usage).toEqual({ hour: later(60), runs: 2 });
+    expect(await as(() => subscriptions.take(id, owner, 2, later(59)))).toBe(false);
+  });
+
   it("takes nothing from another owner's subscription, a missing one, or an hour of none", async () => {
     const { id } = await made();
     expect(await as(() => subscriptions.take(id, other, 3, later(1)))).toBe(false);
@@ -155,11 +164,35 @@ describe('tally: the failure streak', () => {
     const { id } = await made();
     await as(() => subscriptions.tally(id, owner, failed('d1'), 2));
     // The second failure was counted, then the process stopped before turning it off.
-    await runAsSystem(async () => Rows.updateOne({ id }, { $set: { counted: 'd2', failures: 2 } }));
+    await runAsSystem(async () =>
+      Rows.updateOne({ id }, { $set: { counted: ['d1', 'd2'], failures: 2 } }),
+    );
     expect(await as(() => subscriptions.tally(id, owner, failed('d2'), 2, later(9)))).toEqual({
       suspended: true,
     });
     expect((await row(id))?.suspended?.failures).toBe(2);
+  });
+
+  it("counts an older run's replay neither into a newer streak nor against it", async () => {
+    const { id } = await made();
+    await as(() => subscriptions.tally(id, owner, failed('a'), 5));
+    await as(() => subscriptions.tally(id, owner, failed('b'), 5));
+    await as(() => subscriptions.tally(id, owner, failed('a'), 5));
+    expect((await row(id))?.failures).toBe(2);
+    await as(() => subscriptions.tally(id, owner, { key: 'c', failed: false }, 5));
+    await as(() => subscriptions.tally(id, owner, failed('d'), 5));
+    await as(() => subscriptions.tally(id, owner, { key: 'c', failed: false }, 5));
+    expect((await row(id))?.failures).toBe(1);
+  });
+
+  it('remembers a bounded number of counted runs', async () => {
+    const { id } = await made();
+    for (let i = 0; i < 60; i++) {
+      await as(() => subscriptions.tally(id, owner, { key: `k${i}`, failed: false }, 5));
+    }
+    const counted = (await row(id))?.counted ?? [];
+    expect(counted).toHaveLength(50);
+    expect(counted[counted.length - 1]).toBe('k59');
   });
 
   it('turns a subscription off once, not again on a later failure', async () => {
