@@ -237,4 +237,34 @@ describe('ProjectsSection row menus', () => {
     /** Ariakit took the click itself, so it knows its trigger and opened from it. */
     expect(triggers()[0]).toHaveAttribute('aria-expanded', 'true');
   });
+
+  it.each(['ArrowDown', 'ArrowUp'])(
+    'opens the menu from %s when focus came back onto the placeholder',
+    (key) => {
+      renderSection();
+      /** Shift+Tab from the row below reaches the options button before anything else in the row. */
+      const placeholder = triggers()[1];
+      act(() => placeholder.focus());
+      expect(anchors(listen)).toBe(0);
+
+      fireEvent.keyDown(placeholder, { key });
+
+      const trigger = triggers()[1];
+      expect(trigger).not.toBe(placeholder);
+      expect(trigger).toHaveFocus();
+      expect(trigger).toHaveAttribute('aria-expanded', 'true');
+      expect(menus()).toHaveLength(1);
+    },
+  );
+
+  it('leaves other keys to the placeholder', () => {
+    renderSection();
+    const placeholder = triggers()[1];
+    act(() => placeholder.focus());
+
+    fireEvent.keyDown(placeholder, { key: 'Tab', shiftKey: true });
+
+    expect(triggers()[1]).toBe(placeholder);
+    expect(anchors(listen)).toBe(0);
+  });
 });

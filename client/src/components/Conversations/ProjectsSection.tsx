@@ -203,17 +203,28 @@ const ProjectItem = memo(
     const [reached, setReached] = useState(false);
     const placeholder = useRef<HTMLButtonElement>(null);
     const trigger = useRef<HTMLButtonElement>(null);
-    /** The `detail` of a click the placeholder took, replayed on the trigger once it mounts so
-     *  Ariakit opens the menu the way it would have: focus moves in, and returns on close. */
-    const pending = useRef<number | null>(null);
+    /**
+     * What the placeholder was asked to do, replayed on the trigger once it mounts so Ariakit opens
+     * the menu the way it would have: a click with its own `detail`, or an arrow key reaching the
+     * placeholder by keyboard (Shift+Tab lands on it first), which Ariakit reads by placement.
+     */
+    const handoff = useRef<{ click: number } | { key: string } | null>(null);
     useLayoutEffect(() => {
-      const detail = pending.current;
-      if (detail == null || trigger.current == null) {
+      const next = handoff.current;
+      const button = trigger.current;
+      if (next == null || button == null) {
         return;
       }
-      pending.current = null;
-      trigger.current.dispatchEvent(
-        new MouseEvent('click', { bubbles: true, cancelable: true, detail }),
+      handoff.current = null;
+      if ('click' in next) {
+        button.dispatchEvent(
+          new MouseEvent('click', { bubbles: true, cancelable: true, detail: next.click }),
+        );
+        return;
+      }
+      button.focus();
+      button.dispatchEvent(
+        new KeyboardEvent('keydown', { key: next.key, bubbles: true, cancelable: true }),
       );
     }, [reached]);
     /** The dialog items keep the menu open so it does not steal focus from the
@@ -410,7 +421,7 @@ const ProjectItem = memo(
                 items={menuItems}
               />
             ) : (
-              /* Touch has no hover, so a tap reaches the row here: hand its click to the trigger. */
+              /* Touch has no hover, and Shift+Tab lands here first: hand what it is asked to the trigger. */
               <button
                 ref={placeholder}
                 type="button"
@@ -419,7 +430,15 @@ const ProjectItem = memo(
                 aria-expanded={false}
                 className={rowActionClasses()}
                 onClick={(event) => {
-                  pending.current = event.detail;
+                  handoff.current = { click: event.detail };
+                  setReached(true);
+                }}
+                onKeyDown={(event) => {
+                  if (!event.key.startsWith('Arrow')) {
+                    return;
+                  }
+                  event.preventDefault();
+                  handoff.current = { key: event.key };
                   setReached(true);
                 }}
               >
