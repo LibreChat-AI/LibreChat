@@ -906,6 +906,34 @@ export async function injectSkillCatalog(
 }
 
 /**
+ * Adds runtime path context without rewriting the portable, stored Skill body.
+ * The location describes the mount layout, not a guarantee that priming succeeded.
+ */
+function formatSkillInstructions(skill: { name: string; body: string }): string {
+  if (!skill.body) {
+    return skill.body;
+  }
+  const directory = `/mnt/data/${SKILL_FILE_PREFIX}${skill.name}`;
+  return (
+    `Skill base directory: ${directory}\n` +
+    `When bundled files are available in the code environment, resolve relative paths in this skill ` +
+    `against this directory, not the shell's working directory. Use absolute paths when invoking ` +
+    `bundled scripts (for example, "${directory}/scripts/example.py"). ` +
+    `Keep input and output paths explicit; do not change the working directory implicitly.\n\n` +
+    skill.body
+  );
+}
+
+/** Formats bodies for SDK history reconstruction without changing stored bodies or manifests. */
+export function formatSkillBodies(
+  skills: ReadonlyMap<string, string> | undefined,
+): Map<string, string> | undefined {
+  return skills == null
+    ? undefined
+    : new Map([...skills].map(([name, body]) => [name, formatSkillInstructions({ name, body })]));
+}
+
+/**
  * Builds the meta user message that carries a skill's SKILL.md body into a
  * turn's context. Shape mirrors what `handleSkillToolCall` emits when the
  * model invokes the skill tool directly, so downstream message handling
@@ -920,7 +948,7 @@ export async function injectSkillCatalog(
 export function buildSkillPrimeMessage(skill: { name: string; body: string }): InjectedMessage {
   return {
     role: 'user',
-    content: skill.body,
+    content: formatSkillInstructions(skill),
     isMeta: true,
     source: SKILL_MESSAGE_SOURCE,
     skillName: skill.name,
@@ -937,7 +965,7 @@ export function buildAgentEventActorSkillMessages(
       ([name, body]) =>
         new HumanMessage({
           id: `event-actor-skill:${createSkillContentDigest(`${name}\0${body}`)}`,
-          content: body,
+          content: formatSkillInstructions({ name, body }),
           additional_kwargs: {
             isMeta: true,
             source: SKILL_MESSAGE_SOURCE,
@@ -1422,7 +1450,7 @@ export function injectManualSkillPrimes(
   const primeMessages = manualSkillPrimes.map(
     (p) =>
       new HumanMessage({
-        content: p.body,
+        content: formatSkillInstructions(p),
         additional_kwargs: {
           isMeta: true,
           source: SKILL_MESSAGE_SOURCE,
@@ -1623,7 +1651,7 @@ export function injectSkillPrimes(params: InjectSkillPrimesParams): InjectSkillP
 
   const buildPrime = (p: { name: string; body: string }, trigger: SkillTrigger): HumanMessage =>
     new HumanMessage({
-      content: p.body,
+      content: formatSkillInstructions(p),
       additional_kwargs: {
         isMeta: true,
         source: SKILL_MESSAGE_SOURCE,

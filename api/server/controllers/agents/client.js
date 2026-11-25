@@ -153,6 +153,7 @@ const {
   applyAttachmentOnlyText,
   hydrateMissingIndexTokenCounts,
   injectSkillPrimes,
+  formatSkillBodies,
   buildAgentEventActorSkillMessages,
   collectFreshSkillPrimeNames,
   isSkillPrimeMessage,
@@ -4806,7 +4807,7 @@ class AgentClient extends BaseClient {
         payload,
         this.indexTokenCountMap,
         toolSet,
-        skillPrimeResult?.skills,
+        formatSkillBodies(skillPrimeResult?.skills),
         formatOptions,
       );
       restoreGoogleThoughtSignatures(
@@ -4911,7 +4912,7 @@ class AgentClient extends BaseClient {
               stripUnusableSummaryParts(stripActivityLabelParts(this.memoryPayload)),
               undefined,
               toolSet,
-              skillPrimeResult?.skills,
+              formatSkillBodies(skillPrimeResult?.skills),
               hasMessageFormatOptions ? messageFormatOptions : undefined,
             ).messages
           : memorySourceMessages;
