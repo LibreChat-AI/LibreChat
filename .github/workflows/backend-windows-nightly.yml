@@ -13,6 +13,8 @@ on:
       - 'config/jest.setup.mongo.cjs'
       - 'package-lock.json'
       - 'packages/api/src/acl/rolePermissions.spec.ts'
+      - 'packages/api/src/agents/hooks/executor.spec.ts'
+      - 'packages/api/src/agents/hooks/executor.ts'
       - 'packages/api/src/cache/__tests__/outage.spec.ts'
       - 'packages/api/src/code/command.spec.ts'
       - 'packages/api/src/code/setup/bridge.spec.ts'
@@ -52,6 +54,12 @@ jobs:
       - uses: ./.github/actions/mongodb-binary
       - run: npm run build:data-provider
       - run: npm run build:data-schemas
+      - name: Verify plugin hook shell launch failures
+        working-directory: packages/api
+        shell: bash
+        run: >-
+          npm run test:ci -- --runInBand --coverage=false --runTestsByPath
+          src/agents/hooks/executor.spec.ts --testNamePattern 'shell launch failures'
       - name: Run backend portability tests
         working-directory: packages/api
         shell: bash
