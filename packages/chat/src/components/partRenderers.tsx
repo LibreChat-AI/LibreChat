@@ -11,9 +11,17 @@ import {
 } from 'librechat-data-provider';
 import type { PartMetadata, TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import type { ToolRenderer, AgentToolCall, PartRenderers, ToolRenderProps } from './partTypes';
+import type {
+  PartRenderer,
+  ToolRenderer,
+  AgentToolCall,
+  PartRenderers,
+  ToolRenderProps,
+} from './partTypes';
 import { getActivityLabelPart, getActivityLabelText } from '../core/parts/activityLabels';
+import { HostedQuestion, HostedToolApproval } from './approval/hosted';
 import { isBashProgrammaticToolCall } from '../core/parts/routing';
+import { getAskUserQuestionPart } from '../core/parts/questions';
 import Reasoning, { ReasoningMarker } from './parts/Reasoning';
 import BackgroundTaskCall from './parts/BackgroundTaskCall';
 import FileAuthoringCall from './parts/FileAuthoringCall';
@@ -22,6 +30,7 @@ import { ToolPreparation } from './parts/preparation';
 import AskUserQuestionCall from './parts/ask/Call';
 import { getPartKeyIndex } from '../core/content';
 import { WebSearchCall } from './parts/WebSearch';
+import ErrorMessage from './errors/ErrorMessage';
 import ReadFileCall from './parts/ReadFileCall';
 import SubagentCall from './parts/SubagentCall';
 import AgentHandoff from './parts/AgentHandoff';
@@ -400,13 +409,43 @@ const matchTool = ({ name, args }: AgentToolCall): ToolRenderer | undefined => {
   return undefined;
 };
 
-/** Every agent tool call's card sits in its preparation frame, which shows what the tool is doing
- *  before it has anything to report. */
-const wrapTool = (card: ReactNode, { toolCall, isSubmitting }: ToolRenderProps): ReactNode => (
-  <ToolPreparation call={toolCall} isSubmitting={isSubmitting}>
-    {card}
-  </ToolPreparation>
-);
+/** A paused question is answered in its own card, before the part is routed by type. */
+const claim: PartRenderer = ({ part }) => {
+  const paused = getAskUserQuestionPart(part);
+  if (!paused) {
+    return undefined;
+  }
+  const { actionId, question, questions } = paused.ask_user_question;
+  return (
+    <HostedQuestion key={actionId} actionId={actionId} question={question} questions={questions} />
+  );
+};
+
+/**
+ * Every agent tool call's card sits in its preparation frame, which shows what the tool is doing
+ * before it has anything to report. A call paused for approval also gets the controls, whatever
+ * card draws it, while it has nothing to show yet.
+ */
+const wrapTool = (card: ReactNode, { toolCall, isSubmitting }: ToolRenderProps): ReactNode => {
+  const framed = (
+    <ToolPreparation call={toolCall} isSubmitting={isSubmitting}>
+      {card}
+    </ToolPreparation>
+  );
+  if (toolCall.approval == null || (toolCall.output?.length ?? 0) > 0) {
+    return framed;
+  }
+  return (
+    <>
+      {framed}
+      <HostedToolApproval
+        approval={toolCall.approval}
+        toolCallId={toolCall.id ?? ''}
+        args={toolCall.args}
+      />
+    </>
+  );
+};
 
 /** The Assistants tool call shapes: code interpreter, retrieval, and function calls. */
 const renderAssistantsToolCall: PartRenderers['parts'][ContentTypes.TOOL_CALL] = ({
@@ -535,6 +574,18 @@ const build = (): PartRenderers => ({
         isSubmitting={isSubmitting}
       />
     ),
+    [ContentTypes.ERROR]: ({ part }) => (
+      <ErrorMessage
+        text={
+          part[ContentTypes.ERROR] ??
+          (typeof part[ContentTypes.TEXT] === 'string'
+            ? part[ContentTypes.TEXT]
+            : part.text?.value) ??
+          ''
+        }
+        className="my-2"
+      />
+    ),
     [ContentTypes.AGENT_UPDATE]: ({ part, isLast, showCursor }) => (
       <>
         <AgentUpdate currentAgentId={part[ContentTypes.AGENT_UPDATE]?.agentId} />
@@ -641,6 +692,7 @@ const build = (): PartRenderers => ({
   tools: buildTools(),
   matchTool,
   defaultTool: renderDefaultTool,
+  claim,
   wrapTool,
 });
 
@@ -649,7 +701,7 @@ let built: PartRenderers | null = null;
 /**
  * How the package draws each kind of part with its own cards. `Part` uses these unless it is
  * given others, and a host extends them with `extendPartRenderers` for what only it can draw:
- * its error card, a tool of its own, approval controls around every tool call.
+ * its error card, or a tool of its own.
  *
  * Built on first use and kept. The table is keyed by `librechat-data-provider`'s tool and part
  * names, which a spec that replaces that package leaves undefined while this module loads.

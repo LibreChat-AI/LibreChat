@@ -1088,6 +1088,22 @@ endpoints:
   #   # uses its own bound listener; override only for an internal TLS/front-door route.
   #   eventDriven:
   #     # selfUrl: 'https://librechat.internal'
+  #     # Idle polling: the background loops that look for work a crashed process or another replica
+  #     # left behind (agent delivery claims and maintenance, queued-turn recovery, code-environment
+  #     # reconciliation, the MCP authorization retry and the scheduled-chat erasure sweep) back off
+  #     # while they find nothing to do, each up to its own default ceiling of 15 seconds to 20
+  #     # minutes.
+  #     # maxIntervalMs (1000 to 3600000) replaces all of those ceilings with one, for example 900000
+  #     # on a single-instance deployment that wants the fewest idle database reads. A loop never
+  #     # waits less than its own interval, so a low value keeps every loop at its base cadence. A
+  #     # longer ceiling slows the pickup of work another process left behind. Work started in this
+  #     # process still pulls its loop in: agent delivery, queued-turn recovery and maintenance wake
+  #     # at once, while the code-environment reconciler, the MCP authorization retry and the erasure
+  #     # sweep look again within their own base interval. It takes effect on restart and, while
+  #     # set, replaces deliveryMaxIntervalMs, queuedTurnMaxIntervalMs and maintenanceMaxIntervalMs.
+  #     # completionWaitMaxIntervalMs keeps its own cap.
+  #     # idlePolling:
+  #     #   maxIntervalMs: 900000
   #   # (optional) Automatic conversational delivery for supported completed background tasks.
   #   # Enabled by default; set false to keep background tools and subagents poll-only.
   #   backgroundTasks:

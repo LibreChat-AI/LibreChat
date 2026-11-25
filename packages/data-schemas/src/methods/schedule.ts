@@ -9,7 +9,7 @@ import type {
   IScheduleRun,
   IScheduleRunDocument,
 } from '~/types/schedule';
-import type { TriggerRunReservation, TriggerRunClaim, RecordedRunRef } from '~/types/triggerRun';
+import type { TriggerRunReservation, TriggerRunClaim, ScheduleRunRef } from '~/types/triggerRun';
 import type { DuplicateKeyError } from './triggerRun';
 import { createTriggerRuns, ACTIVE_RUN_STATUSES, DUPLICATE_KEY } from './triggerRun';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
@@ -305,7 +305,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
   const runs = createTriggerRuns(mongoose);
 
   /** One occurrence of a schedule, as the run it started is found by. */
-  const occurrence = (scheduleId: string, scheduledFor: string | Date): RecordedRunRef => ({
+  const occurrence = (scheduleId: string, scheduledFor: string | Date): ScheduleRunRef => ({
     subject: { kind: 'schedule', id: scheduleId },
     delivery: { event: { occurredAt: new Date(scheduledFor).getTime() } },
   });
@@ -1488,7 +1488,8 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
    * Non-terminal runs old enough to need a job-store status check. Fetches
    * `started` (capacity-consuming) and `requires_action` (paused) in separate
    * budgeted round-robin buckets so a backlog of live rows in either state
-   * cannot starve an orphaned run out of every sweep.
+   * cannot starve an orphaned run out of every sweep. Schedule rows only: a row with a
+   * `kind` is another subject's run, which this sweep has no job identity to settle by.
    */
   async function getRunsForReconciliation(olderThan: Date, limit: number): Promise<IScheduleRun[]> {
     const [started, paused] = await Promise.all([
@@ -1496,7 +1497,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       // batch. Rotate started rows as well, otherwise a full oldest-first window of
       // legitimate long-running generations can hide a newer abandoned run forever.
       ScheduleRun()
-        .find({ status: 'started', firedAt: { $lt: olderThan } })
+        .find({ status: 'started', firedAt: { $lt: olderThan }, kind: null })
         .sort({ reconciledAt: 1, firedAt: 1 })
         .limit(limit)
         .lean<IScheduleRun[]>(),
@@ -1509,7 +1510,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
       // Ordering by when each row was last examined (never-examined first) gives every
       // row a turn, which makes that starvation impossible for any number of pauses.
       ScheduleRun()
-        .find({ status: 'requires_action', firedAt: { $lt: olderThan } })
+        .find({ status: 'requires_action', firedAt: { $lt: olderThan }, kind: null })
         .sort({ reconciledAt: 1, firedAt: 1 })
         .limit(limit)
         .lean<IScheduleRun[]>(),
@@ -1535,7 +1536,8 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
    *  landed — a crash between the row write and the card/counter writes.
    *  Least-recently-attempted first (the paused window's rotation): a row whose
    *  replay keeps failing must rotate to the back, or a batch of them re-fills
-   *  this bounded window forever and every later row's counters never land. */
+   *  this bounded window forever and every later row's counters never land. Schedule rows
+   *  only, as for the live sweep. */
   async function getUnbookkeptRuns(olderThan: Date, limit: number): Promise<IScheduleRun[]> {
     return ScheduleRun()
       .find({
@@ -1544,6 +1546,7 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
         },
         bookkept: false,
         firedAt: { $lt: olderThan },
+        kind: null,
       })
       .sort({ reconciledAt: 1, firedAt: 1 })
       .limit(limit)
@@ -1652,14 +1655,14 @@ export function createScheduleMethods(mongoose: typeof import('mongoose')): Sche
    * and, narrowed to `started`, for the schedules list. The narrowing matters there:
    * this collection is indexed by status, not by user, and `started` rows are bounded
    * globally by the capacity slots while `requires_action` rows can accumulate for as
-   * long as an approval waits.
+   * long as an approval waits. Schedule rows only: the callers read each row's `scheduleId`.
    */
   async function getActiveRunsForUser(
     userId: string | Types.ObjectId,
     statuses: readonly ScheduleRunStatus[] = ACTIVE_RUN_STATUSES,
   ): Promise<IScheduleRun[]> {
     return ScheduleRun()
-      .find({ user: userId, status: { $in: statuses } })
+      .find({ user: userId, status: { $in: statuses }, kind: null })
       .lean<IScheduleRun[]>();
   }
 

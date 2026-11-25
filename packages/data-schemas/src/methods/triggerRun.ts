@@ -13,12 +13,14 @@ import type {
   TriggerRunScope,
   TriggerRunClaim,
   TriggerRunPause,
+  ScheduleRunRef,
   RecordedRunRef,
   TriggerRunOrigin,
   TriggerRunBinding,
   TriggerRunDetails,
   TriggerRunOutcome,
   TriggerRunSettlement,
+  TriggerRunBlocked,
   TriggerRunUnrecorded,
   TriggerRunExpectation,
   TriggerRunReservation,
@@ -44,45 +46,79 @@ export type DuplicateKeyError = {
   message?: string;
 };
 
-/** DocumentDB can omit keyPattern; retain the deployed default index names as a fallback. */
-function matchesRunDuplicate(
-  error: unknown,
-  fields: readonly string[],
-  indexName: string,
-): boolean {
+/** One unique index a duplicate-key error can name: its fields and its deployed name. */
+type Unique = { fields: readonly string[]; name: string };
+
+/**
+ * Whether a duplicate-key error was raised by one of the indexes given. The fields are compared
+ * as a set, since a rule can be kept under more than one key order. DocumentDB can omit
+ * keyPattern; the deployed index names are the fallback.
+ */
+function matchesRunDuplicate(error: unknown, indexes: readonly Unique[]): boolean {
   const err = error as DuplicateKeyError;
   if (err?.code !== DUPLICATE_KEY) {
     return false;
   }
   const keyPattern = err.keyPattern;
   if (keyPattern != null) {
-    return (
-      Object.keys(keyPattern).length === fields.length &&
-      fields.every((field) => Object.prototype.hasOwnProperty.call(keyPattern, field))
+    const keys = Object.keys(keyPattern);
+    return indexes.some(
+      ({ fields }) =>
+        keys.length === fields.length &&
+        fields.every((field) => Object.prototype.hasOwnProperty.call(keyPattern, field)),
     );
   }
   const message = err.errmsg || err.message;
-  return typeof message === 'string' && /\bindex:\s+(\S+)/.exec(message)?.[1] === indexName;
+  const name = typeof message === 'string' ? /\bindex:\s+(\S+)/.exec(message)?.[1] : undefined;
+  return name != null && indexes.some((index) => index.name === name);
 }
 
-/** A duplicate-key error whose conflict is the {scheduleId, scheduledFor} occurrence index. */
+/**
+ * The schedule rules, each held by its legacy index and by the schedule-only index that
+ * succeeds it. Both exist until the release after this one drops the legacy pair, so a
+ * conflict may be raised by either.
+ */
+const OCCURRENCE: readonly Unique[] = [
+  { fields: ['scheduleId', 'scheduledFor'], name: 'scheduleId_1_scheduledFor_1' },
+  { fields: ['scheduledFor', 'scheduleId'], name: 'occurrence' },
+];
+const ACTIVE: readonly Unique[] = [
+  { fields: ['scheduleId'], name: 'scheduleId_1' },
+  { fields: ['scheduleId', 'status'], name: 'active' },
+];
+
+/** A duplicate-key error whose conflict is the occurrence rule: one row per occurrence. */
 function isOccurrenceDuplicate(error: unknown): boolean {
-  return matchesRunDuplicate(error, ['scheduleId', 'scheduledFor'], 'scheduleId_1_scheduledFor_1');
+  return matchesRunDuplicate(error, OCCURRENCE);
 }
 
-/** A duplicate-key error whose conflict is the single-active-run partial index. */
+/** A duplicate-key error whose conflict is the single-active-run rule. */
 function isActiveRunConflict(error: unknown): boolean {
-  return matchesRunDuplicate(error, ['scheduleId'], 'scheduleId_1');
+  return matchesRunDuplicate(error, ACTIVE);
 }
 
 /** A duplicate-key error whose conflict is the one-row-per-delivery partial index. */
 function isDeliveryDuplicate(error: unknown): boolean {
-  return matchesRunDuplicate(error, ['deliveryKey'], 'deliveryKey_1');
+  return matchesRunDuplicate(error, [{ fields: ['deliveryKey'], name: 'deliveryKey_1' }]);
 }
 
 /** A duplicate-key error whose conflict is the GLOBAL {capacitySlot} cap index. */
 function isCapacitySlotConflict(error: unknown): boolean {
-  return matchesRunDuplicate(error, ['capacitySlot'], 'capacitySlot_1');
+  return matchesRunDuplicate(error, [{ fields: ['capacitySlot'], name: 'capacitySlot_1' }]);
+}
+
+/** An index as the collection lists it. */
+type Listed = { key?: Record<string, unknown>; unique?: boolean; partialFilterExpression?: object };
+
+/**
+ * Whether an index would hold a row with no `scheduleId` to a schedule rule: a unique index on
+ * `scheduleId` whose filter does not require one, as the two legacy indexes are. A
+ * subscription's row has no `scheduleId`, so under such an index it would collide, as a null,
+ * with every other row that has none.
+ */
+function holdsUnscheduled(index: Listed): boolean {
+  const filter = index.partialFilterExpression as Record<string, unknown> | undefined;
+  return index.unique === true && index.key?.scheduleId != null && filter?.scheduleId == null;
 }
 
 type Field = keyof TriggerRun;
@@ -176,18 +212,15 @@ function where(ref: TriggerRunRef): Place | null {
 }
 
 /**
- * The columns a new row is given. A subscription's row also takes the two a schedule's is
- * found by, which every row must hold: its delivery's key stands as `scheduleId`, so the row
- * is alone under the index that allows a schedule one active run, and other runs of its
- * subscription are free to overlap it.
+ * A new row: the columns given, then the ones that name it. A schedule's row is named by its
+ * schedule and the time of its event. A subscription's row holds no `scheduleId`, even one the
+ * columns given name, so the schedule-only indexes leave it out; it takes the time of its
+ * event as `scheduledFor`, as every row does.
  */
-function named(ref: TriggerRunRef, at: Place): Place & Occurrence {
-  if (!('kind' in at)) return at;
-  return {
-    ...at,
-    scheduleId: at.deliveryKey,
-    scheduledFor: new Date(ref.delivery.event.occurredAt),
-  };
+function fill(row: TriggerRunRow, ref: TriggerRunRef, at: Place): TriggerRunRow {
+  if (!('kind' in at)) return { ...row, ...at };
+  const { scheduleId: _scheduleId, ...rest } = row;
+  return { ...rest, ...at, scheduledFor: new Date(ref.delivery.event.occurredAt) };
 }
 
 /**
@@ -252,8 +285,11 @@ export type TriggerRuns = {
    * conflict in the insert itself; nothing is read first.
    */
   reserve: {
-    (ref: RecordedRunRef, row: TriggerRunRow): Promise<TriggerRunReservation>;
-    (ref: TriggerRunRef, row: TriggerRunRow): Promise<TriggerRunReservation | TriggerRunUnrecorded>;
+    (ref: ScheduleRunRef, row: TriggerRunRow): Promise<TriggerRunReservation>;
+    (
+      ref: TriggerRunRef,
+      row: TriggerRunRow,
+    ): Promise<TriggerRunReservation | TriggerRunUnrecorded | TriggerRunBlocked>;
   };
   /** Adds what an accepted fire learned to the row it reserved, matched by its conversation. */
   detail: (ref: TriggerRunRef, details: TriggerRunDetails) => Promise<void>;
@@ -299,15 +335,58 @@ export type TriggerRuns = {
   /**
    * Inserts the row of a run that never starts, marked as not yet settled with its subject.
    * A delivery that already has a row is answered from that row while it is the same skip,
-   * so a retry repeats the subject's step; `null` when the row is anything else.
+   * so a retry repeats the subject's step; `null` when the row is anything else. A
+   * subscription's row is `blocked` while the collection cannot hold it yet.
    */
-  skip: (ref: TriggerRunRef, row: TriggerRunSkip) => Promise<TriggerRunOrigin | null>;
+  skip: {
+    (ref: ScheduleRunRef, row: TriggerRunSkip): Promise<TriggerRunOrigin | null>;
+    (ref: TriggerRunRef, row: TriggerRunSkip): Promise<TriggerRunOrigin | null | TriggerRunBlocked>;
+  };
   /** Marks a run as settled with its subject, once the subject's own step has landed. */
   settled: (ref: TriggerRunRef) => Promise<void>;
+  /**
+   * A subscription's runs that someone has to finish, oldest first, at most `limit` of each
+   * kind: ones still active that fired before `before`, whose owner may have died, and ones
+   * that ended before `before` but whose subscription's own step never landed. Reads every
+   * tenant's rows the caller's scope lets it read; a sweep reads them as the system.
+   */
+  stranded: (
+    kind: 'subscription',
+    before: Date,
+    limit: number,
+  ) => Promise<Array<{ ref: RecordedRunRef; run: Pick<TriggerRun, StrandedField> }>>;
 };
+
+/** What a sweep is handed of a stranded run. */
+type StrandedField = 'status' | 'owner' | 'tenantId' | 'firedAt' | 'revision' | 'conversationId';
+const STRANDED: readonly StrandedField[] = [
+  'status',
+  'owner',
+  'tenantId',
+  'firedAt',
+  'revision',
+  'conversationId',
+];
 
 export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerRuns {
   const Run = () => mongoose.models.ScheduleRun as Model<IScheduleRunDocument>;
+
+  /** Set once the collection is known to hold a subscription's row; it does not go back. */
+  let open = false;
+
+  /**
+   * Whether a subscription's row may be inserted: the schedule-only indexes are built and no
+   * index left would hold a row with no `scheduleId` to a schedule's rule. Asked before each
+   * such insert until it holds, then remembered. Requiring the new indexes as well as the
+   * legacy ones' absence keeps a collection whose indexes are not built yet from passing.
+   */
+  async function writable(): Promise<boolean> {
+    if (open) return true;
+    const indexes = (await Run().listIndexes()) as Array<Listed & { name?: string }>;
+    const names = new Set(indexes.map((index) => index.name));
+    open = names.has('occurrence') && names.has('active') && !indexes.some(holdsUnscheduled);
+    return open;
+  }
 
   async function get<K extends Field>(
     ref: TriggerRunRef,
@@ -336,26 +415,27 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     return row == null ? null : view(row, fields);
   }
 
-  function reserve(ref: RecordedRunRef, row: TriggerRunRow): Promise<TriggerRunReservation>;
+  function reserve(ref: ScheduleRunRef, row: TriggerRunRow): Promise<TriggerRunReservation>;
   function reserve(
     ref: TriggerRunRef,
     row: TriggerRunRow,
-  ): Promise<TriggerRunReservation | TriggerRunUnrecorded>;
+  ): Promise<TriggerRunReservation | TriggerRunUnrecorded | TriggerRunBlocked>;
   async function reserve(
     ref: TriggerRunRef,
     row: TriggerRunRow,
-  ): Promise<TriggerRunReservation | TriggerRunUnrecorded> {
+  ): Promise<TriggerRunReservation | TriggerRunUnrecorded | TriggerRunBlocked> {
     const at = where(ref);
     if (at == null) return { conflict: 'unrecorded' };
+    const delivered = 'kind' in at;
+    if (delivered && !(await writable())) return { conflict: 'blocked' };
     try {
-      const doc = await Run().create({ ...row, ...named(ref, at), status: 'started' });
+      const doc = await Run().create({ ...fill(row, ref, at), status: 'started' });
       return { run: doc.toObject() };
     } catch (error) {
-      // A subscription's row holds its delivery's key under every index that names a row, so
-      // whichever of them refuses a second insert of that delivery, it is the same answer:
-      // the active-run index included, which for a schedule means another occurrence.
-      const again = 'kind' in at && (isDeliveryDuplicate(error) || isActiveRunConflict(error));
-      if (isOccurrenceDuplicate(error) || again) {
+      // A subscription's row is in none of the schedule-only indexes, so a second insert of
+      // its delivery is refused by the delivery index alone, and it never answers `overlap`.
+      const again = delivered ? isDeliveryDuplicate(error) : isOccurrenceDuplicate(error);
+      if (again) {
         // Report the EXISTING row's status. A duplicate means another fire owns this
         // occurrence — but "owns" and "already finished" need opposite handling, and the
         // caller cannot distinguish them without this.
@@ -371,7 +451,7 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
       if (isCapacitySlotConflict(error)) {
         return { conflict: 'slot-taken' };
       }
-      if (isActiveRunConflict(error)) {
+      if (!delivered && isActiveRunConflict(error)) {
         return { conflict: 'overlap' };
       }
       throw error;
@@ -693,14 +773,22 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
    * attempt holds the delivery. Only a row that is the same skip is answered, with its own
    * fire time, since anything else is a run that started and must not be read as a skip.
    */
-  async function skip(ref: TriggerRunRef, row: TriggerRunSkip): Promise<TriggerRunOrigin | null> {
+  function skip(ref: ScheduleRunRef, row: TriggerRunSkip): Promise<TriggerRunOrigin | null>;
+  function skip(
+    ref: TriggerRunRef,
+    row: TriggerRunSkip,
+  ): Promise<TriggerRunOrigin | null | TriggerRunBlocked>;
+  async function skip(
+    ref: TriggerRunRef,
+    row: TriggerRunSkip,
+  ): Promise<TriggerRunOrigin | null | TriggerRunBlocked> {
     const at = where(ref);
     if (at == null) return null;
+    if ('kind' in at && !(await writable())) return { conflict: 'blocked' };
     const now = new Date();
     try {
       const doc = await Run().create({
-        ...row,
-        ...named(ref, at),
+        ...fill(row, ref, at),
         firedAt: now,
         settledAt: now,
         bookkept: false,
@@ -723,7 +811,48 @@ export function createTriggerRuns(mongoose: typeof import('mongoose')): TriggerR
     await Run().updateOne(at, { $set: { bookkept: true } });
   }
 
+  async function stranded(
+    kind: 'subscription',
+    before: Date,
+    limit: number,
+  ): Promise<Array<{ ref: RecordedRunRef; run: Pick<TriggerRun, StrandedField> }>> {
+    const select = `kind subject deliveryKey scheduledFor ${project(STRANDED, { kind })}`;
+    // Two reads, each inside an index the collection already has: active rows by status and
+    // the time they fired, ended ones by the time they settled.
+    const [active, ended] = await Promise.all([
+      Run()
+        .find({ kind, status: { $in: ACTIVE_RUN_STATUSES }, firedAt: { $lt: before } })
+        .sort({ firedAt: 1 })
+        .limit(limit)
+        .select(select)
+        .lean<Row[]>(),
+      Run()
+        .find({ kind, bookkept: false, settledAt: { $lt: before } })
+        .sort({ settledAt: 1 })
+        .limit(limit)
+        .select(select)
+        .lean<Row[]>(),
+    ]);
+    return [...active, ...ended].flatMap((row) =>
+      row.subject != null && row.deliveryKey != null && row.scheduledFor != null
+        ? [
+            {
+              ref: {
+                subject: { kind, id: row.subject },
+                delivery: {
+                  key: row.deliveryKey,
+                  event: { occurredAt: new Date(row.scheduledFor).getTime() },
+                },
+              },
+              run: view(row, STRANDED),
+            },
+          ]
+        : [],
+    );
+  }
+
   return {
+    stranded,
     get,
     byConversation,
     reserve,

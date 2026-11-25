@@ -6,18 +6,23 @@ const SCHEDULE_RUN_TTL_SECONDS = 90 * 24 * 60 * 60;
 
 const scheduleRunSchema: Schema<IScheduleRunDocument> = new Schema(
   {
+    /** The schedule whose occurrence the row records. Required on a schedule's row and
+     *  absent on a row of any other kind, which the schedule-only indexes leave out. */
     scheduleId: {
       type: String,
-      required: true,
+      required: [
+        function (this: { kind?: string }): boolean {
+          return this.kind == null;
+        },
+        'A schedule run requires a scheduleId',
+      ],
     },
     /** Whose run the row records, where that is not a schedule: absent on a schedule's row. */
     kind: {
       type: String,
       enum: ['subscription'],
     },
-    /** That subject's id. A schedule's row holds its schedule's id as `scheduleId` instead,
-     *  and a row of any other kind holds its delivery's key there, so the row stands alone
-     *  under the two unique indexes on `scheduleId` and takes no schedule's place. */
+    /** That subject's id, on a row that holds a `kind`. */
     subject: {
       type: String,
     },
@@ -166,7 +171,17 @@ const scheduleRunSchema: Schema<IScheduleRunDocument> = new Schema(
   },
 );
 
+// LEGACY, dropped in the release after this one. Covers every row, so a row with no
+// `scheduleId` would be held to it as a null: a subscription's row is not written while it
+// exists (see `triggerRun.ts`). `occurrence` below is its schedule-only successor.
 scheduleRunSchema.index({ scheduleId: 1, scheduledFor: 1 }, { unique: true });
+// One row per occurrence, on schedule rows only. The key pattern differs from the legacy
+// index's so the two can coexist on MongoDB before 5.0, which refuses two indexes on one
+// key pattern; an equality on both fields is unique in either order, so the rule is the same.
+scheduleRunSchema.index(
+  { scheduledFor: 1, scheduleId: 1 },
+  { name: 'occurrence', unique: true, partialFilterExpression: { scheduleId: { $exists: true } } },
+);
 // TTL retention applies only to SETTLED rows: an approval window configured longer
 // than the retention period would otherwise let Mongo expire a still-live
 // `requires_action` run — its retained job could then resume with no run row (no
@@ -180,9 +195,21 @@ scheduleRunSchema.index({ settledAt: 1 }, { expireAfterSeconds: SCHEDULE_RUN_TTL
 // At most ONE active (`started`) run per schedule, enforced by the DB rather than a
 // read-then-write check: a second occurrence inserting while one is already active
 // fails with a duplicate-key error instead of racing.
+// LEGACY, dropped in the release after this one, for the same reason as the legacy
+// occurrence index: a row with no `scheduleId` would be held to it as a null.
 scheduleRunSchema.index(
   { scheduleId: 1 },
   { unique: true, partialFilterExpression: { status: 'started' } },
+);
+// Its schedule-only successor. Every row it holds is `started`, so `status` is one value
+// across it and {scheduleId, status} is unique exactly when `scheduleId` is.
+scheduleRunSchema.index(
+  { scheduleId: 1, status: 1 },
+  {
+    name: 'active',
+    unique: true,
+    partialFilterExpression: { status: 'started', scheduleId: { $exists: true } },
+  },
 );
 // GLOBAL fireConcurrency, enforced by the DB rather than a read-then-compare count.
 // A fire claims a slot in [0, fireConcurrency) in the SAME write that inserts the run;
@@ -196,10 +223,9 @@ scheduleRunSchema.index(
     partialFilterExpression: { status: 'started', capacitySlot: { $exists: true } },
   },
 );
-// One row per delivery for a run that is not a schedule's. A schedule's occurrence is unique
-// by {scheduleId, scheduledFor} above; two deliveries to one subscription can carry the same
-// event time, so theirs are told apart by the delivery's key. Partial on an equality, the
-// shape the active-run index already uses here, so no row without `kind` is in it.
+// One row per delivery for a run that is not a schedule's. Two deliveries to one subscription
+// can carry the same event time, so theirs are told apart by the delivery's key. Partial on an
+// equality, the shape the active-run index already uses here, so no row without `kind` is in it.
 scheduleRunSchema.index(
   { deliveryKey: 1 },
   { unique: true, partialFilterExpression: { kind: 'subscription' } },

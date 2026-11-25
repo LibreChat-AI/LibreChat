@@ -3,13 +3,13 @@ import { ChevronDown } from 'lucide-react';
 import { Button } from '@librechat/client';
 import { ApprovalResumeHostProvider } from '@librechat/chat/react';
 import {
+  ToolApproval,
   PendingToolApprovalButton as PackageButton,
   PendingToolApprovalPanel as PackagePanel,
 } from '@librechat/chat/components';
 import type { ApprovalRequestRenderProps } from '@librechat/chat/components';
 import type { ReactNode, RefObject } from 'react';
 import { useChatApprovalHost } from '~/components/Chat/Messages/Content/ApprovalContext';
-import ToolApproval from '~/components/Chat/Messages/Content/ToolApproval';
 import { useLocalize } from '~/hooks';
 
 /**

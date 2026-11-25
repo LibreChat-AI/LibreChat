@@ -163,11 +163,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Content/ToolApproval.tsx": {
-    "shadcn/no-restyle": {
-      "count": 26
-    }
-  },
   "client/src/components/Chat/Messages/Content/UIResourceCarousel.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1

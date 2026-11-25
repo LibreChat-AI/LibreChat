@@ -1932,6 +1932,9 @@ export const subagentActivityConfigSchema = z.object({
 
 export type TSubagentActivityConfig = z.infer<typeof subagentActivityConfigSchema>;
 
+/** The longest `endpoints.agents.eventDriven.idlePolling.maxIntervalMs` may ask a loop to wait: one hour. */
+export const MAX_IDLE_POLLING_INTERVAL_MS = 60 * 60_000;
+
 export const agentsEndpointSchema = baseEndpointSchema
   .omit({ baseURL: true })
   .merge(
@@ -2435,6 +2438,21 @@ export const agentsEndpointSchema = baseEndpointSchema
                 .max(300_000)
                 .optional()
                 .default(60_000),
+              /** One deployment-wide ceiling for the idle back-off of every recovery loop: agent
+               * delivery claims, maintenance and queued-turn recovery (while set it replaces
+               * `deliveryMaxIntervalMs`, `maintenanceMaxIntervalMs` and `queuedTurnMaxIntervalMs`),
+               * the code-environment reconciler, the MCP authorization retry and the scheduled-chat
+               * erasure sweep. The background completion wait keeps `completionWaitMaxIntervalMs`.
+               * A loop never waits less than its own interval, so a low value keeps it at its base
+               * cadence. Unset keeps each loop's default. A quiet single-instance deployment can set
+               * 900000 to trade slower pickup of work another process left behind for fewer idle
+               * database reads. Read once at startup. */
+              maxIntervalMs: z
+                .number()
+                .int()
+                .min(1000)
+                .max(MAX_IDLE_POLLING_INTERVAL_MS)
+                .optional(),
             })
             .optional(),
         })
@@ -2480,6 +2498,11 @@ export const agentsEndpointSchema = baseEndpointSchema
               host: pullRequestHostSchema.optional(),
               /** Longest one request to GitHub may take, in seconds. Default 10. */
               requestTimeoutSeconds: z.number().int().min(1).max(60).optional(),
+              /** How long GitHub's answer that an account may or may not write to a repository
+               *  is reused before it is asked again, in seconds; 0 asks for every event. A
+               *  collaborator removed meanwhile can still start runs until it lapses. A failed
+               *  question is never reused. Default 300. */
+              accessTtlSeconds: z.number().int().min(0).max(3600).optional(),
             })
             .optional(),
           /** How long a subscription's check that an MCP server is ready is reused for the same

@@ -1,34 +1,10 @@
-import fs from 'fs';
-import path from 'path';
 import { hash } from 'bcryptjs';
 import { randomBytes } from 'node:crypto';
 import { MongoClient, ObjectId } from 'mongodb';
 import type { Db } from 'mongodb';
+import { getMongoUri } from '../../setup/env';
 
-const DEFAULT_MONGO_URI = 'mongodb://127.0.0.1:27017/LibreChat-e2e';
-
-/**
- * e2e/setup/start-server.js writes the active Mongo URI (memory-Mongo port included)
- * here on boot. It honors `E2E_RUNTIME_ENV_PATH`, so resolve the same override the
- * server used before falling back to the default location.
- */
-function getRuntimeEnvPath(): string {
-  return (
-    process.env.E2E_RUNTIME_ENV_PATH ?? path.resolve(__dirname, '../.test-results/runtime-env.json')
-  );
-}
-
-export function getMongoUri(): string {
-  try {
-    const env = JSON.parse(fs.readFileSync(getRuntimeEnvPath(), 'utf8')) as { MONGO_URI?: string };
-    if (env.MONGO_URI) {
-      return env.MONGO_URI;
-    }
-  } catch {
-    /* fall through to env/default */
-  }
-  return process.env.MONGO_URI ?? DEFAULT_MONGO_URI;
-}
+export { getMongoUri };
 
 async function resolveUserId(db: Db, userEmail: string): Promise<string> {
   const user = await db.collection('users').findOne({ email: userEmail });

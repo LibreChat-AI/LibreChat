@@ -161,6 +161,28 @@ test('an artifact upload can fail a gated job only when another job downloads th
   }
 });
 
+/** Paths an upload step names, one per line of a multi-line `path`. */
+const uploadPaths = (step) =>
+  String(step.with?.path ?? '')
+    .split('\n')
+    .filter(Boolean);
+
+test('an upload whose glob walks a hidden directory opts into hidden files', () => {
+  /** upload-artifact skips every path under a dot-directory a glob reaches unless told not to;
+   *  `e2e/specs/.test-results/**` then uploads nothing, and a failed run keeps no trace. */
+  const hidden = (path) => path.includes('*') && /(^|\/)\.[^/]+\//.test(path);
+  const misses = Object.entries(workflows).flatMap(([file, workflow]) =>
+    Object.entries(workflow.jobs ?? {}).flatMap(([job, definition]) =>
+      (definition.steps ?? [])
+        .filter((step) => step.uses?.startsWith('actions/upload-artifact@'))
+        .filter((step) => uploadPaths(step).some(hidden))
+        .filter((step) => step.with['include-hidden-files'] !== true)
+        .map((step) => `${file} ${job}: ${step.name ?? step.with.name}`),
+    ),
+  );
+  assert.deepEqual(misses, []);
+});
+
 test('a required context is the name of exactly one gate job and of nothing else', () => {
   const contexts = SUITES.map((suite) => suite.context);
   assert.equal(new Set(contexts).size, contexts.length);

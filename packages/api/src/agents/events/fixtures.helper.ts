@@ -49,6 +49,22 @@ export function repository(name = 'example-org/widgets', id = REPOSITORY_ID): Pa
   };
 }
 
+/** A label as GitHub lists it on a pull request or an issue. */
+function tag(name: string, id: number): Payload {
+  return {
+    id,
+    node_id: `LA_${id}`,
+    url: `${API}/repos/example-org/widgets/labels/${name}`,
+    name,
+    color: 'ededed',
+    default: false,
+    description: null,
+  };
+}
+
+/** The labels every fixture pull request carries. */
+export const LABELS = ['needs-agent', 'backend'];
+
 function ref(label: string, branch: string, sha: string): Payload {
   return { label, ref: branch, sha, user: user('example-org', 9001, 'Organization') };
 }
@@ -72,6 +88,7 @@ export function pullRequest(number = 42): Payload {
     merged_at: null,
     merge_commit_sha: null,
     draft: false,
+    labels: LABELS.map((name, index) => tag(name, 7100 + index)),
     head: { ...ref('example-org:retry-loader', 'retry-loader', HEAD_SHA), repo: repository() },
     base: {
       ...ref('example-org:main', 'main', '1111111111111111111111111111111111111111'),
@@ -160,6 +177,7 @@ export function issueCommentCreated(): Payload {
       updated_at: '2026-11-20T11:00:00Z',
       closed_at: null,
       author_association: 'MEMBER',
+      labels: LABELS.map((name, index) => tag(name, 7100 + index)),
       pull_request: {
         url: `${API}/repos/example-org/widgets/pulls/42`,
         html_url: `${HOST}/example-org/widgets/pull/42`,

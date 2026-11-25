@@ -71,9 +71,25 @@ jest.mock('../parts/WebSearch', () => ({
   __esModule: true,
   WebSearchCall: mockStub('web-search'),
 }));
+jest.mock('../errors/ErrorMessage', () => ({
+  __esModule: true,
+  default: ({ text, className }: { text: string; className?: string }) => (
+    <div data-testid="error-message" data-text={text} className={className} />
+  ),
+}));
 jest.mock('../parts/ask/Call', () => ({
   __esModule: true,
   default: mockStub('ask-user-question-call'),
+}));
+jest.mock('../approval/hosted', () => ({
+  HostedQuestion: ({ actionId, question }: { actionId: string; question: string }) => (
+    <div data-testid="paused-question" data-action-id={actionId}>
+      {question}
+    </div>
+  ),
+  HostedToolApproval: ({ toolCallId }: { toolCallId: string }) => (
+    <div data-testid="tool-approval" data-tool-call-id={toolCallId} />
+  ),
 }));
 
 /** What `Part` drew: the stubbed component's test id, or the text of an inline element. */
@@ -103,8 +119,7 @@ const INHERITED = ['constructor', '__proto__', 'toString', 'hasOwnProperty'];
 /** Every branch of the switch `Part` replaced, with the component that branch drew. */
 const PART_TYPES: [string, TMessageContentParts, string | null][] = [
   ['steer', asPart({ type: ContentTypes.STEER, [ContentTypes.STEER]: 'go' }), 'steer-part'],
-  /** An error part is the host's to draw: the package has no error card of its own. */
-  ['error', asPart({ type: ContentTypes.ERROR, [ContentTypes.ERROR]: 'bad' }), null],
+  ['error', asPart({ type: ContentTypes.ERROR, [ContentTypes.ERROR]: 'bad' }), 'error-message'],
   [
     'agent update',
     asPart({ type: ContentTypes.AGENT_UPDATE, [ContentTypes.AGENT_UPDATE]: { agentId: 'a' } }),
@@ -136,8 +151,8 @@ const PART_TYPES: [string, TMessageContentParts, string | null][] = [
       type: 'ask_user_question',
       ask_user_question: { actionId: 'action-1', question: 'Which?' },
     }),
-    /** A paused question is the host's to claim, with its way to answer. */
-    null,
+    /** A paused question is claimed before routing and answered in its own card. */
+    'paused-question',
   ],
   [
     'code interpreter call',
@@ -253,6 +268,76 @@ describe('the package’s subagent card', () => {
     drawn(agentCall(Constants.SUBAGENT as string));
     expect(mockSubagentProps?.contentPreview).toBeUndefined();
     expect(mockSubagentProps?.toolCallId).toBe('call_1');
+  });
+});
+
+describe('the package’s error part', () => {
+  const errorText = (part: Record<string, unknown>) => {
+    const { container, unmount } = render(
+      <Part
+        part={asPart({ type: ContentTypes.ERROR, ...part })}
+        isSubmitting={false}
+        showCursor={false}
+        isCreatedByUser={false}
+      />,
+    );
+    const element = container.querySelector('[data-testid="error-message"]');
+    const result = [element?.getAttribute('data-text'), element?.className];
+    unmount();
+    return result;
+  };
+
+  it('draws the error message with the part’s error text, set apart from its neighbors', () => {
+    expect(errorText({ [ContentTypes.ERROR]: 'bad' })).toEqual(['bad', 'my-2']);
+  });
+
+  it('falls back to the part’s text, plain or wrapped, and to nothing', () => {
+    expect(errorText({ text: 'plain' })[0]).toBe('plain');
+    expect(errorText({ text: { value: 'wrapped' } })[0]).toBe('wrapped');
+    expect(errorText({})[0]).toBe('');
+  });
+});
+
+describe('paused tool calls and questions', () => {
+  const pausedCall = (toolCall: Record<string, unknown>) =>
+    asPart({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'call_1',
+        name: 'some_mcp_tool',
+        args: '{}',
+        output: '',
+        progress: 0.1,
+        ...toolCall,
+      },
+    });
+  const draw = (part: TMessageContentParts) =>
+    render(<Part part={part} isSubmitting={false} showCursor={false} isCreatedByUser={false} />);
+
+  it('claims a paused question for its card, keyed by its action', () => {
+    const { getByTestId } = draw(
+      asPart({
+        type: 'ask_user_question',
+        ask_user_question: { actionId: 'action-1', question: 'Which?' },
+      }),
+    );
+    const card = getByTestId('paused-question');
+    expect(card).toHaveAttribute('data-action-id', 'action-1');
+    expect(card).toHaveTextContent('Which?');
+  });
+
+  it('puts approval controls under any tool card paused with nothing to show yet', () => {
+    const { getByTestId } = draw(pausedCall({ name: 'read_file', approval: { actionId: 'a1' } }));
+    expect(getByTestId('read-file-call')).toBeInTheDocument();
+    expect(getByTestId('tool-approval')).toHaveAttribute('data-tool-call-id', 'call_1');
+  });
+
+  it('shows no approval controls once the call has output, or when it never paused', () => {
+    const answered = draw(pausedCall({ output: 'done', approval: { actionId: 'a1' } }));
+    expect(answered.queryByTestId('tool-approval')).not.toBeInTheDocument();
+    answered.unmount();
+    const plain = draw(pausedCall({}));
+    expect(plain.queryByTestId('tool-approval')).not.toBeInTheDocument();
   });
 });
 

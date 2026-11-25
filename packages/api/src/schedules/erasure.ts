@@ -12,14 +12,14 @@ import {
   retainedOutcome,
   RESUME_HANDOFF_STALE_MS,
 } from './types';
-import { createIdleRecoveryLoop } from '~/agents/recovery';
+import { createIdleRecoveryLoop, resolveIdleCeilingMs } from '~/agents/recovery';
 import { registerShutdownTask } from '~/app/shutdown';
 
 const SWEEP_MS = 5 * 60_000;
 const SWEEP_JITTER_MS = 30_000;
 /** While a sweep finds nothing the wait doubles up to this ceiling, the same four-fold span the
- *  durable agent loops use. A sweep that finds work returns the loop to the base interval. Fixed for
- *  now: one configurable ceiling shared by the always-on loops is a separate change. */
+ *  durable agent loops use. A sweep that finds work returns the loop to the base interval. The
+ *  deployment-wide `eventDriven.idlePolling.maxIntervalMs` replaces it while set. */
 const SWEEP_MAX_IDLE_MS = 4 * SWEEP_MS;
 const SWEEP_BATCH = 100;
 /** Runs with no readable job older than this are presumed owner-dead (matches the
@@ -75,6 +75,8 @@ export interface ScheduleErasureDeps {
   /** Whether absence in this process's job store proves absence deployment-wide.
    * False for the process-local fallback whose scheduler refused unsafe topology. */
   canInferOwnerDeathFromMissingJob: boolean;
+  /** The deployment-wide `eventDriven.idlePolling.maxIntervalMs`, when configured. */
+  idleCeilingMs?: number;
 }
 
 /** Whether the observed job still carries THIS occurrence's scheduled identity. */
@@ -497,7 +499,11 @@ export function startScheduleErasureSweep(deps: ScheduleErasureDeps): ScheduleEr
   // replicas of a clustered deployment from sweeping in lockstep once they back off.
   const loop = createIdleRecoveryLoop({
     intervalMs: SWEEP_MS,
-    maxIdleIntervalMs: SWEEP_MAX_IDLE_MS,
+    maxIdleIntervalMs: resolveIdleCeilingMs({
+      intervalMs: SWEEP_MS,
+      defaultMs: SWEEP_MAX_IDLE_MS,
+      ceilingMs: deps.idleCeilingMs,
+    }),
     jitterMs: SWEEP_JITTER_MS,
     initialDelayMs: SWEEP_MS,
     scan: pass,

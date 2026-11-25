@@ -15,6 +15,9 @@ import { PendingToolApprovalPanel } from '../Review';
 const mockApprovalMutate = jest.fn();
 
 jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  /** The approval card in each row is the chat package's, which localizes through this module. */
+  useLocalize: () => jest.requireMock<{ useLocalize: () => unknown }>('~/hooks').useLocalize(),
   Button: jest
     .requireActual('react')
     .forwardRef(

@@ -75,7 +75,16 @@ describe('eventSettings', () => {
     expect(eventSettings({ enabled: true, github }, env)?.github).toEqual({
       app: { id: '123456', key: PEM.trim(), host: 'github.com', timeoutMs: 10_000 },
       secret: 'whsec-example-0123456789abcdef',
+      accessTtlMs: 300_000,
     });
+  });
+
+  it.each([
+    [0, 0],
+    [60, 60_000],
+  ])('reuses access answers for the %s seconds that are set', (seconds, ms) => {
+    const config = { enabled: true, github: { ...github, accessTtlSeconds: seconds } };
+    expect(eventSettings(config, env)?.github?.accessTtlMs).toBe(ms);
   });
 
   it('takes the host and the request timeout that are set', () => {

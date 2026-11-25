@@ -150,41 +150,19 @@ const GAPS: Gap[] = [
     }),
   },
   {
-    id: 'subagent-card',
-    why: 'A subagent call is drawn by LibreChat\'s adapter over the package card; outside it is a generic tool card ("Ran subagent"). Closed by the subagent card defaulting from the parts host.',
-    matches: elements('subagent', {
-      missing: ['button:Ran agent', 'span:Ran agent'],
-      /** The generic tool card drawn in its place, and what it shows when opened. */
-      extra: [
-        'span:Ran subagent',
-        'button:',
-        'pre:The logs show two restarts.',
-        'button:Copy',
-        'span:Parameters',
-        'span:description',
-        'span:Summarize the logs',
-        'span:subagent_type',
-        'span:researcher',
-      ],
-    }),
-  },
-  {
-    id: 'error-part',
-    why: "An error part draws nothing outside LibreChat: its card and the error-code registry are the app's. Closed by moving the error card into the package.",
-    matches: elements('error', {
-      missing: [
-        'div[alert]:',
-        'div:Mock Provider A could not complete this request.',
-        'div:The provider rejected the request.',
-      ],
-    }),
-  },
-  {
-    id: 'approval-controls',
-    why: 'A tool call paused for review shows LibreChat\'s approval controls (the reason, Approve, Reject); outside it reads "Cancelled". Closed by moving the approval and question cards into the package.',
-    matches: elements('approval', {
-      missing: ['p:Deletes two records', 'button:Approve', 'button:Reject', 'button:Submit'],
-    }),
+    id: 'subagent-panel',
+    why: 'A subagent row opens its activity panel only inside a `ChatSurfaceProvider`, and the panel loads the child\'s thread through the subagents host. A page with no server has neither, so its "Ran agent" button is disabled: drawn at 80% opacity, in the page\'s text color (see `inherited-text-color`). A capability of the host, listed so the check notices if the default changes.',
+    matches: (difference) =>
+      difference.fixture === 'subagent' &&
+      difference.row === 1 &&
+      difference.part === 'body' &&
+      difference.key === 'button:Ran agent' &&
+      restyles(difference, ['opacity', 'color']) &&
+      changes(difference).every(([property, before, after]) =>
+        property === 'opacity'
+          ? before === '1' && after === '0.8'
+          : before === 'rgb(33, 33, 33)' && after === 'rgb(0, 0, 0)',
+      ),
   },
 ];
 

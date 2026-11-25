@@ -16,7 +16,7 @@ import {
   AttachmentGroup,
   contentPartsRenderer,
 } from '@librechat/chat/components';
-import type { MessagePartsHost, ToolCallChrome } from '@librechat/chat/react';
+import type { ApprovalResumeHost, MessagePartsHost, ToolCallChrome } from '@librechat/chat/react';
 import type { ContentPartsSlots } from '@librechat/chat/components';
 import type { PtcTrace } from '@librechat/chat';
 import type { ReactNode } from 'react';
@@ -72,6 +72,18 @@ export const outsideSlots: ContentPartsSlots = {
   ),
 };
 
+/**
+ * How a paused run resumes, which an app supplies the way LibreChat does. This page talks to no
+ * server, so it sends nothing; it is here so a paused call draws the controls an app that can
+ * answer it would show.
+ */
+const resume: ApprovalResumeHost = {
+  readFields: () => ({ conversationId: 'outside' }),
+  submitToolApproval: () => undefined,
+  submitAskAnswer: () => undefined,
+  readMessages: () => null,
+};
+
 /** The settings follow LibreChat's defaults, so a difference the check finds is the package's. */
 export const outsideHost: MessagePartsHost = {
   useMessage: () => {
@@ -103,6 +115,7 @@ export const outsideHost: MessagePartsHost = {
   useShare: () => ({}),
   useLoadedSkill: () => undefined,
   useToolCallChrome,
+  useApprovalResumeHost: () => resume,
 };
 
 /** The providers an outside app wraps the chat in, per the package README. */

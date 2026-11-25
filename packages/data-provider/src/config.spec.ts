@@ -20,6 +20,7 @@ import {
   supportsConversationTitleOwnership,
   CODE_ENVIRONMENT_ADMISSION_MAX_MS,
   excludedKeys,
+  MAX_IDLE_POLLING_INTERVAL_MS,
   DEFAULT_MCP_APP_ADMISSION_REQUESTS_PER_MINUTE,
   DEFAULT_MCP_APP_PERSISTED_BYTES,
   DEFAULT_MCP_APP_MAX_ACTIVE_VIEWS,
@@ -1580,6 +1581,9 @@ describe('agent events config', () => {
     ['a host with a path', { github: { ...github, host: 'github.example.com/api' } }],
     ['a request timeout of zero', { github: { ...github, requestTimeoutSeconds: 0 } }],
     ['a request timeout over a minute', { github: { ...github, requestTimeoutSeconds: 61 } }],
+    ['a negative access lifetime', { github: { ...github, accessTtlSeconds: -1 } }],
+    ['an access lifetime over an hour', { github: { ...github, accessTtlSeconds: 3601 } }],
+    ['a fractional access lifetime', { github: { ...github, accessTtlSeconds: 1.5 } }],
     ['an excerpt under 16 characters', { limits: { excerpt: 15 } }],
     ['an excerpt over 65,536 characters', { limits: { excerpt: 65_537 } }],
     ['a fractional excerpt', { limits: { excerpt: 100.5 } }],
@@ -1594,6 +1598,8 @@ describe('agent events config', () => {
     ['the smallest bounds', { limits: { excerpt: 16, fanout: 1 } }],
     ['the largest bounds', { limits: { excerpt: 65_536, fanout: 100 } }],
     ['the longest request timeout', { github: { ...github, requestTimeoutSeconds: 60 } }],
+    ['no reuse of access answers', { github: { ...github, accessTtlSeconds: 0 } }],
+    ['the longest access lifetime', { github: { ...github, accessTtlSeconds: 3600 } }],
   ])('accepts %s', (_name, events) => {
     expect(parse(events).success).toBe(true);
   });
@@ -3492,6 +3498,7 @@ describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
       clientLimits: 'operator',
       conversationList: 'operator',
       passwordHashing: 'startup',
+      'endpoints.agents.eventDriven': 'startup',
       'interface.colorModeFromUrl': 'startup',
       'fileConfig.skills.deletionCleanupConcurrency': 'operator',
       'endpoints.agents.managementApi': 'operator',
@@ -3505,6 +3512,50 @@ describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
       const prefixes = segments.map((_, index) => segments.slice(0, index + 1).join('.'));
       expect(prefixes.filter((prefix) => baseOnly.has(prefix))).toEqual([]);
     }
+  });
+});
+
+describe('idle polling configuration', () => {
+  const parse = (idlePolling: unknown) =>
+    configSchema.safeParse({
+      version: '1.3.19',
+      endpoints: { agents: { eventDriven: { idlePolling } } },
+    });
+
+  it('leaves the deployment-wide ceiling unset, and every loop on its own default, when absent', () => {
+    expect(
+      parse({}).data?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs,
+    ).toBeUndefined();
+    expect(configSchema.parse({ version: '1.3.19' }).endpoints?.agents).toBeUndefined();
+  });
+
+  it.each([1_000, 900_000, MAX_IDLE_POLLING_INTERVAL_MS])(
+    'accepts a deployment-wide ceiling of %s ms',
+    (maxIntervalMs) => {
+      expect(
+        parse({ maxIntervalMs }).data?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs,
+      ).toBe(maxIntervalMs);
+    },
+  );
+
+  it.each([
+    ['below one second', { maxIntervalMs: 999 }],
+    ['above one hour', { maxIntervalMs: MAX_IDLE_POLLING_INTERVAL_MS + 1 }],
+    ['fractional', { maxIntervalMs: 1500.5 }],
+    ['not a number', { maxIntervalMs: '15m' }],
+  ])('rejects a ceiling that is %s', (_name, idlePolling) => {
+    expect(parse(idlePolling).success).toBe(false);
+  });
+
+  it('allows up to about one hour, and keeps the per-feature caps on their own defaults', () => {
+    expect(MAX_IDLE_POLLING_INTERVAL_MS).toBe(3_600_000);
+    expect(
+      parse({ maxIntervalMs: 900_000 }).data?.endpoints?.agents?.eventDriven?.idlePolling,
+    ).toMatchObject({
+      maxIntervalMs: 900_000,
+      queuedTurnMaxIntervalMs: 120_000,
+      maintenanceMaxIntervalMs: 120_000,
+    });
   });
 });
 

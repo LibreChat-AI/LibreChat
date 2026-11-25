@@ -828,6 +828,35 @@ describe('deleteScheduleForOwner', () => {
     }
   });
 
+  it('starts the fallback sweep with the deployment-wide idle ceiling', async () => {
+    jest.useFakeTimers();
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+    try {
+      const service = makeService(jest.fn<Promise<ActiveRun[]>, [string]>().mockResolvedValue([]));
+      const deleting = jest.fn(async () => []);
+      Object.assign(service.engineDeps.methods, {
+        getDeletingSchedules: deleting,
+        markEraseAttempted: jest.fn(async () => undefined),
+        getRunsForReconciliation: jest.fn(async () => []),
+        getUnbookkeptRuns: jest.fn(async () => []),
+        markRunsReconciled: jest.fn(async () => undefined),
+      });
+
+      service.initializeScheduleErasureSweep({ idleCeilingMs: 8 * 60_000 });
+      await jest.advanceTimersByTimeAsync(5 * 60_000);
+      expect(deleting).toHaveBeenCalledTimes(1);
+
+      /** The first idle wait would be ten minutes; the ceiling holds it to eight. */
+      await jest.advanceTimersByTimeAsync(8 * 60_000 - 1);
+      expect(deleting).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(deleting).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
   afterEach(() => {
     mockJobStore = null;
     jest.restoreAllMocks();

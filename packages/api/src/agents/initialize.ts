@@ -160,11 +160,7 @@ import { getProviderConfig } from '~/endpoints';
 import { primeResources } from './resources';
 import { pinAgentModel } from './pin';
 
-/**
- * Fraction of context budget reserved as headroom when no explicit maxContextTokens is set.
- * Reduced from 0.10 to 0.05 alongside the introduction of summarization, which actively
- * manages overflow. `createRun` can further override this via `SummarizationConfig.reserveRatio`.
- */
+/** Legacy headroom when no explicit context limit or reserve ratio is used. */
 const DEFAULT_RESERVE_RATIO = 0.05;
 
 /**
@@ -810,7 +806,7 @@ export type InitializedAgent = Agent & {
   toolContextMap: Record<string, unknown>;
   dynamicToolContextMap?: Record<string, unknown>;
   maxContextTokens: number;
-  /** Pre-ratio context budget (agentMaxContextNum - maxOutputTokensNum). Used by createRun to apply a configurable reserve ratio. */
+  /** Input budget after output reservation and input limits, before any headroom. */
   baseContextTokens?: number;
   useLegacyContent: boolean;
   resendFiles: boolean;
@@ -1669,13 +1665,14 @@ export async function initializeAgent(
     llmConfig?.maxTokens as number | undefined,
     0,
   );
+  const modelContextTokens = getModelMaxTokens(
+    tokensModel ?? '',
+    providerEndpointMap[overrideProvider as keyof typeof providerEndpointMap],
+    options.endpointTokenConfig,
+  );
   const agentMaxContextTokens = optionalChainWithEmptyCheck(
     maxContextTokens,
-    getModelMaxTokens(
-      tokensModel ?? '',
-      providerEndpointMap[overrideProvider as keyof typeof providerEndpointMap],
-      options.endpointTokenConfig,
-    ),
+    modelContextTokens,
     DEFAULT_MAX_CONTEXT_TOKENS,
   );
 
@@ -2889,9 +2886,13 @@ export async function initializeAgent(
     agent.provider === Providers.GOOGLE || agent.provider === Providers.VERTEXAI
       ? (getGoogleInputTokenLimit(tokensModel ?? '', maxOutputTokensNum) ?? Infinity)
       : Infinity;
+  const contextLimit =
+    maxContextTokens != null && maxContextTokens > 0 ? maxContextTokens : undefined;
+  // An explicit limit supplies the window only when the provider window is unknown.
+  const contextWindow = modelContextTokens ?? contextLimit ?? DEFAULT_MAX_CONTEXT_TOKENS;
   const baseContextTokens = Math.max(
     0,
-    Math.min(agentMaxContextNum - maxOutputTokensNum, sharedInputLimit),
+    Math.min(contextWindow - maxOutputTokensNum, sharedInputLimit, contextLimit ?? Infinity),
   );
 
   const toMongoFiles = (files: Array<TFile | undefined> | undefined): IMongoFile[] =>
@@ -3033,9 +3034,15 @@ export async function initializeAgent(
     provisionWarnings:
       provisionWarnings != null && provisionWarnings.length > 0 ? provisionWarnings : undefined,
     maxContextTokens:
-      maxContextTokens != null && maxContextTokens > 0
-        ? Math.min(maxContextTokens, sharedInputLimit)
-        : Math.max(1024, Math.round(baseContextTokens * (1 - DEFAULT_RESERVE_RATIO))),
+      contextLimit != null
+        ? Math.min(contextLimit, sharedInputLimit)
+        : Math.max(
+            1024,
+            Math.round(
+              Math.min(agentMaxContextNum - maxOutputTokensNum, sharedInputLimit) *
+                (1 - DEFAULT_RESERVE_RATIO),
+            ),
+          ),
     primedCodeFiles,
     codeContextEntries,
     endpointTokenConfig: options.endpointTokenConfig,

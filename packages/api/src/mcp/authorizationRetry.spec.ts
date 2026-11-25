@@ -194,7 +194,7 @@ describe('MCP authorization fence retry service', () => {
       const { service, storage } = createHarness();
       service.start(jest.fn().mockResolvedValue(undefined), {
         intervalMs: 1_000,
-        maxIdleIntervalMs: 1_500,
+        idleCeilingMs: 1_500,
       });
       await jest.advanceTimersByTimeAsync(0);
       await jest.advanceTimersByTimeAsync(1_500);
@@ -202,6 +202,35 @@ describe('MCP authorization fence retry service', () => {
       await jest.advanceTimersByTimeAsync(1_500);
       expect(storage.list).toHaveBeenCalledTimes(3);
       await service.stop();
+    });
+
+    it('backs off to the deployment-wide ceiling and never below the base interval', async () => {
+      const { service, storage } = createHarness();
+      service.start(jest.fn().mockResolvedValue(undefined), {
+        intervalMs: 1_000,
+        idleCeilingMs: 5_000,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      /** Waits of 2 s and 4 s, then the configured 5 s where the default would be 4 s. */
+      await jest.advanceTimersByTimeAsync(2_000);
+      await jest.advanceTimersByTimeAsync(4_000);
+      expect(storage.list).toHaveBeenCalledTimes(3);
+      await jest.advanceTimersByTimeAsync(4_999);
+      expect(storage.list).toHaveBeenCalledTimes(3);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(storage.list).toHaveBeenCalledTimes(4);
+      await service.stop();
+
+      const low = createHarness();
+      low.service.start(jest.fn().mockResolvedValue(undefined), {
+        intervalMs: 2_500,
+        idleCeilingMs: 1_000,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      await jest.advanceTimersByTimeAsync(2_500);
+      await jest.advanceTimersByTimeAsync(2_500);
+      expect(low.storage.list).toHaveBeenCalledTimes(3);
+      await low.service.stop();
     });
 
     it('logs an unreadable batch and retries at the base interval instead of backing off', async () => {

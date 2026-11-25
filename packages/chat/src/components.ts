@@ -198,6 +198,8 @@ export type { LiveAsk, AskAnswerView, AskPopoverProps } from './components/compo
 export type { AskOption } from './components/parts/AskOptions';
 export { default as AutoHeight } from './components/parts/AutoHeight';
 export { default as AskUserQuestion } from './components/parts/ask/Question';
+export { default as PausedQuestion } from './components/parts/ask/Paused';
+export type { PausedQuestionProps } from './components/parts/ask/Paused';
 export { default as AskUserQuestions } from './components/parts/ask/Questions';
 export { default as AskUserQuestionCall } from './components/parts/ask/Call';
 export { default as AskUserQuestionProgress } from './components/parts/ask/Progress';
@@ -451,6 +453,7 @@ export type {
   ResumeSubmitTransport,
   ToolApprovalDecisionDraft,
 } from './components/approval/context';
+export { default as ToolApproval } from './components/approval/ToolApproval';
 export { PendingToolApprovalButton, PendingToolApprovalPanel } from './components/approval/Review';
 export type {
   ApprovalRequestRenderProps,

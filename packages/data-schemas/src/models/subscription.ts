@@ -1,6 +1,7 @@
 import { Schema } from 'mongoose';
 import {
   subscriptionActors,
+  subscriptionSuspendReasons,
   subscriptionTargets,
   subscriptionCapSchema,
   subscriptionEventsSchema,
@@ -9,12 +10,25 @@ import {
   subscriptionEnrollmentSchema,
   SUBSCRIPTION_PROMPT_MAX_LENGTH,
 } from 'librechat-data-provider';
-import type { Subscription, SubscriptionIdentity, RunGrant } from 'librechat-data-provider';
+import type {
+  SubscriptionSuspension,
+  SubscriptionIdentity,
+  Subscription,
+  RunGrant,
+} from 'librechat-data-provider';
 import type { Model, Types } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 
-export interface SubscriptionRecord extends Omit<Subscription, 'user'> {
+export interface SubscriptionRecord extends Omit<Subscription, 'user' | 'suspended'> {
   user: Types.ObjectId;
+  /** Set by the server when it turns the subscription off; cleared when the owner turns it on. */
+  suspended?: Omit<SubscriptionSuspension, 'at'> & { at: Date };
+  /** How many of its runs have failed in a row. Absent before the first failure. */
+  failures?: number;
+  /** The delivery keys of the last runs counted into `failures`, so a replay is not counted twice. */
+  counted?: string[];
+  /** Runs started in the clock hour that began at `hour`. Absent before the first run. */
+  usage?: { hour: Date; runs: number };
   /**
    * What the owner allowed its runs, made for one `revision`. Absent until the owner grants
    * anything: a run of a subscription with no grant uses none of its agent's tools. Read and
@@ -68,6 +82,26 @@ export function createAgentEventSubscriptionModel(
         type: Schema.Types.Mixed,
         default: undefined,
         validate: within(subscriptionEnrollmentSchema),
+      },
+      suspended: {
+        type: new Schema(
+          {
+            reason: { type: String, enum: subscriptionSuspendReasons, required: true },
+            at: { type: Date, required: true },
+            failures: { type: Number, required: true, min: 0 },
+          },
+          { _id: false },
+        ),
+        default: undefined,
+      },
+      failures: { type: Number, min: 0 },
+      counted: { type: [String], default: undefined },
+      usage: {
+        type: new Schema(
+          { hour: { type: Date, required: true }, runs: { type: Number, required: true, min: 0 } },
+          { _id: false },
+        ),
+        default: undefined,
       },
     },
     { timestamps: true },
