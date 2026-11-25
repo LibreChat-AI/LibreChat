@@ -239,6 +239,24 @@ describe('MCP authorization fence retry service', () => {
       await service.stop();
     });
 
+    it('costs one read per base interval however often markers are persisted and cleared', async () => {
+      const { service, storage } = createHarness();
+      const invalidate = jest.fn().mockResolvedValue(undefined);
+      service.start(invalidate, { intervalMs: 30_000 });
+      await jest.advanceTimersByTimeAsync(0);
+
+      /** A publication every second for 90 s, each cleared at once: nothing is ever left to replay. */
+      for (let second = 0; second < 90; second += 1) {
+        await service.clear(scope, await service.persist(scope));
+        await jest.advanceTimersByTimeAsync(1_000);
+      }
+
+      /** Reads at 0, 30, 60 and 90 s, as the fixed timer made them, not one per publication. */
+      expect(storage.list).toHaveBeenCalledTimes(4);
+      expect(invalidate).not.toHaveBeenCalled();
+      await service.stop();
+    });
+
     it('finds nothing to replay when the publisher cleared its marker in time', async () => {
       const { service, storage } = createHarness();
       const invalidate = jest.fn().mockResolvedValue(undefined);

@@ -431,7 +431,7 @@ export function startCodeEnvironmentLifecycleReconciler(
     maxIdleIntervalMs: RECONCILE_MAX_IDLE_INTERVAL_MS,
     scan: async () =>
       (await isLeader())
-        ? reconcile({ ...options, onRetryAt: (at) => reconcileLoop?.noteEligibleAt(at) })
+        ? reconcile({ ...options, onRetryAt: (at) => reconcileLoop?.hint(at) })
         : false,
     onError: (error) => logger.error('[code-environments] lifecycle reconciliation failed:', error),
   });
@@ -441,7 +441,7 @@ export function startCodeEnvironmentLifecycleReconciler(
 /** A producer left reconcilable work behind: scan again after one base interval instead of waiting
  * out the idle back-off. Best effort, and local to this process. */
 export function noteCodeEnvironmentLifecycleWork(): void {
-  reconcileLoop?.noteEligibleAt(new Date(Date.now() + RECONCILE_INTERVAL_MS));
+  reconcileLoop?.hint(new Date(Date.now() + RECONCILE_INTERVAL_MS));
 }
 
 export async function stopCodeEnvironmentLifecycleReconciler(): Promise<void> {

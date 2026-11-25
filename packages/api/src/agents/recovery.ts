@@ -117,7 +117,7 @@ export function createIdleRecoveryLoop({
     return current;
   };
 
-  return {
+  const loop = {
     start: (): Promise<void> => {
       if (stopped) {
         return Promise.resolve();
@@ -174,6 +174,18 @@ export function createIdleRecoveryLoop({
       }
       schedule();
     },
+    /** For producers that can call at a high rate. Like `noteEligibleAt`, except that a time within one
+     * interval after a deadline still waiting is dropped: the scan at that deadline sees the work, or
+     * finds it and returns the loop to its base interval, so it reaches the later time too. A burst
+     * of hints costs one scan per interval instead of one each. */
+    hint: (at: Date): void => {
+      const time = at.getTime();
+      const now = Date.now();
+      if (deadlines.some((value) => value > now && value <= time && time - value <= intervalMs)) {
+        return;
+      }
+      loop.noteEligibleAt(at);
+    },
     stop: async (): Promise<void> => {
       stopped = true;
       if (timer != null) {
@@ -183,4 +195,5 @@ export function createIdleRecoveryLoop({
       await active;
     },
   };
+  return loop;
 }

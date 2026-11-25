@@ -159,6 +159,44 @@ describe('code environment lifecycle scheduler', () => {
     expect(reconcile).toHaveBeenCalledTimes(2);
   });
 
+  test('answers a burst of producer hints with one scan per base interval', async () => {
+    leader.mockResolvedValue(true);
+    const reconcile = jest.fn().mockResolvedValue(true);
+    startCodeEnvironmentLifecycleReconciler({ mongoose }, { reconcile });
+    await jest.advanceTimersByTimeAsync(0);
+
+    /** A failed revocation every second for four minutes. */
+    for (let second = 0; second < 240; second += 1) {
+      noteCodeEnvironmentLifecycleWork();
+      await jest.advanceTimersByTimeAsync(1_000);
+    }
+
+    /** Scans at 0, 60, 120, 180 and 240 s, not one per hint. */
+    expect(reconcile).toHaveBeenCalledTimes(5);
+  });
+
+  test('answers a pass that defers many retries at nearly the same time with one scan', async () => {
+    leader.mockResolvedValue(true);
+    const reconcile = jest
+      .fn<Promise<boolean>, [Parameters<typeof startCodeEnvironmentLifecycleReconciler>[0]]>()
+      .mockImplementationOnce(async ({ onRetryAt }) => {
+        for (let retry = 0; retry < 25; retry += 1) {
+          onRetryAt?.(new Date(Date.now() + 90_000 + retry * 20));
+        }
+        return true;
+      })
+      .mockResolvedValue(true);
+
+    startCodeEnvironmentLifecycleReconciler({ mongoose }, { reconcile });
+    await jest.advanceTimersByTimeAsync(0);
+    await jest.advanceTimersByTimeAsync(90_000);
+    expect(reconcile).toHaveBeenCalledTimes(2);
+
+    /** The later times fall within one interval of the first, so none adds a scan of its own. */
+    await jest.advanceTimersByTimeAsync(239_000);
+    expect(reconcile).toHaveBeenCalledTimes(2);
+  });
+
   describe('worker revocation during account deletion', () => {
     const environment = {
       _id: new Types.ObjectId(),

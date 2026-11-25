@@ -718,6 +718,23 @@ describe('schedule erasure fallback idle back-off', () => {
     sweep.stop();
   });
 
+  it('answers a burst of hints with one sweep per base interval', async () => {
+    const methods = emptyMethods();
+    const sweep = start(methods);
+    await jest.advanceTimersByTimeAsync(5 * MIN);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(1);
+
+    /** A delete that leaves its row every ten seconds for twenty minutes. */
+    for (let tick = 0; tick < 120; tick += 1) {
+      sweep.hint();
+      await jest.advanceTimersByTimeAsync(10_000);
+    }
+
+    /** One sweep each at 10, 15, 20 and 25 minutes, not one per delete. */
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(5);
+    sweep.stop();
+  });
+
   it('leaves no timer behind after stop, and ignores a hint that arrives afterwards', async () => {
     const methods = emptyMethods();
     const sweep = start(methods);

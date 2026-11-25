@@ -306,4 +306,68 @@ describe('durable agent idle recovery', () => {
     expect(() => createIdleRecoveryLoop({ ...options, jitterMs: value })).toThrow(TypeError);
     expect(() => createIdleRecoveryLoop({ ...options, initialDelayMs: value })).toThrow(TypeError);
   });
+
+  describe('hint', () => {
+    const start = async (scan = jest.fn(async () => true)) => {
+      const loop = createIdleRecoveryLoop({
+        intervalMs: 30_000,
+        maxIdleIntervalMs: 120_000,
+        scan,
+        onError: jest.fn(),
+      });
+      await loop.start();
+      return { loop, scan };
+    };
+
+    it('costs one scan per interval however often it is called', async () => {
+      const { loop, scan } = await start();
+
+      /** A hint every second for 90 s, each asking for a look one interval later. */
+      for (let second = 0; second < 90; second += 1) {
+        loop.hint(new Date(Date.now() + 30_000));
+        await jest.advanceTimersByTimeAsync(1_000);
+      }
+
+      /** Scans at 0, 30, 60 and 90 s, where `noteEligibleAt` would have kept every deadline. */
+      expect(scan).toHaveBeenCalledTimes(4);
+      await loop.stop();
+    });
+
+    it('still honors a time more than one interval after a waiting deadline, and an earlier one', async () => {
+      const { loop, scan } = await start();
+      loop.hint(new Date(Date.now() + 10_000));
+      /** 41 s is more than 30 s after the 10 s deadline, so it is kept. */
+      loop.hint(new Date(Date.now() + 41_000));
+      /** 5 s comes before the 10 s deadline, so it is kept too. */
+      loop.hint(new Date(Date.now() + 5_000));
+
+      await jest.advanceTimersByTimeAsync(4_999);
+      expect(scan).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(scan).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(5_000);
+      expect(scan).toHaveBeenCalledTimes(3);
+      await jest.advanceTimersByTimeAsync(31_000);
+      expect(scan).toHaveBeenCalledTimes(4);
+      await loop.stop();
+    });
+
+    it('runs a scan at once for a time that has passed, like noteEligibleAt', async () => {
+      const { loop, scan } = await start();
+      loop.hint(new Date(Date.now() - 1));
+      await jest.advanceTimersByTimeAsync(0);
+      expect(scan).toHaveBeenCalledTimes(2);
+      await loop.stop();
+    });
+
+    it('ignores an invalid time and a hint after stop', async () => {
+      const { loop, scan } = await start();
+      loop.hint(new Date(Number.NaN));
+      await loop.stop();
+      loop.hint(new Date(Date.now() + 1_000));
+      await jest.advanceTimersByTimeAsync(600_000);
+      expect(scan).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    });
+  });
 });

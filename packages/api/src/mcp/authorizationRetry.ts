@@ -132,7 +132,7 @@ export function createMCPAuthorizationFenceRetryService(
     });
     /** The publisher normally clears the marker within moments. If it cannot, the replay must not
      * wait out an idle back-off: look once, one base interval from now. */
-    loop?.noteEligibleAt(new Date(Date.now() + retryIntervalMs));
+    loop?.hint(new Date(Date.now() + retryIntervalMs));
     return version;
   };
 

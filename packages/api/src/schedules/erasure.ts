@@ -507,7 +507,7 @@ export function startScheduleErasureSweep(deps: ScheduleErasureDeps): ScheduleEr
 
   const engineSweep: ScheduleErasureSweep = {
     sweep,
-    hint: () => loop.noteEligibleAt(new Date(Date.now() + SWEEP_MS)),
+    hint: () => loop.hint(new Date(Date.now() + SWEEP_MS)),
     stop: () => {
       void loop.stop();
     },
