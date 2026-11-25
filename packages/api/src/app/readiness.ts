@@ -1,5 +1,6 @@
 import { logger } from '@librechat/data-schemas';
-import type { TServerReadinessChecks } from 'librechat-data-provider';
+import { serverReadinessChecksSchema } from 'librechat-data-provider';
+import type { TCustomConfig, TServerReadinessChecks } from 'librechat-data-provider';
 import type { Request, Response, RequestHandler } from 'express';
 import type { RedisClientType } from '@redis/client';
 import type { Redis, Cluster } from 'ioredis';
@@ -24,32 +25,58 @@ export type ReadinessOptions = {
 };
 
 export type OpenIdReadinessState = {
-  markPending: () => void;
   markReady: () => void;
-  markNotConfigured: () => void;
   isReady: () => boolean;
 };
 
+export type OpenIdReadinessSettings = {
+  socialLoginEnabled: boolean;
+  clientId?: string;
+  clientSecret?: string;
+  issuer?: string;
+  scope?: string;
+  sessionSecret?: string;
+  usePkce: boolean;
+};
+
+export type ServerReadinessSettings = {
+  checks: TServerReadinessChecks;
+  openIdReadiness: OpenIdReadinessState;
+};
+
+/** Resolves YAML checks and OpenID applicability for the server entrypoint. */
+export function createServerReadinessSettings(
+  config: TCustomConfig | undefined,
+  openId: OpenIdReadinessSettings,
+): ServerReadinessSettings {
+  const checks = serverReadinessChecksSchema.parse(config?.server?.readiness?.checks ?? {});
+  const openIdConfigured = Boolean(
+    openId.socialLoginEnabled &&
+      openId.clientId &&
+      (openId.usePkce || openId.clientSecret?.trim()) &&
+      openId.issuer &&
+      openId.scope &&
+      openId.sessionSecret,
+  );
+  const shouldGateOnOpenId = checks.oidc && openIdConfigured;
+  if (checks.oidc && !shouldGateOnOpenId) {
+    logger.warn(
+      '[readiness] The OIDC readiness check is enabled, but OpenID login is disabled or not configured; skipping the check.',
+    );
+  }
+
+  return { checks, openIdReadiness: createOpenIdReadiness(shouldGateOnOpenId) };
+}
+
 /** Tracks this process's OpenID registration without relying on Passport's internal strategy map. */
 export function createOpenIdReadiness(enabled: boolean): OpenIdReadinessState {
-  let status: 'not-configured' | 'pending' | 'ready' = 'not-configured';
+  let ready = !enabled;
 
   return {
-    markPending: () => {
-      status = 'pending';
-    },
     markReady: () => {
-      status = 'ready';
+      ready = true;
     },
-    markNotConfigured: () => {
-      status = 'not-configured';
-      if (enabled) {
-        logger.warn(
-          '[readiness] The OIDC readiness check is enabled, but OpenID login is not configured; skipping the check.',
-        );
-      }
-    },
-    isReady: () => !enabled || status !== 'pending',
+    isReady: () => ready,
   };
 }
 

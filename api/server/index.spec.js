@@ -174,13 +174,11 @@ describe('Startup readiness wiring', () => {
     }
   });
 
-  it('reads readiness checks from the raw librechat.yaml config in both server entries', () => {
+  it('delegates readiness settings to the TypeScript helper in both server entries', () => {
     const experimental = fs.readFileSync(path.join(__dirname, 'experimental.js'), 'utf8');
 
     for (const contents of [source, experimental]) {
-      expect(contents).toMatch(
-        /appConfig\?\.config\?\.server\?\.readiness\?\.checks \?\? \{\s+redis: true,\s+oidc: false,\s+\}/,
-      );
+      expect(contents).toMatch(/createServerReadinessSettings\(\s*appConfig\?\.config,/);
     }
   });
 

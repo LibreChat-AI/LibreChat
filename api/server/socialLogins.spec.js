@@ -162,7 +162,7 @@ describe('configureSocialLogins OpenID session expiry', () => {
     process.env.OPENID_DISCOVERY_RETRY_DELAY_MS = '1000';
     const discovery = { startupAttempts: 0, retryDelayMs: 250 };
     const app = { use: jest.fn() };
-    const openIdReadiness = { markPending: jest.fn(), markReady: jest.fn() };
+    const openIdReadiness = { markReady: jest.fn() };
 
     await configureSocialLogins(
       app,
@@ -182,13 +182,13 @@ describe('configureSocialLogins OpenID session expiry', () => {
     expect(openIdReadiness.markReady).toHaveBeenCalledTimes(1);
   });
 
-  it('marks the OIDC readiness check not applicable when OpenID is not configured', async () => {
+  it('does not register OpenID when required settings are missing', async () => {
     process.env.OPENID_CLIENT_ID = '';
-    const openIdReadiness = { markNotConfigured: jest.fn() };
+    const openIdReadiness = { markReady: jest.fn() };
 
     await configureSocialLogins({ use: jest.fn() }, undefined, openIdReadiness);
 
-    expect(openIdReadiness.markNotConfigured).toHaveBeenCalledTimes(1);
+    expect(openIdReadiness.markReady).not.toHaveBeenCalled();
     expect(mockRegisterOpenIdWithRetry).not.toHaveBeenCalled();
   });
 });

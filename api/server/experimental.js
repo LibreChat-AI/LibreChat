@@ -67,7 +67,7 @@ const {
   createClusteredFileSweep,
   createRequestSanitizer,
   createStartupReadiness,
-  createOpenIdReadiness,
+  createServerReadinessSettings,
   keyvRedisClient,
   ioredisClient,
 } = require('@librechat/api');
@@ -525,11 +525,18 @@ if (cluster.isMaster) {
     await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
     registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
     const appConfig = await getAppConfig({ baseOnly: true });
-    const readinessChecks = appConfig?.config?.server?.readiness?.checks ?? {
-      redis: true,
-      oidc: false,
-    };
-    const openIdReadiness = createOpenIdReadiness(readinessChecks.oidc);
+    const { checks: readinessChecks, openIdReadiness } = createServerReadinessSettings(
+      appConfig?.config,
+      {
+        socialLoginEnabled: isEnabled(ALLOW_SOCIAL_LOGIN),
+        clientId: process.env.OPENID_CLIENT_ID,
+        clientSecret: process.env.OPENID_CLIENT_SECRET,
+        issuer: process.env.OPENID_ISSUER,
+        scope: process.env.OPENID_SCOPE,
+        sessionSecret: process.env.OPENID_SESSION_SECRET,
+        usePkce: isEnabled(process.env.OPENID_USE_PKCE),
+      },
+    );
     const readiness = createStartupReadiness(
       {
         useRedis: cacheConfig.USE_REDIS,
@@ -706,8 +713,6 @@ if (cluster.isMaster) {
 
     if (isEnabled(ALLOW_SOCIAL_LOGIN)) {
       await configureSocialLogins(app, appConfig, openIdReadiness);
-    } else {
-      openIdReadiness.markNotConfigured();
     }
 
     app.use(capabilityContextMiddleware);

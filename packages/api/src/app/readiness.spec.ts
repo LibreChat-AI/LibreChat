@@ -11,6 +11,7 @@ import type { ReadinessOptions } from './readiness';
 import {
   createOpenIdReadiness,
   createReadinessHandler,
+  createServerReadinessSettings,
   createStartupReadiness,
   isRedisReady,
 } from './readiness';
@@ -162,7 +163,6 @@ describe('OpenID readiness state', () => {
 
   it('remains unready during registration and becomes ready after recovery', () => {
     const readiness = createOpenIdReadiness(true);
-    readiness.markPending();
     expect(readiness.isReady()).toBe(false);
     readiness.markReady();
     expect(readiness.isReady()).toBe(true);
@@ -170,19 +170,40 @@ describe('OpenID readiness state', () => {
 
   it('warns and passes when OpenID is not configured', () => {
     const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
-    const readiness = createOpenIdReadiness(true);
-    readiness.markPending();
-    readiness.markNotConfigured();
-
-    expect(readiness.isReady()).toBe(true);
-    expect(warn).toHaveBeenCalledWith(
-      '[readiness] The OIDC readiness check is enabled, but OpenID login is not configured; skipping the check.',
+    const { checks, openIdReadiness } = createServerReadinessSettings(
+      { server: { readiness: { checks: { oidc: true } } } },
+      { socialLoginEnabled: true, usePkce: false },
     );
+
+    expect(checks).toEqual({ redis: true, oidc: true });
+    expect(openIdReadiness.isReady()).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      '[readiness] The OIDC readiness check is enabled, but OpenID login is disabled or not configured; skipping the check.',
+    );
+  });
+
+  it('uses configured checks and waits for OpenID registration when login is configured', () => {
+    const settings = createServerReadinessSettings(
+      { server: { readiness: { checks: { redis: false, oidc: true } } } },
+      {
+        socialLoginEnabled: true,
+        clientId: 'client-id',
+        clientSecret: 'client-secret',
+        issuer: 'https://issuer.example.com',
+        scope: 'openid profile email',
+        sessionSecret: 'session-secret',
+        usePkce: false,
+      },
+    );
+
+    expect(settings.checks).toEqual({ redis: false, oidc: true });
+    expect(settings.openIdReadiness.isReady()).toBe(false);
+    settings.openIdReadiness.markReady();
+    expect(settings.openIdReadiness.isReady()).toBe(true);
   });
 
   it('does not gate readiness when OIDC is not selected', () => {
     const readiness = createOpenIdReadiness(false);
-    readiness.markPending();
     expect(readiness.isReady()).toBe(true);
   });
 });
@@ -239,7 +260,6 @@ describe('worker startup readiness', () => {
 
   it('keeps API work closed until selected OIDC readiness recovers', async () => {
     const openIdReadiness = createOpenIdReadiness(true);
-    openIdReadiness.markPending();
     const { app, readiness } = worker(clients({ useRedis: false }), {
       checks: { redis: true, oidc: true },
       isOpenIdReady: openIdReadiness.isReady,

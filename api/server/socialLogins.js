@@ -64,7 +64,6 @@ async function configureOpenId(app, appConfig, openIdReadiness) {
   app.use(session(sessionOptions));
   app.use(passport.session());
 
-  openIdReadiness?.markPending();
   await registerOpenIdWithRetry({
     setupOpenId,
     registerJwtStrategy: (config) => passport.use('openidJwt', openIdJwtLogin(config)),
@@ -120,8 +119,6 @@ const configureSocialLogins = async (app, appConfig, openIdReadiness) => {
     process.env.OPENID_SESSION_SECRET
   ) {
     await configureOpenId(app, appConfig, openIdReadiness);
-  } else {
-    openIdReadiness?.markNotConfigured();
   }
   if (
     process.env.SAML_ENTRY_POINT &&
