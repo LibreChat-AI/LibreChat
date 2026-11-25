@@ -120,6 +120,12 @@ import {
   resolveRecursionLimit,
 } from '~/agents/config';
 import {
+  createProductModelCallback,
+  createProductRemoteModelHandlers,
+  observeProductRun,
+  observeProductRunSetup,
+} from './product';
+import {
   isSteeringSupported,
   isSteerPreemptSupported,
   isSteerTerminalContinuationSupported,
@@ -153,7 +159,6 @@ import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
 import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
-import { observeProductRun, observeProductRunSetup } from './product';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
@@ -1741,7 +1746,10 @@ type CallbackClientOptions = {
   fallbacks?: FallbackConfig[];
 };
 
-type RunModelCallback = ModelBoundChatModelCallback | ModelErrorTrackerCallback;
+type RunModelCallback =
+  | ModelBoundChatModelCallback
+  | ModelErrorTrackerCallback
+  | CallbackHandlerMethods;
 
 /**
  * Installs run-stable callbacks on the model client itself. Subagent child
@@ -2593,7 +2601,8 @@ async function buildRun({
       hasActivePiiPatterns(appConfig?.messageFilter?.pii),
     sdkModelHost != null &&
       modelCallbacks?.some(
-        (callback) => callback.name === 'librechat-model-bound-content-filter',
+        (callback) =>
+          'name' in callback && callback.name === 'librechat-model-bound-content-filter',
       ) === true,
   );
   const output = appConfig?.config?.outputProtection;
@@ -2754,14 +2763,41 @@ async function buildRun({
       { user, tenantId, requestBody, agent: safePrimaryAgent },
       agent,
     );
-    const summarization = modelCallbacks?.length
+    const productContext = {
+      runId: isSubagent ? undefined : resolvedRunId,
+      conversationId: conversationId ?? requestBody?.conversationId,
+      agentId: agent.id,
+      model: selfModel,
+      provider: String(provider),
+      usage_type: isSubagent ? ('subagent' as const) : undefined,
+    };
+    const productModelCallback = createProductModelCallback(
+      productTrackingRequest,
+      productContext,
+      signal,
+    );
+    const agentModelCallbacks = productModelCallback
+      ? [...(modelCallbacks ?? []), productModelCallback]
+      : modelCallbacks;
+    const productSummaryCallback = createProductModelCallback(
+      productTrackingRequest,
+      {
+        ...productContext,
+        usage_type: 'summarization',
+      },
+      signal,
+    );
+    const summaryModelCallbacks = productSummaryCallback
+      ? [...(modelCallbacks ?? []), productSummaryCallback]
+      : modelCallbacks;
+    const summarization = summaryModelCallbacks?.length
       ? {
           ...shapedSummarization,
           config: {
             ...shapedSummarization.config,
             parameters: withModelCallbacks(
               { ...(shapedSummarization.config.parameters ?? {}) },
-              modelCallbacks,
+              summaryModelCallbacks,
             ),
           },
         }
@@ -2780,7 +2816,7 @@ async function buildRun({
         },
         modelParameters,
       ) as t.RunLLMConfig,
-      modelCallbacks,
+      agentModelCallbacks,
     );
 
     const joinInstructionMap = (map?: Record<string, unknown>) =>
@@ -3366,11 +3402,25 @@ async function buildRun({
     protection == null
       ? undefined
       : createAssistantModel(agentInputs, graphConfig.type !== 'standard');
+  const productHandlerContext = {
+    runId: resolvedRunId,
+    conversationId: conversationId ?? requestBody?.conversationId,
+    agentId: agents[0]?.id,
+    model: agents[0]?.model_parameters?.model ?? agents[0]?.model ?? undefined,
+    provider: agents[0]?.provider,
+  };
   const runConfig = {
     runId: resolvedRunId,
     graphConfig,
     tokenCounter,
-    customHandlers: runHandlers,
+    customHandlers:
+      registration?.remote && !registration.remote.hostModel
+        ? createProductRemoteModelHandlers(
+            runHandlers,
+            productTrackingRequest,
+            productHandlerContext,
+          )
+        : runHandlers,
     ...(protection != null && { providerTextProtection: protection }),
     initialSessions,
     calibrationRatio,
