@@ -93,6 +93,72 @@ describe('registerOpenIdWithRetry', () => {
     expect(registerJwtStrategy).not.toHaveBeenCalled();
   });
 
+  it('tries once with fail-fast enabled when startup attempts are zero', async () => {
+    const setupOpenId = jest.fn().mockResolvedValue(openIdConfig);
+
+    await registerOpenIdWithRetry({
+      setupOpenId,
+      registerJwtStrategy: jest.fn(),
+      reuseTokens: false,
+      discovery: { startupAttempts: 0 },
+      env: { failOnStartupError: 'true' },
+    });
+
+    expect(setupOpenId).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('fails startup after a failed attempt when fail-fast is enabled', async () => {
+    const setupOpenId = jest.fn().mockResolvedValue(null);
+
+    await expect(
+      registerOpenIdWithRetry({
+        setupOpenId,
+        registerJwtStrategy: jest.fn(),
+        reuseTokens: false,
+        discovery: { startupAttempts: 0 },
+        env: { failOnStartupError: 'true' },
+      }),
+    ).rejects.toThrow('OpenID Connect initialization failed');
+
+    expect(setupOpenId).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it.each(['false', '0', 'no', 'off'])(
+    'schedules background retry when fail-fast is %s',
+    async (value) => {
+      const setupOpenId = jest.fn().mockResolvedValue(null);
+
+      await registerOpenIdWithRetry({
+        setupOpenId,
+        registerJwtStrategy: jest.fn(),
+        reuseTokens: false,
+        discovery: { startupAttempts: 0 },
+        env: { failOnStartupError: value, retryDelayMs: '1000' },
+      });
+
+      expect(setupOpenId).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(1);
+    },
+  );
+
+  it('validates the fail-fast flag before discovery starts', async () => {
+    const setupOpenId = jest.fn().mockResolvedValue(openIdConfig);
+
+    await registerOpenIdWithRetry({
+      setupOpenId,
+      registerJwtStrategy: jest.fn(),
+      reuseTokens: false,
+      env: { failOnStartupError: 'ture' },
+    });
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('OPENID_FAIL_ON_STARTUP_ERROR "ture"'),
+    );
+    expect(setupOpenId).toHaveBeenCalledTimes(1);
+  });
+
   it('continues background retries when strategy registration throws', async () => {
     const setupOpenId = jest.fn().mockResolvedValue(openIdConfig);
     const registerJwtStrategy = jest

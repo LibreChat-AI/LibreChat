@@ -157,6 +157,7 @@ describe('configureSocialLogins OpenID session expiry', () => {
   it('passes OpenID strategy wiring and both retry sources to the API package', async () => {
     process.env.OPENID_DISCOVERY_RETRY_ATTEMPTS = '2';
     process.env.OPENID_DISCOVERY_RETRY_DELAY_MS = '1000';
+    process.env.OPENID_FAIL_ON_STARTUP_ERROR = 'true';
     const discovery = { startupAttempts: 0, retryDelayMs: 250 };
     const app = { use: jest.fn() };
 
@@ -167,7 +168,11 @@ describe('configureSocialLogins OpenID session expiry', () => {
       registerJwtStrategy: expect.any(Function),
       reuseTokens: false,
       discovery,
-      env: { startupAttempts: '2', retryDelayMs: '1000' },
+      env: {
+        startupAttempts: '2',
+        retryDelayMs: '1000',
+        failOnStartupError: 'true',
+      },
     });
     expect(mockSetupOpenId).toHaveBeenCalledTimes(1);
   });

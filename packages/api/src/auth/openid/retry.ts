@@ -7,6 +7,7 @@ type DiscoveryField = 'startupAttempts' | 'retryDelayMs';
 export type OpenIdDiscoveryEnv = {
   startupAttempts?: string;
   retryDelayMs?: string;
+  failOnStartupError?: string;
 };
 
 export type OpenIdRegistrationOptions<TConfig> = {
@@ -57,6 +58,21 @@ export function resolveOpenIdDiscovery(
   };
 }
 
+function shouldFailOnStartupError(raw: string | undefined): boolean {
+  if (raw == null || raw.trim() === '') {
+    return false;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['false', '0', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+  logger.warn(`[OpenID] Ignoring invalid OPENID_FAIL_ON_STARTUP_ERROR "${raw}"; using false.`);
+  return false;
+}
+
 const wait = (delay: number) => new Promise<void>((resolve) => setTimeout(resolve, delay));
 
 /**
@@ -71,6 +87,7 @@ export async function registerOpenIdWithRetry<TConfig>({
   env,
 }: OpenIdRegistrationOptions<TConfig>): Promise<void> {
   const { startupAttempts, retryDelayMs } = resolveOpenIdDiscovery(discovery, env);
+  const failOnStartupError = shouldFailOnStartupError(env?.failOnStartupError);
 
   const tryRegistration = async (): Promise<boolean> => {
     try {
@@ -90,19 +107,24 @@ export async function registerOpenIdWithRetry<TConfig>({
     }
   };
 
-  for (let attempt = 1; attempt <= startupAttempts; attempt++) {
+  const attempts = failOnStartupError ? Math.max(startupAttempts, 1) : startupAttempts;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     if (await tryRegistration()) {
       return;
     }
-    if (attempt < startupAttempts) {
+    if (attempt < attempts) {
       logger.warn(
-        `OpenID Connect setup attempt ${attempt}/${startupAttempts} failed. Retrying in ${retryDelayMs}ms.`,
+        `OpenID Connect setup attempt ${attempt}/${attempts} failed. Retrying in ${retryDelayMs}ms.`,
       );
       await wait(retryDelayMs);
     }
   }
 
   logger.error('OpenID Connect configuration failed - strategy not registered.');
+
+  if (failOnStartupError) {
+    throw new Error('OpenID Connect initialization failed - strategy not registered.');
+  }
 
   const scheduleRetry = () => {
     logger.warn(`OpenID Connect configuration is unavailable. Retrying in ${retryDelayMs}ms.`);
