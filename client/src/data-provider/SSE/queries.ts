@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ACTIVE_JOBS_SUCCESSOR_GRACE_MS } from '@librechat/chat/react';
 import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
 import { apiBaseUrl, QueryKeys, request, dataService } from 'librechat-data-provider';
-import type { TConversation } from 'librechat-data-provider';
+import type { ChatEvent, ChatTransport, TConversation } from 'librechat-data-provider';
 import type { StreamStatusResponse } from '@librechat/chat';
+import type { QueryClient } from '@tanstack/react-query';
 import {
   isNotFoundError,
   updateConvoInAllQueries,
@@ -38,6 +39,10 @@ export function useStreamStatus(conversationId: string | undefined, enabled = tr
 
 export const genTitleQueryKey = (conversationId: string) => ['genTitle', conversationId] as const;
 
+/** SSE that reports a conversation's pending title once its attempt settles. */
+export const titleStreamUrl = (conversationId: string) =>
+  `${apiBaseUrl()}/api/convos/${encodeURIComponent(conversationId)}/title/stream`;
+
 /** Response type for active jobs query */
 export interface ActiveJobsResponse {
   activeJobIds: string[];
@@ -53,6 +58,14 @@ const processedTitles = new Set<string>();
  * of busy-looping — covers a per-endpoint `final` override under a global
  * `immediate` default. */
 const deferredTitles = new Set<string>();
+
+/** Conversations the title stream could not account for: an older server, an Assistants run,
+ * or a stream that kept failing. They poll `/gen_title` instead. */
+const polledTitles = new Set<string>();
+
+/** Stream reconnects before a conversation falls back to `/gen_title`. */
+export const TITLE_STREAM_RETRIES = 3;
+const TITLE_STREAM_RETRY_MS = 1_000;
 
 /** Listeners to notify when queue changes (for non-resumable streams like assistants) */
 const queueListeners = new Set<() => void>();
@@ -70,6 +83,7 @@ export function clearTitleGenerationState() {
   titleQueue.clear();
   processedTitles.clear();
   deferredTitles.clear();
+  polledTitles.clear();
   queueListeners.forEach((listener) => listener());
 }
 
@@ -81,7 +95,156 @@ export function markTitleGenerationProcessed(conversationId: string) {
   processedTitles.add(conversationId);
   titleQueue.delete(conversationId);
   deferredTitles.delete(conversationId);
+  polledTitles.delete(conversationId);
   queueListeners.forEach((listener) => listener());
+}
+
+type IncomingTitle = Pick<TConversation, 'title' | 'titleSetByUser' | 'titleRevision'>;
+
+/** Writes a generated title into every cached copy of the conversation, unless a local
+ * rename already owns it, and marks the conversation's title as delivered. */
+function applyGeneratedTitle(
+  queryClient: QueryClient,
+  conversationId: string,
+  incoming: IncomingTitle,
+) {
+  const titleState =
+    findManualConvoTitleInAllQueries(queryClient, conversationId, incoming) ?? incoming;
+  const applyTitle = (convo: TConversation): TConversation => ({ ...convo, ...titleState });
+  queryClient.setQueryData<TConversation>([QueryKeys.conversation, conversationId], (convo) =>
+    convo ? applyTitle(convo) : convo,
+  );
+  updateConvoInAllQueries(queryClient, conversationId, applyTitle);
+  const title =
+    queryClient.getQueryData<TConversation>([QueryKeys.conversation, conversationId])?.title ??
+    incoming.title;
+  // Only update document title if this conversation is currently active
+  if (window.location.pathname.includes(conversationId)) {
+    setDocumentTitle(title);
+  }
+  markTitleGenerationProcessed(conversationId);
+}
+
+/**
+ * Holds one title stream per queued conversation while its title is pending. The server
+ * answers when the attempt settles, however long after the chat stream closed; a stream that
+ * reports nothing pending, a server without the route, or repeated failures fall back to
+ * `/gen_title` polling for that conversation.
+ */
+function useTitleStreams(enabled: boolean, transport: ChatTransport | null, version: number) {
+  const queryClient = useQueryClient();
+  const streams = useRef(new Map<string, AbortController>());
+  const transportRef = useRef(transport);
+  transportRef.current = transport;
+  const live = enabled && transport != null;
+
+  useEffect(() => {
+    if (!live) {
+      return;
+    }
+    /** A local rename or a poll already delivered these; their streams have nothing left to say. */
+    for (const [conversationId, controller] of streams.current) {
+      if (processedTitles.has(conversationId)) {
+        controller.abort();
+        streams.current.delete(conversationId);
+      }
+    }
+    for (const conversationId of titleQueue) {
+      if (
+        processedTitles.has(conversationId) ||
+        polledTitles.has(conversationId) ||
+        streams.current.has(conversationId)
+      ) {
+        continue;
+      }
+      const controller = new AbortController();
+      streams.current.set(conversationId, controller);
+      let failures = 0;
+      let retry: ReturnType<typeof setTimeout> | undefined;
+      const close = () => {
+        if (retry != null) {
+          clearTimeout(retry);
+        }
+        controller.abort();
+        if (streams.current.get(conversationId) === controller) {
+          streams.current.delete(conversationId);
+        }
+      };
+      const poll = () => {
+        close();
+        polledTitles.add(conversationId);
+        queueListeners.forEach((listener) => listener());
+      };
+      const onEvent = (event: ChatEvent) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        if (event.type === 'title') {
+          const data = event.data.data;
+          if (data?.conversationId === conversationId && data.title != null) {
+            applyGeneratedTitle(queryClient, conversationId, {
+              title: data.title,
+              titleSetByUser: data.titleSetByUser,
+              titleRevision: data.titleRevision,
+            });
+          }
+          return;
+        }
+        if (event.type === 'final') {
+          if (event.data.titleSettled === true) {
+            close();
+            markTitleGenerationProcessed(conversationId);
+          } else {
+            poll();
+          }
+          return;
+        }
+        if (event.type !== 'error') {
+          return;
+        }
+        if (event.status === 404 || failures >= TITLE_STREAM_RETRIES) {
+          poll();
+          return;
+        }
+        failures += 1;
+        retry = setTimeout(connect, TITLE_STREAM_RETRY_MS * 2 ** (failures - 1));
+      };
+      /** A retry that fires after the stream was closed elsewhere finds the signal aborted. */
+      const connect = () => {
+        retry = undefined;
+        const current = transportRef.current;
+        if (controller.signal.aborted) {
+          return;
+        }
+        if (current == null) {
+          poll();
+          return;
+        }
+        current.reconnectToStream(
+          { url: titleStreamUrl(conversationId) },
+          { signal: controller.signal, onEvent },
+        );
+      };
+      connect();
+    }
+  }, [live, version, queryClient]);
+
+  useEffect(() => {
+    const open = streams.current;
+    if (live) {
+      return;
+    }
+    open.forEach((controller) => controller.abort());
+    open.clear();
+  }, [live]);
+
+  useEffect(() => {
+    const open = streams.current;
+    return () => {
+      open.forEach((controller) => controller.abort());
+      open.clear();
+    };
+  }, []);
 }
 
 /**
@@ -92,11 +255,13 @@ export function markTitleGenerationProcessed(conversationId: string) {
  *   it appears while the response is still streaming.
  * - `final` (legacy): fetch only after the stream completes.
  *
- * The title query retries on 404 (server still generating) so a transient
- * not-ready response is never treated as final (#13318).
+ * With a signed-in `transport`, a queued conversation first waits on its title stream, which
+ * delivers the title whenever its attempt settles. Polling is the fallback: the title query
+ * retries on 404 (server still generating) so a transient not-ready response is never treated
+ * as final (#13318).
  * Place this high in the component tree (e.g., Nav.tsx).
  */
-export function useTitleGeneration(enabled = true) {
+export function useTitleGeneration(enabled = true, transport: ChatTransport | null = null) {
   const queryClient = useQueryClient();
   const { data: startupConfig } = useGetStartupConfig();
   /** Defaults to immediate until startup config loads. */
@@ -119,12 +284,18 @@ export function useTitleGeneration(enabled = true) {
     };
   }, []);
 
+  const streamed = enabled && transport != null;
+  useTitleStreams(enabled, transport, queueVersion);
+
   useEffect(() => {
     const activeSet = new Set(activeJobIds);
     const eligible: string[] = [];
 
     for (const conversationId of titleQueue) {
       if (processedTitles.has(conversationId)) {
+        continue;
+      }
+      if (streamed && !polledTitles.has(conversationId)) {
         continue;
       }
       const eager = timing === 'immediate' && !deferredTitles.has(conversationId);
@@ -136,7 +307,7 @@ export function useTitleGeneration(enabled = true) {
     if (eligible.length > 0) {
       setReadyToFetch((prev) => [...new Set([...prev, ...eligible])]);
     }
-  }, [activeJobIds, queueVersion, timing]);
+  }, [activeJobIds, queueVersion, timing, streamed]);
 
   useEffect(() => {
     setReadyToFetch((prev) => {
@@ -171,23 +342,7 @@ export function useTitleGeneration(enabled = true) {
       }
 
       if (titleQuery.isSuccess && titleQuery.data) {
-        const incoming = titleQuery.data;
-        const titleState =
-          findManualConvoTitleInAllQueries(queryClient, conversationId, incoming) ?? incoming;
-        const applyTitle = (convo: TConversation): TConversation => ({ ...convo, ...titleState });
-        queryClient.setQueryData<TConversation>(
-          [QueryKeys.conversation, conversationId],
-          (convo) => (convo ? applyTitle(convo) : convo),
-        );
-        updateConvoInAllQueries(queryClient, conversationId, applyTitle);
-        const title =
-          queryClient.getQueryData<TConversation>([QueryKeys.conversation, conversationId])
-            ?.title ?? incoming.title;
-        // Only update document title if this conversation is currently active
-        if (window.location.pathname.includes(conversationId)) {
-          setDocumentTitle(title);
-        }
-        markTitleGenerationProcessed(conversationId);
+        applyGeneratedTitle(queryClient, conversationId, titleQuery.data);
         setReadyToFetch((prev) => prev.filter((id) => id !== conversationId));
       } else if (titleQuery.isError) {
         // Retries are exhausted here (the query only retries on 404). A title may

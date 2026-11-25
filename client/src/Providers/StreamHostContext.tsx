@@ -1,4 +1,3 @@
-import { useMemo } from 'react';
 import type { StreamHost } from '@librechat/chat/react';
 import {
   useActiveJobs,
@@ -8,19 +7,9 @@ import {
 } from '~/data-provider';
 import { useParentSubagentIndex } from '~/data-provider/Subagents/parents';
 import useEventServices, { useLegacyServices } from '~/hooks/SSE/services';
-import { useChatTransport } from '~/Providers/ChatTransportContext';
+import { useSignedInTransport } from '~/Providers/ChatTransportContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useResumableServices } from '~/hooks/SSE/resumable';
-import { useAuthContext } from '~/hooks/AuthContext';
-
-function useTransport() {
-  const { token, isAuthenticated } = useAuthContext();
-  const transport = useChatTransport();
-  return useMemo(
-    () => (isAuthenticated && token != null ? transport.stream({ token }) : null),
-    [isAuthenticated, token, transport],
-  );
-}
 
 /** The app's services behind the stream bindings: the resumable stream's handlers, cache and
  *  transport, the Assistants stream, which carries its own response, and the signed-in transport
@@ -28,7 +17,7 @@ function useTransport() {
 export const appStreamHost: StreamHost = {
   useResumableServices,
   useLegacyServices,
-  useTransport,
+  useTransport: useSignedInTransport,
   /** Observes the receipts `useSteering` fetches, without competing for the fetch. */
   useQueuedTurnReceipts: (conversationId) => useAgentQueuedTurns(conversationId, false),
   useActiveJobs,

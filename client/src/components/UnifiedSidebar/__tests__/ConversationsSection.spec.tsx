@@ -112,6 +112,10 @@ jest.mock('~/data-provider', () => ({
   useGetConversationTags: () => mockUseGetConversationTags(),
 }));
 
+jest.mock('~/Providers/ChatTransportContext', () => ({
+  useSignedInTransport: () => null,
+}));
+
 jest.mock('~/Providers', () => ({
   __esModule: true,
   useAssistantsMapContext: () => ({}),

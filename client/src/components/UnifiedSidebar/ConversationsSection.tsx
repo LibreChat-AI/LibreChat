@@ -25,6 +25,7 @@ import {
 } from '~/hooks';
 import { chatFacetParamsAtom, useFreshLocalDay } from '~/components/Conversations/facets';
 import ProjectsSection from '~/components/Conversations/ProjectsSection';
+import { useSignedInTransport } from '~/Providers/ChatTransportContext';
 import ChatFilterMenu from '~/components/Conversations/ChatFilterMenu';
 import PinnedSection from '~/components/Conversations/PinnedSection';
 import ProjectNamesProvider from '~/Providers/ProjectNamesContext';
@@ -42,7 +43,7 @@ const ConversationsSection = memo(() => {
   const isSmallScreen = useDrawerViewport();
   const { setSidebarOpen } = useSidebarToggle();
   const { isAuthenticated } = useAuthContext();
-  useTitleGeneration(isAuthenticated);
+  useTitleGeneration(isAuthenticated, useSignedInTransport());
 
   const [isChatsExpanded, setIsChatsExpanded] = useLocalStorage('chatsExpanded', true);
 
