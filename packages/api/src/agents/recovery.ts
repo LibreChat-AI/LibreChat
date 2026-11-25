@@ -12,6 +12,18 @@ export interface IdleRecoveryLoopOptions {
   onError: (error: unknown) => void;
 }
 
+export interface IdleRecoveryLoop {
+  start: () => Promise<void>;
+  /** Scans at once, or right after the scan in progress, and resets the back-off. */
+  wake: () => void;
+  /** Scans no later than `at`; a time that has passed wakes the loop. Every call is honored. */
+  noteEligibleAt: (at: Date) => void;
+  /** For producers that can call at a high rate: a time within one interval after a deadline still
+   * waiting is dropped, so a burst of hints costs one scan per interval instead of one each. */
+  hint: (at: Date) => void;
+  stop: () => Promise<void>;
+}
+
 /** Mongo remains the authority: wakes are only hints, and every replica still scans
  * within the idle ceiling so a crashed producer or a missed local wake is recovered. */
 export function createIdleRecoveryLoop({
@@ -21,7 +33,7 @@ export function createIdleRecoveryLoop({
   initialDelayMs = 0,
   scan,
   onError,
-}: IdleRecoveryLoopOptions) {
+}: IdleRecoveryLoopOptions): IdleRecoveryLoop {
   if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
     throw new TypeError('Recovery interval must be a positive integer');
   }
@@ -117,7 +129,7 @@ export function createIdleRecoveryLoop({
     return current;
   };
 
-  const loop = {
+  const loop: IdleRecoveryLoop = {
     start: (): Promise<void> => {
       if (stopped) {
         return Promise.resolve();
