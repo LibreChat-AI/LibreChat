@@ -1,11 +1,20 @@
 import { memo, useEffect, useRef } from 'react';
 import { isAxiosError } from 'axios';
-import { Eye, X } from 'lucide-react';
+import { Eye, Pause, X } from 'lucide-react';
 import { disabledInkClasses } from '@librechat/client';
 import { Constants, Permissions, PermissionTypes } from 'librechat-data-provider';
+import type { WatchPause } from 'librechat-data-provider';
+import type { TranslationKeys } from '~/hooks';
 import { useEventWatches, useStopWatch } from '~/data-provider/Events';
 import { useLocalize, useHasAccess } from '~/hooks';
 import { cn } from '~/utils';
+
+/** Why a watch continues nothing for now, as its owner reads it. */
+const pauses: Record<WatchPause, TranslationKeys> = {
+  subscription_off: 'com_ui_events_watch_paused_off',
+  watching_off: 'com_ui_events_watch_paused_watching',
+  unbound: 'com_ui_events_watch_paused_unbound',
+};
 
 /** A watch that already ended is gone either way, so stopping it is not a failure. */
 const ended = (error: unknown) => isAxiosError(error) && error.response?.status === 404;
@@ -49,13 +58,18 @@ function Watching({
     <div className="mx-auto w-full max-w-3xl px-4 pb-2 xl:max-w-4xl">
       <ul aria-label={localize('com_ui_events_watches')} className="flex flex-wrap gap-2">
         {watches.map((watch) => {
-          const text = localize('com_ui_events_watching', { 0: watch.label });
+          // A paused watch is named, not claimed: nothing about it arrives until it resumes.
+          const text =
+            watch.paused == null
+              ? localize('com_ui_events_watching', { 0: watch.label })
+              : watch.label;
+          const Icon = watch.paused == null ? Eye : Pause;
           return (
             <li
               key={watch.id}
               className="border-border-light bg-surface-secondary text-text-secondary inline-flex max-w-full items-center gap-1.5 rounded-full border py-0.5 pr-0.5 pl-2.5 text-xs"
             >
-              <Eye className="size-3.5 shrink-0" aria-hidden="true" />
+              <Icon className="size-3.5 shrink-0" aria-hidden="true" />
               {watch.url ? (
                 <a
                   href={watch.url}
@@ -67,6 +81,9 @@ function Watching({
                 </a>
               ) : (
                 <span className="text-text-primary truncate">{text}</span>
+              )}
+              {watch.paused != null && (
+                <span className="truncate">{localize(pauses[watch.paused])}</span>
               )}
               <button
                 type="button"

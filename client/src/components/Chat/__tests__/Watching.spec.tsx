@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { dataService } from 'librechat-data-provider';
 import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { Watch } from 'librechat-data-provider';
+import type { ListedWatch } from 'librechat-data-provider';
 import Watching from '../Watching';
 
 const access = { allowed: true };
@@ -24,7 +24,7 @@ jest.mock('librechat-data-provider', () => ({
 
 const service = dataService as jest.Mocked<typeof dataService>;
 
-const watch = (overrides: Partial<Watch> = {}): Watch => ({
+const watch = (overrides: Partial<ListedWatch> = {}): ListedWatch => ({
   id: 'watch_1',
   user: 'user-1',
   conversationId: 'convo-1',
@@ -82,8 +82,35 @@ describe('Watching', () => {
     ).toBeInTheDocument();
   });
 
+  it('names a paused watch with its reason instead of claiming it, and keeps its stop', async () => {
+    service.getAgentEventWatches.mockResolvedValue({
+      watches: [
+        watch({ paused: 'subscription_off' }),
+        watch({ id: 'watch_2', label: 'acme/widgets#8', paused: 'watching_off' }),
+        watch({ id: 'watch_3', label: 'acme/widgets#9', paused: 'unbound' }),
+        watch({ id: 'watch_4', label: 'acme/widgets#10' }),
+      ],
+    });
+    renderWatching();
+    expect(await screen.findByRole('link', { name: 'acme/widgets#7' })).toBeInTheDocument();
+    expect(screen.getByText('com_ui_events_watch_paused_off')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_events_watch_paused_watching')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_events_watch_paused_unbound')).toBeInTheDocument();
+    for (const label of ['acme/widgets#7', 'acme/widgets#8', 'acme/widgets#9']) {
+      expect(
+        screen.queryByRole('link', { name: `com_ui_events_watching:${label}` }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: `com_ui_events_watch_stop:${label}` }),
+      ).toBeInTheDocument();
+    }
+    expect(
+      screen.getByRole('link', { name: 'com_ui_events_watching:acme/widgets#10' }),
+    ).toBeInTheDocument();
+  });
+
   it('renders nothing while loading, when nothing is followed, or when the list fails', async () => {
-    let resolve: (value: { watches: Watch[] }) => void = () => {};
+    let resolve: (value: { watches: ListedWatch[] }) => void = () => {};
     service.getAgentEventWatches.mockReturnValueOnce(
       new Promise((done) => {
         resolve = done;
