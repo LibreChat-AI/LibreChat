@@ -1,5 +1,10 @@
 const mongoose = require('mongoose');
-const { logger, runAsSystem, tenantStorage } = require('@librechat/data-schemas');
+const {
+  logger,
+  runAsSystem,
+  tenantStorage,
+  createSubscriptions,
+} = require('@librechat/data-schemas');
 const {
   getNewS3URL,
   needsRefresh,
@@ -409,6 +414,7 @@ const deleteUserController = async (req, res) => {
         ...db,
         openCheckpointDeletion,
         deleteSharedLinks: (id) => deleteAllSharedLinksWithCleanup(id, { awaitCleanup: true }),
+        deleteSubscriptions: (id) => createSubscriptions(mongoose).purge(id),
         /** The DELETE carries no body without 2FA, and account erasure targets no assistant. */
         deleteStoredFiles: (files) =>
           processDeleteRequest({ req: Object.assign(Object.create(req), { body: {} }), files }),

@@ -1,6 +1,8 @@
 import {
   SkillsScope,
+  resolveSubagents,
   AgentCapabilities,
+  hasSubagentCapability,
   EModelEndpoint,
   MAX_SUBAGENT_DEPTH,
   MAX_SUBAGENT_GRAPH_NODES,
@@ -62,6 +64,8 @@ export async function resolveRequirements(
   };
   let accessContext: AgentGraphAccessContext | undefined;
   let modelsConfig: TModelsConfig | undefined;
+  let configPromise: Promise<AppConfig | undefined> | undefined;
+  const getConfig = (): Promise<AppConfig | undefined> => (configPromise ??= loadAppConfig());
 
   const loadNodes = async (ids: string[]): Promise<void> => {
     const frontier = [...new Set(ids)].filter(
@@ -93,7 +97,11 @@ export async function resolveRequirements(
     if (descendants.length > 0) {
       modelsConfig ??= await deps.getModelsConfig(user);
     }
-    for (const agent of loaded) {
+    const capabilities = loaded.some((agent) => agent.subagents != null)
+      ? ((await getConfig())?.endpoints?.agents?.capabilities ?? [])
+      : [];
+    for (const stored of loaded) {
+      const agent = { ...stored, subagents: resolveSubagents(stored.subagents, capabilities) };
       viewableById.set(agent.id, agent);
       const availableModels =
         agent.id === agentId
@@ -169,9 +177,9 @@ export async function resolveRequirements(
   let subagentsAvailable: boolean | undefined;
   const canUseSubagents = async (): Promise<boolean> => {
     if (subagentsAvailable != null) return subagentsAvailable;
-    const config = await loadAppConfig();
-    subagentsAvailable = (config?.endpoints?.[EModelEndpoint.agents]?.capabilities ?? []).includes(
-      AgentCapabilities.subagents,
+    const config = await getConfig();
+    subagentsAvailable = hasSubagentCapability(
+      config?.endpoints?.[EModelEndpoint.agents]?.capabilities ?? [],
     );
     return subagentsAvailable;
   };

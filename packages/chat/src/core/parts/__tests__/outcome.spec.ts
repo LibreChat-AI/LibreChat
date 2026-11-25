@@ -1,6 +1,6 @@
 import { Tools, ContentTypes } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
-import { getOutcomeStatus, summarizeSpan } from '../outcome';
+import { getToolMeta, getOutcomeStatus, summarizeSpan } from '../outcome';
 
 const bashPart = (
   id: string,
@@ -22,6 +22,22 @@ const bashPart = (
   }) as unknown as TMessageContentParts;
 
 describe('getOutcomeStatus', () => {
+  it('does not count a client handoff as executed agent activity', () => {
+    const part: TMessageContentParts = {
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        type: 'tool_call',
+        id: 'client',
+        name: 'web_search',
+        args: '{}',
+        clientToolCall: true,
+      },
+    };
+    expect(getToolMeta(part)).toBeNull();
+    expect(
+      getToolMeta({ ...part, tool_call: { ...part.tool_call, runStepStatus: 'cancelled' } }),
+    ).toMatchObject({ cancelled: true });
+  });
   it('keeps identity glyphs for a span that contains both successful and failed calls', () => {
     expect(getOutcomeStatus({ failed: 1, cancelled: 0, total: 3 })).toBeUndefined();
   });

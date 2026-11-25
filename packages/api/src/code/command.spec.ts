@@ -978,11 +978,11 @@ describe('createAttachedWorkspaceBashTool', () => {
 
   test.each([
     'cd packages/api && npm test',
-    '\n\tcd "packages/api" && printf "%s" "$OLDPWD"',
+    '\n\tcd "packages/api" && pwd -P',
     'cd missing && npm test || printf fallback',
     'cd "$DIRECTORY" && npm test',
     'cd .. && pwd',
-    'cd - && pwd',
+    'cd ./packages && pwd -P',
     'cd',
   ])('preserves the script and root lane while suggesting cwd: %s', async (command) => {
     const fetchImpl: CodeBridgeFetch = jest.fn(async () => commandResponse());
@@ -1061,40 +1061,41 @@ describe('createAttachedWorkspaceBashTool', () => {
 
   test('reports the starting directory without changing real Bash state or fallback behavior', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'lc-command-directory-'));
-    const root = join(directory, 'project');
-    await mkdir(join(root, 'child'), { recursive: true });
-    const fetchImpl: CodeBridgeFetch = async (_url, init) => {
-      const request = JSON.parse(String(init?.body)) as WorkspaceExecuteCommandRequest;
-      const stdout = execFileSync('bash', ['-c', request.command], {
-        cwd: request.cwd ? join(root, request.cwd) : root,
-        encoding: 'utf8',
-      });
-      return commandResponse({ stdout });
-    };
-    const bashTool = createAttachedWorkspaceBashTool({
-      baseUrl: 'https://code.example.com/v1',
-      authHeaders: () => ({}),
-      workspaceId: 'project-a',
-      fetchImpl,
-    });
     try {
-      const content = await bashTool.invoke({
-        command: 'cd child && printf "%s/%s" "${OLDPWD##*/}" "${PWD##*/}"',
+      const root = join(directory, 'project');
+      await mkdir(join(root, 'child'), { recursive: true });
+      const run = (command: string, cwd: string) =>
+        execFileSync(process.env.LIBRECHAT_TEST_BASH ?? 'bash', ['-c', command], {
+          cwd,
+          encoding: 'utf8',
+        });
+      const physicalRoot = `${run('pwd -P', directory).trimEnd()}/project`;
+      const physicalChild = `${physicalRoot}/child`;
+      const fetchImpl: CodeBridgeFetch = async (_url, init) => {
+        const request = JSON.parse(String(init?.body)) as WorkspaceExecuteCommandRequest;
+        const stdout = run(request.command, request.cwd ? join(root, request.cwd) : root);
+        return commandResponse({ stdout });
+      };
+      const bashTool = createAttachedWorkspaceBashTool({
+        baseUrl: 'https://code.example.com/v1',
+        authHeaders: () => ({}),
+        workspaceId: 'project-a',
+        fetchImpl,
       });
-      expect(content).toContain('[starting directory: "workspace/"]');
-      expect(content).toContain('stdout:\nproject/child');
-      expect(content).not.toContain(directory);
+      const content = await bashTool.invoke({ command: 'pwd -P && cd ./child && pwd -P' });
+      expect(content.split('\n', 1)[0]).toBe('[starting directory: "workspace/"]');
+      expect(content).toContain(`stdout:\n${physicalRoot}\n${physicalChild}\n`);
       const fallback = await bashTool.invoke({
-        command: 'cd missing 2>/dev/null && printf unexpected || printf fallback',
+        command: 'pwd -P && { cd ./missing 2>/dev/null || printf "fallback\\n"; } && pwd -P',
       });
-      expect(fallback).toContain('stdout:\nfallback');
-      const next = await bashTool.invoke({ command: 'printf "%s" "${PWD##*/}"' });
-      expect(next).toContain('stdout:\nproject');
-      const scoped = await bashTool.invoke({ command: 'printf "%s" "${PWD##*/}"', cwd: 'child' });
-      expect(scoped).toContain('[starting directory: "workspace/child"]');
-      expect(scoped).toContain('stdout:\nchild');
+      expect(fallback).toContain(`stdout:\n${physicalRoot}\nfallback\n${physicalRoot}\n`);
+      const next = await bashTool.invoke({ command: 'pwd -P' });
+      expect(next).toContain(`stdout:\n${physicalRoot}\n`);
+      const scoped = await bashTool.invoke({ command: 'pwd -P', cwd: 'child' });
+      expect(scoped.split('\n', 1)[0]).toBe('[starting directory: "workspace/child"]');
+      expect(scoped).toContain(`stdout:\n${physicalChild}\n`);
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await rm(directory, { recursive: true, force: true, maxRetries: 3 });
     }
   });
 

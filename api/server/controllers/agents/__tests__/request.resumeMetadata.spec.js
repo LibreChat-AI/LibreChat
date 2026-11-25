@@ -360,6 +360,8 @@ jest.mock('@librechat/api', () => ({
   cleanupMCPRequestContext: (...args) => mockCleanupMCPRequestContext(...args),
   createMCPRequestContext: (...args) => mockCreateMCPRequestContext(...args),
   getMCPRequestContext: (...args) => mockGetMCPRequestContext(...args),
+  createChatFinalization: (...args) =>
+    jest.requireActual('@librechat/api').createChatFinalization(...args),
   filterPersistableAbortContent: (...args) => mockFilterPersistableAbortContent(...args),
   cleanupMCPRequestContextForReq: (...args) => mockCleanupMCPRequestContextForReq(...args),
   decrementPendingRequest: (...args) => mockDecrementPendingRequest(...args),
@@ -460,6 +462,8 @@ jest.mock('~/server/services/Endpoints/agents/eventChildLease', () => ({
   acquireEventChildGenerationLease: (...args) => mockAcquireEventChildGenerationLease(...args),
 }));
 
+// Settles a triggered run that is not a schedule's; these requests are neither.
+jest.mock('~/server/services/Events/settle', () => jest.fn(async () => true));
 jest.mock('~/server/services/Schedules', () => ({
   recordScheduleOutcome: (...args) => mockRecordScheduleOutcome(...args),
   isScheduleLive: (...args) => mockIsScheduleLive(...args),

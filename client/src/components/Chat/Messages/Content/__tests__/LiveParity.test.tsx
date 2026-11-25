@@ -1635,7 +1635,6 @@ describe('preparation labels across rendered tool cards', () => {
     'skill',
     Tools.web_search,
     'file_search',
-    Constants.SUBAGENT,
     'image_gen_oai',
     'ask_user_question',
     Constants.CHECK_BACKGROUND_TASK,
@@ -1643,14 +1642,22 @@ describe('preparation labels across rendered tool cards', () => {
     const part = toPart({ name, args: '{"intent":"Checking a record","value":"unfinished' });
     const { container } = mount([part], undefined, false);
     expect(container.textContent).toContain('Preparing ');
-    if (name === Constants.SUBAGENT) {
-      expect(screen.getByRole('button', { name: /^Preparing / })).toBeInTheDocument();
-    } else {
-      expect(container.querySelector('.shimmer')).toHaveTextContent(/^Preparing /);
-    }
+    expect(container.querySelector('.shimmer')).toHaveTextContent(/^Preparing /);
     for (const announcement of container.querySelectorAll('[aria-live]')) {
       expect(announcement).toHaveTextContent(/^Preparing /);
     }
+  });
+
+  it('presents a subagent whose args are streaming as still being briefed', () => {
+    const part = toPart({
+      name: Constants.SUBAGENT,
+      args: '{"intent":"Checking a record","description":"unfinished',
+    });
+    const { container } = mount([part], undefined, false);
+    expect(
+      screen.getByRole('button', { name: 'Checking a record, Writing the brief…' }),
+    ).toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/Working|Running/);
   });
 
   it('keeps collapsed activity in preparation until dispatch, without a sandbox-startup override', () => {

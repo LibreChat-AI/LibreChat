@@ -208,10 +208,14 @@ function ChatViewPane({
   const target = useTarget(chat.conversation, chat.setConversation);
   const agentsMap = useAgentsMapContext();
   const assistantsMap = useAssistantsMapContext();
-  const selectedAgents = useMemo(
-    () => (target.agent ? { ...agentsMap, [target.agent.id]: target.agent } : agentsMap),
-    [agentsMap, target.agent],
-  );
+  const selectedAgents = useMemo(() => {
+    const agent = target.agent;
+    if (!agent) {
+      return agentsMap;
+    }
+    // Keep chat metadata already authorized by the catalog, such as the agent's skill scope.
+    return { ...agentsMap, [agent.id]: { ...agentsMap?.[agent.id], ...agent } };
+  }, [agentsMap, target.agent]);
   const selectedAssistants = useMemo(
     () =>
       target.assistant && chat.conversation?.endpoint

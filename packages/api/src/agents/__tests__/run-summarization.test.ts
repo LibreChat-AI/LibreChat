@@ -112,6 +112,7 @@ import {
   ToolNode,
   Constants,
   buildChildInputs,
+  createPruneMessages,
   InMemorySubagentTaskStore,
   buildSubagentToolParams,
   executeHooks,
@@ -560,64 +561,46 @@ describe('model-level callbacks', () => {
 // Suite 1: reserveRatio
 // ---------------------------------------------------------------------------
 describe('reserveRatio', () => {
-  it('applies ratio from config using baseContextTokens, capped at maxContextTokens', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ baseContextTokens: 200_000, maxContextTokens: 200_000 })],
-      summarizationConfig: { reserveRatio: 0.03, provider: 'anthropic', model: 'claude' },
-    });
-    // Math.round(200000 * 0.97) = 194000, min(200000, 194000) = 194000
-    expect(agents[0].maxContextTokens).toBe(194_000);
-  });
+  it.each`
+    scenario                             | reserveRatio | baseContextTokens   | maxContextTokens | sent       | budget     | viable
+    ${'200k window minus 36,512 output'} | ${0.1}       | ${200_000 - 36_512} | ${200_000}       | ${163_488} | ${147_139} | ${true}
+    ${'no implicit default reserve'}     | ${0.1}       | ${163_488}          | ${155_314}       | ${163_488} | ${147_139} | ${true}
+    ${'smaller explicit cap'}            | ${0.1}       | ${50_000}           | ${50_000}        | ${50_000}  | ${45_000}  | ${true}
+    ${'unset ratio uses legacy budget'}  | ${undefined} | ${163_488}          | ${155_314}       | ${155_314} | ${147_548} | ${true}
+    ${'zero skips both reserves'}        | ${0}         | ${163_488}          | ${155_314}       | ${163_488} | ${163_488} | ${true}
+    ${'one follows SDK no-op semantics'} | ${1}         | ${163_488}          | ${155_314}       | ${163_488} | ${163_488} | ${true}
+    ${'no raw budget falls back'}        | ${0.05}      | ${undefined}        | ${100_000}       | ${100_000} | ${95_000}  | ${true}
+    ${'low budget is not floored'}       | ${0.99}      | ${500}              | ${1024}          | ${500}     | ${5}       | ${false}
+    ${'zero input is not raised'}        | ${0.1}       | ${0}                | ${1024}          | ${0}       | ${0}       | ${false}
+    ${'rounds the reserved tokens'}      | ${0.5}       | ${2047}             | ${2047}          | ${2047}    | ${1023}    | ${false}
+    ${'exactly the viable minimum'}      | ${0.5}       | ${2048}             | ${2048}          | ${2048}    | ${1024}    | ${true}
+  `(
+    '$scenario',
+    async ({ reserveRatio, baseContextTokens, maxContextTokens, sent, budget, viable }) => {
+      const [agent] = (await callAndCapture({
+        agents: [makeAgent({ baseContextTokens, maxContextTokens })],
+        summarizationConfig: { reserveRatio, provider: 'anthropic', model: 'claude' },
+      })) as Pick<
+        AgentInputs,
+        'maxContextTokens' | 'summarizationConfig' | 'summarizationEnabled'
+      >[];
+      expect(agent.maxContextTokens).toBe(sent);
+      expect(agent.summarizationEnabled).toBe(viable);
+      if (agent.maxContextTokens == null) {
+        throw new Error('Expected a context budget in the SDK input');
+      }
 
-  it('never exceeds user-configured maxContextTokens even when ratio computes higher', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ baseContextTokens: 200_000, maxContextTokens: 50_000 })],
-      summarizationConfig: { reserveRatio: 0.03, provider: 'anthropic', model: 'claude' },
-    });
-    // Math.round(200000 * 0.97) = 194000, but min(50000, 194000) = 50000
-    expect(agents[0].maxContextTokens).toBe(50_000);
-  });
-
-  it('falls back to maxContextTokens when ratio is not set', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000, baseContextTokens: 200_000 })],
-      summarizationConfig: { provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('falls back to maxContextTokens when ratio is 0', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000, baseContextTokens: 200_000 })],
-      summarizationConfig: { reserveRatio: 0, provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('falls back to maxContextTokens when ratio is 1', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000, baseContextTokens: 200_000 })],
-      summarizationConfig: { reserveRatio: 1, provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('falls back to maxContextTokens when baseContextTokens is undefined', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000 })],
-      summarizationConfig: { reserveRatio: 0.05, provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('clamps to 1024 minimum but still capped at maxContextTokens', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ baseContextTokens: 500, maxContextTokens: 2000 })],
-      summarizationConfig: { reserveRatio: 0.99, provider: 'anthropic', model: 'claude' },
-    });
-    // Math.round(500 * 0.01) = 5 → clamped to 1024, min(2000, 1024) = 1024
-    expect(agents[0].maxContextTokens).toBe(1024);
-  });
+      const prune = createPruneMessages({
+        maxTokens: agent.maxContextTokens,
+        reserveRatio: agent.summarizationConfig?.reserveRatio,
+        summarizationEnabled: agent.summarizationEnabled,
+        startIndex: 0,
+        tokenCounter: () => 1,
+        indexTokenCountMap: {},
+      });
+      expect(prune({ messages: [new HumanMessage('Hello')] }).contextBudget).toBe(budget);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -2921,22 +2904,20 @@ describe('multi-agent + per-agent overrides', () => {
     });
   });
 
-  it('different agents get different effectiveMaxContextTokens', async () => {
+  it('uses the base budget only for agents with a configured reserve', async () => {
     const agents = await callAndCapture({
       agents: [
-        makeAgent({ id: 'agent_1', baseContextTokens: 200_000, maxContextTokens: 100_000 }),
-        makeAgent({ id: 'agent_2', baseContextTokens: 100_000, maxContextTokens: 50_000 }),
+        makeAgent({ id: 'agent_1', baseContextTokens: 120_000, maxContextTokens: 114_000 }),
+        makeAgent({
+          id: 'agent_2',
+          baseContextTokens: 100_000,
+          maxContextTokens: 95_000,
+          summarization: { reserveRatio: 0 },
+        }),
       ],
-      summarizationConfig: {
-        reserveRatio: 0.1,
-        provider: 'anthropic',
-        model: 'claude',
-      },
+      summarizationConfig: { provider: 'anthropic', model: 'claude' },
     });
-    // agent_1: Math.round(200000 * 0.9) = 180000, but capped at user's maxContextTokens (100000)
-    expect(agents[0].maxContextTokens).toBe(100_000);
-    // agent_2: Math.round(100000 * 0.9) = 90000, but capped at user's maxContextTokens (50000)
-    expect(agents[1].maxContextTokens).toBe(50_000);
+    expect(agents.map((agent) => agent.maxContextTokens)).toEqual([114_000, 100_000]);
   });
 });
 
@@ -3851,6 +3832,132 @@ describe('subagentConfigs', () => {
     expect(configs[0]).toMatchObject({ self: true, type: 'self' });
   });
 
+  it('lets self-spawn reuse the parent agent subagents', async () => {
+    const child = makeAgent({
+      id: 'agent_child',
+      name: 'Researcher',
+    });
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, agent_ids: ['agent_child'] },
+          subagentAgentConfigs: [child],
+        }),
+      ],
+    });
+
+    const configs = agents[0].subagentConfigs as Array<{
+      self?: boolean;
+      allowNested?: boolean;
+      agentInputs?: { subagentConfigs?: Array<{ type?: string }> };
+    }>;
+    const selfConfig = configs.find((config) => config.self);
+
+    expect(selfConfig?.allowNested).toBe(true);
+    expect(selfConfig?.agentInputs?.subagentConfigs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'agent_child' })]),
+    );
+  });
+
+  it('hands the SDK a copy that can reach the subagents but not spawn another copy', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, agent_ids: ['agent_child'] },
+          subagentAgentConfigs: [makeAgent({ id: 'agent_child', name: 'Researcher' })],
+        }),
+      ],
+    });
+    const configs = agents[0].subagentConfigs as SubagentConfig[];
+    const selfConfig = configs.find((config) => config.self === true);
+
+    expect(selfConfig?.description).toMatch(/The copy can delegate to the same subagents\.$/);
+    const copy = buildChildInputs(selfConfig as BuildChildInput, 'agent_1', MAX_SUBAGENT_DEPTH);
+    expect(copy.subagentConfigs?.map((config) => config.type)).toEqual(['agent_child']);
+    expect(copy.maxSubagentDepth).toBe(MAX_SUBAGENT_DEPTH - 1);
+  });
+
+  it('leaves the copy without subagents when subagentSelfNesting is off, and says so', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, agent_ids: ['agent_child'] },
+          subagentAgentConfigs: [makeAgent({ id: 'agent_child', name: 'Researcher' })],
+        }),
+      ],
+      appConfig: { endpoints: { agents: { subagentSelfNesting: false } } } as AppConfig,
+    });
+    const configs = agents[0].subagentConfigs as SubagentConfig[];
+    const selfConfig = configs.find((config) => config.self === true);
+
+    expect(configs.map((config) => config.type)).toEqual(['self', 'agent_child']);
+    expect(selfConfig?.allowNested).toBeUndefined();
+    expect(selfConfig?.agentInputs).toBeUndefined();
+    expect(selfConfig?.description).toMatch(/The copy cannot delegate to subagents;/);
+  });
+
+  it('says nothing about delegation for a copy of an agent with no subagents', async () => {
+    const agents = await callAndCapture({
+      agents: [makeAgent({ subagents: { enabled: true } })],
+    });
+    const [selfConfig] = agents[0].subagentConfigs as SubagentConfig[];
+
+    expect(selfConfig.allowNested).toBeUndefined();
+    expect(selfConfig.description).not.toMatch(/delegate/);
+  });
+
+  it('promises a copy subagents only where every path to it leaves a hop to spend', async () => {
+    const root = makeSubagentChain(MAX_SUBAGENT_DEPTH);
+    const chain: TestRunAgent[] = [root];
+    while (chain[chain.length - 1].subagentAgentConfigs?.[0] != null) {
+      chain.push(chain[chain.length - 1].subagentAgentConfigs![0]);
+    }
+    for (const agent of chain.slice(0, -1)) {
+      (agent.subagents as { allowSelf: boolean }).allowSelf = true;
+    }
+    const agents = await callAndCapture({ agents: [root] });
+
+    /** `levels[n]` holds the self entry and the saved child of the agent `n` hops below the root. */
+    const levels: { copy: SubagentConfig; child: SubagentConfig }[] = [];
+    let configs = agents[0].subagentConfigs as SubagentConfig[] | undefined;
+    while (configs != null) {
+      const copy = configs.find((config) => config.self === true);
+      const child = configs.find((config) => config.self !== true);
+      if (copy == null || child == null) {
+        break;
+      }
+      levels.push({ copy, child });
+      configs = child.agentInputs?.subagentConfigs as SubagentConfig[] | undefined;
+    }
+
+    expect(levels).toHaveLength(MAX_SUBAGENT_DEPTH);
+    expect(levels.map(({ copy }) => copy.allowNested === true)).toEqual(
+      levels.map((_, depth) => 2 * depth + 1 < MAX_SUBAGENT_DEPTH),
+    );
+    for (const { copy } of levels) {
+      expect(copy.description).toMatch(
+        copy.allowNested === true
+          ? /The copy can delegate to the same subagents\.$/
+          : /The copy cannot delegate to subagents;/,
+      );
+    }
+
+    /**
+     * The longest path to each agent goes through the copy of every agent above that has one to
+     * give. Counted down by the SDK itself, a promised copy still has a hop left at the end.
+     */
+    const spend = (config: SubagentConfig, hops: number): number =>
+      buildChildInputs(config as BuildChildInput, 'agent_chain', hops).maxSubagentDepth ?? 0;
+    let hops: number = MAX_SUBAGENT_DEPTH;
+    for (const { copy, child } of levels) {
+      if (copy.allowNested === true) {
+        hops = spend(copy, hops);
+        expect(hops).toBeGreaterThan(0);
+      }
+      hops = spend(child, hops);
+    }
+  });
+
   it('omits self-spawn when allowSelf is false', async () => {
     const agents = await callAndCapture({
       agents: [makeAgent({ subagents: { enabled: true, allowSelf: false } })],
@@ -4084,6 +4191,37 @@ describe('subagentConfigs', () => {
     ).toMatchObject({ defer_loading: false });
     expect(memberRegistry.get('deep_tool')).toMatchObject({ defer_loading: true });
     expect(memberInput.toolDefinitions).toEqual([{ name: 'tool_search' }]);
+  });
+
+  it('advertises graph teams without enabling ordinary self-spawn or explicit agents', async () => {
+    const member = makeAgent({ id: 'graph_only_member' });
+    const definition = {
+      type: 'graph_only',
+      name: 'Graph only',
+      description: 'Delegate a team',
+      agent_ids: [member.id],
+      edges: [],
+      entry_agent_id: member.id,
+      result_agent_id: member.id,
+    };
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          id: 'parent',
+          subagents: {
+            enabled: false,
+            graphsEnabled: true,
+            allowSelf: true,
+            agent_ids: ['unused'],
+            graphs: [definition],
+          },
+          subagentGraphConfigs: [{ definition, memberConfigs: [member] }],
+        }),
+      ],
+    });
+    expect(agents[0].subagentConfigs).toHaveLength(1);
+    const configs = agents[0].subagentConfigs as Array<Record<string, unknown>>;
+    expect(configs[0]).toMatchObject({ kind: 'graph', type: 'graph_only' });
   });
 
   it('builds lazy graph inputs from initialized members instead of capability metadata', async () => {

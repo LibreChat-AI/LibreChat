@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { atom, useAtom } from 'jotai';
 import { useChatActions } from '@librechat/chat/react';
-import { Constants, isCompactedLeaf, isAssistantsEndpoint } from 'librechat-data-provider';
+import { Constants, isCompactedLeaf } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import { useLatestMessageSelect } from '~/hooks/Messages/useLatestMessage';
 import { useChatContext } from '~/Providers/ChatContext';
@@ -20,12 +20,7 @@ const pickLeaf = (tail: TMessage | null): { messageId: string; compactable: bool
     compactable: tail.parentMessageId != null && !isCompactedLeaf(tail),
   };
 
-/**
- * An Assistants thread lives on the provider, so a summary inserted into the
- * local history would compact nothing. Callers hide the action there.
- */
-export const supportsCompaction = (endpoint?: string | null): boolean =>
-  endpoint != null && endpoint !== '' && !isAssistantsEndpoint(endpoint);
+export { supportsCompaction } from '@librechat/chat';
 
 /**
  * Manual context compaction. Submits a summarize-only turn hung off the

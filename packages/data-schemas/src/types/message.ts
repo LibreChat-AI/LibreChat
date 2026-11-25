@@ -31,11 +31,27 @@ export type SubagentTriggerProjection = {
 
 type MessageTriggerEvent = { type: string; occurredAt: Date };
 
+/** What an outside event was about. See `tTriggerDetailSchema` for each field. */
+export type MessageTriggerDetail = {
+  repo: string;
+  number: number;
+  actor: string;
+  bot?: boolean;
+  url?: string;
+  title?: string;
+  state?: string;
+  text?: string;
+  sha?: string;
+  branch?: string;
+  labels?: string[];
+};
+
 /** What started a turn no person sent. See `tMessageTriggerSchema` for the form a client reads. */
 export type MessageTrigger = {
   event: MessageTriggerEvent;
   subject?: { kind: string; id: string };
   origin?: { event: MessageTriggerEvent };
+  detail?: MessageTriggerDetail;
 };
 
 /** Server-private durable receipt for one parent-to-child control invocation. */

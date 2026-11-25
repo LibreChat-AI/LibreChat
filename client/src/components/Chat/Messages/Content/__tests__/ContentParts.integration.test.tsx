@@ -64,7 +64,9 @@ jest.mock('~/Providers/MCPAppsPolicyContext', () => ({
 
 jest.mock('~/components/MCPUIResource', () => {
   const ReactActual = jest.requireActual('react') as typeof React;
-  const MCPAppSuppressionContext = ReactActual.createContext<ReadonlySet<TAttachment> | null>(null);
+  /** The package's context: its content renderer is what provides the suppressed set. */
+  const { AppSuppressionContext: MCPAppSuppressionContext } =
+    jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
   return {
     MCPAppSuppressionContext,
     MCPAppViews: ({
@@ -263,6 +265,11 @@ jest.mock('@librechat/chat/dist/components/parts/ImageGen.cjs', () => ({
   __esModule: true,
   default: mockCards().ImageGen,
 }));
+jest.mock('@librechat/chat/dist/components/parts/SubagentCall.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/SubagentCall.cjs'),
+  __esModule: true,
+  default: mockCards().SubagentCall,
+}));
 jest.mock('@librechat/chat/dist/components/parts/MemoryCall.cjs', () => ({
   __esModule: true,
   default: mockCards().MemoryCall,
@@ -282,6 +289,15 @@ jest.mock('@librechat/chat/dist/components/parts/CodeAnalyze.cjs', () => ({
 jest.mock('@librechat/chat/dist/components/parts/Image.cjs', () => ({
   __esModule: true,
   default: () => <div data-testid="image" />,
+}));
+jest.mock('@librechat/chat/dist/components/parts/Attachment.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/Attachment.cjs'),
+  AttachmentGroup: mockCards().AttachmentGroup,
+}));
+jest.mock('@librechat/chat/dist/components/parts/MemoryArtifacts.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/MemoryArtifacts.cjs'),
+  __esModule: true,
+  default: () => <div data-testid="memory-artifacts" />,
 }));
 jest.mock('@librechat/chat/dist/components/parts/Container.cjs', () => ({
   __esModule: true,
@@ -305,14 +321,9 @@ jest.mock('~/components/Web/Sources', () => ({
   },
 }));
 
-jest.mock('../MemoryArtifacts', () => ({
-  __esModule: true,
-  default: () => <div data-testid="memory-artifacts" />,
-}));
-
-jest.mock('../WebSearch', () => ({
-  __esModule: true,
-  default: ({ attachments }: { attachments?: TAttachment[] }) => (
+jest.mock('@librechat/chat/dist/components/parts/WebSearch.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/WebSearch.cjs'),
+  WebSearchCall: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="web-search" data-count={attachments?.length ?? 0} />
   ),
 }));

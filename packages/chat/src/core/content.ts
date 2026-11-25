@@ -301,6 +301,11 @@ export const preserveStreamedContentIdentity = (
   return stamped ?? finalContent;
 };
 
+/** An empty TEXT part: the placeholder some endpoints seed in a response's content before the
+ * model produces anything. */
+export const isEmptyTextPart = (part: TMessageContentParts | undefined): boolean =>
+  part != null && part.type === ContentTypes.TEXT && getPartTextValue(part.text).length === 0;
+
 /** A content part with its position in the message's content array. */
 export type PartWithIndex = { part: TMessageContentParts; idx: number };
 

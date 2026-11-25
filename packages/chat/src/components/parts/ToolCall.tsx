@@ -39,6 +39,7 @@ const INFO_PANEL_CLASS = `${toolPanelSpacingClassName} border-border-light bg-su
 
 export type ToolCallProps = {
   initialProgress: number;
+  clientToolCall?: true;
   isLast?: boolean;
   isSubmitting: boolean;
   toolCallId?: string;
@@ -60,6 +61,7 @@ export type ToolCallProps = {
 
 export default function ToolCall({
   initialProgress = 0.1,
+  clientToolCall,
   isLast = false,
   isSubmitting,
   toolCallId,
@@ -106,6 +108,9 @@ export default function ToolCall({
     if (typeof name !== 'string') {
       return { function_name: '', domain: null, isMCPToolCall: false, mcpServerName: '' };
     }
+    if (clientToolCall) {
+      return { function_name: name, domain: null, isMCPToolCall: false, mcpServerName: '' };
+    }
     if (name.includes(Constants.mcp_delimiter)) {
       const [func, server = ''] = splitToolCallName(name, mcpServerNames);
       const displayName = func === 'oauth' ? server : func;
@@ -139,7 +144,7 @@ export default function ToolCall({
       isMCPToolCall: false,
       mcpServerName: '',
     };
-  }, [name, parsedAuthUrl, mcpServerNames]);
+  }, [name, clientToolCall, parsedAuthUrl, mcpServerNames]);
 
   const displayFunctionName = useMemo(
     () =>
@@ -147,8 +152,10 @@ export default function ToolCall({
        *  above, so re-parsing it would classify an MCP function that happens to
        *  share a built-in's name (`read_file`, `set_memory`) as that native
        *  tool and show, and announce, an unrelated label. */
-      isMCPToolCall ? function_name : getToolDisplayLabel(function_name, localize, mcpServerNames),
-    [function_name, isMCPToolCall, localize, mcpServerNames],
+      isMCPToolCall || clientToolCall
+        ? function_name
+        : getToolDisplayLabel(function_name, localize, mcpServerNames),
+    [function_name, isMCPToolCall, clientToolCall, localize, mcpServerNames],
   );
   const mcpIconUrl = isMCPToolCall ? iconUrlForServer(mcpServerName) : undefined;
 
@@ -192,7 +199,8 @@ export default function ToolCall({
    * `hasError`, so output parsing cannot demote a stopped step back into an
    * in-flight state.
    */
-  const isClosed = runStepStatus != null;
+  const clientToolPending = clientToolCall === true && output == null;
+  const isClosed = runStepStatus != null || clientToolPending;
 
   const args = useMemo(() => {
     if (typeof _args === 'string') {
@@ -234,6 +242,7 @@ export default function ToolCall({
    */
   const phase = resolveToolCallPhase({
     runStepStatus,
+    clientToolPending,
     displayProgress: rawProgress,
     reportedProgress: initialProgress,
     isSubmitting,
@@ -416,6 +425,9 @@ export default function ToolCall({
         ? localize('com_ui_failed_subject', { 0: failedSubject })
         : localize('com_ui_failed');
     }
+    if (phase === 'delegated') {
+      return localize('com_ui_client_tool_requested', { 0: displayFunctionName });
+    }
     if (intent != null) {
       return intent;
     }
@@ -481,7 +493,7 @@ export default function ToolCall({
             phaseStepId={stepId}
             icon={
               <ToolIcon
-                type={getToolIconType(name)}
+                type={getToolIconType(clientToolCall ? '' : name)}
                 iconUrl={mcpIconUrl}
                 isAnimating={phase === 'running'}
               />

@@ -953,6 +953,29 @@ describe('durable agent trigger service', () => {
     await service.stop();
   });
 
+  it('hands the stored requeue a tenant scope only when the caller names one', async () => {
+    const requeueAgentTriggerDelivery = jest.fn(async () => null);
+    const service = createAgentTriggerService({
+      methods: deliveryMethods({ requeueAgentTriggerDelivery }),
+      deliveryOptions: { concurrency: 1, tickMs: 60_000 },
+    });
+    await service.initialize({
+      address: { address: '127.0.0.1', family: 'IPv4', port: 3080 },
+    });
+
+    await service.requeue('delivery-row-1', START);
+    expect(requeueAgentTriggerDelivery).toHaveBeenLastCalledWith('delivery-row-1', START);
+    await service.requeue('delivery-row-1', START, { tenantId: 'tenant-a' });
+    expect(requeueAgentTriggerDelivery).toHaveBeenLastCalledWith('delivery-row-1', START, {
+      tenantId: 'tenant-a',
+    });
+    await service.requeue('delivery-row-1', START, { tenantId: undefined });
+    expect(requeueAgentTriggerDelivery).toHaveBeenLastCalledWith('delivery-row-1', START, {
+      tenantId: undefined,
+    });
+    await service.stop();
+  });
+
   it('wakes the delivery engine when a dead letter is requeued locally', async () => {
     const claimNextAgentTriggerDelivery = jest.fn(async () => null);
     const requeueAgentTriggerDelivery = jest

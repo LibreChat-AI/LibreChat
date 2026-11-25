@@ -1,4 +1,5 @@
 import type { StartupConfigContext } from './config';
+import type { DeadLetterParams } from './types/dead';
 import type { AssistantsEndpoint } from './schemas';
 import type * as t from './types';
 import { ResourceType } from './accessPermissions';
@@ -581,6 +582,15 @@ export const scheduleMCPConsent = (id: string) => `${schedule(id)}/mcp-consent`;
 export const scheduleMCPOffer = () => `${schedules()}/mcp-consent/offer`;
 export const runSchedule = (id: string) => `${schedule(id)}/run`;
 
+/* Agent event subscriptions */
+export const agentEvents = () => `${BASE_URL}/api/agents/events`;
+export const agentEventConnections = () => `${agentEvents()}/connections`;
+export const agentEventSubscriptions = (agentId?: string) =>
+  `${agentEvents()}/subscriptions${buildQuery({ agentId })}`;
+export const agentEventSubscription = (id: string) =>
+  `${agentEvents()}/subscriptions/${encodeURIComponent(id)}`;
+export const agentEventSubscriptionGrant = (id: string) => `${agentEventSubscription(id)}/grant`;
+
 /* Skills */
 export const skills = () => `${BASE_URL}/api/skills`;
 export const importSkill = () => `${skills()}/import`;
@@ -664,6 +674,19 @@ export const adminLangfusePrompts = (params: t.TLangfusePromptListParams = {}) =
 export const adminLangfuseSyncPrompts = () => `${BASE_URL}/api/admin/langfuse/prompts/sync`;
 export const adminLangfusePrompt = (name: string, version?: number) =>
   `${BASE_URL}/api/admin/langfuse/prompts/${encodeURIComponent(name)}${buildQuery({ version })}`;
+
+/* Dead letters of the agent trigger queue (admin) */
+export const adminDeadLetters = (params: DeadLetterParams = {}) =>
+  `${BASE_URL}/api/admin/events/dead${buildQuery({ ...params })}`;
+export const adminDeadLetter = (id: string) =>
+  `${BASE_URL}/api/admin/events/dead/${encodeURIComponent(id)}`;
+export const adminDeadLetterRequeue = (id: string) => `${adminDeadLetter(id)}/requeue`;
+
+/* Connections of agent events: installs of the GitHub App bound to the tenant (admin) */
+export const adminEventConnections = () => `${BASE_URL}/api/admin/events/connections`;
+export const adminEventConnectionInstall = () => `${adminEventConnections()}/install`;
+export const adminEventConnection = (id: string) =>
+  `${adminEventConnections()}/${encodeURIComponent(id)}`;
 
 /* Combined Pinned-section display order: favorite and pinned-chat entry keys interleaved. */
 export const pinnedOrder = () => `${BASE_URL}/api/user/settings/pinned-order`;

@@ -1,23 +1,8 @@
+import { isUserProvidedEndpointConfig } from '@librechat/chat';
 import { EModelEndpoint, isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
-import type { TConfig, TSpecsConfig, TEndpointsConfig } from 'librechat-data-provider';
+import type { TSpecsConfig, TEndpointsConfig } from 'librechat-data-provider';
 
-/**
- * Whether an endpoint config requires a user-provided credential — an API key or
- * any Bedrock credential field. `userProvideURL` alone is excluded: a user-provided
- * base URL does not imply a user-managed key.
- */
-export const isUserProvidedEndpointConfig = (config?: TConfig | null): boolean => {
-  if (!config) {
-    return false;
-  }
-  return (
-    !!config.userProvide ||
-    !!config.userProvideAccessKeyId ||
-    !!config.userProvideSecretAccessKey ||
-    !!config.userProvideSessionToken ||
-    !!config.userProvideBearerToken
-  );
-};
+export { isUserProvidedEndpointConfig };
 
 /**
  * The endpoints a user can actually reach, mirroring the model selector and mention

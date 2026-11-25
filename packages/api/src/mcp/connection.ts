@@ -59,6 +59,7 @@ import { runOutsideTracing } from '~/utils/tracing';
 import { MCPRequestQuiescedError } from './request';
 import { isOwnedAbortError } from '~/utils/errors';
 import { mediaTypeEssence } from '~/utils/headers';
+import { getTunnelOptions } from '~/utils/proxy';
 import { isAddressAllowed } from '~/auth/domain';
 import { awaitOboOperation } from './oauth/obo';
 import { withTimeout } from '~/utils/promise';
@@ -969,6 +970,7 @@ function createMCPDispatcher(options: {
     return new ProxyAgent({
       uri: proxyUrl,
       ...baseOptions,
+      ...getTunnelOptions(baseOptions),
     });
   }
 

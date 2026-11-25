@@ -4,7 +4,12 @@
 const path = require('path');
 const mongoose = require('mongoose');
 const { randomUUID } = require('node:crypto');
-const { createModels, runAsSystem, tenantStorage } = require('@librechat/data-schemas');
+const {
+  createModels,
+  runAsSystem,
+  tenantStorage,
+  createSubscriptions,
+} = require('@librechat/data-schemas');
 const { User } = createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 const {
@@ -227,6 +232,7 @@ async function gracefulExit(code = 0) {
           ...methods,
           openCheckpointDeletion,
           deleteSharedLinks: (id) => deleteAllSharedLinksWithCleanup(id, { awaitCleanup: true }),
+          deleteSubscriptions: (id) => createSubscriptions(mongoose).purge(id),
           deleteStoredFiles: (files) =>
             runInUserTenant(async () => processDeleteRequest({ req: fileRequest, files })),
           /** Server names are unique per tenant, so these lookups stay in the deleted user's tenant. */

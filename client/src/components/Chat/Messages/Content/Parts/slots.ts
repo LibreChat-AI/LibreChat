@@ -77,3 +77,45 @@ export function setAppMarkdownExtensions(read: () => MarkdownExtensions): void {
 export function getAppMarkdownExtensions(): MarkdownExtensions | null {
   return appMarkdownExtensions?.() ?? null;
 }
+
+/** The host slots an error draws with app components: the key dialog and the recovery actions. */
+export type AppErrorSlots = Required<
+  Pick<MessagePartsHost, 'renderSetKeyDialog' | 'renderErrorActions'>
+>;
+
+let appErrorSlots: AppErrorSlots | null = null;
+
+/** Registers the app's error slots. `~/components/Messages/Content/Error/register` does when a
+ *  surface that draws errors loads it, so the host never imports the key dialog or the recovery
+ *  actions at boot. */
+export function setAppErrorSlots(slots: AppErrorSlots): void {
+  appErrorSlots = slots;
+}
+
+/** Null until a surface that draws errors has loaded. */
+export function getAppErrorSlots(): AppErrorSlots | null {
+  return appErrorSlots;
+}
+
+/** The hooks a paused tool call or question in a message resumes the run through and shares with
+ *  the composer. */
+export type AppApprovalHooks = Required<
+  Pick<MessagePartsHost, 'useApprovalResumeHost' | 'useAskAnswerMode'>
+>;
+
+let appApprovalHooks: AppApprovalHooks | null = null;
+
+/** Registers the approval hooks. `../Part` does when it loads, and every message draws its parts
+ *  through it, so the host never imports the chat form's answer mode or the resume mutations. */
+export function setAppApprovalHooks(hooks: AppApprovalHooks): void {
+  appApprovalHooks = hooks;
+}
+
+export function getAppApprovalHooks(): AppApprovalHooks {
+  if (appApprovalHooks == null) {
+    throw new Error(
+      'The approval hooks are registered by ~/components/Chat/Messages/Content/Part.',
+    );
+  }
+  return appApprovalHooks;
+}

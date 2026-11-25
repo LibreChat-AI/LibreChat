@@ -1,5 +1,26 @@
 /** Themed message and part components. Populated as the components move in. */
 export { Part } from './components/Part';
+export {
+  default as ErrorMessage,
+  ErrorBox,
+  ERROR_CONNECTION_TEXT,
+} from './components/errors/ErrorMessage';
+export { default as ErrorText } from './components/errors/ErrorText';
+export {
+  ErrorBody,
+  ErrorAction,
+  ErrorActions,
+  ErrorDetails,
+  ErrorWithDetail,
+} from './components/errors/parts';
+export { ContentParts } from './components/ContentParts';
+export { contentPartsRenderer } from './components/contentRenderer';
+export type {
+  ContentEditProps,
+  ContentPartsProps,
+  ContentPartsSlots,
+  SubagentAttachmentCallsResult,
+} from './components/contentTypes';
 export { partRenderers, extendPartRenderers } from './components/partRenderers';
 export { ParallelColumns, ParallelContentRenderer } from './components/Parallel';
 export {
@@ -17,6 +38,13 @@ export { default as Summary } from './components/Summary';
 export { default as EmptyText } from './components/EmptyText';
 export { default as AgentUpdate } from './components/AgentUpdate';
 export { default as CollapsibleText } from './components/CollapsibleText';
+export {
+  MessageBody,
+  DisplayMessage,
+  UnfinishedMessage,
+  renderMessageBody,
+} from './components/messages/MessageBody';
+export type { DisplayMessageProps } from './components/messages/MessageBody';
 export type {
   PartProps,
   ContentPart,
@@ -177,6 +205,8 @@ export type { LiveAsk, AskAnswerView, AskPopoverProps } from './components/compo
 export type { AskOption } from './components/parts/AskOptions';
 export { default as AutoHeight } from './components/parts/AutoHeight';
 export { default as AskUserQuestion } from './components/parts/ask/Question';
+export { default as PausedQuestion } from './components/parts/ask/Paused';
+export type { PausedQuestionProps } from './components/parts/ask/Paused';
 export { default as AskUserQuestions } from './components/parts/ask/Questions';
 export { default as AskUserQuestionCall } from './components/parts/ask/Call';
 export { default as AskUserQuestionProgress } from './components/parts/ask/Progress';
@@ -234,7 +264,7 @@ export type { ToolCallProps } from './components/parts/ToolCall';
 export { default as ProgressText } from './components/parts/ProgressText';
 export type { ProgressTextProps } from './components/parts/ProgressText';
 export { default as SubagentCall } from './components/parts/SubagentCall';
-export type { SubagentCallProps, SubagentCallContext } from './components/parts/SubagentCall';
+export type { SubagentCallProps } from './components/parts/SubagentCall';
 export { default as ResumeAuthorHeader } from './components/parts/ResumeAuthorHeader';
 export { ToolAuthWarning, ToolAuthWarningContext } from './components/parts/auth';
 export { ToolPreparation, useToolPreparation } from './components/parts/preparation';
@@ -374,7 +404,7 @@ export type {
   ToolCallGroupExpansionState,
 } from './components/parts/ToolCallGroup';
 export type { StackedToolIconsProps } from './components/parts/StackedToolIcons';
-export { default as FaviconImage } from './components/parts/Favicon';
+export { default as FaviconImage, StackedFavicons } from './components/parts/Favicon';
 export { default as OutputRenderer } from './components/parts/OutputRenderer';
 export type { OutputRendererProps, OutputSegment } from './components/parts/OutputRenderer';
 export { default as ToolCallInfo } from './components/parts/ToolCallInfo';
@@ -430,6 +460,7 @@ export type {
   ResumeSubmitTransport,
   ToolApprovalDecisionDraft,
 } from './components/approval/context';
+export { default as ToolApproval } from './components/approval/ToolApproval';
 export { PendingToolApprovalButton, PendingToolApprovalPanel } from './components/approval/Review';
 export type {
   ApprovalRequestRenderProps,
@@ -452,8 +483,13 @@ export {
   ReasoningMarker,
   StreamingThoughtPeek,
 } from './components/parts/Reasoning';
-export { default as WebSearch } from './components/parts/WebSearch';
-export type { WebSearchFailedCall, WebSearchStackProps } from './components/parts/WebSearch';
+export { default as WebSearch, WebSearchCall } from './components/parts/WebSearch';
+export type {
+  WebSearchProps,
+  WebSearchCallProps,
+  WebSearchFailedCall,
+  WebSearchStackProps,
+} from './components/parts/WebSearch';
 export {
   collectSources,
   getCleanDomain,

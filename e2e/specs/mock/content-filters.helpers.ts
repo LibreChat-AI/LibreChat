@@ -9,6 +9,7 @@ import type {
   FiltersConfig,
   MessageFilterConfig,
   MessageFilterPiiConfig,
+  TCustomConfig,
 } from 'librechat-data-provider';
 import { getPiiRegexProgramSize } from '../../../packages/api/src/protection/programSize';
 import { getPrimaryE2EUser } from '../../setup/users.mock';
@@ -330,6 +331,36 @@ export async function setRuntimeMessageFilterPii(
       base: { filters: baselineConfig.filters, messageFilter },
       effective: { filters: baselineConfig.filters, messageFilter },
     });
+}
+
+export async function setRuntimeAssistantProtection(
+  request: APIRequestContext,
+  token: string,
+  outputProtection: NonNullable<TCustomConfig['outputProtection']>,
+  endpoint: string,
+  baseURL: string,
+): Promise<void> {
+  const baseline = captureBaseline();
+  const config = parseRuntimeConfig(baseline.contents);
+  const endpoints = config.endpoints as TCustomConfig['endpoints'];
+  config.endpoints = {
+    ...endpoints,
+    custom: [
+      ...(endpoints?.custom ?? []),
+      {
+        name: endpoint,
+        baseURL,
+        apiKey: 'local-fixture',
+        models: { default: ['gpt-4o-mini'], fetch: false },
+      },
+    ],
+  };
+  const specs = config.modelSpecs as TCustomConfig['modelSpecs'];
+  config.modelSpecs = { ...specs, addedEndpoints: [...(specs?.addedEndpoints ?? []), endpoint] };
+  config.outputProtection = outputProtection;
+  validateRuntimeConfig(config);
+  atomicWrite(baseline, yaml.dump(config, { noRefs: true, lineWidth: 120 }));
+  await triggerConfigReload(request, token);
 }
 
 export async function restoreRuntimeFilters(

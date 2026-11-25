@@ -233,6 +233,52 @@ describe('createAgentTriggerExecutionHost fire adapter', () => {
     expect(mintToken).toHaveBeenCalledWith(envelope.principal, envelope);
   });
 
+  it("puts a subscription's event beside the event, and no other source's payload", async () => {
+    const event = {
+      provider: 'github',
+      type: 'github.issue_comment.created',
+      item: { provider: 'github', kind: 'pr', repo: 4242, number: 17, key: 'github:pr:4242#17' },
+      actor: { id: 9, login: 'octocat', bot: false },
+      repo: { id: 4242, name: 'acme/widgets' },
+      occurredAt: 10,
+      text: 'Please rebase.',
+    };
+    const envelope = createAgentTriggerEnvelope({
+      mode: 'fire',
+      requestId: 'request-sub',
+      deliveryId: 'delivery-sub',
+      receivedAt: 20,
+      principal: { id: 'user-1', role: 'member', tenantId: 'tenant-1' },
+      target: { agentId: 'agent-1' },
+      event: {
+        id: 'event-sub',
+        type: 'github.issue_comment.created',
+        occurredAt: 10,
+        source: { id: 'sub_1', type: 'subscription' },
+        payload: event,
+      },
+      input: 'Answer the review.',
+    });
+    const body = async (sent: typeof envelope) => {
+      const fetcher = fetchMock(async () =>
+        response({
+          streamId: 'stream-1',
+          conversationId: 'conversation-1',
+          generationCreatedAt: 40,
+          status: 'started',
+        }),
+      );
+      await createAgentTriggerExecutionHost(deps(fetcher)).dispatch(sent);
+      const [, init] = fetcher.mock.calls[0];
+      return JSON.parse(String(init?.body)) as { text: string; agentTrigger: { detail?: unknown } };
+    };
+
+    const sent = await body(envelope);
+    expect(sent.agentTrigger.detail).toEqual(event);
+    expect(sent.text).toBe('Answer the review.');
+    expect((await body(createFireEnvelope())).agentTrigger).not.toHaveProperty('detail');
+  });
+
   it('reuses the same generation identity when an ambiguous delivery is retried', async () => {
     const envelope = createFireEnvelope();
     const fetcher = fetchMock(

@@ -4,6 +4,13 @@ import type { Delivery, RunTrigger } from './trigger';
 import type { AgentRunProtocol } from '../envelope';
 import { readScheduleFireContext } from '~/schedules/trigger';
 import { toDelivery, readRunTrigger } from './trigger';
+import { toDetail } from '../events/turn';
+
+/**
+ * The source type of a delivery an event subscription matched. Only code inside the server
+ * enqueues one: the public event route stamps every delivery it takes with the API key.
+ */
+export const SUBSCRIPTION_SOURCE = 'subscription';
 
 /** The user whose authority a run exercises. */
 export interface ExecutionPrincipal {
@@ -85,9 +92,10 @@ function triggered(
       manual,
       resumed,
     }),
-    // As the chat route has always run these: whether a triggered run may publish a sign-in
-    // prompt is not decided here.
-    unattended: false,
+    // Nobody follows a run an outside event started, on any of its turns, so it never asks
+    // for a sign-in. For any other subject the chat route runs these as it always has:
+    // whether such a run may publish a sign-in prompt is not decided here.
+    unattended: trigger.subject?.kind === 'subscription',
   });
 }
 
@@ -98,8 +106,9 @@ function triggered(
  * The delivery is the request's own: its key in the trigger queue and the identity of the
  * event it carried, which the host names in the body of every request it makes. The subject
  * is whoever the event's source names. A schedule's occurrence runs for the schedule. An
- * event an API key posted runs for that key, so the key's grant can be put over the run. A
- * delivery the server made for itself, such as a queued turn, has none.
+ * event an API key posted runs for that key, so the key's grant can be put over the run. An
+ * event a subscription matched runs for the subscription. A delivery the server made for
+ * itself, such as a queued turn, has none.
  *
  * A turn that reports work sent to the background is the exception: its delivery is the
  * server's own, and it acts for whoever the run that began the work acted for. The work
@@ -111,9 +120,9 @@ function triggered(
  * Nothing here is read from a field a caller sets: the public event route stamps the source
  * with the authenticated key, the captured trigger is written and read back by the server,
  * and only the trigger host can make a request that is a trigger. A delivery that names a
- * key as its source without saying which, or without an event to identify it by, is
- * refused, as is a turn whose captured trigger cannot be read, since running either with
- * no context would run it with no grant.
+ * key or a subscription as its source without saying which, or without an event to identify
+ * it by, is refused, as is a turn whose captured trigger cannot be read, since running either
+ * with no context would run it with no grant.
  */
 export function createTriggerExecutionContext(req: TriggerRequest): ExecutionContext | undefined {
   if (req?._isAgentTrigger !== true) return;
@@ -136,6 +145,13 @@ export function createTriggerExecutionContext(req: TriggerRequest): ExecutionCon
     );
   }
   const source = record(event?.source);
+  if (source?.type === SUBSCRIPTION_SOURCE) {
+    const id = typeof source.id === 'string' ? source.id.trim() : '';
+    if (id.length === 0 || !carried)
+      throw new Error('Agent trigger names a subscription as its source without identifying it.');
+    const who = Object.freeze({ kind: 'subscription', id } as const);
+    return triggered(req, body?.agent_id, { subject: who, delivery: carried }, false, false);
+  }
   if (source?.type !== 'remote_api_key') {
     // Only a delivery the server made for itself reports work an earlier run began: a task's
     // wake-up on its completion marker, a suspended actor's resumption on its delivery. One
@@ -193,26 +209,45 @@ function toEvent(delivery?: Delivery): TMessageTrigger['event'] | undefined {
   return { type, occurredAt: at.toISOString() };
 }
 
+/** The request a subscription's turn is served on, as far as `toMessageTrigger` reads it. */
+interface DetailRequest {
+  _isAgentTrigger?: boolean;
+  body?: { agentTrigger?: unknown } | null;
+}
+
 /**
  * What the first message of a triggered turn records of what started it: the event the
  * turn's own delivery carried, who the run acts for and, on a turn that reports work an
  * earlier run sent to the background, the event that began that run. Undefined for a run no
  * trigger started, and for one whose delivery named no event.
  *
- * Read from the context alone, so a request cannot write it. It is what the owner is shown,
- * so it names events and not deliveries, with their types made safe to show: the delivery
- * key, the event id and the type as it was sent stay on the job.
+ * Read from the context, so a request cannot write it. It is what the owner is shown, so it
+ * names events and not deliveries, with their types made safe to show: the delivery key, the
+ * event id and the type as it was sent stay on the job.
+ *
+ * On a turn an event subscription started it also records what the event was about, which
+ * the trigger host put beside the event on the request only it can make (`_isAgentTrigger`).
+ * Each field is read again and bounded (`toDetail`); any other request, and any other subject,
+ * gets none.
  */
-export function toMessageTrigger(context?: ExecutionContext): TMessageTrigger | undefined {
+export function toMessageTrigger(
+  context?: ExecutionContext,
+  req?: DetailRequest,
+): TMessageTrigger | undefined {
   const source = context?.source;
   if (source?.type !== 'trigger') return;
   const event = toEvent(source.delivery);
   if (!event) return;
   const began = toEvent(source.origin?.delivery);
+  const detail =
+    source.subject?.kind === 'subscription' && req?._isAgentTrigger === true
+      ? toDetail(record(req.body?.agentTrigger)?.detail)
+      : undefined;
   return {
     event,
     ...(source.subject && { subject: { kind: source.subject.kind, id: source.subject.id } }),
     ...(began && { origin: { event: began } }),
+    ...(detail && { detail }),
   };
 }
 

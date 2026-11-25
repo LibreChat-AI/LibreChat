@@ -5,6 +5,7 @@ export * from './react/subagents';
 export * from './react/usage';
 export * from './react/thread';
 export * from './react/latest';
+export { useShared } from './react/shared';
 export * from './react/approval';
 export { MessageContext, MessagePartIndex, useMessageContext } from './react/message';
 export {
@@ -29,8 +30,18 @@ export type {
   MessagePartsUserTextPreferences,
   ToolCallChrome,
   ToolCallLocalize,
+  SetKeyDialogProps,
+  ErrorActionsProps,
+  AgentBuilderAccess,
+  MessagePartsBalanceDisplay,
 } from './react/host';
 export { emptyToolCallChrome } from './react/host';
+export {
+  useOnline,
+  useErrorEndpoint,
+  useBalanceDisplay,
+  useAgentBuilderAccess,
+} from './react/errors';
 export {
   resetSteerFamilies,
   escalatingSteerFamily,
@@ -290,6 +301,7 @@ export { ArtifactContext, ArtifactProvider, useArtifactContext } from './react/p
 export type { ArtifactIndex } from './react/parts/artifactIndex';
 export { MediaContext, useMediaContext } from './react/parts/media';
 export { SearchContext, useSearchContext } from './react/parts/search';
+export { AppSuppressionContext } from './react/parts/apps';
 export type { SearchResults } from './react/parts/search';
 export type { MediaSources } from './react/parts/media';
 export type { LazyImport } from './react/lazy';
@@ -350,6 +362,7 @@ export type {
 export {
   RowMountProvider,
   useProgressiveRowMount,
+  finishProgressiveRowMounts,
   completeProgressiveRowMounts,
 } from './react/messages/useProgressiveRowMount';
 export type { RowMountWindow } from './react/messages/useProgressiveRowMount';

@@ -25,7 +25,7 @@ const {
   isAgentTriggerRequest,
   exemptAgentTriggerFromIpLimiter,
   captureScheduleFireContext,
-  exemptFromUserLimiter: exemptScheduleFromUserLimiter,
+  exemptTriggerFromUserLimiter,
   detectGenerationRetry,
   isConfirmedGenerationRetry,
   generationRetryProbeLimiter,
@@ -1263,14 +1263,14 @@ chatRouter.use(chatConfigMiddleware);
 if (useMessageIpLimiter || useMessageUserLimiter) {
   chatRouter.use(
     unless(
-      (req) => exemptAgentTriggerFromIpLimiter(req) || exemptScheduleFromUserLimiter(req),
+      (req) => exemptAgentTriggerFromIpLimiter(req) || exemptTriggerFromUserLimiter(req),
       generationRetryProbeLimiter,
     ),
   );
   chatRouter.use(detectGenerationRetry);
   chatRouter.use(
     unless(
-      (req) => exemptAgentTriggerFromIpLimiter(req) || exemptScheduleFromUserLimiter(req),
+      (req) => exemptAgentTriggerFromIpLimiter(req) || exemptTriggerFromUserLimiter(req),
       generationRetryLimiter,
     ),
   );
@@ -1283,7 +1283,7 @@ if (useMessageIpLimiter) {
 if (useMessageUserLimiter) {
   chatRouter.use(
     unless(
-      (req) => exemptScheduleFromUserLimiter(req) || isConfirmedGenerationRetry(req),
+      (req) => exemptTriggerFromUserLimiter(req) || isConfirmedGenerationRetry(req),
       messageUserLimiter,
     ),
   );

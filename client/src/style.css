@@ -691,7 +691,7 @@ html {
 
 /* The message editor reads as the message it edits does. `.message-content` carries the same three
  * declarations in @librechat/client (theme/prose.css), after the `.prose` and `.markdown` rules
- * it has to follow. */
+ * it has to follow. Its code block sizes ship with `@librechat/chat/style.css`. */
 .message-editor-text {
   font-size: var(--markdown-font-size, var(--font-size-base));
   line-height: 1.6;
@@ -699,19 +699,11 @@ html {
   max-width: none;
 }
 
-.message-content pre code {
-  font-size: calc(0.9 * var(--markdown-font-size, var(--font-size-base)));
-}
-
 /* iOS zooms into a focused field under 16px and the installed PWA never zooms back out. */
 @media (any-pointer: coarse) {
   .message-editor-text {
     font-size: max(16px, var(--markdown-font-size, var(--font-size-base)));
   }
-}
-
-.message-content pre {
-  font-size: var(--markdown-font-size, var(--font-size-base));
 }
 
 .tooltip {

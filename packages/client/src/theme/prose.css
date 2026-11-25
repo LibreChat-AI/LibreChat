@@ -822,3 +822,21 @@ html:not(.high-contrast) .markdown :is(th, td):last-child {
   /* `.prose` sets max-width: 65ch; fill the message column instead. */
   max-width: none;
 }
+
+/* Text that names no color of its own reads in the primary text color inside the element an app
+ * renders the chat in, as it does in LibreChat's own chat view, whose message list sets it on the
+ * rows' container. LibreChat puts no element in this class, so this applies only in an app outside
+ * it. */
+:where(.librechat) {
+  color: rgb(var(--text-primary));
+}
+
+/* A link in a message's paragraph is bold and in the inline link color. LibreChat's own stylesheet
+ * does the same for every link in a paragraph of this kind on its pages (`client/src/mobile.css`,
+ * unlayered, so it outranks a utility); this keeps it for the message text an app outside
+ * LibreChat draws, scoped to the message so an app's own paragraphs are left alone. */
+.message-content p.whitespace-pre-wrap a {
+  color: rgb(var(--link-inline));
+  text-decoration: underline;
+  font-weight: bold;
+}

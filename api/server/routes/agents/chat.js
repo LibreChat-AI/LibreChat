@@ -10,6 +10,7 @@ const {
   GenerationJobManager,
   getSafeErrorMetadata,
   validateChatMessageIds,
+  admitAssistantRequest,
 } = require('@librechat/api');
 const { PermissionTypes, Permissions, PermissionBits } = require('librechat-data-provider');
 const {
@@ -44,6 +45,7 @@ const restoreResumeContext = createChatResumeContext({
     logger.warn('[agents/chat] Failed to restore resume context', getSafeErrorMetadata(error)),
 });
 
+router.use(admitAssistantRequest);
 router.use(validateChatMessageIds);
 router.use(restoreResumeContext);
 router.use(

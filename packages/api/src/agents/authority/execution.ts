@@ -44,6 +44,8 @@ export interface RunGrantInvocation<Identity extends RunGrantIdentity = Schedule
     /** A readiness check, which calls nothing. Anything else must hold the owner's approval. */
     readiness?: true;
   }) => Promise<void>;
+  /** Tells the subject a call found the server refusing, or asking for, the owner's sign-in. */
+  readonly rejected?: (serverName: string) => void;
 }
 
 export interface RunGrantExecution<Identity extends RunGrantIdentity = ScheduledMCPIdentity> {
@@ -223,12 +225,23 @@ export interface RunGrantExecutionDeps<Identity extends RunGrantIdentity = Sched
    */
   coversTools?: boolean;
   /**
+   * Whether a subject with no grant loads only what a grant that lists nothing would: none of
+   * its agents' MCP tools and, where the grant covers the other tools, none of those. Absent,
+   * such a run loads every tool and is refused at the call once a grant is required.
+   */
+  scoped?: boolean;
+  /**
    * Whether a completion turn for work a run sent to the background resolves this subject's
    * grant again. Absent, it does not, and a run under a grant starts nothing there.
    */
   detaches?: boolean;
   /** What a run under this subject says in the subject's words. */
   wording?: PolicyWording;
+  /**
+   * Told when a call, not a readiness check, finds the server refusing or asking for the
+   * owner's sign-in, so a host that reuses readiness can stop reusing it for that server.
+   */
+  rejected?: (identity: Identity, serverName: string) => void;
   now?: () => number;
 }
 
@@ -438,7 +451,9 @@ export function createRunGrantExecution<Identity extends RunGrantIdentity = Sche
         );
       },
       narrow: (agentId: string, toolKeys: readonly string[]) =>
-        enrolled ? toolKeys.filter((key) => loads(agentId, key)) : [...toolKeys],
+        enrolled || deps.scoped === true
+          ? toolKeys.filter((key) => loads(agentId, key))
+          : [...toolKeys],
       grantsTool: allows,
       coversTools: deps.coversTools === true,
       ...(deps.wording && { wording: deps.wording }),
@@ -450,10 +465,14 @@ export function createRunGrantExecution<Identity extends RunGrantIdentity = Sche
           (key) => askingAny.has(key) || [...asking.values()].some((keys) => keys.has(key)),
         ),
       bind(agentId: string | undefined, selectionName: string): RunGrantInvocation<Identity> {
+        const { rejected } = deps;
         return Object.freeze({
           identity: capturedIdentity,
           agentId,
           enrolled,
+          ...(rejected && {
+            rejected: (serverName: string) => rejected(capturedIdentity, serverName),
+          }),
           async authorize({
             user,
             serverName,
@@ -544,7 +563,10 @@ export function createRunGrantExecution<Identity extends RunGrantIdentity = Sche
                 loadTools(),
               ]);
               signal?.throwIfAborted();
-              if (catalog.authenticationError != null) deny('credential_rejected');
+              if (catalog.authenticationError != null) {
+                if (readiness !== true) deps.rejected?.(capturedIdentity, serverName);
+                deny('credential_rejected');
+              }
               const definitions = catalog.tools.filter((tool: Tool) => tool.name === toolName);
               if (!catalog.complete || definitions.length !== 1) deny('tool_policy_denied');
               const authorization = await evaluation.authority.authorize(

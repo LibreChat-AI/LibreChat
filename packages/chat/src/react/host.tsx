@@ -1,6 +1,8 @@
 import { createContext, useContext } from 'react';
 import type {
   AgentDisplay,
+  BalanceDisplay,
+  EModelEndpoint,
   TFile,
   TAttachment,
   SearchResultData,
@@ -12,6 +14,10 @@ import type { UseQueryOptions, QueryObserverResult } from '@tanstack/react-query
 import type { Dispatch, ElementType, ReactNode, SetStateAction } from 'react';
 import type { TShowToast } from '@librechat/client';
 import type { PluggableList } from 'unified';
+import type { ErrorEnvironment, ErrorSource } from '../core/errors';
+import type { CurrencyConfig } from '../core/usage/format';
+import type { ApprovalResumeHost } from './approval';
+import type { AskCardMode } from './parts/ask';
 import type { PtcTrace } from '../core/ptc';
 
 /** The message a part renders in, as its host reports it. */
@@ -187,6 +193,38 @@ export type MessagePartsFilePreviewProps = {
   pageRelevance?: Record<number, number>;
 };
 
+/** Whether the reader may open the agent builder, as an agent error offers it. */
+export type AgentBuilderAccess = {
+  /** The reader holds both the use and the create permission for agents. */
+  canUseBuilder: boolean;
+  /** The reader is an administrator, who may edit any agent. */
+  isAdmin: boolean;
+};
+
+/** How the deployment shows balances: credits, money in a currency, or a share of the allotment. */
+export type MessagePartsBalanceDisplay = { display: BalanceDisplay; currency?: CurrencyConfig };
+
+/** What an error asks the host's key dialog to edit: the reader's own credentials for an endpoint. */
+export type SetKeyDialogProps = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  endpoint: string;
+  endpointType?: EModelEndpoint;
+  userProvideURL?: boolean | null;
+  userProvideAccessKeyId?: boolean;
+  userProvideSecretAccessKey?: boolean;
+  userProvideSessionToken?: boolean;
+  userProvideBearerToken?: boolean;
+};
+
+/** The failure a host's recovery actions are drawn for. */
+export type ErrorActionsProps = {
+  /** The failed turn's text as persisted. */
+  text: string;
+  /** The failed message, when the caller has it; an error part reads it from its context. */
+  messageId?: string;
+};
+
 /** What a part asks the host's markdown renderer to draw. */
 export type MessagePartsMarkdownProps = {
   /** The markdown source. */
@@ -231,8 +269,12 @@ export interface MessagePartsHost {
   useSmoothStreaming: () => boolean;
   /** An agent the viewer can see, by id. */
   useAgent: (agentId: string) => AgentDisplay | undefined;
-  /** Draws a message's content parts with the app's renderer. */
-  renderContentParts: (props: ContentPartsSlotProps) => ReactNode;
+  /**
+   * Draws a message's content parts, for a host that adds to the package's `ContentParts`; build
+   * it with `contentPartsRenderer(slots)`. Without it the package's renderer draws them with no
+   * slots.
+   */
+  renderContentParts?: (props: ContentPartsSlotProps) => ReactNode;
   /** Renders an agent's avatar; `undefined` when the agent is unknown. */
   renderAgentIcon: (agent: AgentDisplay | undefined) => ReactNode;
   /** Renders an agent's bare inline avatar, without the message icon around it. */
@@ -306,6 +348,20 @@ export interface MessagePartsHost {
    */
   useToolCallPart?: ToolContentQuery;
   /**
+   * A hook that returns how a paused tool call or question in the calling message resumes the run:
+   * the conversation's fields and the requests that send a decision or an answer. Called by the
+   * approval controls and the question card. Without it, or when it returns `null`, they use an
+   * `ApprovalResumeHostProvider` above them; with neither, they render disabled and say the request
+   * cannot be answered from here.
+   */
+  useApprovalResumeHost?: () => ApprovalResumeHost | null;
+  /**
+   * A hook that shares a paused question with the host's composer, for a host whose composer can
+   * take the question over. Called with the conversation of the calling message. Without it the
+   * question is answered in its card only.
+   */
+  useAskAnswerMode?: (conversationId: string | null | undefined) => AskCardMode;
+  /**
    * The host's additions to a reply's markdown, or nothing. Called while rendering, so it must
    * return the same object until the additions change. The lighter renderer for cards and the
    * error boundary's fallback do not use them.
@@ -316,6 +372,29 @@ export interface MessagePartsHost {
    * name (`'markdown'`). For a host's error reporting; the boundary has already drawn its fallback.
    */
   onBoundaryError?: (boundary: string, error: Error) => void;
+  /**
+   * A hook an error card calls with the row that failed, returning what the host knows beyond it:
+   * the conversation the chat shows, the agents a transcript can name, the endpoint configuration
+   * and whether compaction is offered. It must return the same object until one of those changes.
+   * Without it an error names what its row says and nothing more: key ownership stays unknown, so
+   * the copy is the generic sentence and no key can be updated from the card.
+   */
+  useErrorEnvironment?: (source?: ErrorSource) => ErrorEnvironment;
+  /** A hook: whether the reader may open the agent builder. Without it an agent error never
+   *  claims the reader can edit the agent, and names its owner or an administrator instead. */
+  useAgentBuilderAccess?: () => AgentBuilderAccess;
+  /** A hook: how the deployment shows balances. Without it a balance error shows credits. */
+  useBalanceDisplay?: () => MessagePartsBalanceDisplay;
+  /**
+   * Draws the host's dialog for the reader's own key of an endpoint, opened from a key error.
+   * Without it a key error explains itself and offers no button.
+   */
+  renderSetKeyDialog?: (props: SetKeyDialogProps) => ReactNode;
+  /**
+   * Draws what a reader can do about a failure beyond reading it, such as sending the turn again
+   * without its files, inside the error's box under its text. Without it the error stands alone.
+   */
+  renderErrorActions?: (props: ErrorActionsProps) => ReactNode;
 }
 
 const MessagePartsHostContext = createContext<MessagePartsHost | null>(null);

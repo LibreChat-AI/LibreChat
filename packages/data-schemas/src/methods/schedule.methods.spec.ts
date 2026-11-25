@@ -2904,6 +2904,50 @@ describe('skip bookkeeping is crash-recoverable', () => {
   });
 });
 
+describe('getUnbookkeptRuns sweeps every settled status', () => {
+  const scheduledFor = new Date('2026-07-20T12:00:00Z');
+  const statuses = [
+    'success',
+    'error',
+    'interrupted',
+    'skipped_balance',
+    'skipped_overlap',
+  ] as const;
+
+  it.each(statuses)('returns an unbookkept %s row, then drops it once bookkept', async (status) => {
+    const schedule = await methods.createSchedule(scheduleData());
+    // A crash after the row settled but before any schedule-side write landed.
+    await ScheduleRun.create(
+      runData(schedule, {
+        scheduledFor,
+        status,
+        bookkept: false,
+        firedAt: new Date(Date.now() - 10 * 60_000),
+      }),
+    );
+    const cutoff = new Date(Date.now() - 60_000);
+
+    const swept = await methods.getUnbookkeptRuns(cutoff, 10);
+    expect(swept).toHaveLength(1);
+    const [run] = swept;
+    expect(run).toMatchObject({ scheduleId: schedule.id, status });
+
+    // Replay with the swept row's own fields, as the engine's reconcile pass does.
+    await methods.finalizeBookkeeping({
+      scheduleId: run.scheduleId,
+      scheduledFor: run.scheduledFor,
+      status,
+      conversationId: run.conversationId,
+      autoDisableAfterFailures: 5,
+      balanceSkipDisableThreshold: 5,
+    });
+
+    expect((await getRun(schedule.id, scheduledFor)).bookkept).toBe(true);
+    expect((await getSchedule(schedule.id)).lastRun?.status).toBe(status);
+    expect(await methods.getUnbookkeptRuns(cutoff, 10)).toHaveLength(0);
+  });
+});
+
 describe('deleteUnarmedSchedule (guarded create rollback)', () => {
   it('erases a drained unarmed row and its settled runs', async () => {
     const schedule = await methods.createSchedule(scheduleData({ nextRunAt: undefined }));

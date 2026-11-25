@@ -300,23 +300,31 @@ describe('a run found by its subject and delivery', () => {
   });
 
   it.each(['key', 'subscription'])(
-    'finds nothing for a %s, which records no run, and asks the database nothing',
+    'finds nothing for a %s whose delivery names no key, and asks the database nothing',
     async (kind) => {
       const at = new Date('2026-11-21T08:00:00.000Z');
       await ScheduleRun.collection.insertOne(row({ scheduledFor: at, conversationId: 'c' }));
       record();
 
       expect(await runs.get(ref('sched_a', at, kind), ['status'])).toBeNull();
-      expect(
-        await runs.byConversation(
-          { subject: { kind, id: 'sched_a' }, owner: owner.toString() },
-          'c',
-          ['status'],
-        ),
-      ).toBeNull();
       expect(queries).toEqual([]);
     },
   );
+
+  it('finds no run of a conversation for a key, which records none, and asks nothing', async () => {
+    const at = new Date('2026-11-21T08:00:00.000Z');
+    await ScheduleRun.collection.insertOne(row({ scheduledFor: at, conversationId: 'c' }));
+    record();
+
+    expect(
+      await runs.byConversation(
+        { subject: { kind: 'key', id: 'sched_a' }, owner: owner.toString() },
+        'c',
+        ['status'],
+      ),
+    ).toBeNull();
+    expect(queries).toEqual([]);
+  });
 
   it('surfaces a failed read as an error, not as an absent run', async () => {
     const failure = new Error('connection lost');
@@ -449,7 +457,8 @@ describe('what a schedule reader asks the database', () => {
       },
     ]);
     for (const query of queries) {
-      expect((await plan(query)).picked).toBe('scheduleId_1_scheduledFor_1');
+      // Either unique occurrence index answers it while both exist (the legacy one goes next).
+      expect(['scheduleId_1_scheduledFor_1', 'occurrence']).toContain((await plan(query)).picked);
     }
   });
 

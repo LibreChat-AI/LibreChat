@@ -1048,22 +1048,25 @@ describe('what the run record answers', () => {
 });
 
 describe('a subject whose runs are not on record', () => {
-  it.each(['key', 'subscription'])('settles nothing for a %s', async (kind) => {
-    const started = row();
-    await seed(started);
-    const other = ref('sched_a', at, kind);
-    record();
+  it.each(['key', 'subscription'])(
+    'settles nothing for a %s with no delivery key',
+    async (kind) => {
+      const started = row();
+      await seed(started);
+      const other = ref('sched_a', at, kind);
+      record();
 
-    expect(await runs.pause(other, { conversationId: 'conversation-b' })).toBeNull();
-    expect(await runs.finish(other, { status: 'success' })).toBeNull();
-    expect(
-      await runs.skip(ref('sched_a', before, kind), { user: owner, status: 'skipped_overlap' }),
-    ).toBeNull();
-    expect(await runs.settled(other)).toBeUndefined();
+      expect(await runs.pause(other, { conversationId: 'conversation-b' })).toBeNull();
+      expect(await runs.finish(other, { status: 'success' })).toBeNull();
+      expect(
+        await runs.skip(ref('sched_a', before, kind), { user: owner, status: 'skipped_overlap' }),
+      ).toBeNull();
+      expect(await runs.settled(other)).toBeUndefined();
 
-    expect(commands()).toEqual([]);
-    expect(await only()).toEqual(started);
-  });
+      expect(commands()).toEqual([]);
+      expect(await only()).toEqual(started);
+    },
+  );
 });
 
 describe("a schedule's own step, between the row write and the mark", () => {

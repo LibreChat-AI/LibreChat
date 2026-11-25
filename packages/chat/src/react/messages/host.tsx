@@ -260,10 +260,22 @@ export interface MessagesHost {
   /** Whether a response by the agent the header's model selector shows drops its avatar and name
    *  (`interface.messageAuthor: whenDifferent`). */
   useHideSelectedAuthor: () => boolean;
+  /** The sender a response sent now would be written with under the conversation's selection (its
+   *  model spec's label, a configured name or the model's own), so a response from an earlier
+   *  selection of the same model keeps its author. `undefined` when the app cannot name one. */
+  useSelectedSender: (conversation: TConversation | null) => string | undefined;
   /** The agents the viewer can see by id, or `undefined` until they load. */
   useAgentsMap: () => Record<string, Agent | undefined> | undefined;
-  /** Renders a row's text body when it has no content parts. */
-  renderMessageBody: (props: MessageBodySlotProps) => ReactNode;
+  /**
+   * Renders a row's body when it has no content parts, for a host with a body of its own. Without
+   * it a row draws the package's `MessageBody`.
+   */
+  renderMessageBody?: (props: MessageBodySlotProps) => ReactNode;
+  /**
+   * Renders the editor of a message being edited, in place of its body. Without it a message
+   * asked to edit reads as it is.
+   */
+  renderMessageEditor?: (props: MessageBodySlotProps) => ReactNode;
   /** Renders the card of a wake-up turn a background task posted. */
   renderWakeup: (props: WakeupSlotProps) => ReactNode;
   /** Renders the owner's original text of a message stored with a privacy revision. */
@@ -325,8 +337,8 @@ const fallbackHost: MessagesHost = {
   useMaximizeChatSpace: () => false,
   useFlatThread: () => true,
   useHideSelectedAuthor: () => false,
+  useSelectedSender: () => undefined,
   useAgentsMap: () => undefined,
-  renderMessageBody: () => null,
   renderWakeup: () => null,
   renderPrivateText: () => null,
   renderActivity: () => null,

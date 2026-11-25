@@ -4,6 +4,7 @@ import type { Redis, Cluster } from 'ioredis';
 import type { IEventTransport, PreemptMessage } from '~/stream/interfaces/IJobStore';
 import type { ChunkPublicationOptions } from '~/stream/internal/chunkPublication';
 import type { ReplayLimits, ReplayPublication } from '../internal/replay';
+import type { RedisFinalizationRecovery } from '../redisOutage';
 import {
   readChunkEmission,
   parseChunkEmission,
@@ -22,6 +23,7 @@ import {
 import { GenerationPublicationFencedError } from '~/stream/interfaces/IJobStore';
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 import { PUBLISH_REPLAY_LUA, READ_REPLAY_LUA } from '../internal/replay';
+import { retryRedisFinalization } from '../redisOutage';
 
 /**
  * Redis key prefixes for pub/sub channels
@@ -1750,14 +1752,17 @@ export class RedisEventTransport implements IEventTransport {
     streamId: string,
     generationId: number,
     providerExecutionId: string,
+    redisRecovery?: RedisFinalizationRecovery,
   ): Promise<boolean> {
     try {
-      await this.publisher.set(
-        KEYS.providerDrain(streamId, generationId, providerExecutionId),
-        '1',
-        'EX',
-        PROVIDER_DRAIN_TTL_SECONDS,
-      );
+      const record = () =>
+        this.publisher.set(
+          KEYS.providerDrain(streamId, generationId, providerExecutionId),
+          '1',
+          'EX',
+          PROVIDER_DRAIN_TTL_SECONDS,
+        );
+      await retryRedisFinalization(redisRecovery, record);
       return true;
     } catch (error) {
       logger.error(`[RedisEventTransport] Failed to persist provider drain proof:`, error);

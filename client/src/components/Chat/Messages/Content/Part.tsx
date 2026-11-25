@@ -1,137 +1,23 @@
 import { memo } from 'react';
-import { getAskUserQuestionPart } from '@librechat/chat';
-import { Part as ChatPart, partRenderers, extendPartRenderers } from '@librechat/chat/components';
-import {
-  Tools,
-  Constants,
-  ContentTypes,
-  hasToolCallPreview,
-  getToolCallPreviewRevision,
-} from 'librechat-data-provider';
+import { Part as ChatPart, partRenderers } from '@librechat/chat/components';
 import type { TMessageContentParts, TAttachment } from 'librechat-data-provider';
 import type { PartRenderers } from '@librechat/chat/components';
-import { ErrorMessage } from './MessageContent';
-import AskUserQuestion from './AskUserQuestion';
-import ToolApproval from './ToolApproval';
-import { SubagentCall } from './Parts';
-import WebSearch from './WebSearch';
+/** Registers the key dialog and recovery actions an error part draws through the host. */
+import '~/components/Messages/Content/Error/register';
+import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
+import { useChatApprovalHost } from './ApprovalContext';
+import { setAppApprovalHooks } from './Parts/slots';
 import './toolCallSlots';
 
-/**
- * What this app draws that the chat package's own renderers do not: the cards that read this
- * app's state (a paused question, approval controls, a subagent's agents, search results) and
- * its error message. Every other part is the package's to draw.
- */
-const renderers: PartRenderers = extendPartRenderers({
-  claim: ({ part }) => {
-    const askUserQuestion = getAskUserQuestionPart(part);
-    if (!askUserQuestion) {
-      return undefined;
-    }
-    return (
-      <AskUserQuestion
-        key={askUserQuestion.ask_user_question.actionId}
-        actionId={askUserQuestion.ask_user_question.actionId}
-        question={askUserQuestion.ask_user_question.question}
-        questions={askUserQuestion.ask_user_question.questions}
-      />
-    );
-  },
-  parts: {
-    [ContentTypes.ERROR]: ({ part }) => (
-      <ErrorMessage
-        text={
-          part[ContentTypes.ERROR] ??
-          (typeof part[ContentTypes.TEXT] === 'string'
-            ? part[ContentTypes.TEXT]
-            : part.text?.value) ??
-          ''
-        }
-        className="my-2"
-      />
-    ),
-  },
-  tools: {
-    [Constants.SUBAGENT]: ({ part, toolCall, attachments, isSubmitting, hideAttachments }) => {
-      /** `subagent_content` is the aggregated content-parts array the
-       *  backend writes onto the tool_call at message-save time so the
-       *  child's activity survives a page refresh. Not present on older
-       *  runs recorded before the persistence path existed; those fall
-       *  back to the Recoil atom (live session) or the raw tool output
-       *  inside `SubagentCall`. */
-      const persistedContent = (
-        toolCall as unknown as {
-          subagent_content?: TMessageContentParts[];
-        }
-      ).subagent_content;
-      return (
-        <SubagentCall
-          toolCallId={toolCall.id ?? ''}
-          args={toolCall.args}
-          output={toolCall.output ?? ''}
-          initialProgress={toolCall.progress ?? 0.1}
-          isSubmitting={isSubmitting}
-          runStepStatus={toolCall.runStepStatus}
-          attachments={attachments}
-          persistedContent={persistedContent}
-          contentPreview={
-            hasToolCallPreview(toolCall)
-              ? {
-                  revision: getToolCallPreviewRevision(toolCall),
-                  stepId: toolCall.stepId,
-                  agentId: part.agentId,
-                }
-              : undefined
-          }
-          subagentIdentity={toolCall.subagentIdentity}
-          hideAttachments={hideAttachments}
-        />
-      );
-    },
-    [Tools.web_search]: ({
-      toolCall,
-      attachments,
-      isSubmitting,
-      isLast,
-      hideAttachments,
-      onToolExpand,
-    }) => (
-      <WebSearch
-        args={toolCall.args}
-        output={toolCall.output ?? ''}
-        initialProgress={toolCall.progress ?? 0.1}
-        isSubmitting={isSubmitting}
-        runStepStatus={toolCall.runStepStatus}
-        attachments={attachments}
-        hideAttachments={hideAttachments}
-        isLast={isLast}
-        onExpand={onToolExpand}
-      />
-    ),
-  },
-  /**
-   * Approval controls for ANY paused agent tool, not just the generic card, so a HITL policy
-   * that gates a specialized tool (bash, code, file…) still surfaces approve/reject/edit/respond.
-   * Only while the call is unresolved (no output yet).
-   */
-  wrapTool: (card, props) => {
-    const prepared = partRenderers().wrapTool?.(card, props) ?? card;
-    const { toolCall } = props;
-    if (toolCall.approval == null || (toolCall.output?.length ?? 0) > 0) {
-      return prepared;
-    }
-    return (
-      <>
-        {prepared}
-        <ToolApproval
-          approval={toolCall.approval}
-          toolCallId={toolCall.id ?? ''}
-          args={toolCall.args}
-        />
-      </>
-    );
-  },
+/** A paused question or tool call resumes through the chat's approval host, and a question can
+ *  move into this app's composer. */
+setAppApprovalHooks({
+  useApprovalResumeHost: useChatApprovalHost,
+  useAskAnswerMode,
 });
+
+/** The chat package's renderers: this app draws every part with them. */
+export const renderers: PartRenderers = partRenderers();
 
 type PartProps = {
   part?: TMessageContentParts;
@@ -144,7 +30,7 @@ type PartProps = {
   onToolExpand?: () => void;
 };
 
-/** One content part, drawn with the chat package's renderers and this app's own over them. */
+/** One content part, drawn with the chat package's renderers. */
 const Part = memo(function Part(props: PartProps) {
   return <ChatPart {...props} renderers={renderers} />;
 });

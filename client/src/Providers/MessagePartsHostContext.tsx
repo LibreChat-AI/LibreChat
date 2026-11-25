@@ -28,6 +28,14 @@ import type { MessagesEditing } from './MessagesViewContext';
 import type { TranslationKeys } from '~/hooks';
 import type { Artifact } from '~/common';
 import {
+  getAppErrorSlots,
+  getAppContentParts,
+  getAppMarkdownSlots,
+  getAppApprovalHooks,
+  getAppPartRenderers,
+  getAppMarkdownExtensions,
+} from '~/components/Chat/Messages/Content/Parts/slots';
+import {
   useShareContext,
   useMessageContext,
   useFileMapContext,
@@ -36,11 +44,9 @@ import {
   useOptionalMessagesOperations,
 } from '~/Providers';
 import {
-  getAppContentParts,
-  getAppMarkdownSlots,
-  getAppMarkdownExtensions,
-  getAppPartRenderers,
-} from '~/components/Chat/Messages/Content/Parts/slots';
+  useAppErrorEnvironment,
+  useAppAgentBuilderAccess,
+} from '~/components/Messages/Content/Error/host';
 import { getToolCallAttachments } from '~/components/Chat/Messages/Content/toolCallAttachment';
 import { useToolCallPartQuery } from '~/data-provider/Messages/queries';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
@@ -50,6 +56,7 @@ import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { useFileDownload } from '~/data-provider/Files/queries';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import useLoadedSkill from '~/hooks/Skills/useLoadedSkill';
+import useBalanceDisplay from '~/hooks/useBalanceDisplay';
 import { chatDirectionAtom } from '~/store/chatDirection';
 import { showThinkingAtom } from '~/store/showThinking';
 import { reportBoundaryError } from '~/lib/rum/logs';
@@ -220,6 +227,13 @@ export const appMessagePartsHost: MessagePartsHost = {
   onBoundaryError: (boundary, error) => reportBoundaryError(boundary, error),
   markdownExtensions: getAppMarkdownExtensions,
   useToolCallPart: useToolCallPartQuery,
+  useErrorEnvironment: useAppErrorEnvironment,
+  useAgentBuilderAccess: useAppAgentBuilderAccess,
+  useBalanceDisplay,
+  renderSetKeyDialog: (props) => getAppErrorSlots()?.renderSetKeyDialog(props) ?? null,
+  renderErrorActions: (props) => getAppErrorSlots()?.renderErrorActions(props) ?? null,
+  useApprovalResumeHost: () => getAppApprovalHooks().useApprovalResumeHost(),
+  useAskAnswerMode: (conversationId) => getAppApprovalHooks().useAskAnswerMode(conversationId),
 };
 
 setDefaultMessagePartsHost(appMessagePartsHost);

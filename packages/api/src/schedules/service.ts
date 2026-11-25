@@ -57,6 +57,7 @@ import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { ScheduledMCPBearerError } from '../mcp/errors';
 import { startScheduleErasureSweep } from './erasure';
 import { getBalanceConfig } from '../app/config';
+import { isTopologySafeToArm } from './topology';
 import { waitUntilDeadline } from '~/mcp/utils';
 import { startScheduleEngine } from './engine';
 import { withCapacitySlot } from './capacity';
@@ -81,24 +82,6 @@ const QUIESCE_SETTLE_ERRORS: Partial<Record<ScheduleRunOutcomeStatus, string>> =
 
 /** Short schedule-document fence spanning capacity admission -> approval CAS. */
 const SCHEDULE_RESUME_LEASE_MS = 60_000;
-
-/**
- * Whether this process may arm the scheduler at all.
- *
- * v1 is single-process by design, but the standard entrypoint runs
- * `initializeScheduleEngine` in EVERY replica and nothing stops an operator from scaling
- * it. That is only safe when replicas can see each other's generations: a shared stream
- * store (Redis) gives every replica the same job view, so reconciliation and
- * deletion-time aborts reach the run's real owner. With the process-local store a peer
- * sees the globally visible `started` row but no job, and after the orphan cutoff it
- * marks a still-running generation interrupted and frees its capacity slot.
- *
- * A single replica with the in-memory store is perfectly safe, but a process cannot
- * observe its own replica count, so that case needs an explicit operator assertion.
- */
-function isTopologySafeToArm(): boolean {
-  return GenerationJobManager.isRedis || isEnabled(process.env.SCHEDULES_SINGLE_PROCESS);
-}
 
 /** Whether a persisted job still carries a given scheduled occurrence's identity. */
 function jobMatchesIdentity(
@@ -310,13 +293,21 @@ export interface SchedulesService {
    *  entrypoint does not start it. Returns undefined when index creation failed, or when
    *  the topology cannot be shown safe (process-local job store with no single-process
    *  assertion) — see isTopologySafeToArm. */
-  initializeScheduleEngine: () => Promise<ReturnType<typeof startScheduleEngine> | undefined>;
+  initializeScheduleEngine: (
+    options?: ScheduleLoopOptions,
+  ) => Promise<ReturnType<typeof startScheduleEngine> | undefined>;
   /** Starts bounded maintenance for an entrypoint that never arms the engine (the
    *  clustered worker). Idempotent per process and a no-op once the full engine is armed.
    *  Replays terminal permanent-MCP bookkeeping but never claims, fires, advances, or
    *  infers owner death from a process-local missing job. See startScheduleErasureSweep. */
-  initializeScheduleErasureSweep: () => void;
-  reconcileRetainedJobs: () => Promise<void>;
+  initializeScheduleErasureSweep: (options?: ScheduleLoopOptions) => void;
+  reconcileRetainedJobs: () => Promise<number>;
+}
+
+/** What the host tells the fallback maintenance loop when it starts it. */
+export interface ScheduleLoopOptions {
+  /** The deployment-wide `eventDriven.idlePolling.maxIntervalMs`, when configured. */
+  idleCeilingMs?: number;
 }
 
 /** A replaced/foreign generation cannot receive an old denial or model-visible result. */
@@ -1012,11 +1003,12 @@ export function createSchedulesService(
    * elsewhere, or a failed one-shot erase) would retain the hidden prompt forever.
    * The engine's own reconcile pass covers this when armed, so never run both.
    */
-  function startErasureFallback(): void {
+  function startErasureFallback(options: ScheduleLoopOptions = {}): void {
     if (erasureSweep != null || engine != null) {
       return;
     }
     erasureSweep = startScheduleErasureSweep({
+      idleCeilingMs: options.idleCeilingMs,
       methods,
       getJobStatus: engineDeps.getJobStatus,
       // Positive-evidence delivery convergence: a dead delivery settles its reservation
@@ -1036,9 +1028,15 @@ export function createSchedulesService(
     });
   }
 
-  async function initializeScheduleEngine(): Promise<
-    ReturnType<typeof startScheduleEngine> | undefined
-  > {
+  /** A delete that leaves its row `deleting` is the fallback sweep's to converge, and the sweep may be
+   *  backed off while nothing else is pending. A no-op when the armed engine owns erasure. */
+  function leaveToErasureSweep(): void {
+    erasureSweep?.hint();
+  }
+
+  async function initializeScheduleEngine(
+    options: ScheduleLoopOptions = {},
+  ): Promise<ReturnType<typeof startScheduleEngine> | undefined> {
     if (engine != null) {
       return engine;
     }
@@ -1067,7 +1065,7 @@ export function createSchedulesService(
           'SCHEDULES_SINGLE_PROCESS=true to assert this deployment runs exactly one replica. ' +
           'Schedule writes are refused (503) until then.',
       );
-      startErasureFallback();
+      startErasureFallback(options);
       return undefined;
     }
     try {
@@ -1077,7 +1075,7 @@ export function createSchedulesService(
         '[schedules] index creation failed — scheduler NOT started (fires need the unique idempotency index):',
         err,
       );
-      startErasureFallback();
+      startErasureFallback(options);
       return undefined;
     }
     engine = startScheduleEngine(engineDeps);
@@ -1096,8 +1094,8 @@ export function createSchedulesService(
    * between the run-row transition and card projection. It shares startErasureFallback's
    * idempotent startup guard and topology-fenced owner-death policy, and never fires work.
    */
-  function initializeScheduleErasureSweep(): void {
-    startErasureFallback();
+  function initializeScheduleErasureSweep(options: ScheduleLoopOptions = {}): void {
+    startErasureFallback(options);
   }
 
   /**
@@ -1303,11 +1301,13 @@ export function createSchedulesService(
     });
   }
 
-  /** The job outbox survives both owner death and a crash after Mongo bookkeeping. */
-  async function reconcileRetainedJobs(): Promise<void> {
+  /** The job outbox survives both owner death and a crash after Mongo bookkeeping. Resolves how many
+   *  retained jobs it examined, so the fallback sweep can tell an empty outbox from a busy one. */
+  async function reconcileRetainedJobs(): Promise<number> {
     const store = GenerationJobManager.getJobStore();
-    if (!store?.getScheduleReconcileJobs) return;
-    for (const held of await store.getScheduleReconcileJobs(100)) {
+    if (!store?.getScheduleReconcileJobs) return 0;
+    const retained = await store.getScheduleReconcileJobs(100);
+    for (const held of retained) {
       let job = held;
       if (job.terminalPersistencePending === true) {
         try {
@@ -1392,6 +1392,7 @@ export function createSchedulesService(
         logger.warn('[schedules] retained outcome recovery deferred:', error);
       }
     }
+    return retained.length;
   }
 
   const OUTCOME_RETRY_ATTEMPTS = 3;
@@ -2305,10 +2306,14 @@ export function createSchedulesService(
         }
       }
       if (remaining > 0) {
+        leaveToErasureSweep();
         return 'unconfirmed';
       }
     }
-    if (await cleanupStillPending(cleanupPending)) return 'unconfirmed';
+    if (await cleanupStillPending(cleanupPending)) {
+      leaveToErasureSweep();
+      return 'unconfirmed';
+    }
     const erased = await eraseSettledSchedule(scheduleId).catch((err) => {
       logger.warn(`[schedules] erase failed for ${scheduleId}:`, err);
       return false;
@@ -2319,6 +2324,7 @@ export function createSchedulesService(
     // eraseScheduleIfDrained already returns true when the row was concurrently
     // erased or is absent. A false result therefore means the deleting row is still
     // protected by a live lease/run, or the erase could not be confirmed.
+    leaveToErasureSweep();
     return 'draining';
   }
 

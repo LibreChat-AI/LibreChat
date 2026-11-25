@@ -265,9 +265,115 @@ const renderers = extendPartRenderers({
 />;
 ```
 
-Four things have no card in the package yet, because LibreChat's read its own state: an error
-part, a paused question (`claim`), and the subagent and web search tools, which draw as generic
-tool cards until a host supplies them.
+An error part draws the package's `ErrorMessage`; see [Errors](#errors). A web search draws the
+package's card, with the message's streaming results from `SearchContext` and the image, shopping
+and place strips under it. A subagent call draws the package's card: it finds the agent it runs as
+through the messages host's `useAgentsMap`, and the share, strings and run's files through the
+parts host's `useShare` and `useToolCallChrome`. A paused question and the approval controls are
+the package's too; see [Paused runs](#paused-runs).
+
+### Paused runs
+
+A run that pauses for the reader draws its own controls: a paused question claims its part and is
+answered in its card, and a tool call paused for approval gets approve, reject, edit and respond
+controls under whatever card draws it. The answer resumes the run through an
+`ApprovalResumeHost`: the conversation's fields and the requests that send a decision or an answer.
+A host supplies it with the optional `useApprovalResumeHost` member of its parts host, or with an
+`ApprovalResumeHostProvider` above the messages:
+
+```tsx
+const host = { ...rest, useApprovalResumeHost: () => resumeHost };
+```
+
+Without either, the controls still draw, disabled, and say the request cannot be answered from
+there. A host whose composer can take a question over adds `useAskAnswerMode(conversationId)`;
+without it a question is answered in its card. `ToolApproval` and `PausedQuestion` are exported
+for a host that draws a pause elsewhere, such as a review panel.
+
+### A whole message
+
+`ContentParts` draws all of a message's parts in order. It folds runs of tool calls into groups
+and finished work into activity phases, lays agents that ran side by side out in columns, keeps
+each file beside the call that wrote it, and holds the streaming cursor on the last thing shown:
+
+```tsx
+import { ContentParts } from '@librechat/chat/components';
+
+<ContentParts
+  content={message.content}
+  messageId={message.messageId}
+  conversationId={conversationId}
+  attachments={attachments}
+  isCreatedByUser={false}
+  isLast
+  isSubmitting={isStreaming}
+  isLatestMessage
+  showThinking={false}
+/>;
+```
+
+That is enough to draw a message. What a host adds goes in `slots`, one object that must stay the
+same for the life of the tree (two of its members are hooks):
+
+| Slot                         | What it adds                                                       | Without it                                  |
+| ---------------------------- | ------------------------------------------------------------------ | ------------------------------------------- |
+| `renderers`                  | The host's part table, from `extendPartRenderers`                  | The package's cards                         |
+| `renderApp`                  | One MCP App as a row after the part whose call returned it         | No App rows                                 |
+| `useAppsEnabled`             | A hook: whether the reader may run MCP Apps                        | `renderApp` alone decides                   |
+| `renderAppViews`             | The MCP Apps among the files of a tool group or a phase            | Those files draw as files only              |
+| `renderWorkspaceChanges`     | The files an agent changed in a stateful workspace, once a message | They stay beside the calls that wrote them  |
+| `renderEdit`                 | The message in edit mode                                           | A message asked to edit draws read-only     |
+| `renderSources`              | Web search sources above a reply that splits into columns          | No sources row                              |
+| `renderColumnHeader`         | The header of one column                                           | Columns have no header                      |
+| `useSubagentAttachmentCalls` | A hook that asks which subagent transcript holds a late file       | The file stays with the call matching by id |
+
+The package's own surfaces that nest a message, such as a subagent's transcript, draw it through
+the host's `renderContentParts`. A host that leaves it out gets `ContentParts` with no slots
+there. To give those surfaces the same slots, build the member from them:
+
+```tsx
+import { contentPartsRenderer } from '@librechat/chat/components';
+
+const host = { ...rest, renderContentParts: contentPartsRenderer(slots) };
+```
+
+### A message with no content parts
+
+A prompt, and a reply stored as plain text, have no content parts: the row draws their text with
+`MessageBody`. A prompt keeps its line breaks, or renders as light markdown when the reader turned
+that on (`useUserTextPreferences`), and collapses when long if the reader asked for that; a
+reply's text is markdown, with any thinking it carries drawn apart. A failed message draws its
+error card, and a reply that stopped early says so once it is no longer generating.
+
+A host with a body of its own names it with `renderMessageBody` on the messages host. Editing a
+message needs the host's editor, `renderMessageEditor`; without one a message asked to edit reads
+as it is. `ContentRow` draws a message with no content parts this way too, read-only, so an app
+can draw any message with it.
+
+### An app outside LibreChat, checked
+
+[`e2e/outside-host`](../../e2e/outside-host) is such an app: a page built with plain Vite that
+draws recorded conversations with this package, `@librechat/client`, `standalone.css` and the
+shipped strings, and no LibreChat code. Its `host.tsx` fills every member of the parts host with
+what an app that has no server knows. The mock browser lane draws each of its conversations in
+LibreChat's chat view and on that page and compares the two element by element
+(`outside-host.spec.ts`). What the package cannot draw the same way yet is listed there, each
+with the change that closes it.
+
+## Errors
+
+A failed reply draws as `ErrorMessage`: the box, the card for the failure's persisted text
+(`ErrorText`), and under it whatever the host offers a reader to do about it. Every error the
+server persists has a sentence of its own, so a host that supplies nothing still shows the right
+copy; what only the host knows comes from five optional members of `MessagePartsHost`:
+
+| Member                  | What it adds                                                                             | Without it                                                                     |
+| ----------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `useErrorEnvironment`   | The chat's conversation, the transcript's agents, the endpoint configuration, compaction | The error names its row only; key ownership is unknown, so the copy is generic |
+| `useAgentBuilderAccess` | Whether the reader may open the agent builder                                            | An agent error never claims the reader can edit the agent                      |
+| `useBalanceDisplay`     | How balances are shown: credits, a currency, or a share                                  | Balances read in credits                                                       |
+| `renderSetKeyDialog`    | The dialog for the reader's own key, opened from a key error                             | A key error offers no button                                                   |
+| `renderErrorActions`    | What a reader can do about the failure, drawn in the box under its text                  | The error stands alone                                                         |
 
 ## What the app supplies
 

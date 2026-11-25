@@ -237,8 +237,9 @@ interface:
   # hides them. When false, a CUSTOM_FOOTER still renders there, as it does in conversations.
   # landingFooter: true
   # Which responses show the author's avatar and name above their content (default: always).
-  # 'whenDifferent' drops them when the header's model selector already shows that agent; a
-  # response from another agent keeps them. The name stays available to screen readers.
+  # 'whenDifferent' drops them when the header's model selector already shows that agent, model
+  # spec or model; a response from another agent or model spec keeps them. The name stays
+  # available to screen readers.
   # messageAuthor: always
   # Show the endpoint, agent or assistant icon on each sidebar chat history row (default: true).
   # Set to false when every chat uses the same agent and the icon is noise. A running or unread
@@ -952,6 +953,9 @@ endpoints:
   #   # (optional) Maximum explicit subagents per agent, for both the flat list and
   #   # graph definitions. Defaults to 10; hard cap 50.
   #   maxSubagents: 20
+  #   # (optional) A self-spawned copy of an agent keeps that agent's subagents and can
+  #   # delegate to them. Defaults to true; false leaves the copy with the agent's tools only.
+  #   subagentSelfNesting: true
   #   # (optional) Shared files during an active agent run. Each delegating agent must
   #   # also opt in with subagents.shareFiles. Inputs are read-only; outputs stay
   #   # private until explicitly published. Published files remain downloadable.
@@ -983,7 +987,7 @@ endpoints:
   #   # Both require WEB_SEARCH.USE, seeded by interface.webSearch. See UPGRADING.md.
   #   capabilities: ["deferred_tools", "execute_code", "file_search", "web_search", "artifacts", "subagents", "actions", "context", "skills", "memory", "ask_user_question", "tools", "ocr"]
   #   # The following capabilities are opt-in and must be added explicitly:
-  #   # "programmatic_tools", "stateful_code_sessions", "run_in_background", "tool_intents"
+  #   # "programmatic_tools", "stateful_code_sessions", "run_in_background", "tool_intents", "subagent_graphs"
   #   # "stateful_code_sessions" is highly experimental and may change substantially.
   #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
   #   statefulCodeSessions:
@@ -1086,6 +1090,22 @@ endpoints:
   #   # uses its own bound listener; override only for an internal TLS/front-door route.
   #   eventDriven:
   #     # selfUrl: 'https://librechat.internal'
+  #     # Idle polling: the background loops that look for work a crashed process or another replica
+  #     # left behind (agent delivery claims and maintenance, queued-turn recovery, code-environment
+  #     # reconciliation, the MCP authorization retry and the scheduled-chat erasure sweep) back off
+  #     # while they find nothing to do, each up to its own default ceiling of 15 seconds to 20
+  #     # minutes.
+  #     # maxIntervalMs (1000 to 3600000) replaces all of those ceilings with one, for example 900000
+  #     # on a single-instance deployment that wants the fewest idle database reads. A loop never
+  #     # waits less than its own interval, so a low value keeps every loop at its base cadence. A
+  #     # longer ceiling slows the pickup of work another process left behind. Work started in this
+  #     # process still pulls its loop in: agent delivery, queued-turn recovery and maintenance wake
+  #     # at once, while the code-environment reconciler, the MCP authorization retry and the erasure
+  #     # sweep look again within their own base interval. It takes effect on restart and, while
+  #     # set, replaces deliveryMaxIntervalMs, queuedTurnMaxIntervalMs and maintenanceMaxIntervalMs.
+  #     # completionWaitMaxIntervalMs keeps its own cap.
+  #     # idlePolling:
+  #     #   maxIntervalMs: 900000
   #   # (optional) Automatic conversational delivery for supported completed background tasks.
   #   # Enabled by default; set false to keep background tools and subagents poll-only.
   #   backgroundTasks:

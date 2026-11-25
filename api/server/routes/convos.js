@@ -43,6 +43,7 @@ const {
   createFileExclusionHandler,
   createFileExclusionReadHandler,
   createGetConversationHandler,
+  createSavedSpecTargetResolver,
   resolveImportMaxFileSize,
   restoreTenantContextFromReq,
   deleteAllSharedLinksWithCleanup,
@@ -71,7 +72,8 @@ const { forkConversation, duplicateConversation } = require('~/server/utils/impo
 const { storage, importFileFilter } = require('~/server/routes/files/multer');
 const requireJwtAuth = require('~/server/middleware/requireJwtAuth');
 const { importConversations } = require('~/server/utils/import');
-const { getAppConfig } = require('~/server/services/Config');
+const { getAppConfig, getEndpointsConfig } = require('~/server/services/Config');
+const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
 const {
   pendingBackgroundToolCompletions,
@@ -345,7 +347,16 @@ router.get('/:parentConversationId/subagents/:threadId', subagentThreadViewHandl
 
 router.get(
   '/:conversationId',
-  createGetConversationHandler({ getConvo: db.getConvo, jobs: GenerationJobManager, logger }),
+  createGetConversationHandler({
+    getConvo: db.getConvo,
+    jobs: GenerationJobManager,
+    logger,
+    resolveTarget: createSavedSpecTargetResolver({
+      getAppConfig,
+      getEndpointsConfig,
+      getEndpointModelsConfig,
+    }),
+  }),
 );
 
 router.get(

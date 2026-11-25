@@ -87,7 +87,13 @@ export interface IScheduleDocument extends Omit<ISchedule, 'id' | '_id'>, Docume
 export interface IScheduleRun {
   mcp?: ScheduleMCPOutcome[];
   _id?: Types.ObjectId;
+  /** The schedule's id. Every schedule row holds it; a row of another kind holds none, and
+   *  the schedule methods never read one (their queries name `kind: null`). */
   scheduleId: string;
+  /** Whose run the row records, where that is not a schedule. */
+  kind?: 'subscription';
+  /** That subject's id, on a row that holds a `kind`. */
+  subject?: string;
   user: Types.ObjectId;
   tenantId?: string;
   scheduledFor: Date;
@@ -135,6 +141,8 @@ export interface IScheduleRun {
   /** When reconciliation last examined this row; rotates each bounded non-terminal
    *  window so no abandoned row can starve behind a full batch of live runs. */
   reconciledAt?: Date;
+  jobCreatedAt?: Date;
+  counted?: boolean;
   resumeClaimedAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;

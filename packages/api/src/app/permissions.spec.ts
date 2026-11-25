@@ -128,6 +128,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
     };
 
     const expectedPermissionsForAdmin = {
@@ -190,6 +194,10 @@ describe('updateInterfacePermissions - permissions', () => {
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
       },
     };
 
@@ -348,6 +356,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
     };
 
     const expectedPermissionsForAdmin = {
@@ -410,6 +422,10 @@ describe('updateInterfacePermissions - permissions', () => {
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
       },
     };
 
@@ -524,6 +540,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
     };
 
     const expectedPermissionsForAdmin = {
@@ -586,6 +606,10 @@ describe('updateInterfacePermissions - permissions', () => {
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
       },
     };
 
@@ -713,6 +737,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
     };
 
     const expectedPermissionsForAdmin = {
@@ -775,6 +803,10 @@ describe('updateInterfacePermissions - permissions', () => {
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
       },
     };
 
@@ -889,6 +921,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
     };
 
     const expectedPermissionsForAdmin = {
@@ -951,6 +987,10 @@ describe('updateInterfacePermissions - permissions', () => {
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
       },
     };
 
@@ -1070,6 +1110,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
     };
 
     const expectedPermissionsForAdmin = {
@@ -1120,6 +1164,10 @@ describe('updateInterfacePermissions - permissions', () => {
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
       },
     };
 
@@ -1256,6 +1304,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
     };
 
     const expectedPermissionsForAdmin = {
@@ -1310,6 +1362,10 @@ describe('updateInterfacePermissions - permissions', () => {
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
       },
     };
 
@@ -2943,6 +2999,36 @@ describe('updateInterfacePermissions - permissions', () => {
     });
   });
 
+  it('turns agent event subscriptions on only where the operator does', async () => {
+    mockGetRoleByName.mockResolvedValue(null);
+    const seed = async (config: object) => {
+      mockUpdateAccessPermissions.mockClear();
+      const configDefaults = { interface: {} } as TConfigDefaults;
+      const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
+      await updateInterfacePermissions({
+        appConfig: { config, interfaceConfig } as unknown as AppConfig,
+        getRoleByName: mockGetRoleByName,
+        updateAccessPermissions: mockUpdateAccessPermissions,
+      });
+      return Object.fromEntries(
+        mockUpdateAccessPermissions.mock.calls.map((call) => [
+          call[0],
+          call[1][PermissionTypes.AGENT_EVENTS],
+        ]),
+      );
+    };
+    const off = { [Permissions.USE]: false, [Permissions.CREATE]: false };
+    expect(await seed({ interface: {} })).toEqual({
+      [SystemRoles.ADMIN]: off,
+      [SystemRoles.USER]: off,
+    });
+    const on = { [Permissions.USE]: true, [Permissions.CREATE]: true };
+    expect(await seed({ interface: { agentEvents: { use: true, create: true } } })).toEqual({
+      [SystemRoles.ADMIN]: on,
+      [SystemRoles.USER]: on,
+    });
+  });
+
   it('does not re-enable a DB-disabled schedules permission when only runtime limits are configured', async () => {
     // The role already has schedules USE disabled in the DB.
     mockGetRoleByName.mockResolvedValue({
@@ -3066,11 +3152,20 @@ describe('updateInterfacePermissions - web search recovery', () => {
 describe('updateInterfacePermissions - native web search warning', () => {
   const nativeSpec = { name: 'gpt-native', label: 'GPT', preset: { web_search: true } };
 
-  const run = async (webSearch: boolean | undefined, list: unknown[] = [nativeSpec]) => {
+  const run = async (
+    webSearch: boolean | undefined,
+    list: unknown[] = [nativeSpec],
+    endpoints?: unknown,
+  ) => {
     const config = { interface: webSearch === undefined ? {} : { webSearch } };
     const configDefaults = { interface: {} } as TConfigDefaults;
     const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
-    const appConfig = { config, interfaceConfig, modelSpecs: { list } } as unknown as AppConfig;
+    const appConfig = {
+      config,
+      interfaceConfig,
+      endpoints,
+      modelSpecs: { list },
+    } as unknown as AppConfig;
     await updateInterfacePermissions({
       appConfig,
       getRoleByName: mockGetRoleByName,
@@ -3126,6 +3221,82 @@ describe('updateInterfacePermissions - native web search warning', () => {
     }));
     await run(true);
     expect(nativeWarnings()).toHaveLength(0);
+  });
+
+  describe('effective endpoint settings', () => {
+    const customSpec = (preset: Record<string, unknown> = {}) => ({
+      name: 'router-spec',
+      label: 'Router',
+      preset: { endpoint: 'Router', model: 'router-model', ...preset },
+    });
+    const custom = (params: Record<string, unknown>) => ({
+      custom: [{ name: 'Router', apiKey: 'key', baseURL: 'https://router.test', ...params }],
+    });
+    const searchDefault = (value: unknown) => ({
+      customParams: { paramDefinitions: [{ key: 'web_search', default: value }] },
+    });
+
+    it.each([
+      ['addParams turns it on', custom({ addParams: { web_search: true } })],
+      ['a customParams default turns it on', custom(searchDefault(true))],
+    ])('warns when %s for a spec that leaves it unset', async (_label, endpoints) => {
+      await run(false, [customSpec()], endpoints);
+      const warnings = nativeWarnings();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0][0]).toContain('router-spec');
+    });
+
+    it.each([
+      [
+        'addParams turns it off',
+        customSpec({ web_search: true }),
+        custom({ addParams: { web_search: false } }),
+      ],
+      [
+        'dropParams removes it',
+        customSpec({ web_search: true }),
+        custom({ dropParams: ['web_search'] }),
+      ],
+      [
+        'the preset overrides a default',
+        customSpec({ web_search: false }),
+        custom(searchDefault(true)),
+      ],
+      ['a default is not a boolean', customSpec(), custom(searchDefault('true'))],
+      ['the endpoint has no search setting', customSpec(), custom({})],
+    ])('does not warn when %s', async (_label, spec, endpoints) => {
+      await run(false, [spec], endpoints);
+      expect(nativeWarnings()).toHaveLength(0);
+    });
+
+    it('applies the Azure group serving the spec model', async () => {
+      const azureOpenAI = {
+        modelGroupMap: { 'gpt-search': { group: 'search' }, 'gpt-plain': { group: 'plain' } },
+        groupMap: {
+          search: { addParams: { web_search: true } },
+          plain: { dropParams: ['web_search'] },
+        },
+      };
+      const azureSpec = (name: string, model: string, preset: Record<string, unknown> = {}) => ({
+        name,
+        label: name,
+        preset: { endpoint: 'azureOpenAI', model, ...preset },
+      });
+
+      await run(
+        false,
+        [
+          azureSpec('azure-search', 'gpt-search'),
+          azureSpec('azure-plain', 'gpt-plain', { web_search: true }),
+        ],
+        { azureOpenAI },
+      );
+
+      const warnings = nativeWarnings();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0][0]).toContain('azure-search');
+      expect(warnings[0][0]).not.toContain('azure-plain');
+    });
   });
 });
 

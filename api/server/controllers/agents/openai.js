@@ -2,6 +2,7 @@ const { nanoid } = require('nanoid');
 const { logger } = require('@librechat/data-schemas');
 const { Callback, formatAgentMessages } = require('@librechat/agents');
 const {
+  hasSubagentCapability,
   EModelEndpoint,
   ResourceType,
   PermissionBits,
@@ -32,6 +33,7 @@ const {
   createSafeUser,
   validateRequest,
   initializeAgent,
+  assertAgentModelAllowed,
   getBalanceConfig,
   injectSkillPrimes,
   extractManualSkills,
@@ -115,7 +117,6 @@ const { getEndpointModelsConfig } = require('~/server/controllers/ModelControlle
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { resolveConfigServers } = require('~/server/services/MCP');
 const { getMCPManager } = require('~/config');
-const { logViolation } = require('~/cache');
 const db = require('~/models');
 
 const filterFilesByRemoteAgentAccess = (params) =>
@@ -273,11 +274,11 @@ function handleExecutionError({ error, res, context, appConfig }) {
       error.body.error,
     );
   }
-  const errorMetadata = getAgentErrorMetadata(error);
+  const errorMetadata = getAgentErrorMetadata(error, protectionEnabled);
   const statusCode = errorMetadata?.status ?? 500;
   const errorType =
     statusCode >= 400 && statusCode < 500 ? 'invalid_request_error' : 'server_error';
-  const errorCode = !protectionEnabled ? (errorMetadata?.code ?? null) : null;
+  const errorCode = errorMetadata?.code ?? null;
   sendErrorResponse(res, statusCode, errorMessage, errorType, errorCode);
 }
 
@@ -491,6 +492,8 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         );
       }
 
+      const getEndpointModels = (endpoint) => getEndpointModelsConfig(req, endpoint);
+      await assertAgentModelAllowed({ agent, getEndpointModels });
       req.turnStartedAt = envelope.receivedAt;
       const { decision: codeEnvironmentDecision, conversation: admittedConversation } =
         await resolveAdmittedCodeEnvironmentDecision({
@@ -716,7 +719,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       let handoffAgentConfigs = new Map();
       let discoveredEdges = [];
       let discoveredMCPAuthMap;
-      const subagentsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.subagents);
+      const subagentsCapabilityEnabled = hasSubagentCapability([...enabledCapabilities]);
       const primaryHasGraphSubagents =
         subagentsCapabilityEnabled &&
         primaryConfig.subagents?.enabled === true &&
@@ -729,7 +732,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           primaryConfig,
           endpointOption,
           allowedProviders,
-          getEndpointModels: (endpoint) => getEndpointModelsConfig(req, endpoint),
+          getEndpointModels,
           loadTools,
           requestFiles: [],
           conversationId,
@@ -782,7 +785,6 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
             );
             return hasPermissions(permissions, requiredPermission);
           },
-          logViolation,
           db: dbMethods,
           onAgentInitialized: (loadedAgentId, loadedAgent, config) => {
             agentToolContexts.set(

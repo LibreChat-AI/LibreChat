@@ -143,6 +143,7 @@ export async function loadDefaultInterface({
     peoplePicker: interfaceConfig?.peoplePicker,
     marketplace: interfaceConfig?.marketplace,
     remoteAgents: interfaceConfig?.remoteAgents,
+    agentEvents: interfaceConfig?.agentEvents,
     skills: interfaceConfig?.skills,
     sharedLinks: interfaceConfig?.sharedLinks,
     schedules: interfaceConfig?.schedules,

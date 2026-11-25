@@ -17,6 +17,7 @@ import {
   EVENT_ACTOR_DETACHED_COMPLETION_TYPE,
   parseAgentEventActorDetachedCompletion,
 } from './detachedAction';
+import { SUBSCRIPTION_SOURCE } from '~/agents/authority/context';
 import { readRunTrigger } from '~/agents/authority/trigger';
 import { dispatchAgentTrigger } from './dispatch';
 
@@ -804,6 +805,14 @@ async function startRun(
               ...(run?.metadata !== undefined && {
                 metadata: run.metadata,
               }),
+              /** What a subscription's event was about, for the turn's first message and
+               * the model. The router wrote this payload from the bounded catalog fields, so
+               * unlike an outside sender's payload it cannot outgrow the chat route's body
+               * limit; the route reads each field again before keeping it. */
+              ...(envelope.event.source.type === SUBSCRIPTION_SOURCE &&
+                envelope.event.payload != null && {
+                  detail: envelope.event.payload,
+                }),
             },
           }),
           ...(run?.conversationId != null && {

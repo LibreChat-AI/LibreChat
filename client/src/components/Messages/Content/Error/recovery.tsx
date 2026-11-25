@@ -2,6 +2,7 @@ import { useContext, useRef } from 'react';
 import { useStore } from 'jotai';
 import { useRecoilCallback } from 'recoil';
 import { useToastContext } from '@librechat/client';
+import { ErrorAction, ErrorActions } from '@librechat/chat/components';
 import {
   ForkOptions,
   ContentTypes,
@@ -10,13 +11,20 @@ import {
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
 import {
+  isCountLimitError,
+  isAttachmentError,
+  collectOlderFileIds,
+  mayBeAttachmentError,
+  findAttachmentRecovery,
+} from '@librechat/chat';
+import {
   pendingQuotesByConvoId,
   getReasoningStateKey,
   pendingManualSkillsByConvoId,
   pendingReasoningOverrideFamily,
 } from '@librechat/chat/react';
+import type { AttachmentRecovery } from '@librechat/chat';
 import type { TMessage } from 'librechat-data-provider';
-import type { AttachmentRecovery } from './attachments';
 import type { TranslationKeys } from '~/hooks';
 import {
   useMessagesIsSubmitting,
@@ -24,13 +32,6 @@ import {
   useOptionalMessagesOperations,
   useOptionalMessagesConversation,
 } from '~/Providers/MessagesViewContext';
-import {
-  isCountLimitError,
-  isAttachmentError,
-  collectOlderFileIds,
-  mayBeAttachmentError,
-  findAttachmentRecovery,
-} from './attachments';
 import {
   useForkConvoMutation,
   useFileExclusionQuery,
@@ -41,7 +42,6 @@ import { useMessageContext } from '~/Providers/MessageContext';
 import { useLocalize, useNavigateToConvo } from '~/hooks';
 import { isSubmittableMessage } from '~/utils/messages';
 import { ChatContext } from '~/Providers/ChatContext';
-import { ErrorAction, ErrorActions } from './parts';
 import store from '~/store';
 
 /** What the card says the actions do, matched to the ones it offers. */

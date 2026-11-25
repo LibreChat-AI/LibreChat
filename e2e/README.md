@@ -94,18 +94,44 @@ npm run e2e:mock:redis
 
 Memory mode explicitly disables Redis. Redis mode defaults to database 15 with a `LibreChatE2E` key prefix, and fails closed: the test server pings Redis and verifies that the generation job manager did not silently fall back to memory. Override `REDIS_URI` or `E2E_REDIS_KEY_PREFIX` when needed.
 
-Pull request CI runs the complete mock suite in memory mode across fifteen shards, plus a
+Pull request CI runs the complete mock suite in memory mode across forty shards, plus a
 focused Redis transport suite across two. The Redis suite covers streaming fidelity, steering,
 interrupts, resumptions, HITL approvals, completion, thread folding, model icons, and usage:
 
 ```sh
-npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/15
+npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/40
 npm run e2e:mock:redis:transport
 ```
 
 The nightly schedule and manual workflow dispatch run the complete mock suite in both stream
-modes, across fifteen memory shards and ten Redis shards. Every shard keeps one worker so tests do not contend for its
-authenticated user and database.
+modes, across forty memory shards and ten Redis shards.
+
+The mock config runs one worker unless you pass `--workers`:
+
+```sh
+npx playwright test --config=e2e/playwright.config.mock.ts --project=chromium --workers=4 sidebar bookmarks
+npx playwright test --config=e2e/playwright.config.mock.ts --project=chromium-serial sidebar bookmarks
+```
+
+- Global setup signs in one account per worker (`e2e/setup/global-setup.mock.ts`), each with
+  the role of worker 0's account, which is the deployment's first and so an admin.
+  `getE2EUser()` and `getSecondaryE2EUser()` return the account of the worker they run in, and
+  the config points each worker's `storageState` at its own file. Worker 0 keeps
+  `testuser@example.com`, so a one-worker run uses the accounts it always has.
+- A spec file is the unit of parallelism (`fullyParallel: false`): its tests run in order on one
+  worker.
+- Spec files that change what every worker sees belong to a second project, `<profile>-serial`
+  (`chrome-serial` in CI): specs that spawn tooling, rewrite the server's base config, override
+  config for a whole role or group, or set, reset or read a fake harness server's behavior and
+  request log (label, code, RAG, assistants, git host, Flux, MCP app), which every worker's
+  requests share, or start the management OIDC fixture, whose one port, user and tenant every
+  management spec uses. `e2e/setup/serial.ts` finds them by those patterns, so a new spec that does
+  any of this is serial without being listed. A spec that touches only its user's data, a
+  tenant of its own, or a throwaway account runs beside any other. With one worker the serial
+  project simply runs last. With more, run the two projects as two commands, as above: in one
+  command Playwright can start the first serial file while the last parallel one is still
+  running. The second command replaces the first one's HTML report and test results, so open or
+  copy them in between.
 
 CI retries a failed test, twice on the memory shards and three times on the Redis transport
 suite, so the report carries a trace of each failed attempt and shows whether the failure
@@ -118,12 +144,12 @@ to the least-loaded shard by recorded seconds. A spec with no recorded time is e
 test count, so new specs need nothing.
 
 The timings keep themselves current. On each push to `dev`, `.github/workflows/playwright-timings.yml`
-rebuilds them from the three most recent green runs on `dev` and saves the result to the Actions
-cache. The `Shard timings` job of a later run restores the newest entry once and hands the same
-copy to every shard, because shards that planned from different timings would run a spec twice
-or not at all. `e2e/timings.mock.json` is the fallback whenever no entry can be read, such as
-the nightly on the default branch or an evicted cache, so it only needs rebuilding if those runs
-drift apart. Rebuilding it is the command the workflow runs: each shard's report artifact
+rebuilds them from the three most recent green runs on `dev` and publishes the result as an
+`e2e-shard-timings` artifact, kept for 90 days. The `Shard timings` job of a later run on any
+branch, stacked pull requests and the nightly included, downloads the newest one built on `dev`
+and hands the same copy to every shard, because shards that planned from different timings would
+run a spec twice or not at all. `e2e/timings.mock.json` is the fallback whenever no artifact can be
+read, so it only needs rebuilding if the published timings stop being refreshed. Rebuilding it is the command the workflow runs: each shard's report artifact
 carries a `results.json`, so download the `playwright-report-memory-*` artifacts of a few recent
 runs and rebuild the file from them. A spec measured by several runs is recorded at their mean,
 which keeps one slow runner from skewing it:

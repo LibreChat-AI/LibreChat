@@ -8506,16 +8506,16 @@ describe('Conversation Operations', () => {
         awaitTerminalHandling: true,
       });
 
-      /** The first raw page contains no expired receipt. It must still keep
-       * discovery active, without querying delivery protection for an empty ID set.
-       * The second is protected, and only the third reaches removable work. */
+      /** The first raw page contains no expired receipt. It is not work, so it
+       * reports no activity and does not query delivery protection for an empty
+       * ID set. The second is protected, and only the third reaches removable work. */
       const activity = { found: false };
       const protection = jest.spyOn(Delivery, 'find');
       try {
         await expect(methods.expireLegacyAgentEventActorReceipts(now, 1, activity)).resolves.toBe(
           0,
         );
-        expect(activity.found).toBe(true);
+        expect(activity.found).toBe(false);
         expect(protection).not.toHaveBeenCalled();
       } finally {
         protection.mockRestore();
@@ -8536,6 +8536,54 @@ describe('Conversation Operations', () => {
           .select('+agentEventActorReconciliations')
           .lean(),
       ).resolves.toMatchObject({ agentEventActorReconciliations: [] });
+    });
+
+    it('reports no activity for full pages of live conversations across a whole sweep', async () => {
+      /** A full page with nothing to expire is not work. Reporting it held the
+       * caller's idle back-off at its base interval for as long as the collection
+       * spans more than one page, and the sweep restarts at the end, so an install
+       * with a few dozen conversations never went idle. */
+      const now = new Date();
+      await Conversation.create(
+        [0, 1, 2, 3, 4].map((index) => {
+          const conversationId = uuidv4();
+          return {
+            conversationId,
+            user: 'actor-live-pages-user',
+            endpoint: EModelEndpoint.agents,
+            ...(index === 4 && {
+              agentEventActorReconciliations: [
+                {
+                  invocationId: 'live-receipt',
+                  status: 'settled' as const,
+                  resolution: 'action_compensated' as const,
+                  checkpoint: {
+                    threadId: conversationId,
+                    checkpointNs: 'event-actor/live-receipt',
+                  },
+                  action: { toolName: 'submit_move' },
+                  observedAt: now,
+                },
+              ],
+            }),
+          };
+        }),
+      );
+
+      const activity = { found: false };
+      const protection = jest.spyOn(mongoose.models.AgentTriggerDelivery, 'find');
+      try {
+        /** Two full pages, one partial page, then the empty page that ends the sweep. */
+        for (let pass = 0; pass < 4; pass += 1) {
+          await expect(methods.expireLegacyAgentEventActorReceipts(now, 2, activity)).resolves.toBe(
+            0,
+          );
+          expect(activity.found).toBe(false);
+        }
+        expect(protection).not.toHaveBeenCalled();
+      } finally {
+        protection.mockRestore();
+      }
     });
 
     it('clears a compensated headless lifecycle without creating a partial actor head', async () => {

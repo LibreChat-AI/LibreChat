@@ -586,7 +586,8 @@ export function canAgentGraphPause({
 }
 
 /** What a scheduled run that could pause is missing where it cannot. */
-export type ScheduledPauseGap = 'shared_store' | 'durable_checkpointer';
+/** What keeps a run from pausing. `unattended`: its subject's runs never pause. */
+export type ScheduledPauseGap = 'shared_store' | 'durable_checkpointer' | 'unattended';
 
 /** Whether a run keeps its pause and resume wiring, and whether its checkpoints may be pruned. */
 export interface ScheduledPause {

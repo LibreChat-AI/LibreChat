@@ -72,6 +72,10 @@ export enum PermissionTypes {
    * Type for Scheduled Chats Permissions
    */
   SCHEDULES = 'SCHEDULES',
+  /**
+   * Type for Agent Event Subscriptions Permissions
+   */
+  AGENT_EVENTS = 'AGENT_EVENTS',
 }
 
 /**
@@ -97,6 +101,7 @@ export const PERMISSION_TYPE_INTERFACE_FIELDS: Record<PermissionTypes, string> =
   [PermissionTypes.SKILLS]: 'skills',
   [PermissionTypes.SHARED_LINKS]: 'sharedLinks',
   [PermissionTypes.SCHEDULES]: 'schedules',
+  [PermissionTypes.AGENT_EVENTS]: 'agentEvents',
 };
 
 /** Set of interface config field names that correspond to role permissions. */
@@ -265,6 +270,13 @@ export const schedulesPermissionsSchema = z.object({
 });
 export type TSchedulesPermissions = z.infer<typeof schedulesPermissionsSchema>;
 
+/** Off until an operator turns it on: a subscription runs an agent on text outsiders write. */
+export const agentEventsPermissionsSchema = z.object({
+  [Permissions.USE]: z.boolean().default(false),
+  [Permissions.CREATE]: z.boolean().default(false),
+});
+export type TAgentEventsPermissions = z.infer<typeof agentEventsPermissionsSchema>;
+
 export const sharedLinksPermissionsSchema = z.object({
   [Permissions.CREATE]: z.boolean().default(true),
   [Permissions.SHARE]: z.boolean().default(true),
@@ -291,4 +303,5 @@ export const permissionsSchema = z.object({
   [PermissionTypes.SKILLS]: skillPermissionsSchema,
   [PermissionTypes.SHARED_LINKS]: sharedLinksPermissionsSchema,
   [PermissionTypes.SCHEDULES]: schedulesPermissionsSchema,
+  [PermissionTypes.AGENT_EVENTS]: agentEventsPermissionsSchema,
 });

@@ -39,7 +39,9 @@ export type ScheduleRunStatus =
   | 'error'
   | 'interrupted'
   | 'skipped_overlap'
-  | 'skipped_balance';
+  | 'skipped_balance'
+  /** An event subscription's delivery its hourly cap left out. */
+  | 'skipped_cap';
 
 export const structuredCadenceSchema = z.object({
   frequency: z.enum(scheduleStructuredFrequencies),

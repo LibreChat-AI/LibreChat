@@ -84,7 +84,7 @@ const {
   collectAllowAlwaysAliases,
   agentRunUsesCheckpointer,
   canAgentGraphPause,
-  resolveScheduledPause,
+  resolveRunPause,
   getPluginHookSource,
   captureAgentCheckpointGeneration,
   isContentFilterError,
@@ -149,6 +149,7 @@ const {
   countFormattedMessageTokens,
   prependFileContext,
   prependQuotes,
+  appendEvent,
   applyAttachmentOnlyText,
   hydrateMissingIndexTokenCounts,
   injectSkillPrimes,
@@ -179,7 +180,8 @@ const {
   hasYouTubeVideoParts,
   appendYouTubeVideoParts,
   resolveGoogleVideoError,
-  resolveClassifiedProviderError,
+  getUserFacingRequestError,
+  hasGenerationContentProtection,
   resolveYouTubeInjectionConfig,
   decrementPendingRequest,
   maybePrewarmCodeSandbox,
@@ -195,6 +197,9 @@ const {
   rejectPrivateTextAdmission,
   createInitialModelBoundAdmissionCallback,
   hasModelBoundContentProtection,
+  allowsAssistantSideEffects,
+  runAssistantSideEffect,
+  isInteractiveAssistantRequest,
   assertResumeRuntimeContentAllowed,
   collectReachableAgents,
   isStatefulCodeEnvironmentToolName,
@@ -242,7 +247,6 @@ const {
   UsageEvents,
   Permissions,
   VisionModes,
-  ErrorTypes,
   ContentTypes,
   FileSources,
   ApprovalEvents,
@@ -253,7 +257,6 @@ const {
   isAgentsEndpoint,
   isEphemeralAgentId,
   removeNullishValues,
-  stripLangChainTroubleshootingUrl,
   DEFAULT_MEMORY_MAX_INPUT_TOKENS,
 } = require('librechat-data-provider');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
@@ -370,35 +373,6 @@ function captureRunContextMeta(client) {
     fadingTiers: source?.getFadingTiers?.(),
     getEncoding: () => client.getEncoding(),
   });
-}
-
-/**
- * User-visible text for a failed run. LangChain classifies provider errors by mutating
- * `error.message` with a docs URL, so a classified failure becomes typed copy the client localizes
- * and everything else keeps the provider's own wording with that URL removed. The untouched error
- * still reaches the logs through `getSafeErrorMetadata`.
- */
-function getUserFacingRequestError(baseMessage, error, appConfig) {
-  /** Carries no model or user content, so it is safe under every filter. */
-  if (error?.name === 'ManualSummarizationSkippedError') {
-    return JSON.stringify({ type: ErrorTypes.COMPACTION_SKIPPED, reason: error.reason });
-  }
-  const protectionEnabled = hasModelBoundContentProtection(
-    appConfig?.filters,
-    appConfig?.messageFilter?.pii,
-  );
-  if (protectionEnabled || !error?.message) {
-    return baseMessage;
-  }
-  const typedError = resolveClassifiedProviderError(error, appConfig);
-  if (typedError != null) {
-    return typedError;
-  }
-  const message = stripLangChainTroubleshootingUrl(error.message);
-  if (!message) {
-    return baseMessage;
-  }
-  return `${baseMessage}: ${message}`;
 }
 
 class AgentClient extends BaseClient {
@@ -2619,6 +2593,8 @@ class AgentClient extends BaseClient {
     const tokenCountMap = {};
     const memoryPayload = [];
     let hasFileContext = false;
+    /** Some row's model copy holds text the memory agent must not read (`appendEvent`). */
+    let needsMemoryCopy = false;
     let promptTokenTotal = 0;
     const encoding = this.getEncoding();
     /**
@@ -2684,6 +2660,9 @@ class AgentClient extends BaseClient {
         prependQuotes(formattedMessage, message.quotes);
       }
 
+      const added = appendEvent(formattedMessage, message.trigger);
+      needsMemoryCopy ||= added.memoryCopy;
+
       /**
        * An attachment-only turn whose files reach the model out-of-band (file
        * search, code environment) leaves nothing in the content itself, and
@@ -2719,7 +2698,8 @@ class AgentClient extends BaseClient {
       const needsCanonicalTokenCount =
         !hasDbTokenCount ||
         (this.isVisionModel && (message.image_urls || message.files)) ||
-        (Array.isArray(message.quotes) && message.quotes.length > 0);
+        (Array.isArray(message.quotes) && message.quotes.length > 0) ||
+        added.recount;
 
       let canonicalTokenCount = hasDbTokenCount ? dbTokenCount : 0;
       if (needsCanonicalTokenCount) {
@@ -2899,7 +2879,7 @@ class AgentClient extends BaseClient {
     }
     /** After the steer stamp, which adds replayed steers' documents of its own. */
     dedupeDocumentNames(payload, agentsById.values());
-    if (hasFileContext) {
+    if (hasFileContext || needsMemoryCopy) {
       for (let i = 0; i < orderedMessages.length; i++) {
         memoryPayload.push(
           memoryFormattedMessages[i] ?? buildMemoryFormattedMessage(orderedMessages[i]),
@@ -2925,7 +2905,7 @@ class AgentClient extends BaseClient {
         });
       }
     }
-    this.memoryPayload = hasFileContext ? memoryPayload : null;
+    this.memoryPayload = hasFileContext || needsMemoryCopy ? memoryPayload : null;
     messages = orderedMessages;
     promptTokens = promptTokenTotal;
 
@@ -3302,7 +3282,7 @@ class AgentClient extends BaseClient {
    */
   async useMemory() {
     const user = this.options.req.user;
-    if (user.personalization?.memories === false) {
+    if (!allowsAssistantSideEffects(this.options.req.config, user.personalization?.memories)) {
       return;
     }
     const hasAccess = await checkAccess({
@@ -4566,10 +4546,7 @@ class AgentClient extends BaseClient {
       responseMessageId: this.responseMessageId,
       source: '[api/server/controllers/agents/client.js #sendCompletion]',
       genericMessage: '[api/server/controllers/agents/client.js #sendCompletion] Unhandled error',
-      protectionEnabled: hasModelBoundContentProtection(
-        appConfig?.filters,
-        appConfig?.messageFilter?.pii,
-      ),
+      protectionEnabled: hasGenerationContentProtection(appConfig),
     });
     const balanceConfig = getBalanceConfig(appConfig);
     const transactionsConfig = getTransactionsConfig(appConfig);
@@ -4583,7 +4560,7 @@ class AgentClient extends BaseClient {
        * LangGraph continuation must also use a durable shared checkpointer. Redis
        * provides the first half, while handleRunInterrupt verifies the exact durable
        * checkpoint before exposing the pause. On a topology that cannot hold a pause the
-       * run starts without the wiring (`resolveScheduledPause`), so it never reaches one. */
+       * run starts without the wiring (`resolveRunPause`), so it never reaches one. */
       /** @type {AppConfig['endpoints']['agents']} */
       const agentsEConfig = appConfig.endpoints?.[EModelEndpoint.agents];
       const topLevelAgents = [this.options.agent, ...(this.agentConfigs?.values() ?? [])];
@@ -4640,8 +4617,8 @@ class AgentClient extends BaseClient {
         agents: topLevelAgents,
         askUserQuestionAdminDisabled,
       });
-      const pause = await resolveScheduledPause({
-        scheduled: this.options.req?._isScheduledFire === true,
+      const pause = await resolveRunPause({
+        req: this.options.req,
         canPause: runCanPause,
         sharedStore: GenerationJobManager.isRedis,
         getCheckpointer: () => getAgentCheckpointer(agentsEConfig?.checkpointer),
@@ -4962,7 +4939,7 @@ class AgentClient extends BaseClient {
         config = withPrivateTextAdmissionConfig(config, initialModelBoundAdmission);
 
         if (this.processMemory && !isCompactionTurn) {
-          memoryPromise = this.runMemory(memoryMessages);
+          memoryPromise = runAssistantSideEffect(appConfig, () => this.runMemory(memoryMessages));
         }
 
         const { calibrationRatio, fadingTier, fadingTiers } = resolveRunSeeds(this);
@@ -5023,9 +5000,12 @@ class AgentClient extends BaseClient {
           });
         }
 
-        const activityLabel = this.buildActivityLabelWiring(streamId, abortController.signal);
-        const activityPhase = this.buildActivityPhaseWiring(streamId, abortController.signal);
-        const reasoningLabel = this.buildReasoningLabelWiring(streamId, abortController.signal);
+        const { activityLabel, activityPhase, reasoningLabel } =
+          runAssistantSideEffect(appConfig, () => ({
+            activityLabel: this.buildActivityLabelWiring(streamId, abortController.signal),
+            activityPhase: this.buildActivityPhaseWiring(streamId, abortController.signal),
+            reasoningLabel: this.buildReasoningLabelWiring(streamId, abortController.signal),
+          })) ?? {};
         const offsetHandlers = createSteerIndexOffsetHandlers(
           this.options.eventHandlers,
           this.steerOffsetState,
@@ -5111,6 +5091,7 @@ class AgentClient extends BaseClient {
           tenantId: resolveRequestTenantId(this.options.req ?? {}),
           summarizationConfig: appConfig?.summarization,
           summarizeOnly: this.isCompactionTurn(),
+          interactiveAssistant: isInteractiveAssistantRequest(this.options.req),
           appConfig,
           tokenCounter,
           /** Bills subagent child-run model calls — foreground usage joins
@@ -5465,10 +5446,7 @@ class AgentClient extends BaseClient {
       responseMessageId: this.responseMessageId,
       source: '[api/server/controllers/agents/client.js #resumeCompletion]',
       genericMessage: '[api/server/controllers/agents/client.js #resumeCompletion] Unhandled error',
-      protectionEnabled: hasModelBoundContentProtection(
-        appConfig?.filters,
-        appConfig?.messageFilter?.pii,
-      ),
+      protectionEnabled: hasGenerationContentProtection(appConfig),
     });
     const balanceConfig = getBalanceConfig(appConfig);
     const transactionsConfig = getTransactionsConfig(appConfig);

@@ -17,11 +17,26 @@ import type {
   SetSlackWorkspaceRoute,
 } from './types/channels';
 import type {
+  ConnectionBindRequest,
+  ConnectionMarkRequest,
+  ConnectionRemoved,
+  ConnectionInstall,
+  AdminConnections,
+  ConnectionChoicesResponse,
+  AdminConnection,
+} from './types/connections';
+import type {
   ResponseReviewView,
   ResponseCancelReceipt,
   ResponseReviewDecision,
   ResponseReviewDecisionReceipt,
 } from './types/responseReview';
+import type {
+  SubscriptionCreateInput,
+  SubscriptionUpdateInput,
+  SubscriptionsResponse,
+  Subscription,
+} from './types/subscriptions';
 import type {
   TInsightsSelectionResponse,
   TInsightsAccessResponse,
@@ -35,6 +50,12 @@ import type {
   TTraceRecordParams,
   TTraceRecordDetail,
 } from './types/traces';
+import type {
+  DeadLetterDismissed,
+  DeadLetterRequeued,
+  DeadLetterParams,
+  DeadLetterPage,
+} from './types/dead';
 import type {
   ChannelIdentityClient,
   ChannelIdentityResult,
@@ -1340,7 +1361,10 @@ export const listConversations = (
   return request.get(endpoints.conversations(params ?? {}));
 };
 
-export function getConversationById(id: string, signal?: AbortSignal): Promise<s.TConversation> {
+export function getConversationById(
+  id: string,
+  signal?: AbortSignal,
+): Promise<s.TConversationDetail> {
   return request.get(endpoints.conversationById(id), signal ? { signal } : undefined);
 }
 
@@ -1959,6 +1983,43 @@ export function deleteGitHubSkillSyncCredential(
   return request.delete(endpoints.adminSkillsSyncCredential(credentialKey));
 }
 
+/* Dead letters of the agent trigger queue (admin) */
+export function listDeadLetters(params?: DeadLetterParams): Promise<DeadLetterPage> {
+  return request.get(endpoints.adminDeadLetters(params));
+}
+
+export function requeueDeadLetter(id: string): Promise<DeadLetterRequeued> {
+  return request.post(endpoints.adminDeadLetterRequeue(id));
+}
+
+export function dismissDeadLetter(id: string): Promise<DeadLetterDismissed> {
+  return request.delete(endpoints.adminDeadLetter(id));
+}
+
+/* Connections of agent events (admin) */
+export function listEventConnections(): Promise<AdminConnections> {
+  return request.get(endpoints.adminEventConnections());
+}
+
+export function installEventConnection(): Promise<ConnectionInstall> {
+  return request.post(endpoints.adminEventConnectionInstall());
+}
+
+export function bindEventConnection(body: ConnectionBindRequest): Promise<AdminConnection> {
+  return request.post(endpoints.adminEventConnections(), body);
+}
+
+export function markEventConnection(
+  id: string,
+  body: ConnectionMarkRequest,
+): Promise<AdminConnection> {
+  return request.patch(endpoints.adminEventConnection(id), body);
+}
+
+export function removeEventConnection(id: string): Promise<ConnectionRemoved> {
+  return request.delete(endpoints.adminEventConnection(id));
+}
+
 /* Roles */
 export function listRoles(): Promise<q.ListRolesResponse> {
   return request.get(`${endpoints.adminRoles()}?limit=200`);
@@ -2312,6 +2373,44 @@ export function revokeApiKeyMCPConsent(
   expectedRevision: string,
 ): Promise<void> {
   return request.deleteWithOptions(endpoints.apiKeyMCPConsent(id, agentId), {
+    data: { expectedRevision },
+  });
+}
+
+export function getAgentEventConnections(): Promise<ConnectionChoicesResponse> {
+  return request.get(endpoints.agentEventConnections());
+}
+export function getAgentEventSubscriptions(agentId?: string): Promise<SubscriptionsResponse> {
+  return request.get(endpoints.agentEventSubscriptions(agentId));
+}
+export function createAgentEventSubscription(
+  payload: SubscriptionCreateInput,
+): Promise<Subscription> {
+  return request.post(endpoints.agentEventSubscriptions(), payload);
+}
+export function updateAgentEventSubscription(
+  id: string,
+  payload: SubscriptionUpdateInput,
+): Promise<Subscription> {
+  return request.patch(endpoints.agentEventSubscription(id), payload);
+}
+export function deleteAgentEventSubscription(id: string): Promise<void> {
+  return request.delete(endpoints.agentEventSubscription(id));
+}
+export function getAgentEventSubscriptionGrant(id: string): Promise<RunGrantView> {
+  return request.get(endpoints.agentEventSubscriptionGrant(id));
+}
+export function confirmAgentEventSubscriptionGrant(
+  id: string,
+  payload: ConfirmRunGrant,
+): Promise<RunGrantView> {
+  return request.post(endpoints.agentEventSubscriptionGrant(id), payload);
+}
+export function revokeAgentEventSubscriptionGrant(
+  id: string,
+  expectedRevision: string,
+): Promise<void> {
+  return request.deleteWithOptions(endpoints.agentEventSubscriptionGrant(id), {
     data: { expectedRevision },
   });
 }

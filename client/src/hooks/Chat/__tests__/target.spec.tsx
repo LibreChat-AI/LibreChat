@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import { RecoilRoot } from 'recoil';
+import { getDefaultStore } from 'jotai';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { dataService, EModelEndpoint, QueryKeys, defaultOrderQuery } from 'librechat-data-provider';
@@ -18,6 +19,7 @@ import type {
   TEndpointsConfig,
 } from 'librechat-data-provider';
 import { startupConfigKey } from '~/data-provider/Endpoints/queries';
+import { navigationGenerationAtom } from '~/store/navigation';
 import { assistantKey, isTargetReady } from '../ask/guards';
 import useTarget from '../target';
 
@@ -110,6 +112,116 @@ beforeEach(() => {
   jest.spyOn(dataService, 'listAgents').mockImplementation(() => new Promise(() => {}));
   jest.spyOn(dataService, 'listAssistants').mockImplementation(() => new Promise(() => {}));
 });
+
+it.each([false, true])(
+  'waits for refreshed endpoints after recovered detail (old endpoint returns=%s)',
+  async (restored) => {
+    const retired = conversation({
+      conversationId: 'saved',
+      endpoint: EModelEndpoint.google,
+      model: 'saved-model',
+      spec: 'saved-spec',
+    });
+    const recovered = { ...retired, endpoint: EModelEndpoint.anthropic, model: 'recovered' };
+    const endpoints = deferred<TEndpointsConfig>();
+    jest.spyOn(dataService, 'getAIEndpoints').mockReturnValueOnce(endpoints.promise);
+    jest.spyOn(dataService, 'getConversationById').mockResolvedValueOnce(recovered);
+    const { result, client } = setup(retired, undefined, Infinity);
+    client.setQueryData([QueryKeys.conversation, 'saved'], retired);
+    await waitFor(() => expect(result.current.target.failed).toBe(true));
+    await act(async () => result.current.target.retry());
+    expect(result.current.value?.endpoint).toBe(EModelEndpoint.google);
+    await act(async () =>
+      endpoints.resolve({
+        [EModelEndpoint.anthropic]: { order: 0 },
+        ...(restored ? { [EModelEndpoint.google]: { order: 1 } } : {}),
+      }),
+    );
+    await waitFor(() => expect(result.current.target.ready).toBe(true));
+    expect(result.current.value?.endpoint).toBe(
+      restored ? EModelEndpoint.google : EModelEndpoint.anthropic,
+    );
+  },
+);
+
+it('retries a retired saved spec and preserves active conversation settings', async () => {
+  const retired = conversation({
+    conversationId: 'saved',
+    endpoint: EModelEndpoint.google,
+    model: 'saved-model',
+    spec: 'saved-spec',
+    title: 'Open transcript',
+  });
+  const recovered = {
+    ...retired,
+    endpoint: EModelEndpoint.openAI,
+    model: 'saved-model',
+    title: 'Old server title',
+  };
+  const load = jest
+    .spyOn(dataService, 'getConversationById')
+    .mockResolvedValueOnce({ ...retired, targetResolutionFailed: true })
+    .mockResolvedValueOnce(recovered);
+  const { result, client } = setup(retired, undefined, Infinity);
+  client.setQueryData([QueryKeys.conversation, 'saved'], retired);
+  await waitFor(() => expect(result.current.target.failed).toBe(true));
+
+  await act(async () => result.current.target.retry());
+  expect(result.current.value).toEqual(retired);
+  await act(async () => result.current.target.retry());
+  await waitFor(() => expect(result.current.target.ready).toBe(true));
+  expect(result.current.value).toMatchObject({
+    endpoint: EModelEndpoint.openAI,
+    title: retired.title,
+  });
+  expect(client.getQueryData([QueryKeys.conversation, 'saved'])).toMatchObject({
+    endpoint: EModelEndpoint.openAI,
+    title: retired.title,
+  });
+  expect(load.mock.calls.map(([id]) => id)).toEqual(['saved', 'saved']);
+});
+
+it.each(['navigation', 'pending navigation', 'choice', 'committed record', 'new retry'])(
+  'discards retired-target resolution after %s supersedes the request',
+  async (event) => {
+    const retired = conversation({
+      conversationId: 'saved',
+      endpoint: EModelEndpoint.google,
+      model: 'saved-model',
+      spec: 'saved-spec',
+    });
+    const recovered = { ...retired, endpoint: EModelEndpoint.openAI, model: 'recovered' };
+    const late = deferred<typeof recovered>();
+    const load = jest
+      .spyOn(dataService, 'getConversationById')
+      .mockReturnValueOnce(late.promise)
+      .mockResolvedValueOnce({ ...retired, targetResolutionFailed: true });
+    const { result, client } = setup(retired, undefined, Infinity);
+    client.setQueryData([QueryKeys.conversation, 'saved'], retired);
+    await waitFor(() => expect(result.current.target.failed).toBe(true));
+    act(() => result.current.target.retry());
+    if (event === 'navigation') {
+      act(() => result.current.setValue({ ...retired, conversationId: 'next' }));
+    } else if (event === 'pending navigation') {
+      const store = getDefaultStore();
+      store.set(navigationGenerationAtom, (generation) => generation + 1);
+    } else if (event === 'choice') {
+      act(() => result.current.setValue({ ...retired, model: 'picked' }));
+    } else if (event === 'committed record') {
+      act(() =>
+        client.setQueryData([QueryKeys.conversation, 'saved'], { ...retired, model: 'committed' }),
+      );
+    } else {
+      await act(async () => result.current.target.retry());
+    }
+    await act(async () => late.resolve(recovered));
+    expect(result.current.value?.endpoint).toBe(EModelEndpoint.google);
+    expect(client.getQueryData([QueryKeys.conversation, 'saved'])).toMatchObject({
+      endpoint: EModelEndpoint.google,
+    });
+    expect(load).toHaveBeenCalledTimes(event === 'new retry' ? 2 : 1);
+  },
+);
 
 it('makes an explicit model ready without any catalog requests', async () => {
   const { result, client } = setup(conversation({ model: 'configured-model', spec: 'my-spec' }));

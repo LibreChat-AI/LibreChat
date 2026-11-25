@@ -1,3 +1,4 @@
+import fs from 'fs';
 import crypto from 'crypto';
 import path from 'path';
 
@@ -53,6 +54,22 @@ export function getE2EServerAddress(baseURL = getE2EBaseURL()) {
 
 export function getRuntimeEnvPath() {
   return process.env.E2E_RUNTIME_ENV_PATH ?? DEFAULT_RUNTIME_ENV_PATH;
+}
+
+/**
+ * The Mongo URI of the running test server. e2e/setup/start-server.js writes the active URI
+ * (memory-Mongo port included) to the runtime env file on boot.
+ */
+export function getMongoUri(): string {
+  try {
+    const env = JSON.parse(fs.readFileSync(getRuntimeEnvPath(), 'utf8')) as { MONGO_URI?: string };
+    if (env.MONGO_URI) {
+      return env.MONGO_URI;
+    }
+  } catch {
+    /* fall through to env/default */
+  }
+  return process.env.MONGO_URI ?? DEFAULT_MONGO_URI;
 }
 
 function getPassthroughEnv(): Record<string, string> {

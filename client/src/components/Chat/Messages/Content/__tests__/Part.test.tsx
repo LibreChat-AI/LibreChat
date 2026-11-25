@@ -4,29 +4,35 @@ import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import Part from '../Part';
 
-jest.mock('../MessageContent', () => ({
-  ErrorMessage: ({ text }: { text: string }) => <div data-testid="error-message">{text}</div>,
-}));
-jest.mock('../AskUserQuestion', () => ({
+/** An error part is the chat package's card now; this stands in for its module. */
+jest.mock('@librechat/chat/dist/components/errors/ErrorMessage.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/errors/ErrorMessage.cjs'),
   __esModule: true,
-  default: ({ actionId, question }: { actionId: string; question?: string }) => (
+  default: ({ text }: { text: string }) => <div data-testid="error-message">{text}</div>,
+}));
+jest.mock('~/components/Messages/Content/Error/register', () => ({}));
+/** The paused question and the approval controls are the chat package's; the app supplies only
+ *  how they resume, so they stand in by their package module here. */
+jest.mock('@librechat/chat/dist/components/approval/hosted.cjs', () => ({
+  HostedQuestion: ({ actionId, question }: { actionId: string; question?: string }) => (
     <div data-testid="ask-user-question" data-action-id={actionId}>
       {question}
     </div>
   ),
-}));
-jest.mock('../ToolApproval', () => ({
-  __esModule: true,
-  default: ({ toolCallId }: { toolCallId: string }) => (
+  HostedToolApproval: ({ toolCallId }: { toolCallId: string }) => (
     <div data-testid="tool-approval" data-tool-call-id={toolCallId} />
   ),
 }));
-jest.mock('../WebSearch', () => ({
-  __esModule: true,
-  default: () => <div data-testid="web-search" />,
+/** Web search is the chat package's card now; this stands in for its module. */
+jest.mock('@librechat/chat/dist/components/parts/WebSearch.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/WebSearch.cjs'),
+  WebSearchCall: () => <div data-testid="web-search" />,
 }));
-jest.mock('../Parts', () => ({
-  SubagentCall: ({ toolCallId }: { toolCallId: string }) => (
+/** The subagent card is the chat package's now; this stands in for its module. */
+jest.mock('@librechat/chat/dist/components/parts/SubagentCall.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/SubagentCall.cjs'),
+  __esModule: true,
+  default: ({ toolCallId }: { toolCallId: string }) => (
     <div data-testid="subagent-call" data-tool-call-id={toolCallId} />
   ),
 }));
@@ -54,7 +60,7 @@ const draw = (part: TMessageContentParts) =>
   render(<Part part={part} isSubmitting={false} showCursor={false} isCreatedByUser={false} />);
 
 describe('the app’s part renderers, over the chat package’s', () => {
-  it('draws an error part with the app’s error message, from whichever field holds the text', () => {
+  it('draws an error part with the package’s error message, from whichever field holds the text', () => {
     const { unmount } = draw(asPart({ type: ContentTypes.ERROR, [ContentTypes.ERROR]: 'bad' }));
     expect(screen.getByTestId('error-message')).toHaveTextContent('bad');
     unmount();
@@ -62,7 +68,7 @@ describe('the app’s part renderers, over the chat package’s', () => {
     expect(screen.getByTestId('error-message')).toHaveTextContent('worse');
   });
 
-  it('claims a paused question for the app’s ask card', () => {
+  it('claims a paused question for the package’s ask card', () => {
     draw(
       asPart({
         type: 'ask_user_question',
@@ -74,7 +80,7 @@ describe('the app’s part renderers, over the chat package’s', () => {
     expect(card).toHaveTextContent('Which?');
   });
 
-  it('draws a subagent call and a web search with the app’s cards', () => {
+  it('draws a subagent call and a web search with the package’s cards', () => {
     const { unmount } = draw(call(Constants.SUBAGENT as string));
     expect(screen.getByTestId('subagent-call')).toHaveAttribute('data-tool-call-id', 'call_1');
     unmount();

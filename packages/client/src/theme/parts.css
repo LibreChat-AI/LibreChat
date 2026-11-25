@@ -153,6 +153,36 @@
   }
 }
 
+/* Firefox does not keep the two transforms in step once the band carries a
+   mask: the copy's glyphs lurch away from the glyphs under them and snap back,
+   several pixels on a short label and tens on a long one. Chromium holds the
+   pair to a fraction of a pixel, and so does Firefox when the band has no mask.
+   Firefox therefore leaves the band still and unmasked, and slides the mask
+   over the copy itself with the same stops, speed and phase: one animation, and
+   no second transform to drift from. The mask is two labels wide and repeats,
+   so 200% to 0% moves it one image width, the period of the sweep. */
+@supports (-moz-appearance: none) {
+  @keyframes shimmer-mask {
+    from {
+      mask-position: 200% 0;
+    }
+    to {
+      mask-position: 0% 0;
+    }
+  }
+
+  .shimmer-band {
+    -webkit-mask: none;
+    mask: none;
+    animation: none;
+  }
+
+  .shimmer-copy {
+    mask: var(--shimmer-mask) 0 0 / 200% 100% repeat-x;
+    animation: shimmer-mask 2s linear infinite;
+  }
+}
+
 /**
  * Type scale of the tool and status rows `@librechat/chat` renders. The label
  * follows the chat font setting (`--markdown-font-size`) at nine tenths, the

@@ -3,16 +3,24 @@ import {
   SystemRoles,
   Permissions,
   roleDefaults,
+  EModelEndpoint,
   PermissionTypes,
   getConfigDefaults,
+  normalizeEndpointName,
 } from 'librechat-data-provider';
 import type { IRole, AppConfig } from '@librechat/data-schemas';
+import type { TPreset } from 'librechat-data-provider';
 import type { RecordAuditEntry } from '~/admin/audit';
+import { getOpenAIEndpointParameters } from '~/endpoints/openai/parameters';
 import { diffRolePermissions, recordSystemAuditEntry } from '~/admin/audit';
+import { extractDefaultParams } from '~/endpoints/openai/llm';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { isMemoryEnabled } from '~/memory/config';
 
 type RolePermissions = Partial<Record<PermissionTypes, Record<string, boolean | undefined>>>;
+
+/** The preset fields that select a spec's endpoint and its `web_search` request. */
+type SpecPreset = Partial<Pick<TPreset, 'endpoint' | 'model' | 'web_search'>>;
 
 /**
  * Checks if a permission type has explicit configuration
@@ -50,6 +58,8 @@ function hasExplicitConfig(
       return interfaceConfig?.mcpServers !== undefined;
     case PermissionTypes.REMOTE_AGENTS:
       return interfaceConfig?.remoteAgents !== undefined;
+    case PermissionTypes.AGENT_EVENTS:
+      return interfaceConfig?.agentEvents !== undefined;
     case PermissionTypes.SKILLS:
       return interfaceConfig?.skills !== undefined;
     case PermissionTypes.SHARED_LINKS:
@@ -73,6 +83,58 @@ function hasExplicitConfig(
 }
 
 /**
+ * The endpoint parameters that reach a spec's `web_search` switch: a custom endpoint's
+ * `addParams`, `dropParams` and `customParams.paramDefinitions` defaults, or the Azure group
+ * serving the spec's model. Matched the way `initializeCustom` and `initializeOpenAI` match them.
+ */
+function getSpecEndpointParams(
+  appConfig: AppConfig,
+  preset: SpecPreset,
+): {
+  addParams?: Record<string, unknown>;
+  dropParams?: string[];
+  defaultParams?: Record<string, unknown>;
+} {
+  const endpoint = preset.endpoint ?? '';
+  if (endpoint === EModelEndpoint.azureOpenAI) {
+    return getOpenAIEndpointParameters(appConfig, endpoint, preset.model ?? undefined);
+  }
+  const name = normalizeEndpointName(endpoint);
+  const custom = appConfig.endpoints?.[EModelEndpoint.custom]?.find(
+    (config) => normalizeEndpointName(config.name) === name,
+  );
+  if (custom == null) {
+    return {};
+  }
+  return {
+    addParams: custom.addParams,
+    dropParams: custom.dropParams,
+    defaultParams: extractDefaultParams(custom.customParams?.paramDefinitions),
+  };
+}
+
+/**
+ * Whether a spec's request turns provider-native search on, resolved in the order every
+ * provider builder applies: the preset's value, an endpoint default when the preset leaves it
+ * unset, then `addParams`, and `dropParams` last. A spec on the agents endpoint is read from its
+ * preset alone, since the agent's own parameters are not known at startup.
+ */
+function requestsNativeWebSearch(appConfig: AppConfig, preset: SpecPreset): boolean {
+  const { addParams, dropParams, defaultParams } = getSpecEndpointParams(appConfig, preset);
+  let enabled = preset.web_search;
+  if (enabled === undefined && typeof defaultParams?.web_search === 'boolean') {
+    enabled = defaultParams.web_search;
+  }
+  if (typeof addParams?.web_search === 'boolean') {
+    enabled = addParams.web_search;
+  }
+  if (dropParams?.includes('web_search') === true) {
+    enabled = false;
+  }
+  return enabled === true;
+}
+
+/**
  * `WEB_SEARCH.USE` gates provider-native search (the `web_search` model parameter) as well as
  * LibreChat's `web_search` tool. Warns when model specs ask for native search that a role's
  * effective permission blocks, whether `interface.webSearch: false` sets it or a stored role keeps it.
@@ -86,7 +148,7 @@ function warnNativeWebSearchDenied(
     return;
   }
   const specs = (appConfig.modelSpecs?.list ?? [])
-    .filter((spec) => spec.preset?.web_search === true)
+    .filter((spec) => spec.preset != null && requestsNativeWebSearch(appConfig, spec.preset))
     .map((spec) => spec.name);
   if (specs.length === 0) {
     return;
@@ -95,7 +157,7 @@ function warnNativeWebSearchDenied(
     ? '`interface.webSearch: false` denies'
     : '`interface.webSearch` is not set, and the stored role permission keeps denying';
   logger.warn(
-    `Model specs request provider-native web search (\`preset.web_search: true\`), but ${source} the \`WEB_SEARCH\` permission for roles ${deniedRoles.join(', ')}, which also blocks native search: ${specs.join(', ')}. ` +
+    `Model specs request provider-native web search (\`preset.web_search\`, or their endpoint's \`addParams\` or \`customParams\` defaults), but ${source} the \`WEB_SEARCH\` permission for roles ${deniedRoles.join(', ')}, which also blocks native search: ${specs.join(', ')}. ` +
       "To offer native search without LibreChat's search tool, set `interface.webSearch: true` and remove `web_search` from `endpoints.agents.capabilities`. " +
       'Removing `interface.webSearch` alone keeps the stored role permission; set it explicitly or update the role in the admin settings. See "Native-only web search" in UPGRADING.md.',
   );
@@ -655,6 +717,24 @@ export async function updateInterfacePermissions(
                 getConfigCreate(loadedInterface.schedules),
                 defaultPerms[PermissionTypes.SCHEDULES]?.[Permissions.CREATE],
                 schedulesDefaultCreate ?? true,
+              ),
+            }
+          : {}),
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: getPermissionValue(
+          loadedInterface.agentEvents?.use,
+          defaultPerms[PermissionTypes.AGENT_EVENTS]?.[Permissions.USE],
+          defaults.agentEvents?.use,
+        ),
+        ...((typeof interfaceConfig?.agentEvents === 'object' &&
+          'create' in interfaceConfig.agentEvents) ||
+        !existingPermissions?.[PermissionTypes.AGENT_EVENTS]
+          ? {
+              [Permissions.CREATE]: getPermissionValue(
+                loadedInterface.agentEvents?.create,
+                defaultPerms[PermissionTypes.AGENT_EVENTS]?.[Permissions.CREATE],
+                defaults.agentEvents?.create,
               ),
             }
           : {}),

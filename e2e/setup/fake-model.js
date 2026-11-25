@@ -158,7 +158,9 @@ const DEFERRED_HITL_MARKER = 'E2E_DEFERRED_HITL:';
 const DEFERRED_OAUTH_MARKER = 'E2E_DEFERRED_OAUTH:';
 const HANDOFF_MARKER = 'E2E_HANDOFF:';
 const SUBAGENT_RESULT_MARKER = 'E2E_SUBAGENT_RESULT:';
+const SUBAGENT_VIA_SELF_MARKER = 'E2E_SUBAGENT_VIA_SELF:';
 const SUBAGENT_CHILD_MARKER = 'E2E_SUBAGENT_CHILD:';
+const SUBAGENT_COPY_MARKER = 'E2E_SUBAGENT_COPY:';
 const SUBAGENT_CHAIN_MARKER = 'E2E_SUBAGENT_CHAIN:';
 const SUBAGENT_RELAY_MARKER = 'E2E_SUBAGENT_RELAY:';
 const SUBAGENT_ACTIVITY_MARKER = 'E2E_SUBAGENT_ACTIVITY:';
@@ -2323,8 +2325,11 @@ function findLastToolMessageText(messages, requiredToken) {
   return '';
 }
 
+/** `E2E_SUBAGENT_VIA_SELF:` asks for the same result by way of a copy of the parent: the parent
+ *  spawns itself, and the copy is the one that calls the child. */
 function parseSubagentResultMarker(text) {
-  const value = getMarkerValue(text, SUBAGENT_RESULT_MARKER);
+  const viaSelf = text.includes(SUBAGENT_VIA_SELF_MARKER);
+  const value = getMarkerValue(text, viaSelf ? SUBAGENT_VIA_SELF_MARKER : SUBAGENT_RESULT_MARKER);
   const separator = value.indexOf(':');
   if (separator <= 0 || separator === value.length - 1) {
     return null;
@@ -2332,6 +2337,7 @@ function parseSubagentResultMarker(text) {
   return {
     childId: value.slice(0, separator),
     label: value.slice(separator + 1),
+    viaSelf,
   };
 }
 
@@ -2342,6 +2348,7 @@ function subagentResultResponses(text) {
   }
 
   const childPrompt = `${SUBAGENT_CHILD_MARKER}${marker.label}`;
+  const copyPrompt = `${SUBAGENT_COPY_MARKER}${marker.label}`;
   const expectedResult = `E2E subagent streamed result ${marker.label}`;
   return {
     responses: [''],
@@ -2352,19 +2359,21 @@ function subagentResultResponses(text) {
         return { response: toolResult };
       }
 
-      if (getLatestUserText(messages).includes(childPrompt)) {
+      const task = getLatestUserText(messages);
+      if (task.includes(childPrompt)) {
         return { response: expectedResult, textDeltaBlocks: true };
       }
 
+      const copies = marker.viaSelf && !task.includes(copyPrompt);
       return {
         response: '',
         toolCalls: [
           {
-            id: `call_e2e_subagent_${marker.label}`,
+            id: `call_e2e_subagent_${copies ? 'copy_' : ''}${marker.label}`,
             name: 'subagent',
             args: {
-              description: childPrompt,
-              subagent_type: marker.childId,
+              description: copies ? copyPrompt : childPrompt,
+              subagent_type: copies ? 'self' : marker.childId,
             },
             type: 'tool_call',
           },
@@ -3925,6 +3934,30 @@ function codeExecResponses({ filename, toolCallId, finalText, code }, toolNames)
 }
 
 function resolveResponses({ graph, messages, text, toolNames }) {
+  if (text.startsWith('E2E_STORED_CLIENT_TOOLS:')) {
+    const results = messages.filter((message) => messageType(message) === 'tool');
+    if (results.length) {
+      return {
+        responses: [
+          `E2E_CLIENT_RESULTS:${JSON.stringify(
+            results.map((message) => ({
+              id: message.tool_call_id,
+              content: message.content,
+            })),
+          )}`,
+        ],
+      };
+    }
+    const ids = text.includes(':parallel') ? ['call_a', 'call_b'] : ['call_a'];
+    return {
+      responses: [''],
+      toolCalls: ids.map((id) => ({
+        id,
+        name: 'client_lookup',
+        args: { key: id },
+      })),
+    };
+  }
   const history = subagentHistory.responsesForText(text, {
     getLatestUserText,
     messageType,
@@ -4287,6 +4320,8 @@ module.exports = function fakeModelHook(run, context) {
   }
 
   const text = getLatestUserText(context?.messages);
+  // This scenario exercises the native provider boundary; its endpoint runs locally.
+  if (graph.providerTextProtection && text?.startsWith('E2E_ASSISTANT_OUTPUT:')) return;
   /** Recorded-session replay outranks marker routing: a conversation whose
    * prompt matches a fixture's next recorded invocation streams that recording
    * through the real pipeline instead of a scripted mock response. */
