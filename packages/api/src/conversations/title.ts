@@ -137,6 +137,42 @@ export async function publishFallbackConversationTitle(
   }
 }
 
+type AgentTitleInvocation<TResult> = {
+  admit: () => Promise<void>;
+  generate: () => Promise<TResult>;
+  finish: (result: TResult) => Promise<string | undefined>;
+};
+
+/** Do not enter a new title phase after cancellation, even if the previous one ignored the signal. */
+export async function executeAgentTitleModel<TOptions, TResult>(
+  signal: AbortSignal,
+  {
+    prepare,
+    createInvocation,
+    onError,
+  }: {
+    prepare: () => Promise<TOptions | undefined>;
+    createInvocation: (options: TOptions, signal: AbortSignal) => AgentTitleInvocation<TResult>;
+    onError: (error: unknown) => void;
+  },
+): Promise<string | undefined> {
+  signal.throwIfAborted();
+  const options = await prepare();
+  signal.throwIfAborted();
+  if (options == null) return;
+
+  const { admit, generate, finish } = createInvocation(options, signal);
+  try {
+    await admit();
+    signal.throwIfAborted();
+    const result = await generate();
+    signal.throwIfAborted();
+    return await finish(result);
+  } catch (error) {
+    onError(error);
+  }
+}
+
 const pendingKey = (key: string, epoch: number) => `pending:${epoch}:${key}`;
 
 /** The SDK invokes a separate title model. Bound its full call, including retries, with the

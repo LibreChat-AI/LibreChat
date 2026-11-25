@@ -1,6 +1,71 @@
 import express from 'express';
 import request from 'supertest';
-import { createGeneratedTitleHandler, publishConversationTitle } from './title';
+import {
+  createGeneratedTitleHandler,
+  executeAgentTitleModel,
+  publishConversationTitle,
+} from './title';
+
+describe('agent title model execution', () => {
+  function titleModel() {
+    const result = { title: 'Generated' };
+    const invocation = {
+      admit: jest.fn().mockResolvedValue(undefined),
+      generate: jest.fn().mockResolvedValue(result),
+      finish: jest.fn(async (value: typeof result) => value.title),
+    };
+    const stages = {
+      prepare: jest.fn().mockResolvedValue('provider options'),
+      createInvocation: jest.fn().mockReturnValue(invocation),
+      onError: jest.fn(),
+    };
+    return { invocation, result, stages };
+  }
+
+  it('passes the signal to the invocation and finishes a healthy result', async () => {
+    const { invocation, result, stages } = titleModel();
+    const { signal } = new AbortController();
+    await expect(executeAgentTitleModel(signal, stages)).resolves.toBe('Generated');
+    expect(stages.createInvocation).toHaveBeenCalledWith('provider options', signal);
+    expect(invocation.finish).toHaveBeenCalledWith(result);
+    expect(stages.onError).not.toHaveBeenCalled();
+  });
+
+  it('does not start provider setup for an already cancelled title', async () => {
+    const { stages } = titleModel();
+    const signal = AbortSignal.abort();
+    await expect(executeAgentTitleModel(signal, stages)).rejects.toBe(signal.reason);
+    expect(stages.prepare).not.toHaveBeenCalled();
+  });
+
+  it('does not construct a title invocation if setup completes after cancellation', async () => {
+    const { stages } = titleModel();
+    const controller = new AbortController();
+    const reason = new Error('Title cancelled during setup');
+    stages.prepare.mockImplementationOnce(async () => {
+      controller.abort(reason);
+      return 'late provider options';
+    });
+    await expect(executeAgentTitleModel(controller.signal, stages)).rejects.toBe(reason);
+    expect(stages.createInvocation).not.toHaveBeenCalled();
+  });
+
+  it.each(['admit', 'generate'] as const)(
+    'does not finish a title cancelled in %s',
+    async (phase) => {
+      const { invocation, result, stages } = titleModel();
+      const controller = new AbortController();
+      invocation[phase].mockImplementationOnce(async () => {
+        controller.abort();
+        return phase === 'generate' ? result : undefined;
+      });
+      await expect(executeAgentTitleModel(controller.signal, stages)).resolves.toBeUndefined();
+      expect(stages.onError).toHaveBeenCalledWith(controller.signal.reason);
+      expect(invocation.generate).toHaveBeenCalledTimes(phase === 'admit' ? 0 : 1);
+      expect(invocation.finish).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe('generated title publication', () => {
   it.each([undefined, 8])(
