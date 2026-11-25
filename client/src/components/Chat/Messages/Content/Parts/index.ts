@@ -25,5 +25,4 @@ export { ReadFileCall } from '@librechat/chat/components';
 export { FileAuthoringCall } from '@librechat/chat/components';
 export { BashCall } from '@librechat/chat/components';
 export { PtcToolTrace } from '@librechat/chat/components';
-export { default as SubagentCall } from './SubagentCall';
 export { AuthorHeader, ResumeAuthorHeader } from '@librechat/chat/components';

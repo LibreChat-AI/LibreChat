@@ -5,6 +5,8 @@ const mockFollowingMiddleware = jest.fn((_req, _res, next) => next());
 const mockResume = jest.fn(async (req, res) => res.json(req.body));
 const mockPass = (_req, _res, next) => next();
 jest.mock('@librechat/api', () => ({
+  admitAssistantRequest: (...args) =>
+    jest.requireActual('@librechat/api').admitAssistantRequest(...args),
   createChatResumeContext: (...args) =>
     jest.requireActual('@librechat/api').createChatResumeContext(...args),
   getSafeErrorMetadata: (...args) =>
@@ -37,15 +39,36 @@ jest.mock(
       mockResume(...args),
 );
 const router = require('../chat');
-function fixture() {
+function fixture(config) {
   const app = express();
   app.use(express.json());
+  app.use((req, _res, next) => {
+    req.config = config;
+    next();
+  });
   app.use(router);
   return app;
 }
 beforeEach(() => {
   jest.clearAllMocks();
 });
+it('blocks approval resume before reading a job when assistant protection is required', async () => {
+  const config = {
+    config: { outputProtection: { version: 1, assistantText: { timeoutMs: 5_000 } } },
+  };
+  await request(fixture(config))
+    .post('/resume')
+    .send({ conversationId: 'response', text: 'Resume the conversation' })
+    .expect(400, {
+      code: 'assistant_output_unsupported',
+      error: 'content_filter_block',
+      message: 'Start a regular text-only Agent turn to use assistant reply protection.',
+    });
+  expect(mockGetJob).not.toHaveBeenCalled();
+  expect(mockFollowingMiddleware).not.toHaveBeenCalled();
+  expect(mockResume).not.toHaveBeenCalled();
+});
+
 it('rejects Responses resume before endpoint reconstruction in the production router', async () => {
   mockGetJob.mockResolvedValue({ metadata: { endpoint: 'responses' } });
   await request(fixture())

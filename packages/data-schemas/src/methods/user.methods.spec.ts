@@ -2075,6 +2075,63 @@ describe('User Methods - Database Tests', () => {
       expect((results[0] as unknown as t.IUser).name).toBe('Zoë');
     });
 
+    test('should keep an exact match that sits past the window of prefix matches', async () => {
+      await User.create(
+        Array.from({ length: 3 }, (_, i) => ({
+          name: `Zoe Prefix${i}`,
+          email: `zoe${i}@window.test`,
+          username: `zoeprefix${i}`,
+          provider: 'local',
+        })),
+      );
+      await User.create({
+        name: 'Zoë',
+        email: 'zoe-exact@window.test',
+        username: 'zexact',
+        provider: 'local',
+      });
+
+      const results = await methods.searchUsers({ searchPattern: 'zoe', limit: 1 });
+
+      expect(results).toHaveLength(1);
+      expect((results[0] as unknown as t.IUser).name).toBe('Zoë');
+    });
+
+    test('should score a name that repeats the query words as an exact match', async () => {
+      await User.create([
+        { name: 'Zoe Adams', email: 'zadams@repeat.test', provider: 'local' },
+        { name: 'Zoe Zoe', email: 'zoezoe@repeat.test', provider: 'local' },
+      ]);
+
+      const results = await methods.searchUsers({ searchPattern: 'zoe', limit: 1 });
+
+      expect(results).toHaveLength(1);
+      expect((results[0] as unknown as t.IUser).name).toBe('Zoe Zoe');
+    });
+
+    test('should keep an exact email match that sits past the window of prefix matches', async () => {
+      await User.create(
+        Array.from({ length: 3 }, (_, i) => ({
+          name: `Window ${i}`,
+          email: `pat@window.test.example${i}`,
+          provider: 'local',
+        })),
+      );
+      await User.create({ name: 'Pat Exact', email: 'pat@window.test', provider: 'local' });
+
+      const results = await methods.searchUsers({ searchPattern: 'pat@window.test', limit: 1 });
+
+      expect(results).toHaveLength(1);
+      expect((results[0] as unknown as t.IUser).name).toBe('Pat Exact');
+    });
+
+    test('should return each user once when it matches both the exact and the prefix query', async () => {
+      const results = await methods.searchUsers({ searchPattern: 'alice', limit: 5 });
+
+      expect(results).toHaveLength(1);
+      expect((results[0] as unknown as t.IUser).username).toBe('alice');
+    });
+
     test('should rank a reordered full-name match above a longer prefix match', async () => {
       await User.create([
         {

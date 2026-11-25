@@ -1346,7 +1346,10 @@ export const listConversations = (
   return request.get(endpoints.conversations(params ?? {}));
 };
 
-export function getConversationById(id: string, signal?: AbortSignal): Promise<s.TConversation> {
+export function getConversationById(
+  id: string,
+  signal?: AbortSignal,
+): Promise<s.TConversationDetail> {
   return request.get(endpoints.conversationById(id), signal ? { signal } : undefined);
 }
 

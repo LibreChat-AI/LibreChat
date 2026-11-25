@@ -94,17 +94,17 @@ npm run e2e:mock:redis
 
 Memory mode explicitly disables Redis. Redis mode defaults to database 15 with a `LibreChatE2E` key prefix, and fails closed: the test server pings Redis and verifies that the generation job manager did not silently fall back to memory. Override `REDIS_URI` or `E2E_REDIS_KEY_PREFIX` when needed.
 
-Pull request CI runs the complete mock suite in memory mode across fifteen shards, plus a
+Pull request CI runs the complete mock suite in memory mode across twenty-five shards, plus a
 focused Redis transport suite across two. The Redis suite covers streaming fidelity, steering,
 interrupts, resumptions, HITL approvals, completion, thread folding, model icons, and usage:
 
 ```sh
-npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/15
+npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/25
 npm run e2e:mock:redis:transport
 ```
 
 The nightly schedule and manual workflow dispatch run the complete mock suite in both stream
-modes, across fifteen memory shards and ten Redis shards. Every shard keeps one worker so tests do not contend for its
+modes, across twenty-five memory shards and ten Redis shards. Every shard keeps one worker so tests do not contend for its
 authenticated user and database.
 
 CI retries a failed test, twice on the memory shards and three times on the Redis transport
@@ -118,12 +118,12 @@ to the least-loaded shard by recorded seconds. A spec with no recorded time is e
 test count, so new specs need nothing.
 
 The timings keep themselves current. On each push to `dev`, `.github/workflows/playwright-timings.yml`
-rebuilds them from the three most recent green runs on `dev` and saves the result to the Actions
-cache. The `Shard timings` job of a later run restores the newest entry once and hands the same
-copy to every shard, because shards that planned from different timings would run a spec twice
-or not at all. `e2e/timings.mock.json` is the fallback whenever no entry can be read, such as
-the nightly on the default branch or an evicted cache, so it only needs rebuilding if those runs
-drift apart. Rebuilding it is the command the workflow runs: each shard's report artifact
+rebuilds them from the three most recent green runs on `dev` and publishes the result as an
+`e2e-shard-timings` artifact, kept for 90 days. The `Shard timings` job of a later run on any
+branch, stacked pull requests and the nightly included, downloads the newest one built on `dev`
+and hands the same copy to every shard, because shards that planned from different timings would
+run a spec twice or not at all. `e2e/timings.mock.json` is the fallback whenever no artifact can be
+read, so it only needs rebuilding if the published timings stop being refreshed. Rebuilding it is the command the workflow runs: each shard's report artifact
 carries a `results.json`, so download the `playwright-report-memory-*` artifacts of a few recent
 runs and rebuild the file from them. A spec measured by several runs is recorded at their mean,
 which keeps one slow runner from skewing it:

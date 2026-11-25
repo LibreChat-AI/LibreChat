@@ -2,7 +2,14 @@ import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
 import { resolveSubagents } from 'librechat-data-provider';
 import { ensureHandler } from '@langchain/core/callbacks/manager';
-import { Run, Providers, Constants, GraphEvents, HookRegistry } from '@librechat/agents';
+import {
+  Run,
+  Providers,
+  Constants,
+  GraphEvents,
+  HookRegistry,
+  ProviderTextProtectionError,
+} from '@librechat/agents';
 import {
   hasActivePiiPatterns,
   KnownEndpoints,
@@ -116,6 +123,11 @@ import {
   isSteerPreemptSupported,
   isSteerTerminalContinuationSupported,
 } from '~/agents/steering/runtime';
+import {
+  createAssistantModel,
+  createAssistantProtection,
+  inspectAssistantHistory,
+} from '~/protection/assistant';
 import {
   ASK_USER_QUESTION_TOOL_NAME,
   createAskUserQuestionTool,
@@ -2106,6 +2118,7 @@ function buildSubagentConfigs(
 
   const configs: SubagentConfigEntry[] = [];
   const allowSelf = agent.subagents.allowSelf !== false;
+  let selfConfig: SubagentConfig | undefined;
 
   if (allowSelf) {
     const selfName = agentInput.name ?? agent.name ?? 'self';
@@ -2125,7 +2138,7 @@ function buildSubagentConfigs(
       stripBackgroundFromToolRegistry(agentInput.toolRegistry, agent.backgroundToolNames),
       agent.intentToolNames,
     );
-    configs.push({
+    selfConfig = {
       self: true,
       type: SELF_SUBAGENT_TYPE,
       name: selfName,
@@ -2156,7 +2169,8 @@ function buildSubagentConfigs(
             },
           }
         : {}),
-    });
+    };
+    configs.push(selfConfig);
   }
 
   /** Cycle-safety: include the current agent in `ancestors` before
@@ -2273,6 +2287,32 @@ function buildSubagentConfigs(
     });
   }
 
+  const delegates = configs.filter((config) => config !== selfConfig);
+  if (selfConfig != null && delegates.length > 0) {
+    /**
+     * A copy keeps the agent's explicit subagents, never the self entry, so a copy cannot spawn
+     * a copy. The description tells the model which it got: nothing else says a copy cannot
+     * reach data only a subagent holds.
+     *
+     * `depth` counts saved hops only. Each agent above may itself have been reached through its
+     * own copy, a hop the run counts and this builder cannot see, so an agent `depth` hops down
+     * can sit up to `2 * depth` hops down when it runs. A copy is given subagents only where it
+     * would still have a hop to spend on the longest such path, so the promise holds on all.
+     */
+    const nests =
+      agentsEConfig?.subagentSelfNesting !== false && 2 * depth + 1 < MAX_SUBAGENT_DEPTH;
+    if (nests) {
+      selfConfig.allowNested = true;
+      selfConfig.agentInputs = {
+        ...(selfConfig.agentInputs ?? agentInput),
+        subagentConfigs: delegates,
+      };
+    }
+    selfConfig.description += nests
+      ? ' The copy can delegate to the same subagents.'
+      : ' The copy cannot delegate to subagents; give a subtask that needs one to that subagent directly.';
+  }
+
   return configs;
 }
 
@@ -2363,6 +2403,7 @@ export async function createRun({
   sdkResumeState,
   streaming = true,
   streamUsage = true,
+  interactiveAssistant = false,
   eagerToolExecution = true,
 }: {
   agents: RunAgent[];
@@ -2373,6 +2414,7 @@ export async function createRun({
   conversationId?: string;
   streaming?: boolean;
   streamUsage?: boolean;
+  interactiveAssistant?: boolean;
   /** Host-owned execution policy; observed Chat results require post-acceptance execution. */
   eagerToolExecution?: boolean;
   requestBody?: t.RequestBody;
@@ -2550,6 +2592,27 @@ export async function createRun({
         (callback) => callback.name === 'librechat-model-bound-content-filter',
       ) === true,
   );
+  const output = appConfig?.config?.outputProtection;
+  if (
+    output !== undefined &&
+    (!interactiveAssistant ||
+      output?.version !== 1 ||
+      output.assistantText == null ||
+      registration != null ||
+      summarizeOnly ||
+      initialSummary != null ||
+      eventActorCheckpointing ||
+      !streaming ||
+      grantExecution != null ||
+      agents.some((agent) => agent.reasoningKey != null || agentRequestsAskUserQuestion(agent)))
+  ) {
+    throw new ProviderTextProtectionError('unsupported');
+  }
+  const protection = output == null ? undefined : createAssistantProtection(output.assistantText!);
+  if (protection != null) {
+    hitlCapable = false;
+    if (messages != null) inspectAssistantHistory(protection, messages, signal);
+  }
   const runFilesActive =
     runFiles?.activate(
       resolvedRunId,
@@ -2876,7 +2939,7 @@ export async function createRun({
       useLegacyContent: agent.useLegacyContent ?? false,
       discoveredTools:
         !isSubagent && discoveredTools.size > 0 ? Array.from(discoveredTools) : undefined,
-      summarizationEnabled: summarization.enabled && summarizationViable,
+      summarizationEnabled: protection == null && summarization.enabled && summarizationViable,
       summarizationConfig: summarization.config,
       ...(!isSubagent && compactionSemanticIndex != null ? { compactionSemanticIndex } : {}),
       initialSummary: isSubagent ? undefined : initialSummary,
@@ -3295,11 +3358,16 @@ export async function createRun({
         }
       : customHandlers;
 
+  const assistantModel =
+    protection == null
+      ? undefined
+      : createAssistantModel(agentInputs, graphConfig.type !== 'standard');
   const runConfig = {
     runId: resolvedRunId,
     graphConfig,
     tokenCounter,
     customHandlers: runHandlers,
+    ...(protection != null && { providerTextProtection: protection }),
     initialSessions,
     calibrationRatio,
     fadingTier,
@@ -3370,15 +3438,23 @@ export async function createRun({
     // feedback can be scored against the trace without a lookup (see the
     // feedback route in api/server/routes/messages.js). No-op unless Langfuse
     // tracing is enabled. Requires @librechat/agents >= 3.2.21.
-    langfuse: buildLangfuseConfig({
-      appConfig,
-      runId: resolvedRunId,
-      tenantId: tenantId ?? user?.tenantId,
-      centralTraceExportEnabled,
-      isTemporary,
-      user,
-      traceContext: resolveRunTraceContext({ agents, conversationId, requestBody, traceContext }),
-    }),
+    langfuse:
+      protection != null
+        ? { enabled: false }
+        : buildLangfuseConfig({
+            appConfig,
+            runId: resolvedRunId,
+            tenantId: tenantId ?? user?.tenantId,
+            centralTraceExportEnabled,
+            isTemporary,
+            user,
+            traceContext: resolveRunTraceContext({
+              agents,
+              conversationId,
+              requestBody,
+              traceContext,
+            }),
+          }),
     ...(enableToolOutputReferences && {
       toolOutputReferences: { enabled: true },
     }),
@@ -3417,6 +3493,12 @@ export async function createRun({
         },
       })
     : await Run.create(runConfig);
+  if (assistantModel != null) {
+    if (run.Graph == null || run.Graph.providerTextProtection !== protection) {
+      throw new ProviderTextProtectionError('incompatible');
+    }
+    run.Graph.overrideModel = assistantModel;
+  }
   if (approvalWiring != null) bindRunToolApprovalSession(run, agentApprovalSession);
   runMCPToolAliases.set(run, mcpToolAliases);
 

@@ -28,6 +28,7 @@ import {
   useProjectQuery,
 } from '~/data-provider';
 import { useIdChangeEffect, useAppStartup, useNewConvo, useLocalize } from '~/hooks';
+import { hasRetiredSavedSpec } from '~/utils/convos';
 import { ToolCallsMapProvider } from '~/Providers';
 import ChatView from '~/components/Chat/ChatView';
 import { NotificationSeverity } from '~/common';
@@ -257,11 +258,18 @@ export default function ChatRoute() {
 
       hasSetConversation.current = true;
     } else if (initialConvoQuery.data && endpointsQuery.data) {
-      logger.log('conversation', 'ChatRoute initialConvoQuery', initialConvoQuery.data);
+      const record = initialConvoQuery.data;
+      const unresolvedTarget =
+        'targetResolutionFailed' in record &&
+        record.targetResolutionFailed === true &&
+        !!record.endpoint &&
+        !!record.spec;
+      logger.log('conversation', 'ChatRoute initialConvoQuery', record);
       newConversation({
-        template: initialConvoQuery.data,
+        template: record,
         /* this is necessary to load all existing settings */
-        preset: initialConvoQuery.data as TPreset,
+        preset: record as TPreset,
+        buildDefault: !unresolvedTarget && !hasRetiredSavedSpec(record, endpointsQuery.data),
         keepComposerState: true,
       });
       hasSetConversation.current = true;

@@ -1,7 +1,14 @@
 import axios from 'axios';
 import Anthropic from '@anthropic-ai/sdk';
 import { logger } from '@librechat/data-schemas';
-import { Time, EModelEndpoint, defaultModels, AuthType } from 'librechat-data-provider';
+import {
+  Time,
+  EModelEndpoint,
+  defaultModels,
+  AuthType,
+  FileSources,
+} from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
 import type { FetchModelsParams } from './models';
 import type { ServerRequest } from '~/types';
 import {
@@ -12,8 +19,10 @@ import {
   getBedrockModels,
   getAnthropicModels,
 } from './models';
+import { createSavedSpecTargetResolver } from '~/conversations/target';
 import { createLoadConfigModels } from './config/models';
 import { SCOPED_TOKEN_CONFIG_KEY_PREFIX } from './keys';
+import { createModelsService } from './config/service';
 
 jest.mock('axios');
 
@@ -82,6 +91,231 @@ beforeEach(() => {
   mockTokenConfigSet.mockReset().mockResolvedValue(true);
   mockValidateEndpointURL.mockReset().mockResolvedValue(undefined);
   mockCreateSSRFSafeAgents.mockClear();
+});
+
+describe('catalog discovery for saved target recovery', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it.each(['recovery-proxy', 'openAI', 'anthropic'])(
+    'keeps discovery failure distinct from confirmed absence for %s',
+    async (endpoint) => {
+      jest.replaceProperty(process, 'env', {
+        ...process.env,
+        OPENAI_API_KEY: 'test-key',
+        OPENAI_MODELS: undefined,
+        OPENAI_REVERSE_PROXY: undefined,
+        ANTHROPIC_API_KEY: 'test-key',
+        ANTHROPIC_MODELS: undefined,
+        ANTHROPIC_REVERSE_PROXY: undefined,
+      });
+      const config: AppConfig = {
+        config: {},
+        fileStrategy: FileSources.local,
+        imageOutputType: 'png',
+        endpoints: {
+          custom: [
+            {
+              name: 'recovery-proxy',
+              apiKey: 'test-key',
+              baseURL: 'https://proxy.example.test/v1',
+              models: { fetch: true, default: ['gpt-fallback'] },
+            },
+          ],
+        },
+        modelSpecs: {
+          list: [{ name: 'saved-spec', preset: { endpoint, model: 'gpt-fallback' } }],
+        },
+      };
+      const getAppConfig = async () => config;
+      const modelService = createModelsService({
+        getAppConfig,
+        loadDefaultModels: async () => ({}),
+        loadConfigModels: createLoadConfigModels({ getAppConfig, getUserKeyValues: jest.fn() }),
+        defaultEndpointsConfig: {},
+        loadAsyncEndpoints: async () => ({}),
+      });
+      const resolve = createSavedSpecTargetResolver({
+        getAppConfig,
+        getEndpointsConfig: async () => ({ [endpoint]: { order: 0 } }),
+        getEndpointModelsConfig: modelService.getEndpointModelsConfig,
+      });
+      const stored = { endpoint: 'retired-endpoint', spec: 'saved-spec', model: 'gpt-saved' };
+      const req = { config, user: { id: 'owner' } } as ServerRequest;
+      const outage = new Error('Provider timed out');
+
+      mockedAxios.get.mockRejectedValueOnce(outage);
+      const picker = await modelService.getEndpointModelsConfig(req, endpoint);
+      expect(picker[endpoint]?.length).toBeGreaterThan(0);
+
+      mockedAxios.get.mockRejectedValueOnce(outage);
+      await expect(resolve(req, stored)).rejects.toBe(outage);
+
+      mockedAxios.get.mockResolvedValueOnce({ data: { data: [] } });
+      await expect(resolve(req, stored)).resolves.toMatchObject({
+        endpoint,
+        model: 'gpt-fallback',
+      });
+      await expect(
+        modelService.getEndpointModelsConfig(req, endpoint, { strictDiscovery: true }),
+      ).resolves.toEqual({ [endpoint]: [] });
+    },
+  );
+});
+
+describe('built-in saved-spec catalogs', () => {
+  it.each([
+    ['openAI', 'OPENAI', 'gpt-saved'],
+    ['anthropic', 'ANTHROPIC', 'claude-saved'],
+  ])(
+    'reuses the active owner credential for strict %s discovery',
+    async (endpoint, prefix, saved) => {
+      jest.replaceProperty(process, 'env', {
+        ...process.env,
+        [`${prefix}_API_KEY`]: AuthType.USER_PROVIDED,
+        [`${prefix}_MODELS`]: undefined,
+        [`${prefix}_REVERSE_PROXY`]: 'https://model-fixture.example.test/v1',
+      });
+      const owner = { id: 'owner', tenantId: 'tenant-1' };
+      const config: AppConfig = {
+        config: {},
+        fileStrategy: FileSources.local,
+        imageOutputType: 'png',
+        endpoints: {},
+        modelSpecs: {
+          list: [{ name: 'saved-spec', preset: { endpoint, model: 'default-model' } }],
+        },
+      };
+      const getAppConfig = async () => config;
+      const getUserKey = jest.fn().mockResolvedValue('fixture-key');
+      const getUserKeyValues = jest.fn().mockResolvedValue({ apiKey: 'fixture-key' });
+      const modelService = createModelsService({
+        getAppConfig,
+        loadDefaultModels: async () => ({}),
+        loadConfigModels: async () => ({}),
+        defaultEndpointsConfig: {},
+        loadAsyncEndpoints: async () => ({}),
+        credentials: { getUserKey, getUserKeyValues },
+      });
+      const resolve = createSavedSpecTargetResolver({
+        getAppConfig,
+        getEndpointsConfig: async () => ({ [endpoint]: { order: 0 } }),
+        getEndpointModelsConfig: modelService.getEndpointModelsConfig,
+      });
+      const req = () => ({ config, user: owner }) as ServerRequest;
+      const stored = { endpoint: 'retired-endpoint', spec: 'saved-spec', model: saved };
+      const readKey = endpoint === 'openAI' ? getUserKeyValues : getUserKey;
+      const otherReader = endpoint === 'openAI' ? getUserKey : getUserKeyValues;
+      mockedAxios.get.mockClear().mockResolvedValueOnce({ data: { data: [{ id: saved }] } });
+
+      await modelService.getEndpointModelsConfig(req(), endpoint);
+      expect(readKey).not.toHaveBeenCalled();
+      expect(mockedAxios.get).not.toHaveBeenCalled();
+
+      await expect(resolve(req(), stored)).resolves.toMatchObject({ endpoint, model: saved });
+      expect(readKey).toHaveBeenCalledWith({ userId: owner.id, name: endpoint, activeOnly: true });
+      expect(otherReader).not.toHaveBeenCalled();
+      expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+      expect(mockedAxios.get).toHaveBeenCalledWith(
+        'https://model-fixture.example.test/v1/models',
+        expect.objectContaining({
+          headers: expect.objectContaining(
+            endpoint === 'openAI'
+              ? { Authorization: 'Bearer fixture-key' }
+              : { 'x-api-key': 'fixture-key' },
+          ),
+        }),
+      );
+      expect(mockTokenConfigSet).not.toHaveBeenCalled();
+      expect(mockCacheSet).not.toHaveBeenCalled();
+
+      process.env[`${prefix}_MODELS`] = saved;
+      await expect(resolve(req(), stored)).resolves.toMatchObject({ endpoint, model: saved });
+      expect(readKey).toHaveBeenCalledTimes(1);
+      expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+      delete process.env[`${prefix}_MODELS`];
+
+      readKey.mockRejectedValueOnce(new Error('Stored key unavailable'));
+      await expect(resolve(req(), stored)).rejects.toThrow('Stored key unavailable');
+      expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('uses an active owner connection for configured OpenAI proxy discovery', async () => {
+    jest.replaceProperty(process, 'env', {
+      ...process.env,
+      OPENAI_API_KEY: 'configured-key',
+      OPENAI_REVERSE_PROXY: AuthType.USER_PROVIDED,
+      OPENAI_MODELS: undefined,
+      OPENAI_ORGANIZATION: 'configured-organization',
+    });
+    const endpoint = EModelEndpoint.openAI;
+    const baseURL = 'https://openai-proxy.example.test/v1';
+    const allowedAddresses = ['openai-proxy.example.test'];
+    const owner = { id: 'owner', tenantId: 'tenant-1' };
+    const config: AppConfig = {
+      config: {},
+      fileStrategy: FileSources.local,
+      imageOutputType: 'png',
+      endpoints: {
+        allowedAddresses,
+        all: { headers: { Authorization: 'configured-authorization' } },
+        openAI: { headers: { 'X-Gateway': 'configured-gateway' } },
+      },
+      modelSpecs: { list: [{ name: 'saved-spec', preset: { endpoint, model: 'default-model' } }] },
+    };
+    const getAppConfig = async () => config;
+    const getUserKeyValues = jest.fn().mockResolvedValue({ apiKey: 'fixture-key', baseURL });
+    const service = createModelsService({
+      getAppConfig,
+      loadDefaultModels: async () => ({}),
+      loadConfigModels: async () => ({}),
+      defaultEndpointsConfig: {},
+      loadAsyncEndpoints: async () => ({}),
+      credentials: { getUserKeyValues },
+    });
+    const resolve = createSavedSpecTargetResolver({
+      getAppConfig,
+      getEndpointsConfig: async () => ({ [endpoint]: { order: 0 } }),
+      getEndpointModelsConfig: service.getEndpointModelsConfig,
+    });
+    const req = () => ({ config, user: owner }) as ServerRequest;
+    const stored = { endpoint: 'retired-endpoint', spec: 'saved-spec', model: 'saved-model' };
+    mockedAxios.get.mockClear().mockResolvedValueOnce({ data: { data: [{ id: stored.model }] } });
+
+    await expect(resolve(req(), stored)).resolves.toMatchObject({ endpoint, model: stored.model });
+    expect(getUserKeyValues).toHaveBeenCalledWith({
+      userId: owner.id,
+      name: endpoint,
+      activeOnly: true,
+    });
+    expect(mockValidateEndpointURL).toHaveBeenCalledWith(baseURL, endpoint, allowedAddresses);
+    expect(mockCreateSSRFSafeAgents).toHaveBeenCalledWith(allowedAddresses);
+    expect(mockedAxios.get).toHaveBeenCalledWith(
+      `${baseURL}/models`,
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer fixture-key' },
+        httpAgent: mockHttpAgent,
+        httpsAgent: mockHttpsAgent,
+        maxRedirects: 0,
+        proxy: false,
+      }),
+    );
+    expect(mockCacheSet).not.toHaveBeenCalled();
+    expect(mockTokenConfigSet).not.toHaveBeenCalled();
+
+    getUserKeyValues.mockResolvedValueOnce({ baseURL });
+    await expect(resolve(req(), stored)).rejects.toThrow('OpenAI model catalog unavailable');
+    getUserKeyValues.mockResolvedValueOnce({ apiKey: 'fixture-key' });
+    await expect(resolve(req(), stored)).rejects.toThrow('OpenAI model catalog unavailable');
+    mockValidateEndpointURL.mockRejectedValueOnce(new Error('Destination unavailable'));
+    await expect(resolve(req(), stored)).rejects.toThrow('Destination unavailable');
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+
+    process.env.OPENAI_MODELS = stored.model;
+    await expect(resolve(req(), stored)).resolves.toMatchObject({ endpoint, model: stored.model });
+    expect(getUserKeyValues).toHaveBeenCalledTimes(4);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('custom Anthropic discovery', () => {

@@ -1,28 +1,10 @@
-import { useContext, useId, useMemo, useState } from 'react';
-import { Button } from '@librechat/client';
+import { useId, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
-import { useExpandCollapse } from '@librechat/chat/components';
-import { formatNumber, resolveErrorIdentity, resolveErrorEndpoint } from '@librechat/chat';
-import type { ErrorEndpoint, ErrorPayload } from '@librechat/chat';
-import type { ErrorSource } from './source';
-import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
-import { useTranscriptAgentsMap } from '~/hooks/Agents/useTranscriptAgent';
-import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
-import { ChatContext } from '~/Providers/ChatContext';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
-
-export {
-  readString,
-  readNumber,
-  readObject,
-  formatNumber,
-  formatDuration,
-  formatTimestamp,
-  getProviderName,
-  ProviderErrorCodes,
-} from '@librechat/chat';
-export type { JsonValue, ErrorPayload, ErrorEndpoint } from '@librechat/chat';
+import { cn, Button, useLocalize } from '@librechat/client';
+import type { ReactNode } from 'react';
+import type { ErrorPayload, ErrorSource } from '../../core/errors';
+import useExpandCollapse from '../parts/useExpandCollapse';
+import { formatNumber } from '../../core/errors';
 
 export type ErrorRendererProps = {
   /** The payload parsed out of the message text. */
@@ -36,51 +18,8 @@ export type ErrorRendererProps = {
 /** The fallback renderer also runs when there is no payload at all. */
 export type UnclassifiedErrorProps = Omit<ErrorRendererProps, 'json'> & { json?: ErrorPayload };
 
-/**
- * Resolves who produced the failure, from the row and what the chat knows.
- *
- * Error content renders in the chat, in search results and in shared links. Only the chat surface
- * mounts `ChatContext`, and a shared link is read by a viewer whose query client is not
- * authenticated, so the endpoint queries stay disabled outside the chat rather than firing a
- * request that would resolve to a login redirect.
- */
-export function useErrorEndpoint(source?: ErrorSource, payloadEndpoint?: string): ErrorEndpoint {
-  const chat = useContext(ChatContext);
-  const savedAgents = useAgentsMapContext();
-  const inChat = chat != null;
-  const { data: endpointsConfig } = useGetEndpointsQuery({ enabled: inChat });
-  const { data: startupConfig } = useGetStartupConfig({ enabled: inChat });
-  const conversation = chat?.conversation;
-  const { agentKey } = resolveErrorIdentity(source, conversation);
-  const agentsMap = useTranscriptAgentsMap(agentKey);
-  const compactionEnabled =
-    inChat &&
-    startupConfig?.compactionEnabled === true &&
-    startupConfig.interface?.contextUsage !== false;
-
-  return useMemo(
-    () =>
-      resolveErrorEndpoint(source, payloadEndpoint, {
-        conversation,
-        agentsMap,
-        savedAgents,
-        endpointsConfig,
-        compactionEnabled,
-      }),
-    [
-      source,
-      payloadEndpoint,
-      conversation,
-      agentsMap,
-      savedAgents,
-      endpointsConfig,
-      compactionEnabled,
-    ],
-  );
-}
-
 /** Stacks an error's sentences, details and actions without inheriting prose spacing. */
-export function ErrorBody({ children }: { children: React.ReactNode }) {
+export function ErrorBody({ children }: { children: ReactNode }): ReactNode {
   return <div className="flex flex-col gap-2">{children}</div>;
 }
 
@@ -89,9 +28,10 @@ export function ErrorBody({ children }: { children: React.ReactNode }) {
  * budget, a generation breakdown. Collapsed by default and rendered as text rather than through
  * `CodeBlock`, which frames a detail in a code bar and a dark slab that reads as output.
  *
- * Motion is `useExpandCollapse`, the same `grid-template-rows` tween the tool rows and activity
- * phases in the transcript use, so a detail inside an error box opens on the curve the rest of the
- * message content already moves on (and inherits its reduced-motion and `inert` handling).
+ * Motion is `.part-expand`, the same `grid-template-rows` tween the tool rows and reasoning in
+ * the transcript use, so a detail inside an error box opens on the curve the rest of the message
+ * content already moves on, with its reduced-motion rule; `useExpandCollapse` makes the collapsed
+ * body `inert`.
  *
  * The body stays mounted while collapsed. That is what makes the card resize rather than jump: a
  * collapsed row still contributes its width to the box's intrinsic size, so the box only ever
@@ -99,10 +39,16 @@ export function ErrorBody({ children }: { children: React.ReactNode }) {
  * lives inside the animated element for the same reason — as a margin outside it, it would appear
  * in a single step once the height reached zero.
  */
-export function ErrorDetails({ label, children }: { label: string; children: React.ReactNode }) {
+export function ErrorDetails({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}): ReactNode {
   const [open, setOpen] = useState(false);
   const panelId = useId();
-  const { style: panelStyle, ref: panelRef } = useExpandCollapse(open);
+  const { ref: panelRef } = useExpandCollapse(open);
 
   return (
     <div>
@@ -116,13 +62,13 @@ export function ErrorDetails({ label, children }: { label: string; children: Rea
         {label}
         <ChevronRight
           className={cn(
-            'size-3.5 transition-transform duration-300 [transition-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none',
+            'size-3.5 transition-transform duration-300 ease-out motion-reduce:transition-none',
             open ? 'rotate-90' : 'rtl:-scale-x-100',
           )}
           aria-hidden="true"
         />
       </button>
-      <div id={panelId} style={panelStyle} aria-hidden={!open}>
+      <div id={panelId} className="part-expand" data-expanded={open} aria-hidden={!open}>
         <div ref={panelRef} className="overflow-hidden">
           <div className="text-text-secondary mt-1 text-xs break-words whitespace-pre-wrap">
             {children}
@@ -152,7 +98,7 @@ export function ErrorWithDetail({
   detail?: string;
   label: string;
   inline?: boolean;
-}) {
+}): ReactNode {
   if (detail == null) {
     return <>{headline}</>;
   }
@@ -169,7 +115,7 @@ export function ErrorWithDetail({
   );
 }
 
-export function ErrorActions({ children }: { children: React.ReactNode }) {
+export function ErrorActions({ children }: { children: ReactNode }): ReactNode {
   return <div className="flex flex-wrap items-center gap-2">{children}</div>;
 }
 
@@ -181,19 +127,19 @@ export function ErrorAction({
   disabled = false,
 }: {
   onClick: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
   /** A second action next to the primary one reads as the alternative, not a peer. */
   variant?: 'outline';
   disabled?: boolean;
-}) {
+}): ReactNode {
   return (
     /** One step tighter than the button default (8px) so the control reads as nested inside the
      *  error card's 12px corner rather than echoing it. */
     <Button
       type="button"
       size="sm"
+      shape="nested"
       variant={variant}
-      className="rounded-md"
       onClick={onClick}
       disabled={disabled}
     >

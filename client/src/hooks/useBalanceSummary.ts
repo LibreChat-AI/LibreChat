@@ -1,9 +1,9 @@
 import { useMemo } from 'react';
-import { BALANCE_DISPLAY_MODES } from 'librechat-data-provider';
-import type { BalanceDisplay, TBalanceResponse } from 'librechat-data-provider';
+import type { TBalanceResponse } from 'librechat-data-provider';
 import type { BalanceSummary, CurrencyConfig } from '~/utils';
 import { useGetStartupConfig, useGetUserBalance } from '~/data-provider';
 import { useAuthContext } from '~/hooks/AuthContext';
+import useBalanceDisplay from './useBalanceDisplay';
 import { summarizeBalance } from '~/utils';
 
 export type BalanceState =
@@ -17,25 +17,12 @@ export type BalanceState =
  *  the reading. Streams refetch explicitly after each turn, which bypasses it. */
 const BALANCE_STALE_MS = 30_000;
 
-/** Admin config overrides persist without schema validation, so an unknown mode can arrive. */
-const toDisplay = (value: unknown): BalanceDisplay =>
-  BALANCE_DISPLAY_MODES.find((mode) => mode === value) ?? 'credits';
-
 export interface BalanceView {
   enabled: boolean;
   state: BalanceState;
   currency?: CurrencyConfig;
   /** The raw record, for detail rows the summary does not carry */
   balance?: TBalanceResponse;
-}
-
-/** How the deployment shows balance figures, for surfaces that only format an amount. */
-export function useBalanceDisplay(): { display: BalanceDisplay; currency?: CurrencyConfig } {
-  const { data: startupConfig } = useGetStartupConfig();
-  return {
-    display: toDisplay(startupConfig?.balance?.display),
-    currency: startupConfig?.interface?.currency,
-  };
 }
 
 /**

@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 
 jest.spyOn(console, 'log').mockImplementation();
@@ -11,6 +12,19 @@ describe('InMemoryJobStore eviction at capacity', () => {
 
   afterEach(async () => {
     await store.destroy();
+  });
+
+  it('keeps enrolled Responses epochs at or after process start when the clock moves backward', async () => {
+    jest.useFakeTimers({ now: Math.floor(performance.timeOrigin) - 1000 });
+    try {
+      const job = await store.createJob('after-rollback', 'owner', undefined, undefined, {
+        endpoint: 'responses',
+        terminalPersistenceOwner: 'external',
+      });
+      expect(job.createdAt).toBeGreaterThanOrEqual(performance.timeOrigin);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('evicts a finished job before an older running one', async () => {

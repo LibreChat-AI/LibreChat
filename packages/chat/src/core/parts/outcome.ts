@@ -115,6 +115,13 @@ export function getToolMeta(
   /** Terminal verdict lives on the outer `tool_call` object (`PartMetadata`),
    *  not on the per-variant payload, so it is read before any narrowing cast. */
   const runStepStatus = toolCall.runStepStatus;
+  // A client handoff is not an action executed (or cancelled) by this agent.
+  if (
+    toolCall.clientToolCall &&
+    runStepStatus == null &&
+    !('output' in toolCall && toolCall.output != null)
+  )
+    return null;
 
   const isStandard =
     'args' in toolCall && (!toolCall.type || toolCall.type === ToolCallTypes.TOOL_CALL);

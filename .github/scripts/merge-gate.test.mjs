@@ -210,7 +210,7 @@ test('the Playwright merge group matrix is the pull request profile with no lane
   const profile = JSON.parse(selector.env.FULL_INCLUDE);
   const queued = simulate(workflow, mergeGroup());
   assert.deepEqual(queued.e2e_shards.matrix, profile);
-  assert.equal(profile.include.length, 17);
+  assert.equal(profile.include.length, 27);
   assert.deepEqual(ran(queued).sort(), [
     'e2e',
     'e2e_shards',
@@ -221,7 +221,7 @@ test('the Playwright merge group matrix is the pull request profile with no lane
   const opened = simulate(workflow, pullRequest('opened'));
   assert.deepEqual(opened.e2e_shards.matrix, profile);
   const nightly = simulate(workflow, { event_name: 'schedule', event: {} });
-  assert.equal(nightly.e2e_shards.matrix.include.length, 25);
+  assert.equal(nightly.e2e_shards.matrix.include.length, 35);
 });
 
 test('pull request runs keep their selection: full when opened, narrowed on synchronize', () => {

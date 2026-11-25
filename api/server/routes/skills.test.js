@@ -507,6 +507,16 @@ describe('Skill routes', () => {
   });
 
   describe('POST /api/skills/import', () => {
+    it('rejects text fields on a file-only import', async () => {
+      const res = await request(app)
+        .post('/api/skills/import')
+        .field('extra', 'metadata')
+        .attach('file', Buffer.from('Example'), 'skill.md');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('Too many fields');
+    });
+
     it('enforces fileConfig.skills.fileSizeLimit before import handling', async () => {
       mockFileConfig = {
         skills: {
@@ -855,6 +865,19 @@ describe('Skill routes', () => {
   });
 
   describe('POST /api/skills/:id/files (live)', () => {
+    it('rejects fields beyond the file path and revision', async () => {
+      const created = await createSkillAsOwner();
+      const res = await request(app)
+        .post(`/api/skills/${created.body._id}/files`)
+        .field('relativePath', 'references/sample.md')
+        .field('expectedFileId', 'revision')
+        .field('extra', 'metadata')
+        .attach('file', Buffer.from('Example'), 'sample.md');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('Too many fields');
+    });
+
     it('replaces a nested text file and clears the old cached content', async () => {
       const { Readable } = require('stream');
       const { getStrategyFunctions } = require('~/server/services/Files/strategies');

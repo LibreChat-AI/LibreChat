@@ -265,10 +265,12 @@ const renderers = extendPartRenderers({
 />;
 ```
 
-Three things have no card in the package yet, because LibreChat's read its own state: an error
-part, a paused question (`claim`), and the subagent tool, which draws as a generic tool card until
-a host supplies one. A web search draws the package's card, with the message's streaming results
-from `SearchContext` and the image, shopping and place strips under it.
+Two things have no card in the package yet, because LibreChat's read its own state: an error part
+and a paused question (`claim`). A web search draws the package's card, with the message's
+streaming results from `SearchContext` and the image, shopping and place strips under it. A
+subagent call draws the package's card: it finds the agent it runs as through the messages host's
+`useAgentsMap`, and the share, strings and run's files through the parts host's `useShare` and
+`useToolCallChrome`.
 
 ### A whole message
 
@@ -316,6 +318,16 @@ import { contentPartsRenderer } from '@librechat/chat/components';
 
 const host = { ...rest, renderContentParts: contentPartsRenderer(slots) };
 ```
+
+### An app outside LibreChat, checked
+
+[`e2e/outside-host`](../../e2e/outside-host) is such an app: a page built with plain Vite that
+draws recorded conversations with this package, `@librechat/client`, `standalone.css` and the
+shipped strings, and no LibreChat code. Its `host.tsx` fills every member of the parts host with
+what an app that has no server knows. The mock browser lane draws each of its conversations in
+LibreChat's chat view and on that page and compares the two element by element
+(`outside-host.spec.ts`). What the package cannot draw the same way yet is listed there, each
+with the change that closes it.
 
 ## What the app supplies
 

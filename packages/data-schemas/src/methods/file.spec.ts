@@ -1508,6 +1508,36 @@ describe('File Methods', () => {
       expect(result.files.map((file) => file.file_id)).toEqual(['untenanted']);
     });
 
+    it('returns candidate timestamps for the picker card and omits them on a legacy file', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const createdAt = new Date('2026-03-01T12:00:00.000Z');
+      const updatedAt = new Date('2026-03-14T12:00:00.000Z');
+      const base = {
+        user: new mongoose.Types.ObjectId(userId),
+        tenantId: null,
+        filepath: '/uploads/dated',
+        object: 'file',
+        type: 'text/plain',
+        bytes: 1,
+        usage: 0,
+        embedded: true,
+        context: FileContext.message_attachment,
+      };
+      /* Raw inserts, so Mongoose does not stamp the legacy row with timestamps. */
+      await File.collection.insertMany([
+        { ...base, file_id: 'legacy', filename: 'Legacy.txt' },
+        { ...base, file_id: 'dated', filename: 'Dated.txt', createdAt, updatedAt },
+      ]);
+
+      const result = await fileMethods.getAvailableProjectFiles({ userId, limit: 10 });
+
+      const [dated, legacy] = result.files;
+      expect(dated).toMatchObject({ file_id: 'dated', createdAt, updatedAt });
+      expect(legacy.file_id).toBe('legacy');
+      expect(legacy).not.toHaveProperty('createdAt');
+      expect(legacy).not.toHaveProperty('updatedAt');
+    });
+
     it('paginates only eligible owner files with stable cursors and literal search', async () => {
       const userId = new mongoose.Types.ObjectId().toString();
       const now = new Date('2026-01-01T00:00:00.000Z');

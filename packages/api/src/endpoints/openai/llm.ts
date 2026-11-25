@@ -133,11 +133,14 @@ function isOpenAIEndpoint(endpoint?: EModelEndpoint | string | null): boolean {
 }
 
 /**
- * GPT-5.6 models reject function tools combined with `reasoning_effort` in
- * `/v1/chat/completions` (400: "To use function tools, use /v1/responses or
- * set reasoning_effort to 'none'"). Reasoning without tools still works on
- * Chat Completions, but tools are bound after config time, so GPT-5.6
- * reasoning requests default to the Responses API to avoid tool failures.
+ * GPT-5.6 models reason by default and reject function tools alongside
+ * reasoning in `/v1/chat/completions` (400: "To use function tools, use
+ * /v1/responses or set reasoning_effort to 'none'"). Tools are bound after
+ * config time, and the Chat Completions client never transmits the flat
+ * `reasoning_effort` this config sets, so a request there always runs at the
+ * provider's default effort, whether the user chose `none`, another effort, or
+ * nothing. GPT-5.6 therefore defaults to the Responses API, which carries the
+ * selected effort as `reasoning.effort`.
  */
 const responsesApiRequiredPattern = /\bgpt-5\.6\b/;
 
@@ -153,21 +156,8 @@ function isCanonicalAzureBaseURL(baseURL?: string | null, azure?: false | t.Azur
   return isCanonicalAzureURL(constructAzureURL({ baseURL, azureOptions: azure }));
 }
 
-function requiresResponsesApiForReasoning({
-  model,
-  reasoningEffort,
-}: {
-  model?: string;
-  reasoningEffort?: string | null;
-}): boolean {
-  if (typeof model !== 'string' || !responsesApiRequiredPattern.test(model)) {
-    return false;
-  }
-  return (
-    reasoningEffort != null &&
-    reasoningEffort !== ReasoningEffort.unset &&
-    reasoningEffort !== ReasoningEffort.none
-  );
+function requiresResponsesApi(model?: string): boolean {
+  return typeof model === 'string' && responsesApiRequiredPattern.test(model);
 }
 
 /**
@@ -1027,22 +1017,15 @@ export function getOpenAILLMConfig({
   }
 
   /**
-   * Default GPT-5.6 reasoning requests to the Responses API unless explicitly set.
-   * Reads `llmConfig.model` (reflects `addParams` overrides) and skips when
-   * `dropParams` removes `reasoning_effort` later anyway (`'reasoning'` only
-   * drops the nested object, not the flat param) or opts out of the Responses
-   * API entirely. Limited to first-party OpenAI: OpenRouter, custom gateways
-   * (non-canonical base URL), and `reasoningFormat: 'disabled'` (no reasoning
-   * payload is sent) keep their existing Chat Completions path.
-   */
-  const responsesApiOptedOut =
-    dropParams != null &&
-    (dropParams.includes('reasoning_effort') || dropParams.includes('useResponsesApi'));
-  /**
-   * The GPT-5.6 default above is reasoning-driven, so dropping `reasoning_effort`
-   * removes its reason to route. GPT-6's is not: it takes Responses for every
-   * turn, and a drop rule clearing an unsupported stored effort must not also
-   * disable its routing. Only an explicit `useResponsesApi` drop does that.
+   * Default GPT-5.6 to the Responses API unless explicitly set, whatever the
+   * reasoning effort. Reads `llmConfig.model` (reflects `addParams` overrides).
+   * Limited to first-party OpenAI: OpenRouter, custom gateways (non-canonical
+   * base URL), and `reasoningFormat: 'disabled'` keep their existing Chat
+   * Completions path.
+   *
+   * Both GPT-5.6 and GPT-6 route by model, so a drop rule clearing a stored
+   * effort must not also disable their routing. Only an explicit
+   * `useResponsesApi` drop does that.
    */
   const responsesApiExplicitlyOptedOut =
     dropParams != null && dropParams.includes('useResponsesApi');
@@ -1068,8 +1051,8 @@ export function getOpenAILLMConfig({
     firstPartyOpenAI &&
     reasoningFormat !== ReasoningParameterFormat.disabled &&
     llmConfig.useResponsesApi == null &&
-    !responsesApiOptedOut &&
-    requiresResponsesApiForReasoning({ model: llmConfig.model, reasoningEffort })
+    !responsesApiExplicitlyOptedOut &&
+    requiresResponsesApi(llmConfig.model)
   ) {
     llmConfig.useResponsesApi = true;
   }

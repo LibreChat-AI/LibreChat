@@ -924,21 +924,40 @@ describe('getOpenAILLMConfig', () => {
       },
     );
 
-    it('should NOT default to Responses API without reasoning params', () => {
+    it.each(['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6'])(
+      'should default to Responses API for %s without reasoning params',
+      (model) => {
+        const result = getOpenAILLMConfig({
+          apiKey: 'test-api-key',
+          streaming: true,
+          endpoint: EModelEndpoint.openAI,
+          modelOptions: { model },
+        });
+
+        expect(result.llmConfig).toHaveProperty('useResponsesApi', true);
+        expect(result.llmConfig).not.toHaveProperty('reasoning');
+        expect(result.llmConfig).not.toHaveProperty('reasoning_effort');
+      },
+    );
+
+    it('should default to Responses API when reasoning_effort is unset', () => {
       const result = getOpenAILLMConfig({
         apiKey: 'test-api-key',
         streaming: true,
         endpoint: EModelEndpoint.openAI,
         modelOptions: {
           model: 'gpt-5.6-terra',
+          reasoning_effort: ReasoningEffort.unset,
         },
       });
 
-      expect(result.llmConfig).not.toHaveProperty('useResponsesApi');
+      expect(result.llmConfig).toHaveProperty('useResponsesApi', true);
       expect(result.llmConfig).not.toHaveProperty('reasoning');
     });
 
-    it('should NOT default to Responses API when reasoning_effort is none', () => {
+    /** The Chat Completions client drops the flat `reasoning_effort`, so `none`
+     * only reaches OpenAI, and only avoids the tool rejection, as `reasoning.effort`. */
+    it('should default to Responses API when reasoning_effort is none', () => {
       const result = getOpenAILLMConfig({
         apiKey: 'test-api-key',
         streaming: true,
@@ -949,8 +968,84 @@ describe('getOpenAILLMConfig', () => {
         },
       });
 
-      expect(result.llmConfig).not.toHaveProperty('useResponsesApi');
-      expect(result.llmConfig).toHaveProperty('reasoning_effort', ReasoningEffort.none);
+      expect(result.llmConfig).toHaveProperty('useResponsesApi', true);
+      expect(result.llmConfig.reasoning).toEqual({ effort: ReasoningEffort.none });
+      expect(result.llmConfig).not.toHaveProperty('reasoning_effort');
+    });
+
+    it('should default to Responses API when only reasoning_mode is set', () => {
+      const result = getOpenAILLMConfig({
+        apiKey: 'test-api-key',
+        streaming: true,
+        endpoint: EModelEndpoint.openAI,
+        modelOptions: {
+          model: 'gpt-5.6',
+          reasoning_mode: ReasoningMode.pro,
+        },
+      });
+
+      expect(result.llmConfig).toHaveProperty('useResponsesApi', true);
+      expect(result.llmConfig.reasoning).toEqual({ mode: ReasoningMode.pro });
+    });
+
+    it('should shape token and verbosity params for the Responses API without reasoning params', () => {
+      const result = getOpenAILLMConfig({
+        apiKey: 'test-api-key',
+        streaming: true,
+        endpoint: EModelEndpoint.openAI,
+        modelOptions: {
+          model: 'gpt-5.6',
+          max_tokens: 2048,
+          verbosity: Verbosity.low,
+        },
+      });
+
+      expect(result.llmConfig).toHaveProperty('useResponsesApi', true);
+      expect(result.llmConfig.modelKwargs).toEqual({
+        max_output_tokens: 2048,
+        text: { verbosity: Verbosity.low },
+      });
+    });
+
+    it('should respect an explicit useResponsesApi: false without reasoning params', () => {
+      const result = getOpenAILLMConfig({
+        apiKey: 'test-api-key',
+        streaming: true,
+        endpoint: EModelEndpoint.openAI,
+        modelOptions: {
+          model: 'gpt-5.6-terra',
+          useResponsesApi: false,
+        },
+      });
+
+      expect(result.llmConfig).toHaveProperty('useResponsesApi', false);
+      expect(result.llmConfig).not.toHaveProperty('reasoning');
+    });
+
+    it.each([
+      [
+        'a custom gateway base URL',
+        { endpoint: EModelEndpoint.openAI, baseURL: 'https://gw.test/v1' },
+      ],
+      ['OpenRouter', { endpoint: EModelEndpoint.openAI, useOpenRouter: true }],
+      ['a custom endpoint', { endpoint: 'custom' }],
+      [
+        'a useResponsesApi drop',
+        { endpoint: EModelEndpoint.openAI, dropParams: ['useResponsesApi'] },
+      ],
+      [
+        'a disabled reasoning format',
+        { endpoint: EModelEndpoint.openAI, reasoningFormat: ReasoningParameterFormat.disabled },
+      ],
+    ])('should NOT default to Responses API for %s without reasoning params', (_name, config) => {
+      const result = getOpenAILLMConfig({
+        apiKey: 'test-api-key',
+        streaming: true,
+        modelOptions: { model: 'gpt-5.6-terra' },
+        ...config,
+      });
+
+      expect(result.llmConfig.useResponsesApi).not.toBe(true);
     });
 
     it('should respect an explicit useResponsesApi: false', () => {
@@ -1059,7 +1154,7 @@ describe('getOpenAILLMConfig', () => {
       expect(result.llmConfig).toHaveProperty('reasoning_effort', ReasoningEffort.high);
     });
 
-    it('should NOT default to Responses API when dropParams removes reasoning_effort', () => {
+    it('should still default to Responses API when dropParams removes reasoning_effort', () => {
       const result = getOpenAILLMConfig({
         apiKey: 'test-api-key',
         streaming: true,
@@ -1071,7 +1166,7 @@ describe('getOpenAILLMConfig', () => {
         dropParams: ['reasoning_effort'],
       });
 
-      expect(result.llmConfig).not.toHaveProperty('useResponsesApi');
+      expect(result.llmConfig).toHaveProperty('useResponsesApi', true);
       expect(result.llmConfig).not.toHaveProperty('reasoning');
       expect(result.llmConfig).not.toHaveProperty('reasoning_effort');
     });

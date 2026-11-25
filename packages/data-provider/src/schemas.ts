@@ -1567,6 +1567,11 @@ export type TConversation = z.infer<typeof tConversationSchema> & {
   disableParams?: boolean;
 };
 
+export type TConversationDetail = TConversation & {
+  /** The stored conversation was returned because target resolution threw. */
+  targetResolutionFailed?: true;
+};
+
 export const tSharedLinkSchema = z.object({
   conversationId: z.string(),
   shareId: z.string(),

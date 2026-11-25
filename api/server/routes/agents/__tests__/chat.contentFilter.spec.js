@@ -15,6 +15,8 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  admitAssistantRequest: (...args) =>
+    jest.requireActual('@librechat/api').admitAssistantRequest(...args),
   validateChatMessageIds: jest.requireActual(
     '../../../../../packages/api/src/middleware/messageIds',
   ).validateChatMessageIds,

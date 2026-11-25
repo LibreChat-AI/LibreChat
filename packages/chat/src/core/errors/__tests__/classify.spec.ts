@@ -5,6 +5,7 @@ import {
   getLangChainErrorKey,
   codeWorkspaceErrorKeys,
 } from '../classify';
+import { getStreamStartFailureText } from '../../resumable/errors';
 import { extractJson, isJson } from '../../json';
 
 const langChainText = (code: string) =>
@@ -86,6 +87,22 @@ describe('classifyErrorText', () => {
       payload: body,
       code: 'error',
     });
+  });
+
+  it('preserves the localized admission code through a refused chat start', () => {
+    const body = {
+      code: ErrorTypes.ASSISTANT_OUTPUT_UNSUPPORTED,
+      error: 'content_filter_block',
+      message: 'Start a regular text-only Agent turn to use assistant reply protection.',
+    };
+    const failure = classifyErrorText(getStreamStartFailureText(body));
+    expect(failure).toMatchObject({
+      kind: 'payload',
+      code: ErrorTypes.ASSISTANT_OUTPUT_UNSUPPORTED,
+    });
+    expect(failure.kind === 'payload' && errorCopyKey(failure.code ?? '')).toBe(
+      'com_error_assistant_output_unsupported',
+    );
   });
 
   it('reports a payload with no code at all', () => {

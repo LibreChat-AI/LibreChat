@@ -26,8 +26,11 @@ jest.mock('@librechat/chat/dist/components/parts/WebSearch.cjs', () => ({
   ...jest.requireActual('@librechat/chat/dist/components/parts/WebSearch.cjs'),
   WebSearchCall: () => <div data-testid="web-search" />,
 }));
-jest.mock('../Parts', () => ({
-  SubagentCall: ({ toolCallId }: { toolCallId: string }) => (
+/** The subagent card is the chat package's now; this stands in for its module. */
+jest.mock('@librechat/chat/dist/components/parts/SubagentCall.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/SubagentCall.cjs'),
+  __esModule: true,
+  default: ({ toolCallId }: { toolCallId: string }) => (
     <div data-testid="subagent-call" data-tool-call-id={toolCallId} />
   ),
 }));
@@ -75,7 +78,7 @@ describe('the app’s part renderers, over the chat package’s', () => {
     expect(card).toHaveTextContent('Which?');
   });
 
-  it('draws a subagent call with the app’s card and a web search with the package’s', () => {
+  it('draws a subagent call and a web search with the package’s cards', () => {
     const { unmount } = draw(call(Constants.SUBAGENT as string));
     expect(screen.getByTestId('subagent-call')).toHaveAttribute('data-tool-call-id', 'call_1');
     unmount();

@@ -36,6 +36,8 @@ describe('event subscription wiring', () => {
         revoke: expect.any(Function),
       }),
     );
+    // Given what a readiness check reads, the host offers one for the router to call.
+    expect(host.preflight).toEqual(expect.any(Function));
   });
 
   it('is claimed for a delivery a subscription matched, and for no other run', () => {

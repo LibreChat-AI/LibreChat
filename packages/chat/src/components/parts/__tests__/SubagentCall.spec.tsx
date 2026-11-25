@@ -1,12 +1,13 @@
 /**
  * @jest-environment jsdom
  */
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect, useContext, useMemo } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Provider as JotaiProvider, createStore, useAtomValue, useStore } from 'jotai';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type {
   Agent,
+  AgentDisplay,
   PartMetadata,
   TAttachment,
   SubagentIdentity,
@@ -22,6 +23,7 @@ import type {
 import type { ActiveSubagentPanel, SubagentProgress } from '../../../react/subagents/state';
 import type { ChatSurface } from '../../../react/subagents/context';
 import type { StreamHost } from '../../../react/stream/host';
+import type { NestedContentRenderer } from '../../nested';
 import type { SubagentCallProps } from '../SubagentCall';
 import {
   foldSubagentEvent,
@@ -40,11 +42,16 @@ import PackageSubagentCall, { SUBAGENT_TICKER_THROTTLE_MS } from '../SubagentCal
 import { ParentSubagentsProvider } from '../../../react/subagents/parents';
 import { createSubagentsHost } from '../../../__fixtures__/subagentsHost';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
+import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import { SubagentCallerContext } from '../../../react/subagents/author';
 import { SubagentsHostProvider } from '../../../react/subagents/host';
+import { MessagesHostProvider } from '../../../react/messages/host';
 import { useIsPartsPreview } from '../../../react/parts/preview';
 import { StreamHostProvider } from '../../../react/stream/host';
+import { emptyToolCallChrome } from '../../../react/host';
+import { MessageContext } from '../../../react/message';
+import { NestedContentContext } from '../../nested';
 import { ToolPreparation } from '../preparation';
 import { FailedRevealContext } from '../reveal';
 import { FOLD_GLYPH_SELECTOR } from '../rows';
@@ -95,25 +102,48 @@ const agents = {
   },
 } as unknown as Record<string, Agent | undefined>;
 
+/** What the card reads from its hosts: the strings, the run's files, and the agents by id. */
+const chrome = {
+  ...emptyToolCallChrome(),
+  localize,
+  renderAttachments: (attachments: TAttachment[]) => (
+    <>
+      <div data-testid="attachment-group">{JSON.stringify(attachments)}</div>
+      <div data-testid="app-views">{JSON.stringify(attachments)}</div>
+    </>
+  ),
+};
+const messagesHost = createMessagesHost({ useAgentsMap: () => agents });
+
+/** Set by a case for a host that names no content renderer: the card is then given this one by the
+ *  `ContentParts` drawing the message around it. */
+let mockNestedRenderer: NestedContentRenderer | null = null;
+
+/** The card under the hosts and message a row gives it, over whatever parts host a spec set. */
 function SubagentCall(props: SubagentCallProps) {
-  return (
-    <PackageSubagentCall
-      {...props}
-      message={currentMessage}
-      agentsMap={agents}
-      localize={localize}
-      renderAgentIcon={(agent) =>
+  const outer = useMessagePartsHost();
+  const host = useMemo(
+    () => ({
+      ...outer,
+      ...(mockNestedRenderer != null ? { renderContentParts: undefined } : {}),
+      useToolCallChrome: () => chrome,
+      renderAgentIcon: (agent: AgentDisplay | undefined) =>
         agent?.avatar?.filepath != null ? (
           <img alt={agent.name ?? ''} src={agent.avatar.filepath} />
-        ) : null
-      }
-      renderAttachments={(attachments) => (
-        <>
-          <div data-testid="attachment-group">{JSON.stringify(attachments)}</div>
-          <div data-testid="app-views">{JSON.stringify(attachments)}</div>
-        </>
-      )}
-    />
+        ) : null,
+    }),
+    [outer],
+  );
+  return (
+    <MessageContext.Provider value={{ ...currentMessage, isExpanded: false }}>
+      <MessagesHostProvider host={messagesHost}>
+        <MessagePartsHostProvider host={host}>
+          <NestedContentContext.Provider value={mockNestedRenderer}>
+            <PackageSubagentCall {...props} />
+          </NestedContentContext.Provider>
+        </MessagePartsHostProvider>
+      </MessagesHostProvider>
+    </MessageContext.Provider>
   );
 }
 /** A part as one line, so a spec reads which row the thread's renderer was handed. */
@@ -616,6 +646,41 @@ describe('SubagentCall', () => {
       }),
     );
     expect(rendered.getSelection()?.durable).toBeUndefined();
+  });
+
+  it('draws the row with the renderer drawing the message when the host names none', () => {
+    mockNestedRenderer = ({ content, isSubmitting }) => (
+      <div data-testid="nested-row" data-live={String(isSubmitting)}>
+        {(content ?? []).map(partLine).join('|')}
+      </div>
+    );
+    try {
+      renderWithState({
+        toolCallId: 'call-nested',
+        initialProgress: 0.3,
+        isSubmitting: true,
+        progress: progressFromEvents({
+          subagentRunId: 'child-run',
+          subagentType: 'self',
+          status: 'run_step',
+          events: [
+            event('run_step', {
+              stepDetails: {
+                type: 'tool_calls',
+                tool_calls: [{ id: 'inner-1', name: 'calculator', args: '{"value":4}' }],
+              },
+            }),
+          ],
+        }),
+      });
+
+      const row = screen.getByTestId('nested-row');
+      expect(row).toHaveTextContent('calculator');
+      expect(row).toHaveAttribute('data-live', 'true');
+      expect(screen.queryByTestId('thread-row')).not.toBeInTheDocument();
+    } finally {
+      mockNestedRenderer = null;
+    }
   });
 
   it('says it is starting until the child reports, waiting until it has a row, and shows none once it is done', () => {

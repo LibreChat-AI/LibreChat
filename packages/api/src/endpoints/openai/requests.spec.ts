@@ -226,6 +226,102 @@ describe('Azure full-hostname instances', () => {
   });
 });
 
+describe('First-party GPT-5.6 function tool requests', () => {
+  const calculator = {
+    type: 'function' as const,
+    function: {
+      name: 'calculator',
+      description: 'Compute arithmetic',
+      parameters: {
+        type: 'object',
+        properties: { input: { type: 'string' } },
+        required: ['input'],
+      },
+    },
+  };
+
+  /** Sends one tool request through the real client and returns what OpenAI receives. */
+  async function send(modelOptions: object) {
+    const requests: { url: URL; body: Record<string, unknown> }[] = [];
+    const fetch: NonNullable<NonNullable<OpenAIConfiguration>['fetch']> = async (url, init) => {
+      requests.push({ url: new URL(String(url)), body: JSON.parse(String(init?.body)) });
+      const text = 'Four.';
+      return Response.json({
+        id: 'resp_test',
+        object: 'response',
+        status: 'completed',
+        model: 'gpt-5.6',
+        choices: [
+          { index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' },
+        ],
+        output: [
+          {
+            type: 'message',
+            id: 'msg_test',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text, annotations: [] }],
+          },
+        ],
+        usage: { prompt_tokens: 5, completion_tokens: 1, input_tokens: 5, output_tokens: 1 },
+      });
+    };
+    const { llmConfig, configOptions } = getOpenAIConfig(
+      'test-openai-key',
+      { streaming: false, reverseProxyUrl: 'https://api.openai.com/v1', modelOptions },
+      EModelEndpoint.openAI,
+    );
+    const model = initializeModel({
+      provider: Providers.OPENAI,
+      clientOptions: {
+        ...llmConfig,
+        verbosity: undefined,
+        configuration: { ...configOptions, fetch },
+      },
+      tools: [calculator],
+    });
+
+    await model.invoke('Use the calculator to compute 2 + 2.');
+
+    expect(requests).toHaveLength(1);
+    return { path: requests[0].url.origin + requests[0].url.pathname, body: requests[0].body };
+  }
+
+  it.each(['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'])(
+    'sends %s tool requests to the Responses API when no reasoning effort is set',
+    async (model) => {
+      const { path, body } = await send({ model, max_tokens: 2048 });
+
+      expect(path).toBe('https://api.openai.com/v1/responses');
+      expect(body).toMatchObject({
+        model,
+        max_output_tokens: 2048,
+        tools: [expect.objectContaining({ type: 'function', name: 'calculator' })],
+      });
+      for (const key of ['reasoning', 'reasoning_effort', 'max_tokens', 'max_completion_tokens']) {
+        expect(body).not.toHaveProperty(key);
+      }
+    },
+  );
+
+  it.each([ReasoningEffort.none, ReasoningEffort.high])(
+    'sends a selected %s reasoning effort as reasoning.effort',
+    async (effort) => {
+      const { path, body } = await send({ model: 'gpt-5.6', reasoning_effort: effort });
+
+      expect(path).toBe('https://api.openai.com/v1/responses');
+      expect(body).toMatchObject({ reasoning: { effort } });
+      expect(body).not.toHaveProperty('reasoning_effort');
+    },
+  );
+
+  it('keeps tool requests on Chat Completions when Responses is switched off', async () => {
+    const { path } = await send({ model: 'gpt-5.6', useResponsesApi: false });
+
+    expect(path).toBe('https://api.openai.com/v1/chat/completions');
+  });
+});
+
 describe('Gemini-compatible custom endpoint requests', () => {
   const GATEWAY_URL = 'https://gateway.example.com/v1beta/openai';
 

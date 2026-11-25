@@ -12,6 +12,15 @@ import { OboTokenResolutionError } from '~/mcp/oauth/obo';
 export const AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE = 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE';
 export const AGENT_ATTACHMENT_LIMIT_EXCEEDED = 'AGENT_ATTACHMENT_LIMIT_EXCEEDED';
 
+export class AgentModelPolicyError extends Error {
+  readonly status = 403;
+  readonly code = 'model_not_allowed';
+
+  constructor() {
+    super('The configured agent model is unavailable for this request.');
+  }
+}
+
 const FATAL_AGENT_INITIALIZATION_CODES = new Set(
   [
     AGENT_ATTACHMENT_LIMIT_EXCEEDED,
@@ -204,6 +213,9 @@ export function resolveModelStreamError(error: unknown): string | undefined {
  * typed payloads the LibreChat client localizes.
  */
 export function getUserFacingProviderError(error: unknown, protectionEnabled: boolean): string {
+  if (error instanceof AgentModelPolicyError) {
+    return error.message;
+  }
   if (protectionEnabled) {
     return GENERIC_PROVIDER_ERROR;
   }
@@ -301,13 +313,19 @@ export function isStepLimitError(error: unknown): boolean {
 /** Outward metadata shared by UI generation failures and both remote agent APIs. */
 export function getAgentErrorMetadata(
   error: unknown,
+  protectionEnabled = false,
 ): { status?: number; code?: string; retryable?: boolean } | undefined {
+  if (error instanceof AgentModelPolicyError) {
+    return { status: 403, code: 'model_not_allowed' };
+  }
   if (error instanceof OboTokenResolutionError) {
     return {
       status: error.retryable ? 503 : 403,
-      code: error.retryable
-        ? MCPErrorCodes.AUTHENTICATION_REFRESH_FAILED
-        : MCPErrorCodes.AUTHENTICATION_REJECTED,
+      ...(!protectionEnabled && {
+        code: error.retryable
+          ? MCPErrorCodes.AUTHENTICATION_REFRESH_FAILED
+          : MCPErrorCodes.AUTHENTICATION_REJECTED,
+      }),
       retryable: error.retryable,
     };
   }
@@ -320,6 +338,6 @@ export function getAgentErrorMetadata(
     ...(typeof status === 'number' && Number.isInteger(status) && status >= 400 && status < 600
       ? { status }
       : {}),
-    ...(typeof candidate.code === 'string' ? { code: candidate.code } : {}),
+    ...(!protectionEnabled && typeof candidate.code === 'string' ? { code: candidate.code } : {}),
   };
 }

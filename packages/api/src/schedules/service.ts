@@ -316,7 +316,7 @@ export interface SchedulesService {
    *  Replays terminal permanent-MCP bookkeeping but never claims, fires, advances, or
    *  infers owner death from a process-local missing job. See startScheduleErasureSweep. */
   initializeScheduleErasureSweep: () => void;
-  reconcileRetainedJobs: () => Promise<void>;
+  reconcileRetainedJobs: () => Promise<number>;
 }
 
 /** A replaced/foreign generation cannot receive an old denial or model-visible result. */
@@ -1036,6 +1036,12 @@ export function createSchedulesService(
     });
   }
 
+  /** A delete that leaves its row `deleting` is the fallback sweep's to converge, and the sweep may be
+   *  backed off while nothing else is pending. A no-op when the armed engine owns erasure. */
+  function leaveToErasureSweep(): void {
+    erasureSweep?.hint();
+  }
+
   async function initializeScheduleEngine(): Promise<
     ReturnType<typeof startScheduleEngine> | undefined
   > {
@@ -1303,11 +1309,13 @@ export function createSchedulesService(
     });
   }
 
-  /** The job outbox survives both owner death and a crash after Mongo bookkeeping. */
-  async function reconcileRetainedJobs(): Promise<void> {
+  /** The job outbox survives both owner death and a crash after Mongo bookkeeping. Resolves how many
+   *  retained jobs it examined, so the fallback sweep can tell an empty outbox from a busy one. */
+  async function reconcileRetainedJobs(): Promise<number> {
     const store = GenerationJobManager.getJobStore();
-    if (!store?.getScheduleReconcileJobs) return;
-    for (const held of await store.getScheduleReconcileJobs(100)) {
+    if (!store?.getScheduleReconcileJobs) return 0;
+    const retained = await store.getScheduleReconcileJobs(100);
+    for (const held of retained) {
       let job = held;
       if (job.terminalPersistencePending === true) {
         try {
@@ -1392,6 +1400,7 @@ export function createSchedulesService(
         logger.warn('[schedules] retained outcome recovery deferred:', error);
       }
     }
+    return retained.length;
   }
 
   const OUTCOME_RETRY_ATTEMPTS = 3;
@@ -2305,10 +2314,14 @@ export function createSchedulesService(
         }
       }
       if (remaining > 0) {
+        leaveToErasureSweep();
         return 'unconfirmed';
       }
     }
-    if (await cleanupStillPending(cleanupPending)) return 'unconfirmed';
+    if (await cleanupStillPending(cleanupPending)) {
+      leaveToErasureSweep();
+      return 'unconfirmed';
+    }
     const erased = await eraseSettledSchedule(scheduleId).catch((err) => {
       logger.warn(`[schedules] erase failed for ${scheduleId}:`, err);
       return false;
@@ -2319,6 +2332,7 @@ export function createSchedulesService(
     // eraseScheduleIfDrained already returns true when the row was concurrently
     // erased or is absent. A false result therefore means the deleting row is still
     // protected by a live lease/run, or the erase could not be confirmed.
+    leaveToErasureSweep();
     return 'draining';
   }
 

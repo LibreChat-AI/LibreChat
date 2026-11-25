@@ -1,15 +1,11 @@
+import { useLocalize } from '@librechat/client';
 import { ErrorTypes } from 'librechat-data-provider';
+import type { TranslationKeys } from '@librechat/client';
+import type { ReactNode } from 'react';
 import type { ErrorRendererProps } from './parts';
-import type { TranslationKeys } from '~/hooks';
-import {
-  ErrorBody,
-  ErrorDetails,
-  formatNumber,
-  readNumber,
-  readString,
-  useErrorEndpoint,
-} from './parts';
-import { useLocalize } from '~/hooks';
+import { formatNumber, readNumber, readString } from '../../core/errors';
+import { useErrorEndpoint } from '../../react/errors';
+import { ErrorBody, ErrorDetails } from './parts';
 
 const emptyMessagesBoilerplate = [
   'Message pruning removed all messages as none fit in the context window.',
@@ -84,7 +80,7 @@ function hasTextBeyondNumbers(
   return parsed == null || parsed[0] !== projected || parsed[1] !== available;
 }
 
-export default function ContextError({ json, message }: ErrorRendererProps) {
+export default function ContextError({ json, message }: ErrorRendererProps): ReactNode {
   const localize = useLocalize();
   const { compactionAvailable } = useErrorEndpoint(message);
   const errorType = readString(json, 'type');

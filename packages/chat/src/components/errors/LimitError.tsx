@@ -1,16 +1,16 @@
 import { useEffect, useState } from 'react';
+import { useLocalize } from '@librechat/client';
 import { ViolationTypes } from 'librechat-data-provider';
+import type { ReactNode } from 'react';
 import type { ErrorRendererProps } from './parts';
 import {
-  ErrorBody,
   readNumber,
   readString,
   formatNumber,
   formatDuration,
-  useWindowLabel,
   formatTimestamp,
-} from './parts';
-import { useLocalize } from '~/hooks';
+} from '../../core/errors';
+import { ErrorBody, useWindowLabel } from './parts';
 
 type RetryTargetInput = {
   type: string | undefined;
@@ -104,7 +104,7 @@ function useRetryCountdown(target?: number): number | undefined {
   return remaining ?? Math.max(0, target - Date.now());
 }
 
-export default function LimitError({ json, message }: ErrorRendererProps) {
+export default function LimitError({ json, message }: ErrorRendererProps): ReactNode {
   const localize = useLocalize();
   const type = readString(json, 'type');
   const createdAt = message?.createdAt as string | Date | undefined;

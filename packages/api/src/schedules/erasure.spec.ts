@@ -1,3 +1,4 @@
+import { logger } from '@librechat/data-schemas';
 import type { IScheduleRun, ScheduleMethods } from '@librechat/data-schemas';
 import type { JobState } from './types';
 import { startScheduleErasureSweep } from './erasure';
@@ -539,5 +540,220 @@ describe('dead-delivery certainty fence', () => {
     expect(methods.recordRunOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'error', error: 'timed out' }),
     );
+  });
+});
+
+describe('schedule erasure fallback idle back-off', () => {
+  const MIN = 60_000;
+  const emptyMethods = (overrides: Record<string, unknown> = {}) => ({
+    getDeletingSchedules: jest.fn(async () => []),
+    getActiveRunsForSchedule: jest.fn(async () => []),
+    eraseScheduleIfDrained: jest.fn(async () => true),
+    markEraseAttempted: jest.fn(async () => undefined),
+    getRunsForReconciliation: jest.fn(async () => []),
+    getUnbookkeptRuns: jest.fn(async () => []),
+    markRunsReconciled: jest.fn(async () => undefined),
+    finalizeBookkeeping: jest.fn(async () => undefined),
+    recordRunOutcome: jest.fn(async () => undefined),
+    ...overrides,
+  });
+  const start = (methods: ReturnType<typeof emptyMethods>, extra: Record<string, unknown> = {}) =>
+    startScheduleErasureSweep({
+      methods: methods as unknown as ScheduleMethods,
+      getJobStatus: jest.fn(async () => null),
+      getTriggerDelivery: jest.fn(async () => null),
+      abortScheduledJob: jest.fn(async () => true),
+      clearReconciledJob: jest.fn(async () => undefined),
+      canInferOwnerDeathFromMissingJob: false,
+      ...extra,
+    });
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+    jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it('backs off while a sweep finds nothing, up to four times the base interval', async () => {
+    const methods = emptyMethods();
+    const sweep = start(methods);
+
+    /** The first sweep still comes one interval after start, not at start. */
+    await jest.advanceTimersByTimeAsync(5 * MIN - 1);
+    expect(methods.getDeletingSchedules).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(1);
+
+    await jest.advanceTimersByTimeAsync(10 * MIN - 1);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(2);
+
+    await jest.advanceTimersByTimeAsync(20 * MIN - 1);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(2);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(3);
+
+    /** The ceiling holds. */
+    await jest.advanceTimersByTimeAsync(20 * MIN);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(4);
+    sweep.stop();
+  });
+
+  it('keeps jittering every wait, the delayed first one included', async () => {
+    jest.spyOn(Math, 'random').mockReturnValue(0.5);
+    const methods = emptyMethods();
+    const sweep = start(methods);
+
+    await jest.advanceTimersByTimeAsync(5 * MIN + 14_999);
+    expect(methods.getDeletingSchedules).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(10 * MIN + 14_999);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(2);
+    sweep.stop();
+  });
+
+  it.each<[string, Record<string, unknown>, Record<string, unknown>]>([
+    [
+      'a schedule is being deleted',
+      { getDeletingSchedules: jest.fn(async () => [{ id: 's-1' }]) },
+      {},
+    ],
+    [
+      'a run is waiting to be converged',
+      { getRunsForReconciliation: jest.fn(async () => [oldRun({ status: 'success' })]) },
+      {},
+    ],
+    [
+      'a run is waiting for its bookkeeping',
+      { getUnbookkeptRuns: jest.fn(async () => [oldRun({ status: 'success' })]) },
+      {},
+    ],
+    ['a retained job is held', {}, { reconcileRetainedJobs: jest.fn(async () => 2) }],
+  ])('stays on the base interval while %s', async (_name, overrides, extra) => {
+    const methods = emptyMethods(overrides);
+    const sweep = start(methods, extra);
+
+    await jest.advanceTimersByTimeAsync(5 * MIN);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(1);
+    /** Inspecting a row that needs no action is still not an empty sweep. */
+    await jest.advanceTimersByTimeAsync(5 * MIN);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(2);
+    await jest.advanceTimersByTimeAsync(5 * MIN);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(3);
+    sweep.stop();
+  });
+
+  it('treats a retained-job outbox that reports nothing as idle', async () => {
+    const methods = emptyMethods();
+    const reconcileRetainedJobs = jest.fn(async () => 0);
+    const sweep = start(methods, { reconcileRetainedJobs });
+
+    await jest.advanceTimersByTimeAsync(5 * MIN);
+    await jest.advanceTimersByTimeAsync(5 * MIN);
+    expect(reconcileRetainedJobs).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(5 * MIN);
+    expect(reconcileRetainedJobs).toHaveBeenCalledTimes(2);
+    sweep.stop();
+  });
+
+  it.each<[string, Record<string, unknown>, Record<string, unknown>]>([
+    [
+      'the retained jobs cannot be reconciled',
+      {},
+      { reconcileRetainedJobs: jest.fn().mockRejectedValue(new Error('store down')) },
+    ],
+    [
+      'the erase attempts cannot be stamped',
+      { markEraseAttempted: jest.fn().mockRejectedValue(new Error('mongo down')) },
+      {},
+    ],
+    [
+      'the stranded runs cannot be read',
+      { getRunsForReconciliation: jest.fn().mockRejectedValue(new Error('mongo down')) },
+      {},
+    ],
+    [
+      'the unbookkept runs cannot be read',
+      { getUnbookkeptRuns: jest.fn().mockRejectedValue(new Error('mongo down')) },
+      {},
+    ],
+    [
+      'the deleting schedules cannot be read',
+      { getDeletingSchedules: jest.fn().mockRejectedValue(new Error('mongo down')) },
+      {},
+    ],
+  ])('retries at the base interval when %s', async (_name, overrides, extra) => {
+    const methods = emptyMethods(overrides);
+    const sweep = start(methods, extra);
+
+    await jest.advanceTimersByTimeAsync(5 * MIN);
+    await jest.advanceTimersByTimeAsync(5 * MIN);
+    await jest.advanceTimersByTimeAsync(5 * MIN);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(3);
+    sweep.stop();
+  });
+
+  it('sweeps again one base interval after a delete leaves a row behind, even while backed off', async () => {
+    const methods = emptyMethods();
+    const sweep = start(methods);
+    await jest.advanceTimersByTimeAsync(5 * MIN);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(1);
+
+    /** The loop is now waiting ten minutes; the leftover row is due sooner. */
+    sweep.hint();
+    await jest.advanceTimersByTimeAsync(5 * MIN - 1);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(2);
+    sweep.stop();
+  });
+
+  it('answers a burst of hints with one sweep per base interval', async () => {
+    const methods = emptyMethods();
+    const sweep = start(methods);
+    await jest.advanceTimersByTimeAsync(5 * MIN);
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(1);
+
+    /** A delete that leaves its row every ten seconds for twenty minutes. */
+    for (let tick = 0; tick < 120; tick += 1) {
+      sweep.hint();
+      await jest.advanceTimersByTimeAsync(10_000);
+    }
+
+    /** One sweep each at 10, 15, 20 and 25 minutes, not one per delete. */
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(5);
+    sweep.stop();
+  });
+
+  it('leaves no timer behind after stop, and ignores a hint that arrives afterwards', async () => {
+    const methods = emptyMethods();
+    const sweep = start(methods);
+    sweep.stop();
+    sweep.hint();
+
+    await jest.advanceTimersByTimeAsync(60 * MIN);
+
+    expect(methods.getDeletingSchedules).not.toHaveBeenCalled();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('still lets a caller run one sweep on demand', async () => {
+    const methods = emptyMethods();
+    const sweep = start(methods);
+
+    await sweep.sweep();
+
+    expect(methods.getDeletingSchedules).toHaveBeenCalledTimes(1);
+    sweep.stop();
   });
 });

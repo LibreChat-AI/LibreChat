@@ -776,6 +776,58 @@ describe('deleteScheduleForOwner', () => {
     await expect(service.deleteScheduleForOwner('s1', 'user-1')).resolves.toBe('draining');
   });
 
+  /**
+   * The fallback sweep backs off while it finds nothing, so a delete that leaves its row behind
+   * has to pull the next sweep in, or the hidden prompt would wait out the whole back-off.
+   */
+  it('pulls a backed-off fallback sweep in when the delete leaves its row behind', async () => {
+    jest.useFakeTimers();
+    jest.spyOn(Math, 'random').mockReturnValue(0);
+    try {
+      const { service, methods } = makeDeleteHarness({
+        scheduleId: 's1',
+        scheduledFor: new Date('2026-01-01T00:00:00.000Z'),
+        conversationId: 'c1',
+        status: 'requires_action',
+      });
+      mockJobStore = {
+        getJob: jest.fn(async () => ({
+          status: 'requires_action',
+          createdAt: 1,
+          scheduleId: 's1',
+          scheduledFor: '2026-01-01T00:00:00.000Z',
+        })),
+      } as unknown as typeof mockJobStore;
+      const manager = jest.requireMock('../stream/GenerationJobManager').GenerationJobManager;
+      manager.abortJob = jest.fn(async () => ({ success: true }));
+      methods.eraseScheduleIfDrained = jest.fn(async () => false);
+      methods.getScheduleById.mockResolvedValue(null);
+      const deleting = jest.fn(async () => []);
+      Object.assign(methods, {
+        getDeletingSchedules: deleting,
+        markEraseAttempted: jest.fn(async () => undefined),
+        getRunsForReconciliation: jest.fn(async () => []),
+        getUnbookkeptRuns: jest.fn(async () => []),
+        markRunsReconciled: jest.fn(async () => undefined),
+      });
+
+      service.initializeScheduleErasureSweep();
+      // Two empty sweeps leave the next one twenty minutes out.
+      await jest.advanceTimersByTimeAsync(5 * 60_000);
+      await jest.advanceTimersByTimeAsync(10 * 60_000);
+      expect(deleting).toHaveBeenCalledTimes(2);
+
+      await expect(service.deleteScheduleForOwner('s1', 'user-1')).resolves.toBe('draining');
+      await jest.advanceTimersByTimeAsync(5 * 60_000 - 1);
+      expect(deleting).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(deleting).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    }
+  });
+
   afterEach(() => {
     mockJobStore = null;
     jest.restoreAllMocks();

@@ -1,21 +1,18 @@
+import { useLocalize } from '@librechat/client';
 import { ErrorTypes, stripLangChainTroubleshootingUrl } from 'librechat-data-provider';
-import type { ErrorPayload, ErrorRendererProps, UnclassifiedErrorProps } from './parts';
-import type { TranslationKeys } from '~/hooks';
-import {
-  ErrorBody,
-  ErrorDetails,
-  ErrorWithDetail,
-  readObject,
-  readString,
-  useErrorEndpoint,
-} from './parts';
-import { extractJson } from '~/utils/json';
-import { useLocalize } from '~/hooks';
+import type { TranslationKeys } from '@librechat/client';
+import type { ReactElement, ReactNode } from 'react';
+import type { ErrorRendererProps, UnclassifiedErrorProps } from './parts';
+import type { ErrorPayload } from '../../core/errors';
+import { ErrorBody, ErrorDetails, ErrorWithDetail } from './parts';
+import { readObject, readString } from '../../core/errors';
+import { useErrorEndpoint } from '../../react/errors';
+import { extractJson } from '../../core/json';
 
 function withHeadline(
   headline: string,
   detail?: { label: string; value: string },
-): JSX.Element | string {
+): ReactElement | string {
   if (detail == null) {
     return headline;
   }
@@ -40,10 +37,17 @@ function readRefusalExplanation(json: ErrorPayload): string | undefined {
   );
 }
 
-const langChainErrorCopy: Record<string, TranslationKeys> = {
-  [ErrorTypes.MODEL_NOT_FOUND]: 'com_error_model_not_found',
-  [ErrorTypes.MODEL_RATE_LIMIT]: 'com_error_model_rate_limit',
-};
+/** The copy of a classified LangChain failure, by code. Read on use: the codes come from
+ *  `librechat-data-provider`, which a module must not read while it loads. */
+function classifiedCopyKey(code: string): TranslationKeys | undefined {
+  if (code === ErrorTypes.MODEL_NOT_FOUND) {
+    return 'com_error_model_not_found';
+  }
+  if (code === ErrorTypes.MODEL_RATE_LIMIT) {
+    return 'com_error_model_rate_limit';
+  }
+  return undefined;
+}
 
 /** A provider's own message, flat or nested under `error` the way OpenAI-style bodies carry it. */
 function readProviderError(json: ErrorPayload | undefined): string | undefined {
@@ -51,7 +55,7 @@ function readProviderError(json: ErrorPayload | undefined): string | undefined {
 }
 
 /** Renders provider-produced failures with identity-aware copy and readable provider details. */
-export default function ProviderError({ json, message }: ErrorRendererProps) {
+export default function ProviderError({ json, message }: ErrorRendererProps): ReactNode {
   const localize = useLocalize();
   const { provider, model } = useErrorEndpoint(message);
   const errorKey = readString(json, 'code') ?? readString(json, 'type');
@@ -103,7 +107,7 @@ export default function ProviderError({ json, message }: ErrorRendererProps) {
    * with what to do next (where to ask for budget, which models are allowed), so it stays in view
    * at any length rather than collapsing. The server caps it at `maxProviderErrorChars`.
    */
-  const classifiedKey = errorKey != null ? langChainErrorCopy[errorKey] : undefined;
+  const classifiedKey = errorKey != null ? classifiedCopyKey(errorKey) : undefined;
   if (classifiedKey != null) {
     return (
       <ErrorWithDetail
@@ -125,7 +129,7 @@ export default function ProviderError({ json, message }: ErrorRendererProps) {
 }
 
 /** Fallback for provider prose and payloads whose error code has no localized renderer. */
-export function UnclassifiedError({ json, text, message }: UnclassifiedErrorProps) {
+export function UnclassifiedError({ json, text, message }: UnclassifiedErrorProps): ReactNode {
   const localize = useLocalize();
   const { provider } = useErrorEndpoint(message);
   const jsonString = extractJson(text);

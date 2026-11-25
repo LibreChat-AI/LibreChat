@@ -168,7 +168,7 @@ export interface DiscoverConnectedAgentsDeps {
   /** Permission check (typically a wrapper around PermissionService.checkPermission). */
   checkPermission: CheckAgentPermission;
   /** Violation logger passed through to validateAgentModel. */
-  logViolation: ValidateAgentModelParams['logViolation'];
+  logViolation?: ValidateAgentModelParams['logViolation'];
   /** DB methods consumed by initializeAgent for each sub-agent. */
   db: InitializeAgentDbMethods;
   /** Optional callback invoked after each sub-agent is initialized. */

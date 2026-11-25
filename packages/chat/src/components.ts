@@ -1,5 +1,18 @@
 /** Themed message and part components. Populated as the components move in. */
 export { Part } from './components/Part';
+export {
+  default as ErrorMessage,
+  ErrorBox,
+  ERROR_CONNECTION_TEXT,
+} from './components/errors/ErrorMessage';
+export { default as ErrorText } from './components/errors/ErrorText';
+export {
+  ErrorBody,
+  ErrorAction,
+  ErrorActions,
+  ErrorDetails,
+  ErrorWithDetail,
+} from './components/errors/parts';
 export { ContentParts } from './components/ContentParts';
 export { contentPartsRenderer } from './components/contentRenderer';
 export type {
@@ -242,7 +255,7 @@ export type { ToolCallProps } from './components/parts/ToolCall';
 export { default as ProgressText } from './components/parts/ProgressText';
 export type { ProgressTextProps } from './components/parts/ProgressText';
 export { default as SubagentCall } from './components/parts/SubagentCall';
-export type { SubagentCallProps, SubagentCallContext } from './components/parts/SubagentCall';
+export type { SubagentCallProps } from './components/parts/SubagentCall';
 export { default as ResumeAuthorHeader } from './components/parts/ResumeAuthorHeader';
 export { ToolAuthWarning, ToolAuthWarningContext } from './components/parts/auth';
 export { ToolPreparation, useToolPreparation } from './components/parts/preparation';

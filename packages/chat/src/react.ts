@@ -30,8 +30,18 @@ export type {
   MessagePartsUserTextPreferences,
   ToolCallChrome,
   ToolCallLocalize,
+  SetKeyDialogProps,
+  ErrorActionsProps,
+  AgentBuilderAccess,
+  MessagePartsBalanceDisplay,
 } from './react/host';
 export { emptyToolCallChrome } from './react/host';
+export {
+  useOnline,
+  useErrorEndpoint,
+  useBalanceDisplay,
+  useAgentBuilderAccess,
+} from './react/errors';
 export {
   resetSteerFamilies,
   escalatingSteerFamily,

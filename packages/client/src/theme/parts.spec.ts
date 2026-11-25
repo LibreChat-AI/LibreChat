@@ -14,9 +14,8 @@ const palette = fs.readFileSync(
   'utf8',
 );
 
-/** The bodies of every reduced-motion media query, so a rule outside one cannot satisfy a check. */
-function reducedMotionBodies(css: string): string {
-  const marker = '@media (prefers-reduced-motion: reduce) {';
+/** The bodies of every block `marker` opens, so a rule outside one cannot satisfy a check. */
+function bodiesOf(css: string, marker: string): string {
   const bodies: string[] = [];
   let from = css.indexOf(marker);
   while (from !== -1) {
@@ -36,7 +35,7 @@ function reducedMotionBodies(css: string): string {
   return bodies.join('\n');
 }
 
-const reducedMotion = reducedMotionBodies(parts);
+const reducedMotion = bodiesOf(parts, '@media (prefers-reduced-motion: reduce) {');
 
 describe('composer palette styles', () => {
   const classes = Array.from(
@@ -206,5 +205,43 @@ describe('shared streaming effects', () => {
     expect(parts).toContain('animation-delay: var(--lc-delay, 0ms)');
     expect(parts).toContain('@supports not (selector(:has(*)))');
     expect(parts).toContain('background-color: rgb(var(--text-primary))');
+  });
+});
+
+/**
+ * Firefox does not keep the two compositor transforms of the label sweep in step once the band
+ * carries a mask, so there the band stays still and the mask slides over the copy. Every other
+ * browser keeps the compositor sweep.
+ */
+describe('in-flight label sweep in Firefox', () => {
+  const firefox = bodiesOf(parts, '@supports (-moz-appearance: none) {');
+  const elsewhere = parts.replace(firefox, '');
+
+  it('is one block that only Firefox applies', () => {
+    expect(parts.match(/@supports \(-moz-appearance: none\) \{/g)).toHaveLength(1);
+    expect(firefox).not.toBe('');
+  });
+
+  it('leaves the band still and unmasked and slides the mask over the copy', () => {
+    expect(firefox).toMatch(/\.shimmer-band \{[^}]*mask: none;[^}]*animation: none;/);
+    expect(firefox).toMatch(
+      /\.shimmer-copy \{[^}]*mask: var\(--shimmer-mask\) 0 0 \/ 200% 100% repeat-x;[^}]*animation: shimmer-mask 2s linear infinite;/,
+    );
+  });
+
+  it('slides the mask one image width per loop, so the loop has no seam', () => {
+    /** The mask image is two labels wide and repeats. A position of P% offsets it by P% of the
+     *  label width minus the image width, so 200% to 0% slides it by exactly its own width. */
+    expect(firefox).toMatch(
+      /@keyframes shimmer-mask \{\s*from \{\s*mask-position: 200% 0;\s*\}\s*to \{\s*mask-position: 0% 0;\s*\}\s*\}/,
+    );
+  });
+
+  it('leaves the compositor sweep to every other browser', () => {
+    expect(elsewhere).not.toMatch(/@keyframes shimmer-mask|animation: shimmer-mask/);
+    expect(elsewhere).toMatch(
+      /\.shimmer-band \{[^}]*mask: var\(--shimmer-mask\)[^}]*animation: shimmer-band 2s linear infinite;/,
+    );
+    expect(elsewhere).toMatch(/\.shimmer-copy \{[^}]*animation: shimmer-copy 2s linear infinite;/);
   });
 });

@@ -1,5 +1,10 @@
 import { QueryClient, hashQueryKey } from '@tanstack/react-query';
-import { LocalStorageKeys, QueryKeys, UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
+import {
+  Constants,
+  LocalStorageKeys,
+  QueryKeys,
+  UNSEEN_REPLY_WATERMARK,
+} from 'librechat-data-provider';
 import {
   format,
   isToday,
@@ -10,12 +15,42 @@ import {
   startOfYear,
   isWithinInterval,
 } from 'date-fns';
-import type { TConversation, TMessage, GroupedConversations } from 'librechat-data-provider';
+import type {
+  TConversation,
+  TMessage,
+  TEndpointsConfig,
+  GroupedConversations,
+} from 'librechat-data-provider';
 import type { InvalidateQueryFilters } from '@tanstack/react-query';
 import type { InfiniteData, Query } from '@tanstack/react-query';
 import type { ConvoTitleState } from '@librechat/chat';
 import { isTemporaryConversation } from './conversation';
 import { getSessionPrincipal } from './session';
+
+export function hasRetiredSavedSpec(
+  conversation: Pick<TConversation, 'conversationId' | 'spec' | 'endpoint'>,
+  endpoints: TEndpointsConfig | undefined,
+): boolean {
+  return (
+    !!conversation.conversationId &&
+    conversation.conversationId !== Constants.NEW_CONVO &&
+    !!conversation.spec &&
+    !!conversation.endpoint &&
+    endpoints != null &&
+    !endpoints[conversation.endpoint]
+  );
+}
+
+export function conversationTarget({
+  endpoint,
+  endpointType,
+  model,
+  spec,
+  agent_id,
+  assistant_id,
+}: TConversation) {
+  return { endpoint, endpointType, model, spec, agent_id, assistant_id };
+}
 
 /**
  * A conversation is unseen when a reply landed after the user last caught up with it.

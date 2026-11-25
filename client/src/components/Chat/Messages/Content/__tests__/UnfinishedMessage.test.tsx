@@ -14,10 +14,6 @@ jest.mock('@librechat/chat/components', () => ({
   Container: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   ToolCallLimitNotice: () => <div data-testid="tool-call-limit-notice" />,
 }));
-jest.mock('~/components/Messages/Content/Error', () => ({
-  __esModule: true,
-  default: ({ text }: { text: string }) => <span>{text}</span>,
-}));
 
 /** `Constants` is a heterogeneous enum, so its members are not directly
  *  assignable to `finish_reason`'s `string`; coerce rather than duplicate the value. */

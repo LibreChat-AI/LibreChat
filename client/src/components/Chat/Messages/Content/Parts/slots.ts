@@ -77,3 +77,22 @@ export function setAppMarkdownExtensions(read: () => MarkdownExtensions): void {
 export function getAppMarkdownExtensions(): MarkdownExtensions | null {
   return appMarkdownExtensions?.() ?? null;
 }
+
+/** The host slots an error draws with app components: the key dialog and the recovery actions. */
+export type AppErrorSlots = Required<
+  Pick<MessagePartsHost, 'renderSetKeyDialog' | 'renderErrorActions'>
+>;
+
+let appErrorSlots: AppErrorSlots | null = null;
+
+/** Registers the app's error slots. `~/components/Messages/Content/Error/register` does when a
+ *  surface that draws errors loads it, so the host never imports the key dialog or the recovery
+ *  actions at boot. */
+export function setAppErrorSlots(slots: AppErrorSlots): void {
+  appErrorSlots = slots;
+}
+
+/** Null until a surface that draws errors has loaded. */
+export function getAppErrorSlots(): AppErrorSlots | null {
+  return appErrorSlots;
+}
