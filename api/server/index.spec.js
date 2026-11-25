@@ -144,7 +144,9 @@ describe('Startup readiness wiring', () => {
       ['experimental.js', experimental],
     ]) {
       const appConfigIndex = contents.indexOf('const appConfig = await getAppConfig(');
-      const socialLoginsIndex = contents.indexOf('await configureSocialLogins(app, appConfig);');
+      const socialLoginsIndex = contents.indexOf(
+        'await configureSocialLogins(app, appConfig, openIdReadiness);',
+      );
 
       expect([name, appConfigIndex > -1]).toEqual([name, true]);
       expect([name, socialLoginsIndex > appConfigIndex]).toEqual([name, true]);
