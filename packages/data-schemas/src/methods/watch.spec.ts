@@ -57,8 +57,46 @@ const bounds = (overrides: { max?: number; ttlMs?: number; now?: Date } = {}) =>
 const added = (overrides: Partial<WatchDraft> = {}, user = owner, tenantId = TENANT_A) =>
   as(tenantId, async () => watches.add(user, draft(overrides), bounds()));
 
-/** What a unique index answers a write that lost the race for its place to another server. */
-const lost = () => Object.assign(new Error('E11000 duplicate key error'), { code: 11000 });
+/** Another writer's watch on its own item in `convo_1`, taking `slot` in the database. */
+const rival = (n: number, slot: number) =>
+  new Rows({
+    id: `watch_rival_${n}`,
+    user: owner,
+    conversationId: 'convo_1',
+    agentId: 'agent_1',
+    subscription: 'sub_1',
+    connection: 'conn_1',
+    item: `github:pr:900#${n}`,
+    slot,
+    label: `acme/widgets#90${n}`,
+    expiresAt: new Date(NOW.getTime() + 14 * DAY),
+  }).save();
+
+/** That writer removing its watch again, which gives its place back. */
+const gone = (n: number) => Rows.deleteOne({ id: `watch_rival_${n}` });
+
+/**
+ * Runs a rival write just before each of the store's creates reaches the database, so the
+ * unique place index refuses that create for real. A step gets the place the create is about
+ * to take; creates past the steps run untouched.
+ */
+function contend(steps: Array<(slot: number) => Promise<unknown>>) {
+  // `create` is overloaded, so the spy is typed by its variadic form and the call is passed on whole.
+  const create = Rows.create.bind(Rows) as (...args: unknown[]) => ReturnType<typeof Rows.create>;
+  const spy = jest.spyOn(Rows, 'create');
+  spy.mockImplementation(async (...args: unknown[]) => {
+    const [doc] = args as [Pick<WatchRecord, 'slot'>];
+    await steps[spy.mock.calls.length - 1]?.(doc.slot);
+    return create(...args);
+  });
+  return spy;
+}
+
+/** Each stored watch as its item and the place it holds. */
+const places = async () =>
+  (await stored())
+    .map((row) => [row.item, row.slot])
+    .sort(([a], [b]) => String(a).localeCompare(String(b)));
 
 beforeAll(async () => {
   server = await MongoMemoryServer.create();
@@ -219,24 +257,42 @@ describe('add', () => {
     expect(await stored()).toEqual([]);
   });
 
-  it('takes a place freed after losing the race for one as many times as there are places', async () => {
-    const create = jest.spyOn(Rows, 'create');
-    create.mockRejectedValueOnce(lost()).mockRejectedValueOnce(lost());
+  it('reads the places again after each lost race, and takes one another writer gave back', async () => {
+    const creates = contend([
+      // Another writer takes place 0 first, then place 1, giving 0 back.
+      (slot) => rival(1, slot),
+      async (slot) => {
+        await rival(2, slot);
+        await gone(1);
+      },
+    ]);
     const result = await as(TENANT_A, async () => watches.add(owner, draft(), bounds({ max: 2 })));
     expect(result).toMatchObject({ ok: true, created: true });
-    expect(create).toHaveBeenCalledTimes(3);
+    expect(creates).toHaveBeenCalledTimes(3);
+    expect(await places()).toEqual([
+      ['github:pr:101#7', 0],
+      ['github:pr:900#2', 1],
+    ]);
   });
 
-  it('gives up once it has lost the race for a place once more than there are places', async () => {
-    const create = jest.spyOn(Rows, 'create');
-    let calls = 0;
-    create.mockImplementation(async () => {
-      calls += 1;
-      throw calls <= 3 ? lost() : new Error('tried past its bound');
-    });
+  it('answers the limit once it has lost the race more times than there are places', async () => {
+    const creates = contend([
+      // Every try loses its place to another writer, who then gives the older one back.
+      (slot) => rival(1, slot),
+      async (slot) => {
+        await rival(2, slot);
+        await gone(1);
+      },
+      async (slot) => {
+        await rival(3, slot);
+        await gone(2);
+      },
+    ]);
     const result = await as(TENANT_A, async () => watches.add(owner, draft(), bounds({ max: 2 })));
     expect(result).toStrictEqual({ ok: false, error: { code: 'limit' } });
-    expect(create).toHaveBeenCalledTimes(3);
+    // One try per place and one more; a fourth would have found place 1 free.
+    expect(creates).toHaveBeenCalledTimes(3);
+    expect(await places()).toEqual([['github:pr:900#3', 0]]);
   });
 
   it('records when it was made and nothing for later writes', async () => {
