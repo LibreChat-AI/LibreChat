@@ -457,7 +457,8 @@ describe('what a schedule reader asks the database', () => {
       },
     ]);
     for (const query of queries) {
-      expect((await plan(query)).picked).toBe('scheduleId_1_scheduledFor_1');
+      // Either unique occurrence index answers it while both exist (the legacy one goes next).
+      expect(['scheduleId_1_scheduledFor_1', 'occurrence']).toContain((await plan(query)).picked);
     }
   });
 

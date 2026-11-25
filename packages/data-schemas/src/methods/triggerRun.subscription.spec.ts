@@ -2,9 +2,11 @@ import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
+import type { RecordedRunRef, TriggerRunOrigin, TriggerRunRef } from '~/types/triggerRun';
 import type { IScheduleRun, IScheduleRunDocument } from '~/types/schedule';
-import type { RecordedRunRef, TriggerRunRef } from '~/types/triggerRun';
+import type { ScheduleMethods } from './schedule';
 import type { TriggerRuns } from './triggerRun';
+import { createScheduleMethods } from './schedule';
 import { createTriggerRuns } from './triggerRun';
 import { createModels } from '../models';
 
@@ -30,6 +32,9 @@ beforeAll(async () => {
   createModels(mongoose);
   ScheduleRun = mongoose.models.ScheduleRun as Model<IScheduleRunDocument>;
   await ScheduleRun.init();
+  // As the release after this one leaves the collection: a subscription's row is written only
+  // once the two legacy indexes are gone. The tests that need them build them again.
+  await legacy(false);
 }, DB_SETUP_TIMEOUT_MS);
 
 afterAll(async () => {
@@ -45,6 +50,30 @@ beforeEach(async () => {
   // Built for each test, so the test that reads through it also covers how it is put together.
   runs = createTriggerRuns(mongoose);
 });
+
+/** The two indexes that cover every row, which this release builds and the next one drops. */
+const LEGACY: Array<{
+  key: Record<string, 1>;
+  name: string;
+  unique: true;
+  partialFilterExpression?: Record<string, string>;
+}> = [
+  { key: { scheduleId: 1, scheduledFor: 1 }, name: 'scheduleId_1_scheduledFor_1', unique: true },
+  {
+    key: { scheduleId: 1 },
+    name: 'scheduleId_1',
+    unique: true,
+    partialFilterExpression: { status: 'started' },
+  },
+];
+
+async function legacy(present: boolean): Promise<void> {
+  const names = new Set((await ScheduleRun.collection.indexes()).map((index) => index.name));
+  for (const { key, ...options } of LEGACY) {
+    if (present && !names.has(options.name)) await ScheduleRun.collection.createIndex(key, options);
+    if (!present && names.has(options.name)) await ScheduleRun.collection.dropIndex(options.name);
+  }
+}
 
 function record(): void {
   queries = [];
@@ -94,33 +123,110 @@ const skipped: ScheduleMCPOutcome = {
 };
 
 describe('the indexes a run row is held by', () => {
-  it('builds one row per delivery beside the three schedule rules, which stand as they were', async () => {
-    const indexes = await ScheduleRun.collection.indexes();
-    const named = (name: string) => {
-      const { key, unique, partialFilterExpression } = indexes.find((i) => i.name === name) ?? {};
-      return { key, unique, partialFilterExpression };
-    };
+  afterEach(() => legacy(false));
 
-    expect(named('deliveryKey_1')).toEqual({
-      key: { deliveryKey: 1 },
-      unique: true,
-      partialFilterExpression: { kind: 'subscription' },
+  it('builds every unique index this release declares, the legacy pair included', async () => {
+    await ScheduleRun.collection.dropIndexes();
+    await ScheduleRun.createIndexes();
+
+    const unique = (await ScheduleRun.collection.indexes())
+      .filter((index) => index.unique === true)
+      .map(({ name, key, partialFilterExpression }) => ({ name, key, partialFilterExpression }))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+    expect(unique).toEqual([
+      {
+        name: 'active',
+        key: { scheduleId: 1, status: 1 },
+        partialFilterExpression: { status: 'started', scheduleId: { $exists: true } },
+      },
+      {
+        name: 'capacitySlot_1',
+        key: { capacitySlot: 1 },
+        partialFilterExpression: { status: 'started', capacitySlot: { $exists: true } },
+      },
+      {
+        name: 'deliveryKey_1',
+        key: { deliveryKey: 1 },
+        partialFilterExpression: { kind: 'subscription' },
+      },
+      {
+        name: 'occurrence',
+        key: { scheduledFor: 1, scheduleId: 1 },
+        partialFilterExpression: { scheduleId: { $exists: true } },
+      },
+      {
+        name: 'scheduleId_1',
+        key: { scheduleId: 1 },
+        partialFilterExpression: { status: 'started' },
+      },
+      {
+        name: 'scheduleId_1_scheduledFor_1',
+        key: { scheduleId: 1, scheduledFor: 1 },
+        partialFilterExpression: undefined,
+      },
+    ]);
+  });
+
+  it('holds a schedule to one row per occurrence and one started run by the new indexes alone', async () => {
+    await ScheduleRun.create(schedule());
+
+    await expect(ScheduleRun.create(schedule({ status: 'success' }))).rejects.toMatchObject({
+      code: 11000,
+      keyPattern: { scheduledFor: 1, scheduleId: 1 },
     });
-    expect(named('scheduleId_1_scheduledFor_1')).toEqual({
-      key: { scheduleId: 1, scheduledFor: 1 },
-      unique: true,
-      partialFilterExpression: undefined,
+    await expect(
+      ScheduleRun.create(schedule({ scheduledFor: fired, conversationId: 'conversation-t' })),
+    ).rejects.toMatchObject({ code: 11000, keyPattern: { scheduleId: 1, status: 1 } });
+    expect(await ScheduleRun.countDocuments({})).toBe(1);
+  });
+
+  it("reads a schedule's conflicts from the new indexes, as the legacy ones are gone", async () => {
+    const occurrence = (occurredAt: Date): TriggerRunRef => ({
+      subject: { kind: 'schedule', id: 'sched_a' },
+      delivery: { event: { occurredAt: occurredAt.getTime() } },
     });
-    expect(named('scheduleId_1')).toEqual({
-      key: { scheduleId: 1 },
-      unique: true,
-      partialFilterExpression: { status: 'started' },
+    expect(await runs.reserve(occurrence(at), schedule())).toHaveProperty('run');
+
+    expect(await runs.reserve(occurrence(at), schedule())).toEqual({
+      conflict: 'duplicate',
+      existingStatus: 'started',
     });
-    expect(named('capacitySlot_1')).toEqual({
-      key: { capacitySlot: 1 },
-      unique: true,
-      partialFilterExpression: { status: 'started', capacitySlot: { $exists: true } },
+    expect(await runs.reserve(occurrence(fired), schedule())).toEqual({ conflict: 'overlap' });
+  });
+
+  it.each([
+    ['occurrence', { conflict: 'duplicate', existingStatus: 'started' }],
+    ['scheduleId_1_scheduledFor_1', { conflict: 'duplicate', existingStatus: 'started' }],
+    ['active', { conflict: 'overlap' }],
+    ['scheduleId_1', { conflict: 'overlap' }],
+  ])('reads a schedule refusal named only by %s, as DocumentDB reports one', async (index, out) => {
+    const occurrence: TriggerRunRef = {
+      subject: { kind: 'schedule', id: 'sched_a' },
+      delivery: { event: { occurredAt: at.getTime() } },
+    };
+    await runs.reserve(occurrence, schedule());
+    const error = {
+      code: 11000,
+      errmsg: 'E11000 duplicate key error collection: runs index: ' + index,
+    };
+    const create = jest.spyOn(ScheduleRun, 'create').mockRejectedValueOnce(error as never);
+    try {
+      expect(await runs.reserve(occurrence, schedule())).toEqual(out);
+    } finally {
+      create.mockRestore();
+    }
+  });
+
+  it('refuses a schedule row with no scheduleId, and a subscription row needs none', async () => {
+    const { scheduleId: _scheduleId, ...unnamed } = schedule();
+
+    await expect(ScheduleRun.create(unnamed)).rejects.toMatchObject({
+      errors: { scheduleId: expect.anything() },
     });
+    await expect(
+      ScheduleRun.create({ ...unnamed, kind: 'subscription', subject: 'sub_a', deliveryKey: 'k' }),
+    ).resolves.toBeDefined();
   });
 
   it('holds subscription rows only: schedule rows that share a delivery key stay out', async () => {
@@ -163,7 +269,7 @@ describe('the indexes a run row is held by', () => {
 });
 
 describe('the row of a subscription run that is starting', () => {
-  it('stores whose run it is, its delivery, and the key under the columns every row holds', async () => {
+  it('stores whose run it is, its delivery and its event time, and no scheduleId', async () => {
     const reserved = await runs.reserve(ref('trigger_a'), fresh({ capacitySlot: 0 }));
 
     expect(reserved).toHaveProperty('run');
@@ -172,7 +278,6 @@ describe('the row of a subscription run that is starting', () => {
         kind: 'subscription',
         subject: 'sub_a',
         deliveryKey: 'trigger_a',
-        scheduleId: 'trigger_a',
         scheduledFor: at,
         user: owner,
         firedAt: fired,
@@ -194,14 +299,9 @@ describe('the row of a subscription run that is starting', () => {
       }),
     );
 
-    expect(await stored()).toEqual([
-      expect.objectContaining({
-        subject: 'sub_a',
-        deliveryKey: 'trigger_a',
-        scheduleId: 'trigger_a',
-        scheduledFor: at,
-      }),
-    ]);
+    const [row] = await stored();
+    expect(row).toMatchObject({ subject: 'sub_a', deliveryKey: 'trigger_a', scheduledFor: at });
+    expect(row).not.toHaveProperty('scheduleId');
   });
 
   it('starts two deliveries of one subscription that carry the same millisecond', async () => {
@@ -215,6 +315,21 @@ describe('the row of a subscription run that is starting', () => {
       expect.arrayContaining([
         ['trigger_a', 'started', at],
         ['trigger_b', 'started', at],
+      ]),
+    );
+  });
+
+  it('starts runs of two subscriptions at once, with no capacity slot asked for', async () => {
+    const both = await Promise.all([
+      runs.reserve(ref('trigger_a', 'sub_a'), fresh()),
+      runs.reserve(ref('trigger_b', 'sub_b'), fresh()),
+    ]);
+
+    expect(both.every((outcome) => 'run' in outcome)).toBe(true);
+    expect((await stored()).map((row) => [row.subject, row.status])).toEqual(
+      expect.arrayContaining([
+        ['sub_a', 'started'],
+        ['sub_b', 'started'],
       ]),
     );
   });
@@ -254,31 +369,41 @@ describe('the row of a subscription run that is starting', () => {
     expect(await stored()).toHaveLength(1);
   });
 
-  it.each([
-    ['the delivery index', 'deliveryKey_1', { deliveryKey: 1 }],
-    ['the active-run index', 'scheduleId_1', { scheduleId: 1 }],
-    ['the occurrence index', 'scheduleId_1_scheduledFor_1', { scheduleId: 1, scheduledFor: 1 }],
-  ])(
-    'reads a second insert refused by %s as the same delivery',
-    async (_name, index, keyPattern) => {
-      await runs.reserve(ref('trigger_a'), fresh());
-      const refusals = [
-        { code: 11000, keyPattern },
-        { code: 11000, errmsg: 'E11000 duplicate key error collection: runs index: ' + index },
-      ];
-      for (const error of refusals) {
-        const create = jest.spyOn(ScheduleRun, 'create').mockRejectedValueOnce(error as never);
-        try {
-          expect(await runs.reserve(ref('trigger_a'), fresh())).toEqual({
-            conflict: 'duplicate',
-            existingStatus: 'started',
-          });
-        } finally {
-          create.mockRestore();
-        }
+  const refusals = (index: string, keyPattern: Record<string, number>) => [
+    { code: 11000, keyPattern },
+    { code: 11000, errmsg: 'E11000 duplicate key error collection: runs index: ' + index },
+  ];
+
+  it('reads a second insert refused by the delivery index as the same delivery', async () => {
+    await runs.reserve(ref('trigger_a'), fresh());
+    for (const error of refusals('deliveryKey_1', { deliveryKey: 1 })) {
+      const create = jest.spyOn(ScheduleRun, 'create').mockRejectedValueOnce(error as never);
+      try {
+        expect(await runs.reserve(ref('trigger_a'), fresh())).toEqual({
+          conflict: 'duplicate',
+          existingStatus: 'started',
+        });
+      } finally {
+        create.mockRestore();
       }
-    },
-  );
+    }
+  });
+
+  it.each([
+    ['scheduleId_1_scheduledFor_1', { scheduleId: 1, scheduledFor: 1 }],
+    ['occurrence', { scheduledFor: 1, scheduleId: 1 }],
+    ['scheduleId_1', { scheduleId: 1 }],
+    ['active', { scheduleId: 1, status: 1 }],
+  ])('passes on a refusal by %s, which cannot hold its row', async (index, keyPattern) => {
+    for (const error of refusals(index, keyPattern)) {
+      const create = jest.spyOn(ScheduleRun, 'create').mockRejectedValueOnce(error as never);
+      try {
+        await expect(runs.reserve(ref('trigger_a'), fresh())).rejects.toBe(error);
+      } finally {
+        create.mockRestore();
+      }
+    }
+  });
 
   it('shares the capacity slots with schedules, in both directions', async () => {
     await ScheduleRun.create(schedule({ capacitySlot: 0 }));
@@ -565,13 +690,12 @@ describe('the row of a subscription run that never starts', () => {
         kind: 'subscription',
         subject: 'sub_a',
         deliveryKey: 'trigger_a',
-        scheduleId: 'trigger_a',
         scheduledFor: at,
         user: owner,
         status: 'skipped_balance',
         configRevision: 4,
-        firedAt: first?.firedAt,
-        settledAt: first?.firedAt,
+        firedAt: (first as TriggerRunOrigin).firedAt,
+        settledAt: (first as TriggerRunOrigin).firedAt,
         bookkept: false,
       },
     ]);
@@ -591,5 +715,102 @@ describe('the row of a subscription run that never starts', () => {
       await runs.skip(ref('trigger_a'), { user: owner, status: 'skipped_balance' }),
     ).toBeNull();
     expect((await stored())[0].status).toBe('started');
+  });
+});
+
+describe('while an index that would hold a subscription row to a schedule rule still exists', () => {
+  beforeEach(() => legacy(true));
+  afterEach(() => legacy(false));
+
+  const occurrence: TriggerRunRef = {
+    subject: { kind: 'schedule', id: 'sched_a' },
+    delivery: { event: { occurredAt: at.getTime() } },
+  };
+
+  it('writes no subscription row, and answers that it is blocked', async () => {
+    expect(await runs.reserve(ref('trigger_a'), fresh())).toEqual({ conflict: 'blocked' });
+    expect(await runs.skip(ref('trigger_b'), { user: owner, status: 'skipped_balance' })).toEqual({
+      conflict: 'blocked',
+    });
+    expect(await stored()).toEqual([]);
+  });
+
+  it('still writes the row of a schedule', async () => {
+    expect(await runs.reserve(occurrence, schedule())).toHaveProperty('run');
+  });
+
+  it.each(LEGACY.map(({ name }) => name))('is blocked by %s alone', async (name) => {
+    const other = LEGACY.find((index) => index.name !== name)?.name as string;
+    await ScheduleRun.collection.dropIndex(other);
+
+    expect(await runs.reserve(ref('trigger_a'), fresh())).toEqual({ conflict: 'blocked' });
+    expect(await stored()).toEqual([]);
+  });
+
+  it('writes once they are gone, and stops asking', async () => {
+    const list = jest.spyOn(ScheduleRun, 'listIndexes');
+    try {
+      expect(await runs.reserve(ref('trigger_a'), fresh())).toEqual({ conflict: 'blocked' });
+      await legacy(false);
+      expect(await runs.reserve(ref('trigger_a'), fresh())).toHaveProperty('run');
+      expect(await runs.skip(ref('trigger_b'), { user: owner, status: 'skipped_balance' })).toEqual(
+        expect.objectContaining({ firedAt: expect.any(Date) }),
+      );
+      expect(list).toHaveBeenCalledTimes(2);
+    } finally {
+      list.mockRestore();
+    }
+  });
+});
+
+describe('before the schedule-only indexes are built', () => {
+  const OCCURRENCE = {
+    key: { scheduledFor: 1, scheduleId: 1 },
+    name: 'occurrence',
+    unique: true,
+    partialFilterExpression: { scheduleId: { $exists: true } },
+  };
+
+  it('writes no subscription row either', async () => {
+    await ScheduleRun.collection.dropIndex(OCCURRENCE.name);
+    try {
+      expect(await runs.reserve(ref('trigger_a'), fresh())).toEqual({ conflict: 'blocked' });
+      expect(await stored()).toEqual([]);
+    } finally {
+      const { key, ...options } = OCCURRENCE;
+      await ScheduleRun.collection.createIndex(key, options);
+    }
+  });
+});
+
+describe('the schedule sweeps and reads, beside subscription rows', () => {
+  let schedules: ScheduleMethods;
+  const old = new Date(at.getTime() - 60 * 60_000);
+
+  beforeEach(async () => {
+    schedules = createScheduleMethods(mongoose);
+    await runs.reserve(ref('trigger_a'), fresh({ firedAt: old }));
+    await runs.reserve(ref('trigger_b'), fresh({ firedAt: old }));
+    await runs.pause(ref('trigger_b'), {});
+    await runs.reserve(ref('trigger_c'), fresh({ firedAt: old }));
+    await runs.finish(ref('trigger_c'), { status: 'error', error: 'boom' });
+    await ScheduleRun.create([
+      schedule({ firedAt: old }),
+      schedule({ scheduleId: 'sched_b', firedAt: old, status: 'requires_action' }),
+      schedule({ scheduleId: 'sched_c', firedAt: old, status: 'error', bookkept: false }),
+    ]);
+  });
+
+  /** Each row by what names it, so a subscription row a sweep let through is counted too. */
+  const ids = (rows: IScheduleRun[]): string[] =>
+    rows.map((row) => row.scheduleId ?? `subscription:${row.subject}`).sort();
+
+  it('hand the reconciler only the rows of schedules', async () => {
+    expect(ids(await schedules.getRunsForReconciliation(at, 10))).toEqual(['sched_a', 'sched_b']);
+    expect(ids(await schedules.getUnbookkeptRuns(at, 10))).toEqual(['sched_c']);
+  });
+
+  it("list only a schedule's runs among a user's active ones", async () => {
+    expect(ids(await schedules.getActiveRunsForUser(owner))).toEqual(['sched_a', 'sched_b']);
   });
 });

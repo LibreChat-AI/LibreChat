@@ -42,18 +42,19 @@ export type TriggerRun = {
   abortPersistedAt?: Date;
 };
 
+/** A ref to a schedule's run, which always names a row: its schedule and the event's time. */
+export type ScheduleRunRef = TriggerRunRef & { readonly subject: { readonly kind: 'schedule' } };
+
 /**
  * A ref that always names a row: a schedule's, by its id and the time of the event, or a
  * subscription's with the key of its delivery.
  */
-export type RecordedRunRef = TriggerRunRef &
-  (
-    | { readonly subject: { readonly kind: 'schedule' } }
-    | {
-        readonly subject: { readonly kind: 'subscription' };
-        readonly delivery: { readonly key: string };
-      }
-  );
+export type RecordedRunRef =
+  | ScheduleRunRef
+  | (TriggerRunRef & {
+      readonly subject: { readonly kind: 'subscription' };
+      readonly delivery: { readonly key: string };
+    });
 
 /**
  * The stored columns a run's row starts with, written as given. Which row it is comes from
@@ -83,6 +84,13 @@ export type TriggerRunReservation =
  * on record, or a subscription's delivery that names no key.
  */
 export type TriggerRunUnrecorded = { conflict: 'unrecorded' };
+
+/**
+ * The row of a subscription's run cannot be written yet, so nothing was: the collection still
+ * holds an index that would hold the row to a schedule's rule. The release after the one that
+ * adds the schedule-only indexes drops those, and the row can be written from then on.
+ */
+export type TriggerRunBlocked = { conflict: 'blocked' };
 
 /**
  * Outcome of moving a paused run back among the started ones. Both conflicts are decided by
