@@ -1,6 +1,5 @@
 import { useId, useContext, useEffect, useMemo } from 'react';
-import { Button, TextareaAutosize } from '@librechat/client';
-import { useComposerPresentsApproval, useOptionalChatSurface } from '@librechat/chat/react';
+import { cn, Button, useLocalize, TextareaAutosize } from '@librechat/client';
 import { SCHEDULE_APPROVAL_REASON, SUBSCRIPTION_APPROVAL_REASON } from 'librechat-data-provider';
 import {
   X,
@@ -11,22 +10,24 @@ import {
   ShieldQuestion,
   TriangleAlert,
 } from 'lucide-react';
+import type { ComponentType, KeyboardEvent, ReactNode } from 'react';
+import type { TranslationKeys } from '@librechat/client';
+import type { Agents } from 'librechat-data-provider';
+import type { ApprovalResumeHost } from '../../react/approval';
 import {
+  bindingHash,
+  bindingsMatch,
+  bindingFromEvent,
+  NO_HOST_BINDINGS,
   isReboundSubmitChord,
   resolveComposerKeyDown,
-  bindingFromEvent,
-  bindingsMatch,
-  bindingHash,
-  boundApprovalLabel,
-} from '@librechat/chat';
-import type { Agents } from 'librechat-data-provider';
-import type { KeyboardEvent } from 'react';
-import type { TranslationKeys } from '~/hooks';
-import { useApprovalContext, useResumeSubmit } from './ApprovalContext';
-import { cn, forceResize, insertTextAtCursor, logger } from '~/utils';
-import { NO_HOST_BINDINGS } from '~/hooks/Input/useComposerBindings';
-import { ChatContext } from '~/Providers/ChatContext';
-import { useLocalize } from '~/hooks';
+} from '../../core/shortcuts';
+import { useOptionalChatSurface } from '../../react/subagents/surface';
+import { forceResize, insertTextAtCursor } from '../../core/textarea';
+import { useComposerPresentsApproval } from '../../react/approval';
+import { useApprovalContext, useResumeSubmit } from './context';
+import { boundApprovalLabel } from '../../core/parts/approval';
+import { ChatContext } from '../../react/chat/context';
 
 /**
  * The resume route rejects an `edit` whose `editedArguments` isn't a plain object
@@ -39,7 +40,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 type DecisionType = Agents.ToolApprovalDecisionType;
 
-const DECISION_ICON: Record<DecisionType, React.ComponentType<{ className?: string }>> = {
+const DECISION_ICON: Record<DecisionType, ComponentType<{ className?: string }>> = {
   approve: Check,
   reject: X,
   edit: Pencil,
@@ -52,18 +53,6 @@ const DECISION_LABEL: Record<DecisionType, TranslationKeys> = {
   edit: 'com_ui_edit',
   respond: 'com_ui_respond',
 };
-
-/**
- * Chrome shared by the three decision fields. `TextareaAutosize` renders a bare
- * `textarea`, which preflight leaves at `color: inherit`, so a field that names
- * no colour token draws the typed text in whatever colour it inherits — on the
- * dark theme that was near-black over the `surface-primary` fill, about 1.1:1.
- * The value and the placeholder each name their token, and the boundary is
- * `border-xheavy` so the field reads as a control at WCAG 1.4.11's 3:1
- * (`border-light` measures ~1.4:1 against this fill).
- */
-const fieldClasses =
-  'w-full resize-none rounded-md border border-border-xheavy bg-surface-primary p-2 text-text-primary placeholder:text-text-secondary';
 
 /** Pretty-print tool args as JSON for the `edit` textarea seed. */
 function seedArgs(args: string | Record<string, unknown> | undefined): string {
@@ -79,8 +68,7 @@ function seedArgs(args: string | Record<string, unknown> | undefined): string {
   }
   try {
     return JSON.stringify(args, null, 2);
-  } catch (e) {
-    logger.error('ToolApproval - failed to stringify args', e);
+  } catch {
     return '{}';
   }
 }
@@ -105,13 +93,16 @@ export default function ToolApproval({
   toolCallId,
   args,
   surface = 'thread',
+  resumeHost = null,
 }: {
   approval: NonNullable<Agents.ToolCall['approval']>;
   toolCallId: string;
   args: string | Record<string, unknown> | undefined;
   /** The composer panel owns one batch submit; thread cards keep the lead button. */
   surface?: 'thread' | 'composer';
-}) {
+  /** How this view resumes the run. A transport or an `ApprovalResumeHostProvider` above wins. */
+  resumeHost?: ApprovalResumeHost | null;
+}): ReactNode {
   const localize = useLocalize();
   const invalidJsonId = useId();
   const allowAlwaysHintId = useId();
@@ -144,7 +135,7 @@ export default function ToolApproval({
     getLeadToolCallId,
     getRegisteredCount,
   } = useApprovalContext();
-  const { submitToolApproval } = useResumeSubmit();
+  const { available, submitToolApproval } = useResumeSubmit(resumeHost);
   const chatSurface = useOptionalChatSurface();
   const enterToSend = chatSurface?.enterToSend ?? false;
   const { shortcutsEnabled, submitOverride, yieldedChords } =
@@ -180,7 +171,11 @@ export default function ToolApproval({
   }, [registerToolCall, unregisterToolCall, actionId, toolCallId]);
 
   const status = getStatus(actionId);
-  const locked = status === 'submitting' || status === 'submitted' || status === 'expired';
+  /** A view with no way to resume keeps every control disabled and says why, so a decision is
+   *  never taken in and dropped. */
+  const locked =
+    !available || status === 'submitting' || status === 'submitted' || status === 'expired';
+  const unavailableId = useId();
   const descriptionKey = description == null ? undefined : descriptionKeys.get(description);
   let safeDescription: string | undefined;
   if (descriptionKey != null) safeDescription = localize(descriptionKey);
@@ -406,10 +401,10 @@ export default function ToolApproval({
               variant={pressed ? 'default' : 'outline'}
               disabled={locked}
               aria-pressed={pressed}
+              aria-describedby={available ? undefined : unavailableId}
               onClick={() =>
                 updateDecisionDraft({ active: pressed ? null : decision, allowAlways: false })
               }
-              className="inline-flex items-center gap-1.5"
             >
               <Icon className="h-4 w-4" aria-hidden="true" />
               {localize(DECISION_LABEL[decision])}
@@ -445,7 +440,9 @@ export default function ToolApproval({
       )}
 
       {active === 'edit' && (
-        <div className="flex flex-col gap-1">
+        /* The arguments are JSON, so the field is set in the code face. The field owns its type
+           size, and takes its family from this wrapper. */
+        <div className="flex flex-col gap-1 font-mono">
           <TextareaAutosize
             value={editText}
             disabled={locked}
@@ -453,7 +450,8 @@ export default function ToolApproval({
             onKeyDown={handleEditKeyDown}
             minRows={3}
             maxRows={16}
-            className={cn(fieldClasses, 'font-mono text-xs')}
+            variant="field"
+            className="resize-none"
             aria-label={localize('com_ui_edit')}
             aria-invalid={!editIsValid}
             aria-describedby={editIsValid ? undefined : invalidJsonId}
@@ -475,7 +473,8 @@ export default function ToolApproval({
           minRows={2}
           maxRows={12}
           placeholder={localize('com_ui_tool_response_placeholder')}
-          className={cn(fieldClasses, 'text-sm')}
+          variant="field"
+          className="resize-none"
           aria-label={localize('com_ui_respond')}
         />
       )}
@@ -489,12 +488,19 @@ export default function ToolApproval({
           minRows={1}
           maxRows={6}
           placeholder={localize('com_ui_reject_reason_placeholder')}
-          className={cn(fieldClasses, 'text-sm')}
+          variant="field"
+          className="resize-none"
           aria-label={localize('com_ui_reject')}
         />
       )}
 
-      {surface === 'thread' && isLead && (
+      {!available && (
+        <p id={unavailableId} className="text-text-secondary text-xs">
+          {localize('com_ui_approval_unavailable')}
+        </p>
+      )}
+
+      {available && surface === 'thread' && isLead && (
         <div className="mt-1 flex items-center gap-3">
           <Button
             size="sm"

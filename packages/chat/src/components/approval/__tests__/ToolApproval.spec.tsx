@@ -1,61 +1,82 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { RecoilRoot } from 'recoil';
-import { Provider, createStore } from 'jotai';
+import { Provider, createStore, useAtomValue } from 'jotai';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { SCHEDULE_APPROVAL_REASON, SUBSCRIPTION_APPROVAL_REASON } from 'librechat-data-provider';
+import type { Agents } from 'librechat-data-provider';
+import type { ApprovalResumeHost } from '../../../react/approval';
+import type { ShortcutBinding } from '../../../core/shortcuts';
 import {
   approvalPanelOpenFamily,
   pendingApprovalActionFamily,
-  ChatSurfaceProvider,
-  activeGenerationCreatedAtByConvoId,
-} from '@librechat/chat/react';
-import type { ShortcutBinding } from '@librechat/chat';
-import type { Agents } from 'librechat-data-provider';
-import ApprovalProvider, { ResumeSubmitContext, useApprovalContext } from '../ApprovalContext';
-import { ChatContext } from '~/Providers/ChatContext';
+  ApprovalResumeHostProvider,
+} from '../../../react/approval';
+import ApprovalProvider, { ResumeSubmitContext, useApprovalContext } from '../context';
+import { activeGenerationCreatedAtByConvoId } from '../../../react/steer/atoms';
+import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
+import { ChatSurfaceProvider } from '../../../react/subagents/provider';
+import { MessagePartsHostProvider } from '../../../react/host';
+import { ChatContext } from '../../../react/chat/context';
+import { initEnglish } from '../../../__fixtures__/i18n';
+import { HostedToolApproval } from '../hosted';
 import ToolApproval from '../ToolApproval';
-
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string, values?: Record<string | number, string | number>) => {
-    if (key === 'com_ui_submit_decisions') {
-      return `Submit ${values?.[0]} decisions`;
-    }
-    const map: Record<string, string> = {
-      com_ui_approve: 'Approve',
-      com_ui_approve_always: 'Always allow',
-      com_ui_approve_always_hint: 'Runs without asking for this conversation',
-      com_ui_reject: 'Reject',
-      com_ui_edit: 'Edit',
-      com_ui_respond: 'Respond',
-      com_ui_submit: 'Submit',
-      com_ui_submitting: 'Submitting',
-      com_ui_invalid_json: 'Invalid JSON',
-      com_ui_reject_reason_placeholder: 'Reason',
-      com_ui_tool_response_placeholder: 'Response',
-      com_ui_approval_review_in_composer: 'Review in composer',
-    };
-    return map[key] ?? key;
-  },
-}));
 
 const mockMutate = jest.fn();
 const mockInsertTextAtCursor = jest.fn();
 
 /** jsdom has no execCommand, so the newline path is observed through the mock. */
-jest.mock('~/utils/textarea', () => ({
-  ...jest.requireActual('~/utils/textarea'),
+jest.mock('../../../core/textarea', () => ({
+  ...jest.requireActual('../../../core/textarea'),
   forceResize: jest.fn(),
   insertTextAtCursor: (...args: unknown[]) => mockInsertTextAtCursor(...args),
 }));
 
-jest.mock('~/data-provider', () => ({
-  useSubmitToolApprovalMutation: () => ({ mutate: mockMutate }),
-  useSubmitAskAnswerMutation: () => ({ mutate: jest.fn() }),
-}));
+beforeAll(initEnglish);
 
-jest.mock('~/Providers/ChatContext', () => ({
-  ChatContext: jest.requireActual('react').createContext(null),
-}));
+/**
+ * The ordinary chat resume, the way a host builds it: the conversation the card renders in, the
+ * paused generation it observed, and the request that sends the decisions.
+ */
+function useChatResumeHost(): ApprovalResumeHost {
+  const conversationId = React.useContext(ChatContext)?.conversation?.conversationId;
+  const generationCreatedAt = useAtomValue(
+    activeGenerationCreatedAtByConvoId(conversationId ?? 'new'),
+  );
+  return React.useMemo(
+    () => ({
+      readFields: () =>
+        conversationId == null
+          ? null
+          : {
+              conversationId,
+              ...(generationCreatedAt != null && { generationCreatedAt }),
+            },
+      submitToolApproval: (body, callbacks) => mockMutate(body, callbacks),
+      submitAskAnswer: () => undefined,
+      readMessages: () => null,
+    }),
+    [conversationId, generationCreatedAt],
+  );
+}
+
+function ResumeHost({ children }: { children: React.ReactNode }) {
+  return (
+    <ApprovalResumeHostProvider host={useChatResumeHost()}>{children}</ApprovalResumeHostProvider>
+  );
+}
+
+/** A promise and the functions that settle it. */
+function deferred() {
+  let resolve: () => void = () => undefined;
+  let reject: (reason?: unknown) => void = () => undefined;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 const approval = (
   allowed: Agents.ToolApprovalDecisionType[] = ['approve', 'reject'],
@@ -66,9 +87,9 @@ const approval = (
 
 const renderCards = (cards: React.ReactNode) =>
   render(
-    <RecoilRoot>
-      <ApprovalProvider>{cards}</ApprovalProvider>
-    </RecoilRoot>,
+    <ApprovalProvider>
+      <ResumeHost>{cards}</ResumeHost>
+    </ApprovalProvider>,
   );
 
 function DecisionProbe() {
@@ -87,7 +108,9 @@ describe('ToolApproval', () => {
         args={{}}
       />,
     );
-    expect(screen.getByText('com_ui_approval_schedule_owner')).toBeInTheDocument();
+    expect(
+      screen.getByText('You asked to approve each use of this tool when this schedule runs.'),
+    ).toBeInTheDocument();
     expect(screen.queryByText(SCHEDULE_APPROVAL_REASON)).not.toBeInTheDocument();
     cleanup();
     renderCards(
@@ -97,7 +120,11 @@ describe('ToolApproval', () => {
         args={{}}
       />,
     );
-    expect(screen.getByText('com_ui_approval_subscription_owner')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'You asked to approve each use of this tool when this event subscription runs.',
+      ),
+    ).toBeInTheDocument();
     expect(screen.queryByText(SUBSCRIPTION_APPROVAL_REASON)).not.toBeInTheDocument();
     cleanup();
     renderCards(
@@ -128,7 +155,9 @@ describe('ToolApproval', () => {
     );
     const always = screen.getByRole('button', { name: 'Always allow' });
     const approve = screen.getByRole('button', { name: 'Approve' });
-    expect(always).toHaveAccessibleDescription('Runs without asking for this conversation');
+    expect(always).toHaveAccessibleDescription(
+      'This tool will run without asking for the rest of this conversation.',
+    );
 
     fireEvent.click(always);
     expect(always).toHaveAttribute('aria-pressed', 'true');
@@ -183,7 +212,7 @@ describe('ToolApproval', () => {
     expect(submit).toBeEnabled();
   });
 
-  test('every decision field names its own text, placeholder and border tokens', () => {
+  test('every decision field is the shared form field, with its control boundary and tokens', () => {
     renderCards(
       <ToolApproval
         approval={approval(['approve', 'reject', 'edit', 'respond'])}
@@ -196,12 +225,12 @@ describe('ToolApproval', () => {
       const toggle = screen.getByRole('button', { name: decision });
       fireEvent.click(toggle);
       const field = screen.getByRole('textbox', { name: decision });
-      // A bare `textarea` inherits its colour, so the tokens have to be named here.
-      expect(field).toHaveClass('text-text-primary');
-      expect(field).toHaveClass('border-border-xheavy');
-      if (decision !== 'Edit') {
-        expect(field).toHaveClass('placeholder:text-text-secondary');
-      }
+      /* A bare `textarea` inherits its colour, so the field variant names the text, placeholder
+         and boundary tokens: the boundary is the form-control role, drawn for 3:1. */
+      expect(field).toHaveClass('lc-field');
+      expect(field).toHaveClass('text-field-text');
+      expect(field).toHaveClass('border-border-control');
+      expect(field).toHaveClass('placeholder:text-text-secondary');
       fireEvent.click(toggle);
     }
   });
@@ -237,29 +266,23 @@ describe('ToolApproval', () => {
   });
 
   test('hosted cards submit the selected batch and keep decisions locked through acknowledgement', async () => {
-    const first = Promise.withResolvers<void>();
-    const retry = Promise.withResolvers<void>();
+    const first = deferred();
+    const retry = deferred();
     const send = jest
       .fn()
       .mockImplementationOnce(() => first.promise)
       .mockImplementationOnce(() => retry.promise);
     render(
-      <RecoilRoot>
-        <Provider>
-          <ApprovalProvider>
-            <ResumeSubmitContext.Provider
-              value={{ submitToolApproval: send, submitAskAnswer: async () => {} }}
-            >
-              <ToolApproval
-                approval={approval(['edit'])}
-                toolCallId="call-1"
-                args={{ old: true }}
-              />
-              <ToolApproval approval={approval(['reject'])} toolCallId="call-2" args={{}} />
-            </ResumeSubmitContext.Provider>
-          </ApprovalProvider>
-        </Provider>
-      </RecoilRoot>,
+      <Provider>
+        <ApprovalProvider>
+          <ResumeSubmitContext.Provider
+            value={{ submitToolApproval: send, submitAskAnswer: async () => {} }}
+          >
+            <ToolApproval approval={approval(['edit'])} toolCallId="call-1" args={{ old: true }} />
+            <ToolApproval approval={approval(['reject'])} toolCallId="call-2" args={{}} />
+          </ResumeSubmitContext.Provider>
+        </ApprovalProvider>
+      </Provider>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     const editor = screen.getByRole('textbox', { name: 'Edit' });
@@ -326,11 +349,11 @@ describe('ToolApproval', () => {
 
   test('restores a selected decision when the card remounts inside the same message', () => {
     const tree = (key: string) => (
-      <RecoilRoot>
-        <ApprovalProvider>
+      <ApprovalProvider>
+        <ResumeHost>
           <ToolApproval key={key} approval={approval()} toolCallId="call-1" args={{ a: 1 }} />
-        </ApprovalProvider>
-      </RecoilRoot>
+        </ResumeHost>
+      </ApprovalProvider>
     );
     const view = render(tree('direct'));
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
@@ -367,10 +390,10 @@ describe('ToolApproval', () => {
       store.set(pendingApprovalActionFamily(conversationId), pendingAction);
       store.set(approvalPanelOpenFamily(conversationId), open);
       render(
-        <RecoilRoot>
-          <Provider store={store}>
-            <ChatContext.Provider value={{ conversation: { conversationId } } as never}>
-              <ApprovalProvider pendingAction={pendingAction}>
+        <Provider store={store}>
+          <ChatContext.Provider value={{ conversation: { conversationId } } as never}>
+            <ApprovalProvider pendingAction={pendingAction}>
+              <ResumeHost>
                 <div data-testid="thread">
                   <ToolApproval approval={approval()} toolCallId="call-1" args={{ a: 1 }} />
                 </div>
@@ -383,10 +406,10 @@ describe('ToolApproval', () => {
                   />
                 </div>
                 {extra}
-              </ApprovalProvider>
-            </ChatContext.Provider>
-          </Provider>
-        </RecoilRoot>,
+              </ResumeHost>
+            </ApprovalProvider>
+          </ChatContext.Provider>
+        </Provider>,
       );
       return store;
     };
@@ -395,7 +418,7 @@ describe('ToolApproval', () => {
       renderWithComposer(true);
       const thread = screen.getByTestId('thread');
 
-      expect(thread).toHaveTextContent('Review in composer');
+      expect(thread).toHaveTextContent('Review this request in the panel above the message box.');
       expect(thread.querySelectorAll('button')).toHaveLength(0);
       expect(screen.queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument();
       expect(screen.getAllByRole('button', { name: 'Approve' })).toHaveLength(1);
@@ -407,7 +430,9 @@ describe('ToolApproval', () => {
       act(() => store.set(approvalPanelOpenFamily(conversationId), false));
 
       const thread = screen.getByTestId('thread');
-      expect(thread).not.toHaveTextContent('Review in composer');
+      expect(thread).not.toHaveTextContent(
+        'Review this request in the panel above the message box.',
+      );
       fireEvent.click(within(thread).getByRole('button', { name: 'Approve' }));
       expect(within(thread).getByRole('button', { name: 'Submit' })).toBeEnabled();
       expect(
@@ -428,9 +453,13 @@ describe('ToolApproval', () => {
       );
 
       const other = screen.getByTestId('other-action');
-      expect(other).not.toHaveTextContent('Review in composer');
+      expect(other).not.toHaveTextContent(
+        'Review this request in the panel above the message box.',
+      );
       expect(within(other).getByRole('button', { name: 'Approve' })).toBeInTheDocument();
-      expect(screen.getByTestId('thread')).toHaveTextContent('Review in composer');
+      expect(screen.getByTestId('thread')).toHaveTextContent(
+        'Review this request in the panel above the message box.',
+      );
     });
   });
 
@@ -457,30 +486,30 @@ describe('ToolApproval', () => {
       const store = createStore();
       store.set(activeGenerationCreatedAtByConvoId(conversationId), 1000);
       render(
-        <RecoilRoot>
-          <Provider store={store}>
-            <ChatContext.Provider value={{ conversation: { conversationId } } as never}>
-              <ChatSurfaceProvider
-                value={{
-                  enterToSend,
-                  maximizeChatSpace: false,
-                  showScrollButton: false,
-                  composerBindings: {
-                    shortcutsEnabled,
-                    submitOverride,
-                    yieldedChords: new Set(),
-                  },
-                  claimForeground: jest.fn(),
-                  handOffComposerText: jest.fn(),
-                }}
-              >
-                <ApprovalProvider>
+        <Provider store={store}>
+          <ChatContext.Provider value={{ conversation: { conversationId } } as never}>
+            <ChatSurfaceProvider
+              value={{
+                enterToSend,
+                maximizeChatSpace: false,
+                showScrollButton: false,
+                composerBindings: {
+                  shortcutsEnabled,
+                  submitOverride,
+                  yieldedChords: new Set(),
+                },
+                claimForeground: jest.fn(),
+                handOffComposerText: jest.fn(),
+              }}
+            >
+              <ApprovalProvider>
+                <ResumeHost>
                   <ToolApproval approval={approval(allowed)} toolCallId="call-1" args={{ a: 1 }} />
-                </ApprovalProvider>
-              </ChatSurfaceProvider>
-            </ChatContext.Provider>
-          </Provider>
-        </RecoilRoot>,
+                </ResumeHost>
+              </ApprovalProvider>
+            </ChatSurfaceProvider>
+          </ChatContext.Provider>
+        </Provider>,
       );
     };
 
@@ -600,6 +629,95 @@ describe('ToolApproval', () => {
         altKey: true,
       });
       expect(mockMutate).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('in a view with no way to resume the run', () => {
+    beforeEach(() => mockMutate.mockClear());
+
+    test('draws the controls disabled and says the request cannot be answered here', () => {
+      render(
+        <ApprovalProvider>
+          <ToolApproval approval={approval()} toolCallId="call-1" args={{ a: 1 }} />
+        </ApprovalProvider>,
+      );
+
+      const note = "This request can't be answered from here.";
+      expect(screen.getByText(note)).toBeInTheDocument();
+      for (const name of ['Approve', 'Reject']) {
+        const button = screen.getByRole('button', { name });
+        expect(button).toBeDisabled();
+        expect(button).toHaveAccessibleDescription(note);
+      }
+      expect(screen.queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument();
+    });
+
+    test('a resume host passed to the card is enough to answer it', () => {
+      function Card() {
+        return (
+          <ToolApproval
+            approval={approval()}
+            toolCallId="call-1"
+            args={{ a: 1 }}
+            resumeHost={useChatResumeHost()}
+          />
+        );
+      }
+      render(
+        <ChatContext.Provider value={{ conversation: { conversationId: 'c-1' } } as never}>
+          <ApprovalProvider>
+            <Card />
+          </ApprovalProvider>
+        </ChatContext.Provider>,
+      );
+
+      expect(screen.queryByText("This request can't be answered from here.")).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+      expect(mockMutate).toHaveBeenCalledWith(
+        {
+          conversationId: 'c-1',
+          actionId: 'action-1',
+          decisions: [{ tool_call_id: 'call-1', decision: 'approve' }],
+        },
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('inside a message', () => {
+    beforeEach(() => mockMutate.mockClear());
+
+    const drawHosted = (host: ReturnType<typeof createMessagePartsHost>) =>
+      render(
+        <ChatContext.Provider value={{ conversation: { conversationId: 'c-1' } } as never}>
+          <MessagePartsHostProvider host={host}>
+            <ApprovalProvider>
+              <HostedToolApproval approval={approval()} toolCallId="call-1" args={{ a: 1 }} />
+            </ApprovalProvider>
+          </MessagePartsHostProvider>
+        </ChatContext.Provider>,
+      );
+
+    test('resumes through the host’s resume hook', () => {
+      drawHosted(createMessagePartsHost({ useApprovalResumeHost: useChatResumeHost }));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Reject' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+      expect(mockMutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: 'c-1',
+          decisions: [{ tool_call_id: 'call-1', decision: 'reject' }],
+        }),
+        expect.anything(),
+      );
+    });
+
+    test('without a resume hook, is disabled and says why', () => {
+      drawHosted(createMessagePartsHost());
+
+      expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled();
+      expect(screen.getByText("This request can't be answered from here.")).toBeInTheDocument();
     });
   });
 });

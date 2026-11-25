@@ -11,7 +11,7 @@ import {
 } from '@librechat/client';
 import type { Agents } from 'librechat-data-provider';
 import type { KeyboardEvent, ReactNode } from 'react';
-import type { AskAnswerSubmit } from '../../../react/parts/ask';
+import type { AskAnswerSubmit, AskCardMode } from '../../../react/parts/ask';
 import {
   isCancelKey,
   isReboundSubmitChord,
@@ -35,19 +35,7 @@ import AskOptions from '../AskOptions';
  */
 const arrivedSingleQuestions = new Set<string>();
 
-/** What the live pause shares with the composer. Omitted outside a live chat. */
-export type AskCardMode = {
-  popoverVisible: boolean;
-  collapsed: boolean;
-  expand: () => void;
-  liveAsk: { actionId: string } | null;
-  checked: number[];
-  toggleChecked: (index: number) => void;
-  submitOption: (index: number) => void;
-  submitAnswer: (values: string[]) => void;
-  answerText: string;
-  setAnswerText: (value: string) => void;
-};
+export type { AskCardMode };
 
 const INERT_ASK_MODE: AskCardMode = {
   popoverVisible: false,

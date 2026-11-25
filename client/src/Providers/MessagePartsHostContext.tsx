@@ -31,8 +31,9 @@ import {
   getAppErrorSlots,
   getAppContentParts,
   getAppMarkdownSlots,
-  getAppMarkdownExtensions,
+  getAppApprovalHooks,
   getAppPartRenderers,
+  getAppMarkdownExtensions,
 } from '~/components/Chat/Messages/Content/Parts/slots';
 import {
   useShareContext,
@@ -231,6 +232,8 @@ export const appMessagePartsHost: MessagePartsHost = {
   useBalanceDisplay,
   renderSetKeyDialog: (props) => getAppErrorSlots()?.renderSetKeyDialog(props) ?? null,
   renderErrorActions: (props) => getAppErrorSlots()?.renderErrorActions(props) ?? null,
+  useApprovalResumeHost: () => getAppApprovalHooks().useApprovalResumeHost(),
+  useAskAnswerMode: (conversationId) => getAppApprovalHooks().useAskAnswerMode(conversationId),
 };
 
 setDefaultMessagePartsHost(appMessagePartsHost);

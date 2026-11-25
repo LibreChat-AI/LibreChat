@@ -164,13 +164,6 @@ const GAPS: Gap[] = [
           : before === 'rgb(33, 33, 33)' && after === 'rgb(0, 0, 0)',
       ),
   },
-  {
-    id: 'approval-controls',
-    why: 'A tool call paused for review shows LibreChat\'s approval controls (the reason, Approve, Reject); outside it reads "Cancelled". Closed by moving the approval and question cards into the package.',
-    matches: elements('approval', {
-      missing: ['p:Deletes two records', 'button:Approve', 'button:Reject', 'button:Submit'],
-    }),
-  },
 ];
 
 async function buildOutsideHost(): Promise<void> {

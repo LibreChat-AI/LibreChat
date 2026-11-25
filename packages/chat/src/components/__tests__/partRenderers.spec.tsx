@@ -81,6 +81,16 @@ jest.mock('../parts/ask/Call', () => ({
   __esModule: true,
   default: mockStub('ask-user-question-call'),
 }));
+jest.mock('../approval/hosted', () => ({
+  HostedQuestion: ({ actionId, question }: { actionId: string; question: string }) => (
+    <div data-testid="paused-question" data-action-id={actionId}>
+      {question}
+    </div>
+  ),
+  HostedToolApproval: ({ toolCallId }: { toolCallId: string }) => (
+    <div data-testid="tool-approval" data-tool-call-id={toolCallId} />
+  ),
+}));
 
 /** What `Part` drew: the stubbed component's test id, or the text of an inline element. */
 const drawn = (part: TMessageContentParts): string | null => {
@@ -141,8 +151,8 @@ const PART_TYPES: [string, TMessageContentParts, string | null][] = [
       type: 'ask_user_question',
       ask_user_question: { actionId: 'action-1', question: 'Which?' },
     }),
-    /** A paused question is the host's to claim, with its way to answer. */
-    null,
+    /** A paused question is claimed before routing and answered in its own card. */
+    'paused-question',
   ],
   [
     'code interpreter call',
@@ -285,6 +295,49 @@ describe('the package’s error part', () => {
     expect(errorText({ text: 'plain' })[0]).toBe('plain');
     expect(errorText({ text: { value: 'wrapped' } })[0]).toBe('wrapped');
     expect(errorText({})[0]).toBe('');
+  });
+});
+
+describe('paused tool calls and questions', () => {
+  const pausedCall = (toolCall: Record<string, unknown>) =>
+    asPart({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: {
+        id: 'call_1',
+        name: 'some_mcp_tool',
+        args: '{}',
+        output: '',
+        progress: 0.1,
+        ...toolCall,
+      },
+    });
+  const draw = (part: TMessageContentParts) =>
+    render(<Part part={part} isSubmitting={false} showCursor={false} isCreatedByUser={false} />);
+
+  it('claims a paused question for its card, keyed by its action', () => {
+    const { getByTestId } = draw(
+      asPart({
+        type: 'ask_user_question',
+        ask_user_question: { actionId: 'action-1', question: 'Which?' },
+      }),
+    );
+    const card = getByTestId('paused-question');
+    expect(card).toHaveAttribute('data-action-id', 'action-1');
+    expect(card).toHaveTextContent('Which?');
+  });
+
+  it('puts approval controls under any tool card paused with nothing to show yet', () => {
+    const { getByTestId } = draw(pausedCall({ name: 'read_file', approval: { actionId: 'a1' } }));
+    expect(getByTestId('read-file-call')).toBeInTheDocument();
+    expect(getByTestId('tool-approval')).toHaveAttribute('data-tool-call-id', 'call_1');
+  });
+
+  it('shows no approval controls once the call has output, or when it never paused', () => {
+    const answered = draw(pausedCall({ output: 'done', approval: { actionId: 'a1' } }));
+    expect(answered.queryByTestId('tool-approval')).not.toBeInTheDocument();
+    answered.unmount();
+    const plain = draw(pausedCall({}));
+    expect(plain.queryByTestId('tool-approval')).not.toBeInTheDocument();
   });
 });
 
