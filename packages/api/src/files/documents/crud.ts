@@ -6,6 +6,7 @@ import type { TextItem } from 'pdfjs-dist/types/src/display/api';
 import type { MistralOCRUploadResult, ServerRequest } from '~/types';
 import { spreadsheetToText } from './spreadsheet';
 import { assertSafeZipSize } from './zipSafety';
+import { docxToText } from './docx';
 
 type FileParseFn = (file: Express.Multer.File) => Promise<string>;
 
@@ -99,7 +100,7 @@ async function pdfToText(file: Express.Multer.File): Promise<string> {
   return fullText;
 }
 
-/** Parses Word document, returns text inside. */
+/** Parses Word document, returns text inside, with each table as CSV rows. */
 async function wordDocToText(file: Express.Multer.File): Promise<string> {
   const buffer = await fs.promises.readFile(file.path);
   /* Reject zip-bomb DOCX before mammoth's internal extractor runs.
@@ -107,9 +108,7 @@ async function wordDocToText(file: Express.Multer.File): Promise<string> {
    * sub-1MB compressed bomb (~200x ratio) would block the event loop
    * and spike RSS to ~1GB. See SEC review on PR #12934. */
   await assertSafeZipSize(buffer, { name: file.originalname ?? 'docx' });
-  const { extractRawText } = await import('mammoth');
-  const rawText = await extractRawText({ buffer });
-  return rawText.value;
+  return docxToText(buffer);
 }
 
 /**
