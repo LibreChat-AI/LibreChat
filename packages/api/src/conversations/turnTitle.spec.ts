@@ -18,7 +18,7 @@ function setup(overrides: Partial<Parameters<typeof createAgentTurnTitle>[0]> = 
     timing: 'immediate',
     signal: job.signal,
     hasGenerator: true,
-    parentMessageId: Constants.NO_PARENT,
+    parentMessageId: String(Constants.NO_PARENT),
     isNewConvo: true,
     streamId: 'chat',
     epoch: 7,
