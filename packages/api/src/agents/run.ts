@@ -1730,7 +1730,7 @@ function computeEffectiveMaxContextTokens(
   if (reserveRatio == null || reserveRatio <= 0 || reserveRatio >= 1 || baseContextTokens == null) {
     return maxContextTokens;
   }
-  const ratioComputed = Math.max(1024, Math.round(baseContextTokens * (1 - reserveRatio)));
+  const ratioComputed = Math.round(baseContextTokens * (1 - reserveRatio));
   return Math.min(maxContextTokens ?? ratioComputed, ratioComputed);
 }
 
@@ -2897,21 +2897,21 @@ export async function createRun({
       tools = eventOnlyRunFileTools(tools, toolDefinitions);
     }
 
-    const effectiveMaxContextTokens = computeEffectiveMaxContextTokens(
+    const summarizationContextTokens = computeEffectiveMaxContextTokens(
       summarization.reserveRatio,
       agent.baseContextTokens,
       agent.maxContextTokens,
     );
 
     const summarizationViable =
-      effectiveMaxContextTokens == null ||
-      effectiveMaxContextTokens >= MIN_SUMMARIZATION_CONTEXT_TOKENS;
+      summarizationContextTokens == null ||
+      summarizationContextTokens >= MIN_SUMMARIZATION_CONTEXT_TOKENS;
     if (summarization.enabled && !summarizationViable) {
       logger.warn(
         '[createRun] Summarization disabled for this run: context budget below viable minimum',
         {
           agentId: agent.id,
-          effectiveMaxContextTokens,
+          summarizationContextTokens,
           minimum: MIN_SUMMARIZATION_CONTEXT_TOKENS,
         },
       );
@@ -2935,7 +2935,7 @@ export async function createRun({
         }) || undefined,
       name: agent.name ?? undefined,
       toolRegistry,
-      maxContextTokens: effectiveMaxContextTokens,
+      maxContextTokens: agent.maxContextTokens,
       useLegacyContent: agent.useLegacyContent ?? false,
       discoveredTools:
         !isSubagent && discoveredTools.size > 0 ? Array.from(discoveredTools) : undefined,

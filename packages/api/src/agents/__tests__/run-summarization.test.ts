@@ -560,13 +560,14 @@ describe('model-level callbacks', () => {
 // Suite 1: reserveRatio
 // ---------------------------------------------------------------------------
 describe('reserveRatio', () => {
-  it('applies ratio from config using baseContextTokens, capped at maxContextTokens', async () => {
+  it('passes the initialized context budget to the SDK without reserving twice', async () => {
     const agents = await callAndCapture({
       agents: [makeAgent({ baseContextTokens: 200_000, maxContextTokens: 200_000 })],
       summarizationConfig: { reserveRatio: 0.03, provider: 'anthropic', model: 'claude' },
     });
-    // Math.round(200000 * 0.97) = 194000, min(200000, 194000) = 194000
-    expect(agents[0].maxContextTokens).toBe(194_000);
+    // The SDK pruner applies the ratio once to the initialized 200000-token budget.
+    expect(agents[0].maxContextTokens).toBe(200_000);
+    expect(agents[0].summarizationConfig?.reserveRatio).toBe(0.03);
   });
 
   it('never exceeds user-configured maxContextTokens even when ratio computes higher', async () => {
@@ -615,8 +616,8 @@ describe('reserveRatio', () => {
       agents: [makeAgent({ baseContextTokens: 500, maxContextTokens: 2000 })],
       summarizationConfig: { reserveRatio: 0.99, provider: 'anthropic', model: 'claude' },
     });
-    // Math.round(500 * 0.01) = 5 → clamped to 1024, min(2000, 1024) = 1024
-    expect(agents[0].maxContextTokens).toBe(1024);
+    expect(agents[0].maxContextTokens).toBe(2000);
+    expect(agents[0].summarizationEnabled).toBe(false);
   });
 });
 
