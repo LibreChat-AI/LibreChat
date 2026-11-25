@@ -4,10 +4,10 @@ import type { Connections } from '@librechat/data-schemas';
 import type { Connection } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import type { EventsConfigSource, EventSettings, GitHubSettings } from './settings';
+import type { App, AppConfig, Installation, Reply } from './github/app';
 import type { Inbound, Lifecycle, Provider } from './provider';
 import type { Route, RouteDeps, Routed } from './route';
 import type { PullRequestFetch } from '~/pulls/shared';
-import type { AppConfig } from './github/app';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { createAccessCheck } from './access';
 import { github } from './github/provider';
@@ -28,10 +28,12 @@ import { createRoute } from './route';
  * - `ignored`: a verified delivery of an event, action or item nothing subscribes to.
  * - `unbound`: no connection holds the delivery's install; nothing is run for it.
  * - `suspended`: the connection holding the install is suspended.
- * - `installation`: the provider changed the install itself, and the connection was updated.
+ * - `installation`: the provider reported a change to the install itself; the connection now
+ *   holds the install's state as the provider reports it at this moment.
  * - `routed`: matched against the connection's subscriptions.
- * - `unavailable`: the store or the queue failed; the provider marks the delivery failed, and
- *   a later redelivery is absorbed by the body's digest.
+ * - `unavailable`: the store, the queue or the provider failed; the provider marks the
+ *   delivery failed, and a later redelivery is absorbed by the body's digest (or, for an
+ *   install change, applies the install's state as it then is).
  */
 export type ReceiveCode =
   | 'not_found'
@@ -54,8 +56,8 @@ export interface Received {
     field?: string;
     /** For `ignored`: whether the event, the action or the item was not one listened for. */
     reason?: string;
-    /** For `installation`: what happened to the install. */
-    change?: Lifecycle['change'];
+    /** For `installation`: the install's state as the provider reports it now. */
+    state?: InstallState;
     /** For `routed`. */
     enqueued?: number;
     duplicates?: number;
@@ -77,6 +79,9 @@ export interface ReceiveDeps {
 /** The providers a delivery may name, by the path segment it is posted to. */
 const PROVIDERS: Readonly<Record<string, Provider>> = { github };
 
+/** What a connection was set to after the provider reported a change to its install. */
+export type InstallState = 'active' | 'suspended' | 'removed';
+
 const reply = (status: number, body: Received['body']): Received => ({ status, body });
 
 /** A delivery's install, for a provider whose app every tenant shares. */
@@ -85,6 +90,12 @@ function installationOf(occurrences: readonly { installation?: number }[]): stri
   if (ids.size !== 1) return null;
   const [id] = ids;
   return id == null ? null : String(id);
+}
+
+/** The install's state from the provider's answer; only a `missing` refusal reaches here. */
+function stateOf(answer: Reply<Installation>): InstallState {
+  if (!answer.ok) return 'removed';
+  return answer.value.suspended ? 'suspended' : 'active';
 }
 
 /** Runs a connection write inside the tenant that holds it; connection writes are scoped. */
@@ -100,20 +111,33 @@ function within<T>(connection: Connection, fn: () => Promise<T>): Promise<T> {
  * route. The answer never carries the body, a header or an error's text.
  */
 export function createReceive(deps: ReceiveDeps) {
-  /** One router per app configuration, so the app's tokens and access answers are reused. */
-  let held: { key: string; route: Route } | null = null;
-  function routeFor(settings: GitHubSettings): Route {
-    const app: AppConfig = settings.app;
+  /**
+   * One app client and router per app configuration, so the app's tokens and access answers
+   * are reused across deliveries.
+   */
+  let held: { key: string; app: App; route: Route } | null = null;
+  function heldFor(settings: GitHubSettings): { app: App; route: Route } {
+    const config: AppConfig = settings.app;
     const key = createHash('sha256')
-      .update(JSON.stringify([app.id, app.host, app.timeoutMs, app.key, settings.accessTtlMs]))
+      .update(
+        JSON.stringify([
+          config.id,
+          config.host,
+          config.timeoutMs,
+          config.key,
+          settings.accessTtlMs,
+        ]),
+      )
       .digest('hex');
     if (held?.key !== key) {
-      const access = createAccessCheck(
-        createApp(app, { fetch: deps.fetch, ...(deps.now && { now: deps.now }) }),
-        { ttlMs: settings.accessTtlMs, ...(deps.now && { now: deps.now }) },
-      );
+      const app = createApp(config, { fetch: deps.fetch, ...(deps.now && { now: deps.now }) });
+      const access = createAccessCheck(app, {
+        ttlMs: settings.accessTtlMs,
+        ...(deps.now && { now: deps.now }),
+      });
       held = {
         key,
+        app,
         route: createRoute({
           match: deps.match,
           enqueue: deps.enqueue,
@@ -122,10 +146,22 @@ export function createReceive(deps: ReceiveDeps) {
         }),
       };
     }
-    return held.route;
+    return held;
   }
 
-  async function change(lifecycle: Lifecycle, provider: Provider['name']): Promise<Received> {
+  /**
+   * Brings the connection holding an install in line with the install as the provider reports
+   * it now. The delivery's action is not applied: deliveries can arrive late or twice, so
+   * applying the install's current state gives the same outcome whatever order they come in.
+   * The provider having no such install removes the connection; any other refusal, or an
+   * outage, is thrown so the delivery is answered as failed and can be redelivered. Nothing is
+   * cached.
+   */
+  async function reconcile(
+    lifecycle: Lifecycle,
+    provider: Provider['name'],
+    app: App,
+  ): Promise<Received> {
     const connection = await deps.connections.resolve({
       provider,
       installation: lifecycle.installation,
@@ -133,14 +169,18 @@ export function createReceive(deps: ReceiveDeps) {
     if (connection == null) {
       return reply(202, { code: 'unbound' });
     }
-    if (lifecycle.change === 'removed') {
-      await within(connection, () => deps.connections.remove(connection.id));
-    } else {
-      const status = lifecycle.change === 'suspended' ? 'suspended' : 'active';
-      await within(connection, () => deps.connections.mark(connection.id, status));
+    const answer = await app.installation(Number(lifecycle.installation));
+    if (!answer.ok && answer.error.code !== 'missing') {
+      throw new Error(`The installation lookup was refused: ${answer.error.code}`);
     }
-    logger.info(`[events] ${provider} ${lifecycle.change} the install of ${connection.id}`);
-    return reply(200, { code: 'installation', change: lifecycle.change });
+    const state = stateOf(answer);
+    if (state === 'removed') {
+      await within(connection, () => deps.connections.remove(connection.id));
+    } else if (connection.status !== state) {
+      await within(connection, () => deps.connections.mark(connection.id, state));
+    }
+    logger.info(`[events] ${provider} install of ${connection.id} is now ${state}`);
+    return reply(200, { code: 'installation', state });
   }
 
   return async function receive(
@@ -171,7 +211,7 @@ export function createReceive(deps: ReceiveDeps) {
     try {
       const lifecycle = provider.lifecycle(verified);
       if (lifecycle != null) {
-        return await change(lifecycle, provider.name);
+        return await reconcile(lifecycle, provider.name, heldFor(settings.github).app);
       }
       const outcome = provider.parse(verified, settings.limits);
       if (!outcome.ok) {
@@ -193,7 +233,7 @@ export function createReceive(deps: ReceiveDeps) {
         logger.info(`[events] ${label} dropped: ${connection.id} is suspended`);
         return reply(202, { code: 'suspended' });
       }
-      const routed = await routeFor(settings.github)({
+      const routed = await heldFor(settings.github).route({
         verified,
         occurrences: outcome.value,
         connection,

@@ -80,16 +80,6 @@ function read(verified: Verified): unknown {
   }
 }
 
-/**
- * GitHub's own `installation` event, by action. `created` and `new_permissions_accepted` change
- * nothing here, since an install is bound to a tenant only through the admin flow.
- */
-const CHANGES: Readonly<Record<string, Lifecycle['change']>> = {
-  deleted: 'removed',
-  suspend: 'suspended',
-  unsuspend: 'restored',
-};
-
 type InstallBody = {
   action?: unknown;
   repository?: unknown;
@@ -97,11 +87,12 @@ type InstallBody = {
 };
 
 /**
- * An `installation` delivery's change to the install it names. The event header is not
- * signed, and many signed events have an action `deleted` and name their install, so the body
- * must also be shaped as only this event's is: the whole installation object, with its
- * `app_id` and `account`, and no repository. Every other event carries only the install's id,
- * so a relabelled delivery never reads as a change.
+ * The install an `installation` delivery names, whatever its action: the caller asks GitHub for
+ * the install's current state rather than trusting the action, so an older delivery arriving
+ * late cannot undo a newer change. The event header is not signed, and many signed events name
+ * their install, so the body must also be shaped as only this event's is: an action, the whole
+ * installation object with its `app_id` and `account`, and no repository. Every other event
+ * carries only the install's id, so a relabelled delivery never reads as one.
  */
 function lifecycle(verified: Verified): Lifecycle | null {
   if (verified.event !== 'installation') {
@@ -111,11 +102,10 @@ function lifecycle(verified: Verified): Lifecycle | null {
   if (json == null || typeof json !== 'object' || json.repository !== undefined) {
     return null;
   }
-  const change = typeof json.action === 'string' ? CHANGES[json.action] : undefined;
   const install = json.installation;
   const id = install?.id;
   if (
-    change == null ||
+    typeof json.action !== 'string' ||
     typeof id !== 'number' ||
     !Number.isSafeInteger(id) ||
     id <= 0 ||
@@ -125,7 +115,7 @@ function lifecycle(verified: Verified): Lifecycle | null {
   ) {
     return null;
   }
-  return { installation: String(id), change };
+  return { installation: String(id) };
 }
 
 /**

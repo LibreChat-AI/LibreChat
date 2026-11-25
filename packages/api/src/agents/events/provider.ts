@@ -45,13 +45,13 @@ export type Verdict =
   | { ok: false; error: { code: 'signature'; reason: Rejected } };
 
 /**
- * The provider itself changing an install of the deployment's app: the install was removed,
- * held (suspended), or released again. Read from a verified delivery, so the install named
- * here is the one the provider signed for.
+ * A verified delivery saying the provider changed an install of the deployment's app: removed,
+ * held (suspended), released, or re-granted. It names the install only, not what to do: a
+ * delivery can arrive late or twice, so the caller asks the provider for the install's state
+ * now and applies that, whatever order deliveries come in.
  */
 export interface Lifecycle {
   installation: string;
-  change: 'removed' | 'suspended' | 'restored';
 }
 
 /**
@@ -73,7 +73,7 @@ export interface Provider {
    */
   parse(verified: Verified, limits?: Limits): Outcome;
   /**
-   * The change a verified delivery makes to an install, or `null` when it is not about the
+   * The install a verified delivery reports a change to, or `null` when it is not about the
    * install itself (every catalog event). Like `parse`, it never throws for what the body
    * contains.
    */

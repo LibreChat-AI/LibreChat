@@ -337,17 +337,17 @@ describe('github.lifecycle', () => {
     sender: { login: 'example-admin', id: 5009, type: 'User' },
   });
 
-  it.each([
-    ['deleted', 'removed'],
-    ['suspend', 'suspended'],
-    ['unsuspend', 'restored'],
-  ])('reads %s as the install %s', (action, change) => {
-    const result = github.lifecycle(verified(bytes(installation(action)), 'installation'));
-    expect(result).toEqual({ installation: '4400', change });
-  });
+  it.each(['deleted', 'suspend', 'unsuspend', 'created', 'new_permissions_accepted'])(
+    'reads %s as a change to the install, whatever the action',
+    (action) => {
+      const result = github.lifecycle(verified(bytes(installation(action)), 'installation'));
+      expect(result).toEqual({ installation: '4400' });
+    },
+  );
 
-  it.each(['created', 'new_permissions_accepted', 'unknown'])('reads %s as no change', (action) => {
-    expect(github.lifecycle(verified(bytes(installation(action)), 'installation'))).toBeNull();
+  it('reads no change from a body with no action', () => {
+    const { action: _action, ...body } = installation('deleted');
+    expect(github.lifecycle(verified(bytes(body), 'installation'))).toBeNull();
   });
 
   it('reads no change from a delivery of another event', () => {

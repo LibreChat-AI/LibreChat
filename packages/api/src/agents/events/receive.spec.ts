@@ -56,15 +56,36 @@ const store: ReceiveDeps['enqueue'] = async (envelope, options) => {
 };
 
 /** GitHub as the app sees it: a token, then a write answer for every account. */
+/** What the fake provider reports for the install when asked: its state now. */
+let install: 'active' | 'suspended' | 'missing' | 'outage' | 'forbidden' | 'rejected';
+
+/** The provider as the app sees it: a token, a write answer, and the install's current state. */
 const github: PullRequestFetch = async (input, init) => {
-  fetchCalls.push(`${init?.method ?? 'GET'} ${new URL(input).pathname}`);
-  const body = input.endsWith('/access_tokens')
-    ? { token: 'ghs_test', expires_at: new Date(Date.now() + 3_600_000).toISOString() }
-    : { permission: 'write' };
-  return new Response(JSON.stringify(body), {
-    status: input.endsWith('/access_tokens') ? 201 : 200,
-    headers: { 'content-type': 'application/json' },
-  });
+  const path = new URL(input).pathname;
+  fetchCalls.push(`${init?.method ?? 'GET'} ${path}`);
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    });
+  if (path.endsWith('/access_tokens')) {
+    return json(
+      { token: 'ghs_test', expires_at: new Date(Date.now() + 3_600_000).toISOString() },
+      201,
+    );
+  }
+  if (/^\/app\/installations\/\d+$/.test(path)) {
+    if (install === 'outage') throw new TypeError('fetch failed');
+    if (install === 'missing') return json({ message: 'Not Found' }, 404);
+    if (install === 'forbidden') return json({ message: 'Forbidden' }, 403);
+    if (install === 'rejected') return json({ message: 'Bad credentials' }, 401);
+    return json({
+      id: INSTALLATION_ID,
+      account: { login: 'example-org', id: 9001, type: 'Organization' },
+      suspended_at: install === 'suspended' ? '2026-11-25T10:00:00Z' : null,
+    });
+  }
+  return json({ permission: 'write' });
 };
 
 const settings = (overrides: Partial<EventSettings> = {}): EventSettings => ({
@@ -183,6 +204,7 @@ beforeEach(async () => {
   subscriptions = createSubscriptions(mongoose);
   connections = createConnections(mongoose);
   fetchCalls = [];
+  install = 'active';
   await Promise.all([
     mongoose.models.AgentEventSubscription.deleteMany({}),
     mongoose.models.AgentEventConnection.deleteMany({}),
@@ -434,68 +456,113 @@ describe('receive', () => {
   });
 
   describe("the provider's own installation events", () => {
-    it.each([
-      ['suspend', 'suspended'],
-      ['unsuspend', 'active'],
-    ] as const)('%s marks the connection %s, in its own tenant', async (action, status) => {
+    const post = (receive: ReturnType<typeof createReceive>, action: string) =>
+      receive(settings(), 'github', signed('installation', installationEvent(action)));
+    const status = async (id: string) => (await stored(id))?.status;
+
+    it("applies the install's state the provider reports, in the connection's own tenant", async () => {
       const connection = await bind('tenant-a');
-      if (action === 'unsuspend') {
-        await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
-          connections.mark(connection.id, 'suspended'),
-        );
-      }
       const receive = createReceive(deps());
-      const result = await receive(
-        settings(),
-        'github',
-        signed('installation', installationEvent(action)),
-      );
-      expect(result.status).toBe(200);
-      expect(result.body.code).toBe('installation');
-      expect((await stored(connection.id))?.status).toBe(status);
+      install = 'suspended';
+      expect((await post(receive, 'suspend')).body).toEqual({
+        code: 'installation',
+        state: 'suspended',
+      });
+      expect(await status(connection.id)).toBe('suspended');
+      install = 'active';
+      expect((await post(receive, 'unsuspend')).body).toEqual({
+        code: 'installation',
+        state: 'active',
+      });
+      expect(await status(connection.id)).toBe('active');
     });
 
-    it('deleted removes the connection', async () => {
+    it('keeps the newer state when an older suspend arrives after the unsuspend', async () => {
+      const connection = await bind();
+      const receive = createReceive(deps());
+      install = 'active';
+      await post(receive, 'unsuspend');
+      const late = await post(receive, 'suspend');
+      expect(late.body).toEqual({ code: 'installation', state: 'active' });
+      expect(await status(connection.id)).toBe('active');
+    });
+
+    it('keeps the newer state when an older unsuspend arrives after the suspend', async () => {
+      const connection = await bind();
+      const receive = createReceive(deps());
+      install = 'suspended';
+      await post(receive, 'suspend');
+      await post(receive, 'unsuspend');
+      expect(await status(connection.id)).toBe('suspended');
+    });
+
+    it('does not remove a connection the provider still lists, whatever the action', async () => {
+      const connection = await bind();
+      const receive = createReceive(deps());
+      install = 'active';
+      const result = await post(receive, 'deleted');
+      expect(result.body).toEqual({ code: 'installation', state: 'active' });
+      expect(await status(connection.id)).toBe('active');
+    });
+
+    it('removes the connection once the provider has no such install', async () => {
       const connection = await bind('tenant-a');
       const receive = createReceive(deps());
-      const result = await receive(
-        settings(),
-        'github',
-        signed('installation', installationEvent('deleted')),
-      );
-      expect(result.body).toEqual({ code: 'installation', change: 'removed' });
+      install = 'missing';
+      const result = await post(receive, 'deleted');
+      expect(result.body).toEqual({ code: 'installation', state: 'removed' });
       expect(await stored(connection.id)).toBeNull();
+    });
+
+    it('answers 503 and changes nothing when the provider cannot be asked', async () => {
+      jest.spyOn(logger, 'error').mockImplementation(() => logger);
+      const connection = await bind();
+      const receive = createReceive(deps());
+      install = 'outage';
+      const result = await post(receive, 'deleted');
+      expect(result).toEqual({ status: 503, body: { code: 'unavailable' } });
+      expect(await status(connection.id)).toBe('active');
+    });
+
+    it.each(['forbidden', 'rejected'] as const)(
+      'answers 503 and keeps the connection when the provider refuses the lookup (%s)',
+      async (refusal) => {
+        jest.spyOn(logger, 'error').mockImplementation(() => logger);
+        const connection = await bind();
+        const receive = createReceive(deps());
+        install = refusal;
+        const result = await post(receive, 'deleted');
+        expect(result).toEqual({ status: 503, body: { code: 'unavailable' } });
+        expect(await status(connection.id)).toBe('active');
+      },
+    );
+
+    it('asks the provider every time, never from a cache', async () => {
+      const connection = await bind();
+      const receive = createReceive(deps());
+      install = 'suspended';
+      await post(receive, 'suspend');
+      install = 'active';
+      await post(receive, 'suspend');
+      expect(await status(connection.id)).toBe('active');
+      expect(fetchCalls.filter((call) => /\/app\/installations\/\d+$/.test(call))).toHaveLength(2);
     });
 
     it('changes only the connection that holds the install', async () => {
       const mine = await bind('tenant-a');
       const theirs = await bind('tenant-b', '9999');
       const receive = createReceive(deps());
-      await receive(settings(), 'github', signed('installation', installationEvent('deleted')));
+      install = 'missing';
+      await post(receive, 'deleted');
       expect(await stored(mine.id)).toBeNull();
-      expect((await stored(theirs.id))?.status).toBe('active');
+      expect(await status(theirs.id)).toBe('active');
     });
 
-    it('acknowledges an event for an install no tenant has bound', async () => {
+    it('acknowledges an event for an install no tenant has bound, without asking', async () => {
       const receive = createReceive(deps());
-      const result = await receive(
-        settings(),
-        'github',
-        signed('installation', installationEvent('deleted')),
-      );
+      const result = await post(receive, 'deleted');
       expect(result).toEqual({ status: 202, body: { code: 'unbound' } });
-    });
-
-    it.each(['created', 'new_permissions_accepted'])('%s changes nothing', async (action) => {
-      const connection = await bind();
-      const receive = createReceive(deps());
-      const result = await receive(
-        settings(),
-        'github',
-        signed('installation', installationEvent(action)),
-      );
-      expect(result.body.code).toBe('ignored');
-      expect((await stored(connection.id))?.status).toBe('active');
+      expect(fetchCalls).toHaveLength(0);
     });
 
     it('does not act on an unsigned installation event', async () => {
