@@ -80,6 +80,7 @@ interface RawProviderUsage {
 interface ModelEndOutput {
   usage_metadata?: UsageMetadata;
   response_metadata?: {
+    initial_prompt_token_count?: number;
     usage?: RawProviderUsage | null;
     /** Bedrock's streamed `metadata` event */
     metadata?: { usage?: RawProviderUsage | null } | null;
@@ -101,6 +102,13 @@ function getOneHourCacheWrites(usage?: RawProviderUsage | null): number {
     }
   }
   return total;
+}
+
+/** Initial prompt size for context tracking after a multi-segment response.
+ * Aggregate usage remains untouched for billing and output reconciliation. */
+export function getModelEndContextInputTokens(output?: ModelEndOutput | null): number | undefined {
+  const input = output?.response_metadata?.initial_prompt_token_count;
+  return typeof input === 'number' && Number.isFinite(input) && input >= 0 ? input : undefined;
 }
 
 /**

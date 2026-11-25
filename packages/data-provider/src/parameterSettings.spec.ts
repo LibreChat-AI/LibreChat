@@ -34,7 +34,7 @@ describe('applyModelAwareDefaults', () => {
     (settings) => {
       const result = applyModelAwareDefaults(settings, EModelEndpoint.google, 'gemini-4-hydrogen');
       expect(maxOut(result)?.default).toBe(65536);
-      expect(maxOut(result)?.range?.max).toBe(65536);
+      expect(maxOut(result)?.range?.max).toBe(1048576);
       expect(result.find((setting) => setting.key === 'thinkingLevel')?.options).toEqual([
         '',
         'low',
@@ -50,6 +50,16 @@ describe('applyModelAwareDefaults', () => {
   it('resolves the Google maxOutputTokens default for current Gemini models', () => {
     const result = applyModelAwareDefaults(googleParams, EModelEndpoint.google, 'gemini-2.5-pro');
     expect(maxOut(result)?.default).toBe(65535);
+  });
+
+  it('allows the shared-window maximum for Gemini long-decode models', () => {
+    const result = applyModelAwareDefaults(googleParams, EModelEndpoint.google, 'gemini-4-carbon');
+    expect(maxOut(result)?.default).toBe(65535);
+    expect(maxOut(result)?.range).toMatchObject({ max: 1048576, modelSpecific: true });
+
+    const neon = applyModelAwareDefaults(googleParams, EModelEndpoint.google, 'gemini-4-neon');
+    expect(maxOut(neon)?.default).toBe(65535);
+    expect(maxOut(neon)?.range).toMatchObject({ max: 1048576, modelSpecific: true });
   });
 
   it('resolves the legacy default for older Gemini models', () => {

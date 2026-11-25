@@ -127,6 +127,7 @@ import {
 import { assertChatProjectInstructions, ChatProjectResourcesChangedError } from '../projects/turn';
 import { extractAgentContent, extractSkillContent } from '../protection/adapters/submissions';
 import { selectCodeFileGenerations, planCodeSnapshotMounts } from '~/files/code/destinations';
+import { getGoogleInputTokenLimit, getGoogleOutputReserve } from '~/endpoints/google/llm';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
@@ -138,7 +139,6 @@ import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { narrowGrantedTools } from '~/agents/authority/execution';
-import { getGoogleInputTokenLimit } from '~/endpoints/google/llm';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { resolveToolRoleGrants } from '~/tools/rolePermissions';
 import { createRequestAgentExecutionContext } from './runtime';
@@ -2882,6 +2882,7 @@ export async function initializeAgent(
 
   const agentMaxContextNum = Number(agentMaxContextTokens) || DEFAULT_MAX_CONTEXT_TOKENS;
   const maxOutputTokensNum = Number(maxOutputTokens) || 0;
+  const outputReserve = getGoogleOutputReserve(tokensModel ?? '', maxOutputTokensNum);
   const sharedInputLimit =
     agent.provider === Providers.GOOGLE || agent.provider === Providers.VERTEXAI
       ? (getGoogleInputTokenLimit(tokensModel ?? '', maxOutputTokensNum) ?? Infinity)
@@ -2892,7 +2893,7 @@ export async function initializeAgent(
   const contextWindow = modelContextTokens ?? contextLimit ?? DEFAULT_MAX_CONTEXT_TOKENS;
   const baseContextTokens = Math.max(
     0,
-    Math.min(contextWindow - maxOutputTokensNum, sharedInputLimit, contextLimit ?? Infinity),
+    Math.min(contextWindow - outputReserve, sharedInputLimit, contextLimit ?? Infinity),
   );
 
   const toMongoFiles = (files: Array<TFile | undefined> | undefined): IMongoFile[] =>
@@ -3039,7 +3040,7 @@ export async function initializeAgent(
         : Math.max(
             1024,
             Math.round(
-              Math.min(agentMaxContextNum - maxOutputTokensNum, sharedInputLimit) *
+              Math.min(agentMaxContextNum - outputReserve, sharedInputLimit) *
                 (1 - DEFAULT_RESERVE_RATIO),
             ),
           ),

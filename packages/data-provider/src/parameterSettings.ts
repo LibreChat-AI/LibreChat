@@ -32,10 +32,10 @@ import {
   reasoningOverrideSchema,
   ReasoningParameterFormat,
 } from './schemas';
+import { isGeminiHydrogen, isGeminiLongDecodeModel } from './gemini';
 import { resolveEffectiveUseResponsesApi } from './file-config';
 import { gpt6Tier, gpt6Release } from './families';
 import { clampSettingRange } from './generate';
-import { isGeminiHydrogen } from './gemini';
 
 // Base definitions
 const baseDefinitions: Record<string, SettingDefinition> = {
@@ -1870,12 +1870,15 @@ function applyModelFamilyDefaults(
           )
           .map((setting) => {
             if (setting.key === 'maxOutputTokens') {
-              const max = googleSettings.maxOutputTokens.reset(model);
+              const defaultOutput = googleSettings.maxOutputTokens.reset(model);
+              const maxOutput = googleSettings.maxOutputTokens.limit(model);
               return {
                 ...setting,
-                default: max,
-                ...(isGeminiHydrogen(model) &&
-                  setting.range && { range: { ...setting.range, max, modelSpecific: true } }),
+                default: defaultOutput,
+                ...(isGeminiLongDecodeModel(model) &&
+                  setting.range && {
+                    range: { ...setting.range, max: maxOutput, modelSpecific: true },
+                  }),
               };
             }
             if (setting.key === 'thinkingLevel' && isGeminiHydrogen(model)) {

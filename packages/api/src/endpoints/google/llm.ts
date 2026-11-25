@@ -5,8 +5,9 @@ import {
   AuthKeys,
   removeNullishValues,
   isGeminiHydrogen,
-  GEMINI_HYDROGEN_OUTPUT_TOKENS,
-  GEMINI_HYDROGEN_CONTEXT_TOKENS,
+  isGeminiLongDecodeModel,
+  GEMINI_LONG_DECODE_SEGMENT_OUTPUT_TOKENS,
+  GEMINI_LONG_DECODE_MAX_CONTEXT_TOKENS,
 } from 'librechat-data-provider';
 import type { GoogleClientOptions, VertexAIClientOptions } from '@librechat/agents';
 import type { GoogleAIToolType } from '@librechat/agents/langchain/google-common';
@@ -235,19 +236,25 @@ function matchesGeminiModelId(model: string, id: string): boolean {
   return modelId === id || modelId.startsWith(`${id}-`);
 }
 
-/** Reserve the foreground response (including thinking) inside Hydrogen's shared window. */
+/** Reserve the first long-decode segment, shared by every provider using the model. */
+export function getGoogleOutputReserve(model: string, maxOutputTokens?: number): number {
+  if (!isGeminiLongDecodeModel(model)) {
+    return maxOutputTokens ?? 0;
+  }
+  return maxOutputTokens != null && maxOutputTokens > 0
+    ? Math.min(maxOutputTokens, GEMINI_LONG_DECODE_SEGMENT_OUTPUT_TOKENS)
+    : GEMINI_LONG_DECODE_SEGMENT_OUTPUT_TOKENS;
+}
+
+/** Reserve input space for the foreground response within the shared context window. */
 export function getGoogleInputTokenLimit(
   model: string,
   maxOutputTokens?: number,
 ): number | undefined {
-  if (!isGeminiHydrogen(model)) {
+  if (!isGeminiLongDecodeModel(model)) {
     return undefined;
   }
-  const output =
-    maxOutputTokens != null && maxOutputTokens > 0
-      ? Math.min(maxOutputTokens, GEMINI_HYDROGEN_OUTPUT_TOKENS)
-      : GEMINI_HYDROGEN_OUTPUT_TOKENS;
-  return GEMINI_HYDROGEN_CONTEXT_TOKENS - output;
+  return GEMINI_LONG_DECODE_MAX_CONTEXT_TOKENS - getGoogleOutputReserve(model, maxOutputTokens);
 }
 
 function getGeminiFlashThinkingRule(model: string): GeminiFlashThinkingRule | undefined {
@@ -814,8 +821,15 @@ export function getGoogleConfig(
       googleSettings.maxOutputTokens.reset(resolvedModel);
   }
 
-  if (isGeminiHydrogen(llmConfig.model) && typeof llmConfig.maxOutputTokens === 'number') {
-    llmConfig.maxOutputTokens = Math.min(llmConfig.maxOutputTokens, GEMINI_HYDROGEN_OUTPUT_TOKENS);
+  if (
+    llmConfig.model != null &&
+    isGeminiLongDecodeModel(llmConfig.model) &&
+    typeof llmConfig.maxOutputTokens === 'number'
+  ) {
+    llmConfig.maxOutputTokens = googleSettings.maxOutputTokens.set(
+      llmConfig.maxOutputTokens,
+      llmConfig.model,
+    );
   }
 
   applyGeminiFlashOverrides({

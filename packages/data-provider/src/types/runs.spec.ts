@@ -66,6 +66,19 @@ describe('promptTokensFromUsage', () => {
     expect(promptTokensFromUsage(event)).toBe(85);
   });
 
+  it('uses only the initial prompt for context after continuation', () => {
+    const event: TTokenUsageEvent = {
+      input_tokens: 300,
+      output_tokens: 65538,
+      total_tokens: 65838,
+      context_input_tokens: 100,
+      input_token_details: { cache_read: 250 },
+      provider: 'vertexai',
+    };
+    expect(promptTokensFromUsage(event)).toBe(100);
+    expect(outputTokensFromUsage(event)).toBe(65538);
+  });
+
   it('uses the magnitude heuristic when the provider is absent (cache ≤ input ⇒ included)', () => {
     /** OpenAI-compatible/custom payload with no provider: cache already folded
      *  into input_tokens, so it must NOT be re-added. */
