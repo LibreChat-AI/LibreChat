@@ -15,11 +15,17 @@ import {
   preserveOmittedOAuthBindingFields,
   getChangedOAuthSecretBindingFields,
 } from '~/mcp/registry/binding';
+import {
+  encryptHeaderValues,
+  decryptHeaderValues,
+  hasBlankHeaderValue,
+  retainStoredHeaderValues,
+} from '~/mcp/registry/headers';
 import { MCPCommittedWriteError, MCPOAuthSecretReentryRequiredError } from '~/mcp/errors';
+import { getConfigHeaders, isGeneratedUserApiKeyVariable } from '~/mcp/headers';
 import { requireApiKeyReentryForRebinding } from '~/mcp/registry/reentry';
 import { normalizeLegacyHeaderMaps } from '~/mcp/registry/compat';
 import { AccessControlService } from '~/acl/accessControlService';
-import { isGeneratedUserApiKeyVariable } from '~/mcp/headers';
 
 /**
  * Regex patterns for credential/env placeholders that should not be allowed in user-provided configs.
@@ -274,8 +280,18 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
       requireApiKeyReentryForRebinding(existingServer.config, config);
     }
 
+    /** Blank custom header values keep the stored value ("leave blank to keep"). Applied to the
+     *  submitted config, so a value that placeholder stripping empties is not mistaken for blank. */
+    const configWithHeaders =
+      existingServer && hasBlankHeaderValue(config)
+        ? retainStoredHeaderValues(
+            config,
+            await this.decryptConfig(normalizeLegacyHeaderMaps(existingServer.config)),
+          )
+        : config;
+
     let configToSave: ParsedServerConfig = sanitizeUserManagedOAuthConfig(
-      sanitizeConfigHeaderMaps(config),
+      sanitizeConfigHeaderMaps(configWithHeaders),
     );
 
     const existingOAuth = existingServer?.config?.oauth;
@@ -655,11 +671,21 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
 
   /**
    * Encrypts sensitive fields in config before database storage.
-   * Encrypts oauth.client_secret and apiKey.key (when source === 'admin').
+   * Encrypts oauth.client_secret, apiKey.key (when source === 'admin') and every `headers` value.
    * Throws on failure to prevent storing plaintext secrets.
    */
   private async encryptConfig(config: ParsedServerConfig): Promise<ParsedServerConfig> {
     let result = { ...config };
+
+    const headers = getConfigHeaders(result);
+    if (headers) {
+      try {
+        result = { ...result, headers: await encryptHeaderValues(headers) } as ParsedServerConfig;
+      } catch (error) {
+        logger.error('[ServerConfigsDB.encryptConfig] Failed to encrypt headers', error);
+        throw new Error('Failed to encrypt MCP server configuration');
+      }
+    }
 
     if (result.apiKey?.source === 'admin' && result.apiKey.key) {
       try {
@@ -693,11 +719,16 @@ export class ServerConfigsDB implements IServerConfigsRepositoryInterface {
 
   /**
    * Decrypts sensitive fields in config after database retrieval.
-   * Decrypts oauth.client_secret and apiKey.key (when source === 'admin').
+   * Decrypts oauth.client_secret, apiKey.key (when source === 'admin') and `headers` values.
    * Returns config without secret on failure (graceful degradation).
    */
   private async decryptConfig(config: ParsedServerConfig): Promise<ParsedServerConfig> {
     let result = { ...config };
+
+    const headers = getConfigHeaders(result);
+    if (headers) {
+      result = { ...result, headers: await decryptHeaderValues(headers) } as ParsedServerConfig;
+    }
 
     if (result.apiKey?.source === 'admin' && result.apiKey.key) {
       try {

@@ -42,6 +42,7 @@ function renderSection() {
         url: '',
         type: 'streamable-http',
         auth: { auth_type: 'none' as MCPServerFormData['auth']['auth_type'] },
+        headers: [],
         trust: false,
       },
     });

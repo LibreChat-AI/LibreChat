@@ -1587,7 +1587,18 @@ describe('ServerConfigsDB', () => {
         for (const key of ['headers', 'requestHeaders'] as const) {
           const value = expected[key];
           if (value != null && (!minimized || Object.keys(value).length > 0)) {
-            expect(stored?.config[key]).toEqual(value);
+            if (key === 'headers') {
+              /** Header values are encrypted at rest; names are stored as submitted. */
+              const storedHeaders = stored?.config[key] as Record<string, string>;
+              expect(Object.keys(storedHeaders)).toEqual(Object.keys(value));
+              for (const [name, plain] of Object.entries(value)) {
+                expect(storedHeaders[name]).toEqual(
+                  plain === '' ? '' : expect.stringMatching(/^enc:v2:/),
+                );
+              }
+            } else {
+              expect(stored?.config[key]).toEqual(value);
+            }
             expect(result).toHaveProperty(key, expected[key]);
           } else {
             expect(stored?.config).not.toHaveProperty(key);
@@ -2548,6 +2559,163 @@ describe('ServerConfigsDB', () => {
       // Should not find the server via agent
       const result = await serverConfigsDB.get(created.serverName, userId2);
       expect(result).toBeUndefined();
+    });
+  });
+
+  describe('custom header values', () => {
+    type WithHeaders = ParsedServerConfig & { headers?: Record<string, string> };
+    const headerConfig = (headers: Record<string, string>, url = 'https://example.com/mcp') =>
+      ({
+        type: 'streamable-http',
+        url,
+        title: 'Mautic',
+        headers,
+      }) as unknown as ParsedServerConfig;
+
+    const storedHeaders = async (serverName: string): Promise<Record<string, string>> => {
+      const doc = await mongoose.models.MCPServer.findOne({ serverName }).lean<{
+        config: { headers?: Record<string, string> };
+      }>();
+      return doc?.config.headers ?? {};
+    };
+
+    it('encrypts every header value at rest and decrypts it on read', async () => {
+      const created = await serverConfigsDB.add(
+        'temp-name',
+        headerConfig({ 'X-Client-Id': 'client-123', 'X-Client-Secret': 'super-secret' }),
+        userId,
+      );
+
+      const stored = await storedHeaders(created.serverName);
+      expect(Object.keys(stored)).toEqual(['X-Client-Id', 'X-Client-Secret']);
+      for (const value of Object.values(stored)) {
+        expect(value.startsWith('enc:v2:')).toBe(true);
+        expect(value).not.toContain('client-123');
+        expect(value).not.toContain('super-secret');
+      }
+
+      const retrieved = (await serverConfigsDB.get(created.serverName, userId)) as WithHeaders;
+      expect(retrieved.headers).toEqual({
+        'X-Client-Id': 'client-123',
+        'X-Client-Secret': 'super-secret',
+      });
+      expect((created.config as WithHeaders).headers?.['X-Client-Secret']).toBe('super-secret');
+    });
+
+    it('strips dangerous placeholders before encrypting and keeps safe ones', async () => {
+      const created = await serverConfigsDB.add(
+        'temp-name',
+        headerConfig({
+          'X-Token': 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}',
+          'X-Key': '{{MCP_API_KEY}}',
+        }),
+        userId,
+      );
+
+      const stored = await storedHeaders(created.serverName);
+      expect(stored['X-Token'].startsWith('enc:v2:')).toBe(true);
+      const retrieved = (await serverConfigsDB.get(created.serverName, userId)) as WithHeaders;
+      expect(retrieved.headers).toEqual({ 'X-Token': 'Bearer ', 'X-Key': '{{MCP_API_KEY}}' });
+    });
+
+    it('keeps the stored value for a blank header on update and deletes omitted headers', async () => {
+      const created = await serverConfigsDB.add(
+        'temp-name',
+        headerConfig({ 'X-Client-Id': 'client-123', 'X-Client-Secret': 'super-secret' }),
+        userId,
+      );
+
+      await serverConfigsDB.update(
+        created.serverName,
+        headerConfig({ 'x-client-secret': '', 'X-New': 'new-value' }),
+        userId,
+      );
+
+      const retrieved = (await serverConfigsDB.get(created.serverName, userId)) as WithHeaders;
+      expect(retrieved.headers).toEqual({
+        'x-client-secret': 'super-secret',
+        'X-New': 'new-value',
+      });
+      const stored = await storedHeaders(created.serverName);
+      expect(stored['x-client-secret'].startsWith('enc:v2:')).toBe(true);
+    });
+
+    it('replaces a header value when a new one is submitted', async () => {
+      const created = await serverConfigsDB.add(
+        'temp-name',
+        headerConfig({ 'X-Client-Secret': 'old-secret' }),
+        userId,
+      );
+      await serverConfigsDB.update(
+        created.serverName,
+        headerConfig({ 'X-Client-Secret': 'new-secret' }),
+        userId,
+      );
+      const retrieved = (await serverConfigsDB.get(created.serverName, userId)) as WithHeaders;
+      expect(retrieved.headers).toEqual({ 'X-Client-Secret': 'new-secret' });
+    });
+
+    it('does not retain a stored value when stripping empties the submitted one', async () => {
+      const created = await serverConfigsDB.add(
+        'temp-name',
+        headerConfig({ 'X-Client-Secret': 'super-secret' }),
+        userId,
+      );
+      await serverConfigsDB.update(
+        created.serverName,
+        headerConfig({ 'X-Client-Secret': '{{LIBRECHAT_USER_EMAIL}}' }),
+        userId,
+      );
+      const retrieved = (await serverConfigsDB.get(created.serverName, userId)) as WithHeaders;
+      expect(retrieved.headers).toEqual({ 'X-Client-Secret': '' });
+    });
+
+    it('requires re-entry when a retained header value would be sent to a new URL', async () => {
+      const created = await serverConfigsDB.add(
+        'temp-name',
+        headerConfig({ 'X-Client-Secret': 'super-secret' }),
+        userId,
+      );
+
+      await expect(
+        serverConfigsDB.update(
+          created.serverName,
+          headerConfig({ 'X-Client-Secret': '' }, 'https://attacker.example/mcp'),
+          userId,
+        ),
+      ).rejects.toMatchObject({ code: 'MCP_HEADERS_REENTRY_REQUIRED', statusCode: 400 });
+
+      const retrieved = (await serverConfigsDB.get(created.serverName, userId)) as WithHeaders;
+      expect(retrieved.headers).toEqual({ 'X-Client-Secret': 'super-secret' });
+      expect((retrieved as { url?: string }).url).toBe('https://example.com/mcp');
+    });
+
+    it('reads legacy plaintext header values unchanged', async () => {
+      const created = await serverConfigsDB.add(
+        'temp-name',
+        headerConfig({ 'X-Client-Id': 'placeholder' }),
+        userId,
+      );
+      await mongoose.models.MCPServer.updateOne(
+        { serverName: created.serverName },
+        { $set: { 'config.headers': { 'X-Legacy': 'plain-value', 'X-Colon': 'a:b' } } },
+      );
+      const retrieved = (await serverConfigsDB.get(created.serverName, userId)) as WithHeaders;
+      expect(retrieved.headers).toEqual({ 'X-Legacy': 'plain-value', 'X-Colon': 'a:b' });
+    });
+
+    it('drops a header whose value fails to decrypt instead of sending ciphertext', async () => {
+      const created = await serverConfigsDB.add(
+        'temp-name',
+        headerConfig({ 'X-Good': 'good', 'X-Bad': 'bad' }),
+        userId,
+      );
+      await mongoose.models.MCPServer.updateOne(
+        { serverName: created.serverName },
+        { $set: { 'config.headers.X-Bad': 'enc:v2:invalid:corrupted' } },
+      );
+      const retrieved = (await serverConfigsDB.get(created.serverName, userId)) as WithHeaders;
+      expect(retrieved.headers).toEqual({ 'X-Good': 'good' });
     });
   });
 
