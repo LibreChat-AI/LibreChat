@@ -136,18 +136,18 @@ function gateFails(results, mcpRun = '') {
   });
 }
 
-test('PR selection and fail-open defaults use twenty-five memory shards and two Redis transport shards', () => {
+test('PR selection and fail-open defaults use forty memory shards and two Redis transport shards', () => {
   assert.equal(defaults.length, 2);
   assert.deepEqual(defaults[0], prMatrix);
-  assert.equal(prMatrix.include.length, 27);
-  assertPartition(prMatrix, 'memory', 'full', 25);
+  assert.equal(prMatrix.include.length, 42);
+  assertPartition(prMatrix, 'memory', 'full', 40);
   assertPartition(prMatrix, 'redis', 'transport', 2);
 });
 
 test('nightly and default manual runs retain full-suite coverage on both stores', () => {
   assert.equal(workflow.on.workflow_dispatch.inputs.coverage.default, 'full');
-  assert.equal(defaults[1].include.length, 35);
-  assertPartition(defaults[1], 'memory', 'full', 25);
+  assert.equal(defaults[1].include.length, 50);
+  assertPartition(defaults[1], 'memory', 'full', 40);
   assertPartition(defaults[1], 'redis', 'full', 10);
 });
 
@@ -201,8 +201,8 @@ test('an explicit Redis skip drops both transport shards and no memory shard', (
   const { matrix, outputs } = select(t, decision(false, false));
   assert.equal(outputs.decided, 'true');
   assert.equal(outputs.mcp_run, 'false');
-  assert.equal(matrix.include.length, 25);
-  assertPartition(matrix, 'memory', 'full', 25);
+  assert.equal(matrix.include.length, 40);
+  assertPartition(matrix, 'memory', 'full', 40);
 });
 
 test('missing or non-boolean Redis decisions retain both transport shards', (t) => {
@@ -378,7 +378,9 @@ test('timings are published only by a push, as the artifact the shards download'
   assert.match(find.run, /--workflow playwright-mock\.yml --branch dev --event push/);
   assert.match(find.run, /--status success/);
   const restore = workflow.jobs.shard_timings.steps.find((entry) => entry.id === 'restore');
-  const publish = recorder.steps.find((entry) => entry.uses?.startsWith('actions/upload-artifact@'));
+  const publish = recorder.steps.find((entry) =>
+    entry.uses?.startsWith('actions/upload-artifact@'),
+  );
   assert.ok(restore.run.includes(`name=${publish.with.name}&`));
   assert.equal(publish.with.path, 'e2e/.generated/shard-timings.json');
   assert.match(restore.run, / shard-timings\.json -d e2e\/\.generated/);
