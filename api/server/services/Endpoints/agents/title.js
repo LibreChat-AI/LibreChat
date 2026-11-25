@@ -1,6 +1,9 @@
 const {
   isEnabled,
   publishConversationTitle,
+  runAgentConversationTitle,
+  GenerationJobManager,
+  getSafeErrorMetadata,
   allowsAssistantSideEffects,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
@@ -19,6 +22,7 @@ const { resolveConversationTitle } = require('../titlePolicy');
  * @param {AgentClient} params.client
  * @param {string} [params.conversationId] - Required for `immediate` timing, where
  *   `response` is not yet available; falls back to `response.conversationId`.
+ * @param {number} [params.epoch] - Exact chat generation identity for detached titles.
  * @param {boolean} [params.immediate] - When true, the title is generated in parallel
  *   with the response (from the user's first message) and persisted to the conversation
  *   only after `convoReady` resolves (the conversation row must exist for `noUpsert`).
@@ -33,6 +37,7 @@ const { resolveConversationTitle } = require('../titlePolicy');
  *   is superseded by a newer run (or the turn failed), so a stale title does not
  *   clobber the conversation now owned by the newer run. A plain user Stop does
  *   NOT abort this — its generated title is kept.
+ * @param {() => boolean} [params.canPublishEarly] - Whether the live stream still accepts title events.
  * @param {(params: { conversationId: string, title: string }) => Promise<void>|void} [params.onTitleGenerated]
  *   Called after caching the title for the live stream.
  */
@@ -44,9 +49,11 @@ const addTitle = async (
     client,
     conversationId,
     immediate = false,
+    epoch,
     convoReady,
     signal,
     discardSignal,
+    canPublishEarly,
     onTitleGenerated,
   },
 ) => {
@@ -70,68 +77,50 @@ const addTitle = async (
     return;
   }
 
+  if (typeof client.titleConvo !== 'function') return;
   const titleCache = getLogStores(CacheKeys.GEN_TITLE);
-  const key = `${req.user.id}-${convoId}`;
   try {
-    let titlePromise;
-    let abortController = new AbortController();
-    /** Propagate a request abort (Stop) to the title generation so a cancelled
-     *  turn does not consume the title model or surface a title. */
-    if (signal) {
-      if (signal.aborted) {
-        abortController.abort();
-      } else {
-        signal.addEventListener('abort', () => abortController.abort(), { once: true });
-      }
-    }
-    if (client && typeof client.titleConvo === 'function') {
-      titlePromise = client
-        .titleConvo({
-          text,
-          abortController,
-          immediate,
-        })
-        .catch((error) => {
-          logger.error('Client title error:', error);
-        });
-    } else {
-      return;
-    }
-
-    const generatedTitle = await titlePromise;
-    if (!abortController.signal.aborted) {
-      abortController.abort();
-    }
-
-    if (!generatedTitle) {
-      logger.debug(`[${key}] No title generated`);
-      return;
-    }
-
-    const title = resolveConversationTitle(req, generatedTitle);
-    if (title == null) {
-      return;
-    }
-
-    await publishConversationTitle(
-      { saveConvo, getConvo, titleCache },
-      {
-        ctx: {
-          userId: req?.user?.id,
-          isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
-          expiredAt: req?.resolvedConversation?.expiredAt,
-          interfaceConfig: req?.config?.interfaceConfig,
-        },
-        conversationId: convoId,
-        title,
-        convoReady,
-        discardSignal,
-        signal,
-        onTitleGenerated,
+    await runAgentConversationTitle({
+      appConfig: req.config,
+      titleCache,
+      key: `${req.user.id}-${convoId}`,
+      epoch,
+      signal,
+      discardSignal,
+      generate: (abortController) => client.titleConvo({ text, abortController, immediate }),
+      publish: async (generated) => {
+        const title = resolveConversationTitle(req, generated);
+        if (title == null) return;
+        await publishConversationTitle(
+          { saveConvo, getConvo, titleCache },
+          {
+            ctx: {
+              userId: req.user.id,
+              isTemporary: req.resolvedConversation?.isTemporary ?? req.body?.isTemporary,
+              expiredAt: req.resolvedConversation?.expiredAt,
+              interfaceConfig: req.config?.interfaceConfig,
+            },
+            conversationId: convoId,
+            title,
+            convoReady,
+            discardSignal,
+            signal,
+            isCurrent:
+              epoch == null
+                ? undefined
+                : async () =>
+                    (await GenerationJobManager.getJobStore().getGenerationEpoch(convoId)) ===
+                    epoch,
+            canPublishEarly,
+            onTitleGenerated,
+          },
+        );
       },
-    );
+    });
   } catch (error) {
-    logger.error('Error generating title:', error);
+    if (!signal?.aborted && !discardSignal?.aborted) {
+      logger.error('Error generating title:', getSafeErrorMetadata(error));
+    }
   }
 };
 

@@ -1194,6 +1194,8 @@ export interface IJobStore {
  * generation startup.
  */
 export interface IJobStoreV2 extends IJobStore {
+  /** Latest epoch, including the grace window after terminal job cleanup. */
+  getGenerationEpoch(streamId: string): Promise<number | undefined>;
   /** Opt-in contract: status transitions atomically enforce expectProviderExecutionId. */
   readonly providerGuardedStatusTransitions?: true;
   readonly providerStartOwnership?: true;

@@ -6,6 +6,7 @@ import type { TConversation } from 'librechat-data-provider';
 import type { StreamStatusResponse } from '@librechat/chat';
 import {
   isNotFoundError,
+  getResponseErrorCode,
   updateConvoInAllQueries,
   setDocumentTitle,
   findManualConvoTitleInAllQueries,
@@ -145,19 +146,20 @@ export function useTitleGeneration(enabled = true) {
     });
   }, [queueVersion]);
 
-  // Fetch titles for ready conversations.
+  // Fetch titles for ready conversations. A positive pending response extends the
+  // legacy budget, up to the 5-minute server ceiling plus a few retries for races.
   const titleQueries = useQueries({
     queries: readyToFetch.map((conversationId) => ({
       queryKey: genTitleQueryKey(conversationId),
-      queryFn: () => dataService.genTitle({ conversationId }),
+      queryFn: ({ signal }: { signal?: AbortSignal }) =>
+        dataService.genTitle({ conversationId }, { pending: true, signal }),
       // Gate on `enabled` so no /gen_title request fires while unauthenticated
       // (e.g. after logout) even if the module-level queue still holds IDs.
       enabled,
       staleTime: Infinity,
-      /** Retry only on 404 (title still generating server-side) so a transient
-       * not-ready response is never treated as final. All other errors are
-       * terminal. Bounded retry adapted from PR #13329. */
-      retry: (failureCount: number, error: unknown) => isNotFoundError(error) && failureCount < 3,
+      retry: (failureCount: number, error: unknown) =>
+        isNotFoundError(error) &&
+        failureCount < (getResponseErrorCode(error) === 'title_pending' ? 64 : 3),
       retryDelay: () => 5_000,
     })),
   });
@@ -166,7 +168,7 @@ export function useTitleGeneration(enabled = true) {
     const activeSet = new Set(activeJobIds);
     titleQueries.forEach((titleQuery, index) => {
       const conversationId = readyToFetch[index];
-      if (!conversationId || processedTitles.has(conversationId)) {
+      if (!enabled || !conversationId || processedTitles.has(conversationId)) {
         return;
       }
 
@@ -214,7 +216,7 @@ export function useTitleGeneration(enabled = true) {
         }
       }
     });
-  }, [titleQueries, readyToFetch, queryClient, activeJobIds]);
+  }, [titleQueries, readyToFetch, queryClient, activeJobIds, enabled]);
 }
 
 /**

@@ -1450,8 +1450,14 @@ export function markConversationUnread(
   return request.post(endpoints.markConversationUnread(), { arg: payload });
 }
 
-export function genTitle(payload: m.TGenTitleRequest): Promise<m.TGenTitleResponse> {
-  return request.get(endpoints.genTitle(payload.conversationId));
+export function genTitle(
+  payload: m.TGenTitleRequest,
+  options?: { pending?: boolean; signal?: AbortSignal },
+): Promise<m.TGenTitleResponse> {
+  const url = endpoints.genTitle(payload.conversationId);
+  return options == null
+    ? request.get(url)
+    : request.get(options.pending ? `${url}?pending=1` : url, { signal: options.signal });
 }
 
 export const listMessages = (params?: q.MessagesListParams): Promise<q.MessagesListResponse> => {

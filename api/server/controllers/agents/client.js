@@ -6116,6 +6116,7 @@ class AgentClient extends BaseClient {
    *   title derives from the user's input only (`contentParts` is empty).
    */
   async titleConvo({ text, abortController, immediate = false }) {
+    abortController.signal.throwIfAborted();
     if (!this.run) {
       if (!immediate) {
         throw new Error('Run not initialized');
@@ -6193,6 +6194,7 @@ class AgentClient extends BaseClient {
       },
     });
 
+    abortController.signal.throwIfAborted();
     let provider = options.provider ?? titleProviderConfig.overrideProvider ?? agent.provider;
     if (
       endpoint === EModelEndpoint.azureOpenAI &&
@@ -6293,6 +6295,7 @@ class AgentClient extends BaseClient {
         },
       });
 
+      abortController.signal.throwIfAborted();
       const collectedUsage = collectedMetadata.map((item) => {
         let input_tokens, output_tokens;
 

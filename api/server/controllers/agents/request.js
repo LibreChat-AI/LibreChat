@@ -2779,9 +2779,11 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             conversationId,
             client,
             immediate: true,
+            epoch: jobCreatedAt,
             convoReady,
             signal: titleAbortController.signal,
             discardSignal: titleDiscardController.signal,
+            canPublishEarly: () => acceptsTitleEvents,
             onTitleGenerated: emitTitleEvent,
           }).catch((err) => {
             logger.error('[ResumableAgentController] Error in immediate title generation', err);
@@ -3344,8 +3346,11 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         } else if (shouldGenerateTitle) {
           trailingWritePromise = addTitle(req, {
             text: text || getAttachmentTitleText(req.body.files),
-            response: { ...response },
+            conversationId,
             client,
+            epoch: jobCreatedAt,
+            signal: titleAbortController.signal,
+            discardSignal: titleDiscardController.signal,
           })
             .catch((err) => {
               logger.error('[ResumableAgentController] Error in title generation', err);
@@ -3363,8 +3368,8 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       } catch (error) {
         // Any failure (user Stop, or a preflight/quota failure before the run is
         // even created) must cancel the title and unblock its waits: the title's
-        // `_waitForRun` would otherwise never resolve, deferring client disposal
-        // until the 45s title timeout, and no title should persist for a failed turn.
+        // `_waitForRun` would otherwise defer disposal until the title deadline,
+        // and no title should persist for a failed turn.
         titleAbortController.abort();
         titleDiscardController.abort();
         job.abortController.signal.removeEventListener('abort', abortTitleOnJobAbort);

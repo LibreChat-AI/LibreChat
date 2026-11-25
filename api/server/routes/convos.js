@@ -364,6 +364,7 @@ router.get(
   createGeneratedTitleHandler({
     getConvoTitleState: db.getConvoTitleState,
     getCache: () => getLogStores(CacheKeys.GEN_TITLE),
+    getGenerationEpoch: (id) => GenerationJobManager.getJobStore().getGenerationEpoch(id),
     logger,
   }),
 );

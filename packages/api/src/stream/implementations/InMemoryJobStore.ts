@@ -705,6 +705,10 @@ export class InMemoryJobStore implements IJobStoreV2 {
     return createdJob;
   }
 
+  async getGenerationEpoch(streamId: string): Promise<number | undefined> {
+    return this.jobs.get(streamId)?.createdAt ?? this.getRetainedGenerationEpoch(streamId);
+  }
+
   async getJob(streamId: string): Promise<SerializableJobData | null> {
     return this.jobs.get(streamId) ?? null;
   }

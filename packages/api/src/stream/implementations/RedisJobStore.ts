@@ -2496,6 +2496,11 @@ export class RedisJobStore implements IJobStoreV2 {
     return currentJob;
   }
 
+  async getGenerationEpoch(streamId: string): Promise<number | undefined> {
+    const epoch = await this.redis.get(KEYS.generationEpoch(streamId));
+    return epoch == null ? undefined : Number(epoch);
+  }
+
   async getJob(streamId: string): Promise<SerializableJobData | null> {
     const data = await this.redis.hgetall(KEYS.job(streamId));
     if (!data || Object.keys(data).length === 0) {

@@ -7695,7 +7695,7 @@ describe('ResumableAgentController resume metadata', () => {
       expect(addTitle).toHaveBeenCalledTimes(1);
       expect(addTitle).toHaveBeenCalledWith(
         expect.anything(),
-        expect.objectContaining({ response: expect.anything() }),
+        expect.objectContaining({ conversationId: expect.any(String), epoch: 1000 }),
       );
     });
 
