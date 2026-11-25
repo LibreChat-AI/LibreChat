@@ -4,7 +4,7 @@ import { createAgentContinuationResolver } from './continuation';
 
 function envelope(options: {
   sourceId: string;
-  sourceType?: 'internal' | 'webhook';
+  sourceType?: 'internal' | 'webhook' | 'subscription';
   binding?: boolean;
 }): AgentContinueTriggerEnvelope {
   return {
@@ -61,6 +61,27 @@ describe('agent continuation admission', () => {
       status: 'settled',
     });
     expect(internal).toHaveBeenCalledTimes(1);
+    expect(eventActor).not.toHaveBeenCalled();
+  });
+
+  it('routes an outside source the server queued by its source type', async () => {
+    const eventActor = jest.fn();
+    const internal = jest.fn();
+    const watched = jest.fn(async () => ({ status: 'settled' as const }));
+    const resolve = createAgentContinuationResolver({
+      eventActor,
+      internalSources: new Map([['completion', internal]]),
+      sources: new Map([['subscription', watched]]),
+    });
+
+    await expect(
+      resolve(envelope({ sourceId: 'sub_1', sourceType: 'subscription' }), context),
+    ).resolves.toEqual({ status: 'settled' });
+    expect(watched).toHaveBeenCalledTimes(1);
+    expect(
+      resolve(envelope({ sourceId: 'sub_1', sourceType: 'webhook' }), context),
+    ).toBeUndefined();
+    expect(internal).not.toHaveBeenCalled();
     expect(eventActor).not.toHaveBeenCalled();
   });
 

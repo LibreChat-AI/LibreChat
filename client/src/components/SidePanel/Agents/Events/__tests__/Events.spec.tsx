@@ -44,6 +44,7 @@ const subscription: Subscription = {
   actors: 'write',
   bots: false,
   enabled: true,
+  watch: false,
   revision: 3,
 };
 

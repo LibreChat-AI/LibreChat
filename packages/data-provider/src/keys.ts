@@ -129,6 +129,7 @@ export enum QueryKeys {
   agentEventSubscriptions = 'agentEventSubscriptions',
   agentEventConnections = 'agentEventConnections',
   agentEventSubscriptionGrant = 'agentEventSubscriptionGrant',
+  agentEventWatches = 'agentEventWatches',
   schedule = 'schedule',
   parentSubagents = 'parentSubagents',
   subagentThread = 'subagentThread',

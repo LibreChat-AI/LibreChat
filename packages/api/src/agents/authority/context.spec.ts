@@ -811,6 +811,23 @@ describe('createTriggerExecutionContext', () => {
       const recorded = (req: ReturnType<typeof fire>) =>
         toMessageTrigger(createTriggerExecutionContext(req), req);
 
+      it('records it from a continuation a watch queued, as from a new turn', () => {
+        const req = {
+          user,
+          _isAgentTrigger: true,
+          body: {
+            agent_id: 'root-agent',
+            conversationId: 'watching',
+            clientRequestId: 'trigger_cont',
+            agentEvent: { ...event({ type: 'subscription', id: 'sub_1' }), detail: payload },
+          },
+        };
+        expect(toMessageTrigger(createTriggerExecutionContext(req), req)).toMatchObject({
+          subject: { kind: 'subscription', id: 'sub_1' },
+          detail: { repo: 'acme/widgets', number: 17, actor: 'octocat' },
+        });
+      });
+
       it('records it, read again by name, on a turn a subscription started', () => {
         expect(recorded(withDetail({ type: 'subscription', id: 'sub_1' }))).toEqual({
           event: { type: 'review.submitted', occurredAt: at },

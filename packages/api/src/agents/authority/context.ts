@@ -212,7 +212,7 @@ function toEvent(delivery?: Delivery): TMessageTrigger['event'] | undefined {
 /** The request a subscription's turn is served on, as far as `toMessageTrigger` reads it. */
 interface DetailRequest {
   _isAgentTrigger?: boolean;
-  body?: { agentTrigger?: unknown } | null;
+  body?: { agentTrigger?: unknown; agentEvent?: unknown } | null;
 }
 
 /**
@@ -241,7 +241,7 @@ export function toMessageTrigger(
   const began = toEvent(source.origin?.delivery);
   const detail =
     source.subject?.kind === 'subscription' && req?._isAgentTrigger === true
-      ? toDetail(record(req.body?.agentTrigger)?.detail)
+      ? toDetail(record(req.body?.agentTrigger)?.detail ?? record(req.body?.agentEvent)?.detail)
       : undefined;
   return {
     event,

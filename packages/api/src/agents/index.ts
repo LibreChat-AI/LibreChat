@@ -23,6 +23,7 @@ export * from './authority';
 export * from './events/subject';
 export * from './events/reconcile';
 export * from './events/handlers';
+export * from './events/watch';
 export * from './execution';
 export * from './files';
 export * from './handlers';

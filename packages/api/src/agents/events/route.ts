@@ -1,5 +1,6 @@
+import { Constants } from 'librechat-data-provider';
 import { createHash, randomUUID } from 'node:crypto';
-import type { Connection, Subscription } from 'librechat-data-provider';
+import type { Connection, Subscription, Watch } from 'librechat-data-provider';
 import type { AgentTriggerEnqueueOptions } from '~/agents/triggers/delivery';
 import type { AgentTriggerDeliveryReceipt } from '~/agents/triggers/service';
 import type { AgentTriggerEnvelope } from '~/agents/triggers/envelope';
@@ -27,6 +28,10 @@ const ACTORLESS = new Set<string>(['github.check_suite.completed']);
  * - `unknown`: GitHub could not be asked whether the actor may push, or there is no app to ask.
  * - `installation`: the event came through another installation than the connection's, or the
  *   connection's installation id does not read as one.
+ * - `watch`: a watch on the item is no longer allowed: its subscription is gone, off, no longer
+ *   allows watching, or belongs to another owner, agent or connection than the watch.
+ * - `watched`: the subscription's own new conversation was not started, because a conversation
+ *   watching the item under that subscription continues instead.
  */
 export type Skip =
   | 'off'
@@ -40,7 +45,9 @@ export type Skip =
   | 'linked'
   | 'actor'
   | 'unknown'
-  | 'installation';
+  | 'installation'
+  | 'watch'
+  | 'watched';
 
 /** One verified delivery, read into events, and the connection its installation is bound to. */
 export interface Delivery {
@@ -74,6 +81,19 @@ export interface RouteDeps {
    * `null` when no GitHub App is configured; such a subscription then starts nothing.
    */
   access: AccessCheck | null;
+  /**
+   * Conversations following the items an event is about. Absent, every event goes to
+   * subscriptions alone.
+   */
+  watches?: {
+    /** The watches on a connection that follow any of the items and have not ended. */
+    following: (
+      connection: Pick<Connection, 'id' | 'tenantId'>,
+      items: readonly string[],
+    ) => Promise<readonly Watch[]>;
+    /** A subscription by id in any tenant, or `null`: the router checks whose it is. */
+    subscription: (id: string) => Promise<Subscription | null>;
+  };
   now?: () => number;
 }
 
@@ -153,7 +173,13 @@ function conflicted(error: unknown): boolean {
  * Turns one verified delivery into runs: for each event in it, the subscriptions on its
  * connection that listen for it and whose rules it passes each get one trigger delivery, which
  * starts a new conversation with the subscription's agent, acting as the subscription's owner
- * in the subscription's tenant. Watches are not routed yet.
+ * in the subscription's tenant.
+ *
+ * A conversation watching the item an event is about wins over its subscription: the event
+ * continues that conversation under the watch's subscription, held to that subscription's
+ * actor and bot rules, and the same subscription starts no new conversation for it. Its event
+ * types and filters are not applied to a watch: the agent asked to follow the item, so every
+ * catalog event about it arrives. Other subscriptions still start their own runs.
  *
  * A delivery's identity is the digest of its signed body, never the provider's unsigned
  * delivery id: GitHub's own redelivery, and the same body posted again under a new id, queue
@@ -227,6 +253,71 @@ export function createRoute(deps: RouteDeps): Route {
     }
   };
 
+  /**
+   * Continues a watching conversation with one event, under the watch's subscription. The turn
+   * is appended below the conversation's latest reply when it runs, so the parent here is only
+   * a placeholder the continuation resolver replaces. One lane per conversation keeps its
+   * turns in order however many items it follows.
+   */
+  const continueWatch = async (
+    watch: Watch,
+    subscription: Subscription,
+    occurrence: Occurrence,
+    digest: string,
+  ): Promise<boolean> => {
+    const key = itemKey(occurrence.item);
+    const id = `github_${hash([digest, occurrence.type, key, watch.id])}`;
+    const envelope = createAgentTriggerEnvelope({
+      mode: 'continue',
+      requestId: randomUUID(),
+      deliveryId: id,
+      receivedAt: now(),
+      principal: {
+        id: subscription.user,
+        ...(subscription.tenantId != null && { tenantId: subscription.tenantId }),
+      },
+      target: {
+        agentId: watch.agentId,
+        conversationId: watch.conversationId,
+        parentMessageId: Constants.NO_PARENT as string,
+      },
+      event: {
+        id,
+        type: occurrence.type,
+        occurredAt: occurrence.occurredAt,
+        source: { type: SUBSCRIPTION_SOURCE, id: subscription.id },
+        payload: { ...payload(occurrence, key), watch: watch.id },
+      },
+      input: subscription.prompt,
+    });
+    try {
+      const receipt = await deps.enqueue(envelope, {
+        orderingKey: `watch_${hash([watch.user, watch.conversationId])}`,
+      });
+      return !receipt.replayed;
+    } catch (error) {
+      if (conflicted(error)) return false;
+      throw error;
+    }
+  };
+
+  /** True when a watch may still continue its conversation under this subscription. */
+  const governs = (
+    watch: Watch,
+    subscription: Subscription | null,
+    connection: Pick<Connection, 'id' | 'tenantId'>,
+  ): subscription is Subscription =>
+    subscription != null &&
+    subscription.id === watch.subscription &&
+    subscription.enabled &&
+    subscription.watch &&
+    subscription.user === watch.user &&
+    subscription.agentId === watch.agentId &&
+    subscription.connection === connection.id &&
+    watch.connection === connection.id &&
+    (subscription.tenantId ?? null) === (connection.tenantId ?? null) &&
+    (watch.tenantId ?? null) === (connection.tenantId ?? null);
+
   return async ({ verified, occurrences, connection }) => {
     const routed: Routed = { enqueued: 0, duplicates: 0, skipped: {} };
     const skip = (reason: Skip) => {
@@ -241,13 +332,68 @@ export function createRoute(deps: RouteDeps): Route {
       ),
     );
 
+    const keys = Array.from(new Set(occurrences.map((occurrence) => itemKey(occurrence.item))));
+    const watching = deps.watches == null ? [] : await deps.watches.following(connection, keys);
+    /** Each watch's subscription, read once per delivery however many events name its item. */
+    const governing = new Map<string, Promise<Subscription | null>>();
+    const governor = (id: string) => {
+      let read = governing.get(id);
+      if (read == null) {
+        read = deps.watches?.subscription(id) ?? Promise.resolve(null);
+        governing.set(id, read);
+      }
+      return read;
+    };
+
     /** The first enqueue that failed, held in a box so a rejection with no reason still counts. */
     let failure: { error: unknown } | undefined;
     const tasks: Promise<void>[] = [];
+    /** Settles one enqueue where it starts, so none is left as a rejection nothing handles. */
+    const settle = (run: () => Promise<boolean>) =>
+      run().then(
+        (fresh) => {
+          if (fresh) routed.enqueued += 1;
+          else routed.duplicates += 1;
+        },
+        (error: unknown) => {
+          failure ??= { error };
+        },
+      );
     for (const occurrence of occurrences) {
       const own =
         bound && (occurrence.installation == null || occurrence.installation === installation);
+      const key = itemKey(occurrence.item);
+      /** The subscriptions whose watches on this item continue a conversation instead. */
+      const watched = new Set(
+        watching.filter((watch) => watch.item === key).map((watch) => watch.subscription),
+      );
+      for (const watch of watching) {
+        if (watch.item !== key) continue;
+        if (!own) {
+          skip('installation');
+          continue;
+        }
+        tasks.push(
+          (async () => {
+            const subscription = await governor(watch.subscription);
+            if (!governs(watch, subscription, connection)) {
+              skip('watch');
+              return;
+            }
+            const refused = await admits(subscription, occurrence, installation);
+            if (refused != null) {
+              skip(refused);
+              return;
+            }
+            await settle(() => continueWatch(watch, subscription, occurrence, verified.digest));
+          })(),
+        );
+      }
       for (const subscription of listening.get(occurrence.type) ?? []) {
+        if (watched.has(subscription.id)) {
+          skip('watched');
+          continue;
+        }
         if (
           subscription.connection !== connection.id ||
           (subscription.tenantId ?? null) !== (connection.tenantId ?? null)
@@ -273,15 +419,7 @@ export function createRoute(deps: RouteDeps): Route {
               skip(refused);
               return;
             }
-            try {
-              if (await enqueue(subscription, occurrence, verified.digest)) {
-                routed.enqueued += 1;
-              } else {
-                routed.duplicates += 1;
-              }
-            } catch (error) {
-              failure ??= { error };
-            }
+            await settle(() => enqueue(subscription, occurrence, verified.digest));
           })(),
         );
       }

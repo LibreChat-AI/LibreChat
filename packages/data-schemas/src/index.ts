@@ -51,6 +51,8 @@ export type {
   SubscriptionPatch,
   SubscriptionWrite,
 } from './methods/subscription';
+export { createWatches } from './methods/watch';
+export type { Watches, WatchDraft, WatchAdd, WatchBounds } from './methods/watch';
 export type {
   ResponseOwner,
   ResponseStorage,

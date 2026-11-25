@@ -58,6 +58,7 @@ import type {
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
 import type { CodeSetupAttempt, CodeSetupApprovalRequest } from './codeSetup';
 import type { RunGrantView, ConfirmRunGrant } from './types/runGrant';
+import type { WatchesResponse } from './types/watches';
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
@@ -2389,6 +2390,12 @@ export function updateAgentEventSubscription(
 }
 export function deleteAgentEventSubscription(id: string): Promise<void> {
   return request.delete(endpoints.agentEventSubscription(id));
+}
+export function getAgentEventWatches(conversationId: string): Promise<WatchesResponse> {
+  return request.get(endpoints.agentEventWatches(conversationId));
+}
+export function deleteAgentEventWatch(id: string): Promise<void> {
+  return request.delete(endpoints.agentEventWatch(id));
 }
 export function getAgentEventSubscriptionGrant(id: string): Promise<RunGrantView> {
   return request.get(endpoints.agentEventSubscriptionGrant(id));

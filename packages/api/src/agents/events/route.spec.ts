@@ -7,9 +7,10 @@ import {
   createMethods,
   tenantStorage,
   createConnections,
+  createWatches,
   createSubscriptions,
 } from '@librechat/data-schemas';
-import type { Connections, Subscriptions } from '@librechat/data-schemas';
+import type { Connections, Subscriptions, Watches } from '@librechat/data-schemas';
 import type { Connection, Subscription } from 'librechat-data-provider';
 import type { AgentTriggerEnvelope } from '~/agents/triggers/envelope';
 import type { Payload } from './fixtures.helper';
@@ -47,6 +48,7 @@ const CLOSED = 'github.pull_request.closed';
 let server: MongoMemoryServer;
 let subscriptions: Subscriptions;
 let connections: Connections;
+let watches: Watches;
 let methods: ReturnType<typeof createMethods>;
 let access: jest.Mock<ReturnType<AccessCheck>, Parameters<AccessCheck>>;
 let enqueue: jest.MockedFunction<RouteDeps['enqueue']>;
@@ -137,7 +139,9 @@ afterAll(async () => {
 beforeEach(async () => {
   subscriptions = createSubscriptions(mongoose);
   connections = createConnections(mongoose);
+  watches = createWatches(mongoose);
   await Promise.all([
+    mongoose.models.AgentEventWatch?.deleteMany({}),
     mongoose.models.AgentEventSubscription.deleteMany({}),
     mongoose.models.AgentEventConnection.deleteMany({}),
     mongoose.models.AgentTriggerDelivery.deleteMany({}),
@@ -586,6 +590,201 @@ describe('createRoute', () => {
   });
 });
 
+describe('watches', () => {
+  const ITEM = itemKey({ provider: 'github', kind: 'pr', repo: REPOSITORY_ID, number: 42 });
+  const DAY = 24 * 60 * 60 * 1000;
+
+  /** A conversation of the owner's following the fixtures' pull request under `subscription`. */
+  async function follow(
+    subscription: Subscription,
+    conversationId = 'convo_watching',
+    owner = OWNER,
+    tenantId?: string,
+  ) {
+    const write = () =>
+      watches.add(
+        owner,
+        {
+          conversationId,
+          agentId: subscription.agentId,
+          subscription: subscription.id,
+          connection: subscription.connection,
+          item: ITEM,
+          label: 'example-org/widgets#42',
+        },
+        { max: 5, ttlMs: DAY },
+      );
+    const added = tenantId ? await tenantStorage.run({ tenantId }, write) : await write();
+    if (!added.ok) throw new Error('watch was not added');
+    return added.value;
+  }
+
+  const routeWatching = (overrides: Partial<RouteDeps> = {}) =>
+    route({
+      watches: {
+        following: watches.following,
+        subscription: (id) => runAsSystem(() => subscriptions.get(id)),
+      },
+      ...overrides,
+    });
+
+  it('continues the watching conversation under its subscription instead of starting one', async () => {
+    const connection = await bind();
+    const subscription = await subscribe(connection, { watch: true });
+    const watch = await follow(subscription);
+    const routed = await routeWatching()({
+      verified: { digest: DIGEST },
+      occurrences: review(),
+      connection,
+    });
+    expect(routed).toEqual({ enqueued: 1, duplicates: 0, skipped: { watched: 1 } });
+    const [stored] = await queued();
+    const envelope = stored.envelope;
+    if (envelope.mode !== 'continue')
+      throw new Error(`expected a continuation, got ${envelope.mode}`);
+    expect(envelope.target).toEqual({
+      agentId: AGENT,
+      conversationId: 'convo_watching',
+      parentMessageId: '00000000-0000-0000-0000-000000000000',
+    });
+    expect(envelope.principal.userId).toBe(OWNER);
+    expect(envelope.event.source).toEqual({ type: SUBSCRIPTION_SOURCE, id: subscription.id });
+    expect(envelope.event.payload).toMatchObject({
+      type: REVIEW,
+      item: { key: ITEM },
+      watch: watch.id,
+    });
+    expect(envelope.input).toBe(subscription.prompt);
+  });
+
+  it('still starts the runs of other subscriptions on the same event', async () => {
+    const connection = await bind();
+    const watching = await subscribe(connection, { watch: true });
+    await subscribe(connection, { agentId: 'agent_other' });
+    await follow(watching);
+    const routed = await routeWatching()({
+      verified: { digest: DIGEST },
+      occurrences: review(),
+      connection,
+    });
+    expect(routed).toEqual({ enqueued: 2, duplicates: 0, skipped: { watched: 1 } });
+    expect((await queued()).map(({ envelope }) => envelope.mode).sort()).toEqual([
+      'continue',
+      'fire',
+    ]);
+  });
+
+  it('continues once when the same body is delivered again', async () => {
+    const connection = await bind();
+    const subscription = await subscribe(connection, { watch: true });
+    await follow(subscription);
+    const delivery = { verified: { digest: DIGEST }, occurrences: review(), connection };
+    await routeWatching()(delivery);
+    const again = await routeWatching()(delivery);
+    expect(again).toEqual({ enqueued: 0, duplicates: 1, skipped: { watched: 1 } });
+    expect(await queued()).toHaveLength(1);
+  });
+
+  it('keeps each watching conversation on its own lane', async () => {
+    const connection = await bind();
+    const subscription = await subscribe(connection, { watch: true });
+    await follow(subscription, 'convo_a');
+    await follow(subscription, 'convo_b');
+    await routeWatching()({ verified: { digest: DIGEST }, occurrences: review(), connection });
+    const lanes = enqueue.mock.calls.map(([, options]) => options.orderingKey);
+    expect(new Set(lanes).size).toBe(2);
+  });
+
+  it.each([
+    ['turned off', { enabled: false }],
+    ['no longer allowing watching', { watch: false }],
+  ])('continues nothing under a subscription %s', async (_label, edit) => {
+    const connection = await bind();
+    const subscription = await subscribe(connection, { watch: true });
+    await follow(subscription);
+    await subscriptions.update(subscription.id, OWNER, edit);
+    const routed = await routeWatching()({
+      verified: { digest: DIGEST },
+      occurrences: review(),
+      connection,
+    });
+    expect(routed.enqueued).toBe(0);
+    expect(routed.skipped.watch).toBe(1);
+    expect(await queued()).toEqual([]);
+  });
+
+  it("continues nothing for a watch whose subscription is another owner's or agent's", async () => {
+    const connection = await bind();
+    const theirs = await subscribe(connection, { watch: true }, OTHER);
+    const other = await subscribe(connection, { watch: true, agentId: 'agent_other' });
+    // Stored as if they named subscriptions they do not belong to.
+    await follow({ ...theirs, agentId: AGENT }, 'convo_1');
+    await follow({ ...other, agentId: AGENT }, 'convo_2');
+    const routed = await routeWatching()({
+      verified: { digest: DIGEST },
+      occurrences: review(),
+      connection,
+    });
+    expect(routed.skipped.watch).toBe(2);
+    expect((await queued()).some(({ envelope }) => envelope.mode === 'continue')).toBe(false);
+  });
+
+  it("never continues a watch in another tenant than the connection's", async () => {
+    const connection = await bind('tenant-a');
+    const subscription = await subscribe(connection, { watch: true });
+    const stranger = new mongoose.Types.ObjectId().toString();
+    await follow({ ...subscription }, 'convo_b', stranger, 'tenant-b');
+    await follow(subscription, 'convo_a', OWNER, 'tenant-a');
+    await routeWatching()({ verified: { digest: DIGEST }, occurrences: review(), connection });
+    const continued = (await queued()).filter(({ envelope }) => envelope.mode === 'continue');
+    expect(
+      continued.map(
+        ({ envelope }) => envelope.mode === 'continue' && envelope.target.conversationId,
+      ),
+    ).toEqual(['convo_a']);
+  });
+
+  it("refuses another tenant's watch even where the lookup hands it over", async () => {
+    const connection = await bind('tenant-a');
+    const subscription = await subscribe(connection, { watch: true });
+    const watch = await follow(subscription, 'convo_a', OWNER, 'tenant-a');
+    const routed = await routeWatching({
+      watches: {
+        following: async () => [{ ...watch, tenantId: 'tenant-b' }],
+        subscription: (id) => runAsSystem(() => subscriptions.get(id)),
+      },
+    })({ verified: { digest: DIGEST }, occurrences: review(), connection });
+    expect(routed.skipped.watch).toBe(1);
+    expect((await queued()).some(({ envelope }) => envelope.mode === 'continue')).toBe(false);
+  });
+
+  it("holds a watch to its subscription's bot rule", async () => {
+    const connection = await bind();
+    const subscription = await subscribe(connection, { watch: true, bots: false });
+    await follow(subscription);
+    const routed = await routeWatching()({
+      verified: { digest: DIGEST },
+      occurrences: review(set(reviewSubmitted(), 'review.user', user('helper[bot]', 7000, 'Bot'))),
+      connection,
+    });
+    expect(routed.skipped.bot).toBeGreaterThanOrEqual(1);
+    expect((await queued()).some(({ envelope }) => envelope.mode === 'continue')).toBe(false);
+  });
+
+  it('routes every event to subscriptions alone when no watches are wired', async () => {
+    const connection = await bind();
+    const subscription = await subscribe(connection, { watch: true });
+    await follow(subscription);
+    const routed = await route()({
+      verified: { digest: DIGEST },
+      occurrences: review(),
+      connection,
+    });
+    expect(routed).toEqual({ enqueued: 1, duplicates: 0, skipped: {} });
+    expect((await queued())[0].envelope.mode).toBe('fire');
+  });
+});
+
 describe('match', () => {
   const base: Subscription = {
     id: 'sub_1',
@@ -598,6 +797,7 @@ describe('match', () => {
     actors: 'any',
     bots: false,
     enabled: true,
+    watch: false,
     revision: 0,
   };
   const [event] = review();

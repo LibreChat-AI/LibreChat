@@ -33,6 +33,7 @@ import { createAgentApiKeyModel } from './agentApiKey';
 import { createTransactionModel } from './transaction';
 import { createPromptGroupModel } from './promptGroup';
 import { createSystemGrantModel } from './systemGrant';
+import { createAgentEventWatchModel } from './watch';
 import { createPluginAuthModel } from './pluginAuth';
 import { createSharedLinkModel } from './sharedLink';
 import { createAccessRoleModel } from './accessRole';
@@ -131,6 +132,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   AgentQueuedTurnSequence: ReturnType<typeof createAgentQueuedTurnSequenceModel>;
   AgentEventConnection: ReturnType<typeof createAgentEventConnectionModel>;
   AgentEventSubscription: ReturnType<typeof createAgentEventSubscriptionModel>;
+  AgentEventWatch: ReturnType<typeof createAgentEventWatchModel>;
   Schedule: ReturnType<typeof createScheduleModel>;
   ScheduleRun: ReturnType<typeof createScheduleRunModel>;
   RefreshTokenBridge: ReturnType<typeof createRefreshTokenBridgeModel>;
@@ -199,6 +201,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     AgentQueuedTurnSequence: createAgentQueuedTurnSequenceModel(mongoose),
     AgentEventConnection: createAgentEventConnectionModel(mongoose),
     AgentEventSubscription: createAgentEventSubscriptionModel(mongoose),
+    AgentEventWatch: createAgentEventWatchModel(mongoose),
     Schedule: createScheduleModel(mongoose),
     ScheduleRun: createScheduleRunModel(mongoose),
     RefreshTokenBridge: createRefreshTokenBridgeModel(mongoose),

@@ -18,6 +18,8 @@ const mockQueuedTurnLifecycle = {
   cancel: jest.fn(),
 };
 
+const mockWatchContinue = jest.fn();
+
 jest.mock('@librechat/api', () => ({
   createCheckpointDeletionReclaimer: jest.fn((getJobs) => () => getJobs('owner', 'tenant')),
   createBackgroundToolDeadClaimRecovery: jest.fn(() => jest.fn()),
@@ -25,6 +27,8 @@ jest.mock('@librechat/api', () => ({
   createDeadLetters: (...args) => mockCreateDeadLetters(...args),
   createAgentContinuationResolver: jest.fn(() => jest.fn()),
   createAgentEventContinueResolver: jest.fn(() => jest.fn()),
+  createWatchContinueResolver: jest.fn(() => mockWatchContinue),
+  SUBSCRIPTION_SOURCE: 'subscription',
   createBackgroundToolCompletionWakeupResolver: (...args) =>
     mockCreateBackgroundToolCompletionWakeupResolver(...args),
   createSubagentCompletionWakeupResolver: jest.fn(() => jest.fn()),
@@ -44,6 +48,19 @@ jest.mock('../ChannelAuthority', () => {
 });
 
 describe('agent trigger service composition', () => {
+  it("continues a subscription's watched conversation through the watch resolver", () => {
+    require('./triggers');
+    const {
+      createAgentContinuationResolver,
+      createWatchContinueResolver,
+    } = require('@librechat/api');
+    expect(createWatchContinueResolver).toHaveBeenCalledWith(
+      expect.objectContaining({ watches: expect.any(Object) }),
+    );
+    const { sources } = createAgentContinuationResolver.mock.calls.at(-1)[0];
+    expect(sources.get('subscription')).toBe(mockWatchContinue);
+  });
+
   beforeEach(() => {
     jest.resetModules();
     jest.clearAllMocks();

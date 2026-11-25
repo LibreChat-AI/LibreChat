@@ -3,6 +3,7 @@ import type { Connection, Subscription, SubscriptionUpdate } from 'librechat-dat
 import type { SubscriptionRecord } from '~/models/subscription';
 import { createAgentEventSubscriptionModel } from '~/models/subscription';
 import { tenantPartitionFilter } from '~/models/plugins/tenantIsolation';
+import { createAgentEventWatchModel } from '~/models/watch';
 import { createChannelIndexGate } from './channelIndexes';
 import { runAsSystem } from '~/config/tenantContext';
 
@@ -17,10 +18,17 @@ const EDITABLE = [
   'cap',
   'window',
   'enabled',
+  'watch',
 ] as const;
 
 /** A subscription before it is stored: every field the store does not assign. */
-export type SubscriptionDraft = Omit<Subscription, 'id' | 'user' | 'tenantId' | 'revision'>;
+export type SubscriptionDraft = Omit<
+  Subscription,
+  'id' | 'user' | 'tenantId' | 'revision' | 'watch'
+> & {
+  /** Left out, the agent may not follow pull requests under it. */
+  watch?: boolean;
+};
 
 /** An owner's edit. A `null` clears a field that may be left out. */
 export type SubscriptionPatch = Omit<SubscriptionUpdate, 'expectedRevision'>;
@@ -56,9 +64,9 @@ export type Subscriptions = {
     patch: SubscriptionPatch,
     expected?: number,
   ) => Promise<SubscriptionWrite>;
-  /** Deletes an owner's subscription; `false` when the owner had none by that id. */
+  /** Deletes an owner's subscription and its watches; `false` when the owner had none by that id. */
   remove: (id: string, owner: string) => Promise<boolean>;
-  /** Deletes every subscription an owner has, and answers how many there were. */
+  /** Deletes every subscription and watch an owner has, and answers how many subscriptions there were. */
   purge: (owner: string) => Promise<number>;
   /**
    * The enabled subscriptions on a connection that listen for an event type. It reads the
@@ -113,6 +121,7 @@ function view(row: SubscriptionRecord): Subscription {
     ...(row.cap != null && { cap: row.cap }),
     ...(row.window != null && { window: row.window }),
     enabled: row.enabled,
+    watch: row.watch === true,
     revision: row.revision,
     ...(row.suspended != null && {
       suspended: {
@@ -139,6 +148,7 @@ function hourOf(at: Date): Date {
 
 export function createSubscriptions(mongoose: typeof import('mongoose')): Subscriptions {
   const Model = createAgentEventSubscriptionModel(mongoose);
+  const Watches = createAgentEventWatchModel(mongoose);
   const indexed = createChannelIndexGate(() => [Model]);
 
   async function create(owner: string, draft: SubscriptionDraft): Promise<Subscription> {
@@ -157,6 +167,7 @@ export function createSubscriptions(mongoose: typeof import('mongoose')): Subscr
       cap: draft.cap,
       window: draft.window,
       enabled: draft.enabled,
+      watch: draft.watch === true,
       revision: 0,
     });
     return view(doc.toObject());
@@ -190,9 +201,11 @@ export function createSubscriptions(mongoose: typeof import('mongoose')): Subscr
       if (value === null) unset[field] = 1;
       else if (value !== undefined) set[field] = value;
     }
-    /** Turning it on or off changes nothing the owner granted against. */
+    /** Turning it on or off, or letting the agent follow pull requests under it, changes nothing
+     * the owner granted against: the same agent runs under the same grant either way. */
     const activation =
-      Object.keys(unset).length === 0 && Object.keys(set).every((field) => field === 'enabled');
+      Object.keys(unset).length === 0 &&
+      Object.keys(set).every((field) => field === 'enabled' || field === 'watch');
     // An owner turning it on takes back what the server turned off, and starts the streak over.
     if (set.enabled === true) {
       unset.suspended = 1;
@@ -223,11 +236,14 @@ export function createSubscriptions(mongoose: typeof import('mongoose')): Subscr
 
   async function remove(id: string, owner: string): Promise<boolean> {
     const { deletedCount } = await Model.deleteOne({ id, user: owner });
+    // Its watches follow pull requests under its grant; without it they can continue nothing.
+    if (deletedCount === 1) await Watches.deleteMany({ subscription: id, user: owner });
     return deletedCount === 1;
   }
 
   async function purge(owner: string): Promise<number> {
     const { deletedCount } = await Model.deleteMany({ user: owner });
+    await Watches.deleteMany({ user: owner });
     return deletedCount;
   }
 
