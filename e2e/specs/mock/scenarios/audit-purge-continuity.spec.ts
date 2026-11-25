@@ -30,7 +30,9 @@ const { createModels, createMethods } = require('@librechat/data-schemas');
 const tenantId = ${JSON.stringify(tenantId)};
 (async () => {
   await mongoose.connect(${JSON.stringify(getMongoUri())});
-  createModels(mongoose);
+  /* Wait for the background index builds createModels starts: closing the
+   * client under one logs an interrupted build to stdout after the result. */
+  await Promise.all(Object.values(createModels(mongoose)).map((model) => model.init()));
   const methods = createMethods(mongoose);
   const AuditLog = mongoose.models.AuditLog;
   const entry = (i) => ({
@@ -60,7 +62,7 @@ const tenantId = ${JSON.stringify(tenantId)};
       trustedCheckpoint: result.checkpoint,
     });
     process.stdout.write(
-      'RESULT' + JSON.stringify({ tailHash: tail.hash, result, remaining, unverified, verified }),
+      'RESULT' + JSON.stringify({ tailHash: tail.hash, result, remaining, unverified, verified }) + '\\n',
     );
   } finally {
     if (chainKey) {
@@ -72,7 +74,12 @@ const tenantId = ${JSON.stringify(tenantId)};
 `;
   const result = run('node', ['-e', body], { cwd: resolve(repoRoot, 'api') });
   expect(result.status, result.output).toBe(0);
-  return JSON.parse(result.stdout.slice(result.stdout.indexOf('RESULT') + 'RESULT'.length));
+  /** The data-schemas logger shares stdout, so the result is its own line. */
+  const line = result.stdout.split('\n').find((text) => text.startsWith('RESULT'));
+  if (!line) {
+    throw new Error(`The probe printed no result:\n${result.output}`);
+  }
+  return JSON.parse(line.slice('RESULT'.length));
 }
 
 test.describe('audit log retention purge', () => {
