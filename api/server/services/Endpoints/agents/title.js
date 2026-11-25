@@ -1,7 +1,6 @@
 const {
   isEnabled,
   publishConversationTitle,
-  raceWithTimeout,
   allowsAssistantSideEffects,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
@@ -86,20 +85,15 @@ const addTitle = async (
       }
     }
     if (client && typeof client.titleConvo === 'function') {
-      titlePromise = raceWithTimeout(
-        client
-          .titleConvo({
-            text,
-            abortController,
-            immediate,
-          })
-          .catch((error) => {
-            logger.error('Client title error:', error);
-          }),
-        45000,
-        logger,
-        'Title generation',
-      );
+      titlePromise = client
+        .titleConvo({
+          text,
+          abortController,
+          immediate,
+        })
+        .catch((error) => {
+          logger.error('Client title error:', error);
+        });
     } else {
       return;
     }
