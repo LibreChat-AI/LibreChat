@@ -19,6 +19,8 @@ export type OpenIdRegistrationOptions<TConfig> = {
   discovery?: Partial<TOpenIdDiscoveryConfig>;
   /** Raw `OPENID_DISCOVERY_RETRY_*` values, used for fields the YAML leaves unset. */
   env?: OpenIdDiscoveryEnv;
+  /** Called when a complete registration attempt succeeds, including a background retry. */
+  onRegistrationReady?: () => void;
 };
 
 function resolveField(
@@ -69,6 +71,7 @@ export async function registerOpenIdWithRetry<TConfig>({
   reuseTokens,
   discovery,
   env,
+  onRegistrationReady,
 }: OpenIdRegistrationOptions<TConfig>): Promise<void> {
   const { startupAttempts, retryDelayMs } = resolveOpenIdDiscovery(discovery, env);
 
@@ -83,6 +86,7 @@ export async function registerOpenIdWithRetry<TConfig>({
         registerJwtStrategy(config);
       }
       logger.info('OpenID Connect configured successfully.');
+      onRegistrationReady?.();
       return true;
     } catch (error) {
       logger.error('OpenID Connect strategy registration failed.', error);

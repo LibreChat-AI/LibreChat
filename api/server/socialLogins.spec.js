@@ -10,10 +10,13 @@ const mockSetupSaml = jest.fn();
 const mockIsEnabled = jest.fn();
 const mockShouldUseSecureCookie = jest.fn(() => true);
 const mockRegisterOpenIdWithRetry = jest.fn(
-  async ({ setupOpenId, registerJwtStrategy, reuseTokens }) => {
+  async ({ setupOpenId, registerJwtStrategy, reuseTokens, onRegistrationReady }) => {
     const config = await setupOpenId();
     if (config && reuseTokens) {
       registerJwtStrategy(config);
+    }
+    if (config) {
+      onRegistrationReady?.();
     }
   },
 );
@@ -159,8 +162,13 @@ describe('configureSocialLogins OpenID session expiry', () => {
     process.env.OPENID_DISCOVERY_RETRY_DELAY_MS = '1000';
     const discovery = { startupAttempts: 0, retryDelayMs: 250 };
     const app = { use: jest.fn() };
+    const openIdReadiness = { markPending: jest.fn(), markReady: jest.fn() };
 
-    await configureSocialLogins(app, { registration: { openidDiscovery: discovery } });
+    await configureSocialLogins(
+      app,
+      { registration: { openidDiscovery: discovery } },
+      openIdReadiness,
+    );
 
     expect(mockRegisterOpenIdWithRetry).toHaveBeenCalledWith({
       setupOpenId: expect.any(Function),
@@ -168,8 +176,20 @@ describe('configureSocialLogins OpenID session expiry', () => {
       reuseTokens: false,
       discovery,
       env: { startupAttempts: '2', retryDelayMs: '1000' },
+      onRegistrationReady: expect.any(Function),
     });
     expect(mockSetupOpenId).toHaveBeenCalledTimes(1);
+    expect(openIdReadiness.markReady).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the OIDC readiness check not applicable when OpenID is not configured', async () => {
+    process.env.OPENID_CLIENT_ID = '';
+    const openIdReadiness = { markNotConfigured: jest.fn() };
+
+    await configureSocialLogins({ use: jest.fn() }, undefined, openIdReadiness);
+
+    expect(openIdReadiness.markNotConfigured).toHaveBeenCalledTimes(1);
+    expect(mockRegisterOpenIdWithRetry).not.toHaveBeenCalled();
   });
 });
 

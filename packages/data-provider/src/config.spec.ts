@@ -69,6 +69,37 @@ describe('local configuration cache limits', () => {
   });
 });
 
+describe('server readiness checks', () => {
+  it('defaults Redis on and OIDC off', () => {
+    expect(configSchema.parse({ version: '1.3.18' }).server.readiness.checks).toEqual({
+      redis: true,
+      oidc: false,
+    });
+  });
+
+  it('allows individual readiness checks to be configured', () => {
+    expect(
+      configSchema.parse({
+        version: '1.3.18',
+        server: { readiness: { checks: { redis: false, oidc: true } } },
+      }).server.readiness.checks,
+    ).toEqual({ redis: false, oidc: true });
+  });
+
+  it('defaults omitted checks and rejects unknown checks', () => {
+    expect(
+      configSchema.parse({ version: '1.3.18', server: { readiness: { checks: { oidc: true } } } })
+        .server.readiness.checks,
+    ).toEqual({ redis: true, oidc: true });
+    expect(
+      configSchema.safeParse({
+        version: '1.3.18',
+        server: { readiness: { checks: { database: true } } },
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe('independent browser replay opt-in', () => {
   it('preserves absent configuration for existing environment-based RUM deployments', () => {
     expect(configSchema.parse({ version: '1.3.17' }).telemetry).toBeUndefined();

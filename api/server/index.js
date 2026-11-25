@@ -60,6 +60,7 @@ const {
   registerBackgroundTaskShutdown,
   configureServerTimeouts,
   createReadinessHandler,
+  createOpenIdReadiness,
   keyvRedisClient,
   ioredisClient,
   cacheConfig,
@@ -270,6 +271,8 @@ const startServer = async () => {
   await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
   registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
   const appConfig = await getAppConfig({ baseOnly: true });
+  const readinessChecks = appConfig?.server?.readiness?.checks ?? { redis: true, oidc: false };
+  const openIdReadiness = createOpenIdReadiness(readinessChecks.oidc);
   registerShutdownTask(
     'role cache invalidation',
     await startRoleCacheInvalidation({
@@ -399,11 +402,15 @@ const startServer = async () => {
   app.get('/livez', (_req, res) => res.status(200).send('OK'));
   app.get(
     '/readyz',
-    createReadinessHandler(() => serverReady, {
-      useRedis: cacheConfig.USE_REDIS,
-      ioredis: ioredisClient,
-      keyv: keyvRedisClient,
-    }),
+    createReadinessHandler(
+      () => serverReady,
+      {
+        useRedis: cacheConfig.USE_REDIS,
+        ioredis: ioredisClient,
+        keyv: keyvRedisClient,
+      },
+      { checks: readinessChecks, isOpenIdReady: openIdReadiness.isReady },
+    ),
   );
 
   /* Middleware */
@@ -463,7 +470,9 @@ const startServer = async () => {
   }
 
   if (isEnabled(ALLOW_SOCIAL_LOGIN)) {
-    await configureSocialLogins(app, appConfig);
+    await configureSocialLogins(app, appConfig, openIdReadiness);
+  } else {
+    openIdReadiness.markNotConfigured();
   }
 
   /* Per-request capability cache — must be registered before any route that calls hasCapability */

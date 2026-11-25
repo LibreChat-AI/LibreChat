@@ -45,9 +45,10 @@ const getOpenIdSessionExpiry = () => {
  * Configures OpenID Connect for the application.
  * @param {Express.Application} app - The Express application instance.
  * @param {AppConfig} [appConfig] - Base app config, read for OpenID discovery retry settings.
+ * @param {import('@librechat/api').OpenIdReadinessState} [openIdReadiness]
  * @returns {Promise<void>}
  */
-async function configureOpenId(app, appConfig) {
+async function configureOpenId(app, appConfig, openIdReadiness) {
   logger.info('Configuring OpenID Connect...');
   const sessionExpiry = getOpenIdSessionExpiry();
   const sessionOptions = {
@@ -63,6 +64,7 @@ async function configureOpenId(app, appConfig) {
   app.use(session(sessionOptions));
   app.use(passport.session());
 
+  openIdReadiness?.markPending();
   await registerOpenIdWithRetry({
     setupOpenId,
     registerJwtStrategy: (config) => passport.use('openidJwt', openIdJwtLogin(config)),
@@ -72,6 +74,7 @@ async function configureOpenId(app, appConfig) {
       startupAttempts: process.env.OPENID_DISCOVERY_RETRY_ATTEMPTS,
       retryDelayMs: process.env.OPENID_DISCOVERY_RETRY_DELAY_MS,
     },
+    onRegistrationReady: openIdReadiness?.markReady,
   });
 }
 
@@ -79,8 +82,9 @@ async function configureOpenId(app, appConfig) {
  *
  * @param {Express.Application} app
  * @param {AppConfig} [appConfig] - Base app config, read for the social login state lifetime.
+ * @param {import('@librechat/api').OpenIdReadinessState} [openIdReadiness]
  */
-const configureSocialLogins = async (app, appConfig) => {
+const configureSocialLogins = async (app, appConfig, openIdReadiness) => {
   logger.info('Configuring social logins...');
   const stateOptions = {
     secret: process.env.JWT_SECRET,
@@ -115,7 +119,9 @@ const configureSocialLogins = async (app, appConfig) => {
     process.env.OPENID_SCOPE &&
     process.env.OPENID_SESSION_SECRET
   ) {
-    await configureOpenId(app, appConfig);
+    await configureOpenId(app, appConfig, openIdReadiness);
+  } else {
+    openIdReadiness?.markNotConfigured();
   }
   if (
     process.env.SAML_ENTRY_POINT &&
