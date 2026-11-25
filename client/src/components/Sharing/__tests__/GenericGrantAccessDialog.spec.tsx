@@ -5,7 +5,10 @@ import '@testing-library/jest-dom/extend-expect';
 import GenericGrantAccessDialog from '../GenericGrantAccessDialog';
 import translationEn from '~/locales/en/translation.json';
 
+const mockTrack = jest.fn();
 const mockShowToast = jest.fn();
+
+jest.mock('~/Providers/TrackingContext', () => ({ useProductTracking: () => mockTrack }));
 const mockLocalize = jest.fn((key: string) => key);
 const mockRefetchPermissions = jest.fn();
 const mockUseResourcePermissionState = jest.fn();
@@ -88,6 +91,7 @@ const renderDialog = (
 
 describe('GenericGrantAccessDialog - permissions load failure', () => {
   beforeEach(() => {
+    mockTrack.mockReset();
     mockLocalize.mockReset().mockImplementation((key: string) => key);
     mockUseResourcePermissionState.mockReset();
     mockRefetchPermissions.mockReset();
@@ -98,6 +102,36 @@ describe('GenericGrantAccessDialog - permissions load failure', () => {
     });
     mockUseCanSharePublic.mockReturnValue(true);
   });
+
+  it.each([ResourceType.SKILL, ResourceType.PROMPTGROUP])(
+    'records a visible share dialog open for %s with the object database id',
+    (resourceType) => {
+      mockUseResourcePermissionState.mockReturnValue(baseState());
+      render(
+        <GenericGrantAccessDialog
+          resourceDbId="object-id"
+          resourceName="Private title"
+          resourceType={resourceType}
+        />,
+      );
+      expect(mockTrack).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: 'com_ui_share_var' }));
+      expect(mockTrack).toHaveBeenCalledTimes(1);
+      expect(mockTrack).toHaveBeenCalledWith(
+        resourceType === ResourceType.SKILL
+          ? {
+              name: 'librechat.skills.sharing.opened',
+              feature: 'skills',
+              skillId: 'object-id',
+            }
+          : {
+              name: 'librechat.prompts.sharing.opened',
+              feature: 'prompts',
+              groupId: 'object-id',
+            },
+      );
+    },
+  );
 
   it('renders a compact alert button (not the share trigger, not raw text) when permissions fail to load', () => {
     mockUseResourcePermissionState.mockReturnValue(
