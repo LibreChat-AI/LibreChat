@@ -322,6 +322,16 @@ describe('a tool the owner left out of the grant', () => {
     expect(record).toHaveBeenCalledTimes(1);
   });
 
+  it('lets the watch controls through a selective grant, as the host offers them', async () => {
+    const { policy, record, input, signal } = await partial();
+    for (const name of ['watch', 'unwatch']) {
+      const call = input(name);
+      expect(await policy.hook(call, signal)).toEqual({});
+      await policy.receipt(call, signal);
+    }
+    expect(record).not.toHaveBeenCalled();
+  });
+
   it('leaves a tool whose key does not name its server to the check at the call', async () => {
     const fixture = await executionFixture('invoke', readTool, undefined, { offered: ['export'] });
     const policy = createRunPolicy(fixture.execution, [

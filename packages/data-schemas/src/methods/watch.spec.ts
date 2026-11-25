@@ -155,6 +155,46 @@ describe('add', () => {
   });
 });
 
+describe('binding and the limit', () => {
+  it('renews under the subscription, connection and agent that allow it now', async () => {
+    const first = await added();
+    const again = await added({ subscription: 'sub_2', connection: 'conn_2', agentId: 'agent_2' });
+    if (!first.ok || !again.ok) throw new Error('expected both to succeed');
+    expect(again.created).toBe(false);
+    expect(again.value).toMatchObject({
+      id: first.value.id,
+      subscription: 'sub_2',
+      connection: 'conn_2',
+      agentId: 'agent_2',
+    });
+    const [row] = await stored();
+    expect(row).toMatchObject({ subscription: 'sub_2', connection: 'conn_2', agentId: 'agent_2' });
+  });
+
+  it('never lets concurrent adds of different items pass the limit', async () => {
+    const results = await Promise.all(
+      Array.from({ length: 6 }, (_, n) =>
+        as(TENANT_A, async () =>
+          watches.add(owner, draft({ item: `github:pr:101#${n}` }), bounds({ max: 2 })),
+        ),
+      ),
+    );
+    expect(results.filter((result) => result.ok)).toHaveLength(2);
+    expect(results.filter((result) => !result.ok)).toHaveLength(4);
+    expect(await stored()).toHaveLength(2);
+  });
+
+  it('gives a removed watch its place back', async () => {
+    const first = await as(TENANT_A, async () => watches.add(owner, draft(), bounds({ max: 1 })));
+    if (!first.ok) throw new Error('expected the add to succeed');
+    await as(TENANT_A, async () => watches.remove(first.value.id, owner));
+    const next = await as(TENANT_A, async () =>
+      watches.add(owner, draft({ item: 'github:pr:101#8' }), bounds({ max: 1 })),
+    );
+    expect(next).toMatchObject({ ok: true, created: true });
+  });
+});
+
 describe('reads and removal', () => {
   it("lists only the owner's watches on that conversation that have not ended, oldest first", async () => {
     await added();
@@ -282,6 +322,7 @@ describe('cleanup with its subscription and conversation', () => {
       key: { user: 1, conversationId: 1, item: 1 },
       unique: true,
     });
+    expect(byName['user_1_conversationId_1_slot_1']).toMatchObject({ unique: true });
     expect(byName['expiresAt_1']).toMatchObject({ expireAfterSeconds: 0 });
     expect(Rows.collection.collectionName).toBe('agenteventwatches');
   });

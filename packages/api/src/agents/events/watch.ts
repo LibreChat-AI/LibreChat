@@ -18,14 +18,14 @@ import type { EventConfig } from './settings';
 import type { ServerRequest } from '~/types';
 import { AgentTriggerExecutionError } from '~/agents/triggers/host';
 import { SUBSCRIPTION_SOURCE } from '~/agents/authority/context';
+import { governs, WATCH_TOOL, UNWATCH_TOOL } from './controls';
 import { eventSettings, watchSettings } from './settings';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { GitHubError } from './github/app';
 import { createApp } from './github/app';
 import { itemKey } from './item';
 
-export const WATCH_TOOL = 'watch';
-export const UNWATCH_TOOL = 'unwatch';
+export { governs, WATCH_TOOL, UNWATCH_TOOL, WATCH_TOOLS } from './controls';
 
 /** A pull request a person or an agent named: its repository as `owner/name`, and its number. */
 export interface PullRequestRef {
@@ -218,6 +218,8 @@ type ContinueResolver = NonNullable<AgentTriggerExecutionHostDeps['prepareContin
 
 export interface WatchContinueResolverDeps {
   watches: Pick<Watches, 'get'>;
+  /** The governing subscription as it stands, read again for every turn. */
+  subscriptions: Pick<Subscriptions, 'get'>;
   getMessages: (
     filter: { user: string; conversationId: string; isCreatedByUser: boolean },
     select: string,
@@ -271,6 +273,17 @@ export function createWatchContinueResolver(deps: WatchContinueResolverDeps): Co
       watch.subscription !== envelope.event.source.id
     ) {
       throw refused('The watch no longer follows this pull request here.', false, 'WATCH_GONE');
+    }
+    // A turn queued behind a busy conversation runs later: the owner may have turned watching
+    // or the subscription off meanwhile, and then it does not run.
+    let subscription: Subscription | null;
+    try {
+      subscription = await deps.subscriptions.get(watch.subscription, user);
+    } catch {
+      throw refused('Subscription state is temporarily unavailable.', true, 'WATCH_UNAVAILABLE');
+    }
+    if (!governs(watch, subscription)) {
+      throw refused('Watching is no longer allowed here.', false, 'WATCH_NOT_ALLOWED');
     }
     if (deps.getGenerationJob != null) {
       let active;

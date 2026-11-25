@@ -695,14 +695,11 @@ describe('watches', () => {
     expect(new Set(lanes).size).toBe(2);
   });
 
-  it.each([
-    ['turned off', { enabled: false }],
-    ['no longer allowing watching', { watch: false }],
-  ])('continues nothing under a subscription %s', async (_label, edit) => {
+  it('continues nothing under a subscription turned off', async () => {
     const connection = await bind();
     const subscription = await subscribe(connection, { watch: true });
     await follow(subscription);
-    await subscriptions.update(subscription.id, OWNER, edit);
+    await subscriptions.update(subscription.id, OWNER, { enabled: false });
     const routed = await routeWatching()({
       verified: { digest: DIGEST },
       occurrences: review(),
@@ -711,6 +708,24 @@ describe('watches', () => {
     expect(routed.enqueued).toBe(0);
     expect(routed.skipped.watch).toBe(1);
     expect(await queued()).toEqual([]);
+  });
+
+  it('starts the usual run of a subscription that no longer allows watching', async () => {
+    const connection = await bind();
+    const subscription = await subscribe(connection, { watch: true });
+    await follow(subscription);
+    await subscriptions.update(subscription.id, OWNER, { watch: false });
+    const routed = await routeWatching()({
+      verified: { digest: DIGEST },
+      occurrences: review(),
+      connection,
+    });
+    // The stored watch no longer wins, so it silences nothing: the subscription runs as before.
+    expect(routed.skipped.watch).toBe(1);
+    expect(routed.skipped.watched).toBeUndefined();
+    expect(routed.enqueued).toBe(1);
+    const modes = (await queued()).map(({ envelope }) => envelope.mode);
+    expect(modes).toEqual(['fire']);
   });
 
   it("continues nothing for a watch whose subscription is another owner's or agent's", async () => {

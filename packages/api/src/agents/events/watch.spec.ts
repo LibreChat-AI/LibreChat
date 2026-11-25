@@ -372,6 +372,7 @@ describe('createWatchContinueResolver', () => {
   const resolver = (overrides: Record<string, unknown> = {}) =>
     createWatchContinueResolver({
       watches,
+      subscriptions: { get: jest.fn(async () => subscription()) },
       getMessages: jest.fn(async () => [{ messageId: 'reply_9' }]),
       getGenerationJob: jest.fn(async () => null),
       ...overrides,
@@ -406,6 +407,29 @@ describe('createWatchContinueResolver', () => {
       code: 'WATCH_GONE',
       retryable: false,
     });
+  });
+
+  it.each([
+    ['watching is turned off', { watch: false }],
+    ['the subscription is turned off', { enabled: false }],
+    ['the subscription is for another agent', { agentId: 'agent_other' }],
+  ])('refuses for good a turn queued before %s', async (_label, edit) => {
+    const watch = await stored();
+    const get = jest.fn(async () => subscription(edit));
+    await expect(
+      resolver({ subscriptions: { get } })(envelope(watch), context),
+    ).rejects.toMatchObject({ code: 'WATCH_NOT_ALLOWED', retryable: false });
+    expect(get).toHaveBeenCalledWith('sub_1', OWNER);
+  });
+
+  it('retries a turn whose subscription cannot be read yet', async () => {
+    const watch = await stored();
+    const get = jest.fn(async () => {
+      throw new Error('connection reset');
+    });
+    await expect(
+      resolver({ subscriptions: { get } })(envelope(watch), context),
+    ).rejects.toMatchObject({ code: 'WATCH_UNAVAILABLE', retryable: true });
   });
 
   it("refuses for good a watch of another owner's", async () => {

@@ -5,6 +5,11 @@ import { applyTenantIsolation } from './plugins/tenantIsolation';
 
 export interface WatchRecord extends Omit<Watch, 'user' | 'createdAt' | 'expiresAt'> {
   user: Types.ObjectId;
+  /**
+   * The watch's place among its conversation's, below the per-conversation limit. Unique per
+   * conversation, so two servers adding at once cannot both take the last place.
+   */
+  slot: number;
   createdAt: Date;
   /** Read by the TTL index: the server removes the watch once this time has passed. */
   expiresAt: Date;
@@ -30,6 +35,7 @@ export function createAgentEventWatchModel(
       subscription: { type: String, required: true },
       connection: { type: String, required: true },
       item: { type: String, required: true },
+      slot: { type: Number, required: true, min: 0 },
       label: { type: String, required: true, maxlength: WATCH_LABEL_MAX_LENGTH },
       url: { type: String, maxlength: WATCH_URL_MAX_LENGTH },
       expiresAt: { type: Date, required: true },
@@ -41,6 +47,8 @@ export function createAgentEventWatchModel(
   schema.index({ connection: 1, item: 1 });
   // One watch per item in a conversation, and a conversation's watches for its owner.
   schema.index({ user: 1, conversationId: 1, item: 1 }, { unique: true });
+  // The limit: a conversation's watches each hold one of its places.
+  schema.index({ user: 1, conversationId: 1, slot: 1 }, { unique: true });
   // A subscription's watches, removed with it.
   schema.index({ subscription: 1 });
   schema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });

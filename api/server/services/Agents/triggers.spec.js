@@ -55,7 +55,10 @@ describe('agent trigger service composition', () => {
       createWatchContinueResolver,
     } = require('@librechat/api');
     expect(createWatchContinueResolver).toHaveBeenCalledWith(
-      expect.objectContaining({ watches: expect.any(Object) }),
+      expect.objectContaining({
+        watches: expect.any(Object),
+        subscriptions: expect.objectContaining({ get: expect.any(Function) }),
+      }),
     );
     const { sources } = createAgentContinuationResolver.mock.calls.at(-1)[0];
     expect(sources.get('subscription')).toBe(mockWatchContinue);

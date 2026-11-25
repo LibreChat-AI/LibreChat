@@ -10,6 +10,7 @@ import type { Verified } from './provider';
 import { createAgentTriggerEnvelope } from '~/agents/triggers/envelope';
 import { SUBSCRIPTION_SOURCE } from '~/agents/authority/context';
 import { isId, itemKey } from './item';
+import { governs } from './controls';
 
 /** A check suite reports on a commit, whoever pushed it, so no actor rule applies to one. */
 const ACTORLESS = new Set<string>(['github.check_suite.completed']);
@@ -301,21 +302,14 @@ export function createRoute(deps: RouteDeps): Route {
     }
   };
 
-  /** True when a watch may still continue its conversation under this subscription. */
-  const governs = (
+  /** True when a watch may still continue its conversation under this subscription here. */
+  const binds = (
     watch: Watch,
     subscription: Subscription | null,
     connection: Pick<Connection, 'id' | 'tenantId'>,
   ): subscription is Subscription =>
-    subscription != null &&
-    subscription.id === watch.subscription &&
-    subscription.enabled &&
-    subscription.watch &&
-    subscription.user === watch.user &&
-    subscription.agentId === watch.agentId &&
-    subscription.connection === connection.id &&
+    governs(watch, subscription) &&
     watch.connection === connection.id &&
-    (subscription.tenantId ?? null) === (connection.tenantId ?? null) &&
     (watch.tenantId ?? null) === (connection.tenantId ?? null);
 
   return async ({ verified, occurrences, connection }) => {
@@ -334,16 +328,23 @@ export function createRoute(deps: RouteDeps): Route {
 
     const keys = Array.from(new Set(occurrences.map((occurrence) => itemKey(occurrence.item))));
     const watching = deps.watches == null ? [] : await deps.watches.following(connection, keys);
-    /** Each watch's subscription, read once per delivery however many events name its item. */
-    const governing = new Map<string, Promise<Subscription | null>>();
-    const governor = (id: string) => {
-      let read = governing.get(id);
-      if (read == null) {
-        read = deps.watches?.subscription(id) ?? Promise.resolve(null);
-        governing.set(id, read);
-      }
-      return read;
-    };
+    /**
+     * Each watch's subscription, read once per delivery however many events name its item, and
+     * the watches it still lets continue. Only those win over their subscription's own run: a
+     * watch its subscription no longer allows must not silence that subscription too.
+     */
+    const governing = new Map(
+      await Promise.all(
+        Array.from(new Set(watching.map((watch) => watch.subscription))).map(
+          async (id) => [id, (await deps.watches?.subscription(id)) ?? null] as const,
+        ),
+      ),
+    );
+    const eligible = new Map<Watch, Subscription>();
+    for (const watch of watching) {
+      const subscription = governing.get(watch.subscription) ?? null;
+      if (binds(watch, subscription, connection)) eligible.set(watch, subscription);
+    }
 
     /** The first enqueue that failed, held in a box so a rejection with no reason still counts. */
     let failure: { error: unknown } | undefined;
@@ -364,22 +365,21 @@ export function createRoute(deps: RouteDeps): Route {
         bound && (occurrence.installation == null || occurrence.installation === installation);
       const key = itemKey(occurrence.item);
       /** The subscriptions whose watches on this item continue a conversation instead. */
-      const watched = new Set(
-        watching.filter((watch) => watch.item === key).map((watch) => watch.subscription),
-      );
+      const watched = new Set<string>();
       for (const watch of watching) {
         if (watch.item !== key) continue;
         if (!own) {
           skip('installation');
           continue;
         }
+        const subscription = eligible.get(watch);
+        if (subscription == null) {
+          skip('watch');
+          continue;
+        }
+        watched.add(subscription.id);
         tasks.push(
           (async () => {
-            const subscription = await governor(watch.subscription);
-            if (!governs(watch, subscription, connection)) {
-              skip('watch');
-              return;
-            }
             const refused = await admits(subscription, occurrence, installation);
             if (refused != null) {
               skip(refused);

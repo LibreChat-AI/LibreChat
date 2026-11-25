@@ -17,7 +17,7 @@ const {
   createWatchContinueResolver,
 } = require('@librechat/api');
 const mongoose = require('mongoose');
-const { createWatches } = require('@librechat/data-schemas');
+const { createWatches, createSubscriptions } = require('@librechat/data-schemas');
 const methods = require('~/models');
 
 const getGenerationAdmissionEvidence = (userId, clientRequestId, streamId, conversationId) =>
@@ -59,6 +59,7 @@ const backgroundToolCompletionAdapter = createBackgroundToolCompletionWakeupReso
 });
 const watchContinueAdapter = createWatchContinueResolver({
   watches: createWatches(mongoose),
+  subscriptions: createSubscriptions(mongoose),
   getMessages: methods.getMessages,
   getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
 });

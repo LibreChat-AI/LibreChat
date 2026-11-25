@@ -76,7 +76,11 @@ export function createWatches(mongoose: typeof import('mongoose')): Watches {
   const Model = createAgentEventWatchModel(mongoose);
   const indexed = createChannelIndexGate(() => [Model]);
 
-  /** An owner's watch on one item in one conversation, renewed to last from `now`. */
+  /**
+   * An owner's watch on one item in one conversation, renewed to last from `now`. It takes the
+   * binding the caller just checked: the subscription, connection and agent that allow it now,
+   * which can differ from the ones that allowed it first.
+   */
   async function renew(owner: string, draft: WatchDraft, expiresAt: Date, now: Date) {
     return Model.findOneAndUpdate(
       {
@@ -85,7 +89,16 @@ export function createWatches(mongoose: typeof import('mongoose')): Watches {
         item: draft.item,
         expiresAt: { $gt: now },
       },
-      { $set: { expiresAt, label: draft.label, ...(draft.url != null && { url: draft.url }) } },
+      {
+        $set: {
+          expiresAt,
+          agentId: draft.agentId,
+          subscription: draft.subscription,
+          connection: draft.connection,
+          label: draft.label,
+          ...(draft.url != null && { url: draft.url }),
+        },
+      },
       { new: true },
     ).lean<WatchRecord>();
   }
@@ -96,40 +109,49 @@ export function createWatches(mongoose: typeof import('mongoose')): Watches {
     const expiresAt = new Date(now.getTime() + bounds.ttlMs);
     const renewed = await renew(owner, draft, expiresAt, now);
     if (renewed != null) return { ok: true, value: view(renewed), created: false };
-    // An ended watch the TTL monitor has not removed yet holds the item's place: clear it.
-    await Model.deleteOne({
+    // Ended watches the TTL monitor has not removed yet still hold their item and place.
+    await Model.deleteMany({
       user: owner,
       conversationId: draft.conversationId,
-      item: draft.item,
       expiresAt: { $lte: now },
     });
-    const held = await Model.countDocuments({
-      user: owner,
-      conversationId: draft.conversationId,
-      expiresAt: { $gt: now },
-    });
-    if (held >= bounds.max) return { ok: false, error: { code: 'limit' } };
-    try {
-      const doc = await Model.create({
-        id: `watch_${randomUUID()}`,
-        user: owner,
-        conversationId: draft.conversationId,
-        agentId: draft.agentId,
-        subscription: draft.subscription,
-        connection: draft.connection,
-        item: draft.item,
-        label: draft.label,
-        ...(draft.url != null && { url: draft.url }),
-        expiresAt,
-      });
-      return { ok: true, value: view(doc.toObject()), created: true };
-    } catch (error) {
-      if (!duplicate(error)) throw error;
-      // Another call made the same watch first: this one renews it instead.
-      const raced = await renew(owner, draft, expiresAt, now);
-      if (raced == null) throw error;
-      return { ok: true, value: view(raced), created: false };
+    const limit: WatchAdd = { ok: false, error: { code: 'limit' } };
+    // Each try takes a free place; the unique place index refuses a second taker, so two
+    // calls on any servers cannot both take the last one. A lost place is read again.
+    for (let attempt = 0; attempt <= bounds.max; attempt++) {
+      const held = await Model.find(
+        { user: owner, conversationId: draft.conversationId },
+        { slot: 1 },
+      ).lean<Array<Pick<WatchRecord, 'slot'>>>();
+      if (held.length >= bounds.max) return limit;
+      const taken = new Set(held.map((row) => row.slot));
+      let slot = 0;
+      while (taken.has(slot)) slot += 1;
+      if (slot >= bounds.max) return limit;
+      try {
+        const doc = await Model.create({
+          id: `watch_${randomUUID()}`,
+          user: owner,
+          conversationId: draft.conversationId,
+          agentId: draft.agentId,
+          subscription: draft.subscription,
+          connection: draft.connection,
+          item: draft.item,
+          slot,
+          label: draft.label,
+          ...(draft.url != null && { url: draft.url }),
+          expiresAt,
+        });
+        return { ok: true, value: view(doc.toObject()), created: true };
+      } catch (error) {
+        if (!duplicate(error)) throw error;
+        // Another call made the same watch first: this one renews it instead. Otherwise it
+        // took the same place, and the places are read again.
+        const raced = await renew(owner, draft, expiresAt, now);
+        if (raced != null) return { ok: true, value: view(raced), created: false };
+      }
     }
+    return limit;
   }
 
   async function get(id: string, owner: string, now = new Date()): Promise<Watch | null> {
