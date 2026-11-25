@@ -62,7 +62,7 @@ describe('generated title reply provenance', () => {
         if (mode === 'agent') {
           await addAgentTitle(req, {
             text: 'Automatic title',
-            response: { conversationId },
+            conversationId,
             client: {
               options: { titleConvo: true },
               titleConvo: async () => 'Automatic title',

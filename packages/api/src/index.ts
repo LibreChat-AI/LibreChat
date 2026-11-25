@@ -98,6 +98,7 @@ export * from './prompts';
 export * from './projects';
 /* Conversations */
 export * from './conversations';
+export * from './titles';
 /* Messages */
 export * from './messages';
 /* Skills */

@@ -10,111 +10,78 @@ const { saveConvo, getConvo } = require('~/models');
 const { resolveConversationTitle } = require('../titlePolicy');
 
 /**
- * Add title to conversation in a way that avoids memory retention.
+ * Generates an Agent conversation's title without saving it. The chat hands this to its
+ * conversation's title task, which owns the deadline, the save and delivery.
  *
  * @param {ServerRequest} req
  * @param {Object} params
  * @param {string} params.text - The user's first message.
- * @param {TMessage} [params.response] - The assistant response (legacy/`final` timing only).
+ * @param {TMessage} [params.response] - The assistant response (`final` timing only).
  * @param {AgentClient} params.client
- * @param {string} [params.conversationId] - Required for `immediate` timing, where
- *   `response` is not yet available; falls back to `response.conversationId`.
- * @param {boolean} [params.immediate] - When true, the title is generated in parallel
- *   with the response (from the user's first message) and persisted to the conversation
- *   only after `convoReady` resolves (the conversation row must exist for `noUpsert`).
- * @param {Promise<void>} [params.convoReady] - Resolves once the conversation has been
- *   persisted; awaited before saving the title in `immediate` mode.
- * @param {AbortSignal} [params.signal] - When aborted (e.g. the user stops an
- *   immediate-mode generation), cancels the in-flight title model call so a
- *   turn stopped before the title finished does not consume the title model. A
- *   title that already finished generating is still persisted and surfaced.
- * @param {AbortSignal} [params.discardSignal] - When aborted, discards an
- *   already-generated title instead of persisting it. Used only when this stream
- *   is superseded by a newer run (or the turn failed), so a stale title does not
- *   clobber the conversation now owned by the newer run. A plain user Stop does
- *   NOT abort this — its generated title is kept.
- * @param {(params: { conversationId: string, title: string }) => Promise<void>|void} [params.onTitleGenerated]
- *   Called after caching the title for the live stream.
+ * @param {boolean} [params.immediate] - Generate from the user's message alone, in parallel
+ *   with the response, awaiting the run instead of requiring it.
+ * @param {AbortSignal} [params.signal] - Cancels the title model call.
+ * @returns {Promise<string | undefined>}
  */
-const addTitle = async (
-  req,
-  {
-    text,
-    response,
-    client,
-    conversationId,
-    immediate = false,
-    convoReady,
-    signal,
-    discardSignal,
-    onTitleGenerated,
-  },
-) => {
+const generateTitle = async (req, { text, client, immediate = false, signal }) => {
   const { TITLE_CONVO = true } = process.env ?? {};
-  if (!isEnabled(TITLE_CONVO)) {
+  if (!isEnabled(TITLE_CONVO) || typeof client?.titleConvo !== 'function') {
     return;
   }
-
-  if (!allowsAssistantSideEffects(req?.config, client.options.titleConvo)) {
+  if (!allowsAssistantSideEffects(req?.config, client.options?.titleConvo)) {
     return;
   }
-
-  // Skip title generation for temporary conversations
   if (req?.body?.isTemporary) {
     return;
   }
 
-  const convoId = conversationId ?? response?.conversationId;
-  if (!convoId) {
+  const abortController = new AbortController();
+  const abort = () => abortController.abort();
+  if (signal?.aborted) {
+    abort();
+  } else {
+    signal?.addEventListener('abort', abort, { once: true });
+  }
+  try {
+    const generated = await client.titleConvo({ text, abortController, immediate });
+    if (!generated) {
+      logger.debug('[generateTitle] No title generated');
+      return;
+    }
+    return resolveConversationTitle(req, generated) ?? undefined;
+  } catch (error) {
+    logger.error('Client title error:', error);
+    return;
+  } finally {
+    signal?.removeEventListener('abort', abort);
+    abort();
+  }
+};
+
+/**
+ * Generates and publishes a title in one step, for a resumed approval turn that reports the
+ * title on its own stream.
+ *
+ * @param {ServerRequest} req
+ * @param {Object} params
+ * @param {string} params.text - The user's first message.
+ * @param {AgentClient} params.client
+ * @param {string} params.conversationId
+ * @param {(params: { conversationId: string, title: string }) => Promise<void>|void} [params.onTitleGenerated]
+ *   Called after caching the title for the live stream.
+ */
+const addTitle = async (req, { text, client, conversationId, onTitleGenerated }) => {
+  if (!conversationId) {
     logger.warn('[addTitle] Missing conversationId; skipping title generation');
     return;
   }
-
-  const titleCache = getLogStores(CacheKeys.GEN_TITLE);
-  const key = `${req.user.id}-${convoId}`;
   try {
-    let titlePromise;
-    let abortController = new AbortController();
-    /** Propagate a request abort (Stop) to the title generation so a cancelled
-     *  turn does not consume the title model or surface a title. */
-    if (signal) {
-      if (signal.aborted) {
-        abortController.abort();
-      } else {
-        signal.addEventListener('abort', () => abortController.abort(), { once: true });
-      }
-    }
-    if (client && typeof client.titleConvo === 'function') {
-      titlePromise = client
-        .titleConvo({
-          text,
-          abortController,
-          immediate,
-        })
-        .catch((error) => {
-          logger.error('Client title error:', error);
-        });
-    } else {
-      return;
-    }
-
-    const generatedTitle = await titlePromise;
-    if (!abortController.signal.aborted) {
-      abortController.abort();
-    }
-
-    if (!generatedTitle) {
-      logger.debug(`[${key}] No title generated`);
-      return;
-    }
-
-    const title = resolveConversationTitle(req, generatedTitle);
+    const title = await generateTitle(req, { text, client });
     if (title == null) {
       return;
     }
-
     await publishConversationTitle(
-      { saveConvo, getConvo, titleCache },
+      { saveConvo, getConvo, titleCache: getLogStores(CacheKeys.GEN_TITLE) },
       {
         ctx: {
           userId: req?.user?.id,
@@ -122,11 +89,8 @@ const addTitle = async (
           expiredAt: req?.resolvedConversation?.expiredAt,
           interfaceConfig: req?.config?.interfaceConfig,
         },
-        conversationId: convoId,
+        conversationId,
         title,
-        convoReady,
-        discardSignal,
-        signal,
         onTitleGenerated,
       },
     );
@@ -136,3 +100,4 @@ const addTitle = async (
 };
 
 module.exports = addTitle;
+module.exports.generateTitle = generateTitle;

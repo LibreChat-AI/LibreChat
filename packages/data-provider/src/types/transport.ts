@@ -105,6 +105,8 @@ export type ChatFinalFrame = {
   /** Unapplied steers the server already made durable queued turns; never re-queue these locally. */
   promotedSteers?: TPromotedSteer[];
   error?: { message: string };
+  /** Ends a title stream: `true` once the title attempt settled, `false` when none was pending. */
+  titleSettled?: boolean;
 };
 
 /** `{ event: 'title' }`: a generated conversation title. */
@@ -113,6 +115,9 @@ export type ChatTitleFrame = {
   data?: {
     conversationId?: string;
     title?: string;
+    /** Set when a manual rename won over the generated title. */
+    titleSetByUser?: boolean;
+    titleRevision?: number;
   };
 };
 

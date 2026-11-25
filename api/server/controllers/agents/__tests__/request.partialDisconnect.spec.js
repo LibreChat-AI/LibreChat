@@ -55,6 +55,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').buildGenerationStartedResponse(...args),
   describeCreatedTurn: (...args) =>
     jest.requireActual('@librechat/api').describeCreatedTurn(...args),
+  getOutboundTimeoutMs: (...args) =>
+    jest.requireActual('@librechat/api').getOutboundTimeoutMs(...args),
   savePrivateTextMessage: (save, _req, ...args) => save(...args),
   savePrivateTextErrorTurn: (...args) =>
     jest.requireActual('@librechat/api').savePrivateTextErrorTurn(...args),
@@ -152,6 +154,8 @@ jest.mock('~/server/middleware', () => ({
 jest.mock('~/cache', () => ({
   logViolation: jest.fn(),
 }));
+
+jest.mock('~/server/services/Endpoints/agents/titles', () => require('~/test/helpers/titleTasks'));
 
 jest.mock('~/models', () => ({
   saveMessage: (...args) => mockSaveMessage(...args),
