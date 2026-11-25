@@ -1,4 +1,4 @@
-import { AccessRoleIds, ResourceType } from 'librechat-data-provider';
+import { AccessRoleIds, ResourceType, apiBaseUrl } from 'librechat-data-provider';
 
 export interface ResourceConfig {
   resourceType: ResourceType;
@@ -18,7 +18,8 @@ export const RESOURCE_CONFIGS: Partial<Record<ResourceType, ResourceConfig>> = {
     defaultViewerRoleId: AccessRoleIds.AGENT_VIEWER,
     defaultEditorRoleId: AccessRoleIds.AGENT_EDITOR,
     defaultOwnerRoleId: AccessRoleIds.AGENT_OWNER,
-    getResourceUrl: (agentId: string) => `${window.location.origin}/c/new?agent_id=${agentId}`,
+    getResourceUrl: (agentId: string) =>
+      new URL(`${apiBaseUrl()}/c/new?agent_id=${agentId}`, window.location.origin).toString(),
     getResourceName: (name?: string) => (name && name !== '' ? name : 'agent'),
     getShareMessage: (name?: string) => (name && name !== '' ? name : 'agent'),
     getManageMessage: (name?: string) =>
@@ -52,7 +53,8 @@ export const RESOURCE_CONFIGS: Partial<Record<ResourceType, ResourceConfig>> = {
     defaultViewerRoleId: AccessRoleIds.REMOTE_AGENT_VIEWER,
     defaultEditorRoleId: AccessRoleIds.REMOTE_AGENT_EDITOR,
     defaultOwnerRoleId: AccessRoleIds.REMOTE_AGENT_OWNER,
-    getResourceUrl: () => `${window.location.origin}/api/v1/responses`,
+    getResourceUrl: () =>
+      new URL(`${apiBaseUrl()}/api/agents/v1/responses`, window.location.origin).toString(),
     getResourceName: (name?: string) => (name && name !== '' ? `"${name}"` : 'remote agent'),
     getShareMessage: (name?: string) =>
       name && name !== '' ? `"${name}" (API Access)` : 'remote agent access',
