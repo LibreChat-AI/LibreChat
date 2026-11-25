@@ -1,4 +1,4 @@
-import { memo, useCallback, useId, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useDrop } from 'react-dnd';
 import { useRecoilValue } from 'recoil';
 import * as Ariakit from '@ariakit/react';
@@ -194,6 +194,28 @@ const ProjectItem = memo(
     const menuId = useId();
     const [expanded, setExpanded] = useState(defaultExpanded);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
+    /**
+     * One-way: true once the pointer or focus has reached the row, or its menu was asked for.
+     * Until then the row draws a plain button in place of the menu's trigger, because Ariakit's
+     * trigger is a hovercard anchor that listens on the document from the moment it mounts, so
+     * every listed project would otherwise add a listener to every page.
+     */
+    const [reached, setReached] = useState(false);
+    const placeholder = useRef<HTMLButtonElement>(null);
+    const trigger = useRef<HTMLButtonElement>(null);
+    /** The `detail` of a click the placeholder took, replayed on the trigger once it mounts so
+     *  Ariakit opens the menu the way it would have: focus moves in, and returns on close. */
+    const pending = useRef<number | null>(null);
+    useLayoutEffect(() => {
+      const detail = pending.current;
+      if (detail == null || trigger.current == null) {
+        return;
+      }
+      pending.current = null;
+      trigger.current.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, cancelable: true, detail }),
+      );
+    }, [reached]);
     /** The dialog items keep the menu open so it does not steal focus from the
      *  dialog mounting beside it; closing the dialog closes the menu too. */
     const closeMenuWith = (setOpen: (open: boolean) => void, open: boolean) => {
@@ -309,6 +331,17 @@ const ProjectItem = memo(
     return (
       <li className="max-w-full min-w-0 list-none" ref={projectRowRef}>
         <div
+          onPointerEnter={(event) => {
+            if (event.pointerType === 'mouse') {
+              setReached(true);
+            }
+          }}
+          onFocus={(event) => {
+            /* A tap focuses the placeholder before its click: swapping it then would lose the click. */
+            if (!placeholder.current?.contains(event.target)) {
+              setReached(true);
+            }
+          }}
           className={cn(
             'group text-text-primary relative flex h-9 max-w-full min-w-0 items-center rounded-lg text-sm',
             isActive || isMenuOpen || (isDropOver && canDrop)
@@ -354,26 +387,45 @@ const ProjectItem = memo(
                 </a>
               }
             />
-            <DropdownPopup
-              portal={true}
-              focusLoop={true}
-              unmountOnHide={true}
-              menuId={menuId}
-              isOpen={isMenuOpen}
-              setIsOpen={setIsMenuOpen}
-              className="z-[125]"
-              minWidth="11rem"
-              iconClassName="me-2 text-text-secondary"
-              trigger={
-                <Ariakit.MenuButton
-                  aria-label={localize('com_ui_more_options')}
-                  className={rowActionClasses({ open: isMenuOpen })}
-                >
-                  <Ellipsis className="h-4 w-4" aria-hidden="true" />
-                </Ariakit.MenuButton>
-              }
-              items={menuItems}
-            />
+            {reached ? (
+              <DropdownPopup
+                portal={true}
+                focusLoop={true}
+                unmountOnHide={true}
+                menuId={menuId}
+                isOpen={isMenuOpen}
+                setIsOpen={setIsMenuOpen}
+                className="z-[125]"
+                minWidth="11rem"
+                iconClassName="me-2 text-text-secondary"
+                trigger={
+                  <Ariakit.MenuButton
+                    ref={trigger}
+                    aria-label={localize('com_ui_more_options')}
+                    className={rowActionClasses({ open: isMenuOpen })}
+                  >
+                    <Ellipsis className="h-4 w-4" aria-hidden="true" />
+                  </Ariakit.MenuButton>
+                }
+                items={menuItems}
+              />
+            ) : (
+              /* Touch has no hover, so a tap reaches the row here: hand its click to the trigger. */
+              <button
+                ref={placeholder}
+                type="button"
+                aria-label={localize('com_ui_more_options')}
+                aria-haspopup="menu"
+                aria-expanded={false}
+                className={rowActionClasses()}
+                onClick={(event) => {
+                  pending.current = event.detail;
+                  setReached(true);
+                }}
+              >
+                <Ellipsis className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
           </div>
         </div>
         <Collapse open={expanded}>

@@ -68,7 +68,27 @@ jest.mock('@librechat/client', () => ({
   Skeleton: () => <div />,
   Spinner: () => <div />,
   TooltipAnchor: ({ render: anchor }: { render: React.ReactNode }) => <>{anchor}</>,
-  DropdownPopup: () => null,
+  /** The real menu store and provider, so the trigger is Ariakit's own and adds what it adds. */
+  DropdownPopup: function DropdownPopup({
+    trigger,
+    menuId,
+    isOpen,
+    setIsOpen,
+  }: {
+    trigger: React.ReactNode;
+    menuId: string;
+    isOpen: boolean;
+    setIsOpen: (open: boolean) => void;
+  }) {
+    const Ariakit = jest.requireActual('@ariakit/react');
+    const menu = Ariakit.useMenuStore({ open: isOpen, setOpen: setIsOpen });
+    return (
+      <Ariakit.MenuProvider store={menu}>
+        {trigger}
+        {isOpen && <div data-testid={`menu-${menuId}`} />}
+      </Ariakit.MenuProvider>
+    );
+  },
   NewChatIcon: () => null,
   buttonVariants: () => '',
 }));
@@ -146,5 +166,75 @@ describe('ProjectsSection closed projects', () => {
     });
 
     expect(await screen.findByText('com_ui_no_project_chats')).toBeInTheDocument();
+  });
+});
+
+describe('ProjectsSection row menus', () => {
+  /** Ariakit's menu trigger is a hovercard anchor: it adds this to the document as it mounts. */
+  const anchors = (listen: jest.SpyInstance) =>
+    listen.mock.calls.filter(([type]) => type === 'mouseleave').length;
+  const triggers = () => screen.getAllByRole('button', { name: 'com_ui_more_options' });
+  const menus = () => document.querySelectorAll('[data-testid^="menu-"]');
+  /** jsdom has no PointerEvent: React derives enter from `pointerover`, typed here by hand. */
+  const enter = (target: Element, pointerType: string) => {
+    const event = new MouseEvent('pointerover', { bubbles: true, relatedTarget: null });
+    Object.defineProperty(event, 'pointerType', { value: pointerType });
+    act(() => {
+      target.dispatchEvent(event);
+    });
+  };
+
+  let listen: jest.SpyInstance;
+  beforeEach(() => {
+    listen = jest.spyOn(document, 'addEventListener');
+  });
+  afterEach(() => {
+    listen.mockRestore();
+  });
+
+  it('adds nothing to the document for rows nobody has reached', () => {
+    renderSection();
+
+    expect(triggers()).toHaveLength(2);
+    expect(anchors(listen)).toBe(0);
+  });
+
+  it('mounts the real trigger for a row the mouse enters, and keeps it', () => {
+    renderSection();
+    const row = screen.getByRole('button', { name: 'Home' }).parentElement!;
+
+    enter(row, 'mouse');
+    expect(anchors(listen)).toBe(1);
+    enter(document.body, 'mouse');
+    enter(row, 'mouse');
+
+    expect(anchors(listen)).toBe(1);
+    expect(menus()).toHaveLength(0);
+  });
+
+  it('mounts the real trigger once focus reaches the row, before Tab gets to it', () => {
+    renderSection();
+
+    act(() => screen.getByRole('button', { name: 'Home' }).focus());
+
+    expect(anchors(listen)).toBe(1);
+  });
+
+  it('keeps the placeholder through a touch, and hands its click to the real trigger', () => {
+    renderSection();
+    const [placeholder] = triggers();
+
+    enter(placeholder, 'touch');
+    act(() => placeholder.focus());
+    expect(anchors(listen)).toBe(0);
+    expect(triggers()[0]).toBe(placeholder);
+
+    fireEvent.click(placeholder);
+
+    expect(anchors(listen)).toBe(1);
+    expect(menus()).toHaveLength(1);
+    expect(triggers()[0]).not.toBe(placeholder);
+    /** Ariakit took the click itself, so it knows its trigger and opened from it. */
+    expect(triggers()[0]).toHaveAttribute('aria-expanded', 'true');
   });
 });
