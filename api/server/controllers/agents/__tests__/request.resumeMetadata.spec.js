@@ -21,6 +21,7 @@ const mockGenerationJobManager = {
   finishTerminalJob: jest.fn(),
   completeJob: jest.fn(),
   beginProviderExecution: jest.fn(),
+  trackProviderTrailingAbort: jest.fn(),
   markProviderExecutionDrained: jest.fn(),
   failPausePersistence: jest.fn(),
   getResumeState: jest.fn(),
@@ -575,6 +576,7 @@ describe('ResumableAgentController resume metadata', () => {
       },
     );
     mockGenerationJobManager.beginProviderExecution.mockResolvedValue(true);
+    mockGenerationJobManager.trackProviderTrailingAbort.mockResolvedValue(true);
     mockGenerationJobManager.markProviderExecutionDrained.mockResolvedValue(true);
     mockGenerationJobManager.failPausePersistence.mockResolvedValue(true);
     mockGenerationJobManager.claimGeneration.mockResolvedValue(wonGenerationClaim());
@@ -7722,6 +7724,34 @@ describe('ResumableAgentController resume metadata', () => {
         'provider-segment-1',
       );
     });
+
+    it.each(['immediate', 'final'])(
+      'cancels a detached %s title on provider cleanup',
+      async (mode) => {
+        resolveTitleTiming.mockReturnValueOnce(mode);
+        const addTitle = jest.fn(
+          (_req, { signal }) => new Promise((resolve) => signal.addEventListener('abort', resolve)),
+        );
+
+        await runFirstTurn({ addTitle });
+
+        const { signal } = addTitle.mock.calls[0][1];
+        expect(signal.aborted).toBe(false);
+        expect(mockGenerationJobManager.markProviderExecutionDrained).not.toHaveBeenCalled();
+        const [streamId, epoch, provider, cancel] =
+          mockGenerationJobManager.trackProviderTrailingAbort.mock.calls[0];
+        cancel();
+        await nextTick();
+        await nextTick();
+
+        expect(signal.aborted).toBe(true);
+        expect(mockGenerationJobManager.markProviderExecutionDrained).toHaveBeenCalledWith(
+          streamId,
+          epoch,
+          provider,
+        );
+      },
+    );
 
     it('cancels an in-flight immediate title when the turn ends preempt-incomplete', async () => {
       const { addTitle, getTitleSignal } = await runFirstTurn({ run: preemptIncompleteRun });

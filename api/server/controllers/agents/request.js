@@ -2355,7 +2355,11 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         job.abortController.signal.addEventListener('abort', abortTitleOnJobAbort, { once: true });
       }
       const titleEligible =
-        addTitle && parentMessageId === Constants.NO_PARENT && isNewConvo && !req.body?.isTemporary;
+        addTitle &&
+        parentMessageId === Constants.NO_PARENT &&
+        isNewConvo &&
+        !req.body?.isTemporary &&
+        (await finalization.trackTrailingAbort(abortTitleOnJobAbort));
       const emitTitleEvent = ({ conversationId: titleConversationId, title }) => {
         titleEventPromise = (async () => {
           if (!acceptsTitleEvents || titleAbortController.signal.aborted) {
@@ -3070,12 +3074,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           delete userMessage.image_urls;
         }
 
-        const shouldGenerateTitle =
-          addTitle &&
-          parentMessageId === Constants.NO_PARENT &&
-          isNewConvo &&
-          !terminalWasAborted &&
-          !preemptIncomplete;
+        const shouldGenerateTitle = titleEligible && !terminalWasAborted && !preemptIncomplete;
 
         // Save user message BEFORE sending final event to avoid race condition
         // where client refetch happens before database is updated

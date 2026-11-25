@@ -303,6 +303,32 @@ describe('GenerationJobManager startup telemetry', () => {
     await manager.destroy();
   });
 
+  it('cancels trailing work for a completed generation only during destructive cleanup', async () => {
+    const manager = createManager();
+    const streamId = 'stream-completed-provider-cleanup';
+    try {
+      const job = await manager.createJob(streamId, 'user-1');
+      const provider = job.metadata.providerExecutionId!;
+      await manager.beginProviderExecution(streamId, job.createdAt, provider);
+      const stopTrailing = jest.fn(() => {
+        void manager.markProviderExecutionDrained(streamId, job.createdAt, provider);
+      });
+      await expect(
+        manager.trackProviderTrailingAbort(streamId, job.createdAt, provider, stopTrailing),
+      ).resolves.toBe(true);
+      await expect(manager.completeJob(streamId, undefined, job.createdAt)).resolves.toBe(true);
+      await manager.abortJob(streamId);
+      expect(stopTrailing).not.toHaveBeenCalled();
+
+      await expect(
+        manager.abortJob(streamId, { expectedCreatedAt: job.createdAt, awaitProviderDrain: true }),
+      ).resolves.toMatchObject({ failureReason: 'already_settled' });
+      expect(stopTrailing).toHaveBeenCalledTimes(1);
+    } finally {
+      await manager.destroy({ settlementBudgetMs: 0 });
+    }
+  });
+
   it('waits for provider-owner drain before settling an event-driven abort', async () => {
     const manager = createManager();
     const handler = jest.fn().mockResolvedValue(undefined);

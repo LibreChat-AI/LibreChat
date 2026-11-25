@@ -997,7 +997,13 @@ class GenerationJobManagerClass {
    */
   private readonly openProviderExecutions = new Map<
     string,
-    { promise: Promise<void>; settle: () => void; redisRecovery?: RedisFinalizationRecovery }
+    {
+      promise: Promise<void>;
+      settle: () => void;
+      redisRecovery?: RedisFinalizationRecovery;
+      trailingAbort?: () => void;
+      releaseTrailingAbort?: () => void;
+    }
   >();
 
   /** Whether we're using Redis stores */
@@ -5002,6 +5008,7 @@ class GenerationJobManagerClass {
     const abortableStatus = jobData.status;
     if (abortableStatus !== 'running' && abortableStatus !== 'requires_action') {
       if (options?.awaitProviderDrain) {
+        this.cancelTrailingProviderWork(streamId, jobData);
         await this.waitForProviderDrainIfRequired(streamId, jobData);
       }
       this.reconcileInactiveGeneration(streamId, jobData.createdAt, jobData, observedRuntime);
@@ -5122,7 +5129,8 @@ class GenerationJobManagerClass {
         if (jobStillActive || currentJob?.createdAt !== jobData.createdAt) {
           throw new Error(`Failed to stop provider execution before user cleanup: ${streamId}`);
         }
-        await this.waitForProviderDrainIfRequired(streamId, currentJob ?? jobData);
+        this.cancelTrailingProviderWork(streamId, currentJob);
+        await this.waitForProviderDrainIfRequired(streamId, currentJob);
       }
       return {
         success: false,
@@ -8920,6 +8928,52 @@ class GenerationJobManagerClass {
     return true;
   }
 
+  /** Register cancellable trailing work independently of the live chat runtime. */
+  async trackProviderTrailingAbort(
+    streamId: string,
+    createdAt: number,
+    providerExecutionId: string,
+    cancel: () => void,
+  ): Promise<boolean> {
+    const key = this.providerExecutionKey(streamId, createdAt, providerExecutionId);
+    const entry = this.openProviderExecutions.get(key);
+    if (entry == null || (this._isRedis && !this.eventTransport.onAbort)) return false;
+    entry.trailingAbort = cancel;
+    try {
+      const release = await this.eventTransport.onAbort?.(streamId, (epoch) => {
+        if (epoch === createdAt) cancel();
+      });
+      if (this.openProviderExecutions.get(key) !== entry) {
+        release?.();
+        return false;
+      }
+      if (release) {
+        entry.releaseTrailingAbort = () => {
+          try {
+            release();
+          } catch (error) {
+            logger.warn('[GenerationJobManager] Could not release trailing abort:', error);
+          }
+        };
+      }
+      return true;
+    } catch (error) {
+      logger.warn('[GenerationJobManager] Could not register trailing abort:', error);
+      return false;
+    }
+  }
+
+  private cancelTrailingProviderWork(streamId: string, job: SerializableJobData): void {
+    if (job.providerDrained !== false || !job.providerExecutionId) return;
+    const key = this.providerExecutionKey(streamId, job.createdAt, job.providerExecutionId);
+    const entry = this.openProviderExecutions.get(key);
+    if (entry?.trailingAbort) {
+      entry.trailingAbort();
+    } else {
+      this.eventTransport.emitAbort?.(streamId, job.createdAt);
+    }
+  }
+
   private closeProviderExecution(
     streamId: string,
     createdAt: number,
@@ -8931,6 +8985,7 @@ class GenerationJobManagerClass {
       return;
     }
     this.openProviderExecutions.delete(key);
+    entry.releaseTrailingAbort?.();
     entry.settle();
   }
 
@@ -8947,6 +9002,7 @@ class GenerationJobManagerClass {
   /** Settle and drop every open tracker; used wherever the services they belong to go away. */
   private releaseOpenProviderExecutions(): void {
     for (const entry of this.openProviderExecutions.values()) {
+      entry.releaseTrailingAbort?.();
       entry.settle();
     }
     this.openProviderExecutions.clear();
