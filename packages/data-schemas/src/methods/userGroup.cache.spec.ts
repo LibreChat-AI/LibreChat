@@ -2,7 +2,7 @@ import mongoose, { Types } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { PrincipalType, SystemRoles } from 'librechat-data-provider';
 import type * as t from '~/types';
-import { runAsSystem, tenantStorage } from '~/config/tenantContext';
+import { runAsSystem, tenantStorage, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createUserGroupMethods } from './userGroup';
 import groupSchema from '~/schema/group';
 import userSchema from '~/schema/user';
@@ -103,5 +103,14 @@ describe('group membership cache eviction outside the member tenant context', ()
 
     expect(cache.store.has(scopedKey)).toBe(false);
     expect(cache.delete).toHaveBeenCalledWith(userId);
+  });
+
+  it('names no tenant-scoped key for the system tenant, which caches under the bare id', async () => {
+    const { userId, cache, methods } = await seedMembership();
+
+    await runAsSystem(() => methods.invalidatePrincipalMemberships([userId], SYSTEM_TENANT_ID));
+
+    expect(cache.delete).toHaveBeenCalledWith(userId);
+    expect(cache.delete).not.toHaveBeenCalledWith(`${userId}:${SYSTEM_TENANT_ID}`);
   });
 });

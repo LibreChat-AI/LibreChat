@@ -933,10 +933,8 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     resourceId: string | Types.ObjectId,
   ): Promise<ResourcePermissionEntry[]> {
     const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
-    const id =
-      typeof resourceId === 'string' && OBJECT_ID_HEX.test(resourceId)
-        ? new Types.ObjectId(resourceId)
-        : resourceId;
+    const hex = String(resourceId);
+    const id = OBJECT_ID_HEX.test(hex) ? new Types.ObjectId(hex) : resourceId;
     return AclEntry.aggregate<ResourcePermissionEntry>([
       { $match: { resourceType, resourceId: id } },
       { $lookup: { from: 'accessroles', localField: 'roleId', foreignField: '_id', as: 'role' } },

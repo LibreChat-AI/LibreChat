@@ -193,6 +193,12 @@ describe('findResourcePermissionEntries joins only roles the entry tenant can re
     await seedAcl(TENANT_A, { ...entry, principalType: PrincipalType.PUBLIC, roleId: foreignRole });
     await seedAcl(TENANT_A, {
       ...entry,
+      resourceId: new mongoose.Types.ObjectId(),
+      principalType: PrincipalType.PUBLIC,
+      roleId: globalRole,
+    });
+    await seedAcl(TENANT_A, {
+      ...entry,
       principalType: PrincipalType.USER,
       principalModel: PrincipalModel.USER,
       principalId: userId,
@@ -229,6 +235,19 @@ describe('findResourcePermissionEntries joins only roles the entry tenant can re
       source: 'local',
     });
     expect(JSON.stringify(rows)).not.toMatch(/tenant_b_secret_role|hashed-secret|totp-secret/);
+  });
+
+  it('matches no entry, rather than throwing, for an id that is not an ObjectId', async () => {
+    await AclEntry.collection.insertOne({
+      principalType: PrincipalType.PUBLIC,
+      resourceType: RESOURCE_TYPE,
+      resourceId: new mongoose.Types.ObjectId(),
+      permBits: 1,
+    });
+
+    await expect(
+      methods.findResourcePermissionEntries(RESOURCE_TYPE, 'not-an-id'),
+    ).resolves.toEqual([]);
   });
 
   it('keeps only global role labels on a tenantless entry', async () => {
