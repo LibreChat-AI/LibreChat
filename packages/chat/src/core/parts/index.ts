@@ -1,6 +1,7 @@
 export * from './parseJsonField';
 export * from './handle';
 export * from './wakeup';
+export * from './origin';
 export * from './background';
 export * from './command';
 export * from './routing';

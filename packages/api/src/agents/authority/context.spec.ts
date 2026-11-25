@@ -791,6 +791,61 @@ describe('createTriggerExecutionContext', () => {
 
       expect(record(late)).toBeUndefined();
     });
+
+    describe("what a subscription's event was about", () => {
+      const payload = {
+        provider: 'github',
+        type: 'github.issue_comment.created',
+        item: { provider: 'github', kind: 'pr', repo: 4242, number: 17, key: 'github:pr:4242#17' },
+        actor: { id: 9, login: 'octocat', bot: false },
+        repo: { id: 4242, name: 'acme/widgets' },
+        occurredAt: 1_000,
+        text: 'Please rebase.',
+        installation: 7,
+      };
+      const withDetail = (source: Record<string, unknown>) => {
+        const req = fire(source);
+        Object.assign(req.body.agentTrigger, { detail: payload });
+        return req;
+      };
+      const recorded = (req: ReturnType<typeof fire>) =>
+        toMessageTrigger(createTriggerExecutionContext(req), req);
+
+      it('records it, read again by name, on a turn a subscription started', () => {
+        expect(recorded(withDetail({ type: 'subscription', id: 'sub_1' }))).toEqual({
+          event: { type: 'review.submitted', occurredAt: at },
+          subject: { kind: 'subscription', id: 'sub_1' },
+          detail: {
+            repo: 'acme/widgets',
+            number: 17,
+            actor: 'octocat',
+            bot: false,
+            text: 'Please rebase.',
+          },
+        });
+      });
+
+      it('records none for any other subject, whatever the body carries', () => {
+        expect(recorded(withDetail({ type: 'remote_api_key', id: 'key-1' }))).not.toHaveProperty(
+          'detail',
+        );
+      });
+
+      it('records none from a request only the trigger host did not make', () => {
+        const req = withDetail({ type: 'subscription', id: 'sub_1' });
+        const context = createTriggerExecutionContext(req);
+        expect(toMessageTrigger(context, { ...req, _isAgentTrigger: false })).not.toHaveProperty(
+          'detail',
+        );
+        expect(toMessageTrigger(context)).not.toHaveProperty('detail');
+      });
+
+      it('records none for a payload that does not name the pull request', () => {
+        const req = withDetail({ type: 'subscription', id: 'sub_1' });
+        Object.assign(req.body.agentTrigger, { detail: { ...payload, item: {} } });
+        expect(recorded(req)).not.toHaveProperty('detail');
+      });
+    });
   });
 });
 
