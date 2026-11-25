@@ -11,7 +11,7 @@ import {
   countElements,
   countListeners,
 } from '../counts';
-import { clearUserConversations } from '../db';
+import { clearUserConversations, clearUserProjects } from '../db';
 import { getE2EUser } from '../../../setup/user';
 import { sendMessage } from '../helpers';
 import { removeThread, seedThread } from '../thread';
@@ -85,8 +85,13 @@ test.describe('a long agent conversation, by count', () => {
   let thread: Thread;
 
   test.beforeEach(async () => {
-    /** Each conversation in the sidebar listens on the window: leave only this one there. */
-    await clearUserConversations(getE2EUser().email);
+    /**
+     * Each conversation in the sidebar listens on the window, and each project's menu button on
+     * the document, so whatever earlier specs in the shard left there would count here: leave
+     * only this conversation in the sidebar.
+     */
+    const { email } = getE2EUser();
+    await Promise.all([clearUserConversations(email), clearUserProjects(email)]);
     thread = await seedThread(ROWS);
   });
 

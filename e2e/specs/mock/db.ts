@@ -179,6 +179,14 @@ export async function clearUserConversations(userEmail: string): Promise<void> {
   });
 }
 
+/** Clears every project for the user, which other specs create and leave in the sidebar. */
+export async function clearUserProjects(userEmail: string): Promise<void> {
+  await withMongo(async (db) => {
+    const userId = await resolveUserId(db, userEmail);
+    await db.collection('chatprojects').deleteMany({ user: userId });
+  });
+}
+
 export async function seedPasskey(
   userEmail: string,
   credentialId: string,
