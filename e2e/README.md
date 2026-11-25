@@ -104,7 +104,9 @@ npm run e2e:mock:redis:transport
 ```
 
 The nightly schedule and manual workflow dispatch run the complete mock suite in both stream
-modes, across twenty-five memory shards and ten Redis shards.
+modes, across twenty-five memory shards and ten Redis shards. Each memory shard runs its share
+of the parallel project on two workers, then its share of the serial project on one, as two
+invocations (below); the Redis shards run one worker.
 
 The mock config runs one worker unless you pass `--workers`:
 

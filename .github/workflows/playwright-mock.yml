@@ -475,12 +475,29 @@ jobs:
             --shard '${{ matrix.shard }}' \
             --reserve "$E2E_SHARD_RESERVE" \
             --skip "$E2E_SKIP" \
+            --workers 2 \
             --out e2e/.generated/shard-tests.txt
           # Skips or the reservation can leave a shard no files: the plan warns and writes an
           # empty list, which Playwright would fail with "No tests found". An empty suite
           # listing still fails, in the plan itself.
+          #
+          # Two workers share the runner's four CPUs, each signed in as its own user. The specs
+          # that change what every worker sees (e2e/setup/serial.ts) run afterwards in a second
+          # invocation, because in one Playwright can start the first serial file while the last
+          # parallel one finishes. A shard's list may hold only one kind, so neither invocation
+          # requires tests; the second writes its report and results beside the first's, where
+          # the artifact uploads and the timings record find both, and runs whatever the first
+          # returned so a red shard still reports every failure.
           if [ -s e2e/.generated/shard-tests.txt ]; then
-            npx playwright test --config=e2e/playwright.config.mock.ts --test-list=e2e/.generated/shard-tests.txt
+            status=0
+            npx playwright test --config=e2e/playwright.config.mock.ts --project=chrome \
+              --workers=2 --pass-with-no-tests \
+              --test-list=e2e/.generated/shard-tests.txt || status=$?
+            E2E_REPORT_DIR=e2e/playwright-report/serial \
+              npx playwright test --config=e2e/playwright.config.mock.ts --project=chrome-serial \
+              --output=e2e/specs/.test-results/serial --pass-with-no-tests \
+              --test-list=e2e/.generated/shard-tests.txt || status=$?
+            exit "$status"
           fi
 
       - name: Run Redis stream transport e2e

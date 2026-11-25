@@ -13,7 +13,15 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { applySkip, estimate, fileSeconds, listedFiles, partition } from './playwright-shards.mjs';
+import {
+  applySkip,
+  estimate,
+  fileSeconds,
+  listedFiles,
+  partition,
+  serialFiles,
+  wallSeconds,
+} from './playwright-shards.mjs';
 
 const script = fileURLToPath(new URL('./playwright-shards.mjs', import.meta.url));
 const scriptsDir = fileURLToPath(new URL('.', import.meta.url));
@@ -142,6 +150,26 @@ test('the plan is deterministic and ties resolve by name and shard index', () =>
   const second = partition(estimate(new Map([...counts].reverse()), timings), 2);
   assert.deepEqual(first, second);
   assert.deepEqual(first.shards, [['x.spec.ts', 'z.spec.ts'], ['y.spec.ts']]);
+});
+
+test('with more workers, a serial file costs its seconds and any other a worker share', () => {
+  const report = listing({ 'a.spec.ts': 1, 's.spec.ts': 1 });
+  report.suites[1].suites[0].specs[0].tests[0].projectName = 'chrome-serial';
+  const serial = serialFiles(report);
+  assert.deepEqual([...serial], ['s.spec.ts']);
+
+  const seconds = new Map([
+    ['a.spec.ts', 100],
+    ['s.spec.ts', 100],
+  ]);
+  assert.deepEqual([...wallSeconds(seconds, serial, 1)], [...seconds]);
+  assert.deepEqual(
+    [...wallSeconds(seconds, serial, 2)],
+    [
+      ['a.spec.ts', 50],
+      ['s.spec.ts', 100],
+    ],
+  );
 });
 
 test('a reservation hands the reserved shard less of the suite', () => {
@@ -303,14 +331,16 @@ test('a shard the plan leaves empty passes without starting Playwright', (t) => 
   const loaded = runStep(t, { files: pair, shard: '2/2', reserve: '1:130' });
   assert.equal(loaded.status, 0, loaded.output);
   assert.deepEqual(loaded.runs, [
-    'playwright test --config=e2e/playwright.config.mock.ts --test-list=e2e/.generated/shard-tests.txt',
+    'playwright test --config=e2e/playwright.config.mock.ts --project=chrome --workers=2 --pass-with-no-tests --test-list=e2e/.generated/shard-tests.txt',
+    'playwright test --config=e2e/playwright.config.mock.ts --project=chrome-serial --output=e2e/specs/.test-results/serial --pass-with-no-tests --test-list=e2e/.generated/shard-tests.txt',
   ]);
 });
 
 test('a shard with files still fails when its tests fail, and an empty listing fails the plan', (t) => {
   const failed = runStep(t, { files: suite, shard: '1/2', status: 1 });
   assert.notEqual(failed.status, 0, failed.output);
-  assert.equal(failed.runs.length, 1);
+  /** The serial project still runs after the parallel one fails, so the shard reports both. */
+  assert.equal(failed.runs.length, 2);
 
   const empty = runStep(t, { files: {}, shard: '1/2' });
   assert.notEqual(empty.status, 0, empty.output);

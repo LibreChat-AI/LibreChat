@@ -115,7 +115,9 @@ const fluxServerPath = path.resolve(rootPath, 'e2e/setup/fake-flux-server.js');
 const FLUX_PORT = process.env.E2E_FLUX_PORT || '8794';
 const configTemplatePath = path.resolve(rootPath, 'e2e/config/librechat.e2e.yaml');
 const configPath = path.resolve(rootPath, 'e2e/.generated/librechat.e2e.yaml');
-const reportPath = path.resolve(rootPath, 'e2e/playwright-report');
+/** A CI shard runs its serial project as a second invocation (`e2e/setup/serial.ts`), which
+ *  reports into a folder of its own so the HTML reporter does not replace the first report. */
+const reportPath = path.resolve(rootPath, process.env.E2E_REPORT_DIR ?? 'e2e/playwright-report');
 const deploymentSkillsPath = path.resolve(rootPath, 'e2e/fixtures/deployment-skills');
 const enableDynamicMcp = process.env.E2E_MCP_LIST_CHANGED === 'true';
 const enableMcpApps = process.env.E2E_MCP_APPS === 'true';

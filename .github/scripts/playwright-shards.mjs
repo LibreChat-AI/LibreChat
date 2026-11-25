@@ -15,11 +15,13 @@
  *
  *   plan    --list <list.json> --timings <timings.json> --shard <i/n>
  *           [--reserve <i:seconds>[,<i:seconds>...]] [--skip "<specs/mock/a.spec.ts> ..."]
- *           --out <test-list.txt>
+ *           [--workers <n>] --out <test-list.txt>
  *     Writes the shard's files as a Playwright `--test-list` and prints the plan.
  *     `--reserve` charges a shard for work it does outside this run (extra steps), so the
  *     partition gives it less. `--skip` drops files (paths relative to e2e/) before
- *     partitioning; a skip that would drop every file is ignored.
+ *     partitioning; a skip that would drop every file is ignored. `--workers` is how many
+ *     workers each shard runs: a file's seconds count once for a spec its `-serial` project
+ *     runs alone (e2e/setup/serial.ts) and a worker's share for every other.
  *
  *   record  --out <timings.json> <dir-or-results.json>...
  *     Rebuilds the timings file from Playwright JSON reports (`results.json`, written beside
@@ -106,6 +108,40 @@ export function listedFiles(report) {
   return counts;
 }
 
+/** Files the listing puts in a `-serial` project, which a shard runs on one worker. */
+export function serialFiles(report) {
+  const files = new Set();
+  const walk = (suite, file) => {
+    for (const spec of suite.specs ?? []) {
+      if (spec.tests.some((entry) => entry.projectName?.endsWith('-serial'))) {
+        files.add(file);
+      }
+    }
+    for (const child of suite.suites ?? []) {
+      walk(child, file);
+    }
+  };
+  for (const suite of report.suites ?? []) {
+    walk(suite, suite.file);
+  }
+  return files;
+}
+
+/** What each file adds to its shard's wall time when the shard runs `workers` workers. */
+export function wallSeconds(estimates, serial, workers) {
+  return new Map(
+    [...estimates].map(([file, seconds]) => [file, serial.has(file) ? seconds : seconds / workers]),
+  );
+}
+
+function parseWorkers(value) {
+  const workers = Number(value ?? 1);
+  if (!Number.isInteger(workers) || workers < 1) {
+    throw new Error(`--workers must be a positive integer; got ${value}`);
+  }
+  return workers;
+}
+
 /** Seconds for each file: the recorded time, or its test count at the recorded mean. */
 export function estimate(counts, timings) {
   let recordedSeconds = 0;
@@ -172,13 +208,15 @@ function plan(options) {
   if (!options.list || !options.timings || !options.out) {
     throw new Error('plan needs --list, --timings and --out');
   }
-  const listed = listedFiles(JSON.parse(readFileSync(options.list, 'utf8')));
+  const workers = parseWorkers(options.workers);
+  const listing = JSON.parse(readFileSync(options.list, 'utf8'));
+  const listed = listedFiles(listing);
   if (listed.size === 0) {
     throw new Error('playwright --list found no spec files');
   }
   const timings = JSON.parse(readFileSync(options.timings, 'utf8')).files ?? {};
   const { counts, dropped } = applySkip(listed, options.skip);
-  const estimates = estimate(counts, timings);
+  const estimates = wallSeconds(estimate(counts, timings), serialFiles(listing), workers);
   const { shards, loads } = partition(estimates, total, parseReserve(options.reserve, total));
   const mine = shards[index - 1];
   mkdirSync(dirname(options.out), { recursive: true });

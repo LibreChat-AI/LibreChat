@@ -180,15 +180,24 @@ test('every shard has a unique job name and artifact namespace', () => {
   }
 });
 
-test('both suite commands consume the matrix shard without increasing worker concurrency', () => {
+test('both suite commands consume the matrix shard, and only the parallel memory project adds workers', () => {
   const full = shards.steps.find((entry) => entry.if === "matrix.suite == 'full'");
   assert.match(full.run, /playwright-shards\.mjs plan[\s\S]*--shard '\$\{\{ matrix\.shard \}\}'/);
-  assert.match(full.run, /--test-list=e2e\/\.generated\/shard-tests\.txt/);
+  assert.match(full.run, /playwright-shards\.mjs plan[\s\S]*--workers 2/);
+  const runs = full.run
+    .replace(/\\\n\s*/g, '')
+    .split('\n')
+    .filter((line) => /npx playwright test .*--test-list/.test(line));
+  assert.equal(runs.length, 2);
+  assert.match(runs[0], /--project=chrome (?=.*--workers=2)/);
+  assert.match(runs[1], /--project=chrome-serial /);
+  assert.doesNotMatch(runs[1], /--workers/);
+  for (const run of runs) {
+    assert.match(run, /--test-list=e2e\/\.generated\/shard-tests\.txt/);
+  }
   const transport = shards.steps.find((entry) => entry.if === "matrix.suite == 'transport'");
   assert.match(transport.run, /--shard=\$\{\{ matrix\.shard \}\}/);
-  for (const step of [full, transport]) {
-    assert.doesNotMatch(step.run, /--workers/);
-  }
+  assert.doesNotMatch(transport.run, /--workers/);
   const config = readFileSync(
     new URL('../../e2e/playwright.config.mock.ts', import.meta.url),
     'utf8',
@@ -378,7 +387,9 @@ test('timings are published only by a push, as the artifact the shards download'
   assert.match(find.run, /--workflow playwright-mock\.yml --branch dev --event push/);
   assert.match(find.run, /--status success/);
   const restore = workflow.jobs.shard_timings.steps.find((entry) => entry.id === 'restore');
-  const publish = recorder.steps.find((entry) => entry.uses?.startsWith('actions/upload-artifact@'));
+  const publish = recorder.steps.find((entry) =>
+    entry.uses?.startsWith('actions/upload-artifact@'),
+  );
   assert.ok(restore.run.includes(`name=${publish.with.name}&`));
   assert.equal(publish.with.path, 'e2e/.generated/shard-timings.json');
   assert.match(restore.run, / shard-timings\.json -d e2e\/\.generated/);
