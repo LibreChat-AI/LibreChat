@@ -5470,10 +5470,17 @@ export const defaultModels = {
   [EModelEndpoint.azureAssistants]: sharedOpenAIModels,
   [EModelEndpoint.assistants]: [...sharedOpenAIModels, 'chatgpt-4o-latest'],
   // TODO: Add agent models (agentsModels)
+  /**
+   * OpenAI's own catalog leads with the shared models: the Responses-preferred
+   * catalog heads its list so those models appear at the top for admins who want
+   * them, but a model first in the list also becomes the default selection. Astra
+   * is Responses-only and restricted to approved projects, so it must not decide
+   * what a new chat opens with.
+   */
   [EModelEndpoint.agents]: [
-    ...responsesOnlyOpenAIModels,
-    ...responsesReasoningOpenAIModels,
     ...sharedOpenAIModels,
+    ...responsesReasoningOpenAIModels,
+    ...responsesOnlyOpenAIModels,
   ],
   [EModelEndpoint.google]: [
     // Gemini 4 Models
@@ -5502,15 +5509,26 @@ export const defaultModels = {
   ],
   [EModelEndpoint.anthropic]: sharedAnthropicModels,
   [EModelEndpoint.openAI]: [
-    ...responsesOnlyOpenAIModels,
-    ...responsesReasoningOpenAIModels,
     ...sharedOpenAIModels,
+    ...responsesReasoningOpenAIModels,
+    ...responsesOnlyOpenAIModels,
     'chatgpt-4o-latest',
     'gpt-4-vision-preview',
     'gpt-3.5-turbo-instruct-0914',
     'gpt-3.5-turbo-instruct',
   ],
   [EModelEndpoint.bedrock]: bedrockModels,
+};
+
+/**
+ * Catalog models a browser has not enabled yet. They stay offered — Settings >
+ * Models turns them on — but a new selector, and therefore a new chat, starts
+ * without them. Astra is Responses-only and restricted to approved Daybreak
+ * projects, so it is opt-in rather than the model every new chat opens with.
+ */
+export const defaultHiddenModels: Readonly<Record<string, readonly string[]>> = {
+  [EModelEndpoint.openAI]: responsesOnlyOpenAIModels,
+  [EModelEndpoint.agents]: responsesOnlyOpenAIModels,
 };
 
 const fitlerAssistantModels = (str: string) => {

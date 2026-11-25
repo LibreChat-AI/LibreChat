@@ -144,6 +144,23 @@ export function resolveServedCustomEndpoints(
 }
 
 /**
+ * Whether a configured value is usable server-side: omitted values are, an
+ * unexpanded `${VAR}` whose env var is unset is not, and `user_provided` asks
+ * the user instead. Never returns or logs the value, only the fact.
+ */
+function isResolved(value?: string): boolean {
+  const trimmed = (value ?? '').trim();
+  if (!trimmed) {
+    return true;
+  }
+  if (isUserProvided(extractEnvVariable(trimmed))) {
+    return false;
+  }
+  const template = /^\$\{([^}]+)\}$/.exec(trimmed);
+  return template == null || Boolean(process.env[template[1]]);
+}
+
+/**
  * Load config endpoints from the cached configuration object
  * @param customEndpointsConfig - The configuration object
  */
@@ -180,6 +197,9 @@ export function loadCustomEndpointsConfig(
         type: EModelEndpoint.custom,
         userProvide: isUserProvided(resolvedApiKey) || userProvideURL,
         userProvideURL,
+        /** A custom endpoint whose `${ENV_VAR}` credential or URL is unset cannot
+         * serve a request; the client keeps it hidden until the user enables it. */
+        keyProvided: isResolved(apiKey) && isResolved(baseURL),
         customParams: resolvedCustomParams,
         modelDisplayLabel,
         iconURL,

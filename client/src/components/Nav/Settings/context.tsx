@@ -76,6 +76,8 @@ export function useSettingsContext(): SettingsContextValue {
   const engineSTT = useRecoilValue<string>(store.engineSTT);
   const engineTTS = useRecoilValue<string>(store.engineTTS);
   const hasUserProvidedEndpoints = useProviderKeys().length > 0;
+  /** The model selector can only be configured where it is shown. */
+  const hasModelSelect = startupConfig?.interface?.modelSelect !== false;
   const hasStatefulCodeSessions =
     agentsConfig?.capabilities.includes(AgentCapabilities.stateful_code_sessions) ?? false;
 
@@ -89,6 +91,7 @@ export function useSettingsContext(): SettingsContextValue {
       hasUserProvidedEndpoints,
       hasMultiConvo: hasMultiConvoBool,
       hasPrompts: hasPromptsBool,
+      hasModelSelect,
       isLocalProvider,
       emailEnabled,
       allowEmailChange,
@@ -119,6 +122,7 @@ export function useSettingsContext(): SettingsContextValue {
       hasUserProvidedEndpoints,
       hasMultiConvoBool,
       hasPromptsBool,
+      hasModelSelect,
       isLocalProvider,
       emailEnabled,
       allowEmailChange,

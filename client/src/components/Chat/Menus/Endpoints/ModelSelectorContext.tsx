@@ -1,6 +1,11 @@
-import React, { createContext, useContext, useState, useMemo, useCallback } from 'react';
+import React, { createContext, useContext, useState, useMemo, useCallback, useEffect } from 'react';
 import debounce from 'lodash/debounce';
-import { PermissionBits, isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
+import {
+  Constants,
+  PermissionBits,
+  isAgentsEndpoint,
+  isAssistantsEndpoint,
+} from 'librechat-data-provider';
 import type * as t from 'librechat-data-provider';
 import type { Endpoint, SelectedValues } from '~/common';
 import {
@@ -244,6 +249,34 @@ export function ModelSelectorProvider({ children, startupConfig }: ModelSelector
     },
     [agentsMap, announcePolite, assistantsMap, getModelDisplayName, localize, onSelectEndpoint],
   );
+
+  /**
+   * The model catalog loads on idle, after the first new chat may already have opened,
+   * so a remembered model the selector does not offer (hidden in Settings, or absent
+   * from the catalog) is replaced by the first offered one. A saved conversation keeps
+   * the model it was written with.
+   */
+  useEffect(() => {
+    const { endpoint, model, modelSpec } = selectedValues;
+    if (!endpoint || modelSpec) {
+      return;
+    }
+    if (isAgentsEndpoint(endpoint) || isAssistantsEndpoint(endpoint)) {
+      return;
+    }
+    if (getConversation()?.conversationId !== Constants.NEW_CONVO) {
+      return;
+    }
+    const item = mappedEndpoints.find((candidate) => candidate.value === endpoint);
+    const models = item?.models;
+    if (item == null || models == null || models.length === 0) {
+      return;
+    }
+    if (model && models.some((candidate) => candidate.name === model)) {
+      return;
+    }
+    handleSelectModel(item, models[0].name);
+  }, [selectedValues, mappedEndpoints, getConversation, handleSelectModel]);
 
   const value = useMemo(
     () => ({

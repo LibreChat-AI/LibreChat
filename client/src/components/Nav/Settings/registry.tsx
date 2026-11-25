@@ -63,6 +63,7 @@ import { autoScrollAtom } from '~/store/autoScroll';
 import Avatar from '../SettingsTabs/Account/Avatar';
 import ConnectedAccounts from './ConnectedAccounts';
 import CodeEnvironments from './CodeEnvironments';
+import ModelVisibility from './ModelVisibility';
 import About from '../SettingsTabs/About/About';
 import ApiKeys from '../SettingsTabs/ApiKeys';
 import MemoryToggle from './MemoryToggle';
@@ -526,6 +527,16 @@ export const registry: SettingEntry[] = [
     labelKey: 'com_ui_fork_default',
     keywords: ['fork', 'branch', 'split'],
     Component: ForkSettings,
+  },
+  // Chat · Models
+  {
+    id: 'modelVisibility',
+    tab: CHAT,
+    section: 'models',
+    labelKey: 'com_ui_model_visibility_title',
+    keywords: ['model', 'provider', 'endpoint', 'visibility', 'hide', 'show', 'selector'],
+    show: (ctx) => ctx.hasModelSelect,
+    Component: ModelVisibility,
   },
   // Chat · Prompts
   {

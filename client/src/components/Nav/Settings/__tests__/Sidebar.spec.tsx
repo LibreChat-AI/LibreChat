@@ -14,6 +14,7 @@ const ctx: SettingsContextValue = {
   hasUserProvidedEndpoints: false,
   hasMultiConvo: false,
   hasPrompts: false,
+  hasModelSelect: true,
   isLocalProvider: true,
   emailEnabled: true,
   allowEmailChange: true,

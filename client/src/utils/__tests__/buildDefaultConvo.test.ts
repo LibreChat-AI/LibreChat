@@ -231,4 +231,25 @@ describe('selection independent of model discovery', () => {
       }).model,
     ).toBeUndefined();
   });
+
+  it('ignores a remembered model the offered catalog no longer contains', () => {
+    const { getLocalStorageItems } = jest.requireMock('../localStorage') as {
+      getLocalStorageItems: jest.Mock;
+    };
+    getLocalStorageItems.mockReturnValueOnce({
+      lastSelectedModel: { [EModelEndpoint.openAI]: 'gpt-6-astra' },
+      lastSelectedTools: [],
+      lastConversationSetup: {},
+    });
+
+    expect(
+      buildDefaultConvo({
+        conversation: { ...selected, endpoint: EModelEndpoint.openAI, model: undefined },
+        endpoint: EModelEndpoint.openAI,
+        lastConversationSetup: null,
+        models: ['gpt-5.6'],
+        offeredModels: ['gpt-5.6'],
+      }).model,
+    ).toBe('gpt-5.6');
+  });
 });

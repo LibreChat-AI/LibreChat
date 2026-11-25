@@ -24,6 +24,7 @@ export type SectionId =
   | 'commands'
   | 'messages'
   | 'conversations'
+  | 'models'
   | 'prompts'
   | 'stt'
   | 'tts'
@@ -48,6 +49,7 @@ export interface SettingsContextValue {
   hasUserProvidedEndpoints: boolean;
   hasMultiConvo: boolean;
   hasPrompts: boolean;
+  hasModelSelect: boolean;
   isLocalProvider: boolean;
   emailEnabled: boolean;
   allowEmailChange: boolean;
@@ -129,6 +131,7 @@ export const TABS: TabMeta[] = [
       { id: 'commands', labelKey: 'com_ui_settings_section_commands' },
       { id: 'messages', labelKey: 'com_ui_settings_section_messages' },
       { id: 'conversations', labelKey: 'com_ui_settings_section_conversations' },
+      { id: 'models', labelKey: 'com_ui_settings_section_models' },
       { id: 'prompts', labelKey: 'com_ui_settings_section_prompts' },
     ],
   },

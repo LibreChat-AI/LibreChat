@@ -1,4 +1,5 @@
 import React, { useMemo, useCallback } from 'react';
+import { useAtomValue } from 'jotai';
 import { Feather } from 'lucide-react';
 import { Sparkles, ProviderIcon } from '@librechat/client';
 import {
@@ -20,6 +21,8 @@ import type { AgentCatalogQueryResult } from '~/data-provider/Agents/queries';
 import type { ProviderIconResolution } from './useProviderIcon';
 import type { Endpoint } from '~/common';
 import { useModelCatalog, useGetEndpointsQuery, useListAssistantsQuery } from '~/data-provider';
+import { filterVisibleModels, isEndpointVisible } from '~/utils/modelVisibility';
+import { modelVisibilityAtom } from '~/store/modelVisibility';
 import { useHasAccess, useShowMarketplace } from '~/hooks';
 import { resolveProviderIcon } from './useProviderIcon';
 import { mapEndpoints } from '~/utils';
@@ -77,6 +80,7 @@ export const useEndpoints = ({
   startupConfig: TStartupConfig | undefined;
 }) => {
   const modelsQuery = useModelCatalog();
+  const visibility = useAtomValue(modelVisibilityAtom);
   const assistantsQuery = useListAssistantsQuery(EModelEndpoint.assistants, undefined, {
     enabled: false,
   });
@@ -118,11 +122,21 @@ export const useEndpoints = ({
       if (includedEndpoints.size > 0 && !includedEndpoints.has(endpoints[i])) {
         continue;
       }
+      if (!isEndpointVisible(endpoints[i], endpointsConfig?.[endpoints[i]], visibility)) {
+        continue;
+      }
       result.push(endpoints[i]);
     }
 
     return result;
-  }, [endpoints, hasAgentAccess, includedEndpoints, interfaceConfig.modelSelect]);
+  }, [
+    endpoints,
+    hasAgentAccess,
+    includedEndpoints,
+    interfaceConfig.modelSelect,
+    endpointsConfig,
+    visibility,
+  ]);
 
   const endpointRequiresUserKey = useCallback(
     (ep: string) => {
@@ -138,6 +152,16 @@ export const useEndpoints = ({
       if (ep === EModelEndpoint.agents) query = agentsQuery;
       if (ep === EModelEndpoint.assistants) query = assistantsQuery;
       if (ep === EModelEndpoint.azureAssistants) query = azureAssistantsQuery;
+      const isEntityEndpoint =
+        ep === EModelEndpoint.agents ||
+        ep === EModelEndpoint.assistants ||
+        ep === EModelEndpoint.azureAssistants;
+      /** Agents and assistants list entities, not catalog models, so Settings'
+       * model toggles do not apply to them; a catalog endpoint only offers the
+       * models the user left enabled. */
+      const catalogModels = isEntityEndpoint
+        ? modelsQuery.data[ep]
+        : filterVisibleModels(ep, modelsQuery.data[ep], visibility);
       const isLoading =
         query?.isLoading ??
         (ep === EModelEndpoint.agents ? agents == null : modelsQuery.data[ep] === undefined);
@@ -151,12 +175,15 @@ export const useEndpoints = ({
             agentsQuery?.hasNextPage === true)) ||
         (ep === EModelEndpoint.assistants && assistants.length > 0) ||
         (ep === EModelEndpoint.azureAssistants && azureAssistants.length > 0) ||
-        (ep !== EModelEndpoint.assistants &&
-          ep !== EModelEndpoint.azureAssistants &&
-          ep !== EModelEndpoint.agents &&
-          (modelsQuery.data[ep]?.length ?? 0) > 0);
+        (!isEntityEndpoint && (catalogModels?.length ?? 0) > 0);
 
       if (ep === EModelEndpoint.agents && !hasModels) {
+        return acc;
+      }
+
+      /** Every model on the endpoint is hidden: the endpoint row would open onto
+       * nothing, so it is not offered. */
+      if (!isEntityEndpoint && !isLoading && catalogModels?.length === 0) {
         return acc;
       }
 
@@ -238,13 +265,8 @@ export const useEndpoints = ({
       }
 
       // For other endpoints with models from the modelsQuery
-      else if (
-        ep !== EModelEndpoint.agents &&
-        ep !== EModelEndpoint.assistants &&
-        ep !== EModelEndpoint.azureAssistants &&
-        modelsQuery.data[ep] !== undefined
-      ) {
-        result.models = modelsQuery.data?.[ep]?.map((model) => ({
+      else if (!isEntityEndpoint && catalogModels !== undefined) {
+        result.models = catalogModels.map((model) => ({
           name: model,
           isGlobal: false,
         }));
@@ -265,6 +287,7 @@ export const useEndpoints = ({
     modelsQuery.data,
     modelsQuery.endpointQueries,
     showAgentMarketplace,
+    visibility,
   ]);
 
   return {

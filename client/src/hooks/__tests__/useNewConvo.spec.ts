@@ -132,6 +132,10 @@ jest.mock('~/utils', () => ({
   hasModelSelection: (...args) =>
     jest.requireActual('~/utils/endpoints').hasModelSelection(...args),
   buildDefaultConvo: (...args) => jest.requireActual('~/utils/buildDefaultConvo').default(...args),
+  visibleEndpointsConfig: (...args) =>
+    jest.requireActual('~/utils/modelVisibility').visibleEndpointsConfig(...args),
+  filterVisibleModels: (...args) =>
+    jest.requireActual('~/utils/modelVisibility').filterVisibleModels(...args),
   isPastedTextFileMarked: (fileId?: string | null) =>
     fileId != null && mockMarkedPasteIds.has(fileId),
   collectForeignAttachmentClaims: (excludeDraftIds: string[], excludeOwnPane?: number | 'tab') =>

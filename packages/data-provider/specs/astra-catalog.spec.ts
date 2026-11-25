@@ -1,5 +1,5 @@
 import { EModelEndpoint } from '../src/schemas';
-import { defaultModels, initialModelsConfig } from '../src/config';
+import { defaultModels, defaultHiddenModels, initialModelsConfig } from '../src/config';
 
 /**
  * GPT-6 Astra serves tool calls only from the Responses API. The Assistants
@@ -41,5 +41,15 @@ describe('GPT-6 Astra catalog placement', () => {
     ]) {
       expect(defaultModels[endpoint]).toContain('gpt-5.6');
     }
+  });
+
+  it('does not lead the OpenAI catalogs, so it cannot become the default selection', () => {
+    expect(defaultModels[EModelEndpoint.openAI][0]).not.toBe('gpt-6-astra');
+    expect(defaultModels[EModelEndpoint.agents][0]).not.toBe('gpt-6-astra');
+  });
+
+  it('starts hidden in the selector until the user enables it', () => {
+    expect(defaultHiddenModels[EModelEndpoint.openAI]).toContain('gpt-6-astra');
+    expect(defaultHiddenModels[EModelEndpoint.agents]).toContain('gpt-6-astra');
   });
 });

@@ -1,3 +1,4 @@
+import { isAgentsEndpoint } from 'librechat-data-provider';
 import type {
   TPreset,
   TConversation,
@@ -48,7 +49,12 @@ const getEndpointFromLocalStorage = (endpointsConfig: TEndpointsConfig) => {
 
 const getDefinedEndpoint = (endpointsConfig: TEndpointsConfig) => {
   const endpoints = mapEndpoints(endpointsConfig);
-  return endpoints.find((e) => Object.hasOwn(endpointsConfig ?? {}, e));
+  /** A fresh composer opens on a provider that offers models, not on the agent
+   * list, which is empty for most users. Agents stay the fallback when they are
+   * the only endpoint the selector offers, and a stored agent endpoint still
+   * resolves through `getEndpointFromSetup` / `getEndpointFromLocalStorage`. */
+  const defined = endpoints.filter((endpoint) => Object.hasOwn(endpointsConfig ?? {}, endpoint));
+  return defined.find((endpoint) => !isAgentsEndpoint(endpoint)) ?? defined[0];
 };
 
 const getDefaultEndpoint = ({

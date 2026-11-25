@@ -11,12 +11,17 @@ import { getLocalStorageItems } from './localStorage';
 
 const buildDefaultConvo = ({
   models,
+  offeredModels,
   conversation,
   endpoint = null,
   lastConversationSetup,
   defaultParamsEndpoint,
 }: {
   models?: string[];
+  /** The catalog the selector currently offers. A remembered model outside it is
+   * not restored; `models` alone still feeds model discovery, which must not
+   * rewrite a selection the templates already made. */
+  offeredModels?: string[];
   conversation: TConversation;
   endpoint?: EModelEndpoint | null;
   lastConversationSetup: Partial<TConversation | TPreset> | null;
@@ -37,10 +42,19 @@ const buildDefaultConvo = ({
   const presetMatches =
     lastConversationSetup?.endpoint == null || lastConversationSetup.endpoint === endpoint;
   const conversationMatches = conversation.endpoint == null || conversation.endpoint === endpoint;
+  const rememberedLastModel = isAssistantsEndpoint(endpoint)
+    ? undefined
+    : lastSelectedModel?.[endpoint];
+  const lastModel =
+    offeredModels != null &&
+    rememberedLastModel != null &&
+    !offeredModels.includes(rememberedLastModel)
+      ? undefined
+      : rememberedLastModel;
   const model =
     (presetMatches ? lastConversationSetup?.model : undefined) ??
     (conversationMatches ? conversation.model : undefined) ??
-    (isAssistantsEndpoint(endpoint) ? undefined : lastSelectedModel?.[endpoint]);
+    lastModel;
   const possibleModels = model ? [model] : models;
 
   const convo = parseConvo({

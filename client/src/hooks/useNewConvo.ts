@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from 'react';
-import { useAtom, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { useRecoilValue, useRecoilCallback } from 'recoil';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { filesFamily, submissionByIndex } from '@librechat/chat/react';
@@ -46,7 +46,9 @@ import {
   isPastedTextFileMarked,
   loadPendingDiscardIds,
   storePendingDiscardIds,
+  visibleEndpointsConfig,
   removeTabAttachmentPresence,
+  filterVisibleModels,
   collectForeignAttachmentClaims,
   scheduleRetainedFileDeletionRetry,
   retainFileDeletion,
@@ -58,6 +60,7 @@ import { useDeleteFilesMutation, useGetEndpointsQuery, useGetStartupConfig } fro
 import { supersedeNavigation } from './Conversations/useNavigateToConvo';
 import useGetConversation from './Conversations/useGetConversation';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
+import { modelVisibilityAtom } from '~/store/modelVisibility';
 import { clearUploadRecovery } from './Files/useFileHandling';
 import { useApplyModelSpecEffects } from './Agents';
 import { usePauseGlobalAudio } from './Audio';
@@ -136,6 +139,7 @@ const useNewConvo = (index = 0, { routed = true }: { routed?: boolean } = {}) =>
   const [files, setFiles] = useAtom(filesFamily(index));
   const setSubmission = useSetAtom(submissionByIndex(index));
   const { data: endpointsConfig = {} as TEndpointsConfig } = useGetEndpointsQuery();
+  const visibility = useAtomValue(modelVisibilityAtom);
   const queryClient = useQueryClient();
   const storedAgentId = getLocalStorageItems().lastConversationSetup?.agent_id;
   const storedAgent = queryClient.getQueryState<Agent>([QueryKeys.agent, storedAgentId]);
@@ -200,9 +204,12 @@ const useNewConvo = (index = 0, { routed = true }: { routed?: boolean } = {}) =>
             activePreset.presetId === defaultPreset?.presetId);
 
         if (buildDefaultConversation) {
+          /** An empty composer opens on a provider the selector offers, never on a
+           * hidden one; a conversation that already names its endpoint still loads. */
+          const selectableConfig = visibleEndpointsConfig(endpointsConfig, visibility);
           let defaultEndpoint = getDefaultEndpoint({
             convoSetup: activePreset ?? conversation,
-            endpointsConfig,
+            endpointsConfig: selectableConfig,
           });
 
           // If the selected endpoint is agents but user doesn't have access, find an alternative
@@ -221,14 +228,14 @@ const useNewConvo = (index = 0, { routed = true }: { routed?: boolean } = {}) =>
             !hasAgentAccess &&
             !isExistingAgentConvo
           ) {
-            defaultEndpoint = Object.keys(endpointsConfig ?? {}).find(
-              (ep) => !isAgentsEndpoint(ep as EModelEndpoint) && endpointsConfig?.[ep],
+            defaultEndpoint = Object.keys(selectableConfig ?? {}).find(
+              (ep) => !isAgentsEndpoint(ep as EModelEndpoint) && selectableConfig?.[ep],
             ) as EModelEndpoint | undefined;
           }
 
           if (!defaultEndpoint) {
             // Find first available endpoint that's not agents (if no access) or any endpoint
-            defaultEndpoint = Object.keys(endpointsConfig ?? {}).find((ep) => {
+            defaultEndpoint = Object.keys(selectableConfig ?? {}).find((ep) => {
               if (
                 isAgentsEndpoint(ep as EModelEndpoint) &&
                 !hasAgentAccess &&
@@ -236,7 +243,7 @@ const useNewConvo = (index = 0, { routed = true }: { routed?: boolean } = {}) =>
               ) {
                 return false;
               }
-              return !!endpointsConfig?.[ep];
+              return !!selectableConfig?.[ep];
             }) as EModelEndpoint;
           }
 
@@ -255,18 +262,39 @@ const useNewConvo = (index = 0, { routed = true }: { routed?: boolean } = {}) =>
             conversation = restoreRememberedTarget(conversation, defaultEndpoint, index);
           }
 
-          const models =
+          const models = filterVisibleModels(
+            defaultEndpoint,
             modelsData?.[defaultEndpoint] ??
-            queryClient.getQueryData<TModelsConfig>([QueryKeys.models, defaultEndpoint])?.[
-              defaultEndpoint
-            ];
+              queryClient.getQueryData<TModelsConfig>([QueryKeys.models, defaultEndpoint])?.[
+                defaultEndpoint
+              ],
+            visibility,
+          );
           const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, defaultEndpoint);
+          /** A hidden model is not a selection carry-forward: the remembered one is
+           * cleared so the first offered model decides the new chat. Assistants and
+           * agents carry entity IDs in `models`, not the underlying model. */
+          const prunesModels =
+            !isAgentsEndpoint(defaultEndpoint) && !isAssistantsEndpoint(defaultEndpoint);
+          const pruneHidden = <T extends { model?: string | null }>(selection: T | null) => {
+            if (
+              !prunesModels ||
+              selection?.model == null ||
+              models == null ||
+              models.includes(selection.model)
+            ) {
+              return selection;
+            }
+            return { ...selection, model: undefined };
+          };
           conversation = buildDefaultConvo({
-            conversation,
-            lastConversationSetup:
+            conversation: pruneHidden(conversation) ?? conversation,
+            lastConversationSetup: pruneHidden(
               activePreset ?? (conversation.endpoint === defaultEndpoint ? conversation : null),
+            ),
             endpoint: defaultEndpoint,
             models,
+            offeredModels: models,
             defaultParamsEndpoint,
           });
 

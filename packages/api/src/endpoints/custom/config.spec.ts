@@ -277,8 +277,33 @@ describe('loadCustomEndpointsConfig – user credential prompts', () => {
       expect.objectContaining({
         userProvide: false,
         userProvideURL: false,
+        keyProvided: true,
       }),
     );
+  });
+
+  it('marks an endpoint whose credential env var is unset as not provided', () => {
+    const config = loadCustomEndpointsConfig([
+      { ...baseEndpoint, name: 'Unset Key', apiKey: '${LIBRECHAT_TEST_UNSET_KEY}' },
+    ] as unknown as TCustomEndpoints);
+
+    expect(config?.['Unset Key']).toEqual(
+      expect.objectContaining({ userProvide: false, keyProvided: false }),
+    );
+  });
+
+  it('reports a configured credential without exposing it', () => {
+    process.env.LIBRECHAT_TEST_SET_KEY = 'test-value-not-a-real-credential';
+    try {
+      const config = loadCustomEndpointsConfig([
+        { ...baseEndpoint, name: 'Set Key', apiKey: '${LIBRECHAT_TEST_SET_KEY}' },
+      ] as unknown as TCustomEndpoints);
+
+      expect(config?.['Set Key']?.keyProvided).toBe(true);
+      expect(JSON.stringify(config)).not.toContain('test-value-not-a-real-credential');
+    } finally {
+      delete process.env.LIBRECHAT_TEST_SET_KEY;
+    }
   });
 });
 

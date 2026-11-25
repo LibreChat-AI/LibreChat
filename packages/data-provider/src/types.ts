@@ -702,6 +702,12 @@ export type TConfig = {
   modelDisplayLabel?: string;
   userProvide?: boolean | null;
   userProvideURL?: boolean | null;
+  /**
+   * Whether a server-side credential is configured for this endpoint. `undefined`
+   * when the server has no way to know (built-in endpoints), `false` for a custom
+   * endpoint whose `${ENV_VAR}` key resolved to nothing.
+   */
+  keyProvided?: boolean;
   userProvideAccessKeyId?: boolean;
   userProvideSecretAccessKey?: boolean;
   userProvideSessionToken?: boolean;
