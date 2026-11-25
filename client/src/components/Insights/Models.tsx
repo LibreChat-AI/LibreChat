@@ -36,12 +36,12 @@ export default function ModelsTable({
         <EmptyState message={localize('com_insights_no_data')} />
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[50rem] text-left text-sm">
+          <table className="w-full min-w-[50rem] text-start text-sm">
             <thead className="border-border-medium text-text-secondary border-b text-xs">
               <tr>
                 <th className="px-2 py-2 font-medium">{localize('com_insights_model')}</th>
                 {modelColumns.map(({ labelKey }) => (
-                  <th key={labelKey} className="px-2 py-2 text-right font-medium">
+                  <th key={labelKey} className="px-2 py-2 text-end font-medium">
                     {localize(labelKey)}
                   </th>
                 ))}
@@ -58,7 +58,7 @@ export default function ModelsTable({
                     )}
                   </td>
                   {modelColumns.map(({ labelKey, value, format }) => (
-                    <td key={labelKey} className="px-2 py-3 text-right tabular-nums">
+                    <td key={labelKey} className="px-2 py-3 text-end tabular-nums">
                       {formatMetric(value(row), locale, format)}
                     </td>
                   ))}

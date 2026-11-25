@@ -1,5 +1,10 @@
-import type { Model } from 'mongoose';
+import type { ClientSession, Model } from 'mongoose';
+import type { TenantContext } from '~/config/tenantContext';
 import type { IConversation } from '~/types/convo';
+import { runAfterTransaction } from '~/utils/postCommit';
+import { tenantStorage } from '~/config/tenantContext';
+import { retryWithBackoff } from '~/utils/retry';
+import logger from '~/config/winston';
 
 export type InsightsRecordIdentity = {
   conversationId?: string;
@@ -20,31 +25,33 @@ export function insightsIdentityKey(record: InsightsRecordIdentity): string {
   return JSON.stringify([record.tenantId ?? null, record.conversationId, record.user?.toString()]);
 }
 
-/** Empty means never counted (no agent, sub-agent thread, temporary chat); undefined means a
+/** Empty means never counted (no agent, sub-agent thread, temporary chat); null means a
  *  legacy conversation without `initial_agent_id`. */
-function hintFor(conversation: Record<string, unknown>): string | undefined {
+function hintFor(
+  conversation: Partial<Record<'isTemporary' | 'initial_agent_id', unknown>>,
+): string | null {
   if (
     Object.prototype.hasOwnProperty.call(conversation, 'subagentThread') ||
     conversation.isTemporary === true
   ) {
     return '';
   }
-  if (!Object.prototype.hasOwnProperty.call(conversation, 'initial_agent_id')) return undefined;
+  if (!Object.prototype.hasOwnProperty.call(conversation, 'initial_agent_id')) return null;
   return typeof conversation.initial_agent_id === 'string' ? conversation.initial_agent_id : '';
 }
 
-export async function resolveInsightsAttributions(
+async function readRoots(
   mongoose: typeof import('mongoose'),
   records: readonly InsightsRecordIdentity[],
-): Promise<Map<string, string>> {
+): Promise<Map<string, string | null>> {
   const Conversation = mongoose.models.Conversation as Model<IConversation> | undefined;
   const identities = new Map<string, InsightsRecordIdentity>();
   for (const record of records) {
     if (!record.conversationId || !record.user?.toString()) continue;
     identities.set(insightsIdentityKey(record), record);
   }
-  const result = new Map<string, string>();
-  if (!Conversation || identities.size === 0) return result;
+  const roots = new Map<string, string | null>();
+  if (!Conversation || identities.size === 0) return roots;
   const conversations = await Conversation.find(
     {
       $or: [...identities.values()].map(({ conversationId, user, tenantId }) => ({
@@ -64,10 +71,64 @@ export async function resolveInsightsAttributions(
     },
   ).lean<ConversationRoot[]>();
   for (const conversation of conversations) {
-    const hint = hintFor(conversation);
-    if (hint !== undefined) result.set(insightsIdentityKey(conversation), hint);
+    roots.set(insightsIdentityKey(conversation), hintFor(conversation));
+  }
+  return roots;
+}
+
+export async function resolveInsightsAttributions(
+  mongoose: typeof import('mongoose'),
+  records: readonly InsightsRecordIdentity[],
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  for (const [key, hint] of await readRoots(mongoose, records)) {
+    if (hint != null) result.set(key, hint);
   }
   return result;
+}
+
+type Turn = { hints: Map<string, string>; legacy: Set<string>; pending: Set<string> };
+
+const turns = new WeakMap<TenantContext, Turn>();
+
+function getTurn(): Turn {
+  const context = tenantStorage.getStore();
+  const turn = (context && turns.get(context)) ?? {
+    hints: new Map(),
+    legacy: new Set(),
+    pending: new Set(),
+  };
+  if (context?.userId) turns.set(context, turn);
+  return turn;
+}
+
+function remember({ hints, legacy }: Turn, key: string, hint: string | null): void {
+  if (hint == null) legacy.add(key);
+  else if (!hints.has(key)) hints.set(key, hint);
+}
+
+export function rememberInsightsRoot(conversation: IConversation | null): IConversation | null {
+  if (!conversation) return conversation;
+  remember(getTurn(), insightsIdentityKey(conversation), hintFor(conversation));
+  delete conversation.initial_agent_id;
+  return conversation;
+}
+
+export async function lookupInsightsAttributions(
+  mongoose: typeof import('mongoose'),
+  records: readonly InsightsRecordIdentity[],
+): Promise<{ fresh: boolean; hints: Map<string, string> }> {
+  const turn = getTurn();
+  const { hints, legacy } = turn;
+  const missing = records.filter((record) => !hints.has(insightsIdentityKey(record)));
+  const unread = missing.filter((record) => !legacy.has(insightsIdentityKey(record)));
+  try {
+    for (const [key, hint] of await readRoots(mongoose, unread)) remember(turn, key, hint);
+    return { fresh: unread.length === missing.length, hints };
+  } catch (error) {
+    logger.error('[lookupInsightsAttributions] Failed to read Insights attribution', error);
+    return { fresh: false, hints };
+  }
 }
 
 export async function withInsightsAttribution<
@@ -76,32 +137,80 @@ export async function withInsightsAttribution<
   mongoose: typeof import('mongoose'),
   records: readonly T[],
 ): Promise<Array<Omit<T, 'insightsAgentId'> & { insightsAgentId?: string }>> {
-  const attributions = await resolveInsightsAttributions(mongoose, records);
+  const { hints } = await lookupInsightsAttributions(mongoose, records);
   return records.map((record) => {
     const { insightsAgentId: _hint, ...fields } = record;
-    const hint = attributions.get(insightsIdentityKey(record));
+    const hint = hints.get(insightsIdentityKey(record));
     return { ...fields, ...(hint !== undefined && { insightsAgentId: hint }) };
   });
 }
 
-export async function attributeEarlierRecords(
+async function storeAttribution(
   mongoose: typeof import('mongoose'),
-  saved: Record<string, unknown>,
+  { conversationId, user, tenantId }: { conversationId: string; user: string; tenantId?: string },
+  hint: string,
+  { created, session }: { created?: boolean; session?: ClientSession },
 ): Promise<void> {
-  const { conversationId, user } = saved;
-  if (typeof conversationId !== 'string' || typeof user !== 'string') return;
-  const hint = hintFor(saved);
-  if (hint === undefined) return;
-  const filter = { conversationId, user, insightsAgentId: { $exists: false } };
+  const filter = {
+    conversationId,
+    user,
+    tenantId: tenantId ?? { $exists: false },
+    insightsAgentId: created ? { $exists: false } : { $ne: hint },
+  };
   const update = { $set: { insightsAgentId: hint } };
   /** Transactions store the owner as an ObjectId. */
   const models = [
     mongoose.models.Message,
     ...(mongoose.isValidObjectId(user) ? [mongoose.models.Transaction] : []),
-  ];
+  ].filter((model) => model != null);
+  if (session) {
+    for (const model of models) {
+      await model.updateMany(filter, update, { timestamps: false, session });
+    }
+    return;
+  }
   await Promise.all(
-    models
-      .filter((model) => model != null)
-      .map((model) => model.updateMany(filter, update, { timestamps: false })),
+    models.map((model) =>
+      retryWithBackoff(
+        async () => model.updateMany(filter, update, { timestamps: false }),
+        `updateMany(${model.modelName})`,
+      ),
+    ),
   );
+}
+
+export async function syncInsightsAttribution(
+  mongoose: typeof import('mongoose'),
+  saved: Record<string, unknown>,
+  {
+    created,
+    converted,
+    session,
+  }: { created?: boolean; converted?: boolean; session?: ClientSession },
+): Promise<void> {
+  const { conversationId, user, tenantId } = saved;
+  if (typeof conversationId !== 'string' || typeof user !== 'string') return;
+  const hint = hintFor(saved);
+  if (hint == null) return;
+  const identity = { conversationId, user, ...(typeof tenantId === 'string' && { tenantId }) };
+  const { hints, pending } = getTurn();
+  const key = insightsIdentityKey(identity);
+  if (!created && !converted && !hints.get(key) && !pending.has(key)) return;
+  const unneeded = created && hint === '';
+  if (session?.inTransaction()) {
+    if (!unneeded) await storeAttribution(mongoose, identity, hint, { created, session });
+    return runAfterTransaction(session, async () => {
+      hints.set(key, hint);
+      pending.delete(key);
+    });
+  }
+  hints.set(key, hint);
+  if (unneeded) return;
+  pending.add(key);
+  try {
+    await storeAttribution(mongoose, identity, hint, { created });
+    pending.delete(key);
+  } catch (error) {
+    logger.error('[syncInsightsAttribution] Failed to attribute Insights records', error);
+  }
 }

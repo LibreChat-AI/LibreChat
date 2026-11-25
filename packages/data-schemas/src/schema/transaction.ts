@@ -67,12 +67,6 @@ const transactionSchema: Schema<ITransaction> = new Schema(
   },
 );
 
-/** Bound the joined usage rows by their own reporting dates. */
-transactionSchema.index(
-  { conversationId: 1, createdAt: 1 },
-  { name: 'insights_conversation_period' },
-);
-
 transactionSchema.index(
   { tenantId: 1, insightsAgentId: 1, createdAt: 1 },
   { name: 'insights_root_period' },

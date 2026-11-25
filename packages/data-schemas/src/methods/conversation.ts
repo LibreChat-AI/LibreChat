@@ -60,12 +60,12 @@ import {
   updateChatProjectLastConversationForUser,
 } from './chatProject';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
+import { rememberInsightsRoot, syncInsightsAttribution } from './insightsAttribution';
 import { getTenantId, SYSTEM_TENANT_ID, runAsSystem } from '~/config/tenantContext';
 import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
 import { prepareSubagentContentDeletion } from './subagentContent';
-import { attributeEarlierRecords } from './insightsAttribution';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { runAfterTransaction } from '~/utils/postCommit';
 import { isValidObjectIdString } from '~/utils/objectId';
@@ -779,7 +779,14 @@ export function createConversationMethods(
   ) {
     try {
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
-      return await Conversation.findOne({ conversationId }, fieldsToSelect).lean<IConversation>();
+      if (fieldsToSelect != null && !fieldsToSelect.startsWith('-')) {
+        return await Conversation.findOne({ conversationId }, fieldsToSelect).lean<IConversation>();
+      }
+      return rememberInsightsRoot(
+        await Conversation.findOne({ conversationId })
+          .select(`+initial_agent_id ${fieldsToSelect ?? ''}`.trim())
+          .lean<IConversation>(),
+      );
     } catch (error) {
       logger.error('[searchConversation] Error searching conversation', error);
       throw new Error('Error searching conversation');
@@ -792,7 +799,11 @@ export function createConversationMethods(
   async function getConvo(user: string, conversationId: string) {
     try {
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
-      return await Conversation.findOne({ user, conversationId }).lean<IConversation>();
+      return rememberInsightsRoot(
+        await Conversation.findOne({ user, conversationId })
+          .select('+initial_agent_id')
+          .lean<IConversation>(),
+      );
     } catch (error) {
       logger.error('[getConvo] Error getting single conversation', error);
       throw new Error('Error getting single conversation');
@@ -2410,6 +2421,11 @@ export function createConversationMethods(
       );
       stampedDeadline = stamped.modifiedCount > 0;
     }
+    await syncInsightsAttribution(
+      mongoose,
+      { conversationId, user: userId, tenantId: stored.tenantId, isTemporary: true },
+      { converted: stored.isTemporary !== true },
+    );
 
     if (messageIds.length === 0) {
       return;
@@ -2617,11 +2633,13 @@ export function createConversationMethods(
       const responseDeadline =
         update.expiredAt instanceof Date ? update.expiredAt : retentionOnInsert?.expiredAt;
       const replacingConversationId = newConversationId && newConversationId !== conversationId;
+      let converted = false;
       if (responseDeadline || replacingConversationId) {
         const stored = await Conversation.findOne({ user: userId, conversationId })
           .session(deps?.saveSession ?? null)
-          .select('tenantId expiredAt')
-          .lean<Pick<IConversation, 'tenantId' | 'expiredAt'>>();
+          .select('tenantId expiredAt isTemporary')
+          .lean<Pick<IConversation, 'tenantId' | 'expiredAt' | 'isTemporary'>>();
+        converted = update.isTemporary === true && stored?.isTemporary !== true;
         const contextTenant = getTenantId();
         const responseOwner = {
           userId,
@@ -2807,15 +2825,17 @@ export function createConversationMethods(
         return null;
       }
 
-      if (conversationResult.lastErrorObject?.updatedExisting === false) {
-        try {
-          await attributeEarlierRecords(mongoose, {
-            ...(conversation.toObject() as Record<string, unknown>),
-            initial_agent_id: initialAgentId,
-          });
-        } catch (error) {
-          logger.error('[saveConvo] Failed to attribute earlier Insights records', error);
-        }
+      const created = conversationResult.lastErrorObject?.updatedExisting === false;
+      if (created || conversation.isTemporary === true) {
+        const saved = {
+          ...(conversation.toObject() as Record<string, unknown>),
+          initial_agent_id: initialAgentId,
+        };
+        await syncInsightsAttribution(mongoose, saved, {
+          created,
+          converted,
+          session: deps?.saveSession,
+        });
       }
 
       /** `$setOnInsert` only reaches a chat this save creates, yet a chat whose earlier turns never

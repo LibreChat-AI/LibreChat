@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { backfillInsightsAttribution } from './insightsAgentIds';
+import { backfillInsightsAttribution, createInsightsIndexes } from './insightsAgentIds';
 import { createTransactionModel } from '~/models/transaction';
 import { createInsightsMethods } from '~/methods/insights';
 import { createConversationModel } from '~/models/convo';
@@ -29,6 +29,15 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await Promise.all(Object.values(mongoose.models).map((model) => model.deleteMany({})));
+});
+
+it('builds the reporting indexes a deployment without automatic indexing is missing', async () => {
+  const { Message, Transaction } = mongoose.models;
+  await Promise.all([Message.collection.dropIndexes(), Transaction.collection.dropIndexes()]);
+  await createInsightsIndexes(mongoose);
+  await createInsightsIndexes(mongoose);
+  expect(await Message.collection.indexExists('insights_root_period')).toBe(true);
+  expect(await Transaction.collection.indexExists('insights_root_period')).toBe(true);
 });
 
 it('backfills in resumable batches, fixes legacy roots and is idempotent', async () => {

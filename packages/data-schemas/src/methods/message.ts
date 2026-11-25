@@ -11,7 +11,7 @@ import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { ISubagentContentChunk } from '~/models/subagentContent';
 import type { AppConfig, IConversation, IMessage } from '~/types';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
-import { resolveInsightsAttributions, insightsIdentityKey } from './insightsAttribution';
+import { lookupInsightsAttributions, insightsIdentityKey } from './insightsAttribution';
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
 import { fitBoundAppSnapshots, hasBoundAppSnapshots } from './appSnapshots';
 import { prepareSubagentContentDeletion } from './subagentContent';
@@ -1183,11 +1183,11 @@ export function createMessageMethods(
       attributionIdentity.user = identity.user;
     }
     if (attributionIdentity.conversationId && attributionIdentity.user) {
-      const attributions = await resolveInsightsAttributions(mongoose, [attributionIdentity]);
+      const { fresh, hints } = await lookupInsightsAttributions(mongoose, [attributionIdentity]);
       options = {
         ...options,
-        refreshInsightsAttribution: true,
-        insightsAgentId: attributions.get(insightsIdentityKey(attributionIdentity)),
+        refreshInsightsAttribution: fresh,
+        insightsAgentId: hints.get(insightsIdentityKey(attributionIdentity)),
       };
     }
     const paths = normalizeUserSubmittedPaths(update.userSubmittedPaths);
@@ -1396,9 +1396,9 @@ export function createMessageMethods(
           user: userId,
           tenantId: tenantStorage.getStore()?.tenantId,
         };
-        const attributions = await resolveInsightsAttributions(mongoose, [attributionIdentity]);
+        const { hints } = await lookupInsightsAttributions(mongoose, [attributionIdentity]);
         delete update.insightsAgentId;
-        const insightsAgentId = attributions.get(insightsIdentityKey(attributionIdentity));
+        const insightsAgentId = hints.get(insightsIdentityKey(attributionIdentity));
         const existingOrInserted = await Message.findOneAndUpdate(
           { messageId: params.messageId, user: userId },
           {
@@ -1519,10 +1519,10 @@ export function createMessageMethods(
         user: typeof message.user === 'string' ? message.user : undefined,
         tenantId: tenantStorage.getStore()?.tenantId,
       }));
-      const attributions = await resolveInsightsAttributions(mongoose, attributionIdentities);
+      const { fresh, hints } = await lookupInsightsAttributions(mongoose, attributionIdentities);
       const bulkOps = messages.map((message, index) => {
         const normalizedMessage = sanitizeMessageUpdate(message);
-        const hint = attributions.get(insightsIdentityKey(attributionIdentities[index]));
+        const hint = hints.get(insightsIdentityKey(attributionIdentities[index]));
         if (hint !== undefined) normalizedMessage.insightsAgentId = hint;
         delete normalizedMessage.privateText;
         delete normalizedMessage.privacyRevision;
@@ -1569,7 +1569,8 @@ export function createMessageMethods(
               $set: normalizedMessage,
               $inc: { __v: 1 },
               $unset: {
-                ...(hint === undefined &&
+                ...(fresh &&
+                  hint == null &&
                   attributionIdentities[index].conversationId &&
                   attributionIdentities[index].user && { insightsAgentId: 1 }),
                 privateText: 1,

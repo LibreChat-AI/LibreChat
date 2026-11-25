@@ -1,10 +1,13 @@
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { RetentionMode } from 'librechat-data-provider';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { resolveInsightsAttributions, insightsIdentityKey } from './insightsAttribution';
 import { createTransactionModel } from '../models/transaction';
 import { createConversationMethods } from './conversation';
 import { createConversationModel } from '../models/convo';
 import { createTransactionMethods } from './transaction';
+import { materializeResponseTurn } from './responseTurn';
+import { tenantStorage } from '../config/tenantContext';
 import { createMessageModel } from '../models/message';
 import { createAgentModel } from '../models/agent';
 import { createInsightsMethods } from './insights';
@@ -13,10 +16,10 @@ import { createMessageMethods } from './message';
 
 const conversationId = '11111111-1111-4111-8111-111111111111';
 const owner = new mongoose.Types.ObjectId();
-let server: MongoMemoryServer;
+let server: MongoMemoryReplSet;
 
 beforeAll(async () => {
-  server = await MongoMemoryServer.create();
+  server = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(server.getUri());
   await Promise.all([
     createConversationModel(mongoose).init(),
@@ -132,7 +135,7 @@ it('gives records saved before their conversation the hint once the conversation
     { userId: owner.toString() },
     { conversationId: '22222222-2222-4222-8222-222222222222', endpoint: 'openAI' },
   );
-  expect(await hintOf('Message', 'plain-prompt')).toBe('');
+  expect(await hintOf('Message', 'plain-prompt')).toBeUndefined();
 
   await mongoose.models.Message.collection.updateOne(
     { messageId: 'first-prompt' },
@@ -143,6 +146,386 @@ it('gives records saved before their conversation the hint once the conversation
     { conversationId, endpoint: 'agents', agent_id: 'agent-a', title: 'Renamed' },
   );
   expect(await hintOf('Message', 'first-prompt')).toBe('kept');
+});
+
+describe('within a turn', () => {
+  const userId = owner.toString();
+  const messages = createMessageMethods(mongoose);
+  const conversations = createConversationMethods(mongoose, messages);
+  const transactions = createTransactionMethods(mongoose, {
+    getMultiplier: () => 1,
+    getCacheMultiplier: () => null,
+  });
+  const ephemeral = {
+    userId,
+    interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 1 },
+  };
+  const runTurn = (turn: () => Promise<void>) => tenantStorage.run({ userId }, turn);
+  const reply = (messageId: string) =>
+    messages.saveMessage({ userId }, { conversationId, messageId, isCreatedByUser: false });
+  const bill = (messageId: string) =>
+    transactions.bulkInsertTransactions([
+      { user: userId, conversationId, messageId, tokenType: 'completion', tokenValue: -1 },
+    ]);
+  const convert = async () => {
+    await conversations.stampForcedRetention(ephemeral, { conversationId });
+  };
+  const save = () => conversations.saveConvo(ephemeral, { conversationId, endpoint: 'agents' });
+  const storedHints = (model: 'Message' | 'Transaction') =>
+    mongoose.models[model].collection.distinct('insightsAgentId');
+
+  beforeEach(async () => {
+    await mongoose.models.Conversation.collection.insertOne({
+      conversationId,
+      user: userId,
+      initial_agent_id: 'agent-a',
+      codeAttachmentEpoch: 1,
+    });
+  });
+
+  it('shares one lookup between messages and billing', async () => {
+    const reads = jest.spyOn(mongoose.models.Conversation, 'find');
+    await runTurn(async () => {
+      await reply('first');
+      await reply('second');
+      await bill('second');
+      expect(reads).toHaveBeenCalledTimes(1);
+    });
+    reads.mockRestore();
+    expect(await storedHints('Message')).toEqual(['agent-a']);
+    expect(await storedHints('Transaction')).toEqual(['agent-a']);
+  });
+
+  it.each([
+    ['getConvo', () => conversations.getConvo(userId, conversationId)],
+    ['searchConversation', () => conversations.searchConversation(conversationId, '-messages')],
+    ['an unlimited search', () => conversations.searchConversation(conversationId, null)],
+  ])('reuses the chat a request already loaded with %s', async (_loader, load) => {
+    const reads = jest.spyOn(mongoose.models.Conversation, 'find');
+    await runTurn(async () => {
+      const loaded = await load();
+      expect(loaded).toMatchObject({ conversationId, user: userId });
+      expect(loaded).not.toHaveProperty('initial_agent_id');
+      expect(loaded).not.toHaveProperty('codeAttachmentEpoch');
+      await reply('reply');
+      await bill('reply');
+    });
+    expect(reads).not.toHaveBeenCalled();
+    reads.mockRestore();
+    expect(await storedHints('Message')).toEqual(['agent-a']);
+    expect(await storedHints('Transaction')).toEqual(['agent-a']);
+  });
+
+  it('never reuses a chat loaded with only some of its fields', async () => {
+    const reads = jest.spyOn(mongoose.models.Conversation, 'find');
+    await runTurn(async () => {
+      await conversations.searchConversation(conversationId);
+      await reply('reply');
+    });
+    expect(reads).toHaveBeenCalledTimes(1);
+    reads.mockRestore();
+    expect(await storedHints('Message')).toEqual(['agent-a']);
+  });
+
+  it('does not count what a loaded temporary or sub-agent chat saves', async () => {
+    const { Conversation } = mongoose.models;
+    for (const fields of [{ isTemporary: true }, { subagentThread: { depth: 1 } }]) {
+      await Conversation.collection.updateOne({ conversationId }, { $set: fields });
+      await runTurn(async () => {
+        await conversations.getConvo(userId, conversationId);
+        await reply('reply');
+        await bill('reply');
+      });
+      expect(await storedHints('Message')).toEqual(['']);
+      expect(await storedHints('Transaction')).toEqual(['']);
+      await Conversation.collection.updateOne(
+        { conversationId },
+        { $unset: { isTemporary: 1, subagentThread: 1 } },
+      );
+    }
+  });
+
+  it('reads the chat again for every save in a context without a user', async () => {
+    const reads = jest.spyOn(mongoose.models.Conversation, 'find');
+    await tenantStorage.run({ requestId: 'sweep' }, async () => {
+      await conversations.getConvo(userId, conversationId);
+      await reply('before');
+      await mongoose.models.Conversation.collection.updateOne(
+        { conversationId },
+        { $set: { isTemporary: true } },
+      );
+      await reply('after');
+    });
+    expect(reads).toHaveBeenCalledTimes(2);
+    reads.mockRestore();
+    expect(await storedHints('Message')).toEqual(['', 'agent-a']);
+  });
+
+  it('reads a legacy chat without a root agent once and keeps what the migration stored', async () => {
+    const { Conversation, Message } = mongoose.models;
+    await Conversation.collection.updateOne(
+      { conversationId },
+      { $unset: { initial_agent_id: 1 }, $set: { agent_id: 'agent-a' } },
+    );
+    const reads = jest.spyOn(Conversation, 'find');
+    await runTurn(async () => {
+      await reply('reply');
+      await bill('reply');
+      await Message.collection.updateOne(
+        { messageId: 'reply' },
+        { $set: { insightsAgentId: 'agent-a' } },
+      );
+      await reply('reply');
+      await messages.bulkSaveMessages([{ messageId: 'reply', conversationId, user: userId }]);
+      expect(reads).toHaveBeenCalledTimes(1);
+    });
+    reads.mockRestore();
+    expect(await storedHints('Message')).toEqual(['agent-a']);
+  });
+
+  it('keeps saving, billing and the stored agent when the conversation cannot be read', async () => {
+    await runTurn(async () => {
+      await reply('known');
+      await reply('imported');
+    });
+    const reads = jest.spyOn(mongoose.models.Conversation, 'find').mockImplementation(() => {
+      throw new Error('unavailable');
+    });
+    await runTurn(async () => {
+      await reply('known');
+      await messages.bulkSaveMessages([{ messageId: 'imported', conversationId, user: userId }]);
+      await reply('new');
+      await bill('new');
+    });
+    reads.mockRestore();
+    const { Message, Transaction } = mongoose.models;
+    expect(await Message.countDocuments({ messageId: 'new' })).toBe(1);
+    expect(await Transaction.countDocuments({ messageId: 'new' })).toBe(1);
+    expect(await Message.countDocuments({ insightsAgentId: 'agent-a' })).toBe(2);
+  });
+
+  it('never bills a chat that became temporary in its own turn', async () => {
+    await runTurn(async () => {
+      await reply('reply');
+      await bill('before');
+      expect(await storedHints('Transaction')).toEqual(['agent-a']);
+      await convert();
+      expect(await storedHints('Transaction')).toEqual(['']);
+      await reply('late');
+      await bill('running');
+    });
+    expect(await storedHints('Transaction')).toEqual(['']);
+    expect(await storedHints('Message')).toEqual(['']);
+  });
+
+  it('stops counting a chat that its conversation save makes temporary', async () => {
+    await runTurn(async () => {
+      await reply('reply');
+    });
+    await runTurn(async () => {
+      await save();
+    });
+    expect(await storedHints('Message')).toEqual(['']);
+  });
+
+  it('clears what a running turn saved after another request converted the chat', async () => {
+    await runTurn(async () => {
+      await reply('reply');
+      await bill('before');
+      await runTurn(convert);
+      expect(await storedHints('Transaction')).toEqual(['']);
+      await reply('late');
+      await bill('late');
+      await save();
+    });
+    expect(await storedHints('Message')).toEqual(['']);
+    expect(await storedHints('Transaction')).toEqual(['']);
+  });
+
+  it('creates a chat without an agent without updating its records', async () => {
+    const { Conversation, Message, Transaction } = mongoose.models;
+    await Conversation.deleteMany({});
+    const writes = [jest.spyOn(Message, 'updateMany'), jest.spyOn(Transaction, 'updateMany')];
+    const reads = jest.spyOn(Conversation, 'find');
+    await runTurn(async () => {
+      await reply('prompt');
+      await conversations.saveConvo({ userId }, { conversationId, endpoint: 'openAI' });
+      await reply('reply');
+      await bill('reply');
+    });
+    writes.forEach((write) => expect(write).not.toHaveBeenCalled());
+    expect(reads).toHaveBeenCalledTimes(1);
+    [...writes, reads].forEach((spy) => spy.mockRestore());
+    expect(await storedHints('Message')).toEqual(['']);
+    expect(await storedHints('Transaction')).toEqual(['']);
+  });
+
+  it('does not repeat the cleanup of a chat that is already temporary', async () => {
+    await runTurn(async () => {
+      await reply('first');
+      await save();
+    });
+    const writes = jest.spyOn(mongoose.models.Transaction, 'updateMany');
+    await runTurn(async () => {
+      await reply('second');
+      await bill('second');
+      await save();
+      await convert();
+    });
+    expect(writes).not.toHaveBeenCalled();
+    writes.mockRestore();
+  });
+
+  it('clears again when part of the cleanup failed', async () => {
+    const failure = jest
+      .spyOn(mongoose.models.Transaction, 'updateMany')
+      .mockRejectedValueOnce(new Error('unavailable'));
+    await runTurn(async () => {
+      await bill('before');
+      await convert();
+      expect(await storedHints('Transaction')).toEqual(['agent-a']);
+      await save();
+      expect(await storedHints('Transaction')).toEqual(['']);
+    });
+    failure.mockRestore();
+  });
+
+  it('leaves the same conversation and user of another tenant untouched', async () => {
+    await mongoose.models.Conversation.collection.insertOne({
+      conversationId,
+      user: userId,
+      tenantId: 'tenant-b',
+      initial_agent_id: 'agent-b',
+    });
+    await tenantStorage.run({ userId, tenantId: 'tenant-b' }, async () => {
+      await reply('other');
+      await bill('other');
+    });
+    await bill('own');
+    await convert();
+    const { Message, Transaction } = mongoose.models;
+    expect(await Transaction.collection.distinct('insightsAgentId', { messageId: 'own' })).toEqual([
+      '',
+    ]);
+    const counted = { tenantId: 'tenant-b', insightsAgentId: 'agent-b' };
+    expect(await Message.collection.countDocuments(counted)).toBe(1);
+    expect(await Transaction.collection.countDocuments(counted)).toBe(1);
+  });
+});
+
+describe('a Responses turn saved in a transaction', () => {
+  const userId = owner.toString();
+  const messages = createMessageMethods(mongoose);
+  const conversations = createConversationMethods(mongoose, messages);
+  const transactions = createTransactionMethods(mongoose, {
+    getMultiplier: () => 1,
+    getCacheMultiplier: () => null,
+  });
+  const bill = () =>
+    transactions.bulkInsertTransactions([
+      { user: userId, conversationId, messageId: 'reply', tokenType: 'completion', tokenValue: -1 },
+    ]);
+  const counted = async (session: mongoose.ClientSession | null = null) => {
+    const { Message, Transaction } = mongoose.models;
+    const match = { conversationId, insightsAgentId: 'agent-a' };
+    return [
+      await Message.countDocuments(match).session(session),
+      await Transaction.countDocuments(match).session(session),
+    ];
+  };
+  const commit = ({
+    retentionMode,
+    inspect,
+  }: {
+    retentionMode?: RetentionMode;
+    inspect?: (session: mongoose.ClientSession) => Promise<void>;
+  } = {}) =>
+    mongoose.connection.transaction(async (session) => {
+      await materializeResponseTurn(mongoose, session, {
+        intentJSON: '{}',
+        context: { userId, ...(retentionMode && { interfaceConfig: { retentionMode } }) },
+        conversation: { conversationId, endpoint: 'agents', agent_id: 'agent-a' },
+        initialAgentId: 'agent-a',
+        messages: [
+          { conversationId, messageId: 'prompt', isCreatedByUser: true, text: 'Question' },
+          { conversationId, messageId: 'reply', isCreatedByUser: false, text: 'Answer' },
+        ],
+      });
+      await inspect?.(session);
+    });
+
+  it('is counted inside its own transaction, with the usage billed before it', async () => {
+    await bill();
+    expect(await counted()).toEqual([0, 0]);
+    await commit({
+      inspect: async (session) => {
+        expect(await counted(session)).toEqual([2, 1]);
+        expect(await counted()).toEqual([0, 0]);
+      },
+    });
+    expect(await counted()).toEqual([2, 1]);
+  });
+
+  it('is cleared inside the transaction that makes its chat temporary', async () => {
+    await bill();
+    await commit();
+    await commit({
+      retentionMode: RetentionMode.EPHEMERAL,
+      inspect: async (session) => {
+        expect(await counted(session)).toEqual([0, 0]);
+        expect(await counted()).toEqual([2, 1]);
+      },
+    });
+    expect(await counted()).toEqual([0, 0]);
+  });
+
+  it.each(['Message', 'Transaction'])(
+    'is not saved without its attribution when the %s write fails, and is counted once repeated',
+    async (model) => {
+      const { Message, Conversation } = mongoose.models;
+      const failure = jest
+        .spyOn(mongoose.models[model], 'updateMany')
+        .mockRejectedValueOnce(new Error('unavailable'));
+      await bill();
+      await expect(commit()).rejects.toThrow('unavailable');
+      failure.mockRestore();
+      expect(await Message.countDocuments({ conversationId })).toBe(0);
+      expect(await Conversation.countDocuments({ conversationId })).toBe(0);
+      await commit();
+      expect(await counted()).toEqual([2, 1]);
+    },
+  );
+
+  it('leaves no agent behind in the request when its transaction is undone', async () => {
+    await tenantStorage.run({ userId }, async () => {
+      const undone = commit({ inspect: () => Promise.reject(new Error('undone')) });
+      await expect(undone).rejects.toThrow('undone');
+      await messages.saveMessage(
+        { userId },
+        { conversationId, messageId: 'prompt', isCreatedByUser: true },
+      );
+      await conversations.saveConvo(
+        { userId },
+        { conversationId, endpoint: 'agents', agent_id: 'agent-b' },
+        { initialAgentId: 'agent-b' },
+      );
+    });
+    expect(await mongoose.models.Message.collection.distinct('insightsAgentId')).toEqual([
+      'agent-b',
+    ]);
+  });
+
+  it('shares its agent with the rest of the request once committed', async () => {
+    const reads = jest.spyOn(mongoose.models.Conversation, 'find');
+    await tenantStorage.run({ userId }, async () => {
+      await commit();
+      reads.mockClear();
+      await bill();
+      expect(reads).not.toHaveBeenCalled();
+    });
+    reads.mockRestore();
+    expect(await counted()).toEqual([2, 1]);
+  });
 });
 
 it('resolves only matching tenant/owner identities and distinguishes unattributed from legacy records', async () => {
@@ -214,8 +597,8 @@ it('uses the root-period index without reading unrelated agents or old messages'
     ...Array.from({ length: 1000 }, (_, i) => ({
       conversationId,
       user: owner.toString(),
-      messageId: `unindexed-old-${i}`,
-      createdAt: history,
+      messageId: `unindexed-${i}`,
+      createdAt: now,
     })),
     ...Array.from({ length: 1000 }, (_, i) => ({
       conversationId: 'other',

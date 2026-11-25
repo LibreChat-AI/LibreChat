@@ -3,7 +3,7 @@ process.env.MONGO_AUTO_INDEX = 'false';
 process.env.MONGO_AUTO_CREATE = 'false';
 const path = require('path');
 const mongoose = require('mongoose');
-const { backfillInsightsAttribution } = require('@librechat/data-schemas');
+const { backfillInsightsAttribution, createInsightsIndexes } = require('@librechat/data-schemas');
 
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 const connect = require('./connect');
@@ -22,6 +22,9 @@ require('~/db/models');
     const dryRun = process.argv.includes('--dry-run');
     const batchArg = process.argv.find((arg) => arg.startsWith('--batch-size='));
     const batchSize = (batchArg && parseInt(batchArg.split('=')[1], 10)) || 1000;
+    if (!dryRun) {
+      await createInsightsIndexes(mongoose);
+    }
     const results = {};
     for (const collection of ['conversations', 'messages', 'transactions']) {
       const totals = { processed: 0, updated: 0 };

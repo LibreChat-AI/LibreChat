@@ -1,8 +1,9 @@
 import { Types } from 'mongoose';
-import type { AnyBulkWriteOperation, Collection, Document } from 'mongodb';
+import type { AnyBulkWriteOperation, Collection, Document, IndexSpecification } from 'mongodb';
 import type { InsightsRecordIdentity } from '~/methods/insightsAttribution';
 import { resolveInsightsAttributions, insightsIdentityKey } from '~/methods/insightsAttribution';
 import { runAsSystem } from '~/config/tenantContext';
+import { buildIndexWithRetry } from '~/utils/retry';
 
 type IndexedRecord = InsightsRecordIdentity & { _id: Types.ObjectId; insightsAgentId?: string };
 type BatchResult = { processed: number; updated: number; nextAfter?: string };
@@ -15,6 +16,18 @@ type InsightsBackfillOptions = {
   batchSize: number;
   apply?: boolean;
 };
+
+export async function createInsightsIndexes(mongoose: typeof import('mongoose')): Promise<void> {
+  for (const { schema, collection } of [mongoose.models.Message, mongoose.models.Transaction]) {
+    for (const [keys, { name }] of schema.indexes()) {
+      if (!name?.startsWith('insights_')) continue;
+      await buildIndexWithRetry(
+        () => collection.createIndex(keys as IndexSpecification, { name }),
+        `createIndex(${collection.name}.${name})`,
+      );
+    }
+  }
+}
 
 export async function backfillInsightsAttribution(
   mongoose: typeof import('mongoose'),
