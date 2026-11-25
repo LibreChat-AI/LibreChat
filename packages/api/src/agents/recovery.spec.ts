@@ -230,4 +230,80 @@ describe('durable agent idle recovery', () => {
     expect(scan).toHaveBeenCalledTimes(1);
     expect(jest.getTimerCount()).toBe(0);
   });
+
+  it('delays its first scan by the initial delay, and a wake still runs it at once', async () => {
+    const scan = jest.fn(async () => true);
+    const delayed = createIdleRecoveryLoop({
+      intervalMs: 30_000,
+      maxIdleIntervalMs: 120_000,
+      initialDelayMs: 300_000,
+      scan,
+      onError: jest.fn(),
+    });
+    await delayed.start();
+    expect(scan).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(299_999);
+    expect(scan).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(scan).toHaveBeenCalledTimes(1);
+    /** The delay applies once: an idle first scan then backs off from the base interval. */
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(scan).toHaveBeenCalledTimes(2);
+    await delayed.stop();
+
+    const woken = createIdleRecoveryLoop({
+      intervalMs: 30_000,
+      maxIdleIntervalMs: 120_000,
+      initialDelayMs: 300_000,
+      scan,
+      onError: jest.fn(),
+    });
+    await woken.start();
+    woken.wake();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(scan).toHaveBeenCalledTimes(3);
+    await woken.stop();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('spreads every wait, the first one included, by less than the jitter', async () => {
+    const random = jest.spyOn(Math, 'random').mockReturnValue(0.5);
+    const scan = jest.fn(async () => true);
+    const loop = createIdleRecoveryLoop({
+      intervalMs: 30_000,
+      maxIdleIntervalMs: 120_000,
+      jitterMs: 10_000,
+      initialDelayMs: 10_000,
+      scan,
+      onError: jest.fn(),
+    });
+    await loop.start();
+    await jest.advanceTimersByTimeAsync(14_999);
+    expect(scan).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(scan).toHaveBeenCalledTimes(1);
+    /** The idle wait doubles to 60 s, plus the 5 s jitter. */
+    await jest.advanceTimersByTimeAsync(64_999);
+    expect(scan).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(scan).toHaveBeenCalledTimes(2);
+    /** The ceiling bounds the wait before the jitter is added. */
+    await jest.advanceTimersByTimeAsync(124_999);
+    expect(scan).toHaveBeenCalledTimes(2);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(scan).toHaveBeenCalledTimes(3);
+    await loop.stop();
+    random.mockRestore();
+  });
+
+  it.each([-1, 1.5, Number.NaN])('rejects an invalid jitter or initial delay (%s)', (value) => {
+    const options = {
+      intervalMs: 1_000,
+      maxIdleIntervalMs: 2_000,
+      scan: jest.fn(async () => true),
+      onError: jest.fn(),
+    };
+    expect(() => createIdleRecoveryLoop({ ...options, jitterMs: value })).toThrow(TypeError);
+    expect(() => createIdleRecoveryLoop({ ...options, initialDelayMs: value })).toThrow(TypeError);
+  });
 });

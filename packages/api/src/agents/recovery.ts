@@ -1,6 +1,12 @@
 export interface IdleRecoveryLoopOptions {
   intervalMs: number;
   maxIdleIntervalMs: number;
+  /** Adds up to this many milliseconds to every wait, so replicas started together do not scan
+   * in lockstep. Defaults to none. */
+  jitterMs?: number;
+  /** Delays the first scan after `start()`. A wake or an eligibility time still runs it sooner.
+   * Defaults to scanning at once. */
+  initialDelayMs?: number;
   /** True only after a completed scan confirmed no eligible work and no failures. */
   scan: () => Promise<boolean>;
   onError: (error: unknown) => void;
@@ -11,6 +17,8 @@ export interface IdleRecoveryLoopOptions {
 export function createIdleRecoveryLoop({
   intervalMs,
   maxIdleIntervalMs,
+  jitterMs = 0,
+  initialDelayMs = 0,
   scan,
   onError,
 }: IdleRecoveryLoopOptions) {
@@ -20,6 +28,13 @@ export function createIdleRecoveryLoop({
   if (!Number.isSafeInteger(maxIdleIntervalMs) || maxIdleIntervalMs < intervalMs) {
     throw new TypeError('Maximum idle recovery interval must be at least the recovery interval');
   }
+  if (!Number.isSafeInteger(jitterMs) || jitterMs < 0) {
+    throw new TypeError('Recovery jitter must be a non-negative integer');
+  }
+  if (!Number.isSafeInteger(initialDelayMs) || initialDelayMs < 0) {
+    throw new TypeError('Initial recovery delay must be a non-negative integer');
+  }
+  const jitter = (): number => (jitterMs > 0 ? Math.floor(Math.random() * jitterMs) : 0);
 
   let started = false;
   let stopped = false;
@@ -88,7 +103,9 @@ export function createIdleRecoveryLoop({
           return;
         }
         nextPollAt =
-          Date.now() + Math.min(intervalMs * 2 ** Math.min(idleStreak, 30), maxIdleIntervalMs);
+          Date.now() +
+          Math.min(intervalMs * 2 ** Math.min(idleStreak, 30), maxIdleIntervalMs) +
+          jitter();
         if (wakePending) {
           wakePending = false;
           queueMicrotask(() => void runNow());
@@ -109,6 +126,11 @@ export function createIdleRecoveryLoop({
         return active ?? Promise.resolve();
       }
       started = true;
+      if (initialDelayMs > 0) {
+        nextPollAt = Date.now() + initialDelayMs + jitter();
+        schedule();
+        return Promise.resolve();
+      }
       return runNow();
     },
     /** Coalesce notifications while a scan is in progress; none can be erased
