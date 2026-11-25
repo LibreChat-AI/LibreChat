@@ -73,11 +73,17 @@ function withBaseSkillSyncConfig(req, baseConfig) {
   };
 }
 
-function createRunner({ getConfig, loadAppConfig, allowServerCredentials = true } = {}) {
+function createRunner({
+  getConfig,
+  loadAppConfig,
+  allowServerCredentials = true,
+  trackProductFact,
+} = {}) {
   const resolveAppConfig = loadAppConfig ?? loadCurrentAppConfig;
   const resolveConfig = getConfig ?? (() => getSyncConfig(resolveAppConfig));
   const createdRunner = createGitHubSkillSyncRunner({
     getConfig: resolveConfig,
+    trackProductFact,
     getCredentialToken: db.getSkillSyncCredentialToken,
     getCredentialSummary: db.getSkillSyncCredentialSummary,
     listCredentials: db.listSkillSyncCredentials,
@@ -181,9 +187,9 @@ const maybeRunGitHubSkillSyncForRequest = skipUntilTermsAccepted(
   false,
 );
 
-function initializeGitHubSkillSync(appConfig) {
+function initializeGitHubSkillSync(appConfig, tracking = {}) {
   appConfigRef = appConfig;
-  runner = createRunner();
+  runner = createRunner(tracking);
   scheduler = startGitHubSkillSyncScheduler({
     getConfig: getSyncConfig,
     runner,

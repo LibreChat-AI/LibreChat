@@ -37,6 +37,8 @@ export type SkillDeletionProgress = {
   found: boolean;
   deleted: boolean;
   skillAbsent: boolean;
+  /** True only when this operation removed the persisted skill row. */
+  removed?: boolean;
   cleanupComplete: boolean;
   failedSteps: DeleteSkillCleanupStep[];
 };
@@ -212,6 +214,7 @@ export async function runSkillDeletion(
     return {
       found: true,
       deleted: finalized.deleted,
+      removed: finalized.deleted,
       skillAbsent: finalized.skillAbsent,
       cleanupComplete: false,
       failedSteps: finalized.failedCleanupSteps,
@@ -224,6 +227,7 @@ export async function runSkillDeletion(
   return {
     found: true,
     deleted: finalized.deleted,
+    removed: finalized.deleted,
     skillAbsent: finalized.skillAbsent,
     cleanupComplete: true,
     failedSteps: [],

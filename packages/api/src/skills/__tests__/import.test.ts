@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import { Types } from 'mongoose';
-import { FileSources } from 'librechat-data-provider';
+import { FileSources, getProductTrackingConfig } from 'librechat-data-provider';
 
 import type { ISkill, ISkillFile, CreateSkillResult } from '@librechat/data-schemas';
 import type { FiltersConfig } from 'librechat-data-provider';
@@ -57,6 +57,8 @@ function mockImportDeps(limits?: ImportSkillDeps['limits']): ImportSkillDeps {
     _id: skillId,
     name: 'tiny-limit-skill',
     description: 'A skill used by import handler tests.',
+    version: 1,
+    source: 'inline',
   } as ISkill & { _id: Types.ObjectId };
   const skillFile = { _id: new Types.ObjectId() } as ISkillFile & { _id: Types.ObjectId };
 
@@ -469,6 +471,40 @@ describe('createImportHandler', () => {
     } finally {
       streamSpy.mockRestore();
     }
+  });
+
+  it('reports an added skill only after all archive files and ownership persist', async () => {
+    const deps = mockImportDeps();
+    const req = mockZipRequest(await zipWithAdditionalFiles(2, 128));
+    req.productTracking = { ...getProductTrackingConfig(), enabled: true };
+    const productTracker = jest.fn();
+    req.productTracker = productTracker;
+    const res = mockResponse();
+    await createImportHandler(deps)(req, res);
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(productTracker).toHaveBeenCalledTimes(1);
+    expect(productTracker.mock.calls[0][0]).not.toHaveProperty('version');
+    expect(productTracker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'librechat.skills.added',
+        feature: 'skills',
+        source: 'inline',
+      }),
+    );
+  });
+
+  it('does not report an added skill when archive persistence rolls back', async () => {
+    const deps = mockImportDeps();
+    deps.saveBuffer = jest.fn(async () => {
+      throw new Error('storage unavailable');
+    });
+    const req = mockZipRequest(await zipWithAdditionalFiles(1, 128));
+    req.productTracking = { ...getProductTrackingConfig(), enabled: true };
+    const productTracker = jest.fn();
+    req.productTracker = productTracker;
+    await createImportHandler(deps)(req, mockResponse());
+    expect(deps.deleteSkill).toHaveBeenCalled();
+    expect(productTracker).not.toHaveBeenCalled();
   });
 
   it('uses request-scoped import limits', async () => {

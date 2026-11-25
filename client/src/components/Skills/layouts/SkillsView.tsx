@@ -5,7 +5,9 @@ import SkillFileViewer from '~/components/Skills/display/SkillFileViewer';
 import { CreateSkillForm, SkillForm } from '~/components/Skills/forms';
 import { useHasAccess, useAuthContext, useLocalize } from '~/hooks';
 import SkillDetail from '~/components/Skills/display/SkillDetail';
+import { useSkillsOpened } from '~/hooks/useProductObservation';
 import SkillState from '~/components/Skills/display/SkillState';
+import { useSkillOpened } from '~/hooks/Skills/useSkillOpened';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { useGetSkillByIdQuery } from '~/data-provider';
@@ -37,6 +39,7 @@ export default function SkillsView() {
   const isEdit = location.pathname.endsWith('/edit');
 
   const rolesLoaded = user?.role != null && roles?.[user.role] != null;
+  useSkillsOpened('route', rolesLoaded && hasAccess && (isCreate ? hasCreateAccess : !skillId));
   if (!rolesLoaded) {
     return (
       <div className="bg-surface-primary-alt flex h-full w-full items-center justify-center">
@@ -91,6 +94,7 @@ function DetailView({ skillId }: { skillId: string }) {
   const [searchParams] = useSearchParams();
   const activeFile = searchParams.get('file');
   const skillQuery = useGetSkillByIdQuery(skillId, { enabled: !!skillId });
+  useSkillOpened(skillId, skillQuery.data, skillQuery.isSuccess);
 
   // Show file content when a file is selected from the sidebar tree
   if (activeFile) {

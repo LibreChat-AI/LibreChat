@@ -18,6 +18,7 @@ import {
 } from 'librechat-data-provider';
 import type { TSkill, TSkillWarning, TUpdateSkillPayload } from 'librechat-data-provider';
 import { useGetSkillQuery, useUpdateSkillMutation } from '~/data-provider';
+import { useSkillOpened } from '~/hooks/Skills/useSkillOpened';
 import { useLocalize, useSkillPermissions } from '~/hooks';
 import SkillContentEditor from './SkillContentEditor';
 import CategorySelector from './CategorySelector';
@@ -61,6 +62,7 @@ export default function SkillForm({ skillId }: SkillFormProps) {
 
   const skillQuery = useGetSkillQuery(skillId);
   const skill = skillQuery.data;
+  useSkillOpened(skillId, skill, skillQuery.isSuccess);
   const permissions = useSkillPermissions(skill);
 
   const values = useMemo(() => toValues(skill), [skill]);
