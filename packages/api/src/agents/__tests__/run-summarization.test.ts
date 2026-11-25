@@ -112,6 +112,7 @@ import {
   ToolNode,
   Constants,
   buildChildInputs,
+  createPruneMessages,
   InMemorySubagentTaskStore,
   buildSubagentToolParams,
   executeHooks,
@@ -560,64 +561,46 @@ describe('model-level callbacks', () => {
 // Suite 1: reserveRatio
 // ---------------------------------------------------------------------------
 describe('reserveRatio', () => {
-  it('applies ratio from config using baseContextTokens, capped at maxContextTokens', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ baseContextTokens: 200_000, maxContextTokens: 200_000 })],
-      summarizationConfig: { reserveRatio: 0.03, provider: 'anthropic', model: 'claude' },
-    });
-    // Math.round(200000 * 0.97) = 194000, min(200000, 194000) = 194000
-    expect(agents[0].maxContextTokens).toBe(194_000);
-  });
+  it.each`
+    scenario                             | reserveRatio | baseContextTokens   | maxContextTokens | sent       | budget     | viable
+    ${'200k window minus 36,512 output'} | ${0.1}       | ${200_000 - 36_512} | ${200_000}       | ${163_488} | ${147_139} | ${true}
+    ${'no implicit default reserve'}     | ${0.1}       | ${163_488}          | ${155_314}       | ${163_488} | ${147_139} | ${true}
+    ${'smaller explicit cap'}            | ${0.1}       | ${50_000}           | ${50_000}        | ${50_000}  | ${45_000}  | ${true}
+    ${'unset ratio uses legacy budget'}  | ${undefined} | ${163_488}          | ${155_314}       | ${155_314} | ${147_548} | ${true}
+    ${'zero skips both reserves'}        | ${0}         | ${163_488}          | ${155_314}       | ${163_488} | ${163_488} | ${true}
+    ${'one follows SDK no-op semantics'} | ${1}         | ${163_488}          | ${155_314}       | ${163_488} | ${163_488} | ${true}
+    ${'no raw budget falls back'}        | ${0.05}      | ${undefined}        | ${100_000}       | ${100_000} | ${95_000}  | ${true}
+    ${'low budget is not floored'}       | ${0.99}      | ${500}              | ${1024}          | ${500}     | ${5}       | ${false}
+    ${'zero input is not raised'}        | ${0.1}       | ${0}                | ${1024}          | ${0}       | ${0}       | ${false}
+    ${'rounds the reserved tokens'}      | ${0.5}       | ${2047}             | ${2047}          | ${2047}    | ${1023}    | ${false}
+    ${'exactly the viable minimum'}      | ${0.5}       | ${2048}             | ${2048}          | ${2048}    | ${1024}    | ${true}
+  `(
+    '$scenario',
+    async ({ reserveRatio, baseContextTokens, maxContextTokens, sent, budget, viable }) => {
+      const [agent] = (await callAndCapture({
+        agents: [makeAgent({ baseContextTokens, maxContextTokens })],
+        summarizationConfig: { reserveRatio, provider: 'anthropic', model: 'claude' },
+      })) as Pick<
+        AgentInputs,
+        'maxContextTokens' | 'summarizationConfig' | 'summarizationEnabled'
+      >[];
+      expect(agent.maxContextTokens).toBe(sent);
+      expect(agent.summarizationEnabled).toBe(viable);
+      if (agent.maxContextTokens == null) {
+        throw new Error('Expected a context budget in the SDK input');
+      }
 
-  it('never exceeds user-configured maxContextTokens even when ratio computes higher', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ baseContextTokens: 200_000, maxContextTokens: 50_000 })],
-      summarizationConfig: { reserveRatio: 0.03, provider: 'anthropic', model: 'claude' },
-    });
-    // Math.round(200000 * 0.97) = 194000, but min(50000, 194000) = 50000
-    expect(agents[0].maxContextTokens).toBe(50_000);
-  });
-
-  it('falls back to maxContextTokens when ratio is not set', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000, baseContextTokens: 200_000 })],
-      summarizationConfig: { provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('falls back to maxContextTokens when ratio is 0', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000, baseContextTokens: 200_000 })],
-      summarizationConfig: { reserveRatio: 0, provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('falls back to maxContextTokens when ratio is 1', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000, baseContextTokens: 200_000 })],
-      summarizationConfig: { reserveRatio: 1, provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('falls back to maxContextTokens when baseContextTokens is undefined', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000 })],
-      summarizationConfig: { reserveRatio: 0.05, provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('clamps to 1024 minimum but still capped at maxContextTokens', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ baseContextTokens: 500, maxContextTokens: 2000 })],
-      summarizationConfig: { reserveRatio: 0.99, provider: 'anthropic', model: 'claude' },
-    });
-    // Math.round(500 * 0.01) = 5 → clamped to 1024, min(2000, 1024) = 1024
-    expect(agents[0].maxContextTokens).toBe(1024);
-  });
+      const prune = createPruneMessages({
+        maxTokens: agent.maxContextTokens,
+        reserveRatio: agent.summarizationConfig?.reserveRatio,
+        summarizationEnabled: agent.summarizationEnabled,
+        startIndex: 0,
+        tokenCounter: () => 1,
+        indexTokenCountMap: {},
+      });
+      expect(prune({ messages: [new HumanMessage('Hello')] }).contextBudget).toBe(budget);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -2921,22 +2904,20 @@ describe('multi-agent + per-agent overrides', () => {
     });
   });
 
-  it('different agents get different effectiveMaxContextTokens', async () => {
+  it('uses the base budget only for agents with a configured reserve', async () => {
     const agents = await callAndCapture({
       agents: [
-        makeAgent({ id: 'agent_1', baseContextTokens: 200_000, maxContextTokens: 100_000 }),
-        makeAgent({ id: 'agent_2', baseContextTokens: 100_000, maxContextTokens: 50_000 }),
+        makeAgent({ id: 'agent_1', baseContextTokens: 120_000, maxContextTokens: 114_000 }),
+        makeAgent({
+          id: 'agent_2',
+          baseContextTokens: 100_000,
+          maxContextTokens: 95_000,
+          summarization: { reserveRatio: 0 },
+        }),
       ],
-      summarizationConfig: {
-        reserveRatio: 0.1,
-        provider: 'anthropic',
-        model: 'claude',
-      },
+      summarizationConfig: { provider: 'anthropic', model: 'claude' },
     });
-    // agent_1: Math.round(200000 * 0.9) = 180000, but capped at user's maxContextTokens (100000)
-    expect(agents[0].maxContextTokens).toBe(100_000);
-    // agent_2: Math.round(100000 * 0.9) = 90000, but capped at user's maxContextTokens (50000)
-    expect(agents[1].maxContextTokens).toBe(50_000);
+    expect(agents.map((agent) => agent.maxContextTokens)).toEqual([114_000, 100_000]);
   });
 });
 

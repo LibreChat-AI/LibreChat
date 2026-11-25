@@ -497,7 +497,7 @@ type RunAgent = Omit<Agent, 'tools'> & {
   azureOptions?: t.AzureOptions;
   tools?: GenericTool[];
   maxContextTokens?: number;
-  /** Pre-ratio context budget from initializeAgent. */
+  /** Input budget before headroom, from initializeAgent. */
   baseContextTokens?: number;
   useLegacyContent?: boolean;
   imageDetail?: ImageDetail;
@@ -1702,7 +1702,6 @@ function shapeSummarizationConfig(
       retainRecent: config?.retainRecent,
     } satisfies AgentSummarizationConfig,
     contextPruning: config?.contextPruning as ContextPruningConfig | undefined,
-    reserveRatio: config?.reserveRatio,
   };
 }
 
@@ -1713,25 +1712,19 @@ function shapeSummarizationConfig(
  * the recursion limit aborts the run. Dozens of wasted LLM calls surfaced to
  * the user as an opaque LangGraph error. Falling back to plain pruning instead
  * either fits the request or fails fast with the actionable `empty_messages`
- * token-budget breakdown. Matches the floor `initializeAgent` applies when the
- * user supplies no override.
+ * token-budget breakdown.
  */
 const MIN_SUMMARIZATION_CONTEXT_TOKENS = 1024;
 
-/**
- * Applies `reserveRatio` against the pre-ratio base context budget, falling
- * back to the pre-computed `maxContextTokens` from initializeAgent.
- */
+/** Mirror SDK rounding for viability only; leave the unconfigured behavior unchanged. */
 function computeEffectiveMaxContextTokens(
-  reserveRatio: number | undefined,
-  baseContextTokens: number | undefined,
   maxContextTokens: number | undefined,
+  reserveRatio: number | undefined,
 ): number | undefined {
-  if (reserveRatio == null || reserveRatio <= 0 || reserveRatio >= 1 || baseContextTokens == null) {
+  if (maxContextTokens == null || reserveRatio == null || reserveRatio <= 0 || reserveRatio >= 1) {
     return maxContextTokens;
   }
-  const ratioComputed = Math.max(1024, Math.round(baseContextTokens * (1 - reserveRatio)));
-  return Math.min(maxContextTokens ?? ratioComputed, ratioComputed);
+  return maxContextTokens - Math.round(maxContextTokens * reserveRatio);
 }
 
 type CallbackClientOptions = {
@@ -2897,21 +2890,25 @@ export async function createRun({
       tools = eventOnlyRunFileTools(tools, toolDefinitions);
     }
 
-    const effectiveMaxContextTokens = computeEffectiveMaxContextTokens(
-      summarization.reserveRatio,
-      agent.baseContextTokens,
-      agent.maxContextTokens,
+    const { reserveRatio } = summarization.config;
+    const maxContextTokens =
+      reserveRatio != null
+        ? (agent.baseContextTokens ?? agent.maxContextTokens)
+        : agent.maxContextTokens;
+    const summarizationContextTokens = computeEffectiveMaxContextTokens(
+      maxContextTokens,
+      reserveRatio,
     );
 
     const summarizationViable =
-      effectiveMaxContextTokens == null ||
-      effectiveMaxContextTokens >= MIN_SUMMARIZATION_CONTEXT_TOKENS;
+      summarizationContextTokens == null ||
+      summarizationContextTokens >= MIN_SUMMARIZATION_CONTEXT_TOKENS;
     if (summarization.enabled && !summarizationViable) {
       logger.warn(
         '[createRun] Summarization disabled for this run: context budget below viable minimum',
         {
           agentId: agent.id,
-          effectiveMaxContextTokens,
+          summarizationContextTokens,
           minimum: MIN_SUMMARIZATION_CONTEXT_TOKENS,
         },
       );
@@ -2935,7 +2932,7 @@ export async function createRun({
         }) || undefined,
       name: agent.name ?? undefined,
       toolRegistry,
-      maxContextTokens: effectiveMaxContextTokens,
+      maxContextTokens,
       useLegacyContent: agent.useLegacyContent ?? false,
       discoveredTools:
         !isSubagent && discoveredTools.size > 0 ? Array.from(discoveredTools) : undefined,
