@@ -141,6 +141,7 @@ export interface IScheduleRun {
   /** When reconciliation last examined this row; rotates each bounded non-terminal
    *  window so no abandoned row can starve behind a full batch of live runs. */
   reconciledAt?: Date;
+  jobCreatedAt?: Date;
   resumeClaimedAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;

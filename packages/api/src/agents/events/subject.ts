@@ -135,21 +135,12 @@ function counted(status: string): { failed: boolean } | undefined {
   return undefined;
 }
 
-/** What became of a run's generation, as the generation job store has it. */
-export type GenerationStatus =
-  | 'running'
-  | 'requires_action'
-  | 'complete'
-  | 'error'
-  | 'aborted'
-  | null;
-
-/** The outcome a reconciled run is recorded with, from what became of its generation. */
-function ended(state: GenerationStatus): 'success' | 'error' | 'interrupted' | undefined {
-  if (state === 'running' || state === 'requires_action') return undefined;
-  if (state === 'complete') return 'success';
-  if (state === 'error') return 'error';
-  return 'interrupted';
+/** The generation job store, asked for one conversation's current generation. */
+export interface JobSource {
+  getJobStore():
+    | { getJob(id: string): Promise<{ status: string; createdAt: number } | null> }
+    | null
+    | undefined;
 }
 
 export interface SubscriptionHost extends Pick<Adapter, 'resolve'> {
@@ -158,13 +149,12 @@ export interface SubscriptionHost extends Pick<Adapter, 'resolve'> {
   /** The deployment's bounds on a subscription's runs, as its config now sets them. */
   bounds: () => Promise<RunSettings>;
   /**
-   * Finishes the subscription runs nobody else will: an active run whose generation is gone,
-   * ended as interrupted, and an ended run whose subscription step never landed. Run as the
-   * system; answers how many it finished.
+   * Finishes the subscription runs nobody else will: an active run whose own generation is no
+   * longer running or paused, ended as interrupted, which does not count into its streak, and
+   * an ended run whose subscription step never landed. Only a settle records a run's real
+   * outcome. Run as the system; answers how many it finished.
    */
-  reconcile: (
-    job: (run: { conversationId?: string }) => Promise<GenerationStatus>,
-  ) => Promise<number>;
+  reconcile: () => Promise<number>;
   /** What the owner may allow the subscription's runs, and the grant they made. */
   service: RunGrantService<SubscriptionIdentity>;
   execution: RunGrantExecutionFactory<SubscriptionIdentity>;
@@ -196,6 +186,8 @@ export function createSubscriptionHost(deps: {
   runs: Pick<TriggerRuns, 'reserve' | 'skip' | 'pause' | 'finish' | 'settled' | 'stranded'>;
   /** The subscription's hourly count and failure streak. */
   usage: Pick<Subscriptions, 'take' | 'tally'>;
+  /** The generation job store: which generation a run is, and whether it still runs. */
+  jobs: JobSource;
   /**
    * The longest a grant this owner makes may last, in hours, as the deployment sets it.
    * Absent, the default every grant has. It bounds the grant only: no value lifts the need
@@ -372,10 +364,15 @@ export function createSubscriptionHost(deps: {
     // The conversation is the generation's own key, fixed before the run is initialized, so
     // a sweep can ask whether the run's generation still lives from the moment it is on record.
     const conversationId = req.body?.conversationId;
+    const named = typeof conversationId === 'string' && conversationId ? conversationId : undefined;
+    // The generation this request created for the run, before the run was initialized: a later
+    // turn in the same conversation is another generation, created at another time.
+    const job = named ? await deps.jobs.getJobStore()?.getJob(named) : undefined;
     const row = {
       user: owner.id as never,
       ...(owner.tenantId != null && { tenantId: owner.tenantId }),
-      ...(typeof conversationId === 'string' && conversationId && { conversationId }),
+      ...(named && { conversationId: named }),
+      ...(job != null && { jobCreatedAt: new Date(job.createdAt) }),
       firedAt: new Date(),
       configRevision: subscription.revision,
     };
@@ -429,9 +426,15 @@ export function createSubscriptionHost(deps: {
     return true;
   }
 
-  async function reconcile(
-    job: (run: { conversationId?: string }) => Promise<GenerationStatus>,
-  ): Promise<number> {
+  /** Whether the generation a run was reserved with is the one still running or paused. */
+  async function live(run: { conversationId?: string; jobCreatedAt?: Date }): Promise<boolean> {
+    if (!run.conversationId || run.jobCreatedAt == null) return false;
+    const job = await deps.jobs.getJobStore()?.getJob(run.conversationId);
+    if (job == null || job.createdAt !== new Date(run.jobCreatedAt).getTime()) return false;
+    return job.status === 'running' || job.status === 'requires_action';
+  }
+
+  async function reconcile(): Promise<number> {
     const { staleMs } = await settings();
     const stranded = await deps.runs.stranded('subscription', new Date(Date.now() - staleMs), 50);
     let finished = 0;
@@ -439,11 +442,10 @@ export function createSubscriptionHost(deps: {
       try {
         let status: string = run.status;
         if (run.status === 'started' || run.status === 'requires_action') {
-          // Its generation lives on: the run is long, not lost. Otherwise it is recorded as its
-          // generation ended, which a settle that failed left unwritten.
-          const outcome = ended(await job(run));
-          if (!outcome) continue;
-          const written = await deps.runs.finish(ref, { status: outcome });
+          if (await live(run)) continue;
+          // Its own generation is gone or ended without a settle: nothing here knows how the run
+          // went, so it is interrupted, which counts neither for nor against the streak.
+          const written = await deps.runs.finish(ref, { status: 'interrupted' });
           if (written == null) continue;
           status = written.status;
         }

@@ -1,21 +1,10 @@
 import { cadence, createSubscriptionReconciler } from './reconcile';
 
-function setup(jobs: Record<string, string> = {}, staleMs = 30 * 60_000) {
-  const states: unknown[] = [];
-  const reconcile = jest.fn(
-    async (job: (run: { conversationId?: string }) => Promise<string | null>) => {
-      for (const conversationId of ['live', 'paused', 'done', 'gone', undefined]) {
-        states.push(await job({ conversationId }));
-      }
-      return states.length;
-    },
-  );
+function setup(staleMs = 30 * 60_000) {
+  const reconcile = jest.fn(async () => 0);
   const host = { reconcile, bounds: jest.fn(async () => ({ staleMs }) as never) };
-  const store = {
-    getJob: jest.fn(async (id: string) => (id in jobs ? { status: jobs[id] } : null)),
-  };
-  const reconciler = createSubscriptionReconciler(host, { getJobStore: () => store });
-  return { reconciler, reconcile, host, states };
+  const reconciler = createSubscriptionReconciler(host);
+  return { reconciler, reconcile, host };
 }
 
 afterEach(() => jest.useRealTimers());
@@ -30,20 +19,15 @@ describe('cadence', () => {
 });
 
 describe('createSubscriptionReconciler', () => {
-  it("asks the generation job store what became of each run's generation", async () => {
-    const { reconciler, states } = setup({
-      live: 'running',
-      paused: 'requires_action',
-      done: 'complete',
-    });
-    await reconciler.pass();
-    // A run with no conversation, or whose job is gone, has no generation to ask about.
-    expect(states).toEqual(['running', 'requires_action', 'complete', null, null]);
+  it("answers one pass on demand with what the host's pass finished", async () => {
+    const { reconciler, reconcile } = setup();
+    reconcile.mockResolvedValueOnce(3);
+    await expect(reconciler.pass()).resolves.toBe(3);
   });
 
   it('starts no timer until it is initialized, then passes on its cadence', async () => {
     jest.useFakeTimers();
-    const { reconciler, reconcile } = setup({}, 6 * 60_000);
+    const { reconciler, reconcile } = setup(6 * 60_000);
     await jest.advanceTimersByTimeAsync(600_000);
     expect(reconcile).not.toHaveBeenCalled();
     reconciler.initialize();
@@ -56,7 +40,7 @@ describe('createSubscriptionReconciler', () => {
 
   it('passes no more once stopped, and is not started again', async () => {
     jest.useFakeTimers();
-    const { reconciler, reconcile } = setup({}, 6 * 60_000);
+    const { reconciler, reconcile } = setup(6 * 60_000);
     reconciler.initialize();
     await jest.advanceTimersByTimeAsync(120_000);
     await reconciler.stop();
@@ -67,7 +51,7 @@ describe('createSubscriptionReconciler', () => {
 
   it('keeps passing after a pass fails', async () => {
     jest.useFakeTimers();
-    const { reconciler, reconcile } = setup({}, 6 * 60_000);
+    const { reconciler, reconcile } = setup(6 * 60_000);
     reconcile.mockRejectedValueOnce(new Error('store down'));
     reconciler.initialize();
     await jest.advanceTimersByTimeAsync(240_000);

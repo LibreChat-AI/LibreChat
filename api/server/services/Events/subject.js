@@ -5,7 +5,7 @@ const {
   createSubscriptions,
   createSubscriptionGrantStorage,
 } = require('@librechat/data-schemas');
-const { createSubscriptionHost } = require('@librechat/api');
+const { createSubscriptionHost, GenerationJobManager } = require('@librechat/api');
 const { resolveAgentFireAccess } = require('~/server/services/Schedules/access');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { getAppConfig } = require('~/server/services/Config/app');
@@ -27,6 +27,7 @@ module.exports = createSubscriptionHost({
   access: resolveAgentFireAccess,
   runs: createTriggerRuns(mongoose),
   usage: subscriptions,
+  jobs: GenerationJobManager,
   enrollment: {
     getAppConfig,
     resolveGraphAccess: (user) =>

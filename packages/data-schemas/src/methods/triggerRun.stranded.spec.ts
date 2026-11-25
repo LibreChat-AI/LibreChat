@@ -145,6 +145,19 @@ describe("stranded: a subscription's runs someone has to finish", () => {
     expect(keys(await runs.stranded('subscription', minutes(10), 2))).toEqual(['mine']);
   });
 
+  it('moves the rows it returned to the back of the next window', async () => {
+    for (const [key, at] of [
+      ['a', 1],
+      ['b', 2],
+      ['c', 3],
+    ] as const)
+      await started(key, minutes(at));
+    expect(keys(await runs.stranded('subscription', minutes(10), 2))).toEqual(['a', 'b']);
+    expect(keys(await runs.stranded('subscription', minutes(10), 2))).toEqual(['c', 'a']);
+    const stamped = await ScheduleRun.find({ kind: 'subscription' }).lean();
+    expect(stamped.every((row) => row.reconciledAt instanceof Date)).toBe(true);
+  });
+
   it('reads at most the limit of each kind', async () => {
     for (const key of ['a', 'b', 'c']) await started(key, minutes(1));
     for (const key of ['d', 'e', 'f']) {

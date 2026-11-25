@@ -40,6 +40,8 @@ export type TriggerRun = {
   abortRequestedAt?: Date;
   abortSource?: 'stop' | 'deletion';
   abortPersistedAt?: Date;
+  /** When the generation job running the run was created, on a subscription's row. */
+  jobCreatedAt?: Date;
 };
 
 /** A ref to a schedule's run, which always names a row: its schedule and the event's time. */

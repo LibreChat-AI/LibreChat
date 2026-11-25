@@ -160,6 +160,12 @@ const scheduleRunSchema: Schema<IScheduleRunDocument> = new Schema(
     reconciledAt: {
       type: Date,
     },
+    /** When the generation job that runs an event subscription's run was created. With the
+     *  conversation id, which is the job's key, it names that one generation: a later turn in
+     *  the same conversation is another job with another creation time. */
+    jobCreatedAt: {
+      type: Date,
+    },
     /** The schedule's configRevision at claim time. Fences terminal bookkeeping and
      *  auto-disable from owner edits/re-enables that landed after this run started. */
     configRevision: {

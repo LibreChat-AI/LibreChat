@@ -61,6 +61,8 @@ let storage: RunGrantStorage<SubscriptionIdentity>;
 let host: SubscriptionHost;
 let access: jest.Mock<Promise<AgentAccess>, [string, IUser]>;
 let findUser: jest.Mock<Promise<IUser | null>, [string]>;
+/** The generation job store, by conversation: each run's own generation, as the server creates it. */
+let jobStore: Map<string, { status: string; createdAt: number }>;
 let getAppConfig: jest.Mock<Promise<AppConfig | undefined>, [{ baseOnly?: boolean }?]>;
 let connectionId: string;
 
@@ -84,6 +86,7 @@ const build = (overrides: Partial<HostDeps> = {}): SubscriptionHost =>
     access,
     runs: createTriggerRuns(mongoose),
     usage: subscriptions,
+    jobs: { getJobStore: () => ({ getJob: async (id: string) => jobStore.get(id) ?? null }) },
     enrollment: {
       getAppConfig,
       resolveGraphAccess: unused,
@@ -246,6 +249,7 @@ beforeEach(async () => {
   access = jest.fn<Promise<AgentAccess>, [string, IUser]>(async () => 'ok');
   findUser = jest.fn(async (id: string) => ({ id, role: 'USER' }) as IUser);
   // The deployment's own settings are read for a run's bounds; nothing of the owner's is.
+  jobStore = new Map();
   getAppConfig = jest.fn(async (options?: { baseOnly?: boolean }) =>
     options?.baseOnly ? ({} as AppConfig) : unused(),
   );
@@ -1106,7 +1110,14 @@ describe("a subscription's runs on record", () => {
     subject: { kind: 'subscription', id: subscription.id },
     delivery: { key: String(req.body?.clientRequestId), event: { occurredAt: NOW } },
   });
-  const fields = ['status', 'revision', 'owner', 'error', 'conversationId'] as const;
+  const fields = [
+    'status',
+    'revision',
+    'owner',
+    'error',
+    'conversationId',
+    'jobCreatedAt',
+  ] as const;
   const row = (subscription: Subscription, req: TriggerRequest) =>
     runs().get(refOf(subscription, req), [...fields]);
   const stored = (id: string) =>
@@ -1132,6 +1143,8 @@ describe("a subscription's runs on record", () => {
 
   async function started(subscription: Subscription) {
     const req = delivery(subscription.id);
+    // The chat route creates the run's generation before the run is initialized.
+    jobStore.set(String(req.body?.conversationId), { status: 'running', createdAt: Date.now() });
     const input = inputFor(req);
     await place(input);
     return { req, input };
@@ -1144,8 +1157,9 @@ describe("a subscription's runs on record", () => {
       status: 'started',
       revision: 0,
       owner: OWNER,
-      // The generation's key, so a sweep can ask whether it still lives.
+      // The generation's key and when it was created: together they name this generation.
       conversationId: req.body?.conversationId,
+      jobCreatedAt: new Date(jobStore.get(String(req.body?.conversationId))!.createdAt),
     });
   });
 
@@ -1356,45 +1370,87 @@ describe("a subscription's runs on record", () => {
         { kind: 'subscription', subject: subscription.id, deliveryKey: req.body?.clientRequestId },
         { $set: { [field]: new Date(Date.now() - 3 * 3_600_000) } },
       );
+    const generationOf = (req: TriggerRequest) => jobStore.get(String(req.body?.conversationId))!;
 
     it('ends a stale run whose generation is gone as interrupted, without counting it', async () => {
       bounds({ failures: 1 });
       const subscription = await made();
       const { req } = await started(subscription);
       await aged(subscription, req, 'firedAt');
-      const job = jest.fn(async () => null);
-      await expect(host.reconcile(job)).resolves.toBe(1);
-      expect(job).toHaveBeenCalledWith(
-        expect.objectContaining({ conversationId: req.body?.conversationId }),
-      );
+      jobStore.delete(String(req.body?.conversationId));
+      await expect(host.reconcile()).resolves.toBe(1);
       expect(await row(subscription, req)).toMatchObject({ status: 'interrupted' });
       expect(await stored(subscription.id)).toMatchObject({ enabled: true });
     });
 
-    it.each([
-      ['complete', 'success', true],
-      ['error', 'error', false],
-      ['aborted', 'interrupted', true],
-    ] as const)(
-      'records a stale run whose generation ended %s as %s',
-      async (state, status, enabled) => {
-        bounds({ failures: 1 });
+    it.each(['running', 'requires_action'])(
+      'leaves a stale run whose own generation is still %s',
+      async (status) => {
         const subscription = await made();
         const { req } = await started(subscription);
         await aged(subscription, req, 'firedAt');
-        await expect(host.reconcile(async () => state)).resolves.toBe(1);
-        expect(await row(subscription, req)).toMatchObject({ status });
-        expect(await stored(subscription.id)).toMatchObject({ enabled });
+        generationOf(req).status = status;
+        await expect(host.reconcile()).resolves.toBe(0);
+        expect(await row(subscription, req)).toMatchObject({ status: 'started' });
       },
     );
 
-    it('leaves a stale run whose generation is still live', async () => {
+    it('treats a run as lost when a later generation runs in its conversation', async () => {
       const subscription = await made();
       const { req } = await started(subscription);
       await aged(subscription, req, 'firedAt');
-      await expect(host.reconcile(async () => 'running')).resolves.toBe(0);
-      await expect(host.reconcile(async () => 'requires_action')).resolves.toBe(0);
-      expect(await row(subscription, req)).toMatchObject({ status: 'started' });
+      // A later turn of the same conversation: the same key, another generation.
+      jobStore.set(String(req.body?.conversationId), {
+        status: 'running',
+        createdAt: generationOf(req).createdAt + 60_000,
+      });
+      await expect(host.reconcile()).resolves.toBe(1);
+      expect(await row(subscription, req)).toMatchObject({ status: 'interrupted' });
+    });
+
+    it('never reads an outcome from a generation that completed: a lost settle is interrupted', async () => {
+      bounds({ failures: 2 });
+      const subscription = await made();
+      const first = await started(subscription);
+      await host.settle({
+        request: first.input.req,
+        executionContext: first.input.executionContext,
+        status: 'error',
+      });
+      // The next run's turn ended in an error part, which a generation still marks complete,
+      // and its settle never landed.
+      const { req } = await started(subscription);
+      await aged(subscription, req, 'firedAt');
+      generationOf(req).status = 'complete';
+      await expect(host.reconcile()).resolves.toBe(1);
+      expect(await row(subscription, req)).toMatchObject({ status: 'interrupted' });
+      expect(await stored(subscription.id)).toMatchObject({ enabled: true, failures: 1 });
+    });
+
+    it('reaches a lost run behind more live runs than one pass reads', async () => {
+      const subscription = await made();
+      const old = new Date(Date.now() - 3 * 3_600_000);
+      const createdAt = Date.now();
+      for (let i = 0; i < 60; i++) {
+        const ref = {
+          subject: { kind: 'subscription', id: subscription.id },
+          delivery: { key: `live-${i}`, event: { occurredAt: NOW } },
+        };
+        await runs().reserve(ref, {
+          user: OWNER as never,
+          firedAt: new Date(old.getTime() - (60 - i) * 1000),
+          conversationId: `live-${i}`,
+          jobCreatedAt: new Date(createdAt),
+          configRevision: 0,
+        });
+        jobStore.set(`live-${i}`, { status: 'running', createdAt });
+      }
+      const { req } = await started(subscription);
+      await aged(subscription, req, 'firedAt');
+      jobStore.delete(String(req.body?.conversationId));
+      await expect(host.reconcile()).resolves.toBe(0);
+      await expect(host.reconcile()).resolves.toBe(1);
+      expect(await row(subscription, req)).toMatchObject({ status: 'interrupted' });
     });
 
     it("finishes the subscription's step a crash left undone after the row was written", async () => {
@@ -1404,15 +1460,16 @@ describe("a subscription's runs on record", () => {
       // The row was written, then the process stopped before the subscription's own step.
       await runs().finish(refOf(subscription, req), { status: 'error' });
       await aged(subscription, req, 'settledAt');
-      await expect(host.reconcile(async () => null)).resolves.toBe(1);
+      await expect(host.reconcile()).resolves.toBe(1);
       expect(await stored(subscription.id)).toMatchObject({ enabled: false });
-      await expect(host.reconcile(async () => null)).resolves.toBe(0);
+      await expect(host.reconcile()).resolves.toBe(0);
     });
 
     it('leaves a recent run alone', async () => {
       const subscription = await made();
-      await started(subscription);
-      await expect(host.reconcile(async () => null)).resolves.toBe(0);
+      const { req } = await started(subscription);
+      jobStore.delete(String(req.body?.conversationId));
+      await expect(host.reconcile()).resolves.toBe(0);
     });
   });
 });
