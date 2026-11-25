@@ -236,7 +236,13 @@ describe('createClientToolHandoff', () => {
       responseId: 'resp_1',
     });
 
-    expect(handoff.appliedTools).toEqual([declared]);
+    expect(handoff.appliedTools).toEqual([
+      {
+        ...declared,
+        parameters: declared.parameters ?? { type: 'object', properties: {} },
+        strict: false,
+      },
+    ]);
     expect(handoff.appliedTools[0].description).toBe('Open a service page');
   });
 
@@ -283,7 +289,7 @@ describe('createClientToolHandoff', () => {
     expect([...handoff.clientToolNames]).toEqual([]);
   });
 
-  it('drops strict from the echo, which the run cannot enforce', () => {
+  it('reports strict:false and required nullable fields instead of claiming unsupported enforcement', () => {
     const handoff = createClientToolHandoff({
       tools: [fnTool('open_service_page', { description: 'Open a page', strict: true })],
       agentDefinitions: [serverTool],
@@ -291,9 +297,45 @@ describe('createClientToolHandoff', () => {
     });
 
     expect(handoff.appliedTools).toEqual([
-      { type: 'function', name: 'open_service_page', description: 'Open a page' },
+      {
+        type: 'function',
+        name: 'open_service_page',
+        description: 'Open a page',
+        parameters: { type: 'object', properties: {} },
+        strict: false,
+      },
     ]);
   });
+
+  it.each([undefined, null, false, true])(
+    'normalizes required response fields without mutating requested strict=%s',
+    (strict) => {
+      const tool = Object.freeze(fnTool('lookup', { strict }));
+      const handoff = createClientToolHandoff({
+        tools: [tool],
+        agentDefinitions: [],
+        responseId: 'resp_schema',
+      });
+      expect(handoff.appliedTools).toEqual([
+        {
+          type: 'function',
+          name: 'lookup',
+          description: null,
+          parameters: { type: 'object', properties: {} },
+          strict: false,
+        },
+      ]);
+      expect(tool.strict).toBe(strict);
+      expect(tool).not.toHaveProperty('parameters');
+      expect(handoff.toolDefinitions).toEqual([
+        {
+          name: 'lookup',
+          parameters: { type: 'object', properties: {} },
+          allowed_callers: ['direct'],
+        },
+      ]);
+    },
+  );
 
   it('wraps both handlers once a client tool is in play', () => {
     const handoff = createClientToolHandoff({
