@@ -101,7 +101,7 @@ describe('agents addTitle', () => {
     expect(client.titleConvo).toHaveBeenCalledWith(expect.objectContaining({ immediate: true }));
   });
 
-  it('does not discard a healthy title after an arbitrary 45 second window', async () => {
+  it.each([true, false])('publishes a healthy late title (immediate: %s)', async (immediate) => {
     jest.useFakeTimers();
     try {
       let resolveTitle;
@@ -118,17 +118,20 @@ describe('agents addTitle', () => {
         text: 'hello',
         client,
         conversationId: 'cid-slow-provider',
-        immediate: true,
-        convoReady: Promise.resolve(),
+        epoch: 7,
+        immediate,
+        ...(immediate && { convoReady: Promise.resolve(), canPublishEarly: () => false }),
       });
 
-      await jest.advanceTimersByTimeAsync(45_000);
+      await jest.advanceTimersByTimeAsync(45_001);
       expect(mockSaveConvo).not.toHaveBeenCalled();
+      expect(mockCacheStore.has('pending:7:user-1-cid-slow-provider')).toBe(true);
 
       resolveTitle('Late Title');
       await pending;
 
       expect(mockCacheStore.get('user-1-cid-slow-provider')).toBe('Late Title');
+      expect(mockCacheStore.has('pending:7:user-1-cid-slow-provider')).toBe(false);
       expect(mockSaveConvo).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ conversationId: 'cid-slow-provider', title: 'Late Title' }),
