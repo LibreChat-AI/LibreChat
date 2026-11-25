@@ -84,6 +84,7 @@ export {
   apiBaseUrl,
   sharedFileDownload,
   buildLoginRedirectUrl,
+  withLoginError,
 } from './api-endpoints';
 export { default as request } from './request';
 export { dataService };

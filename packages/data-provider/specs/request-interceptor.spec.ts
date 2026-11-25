@@ -1151,7 +1151,43 @@ describe('axios 401 interceptor — temporary session-check unavailability', () 
 
     await axios.get('/api/messages').catch(() => undefined);
 
-    expect(hrefWrites).toEqual(['/login?redirect_to=%2Fc%2Frace']);
+    expect(hrefWrites).toEqual([
+      '/login?redirect_to=%2Fc%2Frace&redirect=false&error=OPENID_SESSION_ENDED',
+    ]);
+  });
+
+  it('keeps the reason from a caller-started refresh when the retry gets a 403 without a code', async () => {
+    expect.assertions(2);
+    setTokenHeader('expired-token');
+    const hrefWrites = setTrackedWindowLocation({
+      href: 'http://localhost/c/race',
+      pathname: '/c/race',
+      search: '',
+      hash: '',
+    } as Partial<Location>);
+
+    mockAdapter.mockImplementation((config: InternalAxiosRequestConfig) => {
+      if (config.url?.includes('/api/auth/refresh?retry=true') === true) {
+        return Promise.reject({
+          response: { status: 403, data: { message: 'No session found' } },
+          config,
+        });
+      }
+      if (config.url?.includes('/api/auth/refresh') === true) {
+        return Promise.reject({
+          response: { status: 401, data: { code: 'OPENID_SESSION_ENDED' } },
+          config,
+        });
+      }
+      return create401Error(config);
+    });
+
+    await dataRequest.refreshToken().catch(() => undefined);
+
+    expect(getCallsForUrl('/api/auth/refresh')).toHaveLength(2);
+    expect(hrefWrites).toEqual([
+      '/login?redirect_to=%2Fc%2Frace&redirect=false&error=OPENID_SESSION_ENDED',
+    ]);
   });
 });
 
@@ -1331,7 +1367,9 @@ describe('proactive refresh — failure handling before a request is sent', () =
     await expect(axios.get('/api/messages')).rejects.toMatchObject({ code: 'AUTH_SESSION_ENDED' });
 
     expect(getCallsForUrl('/api/messages')).toHaveLength(0);
-    expect(hrefWrites).toEqual(['/login?redirect_to=%2Fc%2Frace']);
+    expect(hrefWrites).toEqual([
+      '/login?redirect_to=%2Fc%2Frace&redirect=false&error=OPENID_SESSION_ENDED',
+    ]);
     expect(dataRequest.getAuthGeneration()).toBe(startingGeneration + 1);
   });
 
@@ -1443,7 +1481,9 @@ describe('proactive refresh — failure handling before a request is sent', () =
     ).rejects.toMatchObject({ code: 'AUTH_SESSION_ENDED' });
 
     expect(fetchSpy).not.toHaveBeenCalled();
-    expect(hrefWrites).toEqual(['/login?redirect_to=%2Fc%2Frace']);
+    expect(hrefWrites).toEqual([
+      '/login?redirect_to=%2Fc%2Frace&redirect=false&error=OPENID_SESSION_ENDED',
+    ]);
     expect(dataRequest.getAuthGeneration()).toBe(startingGeneration + 1);
   });
 
@@ -1601,7 +1641,9 @@ describe('proactive refresh — failure handling before a request is sent', () =
     expect(getCallsForUrl('/api/messages')).toHaveLength(0);
     expect(getCallsForUrl('/api/convos')).toHaveLength(0);
     expect(getCallsForUrl('/api/auth/refresh')).toHaveLength(1);
-    expect(hrefWrites).toEqual(['/login?redirect_to=%2Fc%2Frace']);
+    expect(hrefWrites).toEqual([
+      '/login?redirect_to=%2Fc%2Frace&redirect=false&error=OPENID_SESSION_ENDED',
+    ]);
   });
 
   it('names and messages a definitive proactive refresh denial as AuthSessionEndedError', async () => {
