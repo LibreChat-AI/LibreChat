@@ -66,6 +66,7 @@ const EventTypes = {
   ERROR: 'error',
   SUBSCRIPTION_FRONTIER: 'subscription_frontier',
   ABORT: 'abort',
+  TRAILING_ABORT: 'trailing_abort',
   ABORT_ACK: 'abort_ack',
   PREEMPT: 'preempt',
 } as const;
@@ -86,6 +87,8 @@ interface PubSubMessage {
   emission?: readonly [string, number];
   /** Opaque nonce linking a replacement abort to its owner acknowledgement. */
   abortRequestId?: string;
+  /** Exact provider segment for TRAILING_ABORT. */
+  providerExecutionId?: string;
   /** Payload for PREEMPT messages; fenced by its own createdAt. */
   preempt?: PreemptMessage;
   /** Opaque local subscriber fence; never forwarded to application handlers. */
@@ -122,6 +125,7 @@ interface ReorderBuffer {
 
 interface AbortRegistration {
   callback: (generationId?: number) => void | boolean;
+  trailingProviderExecutionId?: string;
 }
 
 interface AbortAckWaiter {
@@ -955,6 +959,15 @@ export class RedisEventTransport implements IEventTransport {
         }
         return;
       }
+      if (parsed.type === EventTypes.TRAILING_ABORT) {
+        if (parsed.generationId == null || parsed.providerExecutionId == null) return;
+        for (const registration of streamState.abortCallbacks) {
+          if (registration.trailingProviderExecutionId === parsed.providerExecutionId) {
+            registration.callback(parsed.generationId);
+          }
+        }
+        return;
+      }
       let replayOnly = streamState.handlers.size > 0;
       for (const handlers of streamState.handlers.values()) {
         if (handlers.onReplayMessage == null) replayOnly = false;
@@ -1699,6 +1712,17 @@ export class RedisEventTransport implements IEventTransport {
     });
   }
 
+  emitTrailingAbort(streamId: string, generationId: number, providerExecutionId: string): void {
+    const message: PubSubMessage = {
+      type: EventTypes.TRAILING_ABORT,
+      generationId,
+      providerExecutionId,
+    };
+    void this.publisher.publish(CHANNELS.events(streamId), JSON.stringify(message)).catch((err) => {
+      logger.error('[RedisEventTransport] Failed to publish trailing abort:', err);
+    });
+  }
+
   private publishAbort(
     streamId: string,
     generationId?: number,
@@ -1859,10 +1883,11 @@ export class RedisEventTransport implements IEventTransport {
   async onAbort(
     streamId: string,
     callback: (generationId?: number) => void | boolean,
+    trailingProviderExecutionId?: string,
   ): Promise<() => void> {
     const state = this.getOrCreateStreamState(streamId);
 
-    const registration = { callback };
+    const registration = { callback, trailingProviderExecutionId };
     state.abortCallbacks.add(registration);
 
     try {

@@ -2215,6 +2215,9 @@ class GenerationJobManagerClass {
         } else {
           try {
             const terminal = isTerminalStatus(receipt.status);
+            if (terminal) {
+              this.cancelTrailingProviderWork(streamId, receipt);
+            }
             const bound = Date.now() + PROVIDER_DRAIN_TIMEOUT_MS;
             const deadline =
               terminal && receipt.completedAt != null
@@ -8937,12 +8940,20 @@ class GenerationJobManagerClass {
   ): Promise<boolean> {
     const key = this.providerExecutionKey(streamId, createdAt, providerExecutionId);
     const entry = this.openProviderExecutions.get(key);
-    if (entry == null || (this._isRedis && !this.eventTransport.onAbort)) return false;
+    if (
+      entry == null ||
+      (this._isRedis && (!this.eventTransport.onAbort || !this.eventTransport.emitTrailingAbort))
+    )
+      return false;
     entry.trailingAbort = cancel;
     try {
-      const release = await this.eventTransport.onAbort?.(streamId, (epoch) => {
-        if (epoch === createdAt) cancel();
-      });
+      const release = await this.eventTransport.onAbort?.(
+        streamId,
+        (epoch) => {
+          if (epoch === createdAt) cancel();
+        },
+        providerExecutionId,
+      );
       if (this.openProviderExecutions.get(key) !== entry) {
         release?.();
         return false;
@@ -8963,14 +8974,17 @@ class GenerationJobManagerClass {
     }
   }
 
-  private cancelTrailingProviderWork(streamId: string, job: SerializableJobData): void {
+  private cancelTrailingProviderWork(
+    streamId: string,
+    job: Pick<SerializableJobData, 'createdAt' | 'providerExecutionId' | 'providerDrained'>,
+  ): void {
     if (job.providerDrained !== false || !job.providerExecutionId) return;
     const key = this.providerExecutionKey(streamId, job.createdAt, job.providerExecutionId);
     const entry = this.openProviderExecutions.get(key);
-    if (entry?.trailingAbort) {
-      entry.trailingAbort();
+    if (entry) {
+      entry.trailingAbort?.();
     } else {
-      this.eventTransport.emitAbort?.(streamId, job.createdAt);
+      this.eventTransport.emitTrailingAbort?.(streamId, job.createdAt, job.providerExecutionId);
     }
   }
 

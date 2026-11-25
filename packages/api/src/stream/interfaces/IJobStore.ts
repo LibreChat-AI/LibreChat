@@ -1921,6 +1921,9 @@ export interface IEventTransport {
    */
   emitAbort?(streamId: string, generationId?: number): void;
 
+  /** Cancel trailing work without aborting the chat runtime or its terminal writes. */
+  emitTrailingAbort?(streamId: string, generationId: number, providerExecutionId: string): void;
+
   /** Awaitable, generation-correlated abort handoff. Resolves true only after
    * the replica owning that generation processes the abort. */
   emitAbortConfirmed?(streamId: string, generationId: number): Promise<boolean>;
@@ -1963,6 +1966,8 @@ export interface IEventTransport {
     streamId: string,
     /** Return true only when this replica owns and stopped the tagged generation. */
     callback: (generationId?: number) => void | boolean,
+    /** Also receive trailing-only aborts for this provider execution. */
+    trailingProviderExecutionId?: string,
   ): void | (() => void) | Promise<void | (() => void)>;
 
   /**

@@ -450,6 +450,42 @@ describe('GenerationJobManager startup telemetry', () => {
     await manager.destroy();
   });
 
+  it('cancels terminal predecessor work before waiting for its exact drain', async () => {
+    const manager = createManager();
+    const streamId = 'stream-terminal-provider-drain-replacement';
+    const predecessor = await manager.createJob(streamId, 'user-1');
+    const provider = predecessor.metadata.providerExecutionId!;
+    let replacing: ReturnType<typeof manager.createJob> | undefined;
+    try {
+      await expect(
+        manager.beginProviderExecution(streamId, predecessor.createdAt, provider),
+      ).resolves.toBe(true);
+      const stopTrailing = jest.fn();
+      await expect(
+        manager.trackProviderTrailingAbort(streamId, predecessor.createdAt, provider, stopTrailing),
+      ).resolves.toBe(true);
+      await expect(manager.completeJob(streamId, undefined, predecessor.createdAt)).resolves.toBe(
+        true,
+      );
+      expect(stopTrailing).not.toHaveBeenCalled();
+
+      let replacementSettled = false;
+      replacing = manager.createJob(streamId, 'user-1').finally(() => (replacementSettled = true));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(stopTrailing).toHaveBeenCalledTimes(1);
+      expect(replacementSettled).toBe(false);
+
+      await manager.markProviderExecutionDrained(streamId, predecessor.createdAt, provider);
+      const replacement = await replacing;
+      expect(replacement.createdAt).not.toBe(predecessor.createdAt);
+      expect(replacement.abortController.signal.aborted).toBe(false);
+    } finally {
+      await manager.markProviderExecutionDrained(streamId, predecessor.createdAt, provider);
+      await replacing;
+      await manager.destroy({ settlementBudgetMs: 0 });
+    }
+  });
+
   it('clears omitted per-turn identity when an in-memory job is replaced', async () => {
     const manager = createManager();
     await manager.createJob('stream-replaced-metadata', 'user-1', 'conversation-1', {
