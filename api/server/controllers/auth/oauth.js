@@ -1,24 +1,18 @@
 const { CacheKeys } = require('librechat-data-provider');
+const { logger, DEFAULT_SESSION_EXPIRY } = require('@librechat/data-schemas');
 const {
-  logger,
-  DEFAULT_SESSION_EXPIRY,
-  DEFAULT_REFRESH_TOKEN_EXPIRY,
-} = require('@librechat/data-schemas');
-const {
-  math,
   isEnabled,
   getAdminPanelUrl,
   isAdminPanelRedirect,
   generateAdminExchangeCode,
-  establishOAuthProviderSession,
   resolveAuthMethod,
 } = require('@librechat/api');
 const { syncUserEntraGroupMemberships } = require('~/server/services/PermissionService');
 const { setAuthTokens } = require('~/server/services/AuthService');
 const { sendOpenIDAuthResponse } = require('~/server/services/OpenIDRefreshRecovery');
 const {
-  getProviderSessionAuthorizer,
-  getProviderSessionClient,
+  establishOAuthCallback,
+  persistOAuthAdminBinding,
 } = require('~/server/services/ProviderSession');
 const getLogStores = require('~/cache/getLogStores');
 const { checkBan } = require('~/server/middleware');
@@ -50,18 +44,11 @@ function createOAuthHandler(redirectUri = domains.client) {
 
       /** Verified before any cookie setter or exchange-code issuance; a denial or unavailable
        *  check redirects and returns `undefined` here, so the handler must stop. */
-      const providerSessionRef = await establishOAuthProviderSession(
-        {
-          authorizer: getProviderSessionAuthorizer(),
-          getProviderSessionClient,
-          logger,
-          refreshTokenExpiryMs: math(
-            process.env.REFRESH_TOKEN_EXPIRY,
-            DEFAULT_REFRESH_TOKEN_EXPIRY,
-          ),
-        },
-        { req, res, clientDomain: domains.client },
-      );
+      const providerSessionRef = await establishOAuthCallback({
+        req,
+        res,
+        clientDomain: domains.client,
+      });
       if (providerSessionRef === undefined) {
         return;
       }
@@ -84,6 +71,14 @@ function createOAuthHandler(redirectUri = domains.client) {
         }
         const expiresAt = Date.now() + sessionExpiry;
 
+        await persistOAuthAdminBinding({
+          provider: req.user.provider,
+          refreshToken,
+          userId: req.user._id,
+          tenantId: req.user.tenantId,
+          providerSession: providerSessionRef,
+        });
+
         const callbackUrl = new URL(redirectUri);
         const exchangeCode = await generateAdminExchangeCode(
           cache,
@@ -93,6 +88,7 @@ function createOAuthHandler(redirectUri = domains.client) {
           callbackUrl.origin,
           req.pkceChallenge,
           expiresAt,
+          providerSessionRef,
         );
         callbackUrl.searchParams.set('code', exchangeCode);
         logger.info(`[OAuth] Admin panel redirect with exchange code for user: ${req.user._id}`);
