@@ -165,17 +165,6 @@ const GAPS: Gap[] = [
       ),
   },
   {
-    id: 'error-part',
-    why: "An error part draws nothing outside LibreChat: its card and the error-code registry are the app's. Closed by moving the error card into the package.",
-    matches: elements('error', {
-      missing: [
-        'div[alert]:',
-        'div:Mock Provider A could not complete this request.',
-        'div:The provider rejected the request.',
-      ],
-    }),
-  },
-  {
     id: 'approval-controls',
     why: 'A tool call paused for review shows LibreChat\'s approval controls (the reason, Approve, Reject); outside it reads "Cancelled". Closed by moving the approval and question cards into the package.',
     matches: elements('approval', {

@@ -71,6 +71,12 @@ jest.mock('../parts/WebSearch', () => ({
   __esModule: true,
   WebSearchCall: mockStub('web-search'),
 }));
+jest.mock('../errors/ErrorMessage', () => ({
+  __esModule: true,
+  default: ({ text, className }: { text: string; className?: string }) => (
+    <div data-testid="error-message" data-text={text} className={className} />
+  ),
+}));
 jest.mock('../parts/ask/Call', () => ({
   __esModule: true,
   default: mockStub('ask-user-question-call'),
@@ -103,8 +109,7 @@ const INHERITED = ['constructor', '__proto__', 'toString', 'hasOwnProperty'];
 /** Every branch of the switch `Part` replaced, with the component that branch drew. */
 const PART_TYPES: [string, TMessageContentParts, string | null][] = [
   ['steer', asPart({ type: ContentTypes.STEER, [ContentTypes.STEER]: 'go' }), 'steer-part'],
-  /** An error part is the host's to draw: the package has no error card of its own. */
-  ['error', asPart({ type: ContentTypes.ERROR, [ContentTypes.ERROR]: 'bad' }), null],
+  ['error', asPart({ type: ContentTypes.ERROR, [ContentTypes.ERROR]: 'bad' }), 'error-message'],
   [
     'agent update',
     asPart({ type: ContentTypes.AGENT_UPDATE, [ContentTypes.AGENT_UPDATE]: { agentId: 'a' } }),
@@ -253,6 +258,33 @@ describe('the package’s subagent card', () => {
     drawn(agentCall(Constants.SUBAGENT as string));
     expect(mockSubagentProps?.contentPreview).toBeUndefined();
     expect(mockSubagentProps?.toolCallId).toBe('call_1');
+  });
+});
+
+describe('the package’s error part', () => {
+  const errorText = (part: Record<string, unknown>) => {
+    const { container, unmount } = render(
+      <Part
+        part={asPart({ type: ContentTypes.ERROR, ...part })}
+        isSubmitting={false}
+        showCursor={false}
+        isCreatedByUser={false}
+      />,
+    );
+    const element = container.querySelector('[data-testid="error-message"]');
+    const result = [element?.getAttribute('data-text'), element?.className];
+    unmount();
+    return result;
+  };
+
+  it('draws the error message with the part’s error text, set apart from its neighbors', () => {
+    expect(errorText({ [ContentTypes.ERROR]: 'bad' })).toEqual(['bad', 'my-2']);
+  });
+
+  it('falls back to the part’s text, plain or wrapped, and to nothing', () => {
+    expect(errorText({ text: 'plain' })[0]).toBe('plain');
+    expect(errorText({ text: { value: 'wrapped' } })[0]).toBe('wrapped');
+    expect(errorText({})[0]).toBe('');
   });
 });
 
