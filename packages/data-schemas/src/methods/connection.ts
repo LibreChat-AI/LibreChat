@@ -43,10 +43,18 @@ export type Connections = {
    * an ingress URL, or an install taken from a delivery whose signature was verified.
    */
   resolve: (ref: ConnectionRef) => Promise<Connection | null>;
-  /** Records the provider holding or restoring an install. `null` when there is none by that id. */
-  mark: (id: string, status: ConnectionStatus) => Promise<Connection | null>;
-  /** Unbinds an install. Its record is deleted; `false` when there was none by that id. */
-  remove: (id: string) => Promise<boolean>;
+  /**
+   * Records the provider holding or restoring an install. `null` when there is none by that id.
+   * With `at`, the time the provider was asked for this state, it applies only when no answer
+   * asked for at that time or later is recorded yet, and `null` also means a newer answer is
+   * already recorded; the admin routes pass none and always apply.
+   */
+  mark: (id: string, status: ConnectionStatus, at?: Date) => Promise<Connection | null>;
+  /**
+   * Unbinds an install. Its record is deleted; `false` when there was none by that id. With
+   * `at`, it applies under the same rule as `mark`.
+   */
+  remove: (id: string, at?: Date) => Promise<boolean>;
 };
 
 function view(row: ConnectionRecord): Connection {
@@ -114,18 +122,31 @@ export function createConnections(mongoose: typeof import('mongoose')): Connecti
     return runAsSystem(async () => found(await Model.findOne(filter).lean<ConnectionRecord>()));
   }
 
-  async function mark(id: string, status: ConnectionStatus): Promise<Connection | null> {
+  /**
+   * The caller's connection by id, and with `at` only while no answer asked for at that time
+   * or later is recorded: equal times are the same answer again and change nothing.
+   */
+  function current(id: string, at?: Date) {
+    if (at == null) {
+      return { id, ...mine() };
+    }
+    return {
+      $and: [{ id }, mine(), { $or: [{ stateAt: { $exists: false } }, { stateAt: { $lt: at } }] }],
+    };
+  }
+
+  async function mark(id: string, status: ConnectionStatus, at?: Date): Promise<Connection | null> {
     return found(
       await Model.findOneAndUpdate(
-        { id, ...mine() },
-        { $set: { status } },
+        current(id, at),
+        { $set: { status, ...(at != null && { stateAt: at }) } },
         { new: true, runValidators: true },
       ).lean<ConnectionRecord>(),
     );
   }
 
-  async function remove(id: string): Promise<boolean> {
-    const { deletedCount } = await Model.deleteOne({ id, ...mine() });
+  async function remove(id: string, at?: Date): Promise<boolean> {
+    const { deletedCount } = await Model.deleteOne(current(id, at));
     return deletedCount === 1;
   }
 

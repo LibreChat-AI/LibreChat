@@ -4,7 +4,12 @@ import type { Connection } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 
-export type ConnectionRecord = Connection;
+/**
+ * A connection as stored. `stateAt` is when the provider was asked for the install's state
+ * that `status` last recorded: a later answer is applied only when it was asked for later
+ * still, so answers that arrive out of order cannot undo a newer one. Never returned.
+ */
+export type ConnectionRecord = Connection & { stateAt?: Date };
 
 export function createAgentEventConnectionModel(
   mongoose: typeof import('mongoose'),
@@ -22,6 +27,7 @@ export function createAgentEventConnectionModel(
         name: { type: String, required: true },
       },
       status: { type: String, enum: connectionStatuses, required: true },
+      stateAt: Date,
       createdBy: { type: String, required: true },
     },
     { timestamps: true },

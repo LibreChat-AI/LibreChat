@@ -111,6 +111,7 @@ function within<T>(connection: Connection, fn: () => Promise<T>): Promise<T> {
  * route. The answer never carries the body, a header or an error's text.
  */
 export function createReceive(deps: ReceiveDeps) {
+  const now = deps.now ?? Date.now;
   /**
    * One app client and router per app configuration, so the app's tokens and access answers
    * are reused across deliveries.
@@ -169,17 +170,23 @@ export function createReceive(deps: ReceiveDeps) {
     if (connection == null) {
       return reply(202, { code: 'unbound' });
     }
+    // Taken before asking: the answer describes the install at this moment or later, so a
+    // lookup sent later can never be overwritten by one sent earlier that arrives last.
+    const at = new Date(now());
     const answer = await app.installation(Number(lifecycle.installation));
     if (!answer.ok && answer.error.code !== 'missing') {
       throw new Error(`The installation lookup was refused: ${answer.error.code}`);
     }
     const state = stateOf(answer);
-    if (state === 'removed') {
-      await within(connection, () => deps.connections.remove(connection.id));
-    } else if (connection.status !== state) {
-      await within(connection, () => deps.connections.mark(connection.id, state));
-    }
-    logger.info(`[events] ${provider} install of ${connection.id} is now ${state}`);
+    const applied =
+      state === 'removed'
+        ? await within(connection, () => deps.connections.remove(connection.id, at))
+        : (await within(connection, () => deps.connections.mark(connection.id, state, at))) != null;
+    logger.info(
+      applied
+        ? `[events] ${provider} install of ${connection.id} is now ${state}`
+        : `[events] ${provider} install of ${connection.id} kept a newer recorded state`,
+    );
     return reply(200, { code: 'installation', state });
   }
 

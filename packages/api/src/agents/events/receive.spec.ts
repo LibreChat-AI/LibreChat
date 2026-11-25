@@ -58,6 +58,9 @@ const store: ReceiveDeps['enqueue'] = async (envelope, options) => {
 /** GitHub as the app sees it: a token, then a write answer for every account. */
 /** What the fake provider reports for the install when asked: its state now. */
 let install: 'active' | 'suspended' | 'missing' | 'outage' | 'forbidden' | 'rejected';
+/** Lookups held open by a spec, answered in the order it chooses. */
+let held: Array<(state: 'active' | 'suspended' | 'missing') => void>;
+let gated: boolean;
 
 /** The provider as the app sees it: a token, a write answer, and the install's current state. */
 const github: PullRequestFetch = async (input, init) => {
@@ -75,14 +78,17 @@ const github: PullRequestFetch = async (input, init) => {
     );
   }
   if (/^\/app\/installations\/\d+$/.test(path)) {
-    if (install === 'outage') throw new TypeError('fetch failed');
-    if (install === 'missing') return json({ message: 'Not Found' }, 404);
-    if (install === 'forbidden') return json({ message: 'Forbidden' }, 403);
-    if (install === 'rejected') return json({ message: 'Bad credentials' }, 401);
+    const state = gated
+      ? await new Promise<'active' | 'suspended' | 'missing'>((resolve) => held.push(resolve))
+      : install;
+    if (state === 'outage') throw new TypeError('fetch failed');
+    if (state === 'missing') return json({ message: 'Not Found' }, 404);
+    if (state === 'forbidden') return json({ message: 'Forbidden' }, 403);
+    if (state === 'rejected') return json({ message: 'Bad credentials' }, 401);
     return json({
       id: INSTALLATION_ID,
       account: { login: 'example-org', id: 9001, type: 'Organization' },
-      suspended_at: install === 'suspended' ? '2026-11-25T10:00:00Z' : null,
+      suspended_at: state === 'suspended' ? '2026-11-25T10:00:00Z' : null,
     });
   }
   return json({ permission: 'write' });
@@ -205,6 +211,8 @@ beforeEach(async () => {
   connections = createConnections(mongoose);
   fetchCalls = [];
   install = 'active';
+  held = [];
+  gated = false;
   await Promise.all([
     mongoose.models.AgentEventSubscription.deleteMany({}),
     mongoose.models.AgentEventConnection.deleteMany({}),
@@ -536,6 +544,69 @@ describe('receive', () => {
         expect(await status(connection.id)).toBe('active');
       },
     );
+
+    /** Waits until `count` lookups are held open. */
+    const until = async (count: number) => {
+      while (held.length < count) await new Promise((resolve) => setImmediate(resolve));
+    };
+
+    it.each([
+      ['the older answer lands first', [0, 1]],
+      ['the newer answer lands first', [1, 0]],
+    ] as const)('ends with the answer to the lookup sent last when %s', async (_name, order) => {
+      const connection = await bind();
+      let clock = 1_000;
+      const receive = createReceive(deps({ now: () => clock }));
+      gated = true;
+      // B's lookup is sent first and finds the install suspended; A's is sent later, after
+      // GitHub released it, and finds it active. A read the connection before B wrote.
+      const b = post(receive, 'suspend');
+      await until(1);
+      clock = 2_000;
+      const a = post(receive, 'unsuspend');
+      await until(2);
+      const answers = ['suspended', 'active'] as const;
+      for (const index of order) {
+        held[index](answers[index]);
+        await (index === 0 ? b : a);
+      }
+      expect(await status(connection.id)).toBe('active');
+    });
+
+    it('changes nothing when an older answer arrives after a newer one was recorded', async () => {
+      const connection = await bind();
+      let clock = 1_000;
+      const receive = createReceive(deps({ now: () => clock }));
+      gated = true;
+      const older = post(receive, 'suspend');
+      await until(1);
+      clock = 2_000;
+      const newer = post(receive, 'unsuspend');
+      await until(2);
+      held[1]('active');
+      await newer;
+      held[0]('suspended');
+      const late = await older;
+      expect(late.body).toEqual({ code: 'installation', state: 'suspended' });
+      expect(await status(connection.id)).toBe('active');
+    });
+
+    it('keeps the connection when an older not-found answer arrives after a newer one', async () => {
+      const connection = await bind();
+      let clock = 1_000;
+      const receive = createReceive(deps({ now: () => clock }));
+      gated = true;
+      const older = post(receive, 'deleted');
+      await until(1);
+      clock = 2_000;
+      const newer = post(receive, 'created');
+      await until(2);
+      held[1]('active');
+      await newer;
+      held[0]('missing');
+      await older;
+      expect(await status(connection.id)).toBe('active');
+    });
 
     it('asks the provider every time, never from a cache', async () => {
       const connection = await bind();
