@@ -107,6 +107,12 @@ experimental clustered startup:
 | `deliveryMaxIntervalMs` | 15000 | 1000–300000 |
 | `completionWaitMaxIntervalMs` | 60000 | 5000–300000 |
 
+`maxIntervalMs` (1000-3600000) in the same block is one deployment-wide ceiling for every
+idle-backoff loop: while it is set it replaces `deliveryMaxIntervalMs`, `queuedTurnMaxIntervalMs`,
+`maintenanceMaxIntervalMs` and the default ceilings of the code-environment reconciler, the MCP
+authorization retry and the schedule erasure sweep. A loop never waits less than its own interval.
+`completionWaitMaxIntervalMs` has its own back-off and keeps its cap.
+
 `completionWaitMaxIntervalMs` caps how long a background or subagent completion waits between
 readiness checks while its result or parent turn is not ready. It backs off from 5 seconds by a tenth
 of its age; a durable result and a settled generation expedite it, so the cap bounds missed signals.

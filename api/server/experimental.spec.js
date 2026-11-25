@@ -62,27 +62,45 @@ describe('Experimental server configuration', () => {
 
   it('starts erasure-only schedule maintenance after connecting to Mongo, once per worker', () => {
     const connectIndex = source.indexOf('await connectDb();');
-    const sweepIndex = source.indexOf('initializeScheduleErasureSweep();');
+    const sweepIndex = source.indexOf('initializeScheduleErasureSweep({ idleCeilingMs });');
 
     expect(connectIndex).toBeGreaterThan(-1);
     expect(sweepIndex).toBeGreaterThan(-1);
     // Mongo must be up before the sweep reads soft-deleted rows.
     expect(sweepIndex).toBeGreaterThan(connectIndex);
     // Idempotent guard lives in the service; started exactly once from this entrypoint.
-    expect(source.match(/initializeScheduleErasureSweep\(\);/g)).toHaveLength(1);
+    expect(source.match(/initializeScheduleErasureSweep\(\{ idleCeilingMs \}\);/g)).toHaveLength(1);
   });
 
   it('starts code-environment lifecycle reconciliation after Mongo connects in each worker', () => {
     const connectIndex = source.indexOf('await connectDb();');
-    const reconcileIndex = source.indexOf('startCodeEnvironmentLifecycleReconciler({ mongoose });');
+    const reconcileIndex = source.indexOf(
+      'startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });',
+    );
     const listenIndex = source.indexOf('const server = app.listen');
 
     expect(connectIndex).toBeGreaterThan(-1);
     expect(reconcileIndex).toBeGreaterThan(connectIndex);
     expect(listenIndex).toBeGreaterThan(reconcileIndex);
     expect(
-      source.match(/startCodeEnvironmentLifecycleReconciler\(\{ mongoose \}\);/g),
+      source.match(/startCodeEnvironmentLifecycleReconciler\(\{ mongoose, idleCeilingMs \}\);/g),
     ).toHaveLength(1);
+  });
+
+  it('reads the deployment-wide idle ceiling from the base config before it starts an idle loop', () => {
+    const configIndex = source.indexOf('const appConfig = await getAppConfig({ baseOnly: true });');
+    const ceilingIndex = source.indexOf(
+      'const idleCeilingMs = appConfig?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs;',
+    );
+    const reconcileIndex = source.indexOf(
+      'startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });',
+    );
+    const sweepIndex = source.indexOf('initializeScheduleErasureSweep({ idleCeilingMs });');
+
+    expect(configIndex).toBeGreaterThan(-1);
+    expect(ceilingIndex).toBeGreaterThan(configIndex);
+    expect(reconcileIndex).toBeGreaterThan(ceilingIndex);
+    expect(sweepIndex).toBeGreaterThan(ceilingIndex);
   });
 
   it('never arms the full schedule engine in a clustered worker', () => {
@@ -131,6 +149,7 @@ describe('Experimental server configuration', () => {
       expect(start).toBeGreaterThan(-1);
       const call = entrypoint.slice(start, entrypoint.indexOf('});', start));
       expect(call).toContain('idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling');
+      expect(call).toContain('idleCeilingMs,');
       expect(call.replace(/\s+/g, ' ')).toContain(
         'deadLetterRetentionDays: appConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays',
       );

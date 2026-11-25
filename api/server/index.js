@@ -233,7 +233,6 @@ const startServer = async () => {
   await connectDb();
 
   logger.info('Connected to MongoDB');
-  startCodeEnvironmentLifecycleReconciler({ mongoose });
   indexSync().catch((err) => {
     logger.error('[indexSync] Background sync failed:', err);
   });
@@ -270,6 +269,9 @@ const startServer = async () => {
   await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
   registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
   const appConfig = await getAppConfig({ baseOnly: true });
+  /* One ceiling for every idle recovery loop below; each keeps its own default while it is unset. */
+  const idleCeilingMs = appConfig?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs;
+  startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });
   registerShutdownTask(
     'role cache invalidation',
     await startRoleCacheInvalidation({
@@ -603,8 +605,9 @@ const startServer = async () => {
           appConfig?.endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
         deadLetterRetentionDays: appConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays,
         idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
+        idleCeilingMs,
       });
-      const scheduleEngineArmed = (await initializeScheduleEngine()) != null;
+      const scheduleEngineArmed = (await initializeScheduleEngine({ idleCeilingMs })) != null;
       await initializeChannelFeedback();
       registerShutdownTask('channel feedback export', stopChannelFeedback, { priority: 100 });
       registerShutdownTask('channel authority cleanup', stopChannelCleanup, { priority: 100 });

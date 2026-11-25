@@ -3,14 +3,14 @@ import { createMethods, logger, runAsSystem } from '@librechat/data-schemas';
 import type { AppConfig, CodeEnvironmentDocument } from '@librechat/data-schemas';
 import type { Types } from 'mongoose';
 import type { CodeBridgeFetch } from './bridge';
+import { createIdleRecoveryLoop, resolveIdleCeilingMs } from '~/agents/recovery';
 import { readCodeBridgeSecret, revokeCodeBridgeWorker } from './bridge';
-import { createIdleRecoveryLoop } from '~/agents/recovery';
 import { isLeader } from '~/cluster';
 
 const RECONCILE_INTERVAL_MS = 60_000;
 /** While a pass finds nothing to do the wait doubles up to this ceiling, the same four-fold span the
- * durable agent loops use. A pass that finds work returns the loop to the base interval. Fixed for
- * now: one configurable ceiling shared by the always-on loops is a separate change. */
+ * durable agent loops use. A pass that finds work returns the loop to the base interval. The
+ * deployment-wide `eventDriven.idlePolling.maxIntervalMs` replaces it while set. */
 const RECONCILE_MAX_IDLE_INTERVAL_MS = 4 * RECONCILE_INTERVAL_MS;
 const RECONCILE_LEASE_MS = 2 * 60_000;
 const REGISTRATION_STALE_MS = 5 * 60_000;
@@ -428,17 +428,25 @@ export async function reconcileCodeEnvironmentLifecycle({
  * off, which keeps a change of leader as prompt as before.
  */
 export function startCodeEnvironmentLifecycleReconciler(
-  options: Parameters<typeof reconcileCodeEnvironmentLifecycle>[0],
+  options: Parameters<typeof reconcileCodeEnvironmentLifecycle>[0] & {
+    /** The deployment-wide `eventDriven.idlePolling.maxIntervalMs`, when configured. */
+    idleCeilingMs?: number;
+  },
   deps: { reconcile?: typeof reconcileCodeEnvironmentLifecycle } = {},
 ): void {
   if (reconcileLoop != null) return;
+  const { idleCeilingMs, ...pass } = options;
   const reconcile = deps.reconcile ?? reconcileCodeEnvironmentLifecycle;
   reconcileLoop = createIdleRecoveryLoop({
     intervalMs: RECONCILE_INTERVAL_MS,
-    maxIdleIntervalMs: RECONCILE_MAX_IDLE_INTERVAL_MS,
+    maxIdleIntervalMs: resolveIdleCeilingMs({
+      intervalMs: RECONCILE_INTERVAL_MS,
+      defaultMs: RECONCILE_MAX_IDLE_INTERVAL_MS,
+      ceilingMs: idleCeilingMs,
+    }),
     scan: async () =>
       (await isLeader())
-        ? reconcile({ ...options, onRetryAt: (at) => reconcileLoop?.noteEligibleAt(at) })
+        ? reconcile({ ...pass, onRetryAt: (at) => reconcileLoop?.noteEligibleAt(at) })
         : false,
     onError: (error) => logger.error('[code-environments] lifecycle reconciliation failed:', error),
   });

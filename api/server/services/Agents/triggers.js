@@ -93,6 +93,7 @@ const initializeAgentTriggerService = async (options) => {
   await service.initialize(options);
   await queuedTurnLifecycle.initialize({
     maxIdleIntervalMs: options?.idlePolling?.queuedTurnMaxIntervalMs,
+    idleCeilingMs: options?.idleCeilingMs,
   });
 };
 

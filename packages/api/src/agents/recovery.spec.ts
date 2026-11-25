@@ -1,4 +1,4 @@
-import { createIdleRecoveryLoop } from './recovery';
+import { createIdleRecoveryLoop, resolveIdleCeilingMs } from './recovery';
 
 describe('durable agent idle recovery', () => {
   beforeEach(() => {
@@ -381,5 +381,21 @@ describe('durable agent idle recovery', () => {
       expect(scan).toHaveBeenCalledTimes(1);
       expect(jest.getTimerCount()).toBe(0);
     });
+  });
+});
+
+describe('resolveIdleCeilingMs', () => {
+  const loop = { intervalMs: 30_000, defaultMs: 120_000 };
+
+  it('keeps the loop default while no deployment ceiling is set', () => {
+    expect(resolveIdleCeilingMs(loop)).toBe(120_000);
+  });
+
+  it.each([
+    ['raises it above the default', 900_000, 900_000],
+    ['lowers it below the default', 60_000, 60_000],
+    ['never goes below the loop interval', 10_000, 30_000],
+  ])('a deployment ceiling %s', (_name, ceilingMs, expected) => {
+    expect(resolveIdleCeilingMs({ ...loop, ceilingMs })).toBe(expected);
   });
 });

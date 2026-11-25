@@ -128,6 +128,23 @@ describe('agent trigger service composition', () => {
     expect(mockQueuedTurnLifecycle.initialize).toHaveBeenCalledWith({ maxIdleIntervalMs: 60_000 });
   });
 
+  it('hands the deployment-wide ceiling to the queued-turn worker as well', async () => {
+    const { initializeAgentTriggerService } = require('./triggers');
+    const options = {
+      address: 'local',
+      idlePolling: { queuedTurnMaxIntervalMs: 60_000 },
+      idleCeilingMs: 900_000,
+    };
+    await initializeAgentTriggerService(options);
+    expect(mockCreateAgentTriggerService.mock.results[0].value.initialize).toHaveBeenCalledWith(
+      options,
+    );
+    expect(mockQueuedTurnLifecycle.initialize).toHaveBeenCalledWith({
+      maxIdleIntervalMs: 60_000,
+      idleCeilingMs: 900_000,
+    });
+  });
+
   it('injects the configured background completion batch size', async () => {
     const { initializeAgentTriggerService } = require('./triggers');
     await initializeAgentTriggerService({ address: 'local', completionResultBatchSize: 12 });

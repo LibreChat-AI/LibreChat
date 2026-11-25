@@ -310,13 +310,21 @@ export interface SchedulesService {
    *  entrypoint does not start it. Returns undefined when index creation failed, or when
    *  the topology cannot be shown safe (process-local job store with no single-process
    *  assertion) — see isTopologySafeToArm. */
-  initializeScheduleEngine: () => Promise<ReturnType<typeof startScheduleEngine> | undefined>;
+  initializeScheduleEngine: (
+    options?: ScheduleLoopOptions,
+  ) => Promise<ReturnType<typeof startScheduleEngine> | undefined>;
   /** Starts bounded maintenance for an entrypoint that never arms the engine (the
    *  clustered worker). Idempotent per process and a no-op once the full engine is armed.
    *  Replays terminal permanent-MCP bookkeeping but never claims, fires, advances, or
    *  infers owner death from a process-local missing job. See startScheduleErasureSweep. */
-  initializeScheduleErasureSweep: () => void;
+  initializeScheduleErasureSweep: (options?: ScheduleLoopOptions) => void;
   reconcileRetainedJobs: () => Promise<number>;
+}
+
+/** What the host tells the fallback maintenance loop when it starts it. */
+export interface ScheduleLoopOptions {
+  /** The deployment-wide `eventDriven.idlePolling.maxIntervalMs`, when configured. */
+  idleCeilingMs?: number;
 }
 
 /** A replaced/foreign generation cannot receive an old denial or model-visible result. */
@@ -1012,11 +1020,12 @@ export function createSchedulesService(
    * elsewhere, or a failed one-shot erase) would retain the hidden prompt forever.
    * The engine's own reconcile pass covers this when armed, so never run both.
    */
-  function startErasureFallback(): void {
+  function startErasureFallback(options: ScheduleLoopOptions = {}): void {
     if (erasureSweep != null || engine != null) {
       return;
     }
     erasureSweep = startScheduleErasureSweep({
+      idleCeilingMs: options.idleCeilingMs,
       methods,
       getJobStatus: engineDeps.getJobStatus,
       // Positive-evidence delivery convergence: a dead delivery settles its reservation
@@ -1042,9 +1051,9 @@ export function createSchedulesService(
     erasureSweep?.hint();
   }
 
-  async function initializeScheduleEngine(): Promise<
-    ReturnType<typeof startScheduleEngine> | undefined
-  > {
+  async function initializeScheduleEngine(
+    options: ScheduleLoopOptions = {},
+  ): Promise<ReturnType<typeof startScheduleEngine> | undefined> {
     if (engine != null) {
       return engine;
     }
@@ -1073,7 +1082,7 @@ export function createSchedulesService(
           'SCHEDULES_SINGLE_PROCESS=true to assert this deployment runs exactly one replica. ' +
           'Schedule writes are refused (503) until then.',
       );
-      startErasureFallback();
+      startErasureFallback(options);
       return undefined;
     }
     try {
@@ -1083,7 +1092,7 @@ export function createSchedulesService(
         '[schedules] index creation failed — scheduler NOT started (fires need the unique idempotency index):',
         err,
       );
-      startErasureFallback();
+      startErasureFallback(options);
       return undefined;
     }
     engine = startScheduleEngine(engineDeps);
@@ -1102,8 +1111,8 @@ export function createSchedulesService(
    * between the run-row transition and card projection. It shares startErasureFallback's
    * idempotent startup guard and topology-fenced owner-death policy, and never fires work.
    */
-  function initializeScheduleErasureSweep(): void {
-    startErasureFallback();
+  function initializeScheduleErasureSweep(options: ScheduleLoopOptions = {}): void {
+    startErasureFallback(options);
   }
 
   /**
