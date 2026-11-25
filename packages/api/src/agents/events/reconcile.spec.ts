@@ -1,14 +1,13 @@
 import { cadence, createSubscriptionReconciler } from './reconcile';
 
 function setup(jobs: Record<string, string> = {}, staleMs = 30 * 60_000) {
+  const states: unknown[] = [];
   const reconcile = jest.fn(
-    async (isLive: (run: { conversationId?: string }) => Promise<boolean>) => {
-      const live = await Promise.all(
-        ['live', 'paused', 'done', 'gone', undefined].map((conversationId) =>
-          isLive({ conversationId }),
-        ),
-      );
-      return live.filter((answer) => !answer).length;
+    async (job: (run: { conversationId?: string }) => Promise<string | null>) => {
+      for (const conversationId of ['live', 'paused', 'done', 'gone', undefined]) {
+        states.push(await job({ conversationId }));
+      }
+      return states.length;
     },
   );
   const host = { reconcile, bounds: jest.fn(async () => ({ staleMs }) as never) };
@@ -16,7 +15,7 @@ function setup(jobs: Record<string, string> = {}, staleMs = 30 * 60_000) {
     getJob: jest.fn(async (id: string) => (id in jobs ? { status: jobs[id] } : null)),
   };
   const reconciler = createSubscriptionReconciler(host, { getJobStore: () => store });
-  return { reconciler, reconcile, host };
+  return { reconciler, reconcile, host, states };
 }
 
 afterEach(() => jest.useRealTimers());
@@ -31,10 +30,15 @@ describe('cadence', () => {
 });
 
 describe('createSubscriptionReconciler', () => {
-  it('counts a run live while its generation job is running or paused', async () => {
-    const { reconciler } = setup({ live: 'running', paused: 'requires_action', done: 'complete' });
-    // done, gone and a run with no conversation are not live.
-    await expect(reconciler.pass()).resolves.toBe(3);
+  it("asks the generation job store what became of each run's generation", async () => {
+    const { reconciler, states } = setup({
+      live: 'running',
+      paused: 'requires_action',
+      done: 'complete',
+    });
+    await reconciler.pass();
+    // A run with no conversation, or whose job is gone, has no generation to ask about.
+    expect(states).toEqual(['running', 'requires_action', 'complete', null, null]);
   });
 
   it('starts no timer until it is initialized, then passes on its cadence', async () => {

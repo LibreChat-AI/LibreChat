@@ -1,5 +1,7 @@
+import { logger } from '@librechat/data-schemas';
 import type { SubjectAdapter, SubjectInput, Settle } from './subject';
 import { createTriggerExecutionContext } from './context';
+import { getSafeErrorMetadata } from '~/utils/errors';
 
 type TriggerRequest = Parameters<typeof createTriggerExecutionContext>[0];
 
@@ -25,6 +27,14 @@ export function createRunSettler(
     const input: SubjectInput = { req, executionContext };
     const adapter = adapters.find((candidate) => candidate.settle && candidate.claims(input));
     if (!adapter?.settle) return true;
-    return adapter.settle({ ...outcome, executionContext });
+    // Never thrown into the caller: the chat route settles on its way out, and its cleanup
+    // after (releasing the generation, the owner's concurrency) must run. A run left active
+    // is finished by its subject's sweep.
+    try {
+      return await adapter.settle({ ...outcome, executionContext, request: req });
+    } catch (error) {
+      logger.error('[agents] a triggered run could not be settled', getSafeErrorMetadata(error));
+      return false;
+    }
   };
 }

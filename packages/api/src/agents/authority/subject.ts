@@ -56,6 +56,8 @@ export interface Settle {
   checkpointNamespace?: string;
   /** The run's conversation was never created; its row should not keep the id it reserved. */
   clearConversationId?: boolean;
+  /** The request the turn ran in. A subject settles only a run that request started. */
+  request?: object;
 }
 
 /**

@@ -116,6 +116,7 @@ function delivery(
     body: {
       agent_id: agentId,
       clientRequestId: key,
+      conversationId: `conversation-${key}`,
       agentTrigger: {
         version: 1,
         event: {
@@ -1143,6 +1144,8 @@ describe("a subscription's runs on record", () => {
       status: 'started',
       revision: 0,
       owner: OWNER,
+      // The generation's key, so a sweep can ask whether it still lives.
+      conversationId: req.body?.conversationId,
     });
   });
 
@@ -1188,7 +1191,11 @@ describe("a subscription's runs on record", () => {
     // While the run is under way the owner turns it off and on again: a new streak.
     await subscriptions.update(subscription.id, OWNER, { enabled: false });
     await subscriptions.update(subscription.id, OWNER, { enabled: true });
-    await host.settle({ executionContext: input.executionContext, status: 'error' });
+    await host.settle({
+      request: input.req,
+      executionContext: input.executionContext,
+      status: 'error',
+    });
     expect(await stored(subscription.id)).toMatchObject({ enabled: true });
     expect((await stored(subscription.id))?.failures).toBeUndefined();
   });
@@ -1231,6 +1238,7 @@ describe("a subscription's runs on record", () => {
     const { req, input } = await started(subscription);
     await expect(
       host.settle({
+        request: input.req,
         executionContext: input.executionContext,
         status: 'success',
         conversationId: 'conversation-1',
@@ -1248,7 +1256,12 @@ describe("a subscription's runs on record", () => {
     const subscription = await made();
     for (let i = 0; i < 2; i++) {
       const { input } = await started(subscription);
-      await host.settle({ executionContext: input.executionContext, status: 'error', error: 'x' });
+      await host.settle({
+        request: input.req,
+        executionContext: input.executionContext,
+        status: 'error',
+        error: 'x',
+      });
     }
     const after = await subscriptions.get(subscription.id, OWNER);
     expect(after).toMatchObject({ enabled: false, suspended: { reason: 'failures', failures: 2 } });
@@ -1261,12 +1274,17 @@ describe("a subscription's runs on record", () => {
     const subscription = await made();
     const first = await started(subscription);
     await host.settle({
+      request: first.input.req,
       executionContext: first.input.executionContext,
       status: 'skipped_balance',
     });
     const second = await started(subscription);
     await expect(
-      host.settle({ executionContext: second.input.executionContext, status: 'requires_action' }),
+      host.settle({
+        request: second.input.req,
+        executionContext: second.input.executionContext,
+        status: 'requires_action',
+      }),
     ).resolves.toBe(true);
     expect(await row(subscription, second.req)).toMatchObject({ status: 'requires_action' });
     expect(await stored(subscription.id)).toMatchObject({ enabled: true });
@@ -1280,16 +1298,56 @@ describe("a subscription's runs on record", () => {
       ...input.executionContext!,
       source: { ...source, origin: { agentId: AGENT } },
     } as ExecutionContext;
-    await expect(host.settle({ executionContext: reporting, status: 'error' })).resolves.toBe(true);
+    await expect(
+      host.settle({ request: input.req, executionContext: reporting, status: 'error' }),
+    ).resolves.toBe(true);
     expect(await row(subscription, req)).toMatchObject({ status: 'started' });
   });
 
-  it('answers false when the run is not active on record', async () => {
+  it('answers false when the run it started is no longer active on record', async () => {
     const subscription = await made();
-    const context = createTriggerExecutionContext(delivery(subscription.id));
-    await expect(host.settle({ executionContext: context, status: 'success' })).resolves.toBe(
-      false,
-    );
+    const { req, input } = await started(subscription);
+    await runs().finish(refOf(subscription, req), { status: 'success' });
+    await expect(
+      host.settle({
+        request: input.req,
+        executionContext: input.executionContext,
+        status: 'error',
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it('never settles the run of another request that holds the same delivery', async () => {
+    bounds({ failures: 1 });
+    const subscription = await made();
+    const { req } = await started(subscription);
+    // The same delivery again, refused as a duplicate while the first request runs it; its
+    // initialization failure is then settled on the way out.
+    const again = inputFor({ ...req });
+    expect(await refusal(again)).toBe('duplicate');
+    await expect(
+      host.settle({
+        request: again.req,
+        executionContext: again.executionContext,
+        status: 'error',
+      }),
+    ).resolves.toBe(true);
+    expect(await row(subscription, req)).toMatchObject({ status: 'started' });
+    expect(await stored(subscription.id)).toMatchObject({ enabled: true });
+  });
+
+  it('settles nothing for a request that put no run on record', async () => {
+    const subscription = await made();
+    const { req } = await started(subscription);
+    const stranger = inputFor({ ...req });
+    await expect(
+      host.settle({
+        request: {},
+        executionContext: stranger.executionContext,
+        status: 'success',
+      }),
+    ).resolves.toBe(true);
+    expect(await row(subscription, req)).toMatchObject({ status: 'started' });
   });
 
   describe('reconcile', () => {
@@ -1299,21 +1357,43 @@ describe("a subscription's runs on record", () => {
         { $set: { [field]: new Date(Date.now() - 3 * 3_600_000) } },
       );
 
-    it('ends a stale run whose generation is gone as interrupted, and counts it', async () => {
+    it('ends a stale run whose generation is gone as interrupted, without counting it', async () => {
       bounds({ failures: 1 });
       const subscription = await made();
       const { req } = await started(subscription);
       await aged(subscription, req, 'firedAt');
-      await expect(host.reconcile(async () => false)).resolves.toBe(1);
+      const job = jest.fn(async () => null);
+      await expect(host.reconcile(job)).resolves.toBe(1);
+      expect(job).toHaveBeenCalledWith(
+        expect.objectContaining({ conversationId: req.body?.conversationId }),
+      );
       expect(await row(subscription, req)).toMatchObject({ status: 'interrupted' });
-      expect(await stored(subscription.id)).toMatchObject({ enabled: false });
+      expect(await stored(subscription.id)).toMatchObject({ enabled: true });
     });
+
+    it.each([
+      ['complete', 'success', true],
+      ['error', 'error', false],
+      ['aborted', 'interrupted', true],
+    ] as const)(
+      'records a stale run whose generation ended %s as %s',
+      async (state, status, enabled) => {
+        bounds({ failures: 1 });
+        const subscription = await made();
+        const { req } = await started(subscription);
+        await aged(subscription, req, 'firedAt');
+        await expect(host.reconcile(async () => state)).resolves.toBe(1);
+        expect(await row(subscription, req)).toMatchObject({ status });
+        expect(await stored(subscription.id)).toMatchObject({ enabled });
+      },
+    );
 
     it('leaves a stale run whose generation is still live', async () => {
       const subscription = await made();
       const { req } = await started(subscription);
       await aged(subscription, req, 'firedAt');
-      await expect(host.reconcile(async () => true)).resolves.toBe(0);
+      await expect(host.reconcile(async () => 'running')).resolves.toBe(0);
+      await expect(host.reconcile(async () => 'requires_action')).resolves.toBe(0);
       expect(await row(subscription, req)).toMatchObject({ status: 'started' });
     });
 
@@ -1324,15 +1404,15 @@ describe("a subscription's runs on record", () => {
       // The row was written, then the process stopped before the subscription's own step.
       await runs().finish(refOf(subscription, req), { status: 'error' });
       await aged(subscription, req, 'settledAt');
-      await expect(host.reconcile(async () => false)).resolves.toBe(1);
+      await expect(host.reconcile(async () => null)).resolves.toBe(1);
       expect(await stored(subscription.id)).toMatchObject({ enabled: false });
-      await expect(host.reconcile(async () => false)).resolves.toBe(0);
+      await expect(host.reconcile(async () => null)).resolves.toBe(0);
     });
 
     it('leaves a recent run alone', async () => {
       const subscription = await made();
       await started(subscription);
-      await expect(host.reconcile(async () => false)).resolves.toBe(0);
+      await expect(host.reconcile(async () => null)).resolves.toBe(0);
     });
   });
 });

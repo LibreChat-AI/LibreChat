@@ -41,6 +41,7 @@ describe('createRunSettler', () => {
     expect(mine.settle).toHaveBeenCalledWith({
       status: 'error',
       error: 'failed',
+      request: subscription,
       executionContext: expect.objectContaining({
         principal: { userId: OWNER },
         source: expect.objectContaining({
@@ -49,6 +50,14 @@ describe('createRunSettler', () => {
         }),
       }),
     });
+  });
+
+  it('answers false, never throwing, when the subject cannot record the run', async () => {
+    const mine = adapter('subscription');
+    mine.settle.mockRejectedValue(new Error('store down'));
+    await expect(createRunSettler([mine])(subscription, { status: 'success' })).resolves.toBe(
+      false,
+    );
   });
 
   it('settles nothing for a request no trigger made', async () => {

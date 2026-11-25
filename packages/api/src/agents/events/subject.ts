@@ -18,8 +18,8 @@ import type {
   Connection,
 } from 'librechat-data-provider';
 import type { RunGrantExecutionFactory, PolicyWording } from '~/agents/authority/execution';
-import type { PreflightDeps, PreflightOptions } from '~/agents/authority/preflight';
 import type { SubjectAdapter, SubjectInput, Settle } from '~/agents/authority/subject';
+import type { PreflightDeps, PreflightOptions } from '~/agents/authority/preflight';
 import type { ExecutionContext } from '~/agents/authority/context';
 import type { RunGrantService } from '~/agents/authority/service';
 import type { RunGrantOfferDeps } from '~/agents/authority/offer';
@@ -129,8 +129,27 @@ type RunRef = RecordedRunRef & { readonly delivery: { readonly key: string } };
 /** How a run that ended counts into its subscription's failure streak; a skip counts not at all. */
 function counted(status: string): { failed: boolean } | undefined {
   if (status === 'success') return { failed: false };
-  if (status === 'error' || status === 'interrupted') return { failed: true };
+  // As for a schedule: an interrupted run, stopped, preempted or cut off by a restart, neither
+  // counts as a failure nor ends the streak.
+  if (status === 'error') return { failed: true };
   return undefined;
+}
+
+/** What became of a run's generation, as the generation job store has it. */
+export type GenerationStatus =
+  | 'running'
+  | 'requires_action'
+  | 'complete'
+  | 'error'
+  | 'aborted'
+  | null;
+
+/** The outcome a reconciled run is recorded with, from what became of its generation. */
+function ended(state: GenerationStatus): 'success' | 'error' | 'interrupted' | undefined {
+  if (state === 'running' || state === 'requires_action') return undefined;
+  if (state === 'complete') return 'success';
+  if (state === 'error') return 'error';
+  return 'interrupted';
 }
 
 export interface SubscriptionHost extends Pick<Adapter, 'resolve'> {
@@ -143,7 +162,9 @@ export interface SubscriptionHost extends Pick<Adapter, 'resolve'> {
    * ended as interrupted, and an ended run whose subscription step never landed. Run as the
    * system; answers how many it finished.
    */
-  reconcile: (isLive: (run: { conversationId?: string }) => Promise<boolean>) => Promise<number>;
+  reconcile: (
+    job: (run: { conversationId?: string }) => Promise<GenerationStatus>,
+  ) => Promise<number>;
   /** What the owner may allow the subscription's runs, and the grant they made. */
   service: RunGrantService<SubscriptionIdentity>;
   execution: RunGrantExecutionFactory<SubscriptionIdentity>;
@@ -327,6 +348,9 @@ export function createSubscriptionHost(deps: {
         },
       }));
 
+  /** The requests that put a run on record, each the only one that may settle it. */
+  const started = new WeakSet<object>();
+
   const settings = async (): Promise<RunSettings> =>
     runSettings(
       (await deps.enrollment.getAppConfig({ baseOnly: true }))?.endpoints?.agents?.events,
@@ -338,11 +362,20 @@ export function createSubscriptionHost(deps: {
    * written, so a delivery retried after the count, or delivered twice, counts again: the cap
    * errs toward fewer runs, never more.
    */
-  async function start(ref: RunRef, subscription: Subscription, owner: IUser) {
+  async function start(
+    ref: RunRef,
+    subscription: Subscription,
+    owner: IUser,
+    req: SubscriptionInput['req'],
+  ) {
     const { agentId } = subscription;
+    // The conversation is the generation's own key, fixed before the run is initialized, so
+    // a sweep can ask whether the run's generation still lives from the moment it is on record.
+    const conversationId = req.body?.conversationId;
     const row = {
       user: owner.id as never,
       ...(owner.tenantId != null && { tenantId: owner.tenantId }),
+      ...(typeof conversationId === 'string' && conversationId && { conversationId }),
       firedAt: new Date(),
       configRevision: subscription.revision,
     };
@@ -356,6 +389,7 @@ export function createSubscriptionHost(deps: {
     if ('conflict' in reserved) {
       throw new RunRefusal(reserved.conflict === 'blocked' ? 'blocked' : 'duplicate', agentId);
     }
+    started.add(req);
   }
 
   /** The subscription's own step for a run that ended: its failure streak, then the mark. */
@@ -374,7 +408,9 @@ export function createSubscriptionHost(deps: {
   async function settle(run: Settle): Promise<boolean> {
     const ref = recordOf(run.executionContext);
     const owner = run.executionContext?.principal.userId;
-    if (!ref || !owner) return true;
+    // Only the request that put the run on record settles it. A delivery refused as a duplicate
+    // names the same row, which belongs to the request still running it.
+    if (!ref || !owner || !run.request || !started.has(run.request)) return true;
     if (run.status === 'requires_action') {
       const held = await deps.runs.pause(ref, {
         ...(run.conversationId && { conversationId: run.conversationId }),
@@ -394,20 +430,24 @@ export function createSubscriptionHost(deps: {
   }
 
   async function reconcile(
-    isLive: (run: { conversationId?: string }) => Promise<boolean>,
+    job: (run: { conversationId?: string }) => Promise<GenerationStatus>,
   ): Promise<number> {
     const { staleMs } = await settings();
     const stranded = await deps.runs.stranded('subscription', new Date(Date.now() - staleMs), 50);
     let finished = 0;
     for (const { ref, run } of stranded) {
       try {
+        let status: string = run.status;
         if (run.status === 'started' || run.status === 'requires_action') {
-          if (await isLive(run)) continue;
-          const ended = await deps.runs.finish(ref, { status: 'interrupted' });
-          if (ended == null) continue;
+          // Its generation lives on: the run is long, not lost. Otherwise it is recorded as its
+          // generation ended, which a settle that failed left unwritten.
+          const outcome = ended(await job(run));
+          if (!outcome) continue;
+          const written = await deps.runs.finish(ref, { status: outcome });
+          if (written == null) continue;
+          status = written.status;
         }
-        const active = run.status === 'started' || run.status === 'requires_action';
-        await account(ref as RunRef, run.owner, active ? 'interrupted' : run.status, run.revision);
+        await account(ref as RunRef, run.owner, status, run.revision);
         finished++;
       } catch {
         // One row that cannot be finished now is left for the next pass; the rest go on.
@@ -459,7 +499,7 @@ export function createSubscriptionHost(deps: {
       // A delivery's first turn is put on record; a resume and a turn that reports earlier
       // work belong to a run already there.
       const ref = source.resumed ? undefined : recordOf(executionContext);
-      if (ref) await start(ref, subscription, owner);
+      if (ref) await start(ref, subscription, owner, req);
       return {
         identity,
         context,
