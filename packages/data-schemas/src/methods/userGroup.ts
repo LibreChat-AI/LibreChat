@@ -11,9 +11,9 @@ import {
   buildUserSearchFilter,
   buildGroupSearchFilter,
 } from '~/utils/search';
+import { scopedCacheKey, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { runAfterTransaction } from '~/utils/postCommit';
-import { scopedCacheKey } from '~/config/tenantContext';
 import { escapeRegExp } from '~/utils/string';
 
 export interface UserGroupDeps {
@@ -124,7 +124,7 @@ export function createUserGroupMethods(
     limit?: number,
     session?: ClientSession,
   ) => Promise<IGroup[]>;
-  invalidatePrincipalMemberships: (memberIds: string[]) => Promise<void>;
+  invalidatePrincipalMemberships: (memberIds: string[], tenantId?: string) => Promise<void>;
   createGroup: (groupData: Partial<IGroup>, session?: ClientSession) => Promise<IGroup>;
   upsertGroupByExternalId: (
     idOnTheSource: string,
@@ -142,7 +142,7 @@ export function createUserGroupMethods(
     groupId: string | Types.ObjectId,
     session?: ClientSession,
   ) => Promise<{ user: IUser; group: IGroup | null; changed: boolean }>;
-  removeUserFromAllGroups: (userId: string | Types.ObjectId) => Promise<void>;
+  removeUserFromAllGroups: (userId: string | Types.ObjectId, tenantId?: string) => Promise<void>;
   findGroupByQuery: (
     filter: Record<string, unknown>,
     session?: ClientSession,
@@ -421,8 +421,13 @@ export function createUserGroupMethods(
     }
   };
 
+  /**
+   * `tenantId` names the members' tenant explicitly, so a caller running under `runAsSystem`
+   * still evicts the `<memberId>:<tenantId>` keys that tenant-scoped reads cached.
+   */
   async function invalidateMemberGroupsCache(
     memberIds: Array<string | Types.ObjectId | undefined | null>,
+    tenantId?: string,
   ): Promise<void> {
     const cache = getPrincipalsCache();
     if (!cache?.delete) {
@@ -437,6 +442,9 @@ export function createUserGroupMethods(
       const baseKey = memberId.toString();
       cacheKeys.add(baseKey);
       cacheKeys.add(scopedCacheKey(baseKey));
+      if (tenantId && tenantId !== SYSTEM_TENANT_ID) {
+        cacheKeys.add(`${baseKey}:${tenantId}`);
+      }
     }
     if (cacheKeys.size === 0) {
       return;
@@ -988,11 +996,15 @@ export function createUserGroupMethods(
   /**
    * Removes a user from all groups they belong to.
    * @param userId - The user ID (or ObjectId) of the member to remove
+   * @param tenantId - The member's tenant, for cache eviction outside its tenant context
    */
-  async function removeUserFromAllGroups(userId: string | Types.ObjectId): Promise<void> {
+  async function removeUserFromAllGroups(
+    userId: string | Types.ObjectId,
+    tenantId?: string,
+  ): Promise<void> {
     const Group = mongoose.models.Group as Model<IGroup>;
     await Group.updateMany({ memberIds: userId }, { $pullAll: { memberIds: [userId] } });
-    await invalidateMemberGroupsCache([userId]);
+    await invalidateMemberGroupsCache([userId], tenantId);
   }
 
   /**

@@ -137,3 +137,130 @@ describe('AclEntry grants made as a unique entry', () => {
     expect(entries[0].tenantId).toBe(TENANT_A);
   });
 });
+
+describe('findResourcePermissionEntries joins only roles the entry tenant can reference', () => {
+  const db = () => mongoose.connection.db!;
+
+  afterEach(async () => {
+    await Promise.all(
+      ['accessroles', 'users', 'groups'].map((name) => db().collection(name).deleteMany({})),
+    );
+  });
+
+  async function seedRole(accessRoleId: string, tenantId?: string) {
+    const _id = new mongoose.Types.ObjectId();
+    await db()
+      .collection('accessroles')
+      .insertOne({
+        _id,
+        accessRoleId,
+        name: accessRoleId,
+        resourceType: RESOURCE_TYPE,
+        permBits: 1,
+        ...(tenantId && { tenantId }),
+      });
+    return _id;
+  }
+
+  it('drops a foreign tenant role label and keeps global and same-tenant labels', async () => {
+    const resourceId = new mongoose.Types.ObjectId();
+    const userId = new mongoose.Types.ObjectId();
+    const groupId = new mongoose.Types.ObjectId();
+    const [globalRole, ownRole, foreignRole] = await Promise.all([
+      seedRole('agent_viewer'),
+      seedRole('tenant_a_editor', TENANT_A),
+      seedRole('tenant_b_secret_role', TENANT_B),
+    ]);
+    await db().collection('users').insertOne({
+      _id: userId,
+      tenantId: TENANT_A,
+      name: 'Member',
+      email: 'member@example.com',
+      password: 'hashed-secret',
+      totpSecret: 'totp-secret',
+      role: 'USER',
+    });
+    await db()
+      .collection('groups')
+      .insertOne({
+        _id: groupId,
+        tenantId: TENANT_A,
+        name: 'Team',
+        source: 'local',
+        memberIds: [userId.toString()],
+      });
+    const entry = { resourceType: RESOURCE_TYPE, resourceId, permBits: PermissionBits.VIEW };
+    await seedAcl(TENANT_A, { ...entry, principalType: PrincipalType.PUBLIC, roleId: foreignRole });
+    await seedAcl(TENANT_A, {
+      ...entry,
+      principalType: PrincipalType.USER,
+      principalModel: PrincipalModel.USER,
+      principalId: userId,
+      roleId: ownRole,
+    });
+    await seedAcl(TENANT_A, {
+      ...entry,
+      principalType: PrincipalType.GROUP,
+      principalModel: PrincipalModel.GROUP,
+      principalId: groupId,
+      roleId: globalRole,
+    });
+
+    const rows = await runAs(TENANT_A, () =>
+      methods.findResourcePermissionEntries(RESOURCE_TYPE, resourceId.toString()),
+    );
+    const byType = Object.fromEntries(rows.map((row) => [row.principalType, row]));
+
+    expect(rows).toHaveLength(3);
+    expect(byType[PrincipalType.PUBLIC].accessRoleId).toBeUndefined();
+    expect(byType[PrincipalType.USER].accessRoleId).toBe('tenant_a_editor');
+    expect(byType[PrincipalType.GROUP].accessRoleId).toBe('agent_viewer');
+    expect(byType[PrincipalType.USER].userInfo).toEqual({
+      _id: userId,
+      tenantId: TENANT_A,
+      name: 'Member',
+      email: 'member@example.com',
+      role: 'USER',
+    });
+    expect(byType[PrincipalType.GROUP].groupInfo).toEqual({
+      _id: groupId,
+      tenantId: TENANT_A,
+      name: 'Team',
+      source: 'local',
+    });
+    expect(JSON.stringify(rows)).not.toMatch(/tenant_b_secret_role|hashed-secret|totp-secret/);
+  });
+
+  it('keeps only global role labels on a tenantless entry', async () => {
+    const resourceId = new mongoose.Types.ObjectId();
+    const [globalRole, tenantRole] = await Promise.all([
+      seedRole('agent_viewer'),
+      seedRole('tenant_a_editor', TENANT_A),
+    ]);
+    await AclEntry.collection.insertMany([
+      {
+        principalType: PrincipalType.PUBLIC,
+        resourceType: RESOURCE_TYPE,
+        resourceId,
+        permBits: 1,
+        roleId: tenantRole,
+      },
+      {
+        principalType: PrincipalType.ROLE,
+        principalId: 'USER',
+        resourceType: RESOURCE_TYPE,
+        resourceId,
+        permBits: 1,
+        roleId: globalRole,
+      },
+    ]);
+
+    const rows = await methods.findResourcePermissionEntries(RESOURCE_TYPE, resourceId);
+    const byType = Object.fromEntries(rows.map((row) => [row.principalType, row.accessRoleId]));
+
+    expect(byType).toEqual({
+      [PrincipalType.PUBLIC]: undefined,
+      [PrincipalType.ROLE]: 'agent_viewer',
+    });
+  });
+});

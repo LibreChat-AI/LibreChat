@@ -57,7 +57,7 @@ const mockRemoveAgentFromUserFavorites = jest.fn();
 const mockRecordAuditEntry = jest.fn();
 
 jest.mock('~/models', () => ({
-  aggregateAclEntries: jest.fn(),
+  findResourcePermissionEntries: jest.fn(),
   searchPrincipals: jest.fn(),
   sortPrincipalsByRelevance: jest.fn(),
   calculateRelevanceScore: jest.fn(),
@@ -144,7 +144,7 @@ describe('PermissionsController', () => {
 
     it('omits joined user and group details outside the current request context', async () => {
       mockGetTenantId.mockReturnValue(currentTenantId);
-      db.aggregateAclEntries.mockResolvedValue([
+      db.findResourcePermissionEntries.mockResolvedValue([
         {
           principalType: PrincipalType.USER,
           accessRoleId: AccessRoleIds.AGENT_VIEWER,
@@ -192,7 +192,7 @@ describe('PermissionsController', () => {
 
     it('includes joined user and group details in the current request context', async () => {
       mockGetTenantId.mockReturnValue(currentTenantId);
-      db.aggregateAclEntries.mockResolvedValue([
+      db.findResourcePermissionEntries.mockResolvedValue([
         {
           principalType: PrincipalType.USER,
           accessRoleId: AccessRoleIds.AGENT_VIEWER,

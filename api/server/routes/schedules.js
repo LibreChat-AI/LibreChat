@@ -100,9 +100,9 @@ const consentHost = require('~/server/services/Schedules/consent').consent;
 
 /** Before the `/:id` routes: what the owner could allow a schedule of an agent not yet created. */
 router.post('/mcp-consent/offer', checkSchedulesCreate, consentHost.handlers.draft);
-router.get('/:id/mcp-consent', consentHost.handlers.get);
+router.get('/:id/mcp-consent', checkSchedulesAccess, consentHost.handlers.get);
 router.post('/:id/mcp-consent', checkSchedulesCreate, consentHost.handlers.confirm);
-router.delete('/:id/mcp-consent', consentHost.handlers.revoke);
+router.delete('/:id/mcp-consent', checkSchedulesCreate, consentHost.handlers.revoke);
 
 router.get('/', checkSchedulesAccess, handlers.listSchedules);
 router.get('/:id', checkSchedulesAccess, handlers.getSchedule);

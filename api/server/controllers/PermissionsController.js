@@ -2,7 +2,6 @@
  * @import { TUpdateResourcePermissionsRequest, TUpdateResourcePermissionsResponse } from 'librechat-data-provider'
  */
 
-const mongoose = require('mongoose');
 const { logger, getTenantId, SYSTEM_TENANT_ID } = require('@librechat/data-schemas');
 const { ResourceType, PrincipalType, PermissionBits } = require('librechat-data-provider');
 const {
@@ -203,7 +202,7 @@ const updateResourcePermissions = async (req, res) => {
 
 /**
  * Get principals with their permission roles for a resource (UI-friendly format)
- * Uses efficient aggregation pipeline to join User/Group data in single query
+ * Joins role, user and group data in a single aggregation
  * @route GET /api/permissions/{resourceType}/{resourceId}
  */
 const getResourcePermissions = async (req, res) => {
@@ -212,55 +211,7 @@ const getResourcePermissions = async (req, res) => {
     validateResourceType(resourceType);
     const tenantId = getTenantId();
 
-    const results = await db.aggregateAclEntries([
-      // Match ACL entries for this resource
-      {
-        $match: {
-          resourceType,
-          resourceId: mongoose.Types.ObjectId.isValid(resourceId)
-            ? mongoose.Types.ObjectId.createFromHexString(resourceId)
-            : resourceId,
-        },
-      },
-      // Lookup AccessRole information
-      {
-        $lookup: {
-          from: 'accessroles',
-          localField: 'roleId',
-          foreignField: '_id',
-          as: 'role',
-        },
-      },
-      // Lookup User information (for user principals)
-      {
-        $lookup: {
-          from: 'users',
-          localField: 'principalId',
-          foreignField: '_id',
-          as: 'userInfo',
-        },
-      },
-      // Lookup Group information (for group principals)
-      {
-        $lookup: {
-          from: 'groups',
-          localField: 'principalId',
-          foreignField: '_id',
-          as: 'groupInfo',
-        },
-      },
-      // Project final structure
-      {
-        $project: {
-          principalType: 1,
-          principalId: 1,
-          accessRoleId: { $arrayElemAt: ['$role.accessRoleId', 0] },
-          userInfo: { $arrayElemAt: ['$userInfo', 0] },
-          groupInfo: { $arrayElemAt: ['$groupInfo', 0] },
-          permBits: 1,
-        },
-      },
-    ]);
+    const results = await db.findResourcePermissionEntries(resourceType, resourceId);
 
     let principals = [];
     let publicPermission = null;
