@@ -1,4 +1,4 @@
-import { OPENID_SESSION_ENDED } from 'librechat-data-provider';
+import { OPENID_SESSION_ENDED, OPENID_SESSION_ID_MISSING } from 'librechat-data-provider';
 import type {
   ProviderSessionOperationData,
   ProviderSessionEstablishResult,
@@ -39,7 +39,10 @@ export type ProviderSessionEstablishOutcome =
   | { ok: true }
   | {
       ok: false;
-      code: typeof OPENID_SESSION_ENDED | typeof CALLBACK_EXPIRED;
+      code:
+        | typeof OPENID_SESSION_ENDED
+        | typeof OPENID_SESSION_ID_MISSING
+        | typeof CALLBACK_EXPIRED;
     };
 
 export interface ProviderSessionAuthorizeInput {
@@ -77,6 +80,21 @@ function refLogMeta(ref: ProviderSessionRef): {
   return { issuer: ref.issuer, clientId: ref.clientId, sidHash: hashProviderSessionId(ref.sid) };
 }
 
+/** Why `authorize` denied a session; logged so operators can tell a legacy session that must
+ *  sign in once from a back-channel logout or a conflicting session. */
+type ProviderSessionDenialReason = 'no_ref' | 'missing' | 'ended' | 'conflict';
+
+/** The failure's class name and driver code only. The message is left out because a database
+ *  error message can echo key values, such as the raw `sid`. */
+function causeLogMeta(error: unknown): { errorName: string; errorCode?: string | number } {
+  const errorName = error instanceof Error ? error.name : typeof error;
+  const code =
+    error != null && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
+  return typeof code === 'string' || typeof code === 'number'
+    ? { errorName, errorCode: code }
+    : { errorName };
+}
+
 export function createProviderSessionAuthorizer({
   methods,
   getConfig,
@@ -110,6 +128,9 @@ export function createProviderSessionAuthorizer({
     }
 
     if (input.ref == null) {
+      if (config.mode === 'enforce') {
+        return { ok: false, code: OPENID_SESSION_ID_MISSING };
+      }
       /** Logged at login only, not on each refresh: the operator must know the provider sends
        *  no `sid` before a back-channel logout can end this session. */
       logger.warn(
@@ -137,6 +158,15 @@ export function createProviderSessionAuthorizer({
       });
       return { ok: false, code: OPENID_SESSION_ENDED };
     } catch (error) {
+      if (config.mode === 'enforce') {
+        logger.error('[providerSession] establish check unavailable', {
+          ...refLogMeta(input.ref),
+          ...causeLogMeta(error),
+        });
+        throw new ProviderSessionUnavailableError('Provider session check unavailable', {
+          cause: error,
+        });
+      }
       logger.warn('[providerSession] establish check unavailable; continuing in record mode', {
         ...refLogMeta(input.ref),
         error,
@@ -153,8 +183,18 @@ export function createProviderSessionAuthorizer({
       return { ok: true };
     }
 
+    const deny = (reason: ProviderSessionDenialReason): ProviderSessionAuthorizeOutcome => {
+      logger.warn('[providerSession] renewal denied', {
+        ...(input.ref ? refLogMeta(input.ref) : {}),
+        mode: config.mode,
+        reason,
+        legacy: input.legacy,
+      });
+      return { ok: false, code: OPENID_SESSION_ENDED };
+    };
+
     if (input.ref == null) {
-      return { ok: true };
+      return config.mode === 'enforce' ? deny('no_ref') : { ok: true };
     }
 
     try {
@@ -169,12 +209,18 @@ export function createProviderSessionAuthorizer({
       if (result.ok) {
         return { ok: true };
       }
-      if (result.code === 'ENDED' || result.code === 'CONFLICT') {
-        return { ok: false, code: OPENID_SESSION_ENDED };
+      if (result.code === 'ENDED') {
+        return deny('ended');
+      }
+      if (result.code === 'CONFLICT') {
+        return deny('conflict');
       }
 
-      // MISSING: an unassociated or legacy credential. record fails open while the rollout
-      // observes legacy sessions.
+      // MISSING: an unassociated or legacy credential. enforce denies it; record fails open
+      // while the rollout observes legacy sessions.
+      if (config.mode === 'enforce') {
+        return deny('missing');
+      }
       logger.warn(
         '[providerSession] provider session missing or unassociated; allowed in record mode',
         {
@@ -185,6 +231,16 @@ export function createProviderSessionAuthorizer({
       );
       return { ok: true };
     } catch (error) {
+      if (config.mode === 'enforce') {
+        logger.error('[providerSession] authorize check unavailable', {
+          ...refLogMeta(input.ref),
+          legacy: input.legacy,
+          ...causeLogMeta(error),
+        });
+        throw new ProviderSessionUnavailableError('Provider session check unavailable', {
+          cause: error,
+        });
+      }
       logger.warn('[providerSession] authorize check unavailable; continuing in record mode', {
         ...refLogMeta(input.ref),
         legacy: input.legacy,

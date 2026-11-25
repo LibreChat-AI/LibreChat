@@ -89,7 +89,7 @@ describe('OpenID session refresh: provider-session authorization', () => {
         establish: jest.fn().mockResolvedValue({ ok: true }),
         authorize: jest.fn().mockResolvedValue({ ok: true }),
         preCheck: jest.fn().mockResolvedValue({ ok: true }),
-        getMode: jest.fn().mockResolvedValue('record'),
+        getMode: jest.fn().mockResolvedValue('enforce'),
       },
       getProviderSessionClient: jest.fn((): { issuer: string; clientId: string } | null => null),
     } satisfies OpenIDSessionRefreshDeps;
@@ -479,7 +479,7 @@ describe('OpenID session refresh: provider-session authorization', () => {
    * `syncRefreshTokenCookie` is the only place that writes the durable Session record and the
    * `openid_user_id` marker cookie for a rotated refresh token. Without the provider-session
    * binding flowing into both, the Express-session copy would be the only place it survives, and
-   * a restore after that session expires would resolve a null binding and lose the revocation check.
+   * a restore after that session expires would resolve a null binding and reject in `enforce` mode.
    */
   describe('provider-session binding on a cookie-capable rotation', () => {
     const boundRef = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-1' };
@@ -703,7 +703,7 @@ describe('OpenID session refresh: provider-session authorization', () => {
   /**
    * Every recovery bridge `refreshController` can later resolve a rotated token through must carry
    * the same provider-session binding, or a browser that recovers through it resolves a null
-   * binding and skips the revocation check on `/refresh`.
+   * binding and `enforce` mode rejects an otherwise-valid `/refresh`.
    */
   describe('provider-session binding on a recovery bridge', () => {
     const boundRef = { issuer: ISSUER, clientId: CLIENT_ID, sid: 'sid-1' };

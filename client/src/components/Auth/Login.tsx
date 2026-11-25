@@ -5,6 +5,7 @@ import {
   ErrorTypes,
   registerPage,
   OPENID_SESSION_ENDED,
+  OPENID_SESSION_ID_MISSING,
   AUTH_SESSION_CHECK_UNAVAILABLE,
 } from 'librechat-data-provider';
 import type { TLoginLayoutContext } from '~/common';
@@ -26,6 +27,7 @@ const oauthErrorKeys: Record<string, TranslationKeys> = {
   [ErrorTypes.AUTH_RATE_LIMITED]: 'com_auth_error_login_rl',
   [ErrorTypes.AUTH_BANNED]: 'com_auth_error_login_ban',
   [OPENID_SESSION_ENDED]: 'com_auth_openid_session_ended',
+  [OPENID_SESSION_ID_MISSING]: 'com_auth_openid_session_id_missing',
   [AUTH_SESSION_CHECK_UNAVAILABLE]: 'com_auth_session_check_unavailable_login',
 };
 

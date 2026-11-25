@@ -26,7 +26,7 @@ function createAuthorizer(
     establish: jest.fn().mockResolvedValue({ ok: true }),
     authorize: jest.fn().mockResolvedValue({ ok: true }),
     preCheck: jest.fn().mockResolvedValue({ ok: true }),
-    getMode: jest.fn().mockResolvedValue('record'),
+    getMode: jest.fn().mockResolvedValue('enforce'),
     ...overrides,
   };
 }
@@ -117,15 +117,45 @@ describe('establishOpenIDCallbackProviderSession', () => {
     );
   });
 
-  it('establishes with a null ref when the provider-session client is not configured', async () => {
+  it('record mode: establishes with a null ref and logs a configuration error when the provider-session client is unresolved', async () => {
     const getClaims = jest.fn().mockReturnValue({ sub: 'sub-1', sid: 'sid-1' });
-    const deps = createDeps({ getProviderSessionClient: jest.fn().mockReturnValue(null) });
+    const deps = createDeps({
+      authorizer: createAuthorizer({ getMode: jest.fn().mockResolvedValue('record') }),
+      getProviderSessionClient: jest.fn().mockReturnValue(null),
+    });
     const res = createResponse();
 
     const result = await establishOpenIDCallbackProviderSession(deps, { getClaims, res });
 
     expect(result).toEqual({ ok: true, ref: null });
     expect(deps.authorizer.establish).toHaveBeenCalledWith(expect.objectContaining({ ref: null }));
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('provider-session client unresolved'),
+      { mode: 'record' },
+    );
+  });
+
+  it('enforce mode: an unresolved provider-session client redirects as unavailable, not as a missing sid', async () => {
+    const getClaims = jest.fn().mockReturnValue({ sub: 'sub-1', sid: 'sid-1' });
+    const deps = createDeps({ getProviderSessionClient: jest.fn().mockReturnValue(null) });
+    const res = createResponse();
+
+    const result = await establishOpenIDCallbackProviderSession(deps, {
+      getClaims,
+      res,
+      clientDomain: 'http://client.test',
+    });
+
+    expect(result).toEqual({ ok: false });
+    expect(deps.authorizer.establish).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('provider-session client unresolved'),
+      { mode: 'enforce' },
+    );
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(res.redirect).toHaveBeenCalledWith(
+      'http://client.test/login?redirect=false&error=AUTH_SESSION_CHECK_UNAVAILABLE',
+    );
   });
 
   it('treats a missing callbackIssuedAt as indeterminately old rather than omitting it', async () => {
@@ -157,6 +187,27 @@ describe('establishOpenIDCallbackProviderSession', () => {
     expect(result).toEqual({ ok: false });
     expect(res.redirect).toHaveBeenCalledWith(
       'http://client.test/login?redirect=false&error=OPENID_SESSION_ENDED',
+    );
+  });
+
+  it('logs and redirects with the missing-sid error when enforce denies a missing sid', async () => {
+    const getClaims = jest.fn().mockReturnValue({ sub: 'sub-1', sid: 'sid-1' });
+    const authorizer = createAuthorizer({
+      establish: jest.fn().mockResolvedValue({ ok: false, code: 'OPENID_SESSION_ID_MISSING' }),
+    });
+    const deps = createDeps({ authorizer });
+    const res = createResponse();
+
+    const result = await establishOpenIDCallbackProviderSession(deps, {
+      getClaims,
+      res,
+      clientDomain: 'http://client.test',
+    });
+
+    expect(result).toEqual({ ok: false });
+    expect(logger.warn).toHaveBeenCalled();
+    expect(res.redirect).toHaveBeenCalledWith(
+      'http://client.test/login?redirect=false&error=OPENID_SESSION_ID_MISSING',
     );
   });
 

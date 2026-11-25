@@ -33,7 +33,7 @@ jest.mock('~/server/middleware', () => {
 });
 
 const ENABLED_CONFIG = {
-  mode: 'record',
+  mode: 'enforce',
   algorithms: ['RS256'],
   clockToleranceSec: 60,
   maxTokenAgeSec: 120,
@@ -104,7 +104,7 @@ describe('POST /oauth/openid/backchannel-logout', () => {
     expect(mockBackchannelLogoutLimiter).not.toHaveBeenCalled();
   });
 
-  it('returns 404 when OpenID is not configured, even in record mode', async () => {
+  it('returns 404 when OpenID is not configured, even in record/enforce mode', async () => {
     mockGetBackchannelLogoutConfig.mockResolvedValue(ENABLED_CONFIG);
     mockGetProviderSessionClient.mockReturnValue(null);
 

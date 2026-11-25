@@ -1,4 +1,4 @@
-import { OPENID_SESSION_ENDED } from 'librechat-data-provider';
+import { OPENID_SESSION_ENDED, OPENID_SESSION_ID_MISSING } from 'librechat-data-provider';
 import type { ResolvedBackchannelLogoutConfig } from './config';
 import {
   createProviderSessionAuthorizer,
@@ -48,7 +48,7 @@ describe('createProviderSessionAuthorizer: establish', () => {
     expect(methods.establish).not.toHaveBeenCalled();
   });
 
-  it.each(['record'] as const)(
+  it.each(['record', 'enforce'] as const)(
     '%s mode: rejects a callback older than callbackGraceMs before touching the database',
     async (mode) => {
       const methods = makeMethods();
@@ -96,7 +96,24 @@ describe('createProviderSessionAuthorizer: establish', () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  it.each(['record'] as const)('%s mode: a successful establish is ok', async (mode) => {
+  it('enforce mode: a missing ref is denied as OPENID_SESSION_ID_MISSING', async () => {
+    const methods = makeMethods();
+    const authorizer = createProviderSessionAuthorizer({
+      methods,
+      getConfig: async () => makeConfig({ mode: 'enforce' }),
+      logger: makeLogger(),
+      now: () => now,
+    });
+    await expect(
+      authorizer.establish({ ref: null, expiresAt, callbackIssuedAt: now }),
+    ).resolves.toEqual({
+      ok: false,
+      code: OPENID_SESSION_ID_MISSING,
+    });
+    expect(methods.establish).not.toHaveBeenCalled();
+  });
+
+  it.each(['record', 'enforce'] as const)('%s mode: a successful establish is ok', async (mode) => {
     const methods = makeMethods();
     methods.establish.mockResolvedValue({ ok: true });
     const authorizer = createProviderSessionAuthorizer({
@@ -131,7 +148,7 @@ describe('createProviderSessionAuthorizer: establish', () => {
       const logger = makeLogger();
       const authorizer = createProviderSessionAuthorizer({
         methods,
-        getConfig: async () => makeConfig({ mode: 'record' }),
+        getConfig: async () => makeConfig({ mode: 'enforce' }),
         logger,
         now: () => now,
       });
@@ -151,6 +168,21 @@ describe('createProviderSessionAuthorizer: establish', () => {
       expect(JSON.stringify(meta)).not.toContain(ref.sid);
     },
   );
+
+  it('enforce mode: a database failure throws ProviderSessionUnavailableError with the original error as cause', async () => {
+    const methods = makeMethods();
+    const dbError = new Error('connection lost');
+    methods.establish.mockRejectedValue(dbError);
+    const authorizer = createProviderSessionAuthorizer({
+      methods,
+      getConfig: async () => makeConfig({ mode: 'enforce' }),
+      logger: makeLogger(),
+      now: () => now,
+    });
+    const rejection = authorizer.establish({ ref, expiresAt, callbackIssuedAt: now });
+    await expect(rejection).rejects.toBeInstanceOf(ProviderSessionUnavailableError);
+    await expect(rejection).rejects.toMatchObject({ cause: dbError });
+  });
 
   it('record mode: a database failure fails open and logs without the raw sid', async () => {
     const methods = makeMethods();
@@ -203,7 +235,22 @@ describe('createProviderSessionAuthorizer: authorize', () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  it.each(['record'] as const)('%s mode: a successful authorize is ok', async (mode) => {
+  it('enforce mode: a missing ref is denied', async () => {
+    const methods = makeMethods();
+    const authorizer = createProviderSessionAuthorizer({
+      methods,
+      getConfig: async () => makeConfig({ mode: 'enforce' }),
+      logger: makeLogger(),
+      now: () => now,
+    });
+    await expect(authorizer.authorize({ ref: null, expiresAt, legacy: true })).resolves.toEqual({
+      ok: false,
+      code: OPENID_SESSION_ENDED,
+    });
+    expect(methods.authorize).not.toHaveBeenCalled();
+  });
+
+  it.each(['record', 'enforce'] as const)('%s mode: a successful authorize is ok', async (mode) => {
     const methods = makeMethods();
     methods.authorize.mockResolvedValue({ ok: true });
     const authorizer = createProviderSessionAuthorizer({
@@ -227,13 +274,30 @@ describe('createProviderSessionAuthorizer: authorize', () => {
 
   it.each([
     ['record', 'ENDED'],
+    ['enforce', 'ENDED'],
     ['record', 'CONFLICT'],
+    ['enforce', 'CONFLICT'],
   ] as const)('%s mode: %s is always denied, never failing open', async (mode, dbCode) => {
     const methods = makeMethods();
     methods.authorize.mockResolvedValue({ ok: false, code: dbCode });
     const authorizer = createProviderSessionAuthorizer({
       methods,
       getConfig: async () => makeConfig({ mode }),
+      logger: makeLogger(),
+      now: () => now,
+    });
+    await expect(authorizer.authorize({ ref, expiresAt, legacy: false })).resolves.toEqual({
+      ok: false,
+      code: OPENID_SESSION_ENDED,
+    });
+  });
+
+  it('enforce mode: MISSING is denied', async () => {
+    const methods = makeMethods();
+    methods.authorize.mockResolvedValue({ ok: false, code: 'MISSING' });
+    const authorizer = createProviderSessionAuthorizer({
+      methods,
+      getConfig: async () => makeConfig({ mode: 'enforce' }),
       logger: makeLogger(),
       now: () => now,
     });
@@ -262,6 +326,85 @@ describe('createProviderSessionAuthorizer: authorize', () => {
     expect(JSON.stringify(meta)).not.toContain(ref.sid);
   });
 
+  it('enforce mode: a database failure throws ProviderSessionUnavailableError with the original error as cause', async () => {
+    const methods = makeMethods();
+    const dbError = new Error('connection lost');
+    methods.authorize.mockRejectedValue(dbError);
+    const authorizer = createProviderSessionAuthorizer({
+      methods,
+      getConfig: async () => makeConfig({ mode: 'enforce' }),
+      logger: makeLogger(),
+      now: () => now,
+    });
+    const rejection = authorizer.authorize({ ref, expiresAt, legacy: false });
+    await expect(rejection).rejects.toBeInstanceOf(ProviderSessionUnavailableError);
+    await expect(rejection).rejects.toMatchObject({ cause: dbError });
+  });
+
+  it.each([
+    ['enforce', null, undefined, 'no_ref', true],
+    ['enforce', ref, 'MISSING', 'missing', true],
+    ['enforce', ref, 'ENDED', 'ended', false],
+    ['enforce', ref, 'CONFLICT', 'conflict', false],
+    ['record', ref, 'ENDED', 'ended', false],
+    ['record', ref, 'CONFLICT', 'conflict', false],
+  ] as const)(
+    '%s mode: logs the denial reason for ref=%p, result %s',
+    async (mode, inputRef, dbCode, reason, legacy) => {
+      const methods = makeMethods();
+      if (dbCode) methods.authorize.mockResolvedValue({ ok: false, code: dbCode });
+      const logger = makeLogger();
+      const authorizer = createProviderSessionAuthorizer({
+        methods,
+        getConfig: async () => makeConfig({ mode }),
+        logger,
+        now: () => now,
+      });
+      await expect(authorizer.authorize({ ref: inputRef, expiresAt, legacy })).resolves.toEqual({
+        ok: false,
+        code: OPENID_SESSION_ENDED,
+      });
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      const [message, meta] = logger.warn.mock.calls[0];
+      expect(message).toBe('[providerSession] renewal denied');
+      expect(meta).toMatchObject({ mode, reason, legacy });
+      if (inputRef) {
+        expect(meta).toMatchObject({ issuer: ref.issuer, clientId: ref.clientId });
+        expect(meta.sidHash).toEqual(expect.any(String));
+      }
+      expect(JSON.stringify(meta)).not.toContain(ref.sid);
+    },
+  );
+
+  it.each(['authorize', 'establish'] as const)(
+    'enforce mode: the %s unavailable log names the database failure without its message',
+    async (operation) => {
+      const methods = makeMethods();
+      const dbError = Object.assign(new Error(`E11000 duplicate key { sid: "${ref.sid}" }`), {
+        name: 'MongoServerError',
+        code: 11000,
+      });
+      methods[operation].mockRejectedValue(dbError);
+      const logger = makeLogger();
+      const authorizer = createProviderSessionAuthorizer({
+        methods,
+        getConfig: async () => makeConfig({ mode: 'enforce' }),
+        logger,
+        now: () => now,
+      });
+      const call =
+        operation === 'authorize'
+          ? authorizer.authorize({ ref, expiresAt, legacy: false })
+          : authorizer.establish({ ref, expiresAt, callbackIssuedAt: now });
+      await expect(call).rejects.toBeInstanceOf(ProviderSessionUnavailableError);
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      const [, meta] = logger.error.mock.calls[0];
+      expect(meta).toMatchObject({ errorName: 'MongoServerError', errorCode: 11000 });
+      expect(JSON.stringify(meta)).not.toContain(ref.sid);
+      expect(JSON.stringify(meta)).not.toContain('E11000');
+    },
+  );
+
   it('record mode: a database failure fails open and logs without the raw sid', async () => {
     const methods = makeMethods();
     methods.authorize.mockRejectedValue(new Error('connection lost'));
@@ -284,7 +427,7 @@ describe('createProviderSessionAuthorizer: authorize', () => {
     methods.authorize.mockResolvedValue({ ok: true });
     const authorizer = createProviderSessionAuthorizer({
       methods,
-      getConfig: async () => makeConfig({ mode: 'record' }),
+      getConfig: async () => makeConfig({ mode: 'enforce' }),
       logger: makeLogger(),
       now: () => now,
     });
@@ -300,7 +443,7 @@ describe('createProviderSessionAuthorizer: preCheck', () => {
     methods.authorize.mockResolvedValue({ ok: true });
     const authorizer = createProviderSessionAuthorizer({
       methods,
-      getConfig: async () => makeConfig({ mode: 'record' }),
+      getConfig: async () => makeConfig({ mode: 'enforce' }),
       logger: makeLogger(),
       now: () => now,
     });
@@ -317,7 +460,7 @@ describe('createProviderSessionAuthorizer: preCheck', () => {
     methods.authorize.mockResolvedValue({ ok: false, code: 'ENDED' });
     const authorizer = createProviderSessionAuthorizer({
       methods,
-      getConfig: async () => makeConfig({ mode: 'record' }),
+      getConfig: async () => makeConfig({ mode: 'enforce' }),
       logger: makeLogger(),
       now: () => now,
     });
@@ -377,7 +520,7 @@ describe('createProviderSessionAuthorizer: config load failure', () => {
     const authorizer = createProviderSessionAuthorizer({
       methods,
       getConfig: () =>
-        new Promise((resolve) => setTimeout(() => resolve(makeConfig({ mode: 'record' })), 5)),
+        new Promise((resolve) => setTimeout(() => resolve(makeConfig({ mode: 'enforce' })), 5)),
       logger: makeLogger(),
       now: () => now,
     });
@@ -389,14 +532,17 @@ describe('createProviderSessionAuthorizer: config load failure', () => {
 });
 
 describe('createProviderSessionAuthorizer: getMode', () => {
-  it.each(['off', 'record'] as const)('resolves the configured mode: %s', async (mode) => {
-    const methods = makeMethods();
-    const authorizer = createProviderSessionAuthorizer({
-      methods,
-      getConfig: async () => makeConfig({ mode }),
-      logger: makeLogger(),
-      now: () => now,
-    });
-    await expect(authorizer.getMode()).resolves.toBe(mode);
-  });
+  it.each(['off', 'record', 'enforce'] as const)(
+    'resolves the configured mode: %s',
+    async (mode) => {
+      const methods = makeMethods();
+      const authorizer = createProviderSessionAuthorizer({
+        methods,
+        getConfig: async () => makeConfig({ mode }),
+        logger: makeLogger(),
+        now: () => now,
+      });
+      await expect(authorizer.getMode()).resolves.toBe(mode);
+    },
+  );
 });

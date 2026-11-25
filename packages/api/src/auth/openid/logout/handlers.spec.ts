@@ -20,7 +20,7 @@ function makeConfig(
   overrides: Partial<ResolvedBackchannelLogoutConfig> = {},
 ): ResolvedBackchannelLogoutConfig {
   return {
-    mode: 'record',
+    mode: 'enforce',
     algorithms: ['RS256'],
     clockToleranceSec: 60,
     maxTokenAgeSec: 120,

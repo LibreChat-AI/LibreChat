@@ -1,4 +1,8 @@
-import { AUTH_SESSION_CHECK_UNAVAILABLE, OPENID_SESSION_ENDED } from 'librechat-data-provider';
+import {
+  AUTH_SESSION_CHECK_UNAVAILABLE,
+  OPENID_SESSION_ENDED,
+  OPENID_SESSION_ID_MISSING,
+} from 'librechat-data-provider';
 import type { ProviderSessionRef } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { ProviderSessionAuthorizer } from './authorize';
@@ -46,6 +50,21 @@ export async function establishOpenIDCallbackProviderSession(
 
     const claims = input.getClaims();
     const client = deps.getProviderSessionClient();
+    if (!client) {
+      /** A LibreChat configuration fault, not a missing `sid`: the client ID or issuer that
+       *  scopes the provider session could not be resolved. */
+      deps.logger.error(
+        '[OAuth] OpenID provider-session client unresolved (client ID or issuer); check the OpenID configuration',
+        { mode },
+      );
+      if (mode === 'enforce') {
+        redirectToAuthFailure(input.res, {
+          clientDomain: input.clientDomain,
+          authFailedError: AUTH_SESSION_CHECK_UNAVAILABLE,
+        });
+        return { ok: false };
+      }
+    }
     const ref = client
       ? extractProviderSessionRef(claims, { issuer: client.issuer, clientId: client.clientId })
       : null;
@@ -62,9 +81,17 @@ export async function establishOpenIDCallbackProviderSession(
     if (outcome.ok) {
       return { ok: true, ref };
     }
+    if (outcome.code === OPENID_SESSION_ID_MISSING) {
+      deps.logger.warn(
+        '[OAuth] OpenID callback carried no provider session id (sid); denied by backchannel-logout enforcement',
+      );
+    }
     redirectToAuthFailure(input.res, {
       clientDomain: input.clientDomain,
-      authFailedError: OPENID_SESSION_ENDED,
+      authFailedError:
+        outcome.code === OPENID_SESSION_ID_MISSING
+          ? OPENID_SESSION_ID_MISSING
+          : OPENID_SESSION_ENDED,
     });
     return { ok: false };
   } catch (error) {

@@ -20,9 +20,9 @@ describe('resolveBackchannelLogoutConfig', () => {
 
   it('fills in schema defaults for fields the YAML leaves unset', () => {
     const resolved = resolveBackchannelLogoutConfig({
-      openidBackchannelLogout: { mode: 'record' },
+      openidBackchannelLogout: { mode: 'enforce' },
     });
-    expect(resolved.mode).toBe('record');
+    expect(resolved.mode).toBe('enforce');
     expect(resolved.algorithms).toEqual(['RS256']);
     expect(resolved.callbackGraceMs).toBe(600_000);
   });
