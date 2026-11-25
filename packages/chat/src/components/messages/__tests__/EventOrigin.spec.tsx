@@ -40,7 +40,7 @@ describe('EventOrigin', () => {
     ['github.issue_comment.created', 'com_ui_events_origin_comment'],
     ['github.check_suite.completed', 'com_ui_events_origin_checks'],
     ['github.pull_request.closed', 'com_ui_events_origin_closed'],
-    ['github.release.published', 'com_ui_events_origin_other'],
+    ['github.release.published', 'com_ui_events_origin_generic'],
   ])('labels a %s event', (type, label) => {
     render(<EventOrigin message={row(type, URL)} />);
     expect(screen.getByText(label)).toBeInTheDocument();

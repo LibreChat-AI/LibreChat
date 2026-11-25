@@ -27,7 +27,7 @@ export default function EventOrigin({
   const localize = useLocalize();
   const origin = parseEventOrigin(message);
   if (origin == null) return null;
-  const event = localize(LABELS[origin.type] ?? 'com_ui_events_origin_other');
+  const event = localize(LABELS[origin.type] ?? 'com_ui_events_origin_generic');
   const item = `${origin.repo}#${origin.number}`;
   return (
     <p className="text-text-secondary mb-1 flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs">
