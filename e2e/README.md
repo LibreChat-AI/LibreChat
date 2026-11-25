@@ -104,8 +104,34 @@ npm run e2e:mock:redis:transport
 ```
 
 The nightly schedule and manual workflow dispatch run the complete mock suite in both stream
-modes, across twenty-five memory shards and ten Redis shards. Every shard keeps one worker so tests do not contend for its
-authenticated user and database.
+modes, across twenty-five memory shards and ten Redis shards.
+
+The mock config runs one worker unless you pass `--workers`:
+
+```sh
+npx playwright test --config=e2e/playwright.config.mock.ts --project=chromium --workers=4 sidebar bookmarks
+npx playwright test --config=e2e/playwright.config.mock.ts --project=chromium-serial sidebar bookmarks
+```
+
+- Global setup signs in one account per worker (`e2e/setup/global-setup.mock.ts`), each with
+  the role of worker 0's account, which is the deployment's first and so an admin.
+  `getE2EUser()` and `getSecondaryE2EUser()` return the account of the worker they run in, and
+  the config points each worker's `storageState` at its own file. Worker 0 keeps
+  `testuser@example.com`, so a one-worker run uses the accounts it always has.
+- A spec file is the unit of parallelism (`fullyParallel: false`): its tests run in order on one
+  worker.
+- Spec files that change what every worker sees belong to a second project, `<profile>-serial`
+  (`chrome-serial` in CI): specs that spawn tooling, rewrite the server's base config, override
+  config for a whole role or group, or set, reset or read a fake harness server's behavior and
+  request log (label, code, RAG, assistants, git host, Flux, MCP app), which every worker's
+  requests share, or start the management OIDC fixture, whose one port, user and tenant every
+  management spec uses. `e2e/setup/serial.ts` finds them by those patterns, so a new spec that does
+  any of this is serial without being listed. A spec that touches only its user's data, a
+  tenant of its own, or a throwaway account runs beside any other. With one worker the serial
+  project simply runs last. With more, run the two projects as two commands, as above: in one
+  command Playwright can start the first serial file while the last parallel one is still
+  running. The second command replaces the first one's HTML report and test results, so open or
+  copy them in between.
 
 CI retries a failed test, twice on the memory shards and three times on the Redis transport
 suite, so the report carries a trace of each failed attempt and shows whether the failure
