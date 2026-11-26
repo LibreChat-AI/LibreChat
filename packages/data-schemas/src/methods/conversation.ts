@@ -53,6 +53,7 @@ import {
 import {
   includeInInsights,
   excludeFromInsights,
+  needsInsightsRepair,
   rememberInsightsRoot,
   syncInsightsAttribution,
 } from './insightsAttribution';
@@ -789,7 +790,7 @@ export function createConversationMethods(
       }
       return rememberInsightsRoot(
         await Conversation.findOne({ conversationId })
-          .select(`+initial_agent_id ${fieldsToSelect ?? ''}`.trim())
+          .select(`+initial_agent_id +insightsRepair ${fieldsToSelect ?? ''}`.trim())
           .lean<IConversation>(),
       );
     } catch (error) {
@@ -806,7 +807,7 @@ export function createConversationMethods(
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
       return rememberInsightsRoot(
         await Conversation.findOne({ user, conversationId })
-          .select('+initial_agent_id')
+          .select('+initial_agent_id +insightsRepair')
           .lean<IConversation>(),
       );
     } catch (error) {
@@ -2845,7 +2846,7 @@ export function createConversationMethods(
       }
 
       const created = conversationResult.lastErrorObject?.updatedExisting === false;
-      if (created || conversation.isTemporary === true) {
+      if (created || conversation.isTemporary === true || needsInsightsRepair(conversation)) {
         const saved = {
           ...(conversation.toObject() as Record<string, unknown>),
           initial_agent_id: initialAgentId,

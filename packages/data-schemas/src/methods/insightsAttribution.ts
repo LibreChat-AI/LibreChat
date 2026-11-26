@@ -99,7 +99,12 @@ export async function resolveInsightsAttributions(
   return result;
 }
 
-type Turn = { hints: Map<string, string>; legacy: Set<string>; pending: Set<string> };
+type Turn = {
+  hints: Map<string, string>;
+  legacy: Set<string>;
+  pending: Set<string>;
+  repair: Map<string, string>;
+};
 
 const turns = new WeakMap<TenantContext, Turn>();
 
@@ -109,6 +114,7 @@ function getTurn(): Turn {
     hints: new Map(),
     legacy: new Set(),
     pending: new Set(),
+    repair: new Map(),
   };
   if (context?.userId) turns.set(context, turn);
   return turn;
@@ -121,8 +127,13 @@ function remember({ hints, legacy }: Turn, key: string, hint: string | null): vo
 
 export function rememberInsightsRoot(conversation: IConversation | null): IConversation | null {
   if (!conversation) return conversation;
-  remember(getTurn(), insightsIdentityKey(conversation), hintFor(conversation));
+  const turn = getTurn();
+  const key = insightsIdentityKey(conversation);
+  const hint = hintFor(conversation);
+  remember(turn, key, hint);
+  if (conversation.insightsRepair === true && hint != null) turn.repair.set(key, hint);
   delete conversation.initial_agent_id;
+  delete conversation.insightsRepair;
   return conversation;
 }
 
@@ -191,6 +202,10 @@ async function storeAttribution(
   );
 }
 
+export function needsInsightsRepair(chat: InsightsRecordIdentity): boolean {
+  return getTurn().repair.has(insightsIdentityKey(chat));
+}
+
 export async function syncInsightsAttribution(
   mongoose: typeof import('mongoose'),
   saved: Record<string, unknown>,
@@ -202,28 +217,50 @@ export async function syncInsightsAttribution(
 ): Promise<void> {
   const { conversationId, user, tenantId } = saved;
   if (typeof conversationId !== 'string' || typeof user !== 'string') return;
-  const hint = hintFor(saved);
-  if (hint == null) return;
   const identity = { conversationId, user, ...(typeof tenantId === 'string' && { tenantId }) };
-  const { hints, pending } = getTurn();
+  const { hints, pending, repair } = getTurn();
   const key = insightsIdentityKey(identity);
-  if (!created && !converted && !hints.get(key) && !pending.has(key)) return;
+  const repairHint = repair.get(key);
+  const repairing = repairHint !== undefined;
+  const hint = repairing && !created && saved.isTemporary !== true ? repairHint : hintFor(saved);
+  if (hint == null) return;
+  if (!created && !converted && !repairing && !hints.get(key) && !pending.has(key)) return;
   const unneeded = created && hint === '';
+  const stamp = { created: created || repairing };
+  const Conversation = mongoose.models.Conversation as Model<IConversation>;
+  const chat = { conversationId, user, tenantId: identity.tenantId ?? { $exists: false } };
+  const mark = (insightsRepair: boolean, options: { session?: ClientSession } = {}) =>
+    Conversation.updateOne(
+      chat,
+      insightsRepair ? { $set: { insightsRepair } } : { $unset: { insightsRepair: 1 } },
+      { timestamps: false, ...options },
+    );
   if (session?.inTransaction()) {
-    if (!unneeded) await storeAttribution(mongoose, identity, hint, { created, session });
+    if (!unneeded) await storeAttribution(mongoose, identity, hint, { ...stamp, session });
+    if (repairing) await mark(false, { session });
     return runAfterTransaction(session, async () => {
       hints.set(key, hint);
       pending.delete(key);
+      repair.delete(key);
     });
   }
   hints.set(key, hint);
   if (unneeded) return;
   pending.add(key);
   try {
-    await storeAttribution(mongoose, identity, hint, { created });
+    await storeAttribution(mongoose, identity, hint, stamp);
     pending.delete(key);
+    if (repairing) {
+      repair.delete(key);
+      await mark(false).catch((markError: unknown) =>
+        logger.error('[syncInsightsAttribution] Failed to clear the repair mark', markError),
+      );
+    }
   } catch (error) {
     logger.error('[syncInsightsAttribution] Failed to attribute Insights records', error);
+    await mark(true).catch((markError: unknown) =>
+      logger.error('[syncInsightsAttribution] Failed to mark the chat for repair', markError),
+    );
   }
 }
 

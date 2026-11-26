@@ -163,6 +163,7 @@ describe('within a turn', () => {
     interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 1 },
   };
   const runTurn = (turn: () => Promise<void>) => tenantStorage.run({ userId }, turn);
+  const runTurnWith = <T>(turn: () => Promise<T>) => tenantStorage.run({ userId }, turn);
   const reply = (messageId: string) =>
     messages.saveMessage({ userId }, { conversationId, messageId, isCreatedByUser: false });
   const bill = (messageId: string, context = 'message') =>
@@ -403,6 +404,48 @@ describe('within a turn', () => {
       expect(await totals()).toEqual({ messages: 0, spend: null });
     },
   );
+
+  it('repairs a first turn whose stamping failed on the next turn of the chat', async () => {
+    const fresh = '33333333-3333-4333-8333-333333333333';
+    const repairMark = async () =>
+      (
+        await mongoose.models.Conversation.findOne({ conversationId: fresh })
+          .select('+insightsRepair')
+          .lean<{ insightsRepair?: boolean }>()
+      )?.insightsRepair;
+    const stamp = async () =>
+      (
+        await mongoose.models.Message.collection.findOne({
+          conversationId: fresh,
+          messageId: 'first',
+        })
+      )?.insightsAgentId;
+    await runTurn(async () => {
+      await messages.saveMessage(
+        { userId },
+        { conversationId: fresh, messageId: 'first', isCreatedByUser: false },
+      );
+      const failure = jest
+        .spyOn(mongoose.models.Message, 'updateMany')
+        .mockRejectedValue(new Error('unavailable'));
+      await conversations.saveConvo(
+        { userId },
+        { conversationId: fresh, endpoint: 'agents', agent_id: 'agent-a' },
+        { initialAgentId: 'agent-a' },
+      );
+      failure.mockRestore();
+    });
+    expect(await stamp()).toBeUndefined();
+    expect(await repairMark()).toBe(true);
+    const loaded = await runTurnWith(() => conversations.getConvo(userId, fresh));
+    expect(loaded).not.toHaveProperty('insightsRepair');
+    await runTurn(async () => {
+      await conversations.getConvo(userId, fresh);
+      await conversations.saveConvo({ userId }, { conversationId: fresh, endpoint: 'agents' });
+    });
+    expect(await stamp()).toBe('agent-a');
+    expect(await repairMark()).toBeUndefined();
+  });
 
   it('records one exclusion per converted chat and nothing more in its later turns', async () => {
     await runTurn(async () => {

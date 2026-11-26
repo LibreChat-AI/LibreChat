@@ -78,6 +78,7 @@ const convoSchema: Schema<IConversation> = new Schema(
       default: undefined,
       select: false,
     },
+    insightsRepair: { type: Boolean, default: undefined, select: false },
     subagentThread: {
       type: {
         rootConversationId: { type: String, required: true },
