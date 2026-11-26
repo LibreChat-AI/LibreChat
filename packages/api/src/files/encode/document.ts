@@ -12,11 +12,14 @@ import type { BedrockDocumentFormat } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type {
   DocumentBlock,
+  SharedDocumentBlock,
   AnthropicDocumentBlock,
+  OpenAITextDocumentBlock,
   StrategyFunctions,
   DocumentResult,
   ServerRequest,
 } from '~/types';
+import type { ValidationResult } from '~/files/validation';
 import type { ReachableAgent } from '~/agents/traversal';
 import type { MissingAttachmentHandler } from './utils';
 import {
@@ -137,8 +140,15 @@ function renameDocumentParts(
   return renamed ?? parts;
 }
 
-interface DocumentRecipient extends ReachableAgent<DocumentRecipient> {
+/** An agent that reads a formatted history, with the parameters its initialization resolved. */
+export interface DocumentRecipient extends ReachableAgent<DocumentRecipient> {
   readonly provider?: string;
+  readonly endpoint?: string | null;
+  readonly model?: string | null;
+  readonly model_parameters?: {
+    readonly model?: string | null;
+    readonly useResponsesApi?: boolean | null;
+  } | null;
 }
 
 function isBedrockRecipient({ provider }: DocumentRecipient): boolean {
@@ -211,11 +221,197 @@ function getAnthropicDocumentSource(
  * Whether the model behind this provider is Claude, which accepts only PDFs as base64
  * documents. OpenAI-compatible gateways report an OpenAI-like provider for Claude models.
  */
-function usesAnthropicDocumentCapabilities(provider: Providers, model?: string): boolean {
+function usesAnthropicDocumentCapabilities(provider: string, model?: string | null): boolean {
   return (
     provider === Providers.ANTHROPIC ||
     (isOpenAILikeProvider(provider) && (model?.toLowerCase().includes('claude') ?? false))
   );
+}
+
+/** A textual document as a text part, which every provider reads as it is. */
+function formatTextDocument(content: string, filename = 'document'): OpenAITextDocumentBlock {
+  return {
+    type: 'text',
+    text: `File: "${filename}"\n\n${Buffer.from(content, 'base64').toString('utf8')}`,
+  };
+}
+
+/** Bedrock accepts only letters, digits, whitespace, hyphens, parentheses and brackets. */
+function getBedrockDocumentName(filename?: string): string {
+  return (filename || 'document')
+    .replace(/[^a-zA-Z0-9\s\-()[\]]/g, '_')
+    .slice(0, BEDROCK_DOCUMENT_NAME_LIMIT);
+}
+
+/** Which block an agent's provider path builds for a document (see `formatDocumentBlock`). */
+function getDocumentFormat(
+  provider: string,
+  useResponsesApi?: boolean | null,
+  model?: string | null,
+): string {
+  if (provider === Providers.GOOGLE || provider === Providers.VERTEXAI) {
+    return Providers.GOOGLE;
+  }
+  if (
+    provider === Providers.ANTHROPIC ||
+    provider === Providers.BEDROCK ||
+    !isDocumentSupportedProvider(provider)
+  ) {
+    return provider;
+  }
+  if (useResponsesApi) {
+    return 'responses';
+  }
+  return usesAnthropicDocumentCapabilities(provider, model) ? 'claude' : 'completions';
+}
+
+/**
+ * The document formats of every agent that reads the history: the primary agent's and those of
+ * its chain, handoff and added-conversation agents. Subagents see only their task and receive
+ * their files through the run file encoder, so they never read these blocks.
+ */
+function getReaderFormats(
+  primary: string,
+  recipients: Iterable<DocumentRecipient> = [],
+): Set<string> {
+  const formats = new Set([primary]);
+  for (const recipient of recipients) {
+    if (recipient?.provider == null) {
+      continue;
+    }
+    const params = recipient.model_parameters;
+    formats.add(
+      getDocumentFormat(
+        recipient.provider,
+        params?.useResponsesApi,
+        params?.model ?? recipient.model,
+      ),
+    );
+  }
+  return formats;
+}
+
+/**
+ * A document block every agent of a shared history can read. The agents SDK converts a standard
+ * file block into each agent's own document format before its request, leaving it out where the
+ * provider cannot read the type, and a text part reads the same everywhere.
+ */
+function formatSharedDocumentBlock(
+  mimeType: string,
+  content: string,
+  filename: string | undefined,
+): SharedDocumentBlock | OpenAITextDocumentBlock {
+  if (isAnthropicTextDocumentType(mimeType)) {
+    return formatTextDocument(content, filename);
+  }
+  return {
+    type: 'file',
+    source_type: 'base64',
+    mime_type: mimeType,
+    data: content,
+    metadata: {
+      name: getBedrockDocumentName(filename),
+      filename: filename ?? 'document',
+      ...(filename ? { context: `File: "${filename}"` } : {}),
+      citations: { enabled: true },
+    },
+  };
+}
+
+/**
+ * The agents SDK hands Bedrock every block unconverted, so a shared history that a Bedrock agent
+ * reads leaves out binary types outside Bedrock's document formats instead of failing its turns.
+ */
+function filterSharedDocumentFiles(files: IMongoFile[], formats: Set<string>): IMongoFile[] {
+  if (formats.size < 2 || !formats.has(Providers.BEDROCK)) {
+    return files;
+  }
+  const readable: IMongoFile[] = [];
+  const skipped: string[] = [];
+  for (const file of files) {
+    if (isAnthropicTextDocumentType(file.type) || isBedrockDocumentType(file.type)) {
+      readable.push(file);
+    } else {
+      skipped.push(`"${file.filename}" (${file.type})`);
+    }
+  }
+  if (skipped.length) {
+    logger.warn(
+      `Skipping attachment(s) a Bedrock agent in this conversation cannot read: ${skipped.join(', ')}`,
+    );
+  }
+  return readable;
+}
+
+/** The limits one provider checks before it takes a document. */
+interface DocumentCheck {
+  provider: Providers;
+  model?: string;
+  fileSizeLimit?: number;
+}
+
+/** Only Bedrock's limits depend on the model, so other providers' checks ignore it. */
+const getCheckKey = ({ provider, model, fileSizeLimit }: DocumentCheck): string =>
+  `${provider}:${provider === Providers.BEDROCK ? (model ?? '') : ''}:${fileSizeLimit ?? ''}`;
+
+/**
+ * The checks of the other agents reading the history that differ from the primary agent's own. A
+ * document one of them refuses fails the turn with that provider's reason, as the primary agent's
+ * checks do, instead of failing that agent's request on this turn and every later one that resends
+ * the file.
+ */
+function getReaderChecks(
+  req: ServerRequest,
+  primary: DocumentCheck,
+  recipients: readonly DocumentRecipient[],
+): DocumentCheck[] {
+  const checks = new Map<string, DocumentCheck>();
+  for (const recipient of recipients) {
+    if (recipient?.provider == null) {
+      continue;
+    }
+    const provider = recipient.provider as Providers;
+    const check: DocumentCheck = {
+      provider,
+      model: recipient.model_parameters?.model ?? recipient.model ?? undefined,
+      fileSizeLimit: getConfiguredFileSizeLimit(req, {
+        provider,
+        endpoint: recipient.endpoint ?? undefined,
+        explicit: provider === Providers.BEDROCK,
+      }),
+    };
+    checks.set(getCheckKey(check), check);
+  }
+  checks.delete(getCheckKey(primary));
+  return [...checks.values()];
+}
+
+/**
+ * Applies the readers' checks to one document, as the primary agent's apply: their provider's PDF
+ * checks, Bedrock's document limits, and otherwise their configured size limit.
+ */
+async function validateForReaders(
+  checks: readonly DocumentCheck[],
+  mimeType: string,
+  size: number,
+  buffer?: Buffer,
+): Promise<void> {
+  const isPdf = mimeType === 'application/pdf';
+  for (const { provider, model, fileSizeLimit } of checks) {
+    let validation: ValidationResult | undefined;
+    if (isPdf && buffer) {
+      validation = await validatePdf(buffer, size, provider, fileSizeLimit, model);
+    } else if (provider === Providers.BEDROCK) {
+      validation = await validateBedrockDocument(size, mimeType, buffer, fileSizeLimit, model);
+    } else if (fileSizeLimit && size > fileSizeLimit) {
+      throw new Error(
+        `File size (~${(size / 1024 / 1024).toFixed(1)}MB) exceeds the configured limit for ${provider}`,
+      );
+    }
+    if (validation?.isValid === false) {
+      throw new Error(`${isPdf ? 'PDF' : 'Document'} validation failed: ${validation.error}`);
+    }
+  }
 }
 
 /**
@@ -266,10 +462,7 @@ function formatDocumentBlock(
     isAnthropicTextDocumentType(mimeType) &&
     usesAnthropicDocumentCapabilities(provider, model)
   ) {
-    return {
-      type: 'text',
-      text: `File: "${resolvedFilename}"\n\n${Buffer.from(content, 'base64').toString('utf8')}`,
-    };
+    return formatTextDocument(content, resolvedFilename);
   }
 
   if (useResponsesApi) {
@@ -354,6 +547,10 @@ function getBase64DecodedByteCount(content: string): number {
  *   all others are skipped.
  * - **PDF**: Validated via `validatePdf` before encoding.
  * - **Generic types**: Encoded with a provider-specific size check.
+ * - **Shared history**: When `recipients` need another block than the primary agent's own,
+ *   every document becomes a block each of them can read (`formatSharedDocumentBlock`).
+ * - **Recipients' limits**: Each document also passes the checks of every recipient whose
+ *   limits differ from the primary agent's (`getReaderChecks`).
  */
 export async function encodeAndFormatDocuments(
   req: ServerRequest,
@@ -363,11 +560,13 @@ export async function encodeAndFormatDocuments(
     endpoint?: string;
     useResponsesApi?: boolean;
     model?: string;
+    /** The other agents that read the same history: chain, handoff and added conversation. */
+    recipients?: Iterable<DocumentRecipient>;
     onMissingFile?: MissingAttachmentHandler;
   },
   getStrategyFunctions: (source: string) => StrategyFunctions,
 ): Promise<DocumentResult> {
-  const { provider, endpoint, useResponsesApi, model, onMissingFile } = params;
+  const { provider, endpoint, useResponsesApi, model, recipients, onMissingFile } = params;
   if (!files?.length) {
     return { documents: [], files: [] };
   }
@@ -382,7 +581,18 @@ export async function encodeAndFormatDocuments(
     return result;
   }
 
-  const processableFiles = filterProviderDocumentFiles(provider, files, model);
+  const readers = Array.from(recipients ?? []);
+  const formats = getReaderFormats(getDocumentFormat(provider, useResponsesApi, model), readers);
+  /** Agents on another provider or API read the history too, so no one agent's block serves all. */
+  const shared = formats.size > 1;
+  const formatBlock = (mimeType: string, content: string, filename?: string) =>
+    shared
+      ? formatSharedDocumentBlock(mimeType, content, filename)
+      : formatDocumentBlock(provider, mimeType, content, filename, useResponsesApi, model);
+  const processableFiles = filterSharedDocumentFiles(
+    filterProviderDocumentFiles(provider, files, model),
+    formats,
+  );
 
   if (!processableFiles.length) {
     return result;
@@ -394,10 +604,27 @@ export async function encodeAndFormatDocuments(
     endpoint,
     explicit: isBedrock,
   });
-
-  /** Bedrock's limit per document, known before anything is read. Other providers read unbounded. */
+  const readerChecks = getReaderChecks(
+    req,
+    { provider, model, fileSizeLimit: configuredFileSizeLimit },
+    readers,
+  );
+  /**
+   * Bedrock's limit per document, the smallest among the Bedrock agents that read it, known before
+   * anything is read. Other providers read unbounded.
+   */
+  const bedrockChecks = [
+    ...(isBedrock ? [{ provider, model, fileSizeLimit: configuredFileSizeLimit }] : []),
+    ...readerChecks.filter((check) => check.provider === Providers.BEDROCK),
+  ];
   const readLimits = processableFiles.map((file) =>
-    isBedrock ? getBedrockDocumentLimit(file.type, configuredFileSizeLimit, model) : undefined,
+    bedrockChecks.length > 0
+      ? Math.min(
+          ...bedrockChecks.map((check) =>
+            getBedrockDocumentLimit(file.type, check.fileSizeLimit, check.model),
+          ),
+        )
+      : undefined,
   );
   /**
    * A file attached this turn is refused from its recorded size, before storage is opened. Replayed
@@ -465,19 +692,21 @@ export async function encodeAndFormatDocuments(
       if (!validation.isValid) {
         throw new Error(`Document validation failed: ${validation.error}`);
       }
+      await validateForReaders(readerChecks, mimeType, fileBuffer.length, fileBuffer);
 
-      const sanitizedName = (file.filename || 'document')
-        .replace(/[^a-zA-Z0-9\s\-()[\]]/g, '_')
-        .slice(0, BEDROCK_DOCUMENT_NAME_LIMIT);
       /** Raw bytes would serialize as a number array in traces and checkpoints, and a restored
        *  checkpoint would hold a plain object instead of bytes; base64 stays a string. */
-      result.documents.push({
-        type: 'file',
-        source_type: 'base64',
-        mime_type: BEDROCK_DOCUMENT_MIME_TYPES[format],
-        data: content,
-        metadata: { name: sanitizedName },
-      });
+      result.documents.push(
+        shared
+          ? formatSharedDocumentBlock(mimeType, content, file.filename)
+          : {
+              type: 'file',
+              source_type: 'base64',
+              mime_type: BEDROCK_DOCUMENT_MIME_TYPES[format],
+              data: content,
+              metadata: { name: getBedrockDocumentName(file.filename) },
+            },
+      );
       result.files.push(metadata);
     } else if (file.type === 'application/pdf' && isDocSupported) {
       const pdfBuffer = Buffer.from(content, 'base64');
@@ -493,15 +722,9 @@ export async function encodeAndFormatDocuments(
       if (!validation.isValid) {
         throw new Error(`PDF validation failed: ${validation.error}`);
       }
+      await validateForReaders(readerChecks, mimeType, pdfBuffer.length, pdfBuffer);
 
-      const block = formatDocumentBlock(
-        provider,
-        mimeType,
-        content,
-        file.filename,
-        useResponsesApi,
-        model,
-      );
+      const block = formatBlock(mimeType, content, file.filename);
       if (block) {
         result.documents.push(block);
         result.files.push(metadata);
@@ -513,15 +736,9 @@ export async function encodeAndFormatDocuments(
           `File size (~${(decodedByteCount / 1024 / 1024).toFixed(1)}MB) exceeds the configured limit for ${provider}`,
         );
       }
+      await validateForReaders(readerChecks, mimeType, decodedByteCount);
 
-      const block = formatDocumentBlock(
-        provider,
-        mimeType,
-        content,
-        file.filename,
-        useResponsesApi,
-        model,
-      );
+      const block = formatBlock(mimeType, content, file.filename);
       if (block) {
         result.documents.push(block);
         result.files.push(metadata);
