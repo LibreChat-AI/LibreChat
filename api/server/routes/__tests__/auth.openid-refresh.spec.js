@@ -182,9 +182,12 @@ describe('OpenID token reuse from sign-in through refresh', () => {
    * 30 s expiry buffer, so the next grant meets a publication whose tokens nobody may reuse.
    */
   describe('with a provider that keeps the refresh token', () => {
-    const SHORT_LIFETIME = 31;
-    /** Past the second in which tokens of {@link SHORT_LIFETIME} stop being reusable. */
-    const outliveShortTokens = () => new Promise((resolve) => setTimeout(resolve, 2000));
+    /**
+     * Expiry is kept in whole seconds, so these tokens stay reusable for two to three seconds after
+     * their grant: enough to answer that refresh, well short of the delivery lease.
+     */
+    const SHORT_LIFETIME = 33;
+    const outliveShortTokens = () => new Promise((resolve) => setTimeout(resolve, 4000));
 
     beforeEach(() => {
       idp.options.rotate = false;
