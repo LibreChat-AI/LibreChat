@@ -522,6 +522,13 @@ describe('Insights methods', () => {
       reply('temporary', 'temporary', 1, { rating: 'thumbsUp', text: 'Temporary chat' }),
       reply('elsewhere', 'elsewhere', 1, { rating: 'thumbsUp', text: 'Another agent' }),
       {
+        ...reply('orphan', 'deleted-chat', 1, {
+          rating: 'thumbsDown',
+          text: 'From a deleted chat',
+        }),
+        insightsAgentId: 'agent-a',
+      },
+      {
         messageId: 'prompt',
         conversationId: 'chat',
         user,

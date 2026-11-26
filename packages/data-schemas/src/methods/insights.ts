@@ -752,6 +752,16 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
           agentIds,
         ),
         { $sort: { createdAt: -1, _id: -1 } },
+        {
+          $lookup: {
+            from: 'conversations',
+            localField: 'conversationId',
+            foreignField: 'conversationId',
+            as: 'chats',
+          },
+        },
+        { $addFields: { insightsLive: { $in: ['$user', '$chats.user'] } } },
+        { $match: { insightsLive: true } },
         { $limit: options.commentLimit ?? INSIGHTS_COMMENT_LIMIT },
         {
           $project: {
