@@ -32,6 +32,7 @@ jest.mock(
       compareSecret: jest.fn((plain, hash) => require('bcryptjs').compare(plain, hash)),
       getOpenIDBearerAudiences: jest.requireActual('@librechat/api').getOpenIDBearerAudiences,
       getOpenIDAppAccessToken: jest.requireActual('@librechat/api').getOpenIDAppAccessToken,
+      createLogoutUser: jest.requireActual('@librechat/api').createLogoutUser,
       checkEmailConfig: jest.fn(),
       isEmailDomainAllowed: jest.fn(),
       getSafeErrorMetadata: jest.fn((error) => ({ type: error?.name ?? 'UnknownError' })),
