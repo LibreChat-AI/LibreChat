@@ -26,20 +26,18 @@ type Endpoints = NonNullable<AppConfig['endpoints']>;
 /** A model the turn will call, and the endpoint that serves it. */
 type Target = { endpoint: string; model?: string };
 
-type AgentModel = Pick<Agent, 'provider' | 'model'>;
-
 /** `buildEndpointOption` also carries the added conversation of a multi-response turn. */
 type TurnOption = Partial<TEndpointOption> & {
   addedConvo?: Pick<TConversation, 'endpoint' | 'model' | 'agent_id'> | null;
 };
 
-/** The added conversation's saved agent, cached by the chat router's agent access check. */
-type TurnRequest = ServerRequest & { resolvedAddedAgent?: AgentModel | null };
+/** The request cache of the added conversation's saved agent, read by `loadAddedAgent`. */
+type TurnRequest = ServerRequest & { resolvedAddedAgent?: Agent | null };
 
 export interface OpenIDTokenRefreshDeps
   extends Pick<OpenIDSessionRefreshService, 'createOpenIDSessionTokenProvider'> {
   /** Reads a saved agent the access check did not cache, as `loadAddedAgent` does. */
-  getAgent: (filter: { id: string }) => Promise<AgentModel | null>;
+  getAgent: (filter: { id: string }) => Promise<Agent | null>;
 }
 
 const REAUTH_MESSAGE =
@@ -97,6 +95,26 @@ function anyForwardsOpenIDAccessToken(endpoints: Endpoints): boolean {
 }
 
 /**
+ * The added conversation's saved agent, read once per request. The agent access check caches it on
+ * `req.resolvedAddedAgent`, except for administrators; a read here fills that cache, so
+ * `loadAddedAgent` reuses the agent when the turn starts. A failed read leaves the turn to report it.
+ */
+async function resolveAddedAgent(
+  req: TurnRequest,
+  id: string,
+  getAgent: OpenIDTokenRefreshDeps['getAgent'],
+): Promise<Agent | null> {
+  if (req.resolvedAddedAgent) {
+    return req.resolvedAddedAgent;
+  }
+  const agent = await getAgent({ id }).catch(() => null);
+  if (agent) {
+    req.resolvedAddedAgent = agent;
+  }
+  return agent;
+}
+
+/**
  * The models the user picked for this turn: the agent's, and the added conversation's, which is a
  * saved agent or an endpoint and model of its own, resolved as `loadAddedAgent` will resolve it.
  * The agent is the promise `buildEndpointOption` started, so reading it costs no extra query.
@@ -111,9 +129,7 @@ async function getTurnTargets(
     added?.agent_id && !isEphemeralAgentId(added.agent_id) ? added.agent_id : undefined;
   const [agent, addedAgent] = await Promise.all([
     option?.agent,
-    savedAgentId
-      ? (req.resolvedAddedAgent ?? getAgent({ id: savedAgentId }).catch(() => null))
-      : undefined,
+    savedAgentId ? resolveAddedAgent(req, savedAgentId, getAgent) : undefined,
   ]);
   const targets: Target[] = [];
   const add = (endpoint?: string | null, model?: string | null) => {

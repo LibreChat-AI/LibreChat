@@ -1,10 +1,11 @@
 import { logger } from '@librechat/data-schemas';
 import type { AppConfig, IUser, OIDCTokens } from '@librechat/data-schemas';
-import type { Agent } from 'librechat-data-provider';
+import type { Agent, TConversation } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types/http';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
 import { createOpenIDTokenRefresh } from './openid';
+import { loadAddedAgent } from '~/agents/added';
 import { resolveHeaders } from '~/utils/env';
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -82,9 +83,7 @@ const SAVED_AGENT = 'agent_saved';
 
 function setup(
   result: () => Promise<OIDCTokens | null>,
-  getAgent: (filter: {
-    id: string;
-  }) => Promise<Pick<Agent, 'provider' | 'model'> | null> = async () => null,
+  getAgent: (filter: { id: string }) => Promise<Agent | null> = async () => null,
 ) {
   const provider = jest.fn(result);
   const createOpenIDSessionTokenProvider = jest.fn(() => provider);
@@ -306,16 +305,27 @@ describe('createOpenIDTokenRefresh', () => {
     expect(provider).toHaveBeenCalledTimes(1);
   });
 
-  it("reads the added conversation's saved agent when the access check did not cache it", async () => {
-    const getAgent = jest.fn(async () => ({ provider: 'gateway', model: 'm' }));
+  it("reads the added conversation's saved agent once, for itself and the turn", async () => {
+    const saved = { id: SAVED_AGENT, provider: 'gateway', model: 'm' } as Agent;
+    const getAgent = jest.fn(async () => saved);
     const { run, provider } = setup(async () => FRESH, getAgent);
+    const addedConvo = { agent_id: SAVED_AGENT };
+    const req = makeReq({ provider: 'plain', addedConvo });
 
-    await expect(
-      run(makeReq({ provider: 'plain', addedConvo: { agent_id: SAVED_AGENT } })),
-    ).resolves.toBeUndefined();
+    await expect(run(req)).resolves.toBeUndefined();
 
     expect(getAgent).toHaveBeenCalledWith({ id: SAVED_AGENT });
     expect(provider).toHaveBeenCalledTimes(1);
+    const turnRead = jest.fn(async () => null);
+    /** The same request object, so the turn sees what the middleware cached on it. */
+    const turnReq = req as unknown as Parameters<typeof loadAddedAgent>[0]['req'];
+    const added = await loadAddedAgent(
+      { req: turnReq, conversation: addedConvo as TConversation },
+      { getAgent: turnRead, getMCPServerTools: jest.fn() },
+    );
+    expect(added?.provider).toBe('gateway');
+    expect(turnRead).not.toHaveBeenCalled();
+    expect(getAgent).toHaveBeenCalledTimes(1);
   });
 
   it('leaves the turn to fail on its own when the added agent cannot be read', async () => {
