@@ -6,6 +6,7 @@ import type { TextItem } from 'pdfjs-dist/types/src/display/api';
 import type { MistralOCRUploadResult, ServerRequest } from '~/types';
 import { spreadsheetToText } from './spreadsheet';
 import { assertSafeZipSize } from './zipSafety';
+import { contentToText } from './odt';
 import { docxToText } from './docx';
 
 type FileParseFn = (file: Express.Multer.File) => Promise<string>;
@@ -111,36 +112,9 @@ async function wordDocToText(file: Express.Multer.File): Promise<string> {
   return docxToText(buffer);
 }
 
-/**
- * Parses OpenDocument Text (.odt) by extracting the body text from content.xml.
- * Uses regex-based XML extraction scoped to <office:body>: paragraph/heading
- * boundaries become newlines, tab and spacing elements are preserved, and the
- * five standard XML entities are decoded. Complex elements such as frames,
- * text boxes, and annotations are stripped without replacement.
- */
+/** Parses OpenDocument Text (.odt), returns text inside, with each table as CSV rows. */
 async function odtToText(file: Express.Multer.File): Promise<string> {
-  const xml = await extractOdtContentXml(file.path);
-  const bodyMatch = xml.match(/<office:body[^>]*>([\s\S]*?)<\/office:body>/);
-  if (!bodyMatch) {
-    return '';
-  }
-  return bodyMatch[1]
-    .replace(/<\/text:p>/g, '\n')
-    .replace(/<\/text:h>/g, '\n')
-    .replace(/<text:line-break\/>/g, '\n')
-    .replace(/<text:tab\/>/g, '\t')
-    .replace(/<text:s[^>]*\/>/g, ' ')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n[ \t]+/g, '\n')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  return contentToText(await extractOdtContentXml(file.path));
 }
 
 /**
