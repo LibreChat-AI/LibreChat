@@ -21,6 +21,8 @@ export type TOptions = {
   editedMessageId?: string | null;
   editedContent?: TEditedContent;
   isRegenerate?: boolean;
+  /** An explicit retry of a failed submission or response. */
+  isRetry?: boolean;
   isContinued?: boolean;
   isEdited?: boolean;
   /**
@@ -77,7 +79,7 @@ export type TAskFunction = (props: TAskProps, options?: TOptions) => false | voi
 
 /** Target of a regenerate: a response to redo, or the user message whose response to redo. */
 export type RegenerateTarget = Partial<
-  Pick<TMessage, 'messageId' | 'parentMessageId' | 'isCreatedByUser'>
+  Pick<TMessage, 'messageId' | 'parentMessageId' | 'isCreatedByUser' | 'error'>
 >;
 
 /** Re-runs the response to a message; see `ChatSubmissionContract.regenerate`. */

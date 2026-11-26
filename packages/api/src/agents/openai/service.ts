@@ -1,6 +1,7 @@
 import type { LocatorTraversalReporter } from '../../protection/diagnostics';
 import type { AssistantConfig } from '../../protection/assistant';
 import type { SdkModelHost } from '../remoteSdk/builder';
+import type { ProductTrackingRequest } from '../product';
 import type { ServerToolResultFields } from './types';
 import { validateChatIncludes } from './results';
 /**
@@ -307,6 +308,7 @@ type CreateRunFn = (params: {
   sdkModelHost?: SdkModelHost;
   eagerToolExecution?: boolean;
   modelCallbacks?: ReturnType<typeof createApiModelCallbacks>;
+  productTrackingRequest?: ProductTrackingRequest;
   agents: unknown[];
   messages: unknown[];
   runId: string;
@@ -652,7 +654,7 @@ export function buildNonStreamingResponse(
  * @param deps - Dependencies for the service
  */
 export async function createAgentChatCompletion(
-  req: Request,
+  req: Request & ProductTrackingRequest,
   res: ServerResponse,
   deps: ChatCompletionDependencies,
 ): Promise<void> {
@@ -933,6 +935,7 @@ export async function createAgentChatCompletion(
           onTraversalFailure: deps.onTraversalFailure,
           resolvedFiles: modelBoundFiles,
         }),
+        productTrackingRequest: req,
         agents: [initializedAgent],
         messages,
         runId: requestId,

@@ -394,4 +394,38 @@ describe('useTurns', () => {
     expect(chat.store.get(siblingIdxFamily(siblingKey('user-1')))).toBe(0);
     expect(chat.store.get(pendingManualSkillsByConvoId(conversationId))).toEqual(['queued']);
   });
+  it('does not delay transport or mutate a submission for a stalled async observer', async () => {
+    let resolve: (value: { submissionId: string }) => void = () => undefined;
+    const context = new Promise<{ submissionId: string }>((done) => {
+      resolve = done;
+    });
+    const onProductSubmission = jest.fn(() => context);
+    const chat = setup({ services: createTurnServices({ onProductSubmission }) });
+    chat.turns.ask({ text: 'Next' });
+    expect(chat.submission()).not.toBeNull();
+    expect(chat.turns.ask({ text: 'Double click' })).toBe(false);
+    resolve({ submissionId: 'aef33490-7e1a-4786-9ac6-d45dd28ca281' });
+    await context;
+    expect(chat.submission()?.productTrackingContext).toBeUndefined();
+    expect(onProductSubmission).toHaveBeenCalledTimes(1);
+    expect(onProductSubmission).toHaveBeenCalledWith(expect.any(Object), 'send');
+  });
+
+  it('attaches synchronous correlation before starting transport', () => {
+    const context = { sessionId: 'aef33490-7e1a-4786-9ac6-d45dd28ca281' };
+    const chat = setup({ services: createTurnServices({ onProductSubmission: () => context }) });
+    chat.turns.ask({ text: 'Next' });
+    expect(chat.submission()?.productTrackingContext).toEqual(context);
+  });
+
+  it('submits when correlation fails and classifies an explicit retry', async () => {
+    const onProductSubmission = jest.fn(async () => {
+      throw new Error('storage unavailable');
+    });
+    const chat = setup({ services: createTurnServices({ onProductSubmission }) });
+    chat.turns.regenerate({ ...response, error: true });
+    await Promise.resolve();
+    expect(chat.submission()).not.toBeNull();
+    expect(onProductSubmission).toHaveBeenCalledWith(expect.any(Object), 'retry');
+  });
 });

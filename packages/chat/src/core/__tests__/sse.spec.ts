@@ -178,7 +178,31 @@ describe('createSSETransport', () => {
     current().status = 500;
     current().write('Internal Server Error');
 
-    expect(events).toEqual([{ type: 'error', data: undefined }]);
+    expect(events).toEqual([{ type: 'error', data: undefined, status: 500 }]);
+  });
+
+  it('preserves correlation headers after token refresh', async () => {
+    jest.spyOn(request, 'refreshToken').mockResolvedValue({ token: 'token-2' } as never);
+    jest.spyOn(request, 'dispatchTokenUpdatedEvent').mockImplementation(() => undefined);
+    const productTrackingContext = {
+      sessionId: 'd79706cc-4ddf-4cf7-b99a-333755af9be8',
+      submissionId: '1b7ff690-8b9b-4af6-b68d-9cab4a5f2f21',
+    };
+    const transport = createSSETransport({ token: 'old' });
+    transport.send(
+      { ...turn, productTrackingContext },
+      { signal: new AbortController().signal, onEvent: (event) => events.push(event) },
+    );
+    const expected = {
+      'x-librechat-product-session-id': productTrackingContext.sessionId,
+      'x-librechat-product-submission-id': productTrackingContext.submissionId,
+    };
+    expect(current().headers).toMatchObject(expected);
+    current().status = 401;
+    current().write('Unauthorized');
+    await new Promise(process.nextTick);
+    expect(xhrs).toHaveLength(2);
+    expect(current().headers).toMatchObject(expected);
   });
 
   it('refreshes the token once on a 401 and retries on a new connection', async () => {
@@ -216,7 +240,7 @@ describe('createSSETransport', () => {
 
     expect(refreshToken).toHaveBeenCalledTimes(1);
     expect(xhrs).toHaveLength(2);
-    expect(events).toEqual([{ type: 'error', data: undefined }]);
+    expect(events).toEqual([{ type: 'error', data: undefined, status: 401 }]);
   });
 
   it('leaves for setup on an enrollment 403 instead of reporting a stream error', () => {
@@ -234,7 +258,7 @@ describe('createSSETransport', () => {
     current().status = 403;
     current().write(JSON.stringify({ message: 'Forbidden' }));
 
-    expect(events).toEqual([{ type: 'error', data: { message: 'Forbidden' } }]);
+    expect(events).toEqual([{ type: 'error', data: { message: 'Forbidden' }, status: 403 }]);
   });
 
   it('leaves for setup when the 401 refresh answers with enrollment', async () => {

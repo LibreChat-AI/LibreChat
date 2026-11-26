@@ -4054,17 +4054,10 @@ export const PRODUCT_TRACKING_SESSION_DEFAULTS = Object.freeze({
   idleTimeoutMs: 1800000,
   activityIntervalMs: 60000,
 });
-/** Server facts that a host sink may hold unsettled before LibreChat drops new ones. */
-export const PRODUCT_TRACKING_MAX_PENDING_DELIVERIES_DEFAULT = 1000;
 
 export const productTrackingConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
-    /**
-     * A stalled collector must not grow server memory and sockets without a limit. Unset uses
-     * `PRODUCT_TRACKING_MAX_PENDING_DELIVERIES_DEFAULT`.
-     */
-    maxPendingDeliveries: z.number().int().min(1).max(1000000).optional(),
     session: z
       .object({
         shareAcrossTabs: z.boolean().default(PRODUCT_TRACKING_SESSION_DEFAULTS.shareAcrossTabs),
@@ -4093,13 +4086,8 @@ export type TProductTrackingConfig = z.infer<typeof productTrackingConfigSchema>
  * in `GET /api/config`, also before login, so they must never hold credentials or identity.
  */
 export type ProductSinkDescriptor = Readonly<Record<string, string | number | boolean>>;
-/**
- * The resolved policy that `GET /api/config` publishes. Every session setting has a value.
- * Server delivery limits stay on the server.
- */
-export type TProductTrackingPolicy = Required<
-  Omit<TProductTrackingConfig, 'maxPendingDeliveries'>
-> & {
+/** The resolved policy. Every session setting has a value. */
+export type TProductTrackingPolicy = Required<TProductTrackingConfig> & {
   /** Present only when tracking is enabled and the host supplies browser sink settings. */
   browserSink?: ProductSinkDescriptor;
 };

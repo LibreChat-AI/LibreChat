@@ -103,12 +103,8 @@ export function createProductSession(options: SessionOptions) {
     return context;
   };
 
-  /**
-   * Passes the record to `emit` when its latest activity is not reported yet, and marks it.
-   * A report that waited for the lock does nothing once the session has stopped.
-   */
+  /** Passes the record to `emit` when its latest activity is not reported yet, and marks it. */
   const reportNow = (emit: (record: SessionRecord) => void) => {
-    if (stopped) return;
     const record = read();
     if (!record || record.lastReportedActivityAt === record.lastActivityAt) return;
     write({ ...record, lastReportedActivityAt: record.lastActivityAt });

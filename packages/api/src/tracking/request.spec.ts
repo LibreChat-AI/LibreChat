@@ -1,7 +1,6 @@
 import express from 'express';
 import request from 'supertest';
 import { logger, tenantStorage } from '@librechat/data-schemas';
-import { getProductTrackingConfig } from 'librechat-data-provider';
 import type { ServerProductEvent, ServerProductFact } from 'librechat-data-provider';
 import type { RequestHandler, Response } from 'express';
 import type { ServerProductSink } from './request';
@@ -12,7 +11,7 @@ import {
   createProductTrackingMiddleware,
 } from './request';
 
-const productTracking = getProductTrackingConfig({ productTracking: { enabled: true } });
+const productTracking = { enabled: true };
 
 const fact: ServerProductFact = {
   name: 'librechat.langfuse.connection.updated',
@@ -49,7 +48,7 @@ it('isolates sync and async tracker failures', async () => {
   await new Promise<void>((resolve) => setImmediate(resolve));
 });
 
-it.each([undefined, getProductTrackingConfig()])(
+it.each([undefined, { enabled: false }])(
   'does not invoke an injected callback when policy is %p',
   (policy) => {
     const productTracker = jest.fn();
@@ -129,67 +128,6 @@ it('builds the event envelope, with identity from the authenticated request', ()
       { token: 'host-token' },
     ],
   ]);
-});
-
-it('warns at startup when telemetry enables tracking without a host sink', () => {
-  const warn = jest.spyOn(logger, 'warn').mockReturnValue(logger);
-  try {
-    runMiddleware({}, true);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no host sink is installed'));
-    warn.mockClear();
-    runMiddleware({}, false);
-    runMiddleware({}, true, createSink().sink);
-    expect(warn).not.toHaveBeenCalled();
-  } finally {
-    warn.mockRestore();
-  }
-});
-
-it('drops new facts while the sink holds the maximum of unsettled deliveries', async () => {
-  const warn = jest.spyOn(logger, 'warn').mockReturnValue(logger);
-  const settle: Array<() => void> = [];
-  const sink: ServerProductSink<Scope> = {
-    resolveScope: jest.fn(() => ({ token: 'host-token' })),
-    deliver: jest.fn(() => new Promise<void>((resolve) => void settle.push(resolve))),
-  };
-  const middleware = createProductTrackingMiddleware(
-    { productTracking: { enabled: true, maxPendingDeliveries: 2 } },
-    { sink },
-  );
-  const track = () => {
-    const req: Partial<ServerRequest> = { user: signedIn };
-    middleware(req as ServerRequest, {} as Response, jest.fn());
-    trackRequestProductFact(req, fact);
-  };
-  try {
-    track();
-    track();
-    track();
-    expect(sink.deliver).toHaveBeenCalledTimes(2);
-    expect(sink.resolveScope).toHaveBeenCalledTimes(2);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('saturated'), { maxPending: 2 });
-    settle.shift()?.();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('recovered'), { dropped: 1 });
-    track();
-    expect(sink.deliver).toHaveBeenCalledTimes(3);
-  } finally {
-    warn.mockRestore();
-  }
-});
-
-it('does not count a sink that delivers synchronously as pending', () => {
-  const { sink, delivered } = createSink();
-  const middleware = createProductTrackingMiddleware(
-    { productTracking: { enabled: true, maxPendingDeliveries: 1 } },
-    { sink },
-  );
-  for (let i = 0; i < 3; i++) {
-    const req: Partial<ServerRequest> = { user: signedIn };
-    middleware(req as ServerRequest, {} as Response, jest.fn());
-    trackRequestProductFact(req, fact);
-  }
-  expect(delivered).toHaveLength(3);
 });
 
 it('takes the tenant from the request tenant context before the stored user tenant', () => {
@@ -339,7 +277,7 @@ it('keeps the original session and explicit submission header', () => {
 });
 
 it('ignores queued correlation when tracking is disabled', () => {
-  const req: Partial<ServerRequest> = { productTracking: getProductTrackingConfig() };
+  const req: Partial<ServerRequest> = { productTracking: { enabled: false } };
   bindProductSubmissionContext(req, '1b7ff690-8b9b-4af6-b68d-9cab4a5f2f21');
   expect(req.productTrackingContext).toBeUndefined();
 });

@@ -45,6 +45,7 @@ import { transferFileSearchPreference, withFileSearchPreference } from '~/hooks/
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import { getFailedCodeDecisionRequest } from '~/hooks/Agents/codeDecision';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
+import { useProductSubmissionFailure } from '~/hooks/Chat/tracking';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { updateAttachmentCaches } from './useAttachmentHandler';
@@ -182,6 +183,7 @@ export default function useEventServices({
 /** The app's transport, balance and terms services behind the Assistants stream. The balance
  *  observer lives here, on the one path that refreshes it after a turn. */
 export function useLegacyServices(): LegacyStreamServices {
+  const onSubmissionFailure = useProductSubmissionFailure();
   const queryClient = useQueryClient();
   const localize = useLocalize();
   const { auth, config } = useChatSettings();
@@ -194,6 +196,7 @@ export function useLegacyServices(): LegacyStreamServices {
 
   return useMemo(
     () => ({
+      onSubmissionFailure,
       transport: chatTransport.stream({ token }),
       refreshBalance: () => {
         if (balanceEnabled) void refetchBalance();
@@ -202,6 +205,14 @@ export function useLegacyServices(): LegacyStreamServices {
         reopenTermsOnRefusal(queryClient, data) ? localize('com_error_terms_not_accepted') : null,
       clearComposerDrafts,
     }),
-    [chatTransport, token, balanceEnabled, refetchBalance, queryClient, localize],
+    [
+      chatTransport,
+      token,
+      balanceEnabled,
+      refetchBalance,
+      queryClient,
+      localize,
+      onSubmissionFailure,
+    ],
   );
 }

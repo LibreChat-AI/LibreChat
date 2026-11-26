@@ -18,6 +18,7 @@ import type {
   TReasoningLabelAttemptEvent,
 } from './runs';
 import type { TMessage, TPayload, TConversation, TEditedContent } from '../types';
+import type { ProductTrackingContext } from '../tracking';
 import type { TPromotedSteer } from './queuedTurns';
 import type { StreamContentData } from './content';
 import type { TAttachment } from '../schemas';
@@ -277,6 +278,7 @@ export type ChatEventType = ChatEvent['type'];
 export type ChatTransportRequest = {
   server: string;
   payload: TPayload;
+  productTrackingContext?: ProductTrackingContext;
 };
 
 export type ChatTransportOptions = {

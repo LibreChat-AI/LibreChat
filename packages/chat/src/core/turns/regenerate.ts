@@ -20,6 +20,7 @@ export const createRegenerate =
         { ...parentMessage },
         {
           isRegenerate: true,
+          isRetry: message.error === true,
           addedConvo: options?.addedConvo ?? undefined,
           targetResponseMessageId,
           /** Carry the original user message's manual skill picks forward
