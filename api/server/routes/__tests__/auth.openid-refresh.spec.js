@@ -136,25 +136,40 @@ describe('OpenID token reuse from sign-in through refresh', () => {
     process.env = savedEnv;
   }, 180000);
 
-  it('answers each refresh with the tokens its grant issued, not the sign-in tokens', async () => {
+  /** Signs in through the OpenID callback; returns the browser and the sign-in token set. */
+  async function signIn() {
     const agent = request.agent(app);
-    const signIn = await agent.get('/oauth/openid/callback?code=code&state=state');
-    expect(signIn.status).toBe(302);
-    expect(signIn.headers.location).toBe('http://localhost:3080');
-    expect(getCookie(signIn, 'refreshToken')).toBe(idp.issued[0].refresh_token);
+    const issued = idp.issued.length;
+    const response = await agent.get('/oauth/openid/callback?code=code&state=state');
+    expect(response.status).toBe(302);
+    expect(response.headers.location).toBe('http://localhost:3080');
+    const tokens = idp.issued[issued];
+    expect(getCookie(response, 'refreshToken')).toBe(tokens.refresh_token);
+    return { agent, issued };
+  }
 
-    const first = await agent.post('/api/auth/refresh');
-    expect(first.status).toBe(200);
+  it('answers the first refresh after sign-in with the ID token its grant issued', async () => {
+    const { agent, issued } = await signIn();
+
+    const refresh = await agent.post('/api/auth/refresh');
+    expect(refresh.status).toBe(200);
     expect(idp.refreshTokenGrant).toHaveBeenCalledTimes(1);
-    expect(first.body.token).toBe(idp.issued[1].id_token);
-    expect(getCookie(first, 'refreshToken')).toBe(idp.issued[1].refresh_token);
+    expect(idp.refreshTokenGrant.mock.calls[0][1]).toBe(idp.issued[issued].refresh_token);
+    expect(refresh.body.token).toBe(idp.issued[issued + 1].id_token);
+    expect(refresh.body.token).not.toBe(idp.issued[issued].id_token);
+    expect(getCookie(refresh, 'refreshToken')).toBe(idp.issued[issued + 1].refresh_token);
+  });
 
-    /** The rotated token is the one the session now refreshes with; the sign-in token is spent. */
-    const second = await agent.post('/api/auth/refresh');
-    expect(second.status).toBe(200);
+  /** The provider refuses the spent sign-in token, so a session left on it would end in a 403. */
+  it('refreshes again with the token the first grant rotated in', async () => {
+    const { agent, issued } = await signIn();
+
+    expect((await agent.post('/api/auth/refresh')).status).toBe(200);
+    const refresh = await agent.post('/api/auth/refresh');
+    expect(refresh.status).toBe(200);
     expect(idp.refreshTokenGrant).toHaveBeenCalledTimes(2);
-    expect(idp.refreshTokenGrant.mock.calls[1][1]).toBe(idp.issued[1].refresh_token);
-    expect(second.body.token).toBe(idp.issued[2].id_token);
-    expect(getCookie(second, 'refreshToken')).toBe(idp.issued[2].refresh_token);
+    expect(idp.refreshTokenGrant.mock.calls[1][1]).toBe(idp.issued[issued + 1].refresh_token);
+    expect(refresh.body.token).toBe(idp.issued[issued + 2].id_token);
+    expect(getCookie(refresh, 'refreshToken')).toBe(idp.issued[issued + 2].refresh_token);
   });
 });
