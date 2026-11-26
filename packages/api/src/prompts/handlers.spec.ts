@@ -80,6 +80,142 @@ function makeDeps(overrides: Partial<PromptHandlersDeps> = {}): PromptHandlersDe
 const groupId = '507f1f77bcf86cd799439011';
 const promptId = '507f1f77bcf86cd799439012';
 
+describe('prompt product facts', () => {
+  it('records creation and initial deployment only after a successful write', async () => {
+    const productTracker = jest.fn();
+    const service = makeService({
+      createPromptGroup: jest.fn().mockResolvedValue({
+        ok: true,
+        value: { prompt: { _id: promptId, groupId }, group: { _id: groupId } },
+      }),
+    });
+    await createPromptHandlers(makeDeps({ service })).createPromptGroup(
+      mockReq({
+        body: { prompt: { prompt: 'private content' }, group: { name: 'private name' } },
+        productTracking: { enabled: true },
+        productTracker,
+      }),
+      mockRes(),
+    );
+    expect(productTracker.mock.calls.map(([fact]) => fact)).toEqual([
+      {
+        name: 'librechat.prompts.created',
+        feature: 'prompts',
+        source: 'native',
+        groupId,
+      },
+      {
+        name: 'librechat.prompts.deployed',
+        feature: 'prompts',
+        source: 'native',
+        groupId,
+        deployment: 'initial',
+      },
+    ]);
+  });
+
+  it.each(['explicit', 'automatic'])(
+    'records a changed %s promotion and keeps its response',
+    async (deployment) => {
+      const productTracker = jest.fn();
+      const service = makeService({
+        makePromptProduction: jest.fn().mockResolvedValue({
+          ok: true,
+          value: { message: 'Prompt production made successfully' },
+          groupId,
+          changed: true,
+        }),
+      });
+      const res = mockRes();
+      await createPromptHandlers(makeDeps({ service })).makePromptProduction(
+        mockReq({
+          params: { promptId },
+          body: { deployment },
+          productTracking: { enabled: true },
+          productTracker,
+        }),
+        res,
+      );
+      expect(res.body).toEqual({ message: 'Prompt production made successfully' });
+      expect(productTracker.mock.calls[0][0]).toEqual({
+        name: 'librechat.prompts.deployed',
+        feature: 'prompts',
+        source: 'native',
+        groupId,
+        deployment,
+      });
+    },
+  );
+
+  it.each([false, undefined])(
+    'does not report a promotion without a confirmed change (%p)',
+    async (changed) => {
+      const productTracker = jest.fn();
+      const service = makeService({
+        makePromptProduction: jest
+          .fn()
+          .mockResolvedValue({ ok: true, value: {}, groupId, changed }),
+      });
+      await createPromptHandlers(makeDeps({ service })).makePromptProduction(
+        mockReq({
+          params: { promptId },
+          productTracking: { enabled: true },
+          productTracker,
+        }),
+        mockRes(),
+      );
+      expect(productTracker).not.toHaveBeenCalled();
+    },
+  );
+
+  it('promotes with an unknown deployment label and records it as explicit', async () => {
+    const productTracker = jest.fn();
+    const service = makeService({
+      makePromptProduction: jest
+        .fn()
+        .mockResolvedValue({ ok: true, value: {}, groupId, changed: true }),
+    });
+    const res = mockRes();
+    await createPromptHandlers(makeDeps({ service })).makePromptProduction(
+      mockReq({
+        params: { promptId },
+        body: { deployment: 'private content' },
+        productTracking: { enabled: true },
+        productTracker,
+      }),
+      res,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(service.makePromptProduction).toHaveBeenCalled();
+    expect(productTracker.mock.calls[0][0]).toMatchObject({ deployment: 'explicit' });
+    expect(JSON.stringify(productTracker.mock.calls)).not.toContain('private');
+  });
+
+  it('does not turn failed writes or disabled tracking into facts', async () => {
+    const productTracker = jest.fn();
+    const service = makeService({
+      savePrompt: jest
+        .fn()
+        .mockRejectedValue(new PromptStoreError('write', new Error('private content'))),
+    });
+    const handlers = createPromptHandlers(makeDeps({ service }));
+    await handlers.savePrompt(
+      mockReq({ productTracking: { enabled: true }, productTracker }),
+      mockRes(),
+    );
+    expect(productTracker).not.toHaveBeenCalled();
+    jest.mocked(service.savePrompt).mockResolvedValue({
+      ok: true,
+      value: { prompt: { _id: promptId, groupId, author: 'u1', prompt: 'private' } },
+    });
+    await handlers.savePrompt(
+      mockReq({ productTracking: { enabled: false }, productTracker }),
+      mockRes(),
+    );
+    expect(productTracker).not.toHaveBeenCalled();
+  });
+});
+
 /** The shape `canAccessPromptViaGroup` stores on a non-bypass request. */
 function withLoadedRevision(overrides: Record<string, unknown> = {}): PromptRequest {
   return mockReq({

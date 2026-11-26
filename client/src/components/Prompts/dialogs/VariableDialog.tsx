@@ -1,7 +1,8 @@
 import React, { useMemo } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { OGDialog, OGDialogTitle, OGDialogContent } from '@librechat/client';
-import type { TPromptGroup } from 'librechat-data-provider';
+import type { ProductPromptReference, TPromptGroup } from 'librechat-data-provider';
+import type { PromptEntryPoint } from '~/hooks/Prompts/usePromptTracking';
 import VariableForm from '../forms/VariableForm';
 import { detectVariables } from '~/utils';
 
@@ -10,9 +11,18 @@ interface VariableDialogProps extends Omit<DialogPrimitive.DialogProps, 'onOpenC
   group: TPromptGroup | null;
   /** Resolved prompt text; falls back to the production prompt when absent. */
   promptText?: string;
+  promptReference?: ProductPromptReference;
+  entryPoint?: PromptEntryPoint;
 }
 
-const VariableDialog: React.FC<VariableDialogProps> = ({ open, onClose, group, promptText }) => {
+const VariableDialog: React.FC<VariableDialogProps> = ({
+  open,
+  onClose,
+  group,
+  promptText,
+  promptReference,
+  entryPoint,
+}) => {
   const handleOpenChange = (open: boolean) => {
     if (!open) {
       onClose();
@@ -33,7 +43,13 @@ const VariableDialog: React.FC<VariableDialogProps> = ({ open, onClose, group, p
     <OGDialog open={open} onOpenChange={handleOpenChange}>
       <OGDialogContent className="text-text-primary max-h-[90vh] max-w-full overflow-y-auto md:max-w-[60vw]">
         <OGDialogTitle>{group.name}</OGDialogTitle>
-        <VariableForm group={group} onClose={onClose} promptText={promptText} />
+        <VariableForm
+          group={group}
+          onClose={onClose}
+          promptText={promptText}
+          promptReference={promptReference}
+          entryPoint={entryPoint}
+        />
       </OGDialogContent>
     </OGDialog>
   );

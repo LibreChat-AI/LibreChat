@@ -472,16 +472,19 @@ describe('createPromptService', () => {
     };
 
     it('creates a pointer group with source fields and no productionId, and grants a PUBLIC viewer as the system user', async () => {
+      const onImported = jest.fn();
       const outcome = await service.importSourceGroup({
         identity,
         name: 'Synced prompt',
         author,
         authorName: 'Langfuse Sync',
+        onImported,
       });
 
       expect(outcome).toBe('created');
       const found = await db.findLangfusePromptGroup(identity);
       expect(found).not.toBeNull();
+      expect(onImported.mock.calls.map(([id]) => id)).toEqual([found?._id]);
       const stored = (await mongoose.models.PromptGroup.findById(found?._id).lean()) as {
         productionId?: unknown;
       } | null;
@@ -504,6 +507,7 @@ describe('createPromptService', () => {
     });
 
     it('leaves a second import for the same identity unchanged, without granting again', async () => {
+      const onImported = jest.fn();
       await service.importSourceGroup({
         identity,
         name: 'Synced prompt',
@@ -517,9 +521,11 @@ describe('createPromptService', () => {
         name: 'Synced prompt',
         author,
         authorName: 'Langfuse Sync',
+        onImported,
       });
 
       expect(outcome).toBe('unchanged');
+      expect(onImported).not.toHaveBeenCalled();
       expect(grantPermission).not.toHaveBeenCalled();
     });
 
@@ -827,6 +833,7 @@ describe('createPromptService', () => {
         ok: true,
         value: { message: 'Prompt production made successfully' },
         groupId: draft.groupId,
+        changed: true,
       });
       expect(read).not.toHaveBeenCalled();
     });
@@ -839,6 +846,7 @@ describe('createPromptService', () => {
         ok: true,
         value: { message: 'Prompt production made successfully' },
         groupId: draft.groupId,
+        changed: true,
       });
       expect(read).toHaveBeenCalledTimes(1);
     });

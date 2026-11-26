@@ -1,4 +1,5 @@
-import type { TLangfusePromptListResponse } from 'librechat-data-provider';
+import { safelyTrack } from 'librechat-data-provider';
+import type { ServerProductFact, TLangfusePromptListResponse } from 'librechat-data-provider';
 import type { PromptGroupSourceIdentity } from '~/prompts/types';
 import type { PromptService } from '~/prompts/service';
 import type { DistributedLock } from '~/cache/lock';
@@ -27,6 +28,11 @@ export type PromptCatalogSyncResult =
   | { ok: true; value: PromptCatalogSyncCounts }
   | { ok: false; error: { code: 'already_running' | 'lock_lost' } };
 
+export type PromptCatalogProductTracker = (
+  fact: Extract<ServerProductFact, { name: 'librechat.prompts.imported' }>,
+  context: { actor: 'system'; tenantId?: string },
+) => void | Promise<void>;
+
 export type PromptCatalogSyncDeps = {
   listPrompts: (query: {
     type: 'text';
@@ -42,6 +48,8 @@ export type PromptCatalogSyncDeps = {
   };
   pageLimit?: number;
   maxPages?: number;
+  /** The host applies deployment policy and supplies system identity and delivery. */
+  trackProductFact?: PromptCatalogProductTracker;
 };
 
 /**
@@ -129,6 +137,21 @@ export async function syncLangfusePromptCatalog(
           name: item.name,
           author,
           authorName: LANGFUSE_SYNC_AUTHOR_NAME,
+          ...(deps.trackProductFact
+            ? {
+                onImported: (groupId: string) =>
+                  safelyTrack(
+                    (fact: Extract<ServerProductFact, { name: 'librechat.prompts.imported' }>) =>
+                      deps.trackProductFact?.(fact, { actor: 'system', tenantId: source.tenantId }),
+                    {
+                      name: 'librechat.prompts.imported',
+                      feature: 'prompts',
+                      source: 'langfuse',
+                      groupId,
+                    },
+                  ),
+              }
+            : {}),
         });
         counts[outcome] += 1;
       }

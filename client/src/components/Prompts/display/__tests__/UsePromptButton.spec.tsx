@@ -8,6 +8,11 @@ import { navigationGenerationAtom } from '~/store/navigation';
 import UsePromptButton from '../UsePromptButton';
 
 const mockSubmitPrompt = jest.fn();
+const mockTrack = jest.fn();
+jest.mock('~/Providers/TrackingContext', () => ({
+  useProductTracking: () => mockTrack,
+  useProductTrackingContext: () => () => undefined,
+}));
 const mockRecordUsageMutate = jest.fn();
 
 jest.mock('~/hooks', () => ({
@@ -84,4 +89,21 @@ describe('UsePromptButton chat-scoped variable dialog', () => {
 
     expect(screen.getByTestId('variable-dialog')).toBeInTheDocument();
   });
+});
+
+it('records a resolved preview before handing its text to the composer', async () => {
+  const user = userEvent.setup();
+  render(
+    <UsePromptButton
+      group={makeGroup()}
+      promptText="Resolved text"
+      promptReference={{ source: 'langfuse', groupId: 'group-1' }}
+    />,
+  );
+  await user.click(screen.getByRole('button', { name: 'com_ui_use_prompt' }));
+  expect(mockSubmitPrompt).toHaveBeenCalledWith('Resolved text');
+  expect(mockTrack.mock.calls[0][0].name).toBe('librechat.prompts.resolved');
+  expect(mockTrack.mock.invocationCallOrder[0]).toBeLessThan(
+    mockSubmitPrompt.mock.invocationCallOrder[0],
+  );
 });

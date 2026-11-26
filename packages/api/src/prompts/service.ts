@@ -1,5 +1,5 @@
 import { logger, BASE_CONFIG_PRINCIPAL_ID } from '@librechat/data-schemas';
-import { AccessRoleIds, PrincipalType, ResourceType } from 'librechat-data-provider';
+import { AccessRoleIds, PrincipalType, ResourceType, safelyTrack } from 'librechat-data-provider';
 import type {
   FiltersConfig,
   TDeletePromptResponse,
@@ -381,8 +381,13 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
         return rejection;
       }
       const promote = store.makePromptProduction;
-      const value = await withPromptStage('write', () => promote(promptId));
-      return { ok: true, value, groupId: revision?.groupId };
+      const { changed, ...value } = await withPromptStage('write', () => promote(promptId));
+      return {
+        ok: true,
+        value,
+        groupId: revision?.groupId,
+        ...(changed === undefined ? {} : { changed }),
+      };
     },
 
     async deletePrompt(input) {
@@ -425,7 +430,7 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       return { ok: true, value: promptIds == null ? value : { ...value, promptIds } };
     },
 
-    async importSourceGroup({ identity, name, author, authorName }) {
+    async importSourceGroup({ identity, name, author, authorName, onImported }) {
       // Insertion and the initial PUBLIC grant are separate writes. If a run stops between
       // them, a later import leaves the existing group unchanged and does not retry the grant.
       const existing = await store.findSourceGroup(identity);
@@ -465,6 +470,7 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
         throw error;
       }
 
+      safelyTrack(onImported, groupId);
       return 'created';
     },
   };

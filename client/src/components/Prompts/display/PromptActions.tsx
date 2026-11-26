@@ -1,9 +1,10 @@
-import type { TPromptGroup } from 'librechat-data-provider';
+import type { ProductPromptReference, TPromptGroup } from 'librechat-data-provider';
 import SharePrompt from '../dialogs/SharePrompt';
 import UsePromptButton from './UsePromptButton';
 
 interface PromptActionsProps {
   group: TPromptGroup;
+  promptReference?: ProductPromptReference;
   /** The prompt text `UsePromptButton` submits or detects variables in. */
   promptText: string;
   /** Forwarded to `UsePromptButton`: true while `promptText` is still being
@@ -19,6 +20,7 @@ interface PromptActionsProps {
 
 const PromptActions = ({
   group,
+  promptReference,
   promptText,
   isLoading = false,
   hasError = false,
@@ -31,6 +33,7 @@ const PromptActions = ({
 
       <UsePromptButton
         group={group}
+        promptReference={promptReference}
         promptText={promptText}
         isLoading={isLoading}
         hasError={hasError}
