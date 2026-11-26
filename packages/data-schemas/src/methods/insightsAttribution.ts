@@ -272,10 +272,23 @@ export async function clearExcludedRecords(
   if (!(await Exclusion.exists(tenant))) return;
   const clear = async (conversationIds: string[]) => {
     if (conversationIds.length === 0) return;
-    const excluded = await Exclusion.find(
+    const exclusions = await Exclusion.find(
       { ...tenant, conversationId: { $in: conversationIds } },
       { _id: 0, conversationId: 1, user: 1 },
     ).lean();
+    if (exclusions.length === 0) return;
+    const pairs = exclusions.map(({ conversationId, user }) => ({ conversationId, user }));
+    const live = await (mongoose.models.Conversation as Model<IConversation>)
+      .find({ ...tenant, $or: pairs }, { _id: 0, conversationId: 1, user: 1, isTemporary: 1 })
+      .lean<Array<Pick<IConversation, 'conversationId' | 'user' | 'isTemporary'>>>();
+    const pending = new Set(
+      live
+        .filter(({ isTemporary }) => isTemporary !== true)
+        .map(({ conversationId, user }) => JSON.stringify([conversationId, user])),
+    );
+    const excluded = pairs.filter(
+      ({ conversationId, user }) => !pending.has(JSON.stringify([conversationId, user])),
+    );
     if (excluded.length === 0) return;
     const owned = excluded.filter(({ user }) => mongoose.isValidObjectId(user));
     const counted = { ...tenant, insightsAgentId: { $nin: ['', null] } };

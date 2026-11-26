@@ -4469,6 +4469,22 @@ export function createConversationMethods(
        * `conversationIds` that downstream cleanup (e.g. agent-checkpoint pruning)
        * needs, with no way to recover them on retry (the query finds nothing).
        */
+      try {
+        await retryCascadeOperation(() =>
+          (mongoose.models.Message as Model<IMessage>).updateMany(
+            {
+              user,
+              conversationId: { $in: conversationIds },
+              insightsAgentId: { $nin: ['', null] },
+            },
+            { $set: { insightsAgentId: '' } },
+            { timestamps: false },
+          ),
+        );
+      } catch (error) {
+        logger.error('[deleteConvos] Conversations deleted but Insights cleanup failed', error);
+      }
+
       let deleteMessagesResult: DeleteResult = { acknowledged: false, deletedCount: 0 };
       try {
         deleteMessagesResult = await deleteMessages({

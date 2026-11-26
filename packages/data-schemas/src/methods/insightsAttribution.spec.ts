@@ -554,6 +554,60 @@ describe('within a turn', () => {
     expect((await totals()).messages).toBe(1);
   });
 
+  it('keeps counting a chat when the dashboard reads during a conversion that then fails', async () => {
+    await runTurn(async () => {
+      await reply('reply');
+      await bill('reply');
+    });
+    let during = -1;
+    const conversion = jest
+      .spyOn(mongoose.models.Conversation, 'updateOne')
+      .mockImplementationOnce((() =>
+        totals().then(({ messages }) => {
+          during = messages;
+          throw new Error('unavailable');
+        })) as never);
+    await expect(convert()).rejects.toThrow('unavailable');
+    conversion.mockRestore();
+    expect(during).toBe(1);
+    expect(await exclusions().countDocuments({})).toBe(0);
+    expect((await totals()).messages).toBe(1);
+    expect(await storedHints('Message')).toEqual(['agent-a']);
+    expect(await storedHints('Transaction')).toEqual(['agent-a']);
+  });
+
+  it('keeps counting a chat whose deletion failed', async () => {
+    await runTurn(async () => {
+      await reply('reply');
+      await bill('reply');
+    });
+    const deletion = jest
+      .spyOn(mongoose.models.Conversation, 'deleteMany')
+      .mockRejectedValueOnce(new Error('unavailable'));
+    await expect(conversations.deleteConvos(userId, { conversationId })).rejects.toThrow(
+      'unavailable',
+    );
+    deletion.mockRestore();
+    expect(await mongoose.models.Conversation.countDocuments({})).toBe(1);
+    expect((await totals()).messages).toBe(1);
+    expect(await storedHints('Message')).toEqual(['agent-a']);
+  });
+
+  it('stops counting the messages of a deleted chat even when their cleanup fails', async () => {
+    await runTurn(async () => {
+      await reply('reply');
+      await bill('reply');
+    });
+    const cleanup = jest
+      .spyOn(mongoose.models.Message, 'deleteMany')
+      .mockRejectedValue(new Error('unavailable'));
+    await conversations.deleteConvos(userId, { conversationId });
+    cleanup.mockRestore();
+    expect(await mongoose.models.Message.countDocuments({})).toBe(1);
+    expect((await totals()).messages).toBe(0);
+    expect(await storedHints('Transaction')).toEqual(['agent-a']);
+  });
+
   it('only reads the exclusions of chats in the report, by index', async () => {
     await exclusions().collection.insertMany(
       Array.from({ length: 300 }, (_, index) => ({
