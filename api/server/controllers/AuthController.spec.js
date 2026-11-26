@@ -231,8 +231,8 @@ describe('OpenID logout refresh chain', () => {
         `session:${identityContext.openidSubject}:${refreshToken}`,
     );
     createRefreshTokenBridgeFlightKey.mockImplementation(
-      ({ oldRefreshToken, userId, openidIssuer }) =>
-        `bridge:${userId}:${openidIssuer}:${oldRefreshToken}`,
+      ({ oldRefreshToken, userId, openidIssuer, signIn }) =>
+        `${signIn ? 'sign-in' : 'bridge'}:${userId}:${openidIssuer}:${oldRefreshToken}`,
     );
     const acceptedIdentity = {
       appUserId: 'user-2',
@@ -269,6 +269,7 @@ describe('OpenID logout refresh chain', () => {
         'recorded-publication-key',
         'session:subject-1:rt-predecessor',
         'bridge:user-1:https://issuer.example.com:rt-predecessor',
+        'sign-in:user-1:https://issuer.example.com:rt-predecessor',
       ],
       ttl: 60_000,
     });
@@ -276,8 +277,10 @@ describe('OpenID logout refresh chain', () => {
       keys: [
         'session:subject-1:rt-successor-1',
         'bridge:user-1:https://issuer.example.com:rt-successor-1',
+        'sign-in:user-1:https://issuer.example.com:rt-successor-1',
         'session:subject-2:rt-successor-1',
         'bridge:user-2:https://issuer-2.example.com:rt-successor-1',
+        'sign-in:user-2:https://issuer-2.example.com:rt-successor-1',
       ],
       ttl: 60_000,
     });
@@ -285,8 +288,10 @@ describe('OpenID logout refresh chain', () => {
       keys: [
         'session:subject-1:rt-successor-2',
         'bridge:user-1:https://issuer.example.com:rt-successor-2',
+        'sign-in:user-1:https://issuer.example.com:rt-successor-2',
         'session:subject-2:rt-successor-2',
         'bridge:user-2:https://issuer-2.example.com:rt-successor-2',
+        'sign-in:user-2:https://issuer-2.example.com:rt-successor-2',
       ],
       ttl: 60_000,
     });
