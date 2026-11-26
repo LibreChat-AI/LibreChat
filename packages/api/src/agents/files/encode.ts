@@ -13,16 +13,18 @@ import type {
   TurnFileConsumers,
 } from 'librechat-data-provider';
 import type { BaseMessage } from '@librechat/agents/langchain';
-import type { ServerRequest, StrategyFunctions } from '~/types';
+import type { OmittedAttachment, ServerRequest, StrategyFunctions } from '~/types';
 import type { TokenCountFn } from '~/utils/text';
 import {
   isToolOwnedAttachment,
   isModelBoundAttachmentFile,
   assertAgentAttachmentLimits,
   AgentAttachmentPolicyError,
+  AgentAttachmentUnsupportedError,
 } from '../attachments';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
 import { filterFilesByEndpointRuntimeConfig } from '~/files/filter';
+import { isProviderDocumentCandidate } from '~/files/encode/utils';
 import { countTokens } from '~/utils/tokenizer';
 
 type ContentBlock = Exclude<BaseMessage['content'], string>[number];
@@ -59,7 +61,7 @@ export interface RunFileMessageEncoderDeps {
   req: ServerRequest;
   getAgent: (agentId: string) => RunFileEncodingAgent | undefined;
   encodeImages: MediaEncoder<{ image_urls: ContentBlock[] }>;
-  encodeDocuments: MediaEncoder<{ documents: ContentBlock[] }>;
+  encodeDocuments: MediaEncoder<{ documents: ContentBlock[]; omitted?: OmittedAttachment[] }>;
   encodeAudios: MediaEncoder<{ audios: ContentBlock[] }>;
   encodeVideos: MediaEncoder<{ videos: ContentBlock[] }>;
   getStrategyFunctions: (source: string) => StrategyFunctions;
@@ -128,30 +130,17 @@ export function createRunFileMessageEncoder(
       endpoint,
     });
     assertModelBoundContent({ filters: deps.req.config?.filters, files: sharedFiles });
-    return { agent, params, sharedFiles, fileConfig, endpointConfig };
-  }
 
-  function validate(files: TFile[], agentId: string): void {
-    if (files.length > 0) prepare(files, agentId);
-  }
-
-  async function encode(files: TFile[], agentId: string): Promise<BaseMessage[]> {
-    if (files.length === 0) return [];
-    const { agent, params, sharedFiles, fileConfig, endpointConfig } = prepare(files, agentId);
     const images: TFile[] = [];
     const documents: TFile[] = [];
     const audios: TFile[] = [];
     const videos: TFile[] = [];
     const textFiles: TFile[] = [];
+    const unsupported: OmittedAttachment[] = [];
     for (const file of sharedFiles) {
       const deliveryPath = file.llmDeliveryPath;
       if (deliveryPath === 'none') {
         continue;
-      }
-      if (deliveryPath === 'text' && !file.text) {
-        throw new Error(
-          `Shared file "${file.filename}" requires extracted text for this agent. Attach a text version or use an agent that supports the original file.`,
-        );
       }
       if (deliveryPath == null || deliveryPath === 'text') {
         textFiles.push(file);
@@ -176,10 +165,41 @@ export function createRunFileMessageEncoder(
       } else if (file.type.startsWith('video/')) {
         videos.push(file);
       } else if (
-        endpointConfig.supportedMimeTypes &&
-        fileConfig.checkType?.(file.type, endpointConfig.supportedMimeTypes)
+        isProviderDocumentCandidate(file.type, fileConfig, endpointConfig.supportedMimeTypes)
       ) {
         documents.push(file);
+      } else if (deliveryPath === 'provider') {
+        unsupported.push({
+          ...(file.file_id && { file_id: file.file_id }),
+          filename: file.filename,
+          type: file.type,
+          reason: 'unsupported_type',
+        });
+      }
+    }
+    /* A provider-bound file with no encoder would reach the child as nothing at all, so the
+     * share is rejected before the child runs rather than answered without the file. */
+    if (unsupported.length > 0) {
+      throw new AgentAttachmentUnsupportedError(unsupported);
+    }
+    return { params, sharedFiles, images, documents, audios, videos, textFiles };
+  }
+
+  function validate(files: TFile[], agentId: string): void {
+    if (files.length > 0) prepare(files, agentId);
+  }
+
+  async function encode(files: TFile[], agentId: string): Promise<BaseMessage[]> {
+    if (files.length === 0) return [];
+    const { params, sharedFiles, images, documents, audios, videos, textFiles } = prepare(
+      files,
+      agentId,
+    );
+    for (const file of sharedFiles) {
+      if (file.llmDeliveryPath === 'text' && !file.text) {
+        throw new Error(
+          `Shared file "${file.filename}" requires extracted text for this agent. Attach a text version or use an agent that supports the original file.`,
+        );
       }
     }
 
@@ -196,6 +216,9 @@ export function createRunFileMessageEncoder(
         ? deps.extractText({ attachments: textFiles, req: deps.req, tokenCountFn: countTokens })
         : Promise.resolve(undefined),
     ]);
+    if (documentResult.omitted?.length) {
+      throw new AgentAttachmentUnsupportedError(documentResult.omitted);
+    }
     if (
       !text &&
       imageResult.image_urls.length === 0 &&
