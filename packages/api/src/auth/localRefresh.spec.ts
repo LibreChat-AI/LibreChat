@@ -166,6 +166,26 @@ describe('local refresh shared by several tabs', () => {
     expect((await refresh(deps, land(initial, first))).status).toBe(200);
   });
 
+  it('refuses the replaced token at once when REFRESH_TOKEN_GRACE_MS is 0', async () => {
+    const original = process.env.REFRESH_TOKEN_GRACE_MS;
+    process.env.REFRESH_TOKEN_GRACE_MS = '0';
+    try {
+      const userId = await createUser();
+      const { refreshToken: initial } = await methods.createSession(userId);
+      const deps = createDeps();
+      const first = await refresh(deps, initial);
+
+      expect((await refresh(deps, initial)).status).toBe(401);
+      expect((await refresh(deps, land(initial, first))).status).toBe(200);
+    } finally {
+      if (original === undefined) {
+        delete process.env.REFRESH_TOKEN_GRACE_MS;
+      } else {
+        process.env.REFRESH_TOKEN_GRACE_MS = original;
+      }
+    }
+  });
+
   it('refuses the replaced token after the session was revoked', async () => {
     const userId = await createUser();
     const { refreshToken: initial } = await methods.createSession(userId);

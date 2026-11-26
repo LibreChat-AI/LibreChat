@@ -18,11 +18,12 @@ import { math } from '~/utils/math';
 const EXPIRED_REFRESH_MESSAGE = 'Refresh token expired or not found for this user';
 
 /**
- * How long a refresh may still present the token that a rotation replaced. Tabs share one refresh
- * cookie, so one tab can send it while another tab's refresh is replacing it. The window only has
- * to outlast such a request; it matches the default of the OpenID refresh-token bridge.
+ * Default of `REFRESH_TOKEN_GRACE_MS`, how long a refresh may still present the token that a
+ * rotation replaced. Tabs share one refresh cookie, so one tab can send it while another tab's
+ * refresh is replacing it. The window only has to outlast such a request, like the OpenID
+ * refresh-token bridge's `OPENID_REFRESH_BRIDGE_GRACE_MS`.
  */
-const ROTATION_GRACE_MS = 60_000;
+const DEFAULT_ROTATION_GRACE_MS = 60_000;
 
 type UserIdentifier = string | { toString(): string };
 
@@ -123,7 +124,13 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
   };
 
   const findSession = (userId: string, refreshToken: string) =>
-    deps.findSession({ userId, refreshToken }, { lean: false, graceMs: ROTATION_GRACE_MS });
+    deps.findSession(
+      { userId, refreshToken },
+      {
+        lean: false,
+        graceMs: math(process.env.REFRESH_TOKEN_GRACE_MS, DEFAULT_ROTATION_GRACE_MS),
+      },
+    );
 
   const mintAccessToken = (user: RefreshUser) =>
     deps.generateToken(user, math(process.env.SESSION_EXPIRY, DEFAULT_SESSION_EXPIRY));
