@@ -4,11 +4,17 @@ const fs = require('fs').promises;
 const { nanoid } = require('nanoid');
 const { logger } = require('@librechat/data-schemas');
 const {
+  createAgent,
   refreshS3Url,
+  toCreatedAgent,
+  sendAgentRefusal,
+  checkAgentContent,
+  createAgentPanelCreateHandler,
+  getAgentReferenceErrorResponse,
+  isCodeInterpreterCapabilityEnabled,
   splitMCPToolKey,
   buildServerNameAliases,
   findShadowedServerNames,
-  agentCreateSchema,
   agentUpdateSchema,
   agentSubagentsSchema,
   resolveAvatarRefresh,
@@ -29,20 +35,12 @@ const {
   stripFileIdsFromToolResources,
   inspectContent,
   inspectContentWithTraversal,
-  extractAgentContent,
   extractAssistantActionContent,
   extractFileContent,
-  hasActiveFilePolicy,
   hasActiveFileFieldPolicy,
   contentFilterBlockResponse,
   contentFilterUninspectableResponse,
-  getBlockedOpaqueFileField,
   getBlockedUninspectableFileField,
-  getContentTraversalFragments,
-  isContentTraversalProtected,
-  isContentTraversalLimitError,
-  resolveCanonicalFileReferences,
-  reportLocatorTraversalFailure,
   isActiveAgentWorkspaceConfiguration,
   reconcileAgentWorkspaceDefault,
   resolveAgentWorkspaceRestoreConfiguration,
@@ -74,7 +72,6 @@ const {
   isActionTool,
   PermissionBits,
   actionDelimiter,
-  AgentCapabilities,
   EModelEndpoint,
   FileSources,
   removeCodeExecutionCaller,
@@ -180,86 +177,14 @@ const blockFilteredActionContent = (req, res, actions) => {
   return false;
 };
 
-const blockFilteredAgentContent = async (req, res, agentData) => {
-  const filters = req.config?.filters;
-  const definitionPolicyActive =
-    hasActivePiiPatterns(filters?.agentInstructions?.pii) ||
-    hasActivePiiPatterns(filters?.conversationStarters?.pii) ||
-    hasActivePiiPatterns(filters?.modelParameters?.pii) ||
-    hasActivePiiFields(filters?.toolArguments?.pii, ['name', 'arguments']);
-  const filePolicyActive = hasActiveFilePolicy(filters);
-  if (!definitionPolicyActive && !filePolicyActive) {
-    return false;
-  }
-  let opaqueAgentData = agentData;
-  let hydratedFiles = [];
-  if (filePolicyActive) {
-    try {
-      const fileInspection = await resolveCanonicalFileReferences({
-        onTraversalFailure: reportLocatorTraversalFailure,
-        filters,
-        input: agentData,
-        user: req.user,
-        /**
-         * Every caller prunes tool-resource IDs against current ownership or
-         * the existing agent's already-authorized resources before reaching
-         * this point. Preserve that authorization decision while hydrating the
-         * canonical rows for content inspection.
-         */
-        getFiles: ({ file_id, tenantId }, sort, select) =>
-          db.getFiles(
-            {
-              file_id,
-              ...(tenantId != null && { tenantId }),
-            },
-            sort,
-            select,
-          ),
-      });
-      opaqueAgentData = fileInspection.sanitizedInput;
-      hydratedFiles = fileInspection.hydratedFiles;
-    } catch (error) {
-      if (error?.statusCode === 400 && error?.body != null) {
-        res.status(error.statusCode).json(error.body);
-        return true;
-      }
-      throw error;
-    }
-  }
-  const avatarPath = agentData?.avatar?.filepath;
-  const uninspectableField = getBlockedOpaqueFileField(filters, opaqueAgentData);
-  if (uninspectableField != null) {
-    res.status(400).json(contentFilterUninspectableResponse(uninspectableField));
-    return true;
-  }
-  const fileFragments = hydratedFiles.flatMap(extractFileContent);
-  if (typeof avatarPath === 'string' && !avatarPath.toLowerCase().startsWith('data:')) {
-    fileFragments.push(...extractFileContent({ filepath: avatarPath }));
-  }
-  let agentFragments;
-  let traversalError;
-  try {
-    agentFragments = extractAgentContent(agentData);
-  } catch (error) {
-    if (!isContentTraversalLimitError(error)) {
-      throw error;
-    }
-    agentFragments = getContentTraversalFragments(error);
-    traversalError = error;
-  }
-  const finding = inspectContent([...agentFragments, ...fileFragments], {
-    filters,
+/** Binds the request's filters, user and file lookup to the shared agent content check. */
+const checkAgentContentForRequest = (req, agentData) =>
+  checkAgentContent({
+    filters: req.config?.filters,
+    user: req.user,
+    agentData,
+    getFiles: (filter, sort, select) => db.getFiles(filter, sort, select),
   });
-  if (finding != null) {
-    res.status(400).json(contentFilterBlockResponse(finding));
-    return true;
-  }
-  if (traversalError != null && isContentTraversalProtected({ error: traversalError, filters })) {
-    res.status(traversalError.statusCode).json(traversalError.body);
-    return true;
-  }
-  return false;
-};
 
 const sanitizeViewerSkillScope = (agent, accessibleSkillSet) => {
   const skillScopeEnabled = agent.skills_enabled === true;
@@ -480,18 +405,13 @@ const isSubagentsCapabilityEnabled = (req) => {
   return hasSubagentCapability(capabilities);
 };
 
-const isCodeInterpreterCapabilityEnabled = (req) => {
-  const capabilities = req.config?.endpoints?.[EModelEndpoint.agents]?.capabilities;
-  if (!Array.isArray(capabilities)) return false;
-  return capabilities.includes(AgentCapabilities.execute_code);
-};
-
 /**
+ * Returns `null` when the request needs no subagent reference check.
  * @param {import('librechat-data-provider').AgentSubagentsConfig | undefined} subagents
  * @param {Express.Request} req
- * @returns {Promise<{ status: number, body: { error: string, agent_ids: string[] } } | null>}
+ * @returns {Promise<{ missing: string[], unauthorized: string[] } | null>}
  */
-const getSubagentReferenceError = async (subagents, req, allowedMissingIds = new Set()) => {
+const checkSubagentReferences = async (subagents, req, allowedMissingIds = new Set()) => {
   subagents = resolveSubagents(subagents, req.config?.endpoints?.agents?.capabilities ?? []);
   if (
     !isSubagentsCapabilityEnabled(req) ||
@@ -501,32 +421,19 @@ const getSubagentReferenceError = async (subagents, req, allowedMissingIds = new
     return null;
   }
 
-  const { missing, unauthorized } = await validateSubagentReferences(
-    subagents,
-    req.user.id,
-    req.user.role,
-    allowedMissingIds,
-  );
-  if (missing.length > 0) {
-    return {
-      status: 400,
-      body: {
-        error: 'One or more agents referenced in subagents do not exist',
-        agent_ids: missing,
-      },
-    };
-  }
-  if (unauthorized.length > 0) {
-    return {
-      status: 403,
-      body: {
-        error: 'You do not have access to one or more agents referenced in subagents',
-        agent_ids: unauthorized,
-      },
-    };
-  }
-  return null;
+  return validateSubagentReferences(subagents, req.user.id, req.user.role, allowedMissingIds);
 };
+
+/**
+ * @param {import('librechat-data-provider').AgentSubagentsConfig | undefined} subagents
+ * @param {Express.Request} req
+ * @returns {Promise<{ status: number, body: { error: string, agent_ids: string[] } } | null>}
+ */
+const getSubagentReferenceError = async (subagents, req, allowedMissingIds = new Set()) =>
+  getAgentReferenceErrorResponse(
+    'subagent',
+    await checkSubagentReferences(subagents, req, allowedMissingIds),
+  );
 
 /**
  * Filters tools to only include those the user is authorized to use.
@@ -749,6 +656,40 @@ const pruneToolResourceFileIdsForAgent = async ({
 };
 
 /**
+ * Runs the shared creation service with this request's user, config and CJS collaborators.
+ * @param {ServerRequest} req
+ * @param {unknown} input - Agent create payload.
+ */
+const createAgentForRequest = (req, input) =>
+  createAgent(input, {
+    user: req.user,
+    config: req.config,
+    request: req,
+    deps: {
+      createAgent: (agentData) => db.createAgent(agentData).then(toCreatedAgent),
+      getFiles: (filter, sort, select) => db.getFiles(filter, sort, select),
+      pruneToolResourceFileIds: pruneToolResourceFileIdsForAgent,
+      replaceSubagentGraphAgentId: replaceAndValidateSubagentGraphAgentId,
+      classifyAgentReferences: (agentIds) =>
+        classifyAgentReferences(agentIds, req.user.id, req.user.role),
+      checkSubagentReferences: (subagents, allowedMissingIds) =>
+        checkSubagentReferences(subagents, req, allowedMissingIds),
+      instructionsPromptAccess,
+      getCachedTools: () => getCachedTools(),
+      resolveConfigServers: () => resolveConfigServers(req),
+      filterAuthorizedTools: (params) =>
+        filterAuthorizedTools({
+          ...params,
+          userId: req.user.id,
+          role: req.user.role,
+          user: req.user,
+          mcpPermissionContext: createMCPPermissionContext(req),
+        }),
+      grantPermission: (grant) => grantPermission(grant),
+    },
+  });
+
+/**
  * Creates an Agent.
  * @route POST /Agents
  * @param {ServerRequest} req - The request object.
@@ -756,205 +697,7 @@ const pruneToolResourceFileIdsForAgent = async ({
  * @param {ServerResponse} res - The response object.
  * @returns {Promise<Agent>} 201 - success response - application/json
  */
-const createAgentHandler = async (req, res) => {
-  try {
-    /**
-     * Hydrated resource records are a client transport shape, not a persisted
-     * Agent shape. Canonicalize them before the strict IDs-only schema strips
-     * `files`, then let the schema validate the resulting `file_ids`.
-     */
-    normalizeToolResourceFiles(req.body?.tool_resources);
-    const validatedData = agentCreateSchema.parse(req.body);
-    const { tools = [], ...agentData } = removeNullishValues(validatedData);
-    applySdkAgentBindingWrite(
-      agentData,
-      validatedData.sdk_runtime,
-      req.config?.endpoints?.agents,
-      req.user?.role,
-    );
-
-    if (
-      (!isCodeInterpreterCapabilityEnabled(req) || !tools.includes(Tools.execute_code)) &&
-      agentData.tool_options != null
-    ) {
-      agentData.tool_options = removeCodeExecutionCaller(agentData.tool_options);
-    }
-
-    if (
-      !validateStatefulCodeEnvironment(
-        req,
-        res,
-        agentData.stateful_code_sessions,
-        agentData.stateful_code_environment,
-        agentData.code_environment_id,
-        agentData.code_environment_id != null,
-        agentData.code_workspace_id,
-        undefined,
-        undefined,
-        agentData.code_environment_ids,
-      )
-    ) {
-      return;
-    }
-
-    applyAgentInferenceInput(agentData, undefined, req.config);
-    const { id: userId, role: userRole } = req.user;
-    agentData.id = `agent_${nanoid()}`;
-    agentData.edges = replaceEdgeSourceId(agentData.edges, '', agentData.id);
-    agentData.subagents = replaceAndValidateSubagentGraphAgentId(
-      agentData.subagents,
-      '',
-      agentData.id,
-    );
-
-    if (agentData.tool_resources) {
-      await pruneToolResourceFileIdsForAgent({
-        tool_resources: agentData.tool_resources,
-        ownerIds: userId,
-        logPrefix: '[/Agents]',
-      });
-    }
-
-    if (
-      await blockFilteredAgentContent(
-        req,
-        res,
-        instructionsContentForScan('create', { data: agentData }),
-      )
-    ) {
-      return;
-    }
-
-    if (agentData.edges?.length) {
-      const { missing, unauthorized } = await validateEdgeAgentReferences(
-        agentData.edges,
-        userId,
-        userRole,
-        new Set([agentData.id]),
-        req.config?.modelSpecs?.list,
-      );
-      if (missing.length > 0) {
-        return res.status(400).json({
-          error: 'One or more agents referenced in edges do not exist',
-          agent_ids: missing,
-        });
-      }
-      if (unauthorized.length > 0) {
-        return res.status(403).json({
-          error: 'You do not have access to one or more agents referenced in edges',
-          agent_ids: unauthorized,
-        });
-      }
-    }
-
-    /**
-     * Only validate subagent ACL when the feature is actually enabled
-     * on BOTH the endpoint (capability flag in appConfig) AND the
-     * agent payload. Runtime (`initializeClient` + `run.ts`) checks
-     * `subagents?.enabled` as a truthy predicate — so `undefined` /
-     * `null` / missing `enabled` all disable the feature. The ACL
-     * check must match exactly: only enforce when `enabled === true`.
-     * Otherwise a payload that omits `enabled` (e.g. API clients, or
-     * legacy records that never set the field) could 403 here while
-     * runtime would happily no-op on the subagent tool. Disable-path
-     * is also untouched: toggling `enabled: false` always passes the
-     * gate, so a user who lost VIEW on a child can still save the
-     * disable edit.
-     */
-    const subagentReferenceError = await getSubagentReferenceError(
-      agentData.subagents,
-      req,
-      new Set([agentData.id]),
-    );
-    if (subagentReferenceError) {
-      return res.status(subagentReferenceError.status).json(subagentReferenceError.body);
-    }
-
-    const instructionsPromptError = await checkInstructionsPromptWrite({
-      access: instructionsPromptAccess,
-      operation: 'create',
-      user: req.user,
-      previous: undefined,
-      next: agentData.instructionsPrompt,
-      filters: req.config?.filters,
-      linkedInstructions: req.config?.endpoints?.agents?.linkedInstructions,
-      logger,
-      req,
-    });
-    if (instructionsPromptError) {
-      return res.status(instructionsPromptError.status).json(instructionsPromptError.body);
-    }
-
-    agentData.author = userId;
-    agentData.tools = [];
-
-    const hasMCPTools = tools.some((t) => t?.includes(Constants.mcp_delimiter));
-    const [availableTools, configServers] = await Promise.all([
-      getCachedTools().then((t) => t ?? {}),
-      hasMCPTools ? resolveConfigServers(req) : Promise.resolve(undefined),
-    ]);
-    const mcpPermissionContext = createMCPPermissionContext(req);
-    /** Resolved during authorization, so persistence indexes the real server rather
-     *  than a suffix guess - see the note on `filterAuthorizedTools`. */
-    const resolvedServerNames = new Set();
-    agentData.tools = await filterAuthorizedTools({
-      tools,
-      userId,
-      role: req.user.role,
-      user: req.user,
-      mcpPermissionContext,
-      availableTools,
-      configServers,
-      resolvedServerNames,
-    });
-    if (hasMCPTools) {
-      agentData.mcpServerNames = Array.from(resolvedServerNames);
-    }
-
-    const agent = await db.createAgent(agentData);
-
-    try {
-      await Promise.all([
-        grantPermission({
-          principalType: PrincipalType.USER,
-          principalId: userId,
-          resourceType: ResourceType.AGENT,
-          resourceId: agent._id,
-          accessRoleId: AccessRoleIds.AGENT_OWNER,
-          grantedBy: userId,
-        }),
-        grantPermission({
-          principalType: PrincipalType.USER,
-          principalId: userId,
-          resourceType: ResourceType.REMOTE_AGENT,
-          resourceId: agent._id,
-          accessRoleId: AccessRoleIds.REMOTE_AGENT_OWNER,
-          grantedBy: userId,
-        }),
-      ]);
-      logger.debug(
-        `[createAgent] Granted owner permissions to user ${userId} for agent ${agent.id}`,
-      );
-    } catch (permissionError) {
-      logger.error(
-        `[createAgent] Failed to grant owner permissions for agent ${agent.id}:`,
-        permissionError,
-      );
-    }
-
-    res.status(201).json(agent);
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      logger.error('[/Agents] Validation error', error.issues);
-      return res.status(400).json({ error: 'Invalid request data', details: error.issues });
-    }
-    logger.error('[/Agents] Error creating agent', error);
-    if (error?.statusCode === 409) {
-      return res.status(409).json({ error: error.message });
-    }
-    res.status(500).json({ error: error.message });
-  }
-};
+const createAgentHandler = createAgentPanelCreateHandler({ createAgent: createAgentForRequest });
 
 /**
  * Retrieves an Agent by ID.
@@ -1104,7 +847,12 @@ const updateAgentHandler = async (req, res) => {
     /** See the create path: retain hydrated file IDs through validation. */
     normalizeToolResourceFiles(req.body?.tool_resources);
     const validatedData = agentUpdateSchema.parse(req.body);
-    if (!validateAgentCodeEnvironmentAllowlist(req, res, validatedData.code_environment_ids)) {
+    if (
+      sendAgentRefusal(
+        res,
+        validateAgentCodeEnvironmentAllowlist(req.config, validatedData.code_environment_ids),
+      )
+    ) {
       return;
     }
     // Preserve explicit null for avatar to allow resetting the avatar
@@ -1196,16 +944,17 @@ const updateAgentHandler = async (req, res) => {
             ? undefined
             : (updateData.code_environment_id ?? existingAgent.code_environment_id);
         if (
-          !validateStatefulCodeEnvironment(
-            req,
+          sendAgentRefusal(
             res,
-            effectiveStatefulSessions,
-            effectiveStatefulEnvironment,
-            effectiveCodeEnvironmentId,
-            codeEnvironmentSelectionChanged,
-            effectiveCodeWorkspaceId,
-            existingAgent.code_workspace_id,
-            existingAgent.code_environment_id,
+            validateStatefulCodeEnvironment(req.config, {
+              enabled: effectiveStatefulSessions,
+              environment: effectiveStatefulEnvironment,
+              environmentId: effectiveCodeEnvironmentId,
+              environmentIdSelected: codeEnvironmentSelectionChanged,
+              workspaceId: effectiveCodeWorkspaceId,
+              currentWorkspaceId: existingAgent.code_workspace_id,
+              currentEnvironmentId: existingAgent.code_environment_id,
+            }),
           )
         ) {
           return;
@@ -1216,7 +965,7 @@ const updateAgentHandler = async (req, res) => {
         const effectiveTools = updateData.tools ?? existingAgent.tools;
         const effectiveToolOptions = updateData.tool_options ?? existingAgent.tool_options;
         if (
-          (!isCodeInterpreterCapabilityEnabled(req) ||
+          (!isCodeInterpreterCapabilityEnabled(req.config) ||
             !effectiveTools?.includes(Tools.execute_code)) &&
           effectiveToolOptions != null
         ) {
@@ -1315,14 +1064,16 @@ const updateAgentHandler = async (req, res) => {
     }
 
     if (
-      await blockFilteredAgentContent(
-        req,
+      sendAgentRefusal(
         res,
-        instructionsContentForScan('update', {
-          data: updateData,
-          existing: existingAgent,
-          nextLink: instructionsPromptField,
-        }),
+        await checkAgentContentForRequest(
+          req,
+          instructionsContentForScan('update', {
+            data: updateData,
+            existing: existingAgent,
+            nextLink: instructionsPromptField,
+          }),
+        ),
       )
     ) {
       return;
@@ -1541,19 +1292,24 @@ const duplicateAgentHandler = async (req, res) => {
       req.config?.endpoints?.agents,
       req.user?.role,
     );
-    if (!validateAgentCodeEnvironmentAllowlist(req, res, newAgentData.code_environment_ids)) {
+    if (
+      sendAgentRefusal(
+        res,
+        validateAgentCodeEnvironmentAllowlist(req.config, newAgentData.code_environment_ids),
+      )
+    ) {
       return;
     }
     if (
       isActiveAgentWorkspaceConfiguration(newAgentData) &&
-      !validateStatefulCodeEnvironment(
-        req,
+      sendAgentRefusal(
         res,
-        newAgentData.stateful_code_sessions,
-        newAgentData.stateful_code_environment,
-        newAgentData.code_environment_id,
-        false,
-        newAgentData.code_workspace_id,
+        validateStatefulCodeEnvironment(req.config, {
+          enabled: newAgentData.stateful_code_sessions,
+          environment: newAgentData.stateful_code_environment,
+          environmentId: newAgentData.code_environment_id,
+          workspaceId: newAgentData.code_workspace_id,
+        }),
       )
     ) {
       return;
@@ -1660,7 +1416,7 @@ const duplicateAgentHandler = async (req, res) => {
     }
 
     if (
-      (!isCodeInterpreterCapabilityEnabled(req) ||
+      (!isCodeInterpreterCapabilityEnabled(req.config) ||
         !newAgentData.tools?.includes(Tools.execute_code)) &&
       newAgentData.tool_options != null
     ) {
@@ -1668,11 +1424,13 @@ const duplicateAgentHandler = async (req, res) => {
     }
 
     if (
-      (await blockFilteredAgentContent(
-        req,
+      sendAgentRefusal(
         res,
-        instructionsContentForScan('duplicate', { data: newAgentData }),
-      )) ||
+        await checkAgentContentForRequest(
+          req,
+          instructionsContentForScan('duplicate', { data: newAgentData }),
+        ),
+      ) ||
       blockFilteredActionContent(req, res, sanitizedActions)
     ) {
       return;
@@ -2125,7 +1883,12 @@ const revertAgentVersionHandler = async (req, res) => {
       req.config?.endpoints?.agents,
       req.user?.role,
     );
-    if (!validateAgentCodeEnvironmentAllowlist(req, res, revertVersion.code_environment_ids)) {
+    if (
+      sendAgentRefusal(
+        res,
+        validateAgentCodeEnvironmentAllowlist(req.config, revertVersion.code_environment_ids),
+      )
+    ) {
       return;
     }
 
@@ -2135,14 +1898,14 @@ const revertAgentVersionHandler = async (req, res) => {
     });
     if (
       isActiveAgentWorkspaceConfiguration(restoredWorkspaceConfiguration) &&
-      !validateStatefulCodeEnvironment(
-        req,
+      sendAgentRefusal(
         res,
-        restoredWorkspaceConfiguration.stateful_code_sessions,
-        restoredWorkspaceConfiguration.stateful_code_environment,
-        restoredWorkspaceConfiguration.code_environment_id,
-        false,
-        restoredWorkspaceConfiguration.code_workspace_id,
+        validateStatefulCodeEnvironment(req.config, {
+          enabled: restoredWorkspaceConfiguration.stateful_code_sessions,
+          environment: restoredWorkspaceConfiguration.stateful_code_environment,
+          environmentId: restoredWorkspaceConfiguration.code_environment_id,
+          workspaceId: restoredWorkspaceConfiguration.code_workspace_id,
+        }),
       )
     ) {
       return;
@@ -2190,11 +1953,13 @@ const revertAgentVersionHandler = async (req, res) => {
         : [];
 
     if (
-      (await blockFilteredAgentContent(
-        req,
+      sendAgentRefusal(
         res,
-        instructionsContentForScan('revert', { data: revertVersion, existing: existingAgent }),
-      )) ||
+        await checkAgentContentForRequest(
+          req,
+          instructionsContentForScan('revert', { data: revertVersion, existing: existingAgent }),
+        ),
+      ) ||
       blockFilteredActionContent(req, res, actions)
     ) {
       return;
@@ -2242,7 +2007,7 @@ const revertAgentVersionHandler = async (req, res) => {
       options.allowed_callers?.includes('code_execution'),
     );
     if (
-      (!isCodeInterpreterCapabilityEnabled(req) ||
+      (!isCodeInterpreterCapabilityEnabled(req.config) ||
         !effectiveRevertTools?.includes(Tools.execute_code)) &&
       hasCodeExecutionCaller
     ) {
@@ -2340,6 +2105,7 @@ const getAgentCategories = async (_req, res) => {
 };
 module.exports = {
   createAgent: createAgentHandler,
+  createAgentForRequest,
   getAgent: (req, res) => getAgentHandler(req, res, false),
   getAgentExpanded: (req, res) => getAgentHandler(req, res, true),
   getAgentVersions: getAgentVersionsHandler,

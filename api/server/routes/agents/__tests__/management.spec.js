@@ -128,7 +128,7 @@ jest.mock('~/server/services/Config', () => ({
   getEndpointsConfig: mockGetEndpointsConfig,
 }));
 jest.mock('~/server/controllers/agents/v1', () => ({
-  createAgent: mockBrowserCreate,
+  createAgentForRequest: mockBrowserCreate,
   updateAgent: mockBrowserUpdate,
 }));
 jest.mock('~/server/middleware/roles/capabilities', () => ({ hasCapability: jest.fn() }));

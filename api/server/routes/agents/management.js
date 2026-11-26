@@ -48,7 +48,7 @@ const readHandlers = createAgentManagementReadHandlers({
 });
 const createHandler = createAgentManagementCreateHandler({
   getRoleByName: db.getRoleByName,
-  createAgent: v1.createAgent,
+  createAgent: v1.createAgentForRequest,
 });
 const updateHandler = createAgentManagementUpdateHandler({
   getRoleByName: db.getRoleByName,

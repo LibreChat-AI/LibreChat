@@ -355,3 +355,41 @@ export function getAgentErrorMetadata(
     ...(!protectionEnabled && typeof candidate.code === 'string' ? { code: candidate.code } : {}),
   };
 }
+
+/**
+ * Agent write conflicts whose messages are fixed, user-safe text: an agent changed while
+ * it was written, or a code environment it references is being removed. Both come from
+ * `@librechat/data-schemas` with `statusCode: 409` and a constructor-set `name`.
+ */
+const APPROVED_AGENT_CONFLICT_ERRORS = new Set([
+  'AgentRevisionConflictError',
+  'CodeEnvironmentReferenceError',
+]);
+
+function readErrorField(error: unknown, field: 'name' | 'message' | 'statusCode'): unknown {
+  return error != null && typeof error === 'object'
+    ? (error as Record<string, unknown>)[field]
+    : undefined;
+}
+
+/**
+ * Maps an unexpected failure on an agent write route to the response it sends. An approved
+ * conflict keeps 409 with its own message; any other error is 500 with `fallbackMessage`,
+ * so thrown diagnostics never reach the client.
+ */
+export function getAgentRouteErrorResponse(
+  error: unknown,
+  fallbackMessage: string,
+): { status: 409 | 500; body: { error: string } } {
+  const name = readErrorField(error, 'name');
+  const message = readErrorField(error, 'message');
+  if (
+    typeof name === 'string' &&
+    APPROVED_AGENT_CONFLICT_ERRORS.has(name) &&
+    readErrorField(error, 'statusCode') === 409 &&
+    typeof message === 'string'
+  ) {
+    return { status: 409, body: { error: message } };
+  }
+  return { status: 500, body: { error: fallbackMessage } };
+}
