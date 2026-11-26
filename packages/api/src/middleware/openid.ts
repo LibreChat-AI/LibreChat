@@ -1,11 +1,11 @@
 import { logger } from '@librechat/data-schemas';
 import {
   EModelEndpoint,
-  isAgentsEndpoint,
+  isEphemeralAgentId,
   extractEnvVariable,
   normalizeEndpointName,
 } from 'librechat-data-provider';
-import type { TConversation, TEndpointOption } from 'librechat-data-provider';
+import type { Agent, TConversation, TEndpointOption } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { NextFunction, Response } from 'express';
 import type { OpenIDSessionRefreshService } from '~/auth/openid/session';
@@ -26,10 +26,21 @@ type Endpoints = NonNullable<AppConfig['endpoints']>;
 /** A model the turn will call, and the endpoint that serves it. */
 type Target = { endpoint: string; model?: string };
 
+type AgentModel = Pick<Agent, 'provider' | 'model'>;
+
 /** `buildEndpointOption` also carries the added conversation of a multi-response turn. */
 type TurnOption = Partial<TEndpointOption> & {
-  addedConvo?: Pick<TConversation, 'endpoint' | 'model'> | null;
+  addedConvo?: Pick<TConversation, 'endpoint' | 'model' | 'agent_id'> | null;
 };
+
+/** The added conversation's saved agent, cached by the chat router's agent access check. */
+type TurnRequest = ServerRequest & { resolvedAddedAgent?: AgentModel | null };
+
+export interface OpenIDTokenRefreshDeps
+  extends Pick<OpenIDSessionRefreshService, 'createOpenIDSessionTokenProvider'> {
+  /** Reads a saved agent the access check did not cache, as `loadAddedAgent` does. */
+  getAgent: (filter: { id: string }) => Promise<AgentModel | null>;
+}
 
 const REAUTH_MESSAGE =
   'The OpenID session could not provide a current access token for the model request. Please sign in again.';
@@ -86,20 +97,35 @@ function anyForwardsOpenIDAccessToken(endpoints: Endpoints): boolean {
 }
 
 /**
- * The models the user picked for this turn: the agent's, and an added conversation's when it names
- * an endpoint directly rather than another agent. The agent is the promise `buildEndpointOption`
- * started, so reading it costs no extra query.
+ * The models the user picked for this turn: the agent's, and the added conversation's, which is a
+ * saved agent or an endpoint and model of its own, resolved as `loadAddedAgent` will resolve it.
+ * The agent is the promise `buildEndpointOption` started, so reading it costs no extra query.
  */
-async function getTurnTargets(req: ServerRequest): Promise<Target[]> {
+async function getTurnTargets(
+  req: TurnRequest,
+  getAgent: OpenIDTokenRefreshDeps['getAgent'],
+): Promise<Target[]> {
   const option = req.body?.endpointOption as TurnOption | undefined;
-  const agent = await option?.agent;
   const added = option?.addedConvo;
+  const savedAgentId =
+    added?.agent_id && !isEphemeralAgentId(added.agent_id) ? added.agent_id : undefined;
+  const [agent, addedAgent] = await Promise.all([
+    option?.agent,
+    savedAgentId
+      ? (req.resolvedAddedAgent ?? getAgent({ id: savedAgentId }).catch(() => null))
+      : undefined,
+  ]);
   const targets: Target[] = [];
-  if (agent?.provider) {
-    targets.push({ endpoint: agent.provider, model: agent.model ?? undefined });
-  }
-  if (added?.endpoint && !isAgentsEndpoint(added.endpoint)) {
-    targets.push({ endpoint: added.endpoint, model: added.model ?? undefined });
+  const add = (endpoint?: string | null, model?: string | null) => {
+    if (endpoint) {
+      targets.push({ endpoint, model: model ?? undefined });
+    }
+  };
+  add(agent?.provider, agent?.model);
+  if (savedAgentId) {
+    add(addedAgent?.provider, addedAgent?.model);
+  } else {
+    add(added?.endpoint, added?.model);
   }
   return targets;
 }
@@ -116,9 +142,10 @@ async function getTurnTargets(req: ServerRequest): Promise<Target[]> {
  */
 export function createOpenIDTokenRefresh({
   createOpenIDSessionTokenProvider,
-}: Pick<OpenIDSessionRefreshService, 'createOpenIDSessionTokenProvider'>) {
+  getAgent,
+}: OpenIDTokenRefreshDeps) {
   return async function refreshOpenIDToken(
-    req: ServerRequest,
+    req: TurnRequest,
     res: Response,
     next: NextFunction,
   ): Promise<void> {
@@ -134,7 +161,7 @@ export function createOpenIDTokenRefresh({
     if (tokenInfo == null || isOpenIDTokenValid(tokenInfo)) {
       return next();
     }
-    const targets = await getTurnTargets(req);
+    const targets = await getTurnTargets(req, getAgent);
     if (!targets.some((target) => needsOpenIDAccessToken(getTargetHeaders(endpoints, target)))) {
       return next();
     }

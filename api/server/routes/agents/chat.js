@@ -27,7 +27,7 @@ const guardSubagentThreadTurn = require('~/server/middleware/validate/subagentTh
 const AgentController = require('~/server/controllers/agents/request');
 const ResumeController = require('~/server/controllers/agents/resume');
 const addTitle = require('~/server/services/Endpoints/agents/title');
-const { getFiles, getRoleByName } = require('~/models');
+const { getFiles, getRoleByName, getAgentWithVersionCount } = require('~/models');
 
 const router = express.Router();
 
@@ -65,7 +65,12 @@ router.use(checkAgentResourceAccess);
 router.use(validateConvoAccess);
 router.use(guardSubagentThreadTurn);
 router.use(buildEndpointOption);
-router.use(createOpenIDTokenRefresh({ createOpenIDSessionTokenProvider }));
+router.use(
+  createOpenIDTokenRefresh({
+    createOpenIDSessionTokenProvider,
+    getAgent: getAgentWithVersionCount,
+  }),
+);
 
 const controller = async (req, res, next) => {
   await AgentController(req, res, next, initializeClient, addTitle);

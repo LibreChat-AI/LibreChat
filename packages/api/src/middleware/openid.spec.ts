@@ -56,28 +56,42 @@ function makeReq({
   provider = 'gateway',
   model = 'model',
   addedConvo,
+  resolvedAddedAgent,
   authStrategy = 'openidJwt',
 }: {
   user?: IUser;
   endpoints?: Endpoints;
   provider?: string;
   model?: string;
-  addedConvo?: { endpoint: string; model?: string };
+  addedConvo?: { endpoint?: string; model?: string; agent_id?: string };
+  resolvedAddedAgent?: Pick<Agent, 'provider' | 'model'>;
   authStrategy?: string;
 } = {}): ServerRequest {
   const agent = Promise.resolve({ id: 'agent-1', provider, model } as Agent);
   return {
     user,
     authStrategy,
+    resolvedAddedAgent,
     config: { endpoints },
     body: { endpointOption: { agent, addedConvo } },
   } as unknown as ServerRequest;
 }
 
-function setup(result: () => Promise<OIDCTokens | null>) {
+/** A saved agent the access check did not cache, as it does not for administrators. */
+const SAVED_AGENT = 'agent_saved';
+
+function setup(
+  result: () => Promise<OIDCTokens | null>,
+  getAgent: (filter: {
+    id: string;
+  }) => Promise<Pick<Agent, 'provider' | 'model'> | null> = async () => null,
+) {
   const provider = jest.fn(result);
   const createOpenIDSessionTokenProvider = jest.fn(() => provider);
-  const middleware = createOpenIDTokenRefresh({ createOpenIDSessionTokenProvider });
+  const middleware = createOpenIDTokenRefresh({
+    createOpenIDSessionTokenProvider,
+    getAgent: jest.fn(getAgent),
+  });
   const res = {} as Response;
   const run = async (req: ServerRequest) => {
     const next = jest.fn();
@@ -218,6 +232,14 @@ describe('createOpenIDTokenRefresh', () => {
         } as Endpoints,
       },
     ],
+    [
+      "the added conversation's saved agent uses an endpoint that does not forward the token",
+      {
+        provider: 'plain',
+        addedConvo: { agent_id: SAVED_AGENT },
+        resolvedAddedAgent: { provider: 'plain', model: 'm' },
+      },
+    ],
     ['the request was not authenticated by OpenID token reuse', { authStrategy: 'jwt' }],
     ['no endpoint forwards the access token', { endpoints: { custom: [custom('gateway')] } }],
   ])('does not touch the session when %s', async (_label, options) => {
@@ -248,6 +270,14 @@ describe('createOpenIDTokenRefresh', () => {
       { provider: 'ollama', endpoints: { custom: [custom('Ollama', BEARER)] } },
     ],
     [
+      "the added conversation's saved agent, cached by the access check",
+      {
+        provider: 'plain',
+        addedConvo: { agent_id: SAVED_AGENT },
+        resolvedAddedAgent: { provider: 'gateway', model: 'm' },
+      },
+    ],
+    [
       'the added conversation of a multi-response turn',
       { provider: 'plain', addedConvo: { endpoint: 'gateway' } },
     ],
@@ -274,5 +304,30 @@ describe('createOpenIDTokenRefresh', () => {
     await expect(run(makeReq(options))).resolves.toBeUndefined();
 
     expect(provider).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the added conversation's saved agent when the access check did not cache it", async () => {
+    const getAgent = jest.fn(async () => ({ provider: 'gateway', model: 'm' }));
+    const { run, provider } = setup(async () => FRESH, getAgent);
+
+    await expect(
+      run(makeReq({ provider: 'plain', addedConvo: { agent_id: SAVED_AGENT } })),
+    ).resolves.toBeUndefined();
+
+    expect(getAgent).toHaveBeenCalledWith({ id: SAVED_AGENT });
+    expect(provider).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the turn to fail on its own when the added agent cannot be read', async () => {
+    const getAgent = jest.fn(async () => {
+      throw new Error('database unavailable');
+    });
+    const { run, createOpenIDSessionTokenProvider } = setup(async () => FRESH, getAgent);
+
+    await expect(
+      run(makeReq({ provider: 'plain', addedConvo: { agent_id: SAVED_AGENT } })),
+    ).resolves.toBeUndefined();
+
+    expect(createOpenIDSessionTokenProvider).not.toHaveBeenCalled();
   });
 });
