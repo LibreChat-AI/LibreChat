@@ -97,7 +97,8 @@ function anyForwardsOpenIDAccessToken(endpoints: Endpoints): boolean {
 /**
  * The added conversation's saved agent, read once per request. The agent access check caches it on
  * `req.resolvedAddedAgent`, except for administrators; a read here fills that cache, so
- * `loadAddedAgent` reuses the agent when the turn starts. A failed read leaves the turn to report it.
+ * `loadAddedAgent` reuses the agent when the turn starts. A failed read is not an absent agent: it
+ * rejects, so the request ends at the error handler before the turn is accepted.
  */
 async function resolveAddedAgent(
   req: TurnRequest,
@@ -107,7 +108,7 @@ async function resolveAddedAgent(
   if (req.resolvedAddedAgent) {
     return req.resolvedAddedAgent;
   }
-  const agent = await getAgent({ id }).catch(() => null);
+  const agent = await getAgent({ id });
   if (agent) {
     req.resolvedAddedAgent = agent;
   }
@@ -177,7 +178,12 @@ export function createOpenIDTokenRefresh({
     if (tokenInfo == null || isOpenIDTokenValid(tokenInfo)) {
       return next();
     }
-    const targets = await getTurnTargets(req, getAgent);
+    let targets: Target[];
+    try {
+      targets = await getTurnTargets(req, getAgent);
+    } catch (error) {
+      return next(error);
+    }
     if (!targets.some((target) => needsOpenIDAccessToken(getTargetHeaders(endpoints, target)))) {
       return next();
     }

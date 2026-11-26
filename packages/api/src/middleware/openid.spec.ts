@@ -328,16 +328,19 @@ describe('createOpenIDTokenRefresh', () => {
     expect(getAgent).toHaveBeenCalledTimes(1);
   });
 
-  it('leaves the turn to fail on its own when the added agent cannot be read', async () => {
+  it('ends the request at the error handler when the added agent cannot be read', async () => {
+    const failure = new Error('database unavailable');
     const getAgent = jest.fn(async () => {
-      throw new Error('database unavailable');
+      throw failure;
     });
     const { run, createOpenIDSessionTokenProvider } = setup(async () => FRESH, getAgent);
+    const req = makeReq({ provider: 'plain', addedConvo: { agent_id: SAVED_AGENT } });
 
-    await expect(
-      run(makeReq({ provider: 'plain', addedConvo: { agent_id: SAVED_AGENT } })),
-    ).resolves.toBeUndefined();
+    await expect(run(req)).resolves.toBe(failure);
 
     expect(createOpenIDSessionTokenProvider).not.toHaveBeenCalled();
+    expect(
+      (req as ServerRequest & { resolvedAddedAgent?: Agent }).resolvedAddedAgent,
+    ).toBeUndefined();
   });
 });
