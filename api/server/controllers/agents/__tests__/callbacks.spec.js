@@ -830,9 +830,41 @@ describe('createToolEndCallback', () => {
 
       expect(queueGeneratedFile).toHaveBeenCalledTimes(1);
       const [saved, owner] = queueGeneratedFile.mock.calls[0];
-      expect(saved).toBe(artifactPromises[0]);
       expect(owner).toBe(metadata);
       await expect(saved).resolves.toMatchObject({ file_id: 'generated-image' });
+    },
+  );
+
+  it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
+    '%s hands the code queue a failed save as a failure, not as a missing image',
+    async (factoryName) => {
+      const { saveBase64Image } = require('~/server/services/Files/process');
+      const outage = new Error('storage unavailable');
+      saveBase64Image.mockRejectedValue(outage);
+      const queueGeneratedFile = jest.fn();
+      const callback = require('../callbacks')[factoryName]({
+        req,
+        res,
+        artifactPromises,
+        queueGeneratedFile,
+      });
+      await callback(
+        {
+          output: {
+            name: 'image_gen_oai',
+            tool_call_id: 'image-call',
+            artifact: {
+              content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,image' } }],
+            },
+          },
+        },
+        { run_id: 'run-image', thread_id: 'thread-image', executingAgentId: 'agent-a' },
+      );
+
+      const [saved] = queueGeneratedFile.mock.calls[0];
+      await expect(saved).rejects.toBe(outage);
+      /* The chat still treats it as an attachment that did not arrive. */
+      await expect(artifactPromises[0]).resolves.toBeNull();
     },
   );
 

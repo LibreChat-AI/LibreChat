@@ -76,26 +76,14 @@ function resolveProvisionContext({
   return {};
 }
 
-type ToolContextResolver = Pick<
-  ProvisionCallbackDeps,
-  'agentToolContexts' | 'resolvePrimaryAgentId' | 'resolveExecutionContext'
->;
-
-/** A child routed per call keeps its own context; anything else resolves by agent id. */
-function resolveToolContext(
-  { agentToolContexts, resolvePrimaryAgentId, resolveExecutionContext }: ToolContextResolver,
-  agentId: string | undefined,
-  executionContext: SubagentExecutionContext | undefined,
-): { ctx?: ProvisionToolContext; resolvedAgentId?: string } {
-  const placedCtx = resolveExecutionContext?.(agentId, executionContext);
-  if (placedCtx != null) {
-    return { ctx: placedCtx, resolvedAgentId: agentId };
-  }
-  return resolveProvisionContext({
-    agentId,
-    agentToolContexts,
-    primaryAgentId: resolvePrimaryAgentId?.(),
-  });
+export interface GeneratedFileQueueDeps
+  extends Pick<
+    ProvisionCallbackDeps,
+    'agentToolContexts' | 'resolvePrimaryAgentId' | 'resolveExecutionContext'
+  > {
+  /** The context of a shared-file execution, read after a routed child's own: such a child
+   *  provisions in a context of its own, so the files it generates belong there. */
+  resolveSharedContext?: ProvisionCallbackDeps['resolveExecutionContext'];
 }
 
 /** The tool-end metadata naming the agent and the execution a file came from. */
@@ -107,18 +95,32 @@ interface GeneratedFileOwner {
 }
 
 /**
- * Builds the hook a tool-end handler calls with a file a tool produced during the run, such as
- * a generated image. The file joins the queue of the agent that ran the tool, resolved the way
- * its provisioning resolves it, so that agent's next code call uploads it like any queued input.
- * The file may still be saving when it is handed over; the code call waits for it.
+ * Builds the hook a tool-end handler calls with the save of a file a tool produced during the
+ * run, such as a generated image. The file joins the queue of the context the producing agent's
+ * code calls provision from, so its next code call uploads it like any queued input. The save
+ * may still be running when it is handed over; the code call waits for it.
  */
-export function createGeneratedFileQueue(
-  deps: ToolContextResolver,
-): (file: Promise<TFile | null | undefined>, metadata?: GeneratedFileOwner) => void {
+export function createGeneratedFileQueue({
+  agentToolContexts,
+  resolvePrimaryAgentId,
+  resolveExecutionContext,
+  resolveSharedContext,
+}: GeneratedFileQueueDeps): (
+  file: Promise<TFile | null | undefined>,
+  metadata?: GeneratedFileOwner,
+) => void {
   return (file, metadata) => {
     const owner = metadata?.executingAgentId ?? metadata?.agentId ?? metadata?.agent_id;
     const agentId = typeof owner === 'string' && owner.length > 0 ? owner : undefined;
-    const { ctx } = resolveToolContext(deps, agentId, metadata?.executionContext);
+    const executionContext = metadata?.executionContext;
+    const ctx =
+      resolveExecutionContext?.(agentId, executionContext) ??
+      resolveSharedContext?.(agentId, executionContext) ??
+      resolveProvisionContext({
+        agentId,
+        agentToolContexts,
+        primaryAgentId: resolvePrimaryAgentId?.(),
+      }).ctx;
     if (ctx == null) {
       return;
     }
@@ -151,21 +153,34 @@ function untilAborted<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> 
 /**
  * Moves the files a tool generated earlier in this run onto the agent's code queue, once their
  * saves settle. A generated image names no destination, so like an upload that made no choice
- * it goes to whichever tool can read it; one whose save failed is simply not there to send.
+ * it goes to whichever tool can read it. Returns why each save failed; such a file never
+ * reached storage, so unlike a failed upload there is nothing left to retry.
  */
-async function queueGeneratedFiles(ctx: ProvisionToolContext, signal?: AbortSignal) {
+async function queueGeneratedFiles(
+  ctx: ProvisionToolContext,
+  signal?: AbortSignal,
+): Promise<unknown[]> {
   const pending = ctx.generatedFiles;
   if (!pending?.length) {
-    return;
+    return [];
   }
   /* The saves stay listed until they settle, so a concurrent code call for this agent waits
    * for them too instead of running without the image. */
   const saved = await untilAborted(Promise.allSettled(pending), signal);
   const remaining = ctx.generatedFiles?.filter((file) => !pending.includes(file)) ?? [];
   ctx.generatedFiles = remaining.length > 0 ? remaining : undefined;
+  const unsaved: unknown[] = [];
   for (const result of saved) {
-    const file = result.status === 'fulfilled' ? result.value : undefined;
-    if (!file?.file_id || !canToolResourceConsume(EToolResources.execute_code, file.type ?? '')) {
+    if (result.status === 'rejected') {
+      unsaved.push(result.reason);
+      continue;
+    }
+    const file = result.value;
+    if (!file?.file_id) {
+      unsaved.push(new Error('The generated file has no stored record'));
+      continue;
+    }
+    if (!canToolResourceConsume(EToolResources.execute_code, file.type ?? '')) {
       continue;
     }
     ctx.provisionState ??= {
@@ -178,6 +193,19 @@ async function queueGeneratedFiles(ctx: ProvisionToolContext, signal?: AbortSign
       ctx.provisionState.codeEnvFiles.push(file);
     }
   }
+  return unsaved;
+}
+
+/** Reported once, by the code call that would have used the files; the reasons stay as causes
+ *  rather than in the message, which the model and the user read. */
+function createUnsavedFilesError(reasons: unknown[]): Error {
+  return Object.assign(
+    new Error(
+      `Failed to save ${reasons.length} generated file(s), so they are not in the code environment; aborting tool execution rather than running without them`,
+      { cause: reasons[0] },
+    ),
+    { errors: reasons },
+  );
 }
 
 function getRetryAfterMs(reason: unknown): number {
@@ -280,16 +308,25 @@ export function createProvisionFilesCallback({
      * while reading state from a fallback context would upload them as user-scoped,
      * then reconstruct them as agent-scoped on the next turn, and the entity id used to
      * query those vectors would no longer match the one they were stored under. */
-    const { ctx, resolvedAgentId } = resolveToolContext(
-      { agentToolContexts, resolvePrimaryAgentId, resolveExecutionContext },
-      agentId,
-      executionContext,
-    );
+    const placedCtx = resolveExecutionContext?.(agentId, executionContext);
+    const { ctx, resolvedAgentId } =
+      placedCtx != null
+        ? { ctx: placedCtx, resolvedAgentId: agentId }
+        : resolveProvisionContext({
+            agentId,
+            agentToolContexts,
+            primaryAgentId: resolvePrimaryAgentId?.(),
+          });
     /** The same set that decides whether an agent wants code-file provisioning at all,
      *  so a tool cannot be eligible in one place and unrecognized in the other. */
     const needsCode = toolNames.some(isCodeFileToolName);
     if (ctx != null && needsCode) {
-      await queueGeneratedFiles(ctx, signal);
+      /* A generated image the code may need never reached storage; this call says so rather
+       * than run without it, and later calls run as usual. */
+      const unsaved = await queueGeneratedFiles(ctx, signal);
+      if (unsaved.length > 0) {
+        throw createUnsavedFilesError(unsaved);
+      }
     }
     if (!ctx?.provisionState) {
       return [];

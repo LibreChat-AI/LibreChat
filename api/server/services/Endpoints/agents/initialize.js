@@ -412,10 +412,6 @@ const initializeClientWithProvider = async ({
   const getRoutedToolContext = (agentId, executionContext) =>
     subagentCodeRouting?.getToolContext(agentId, executionContext);
   let runFileBindings;
-  /** The context a tool call executes in, which is also the one its provisioning reads. */
-  const getExecutionToolContext = (agentId, executionContext) =>
-    getRoutedToolContext(agentId, executionContext) ??
-    runFileBindings.getContext(agentId, executionContext);
   const artifactToolEndCallback = createToolEndCallback({
     req,
     res,
@@ -425,7 +421,9 @@ const initializeClientWithProvider = async ({
     queueGeneratedFile: createGeneratedFileQueue({
       agentToolContexts,
       resolvePrimaryAgentId: () => primaryConfig?.id,
-      resolveExecutionContext: getExecutionToolContext,
+      resolveExecutionContext: getRoutedToolContext,
+      resolveSharedContext: (agentId, executionContext) =>
+        runFileBindings.getContext(agentId, executionContext),
     }),
   });
   const resolveMcpServerName = (toolName, agentId) => {
@@ -508,7 +506,10 @@ const initializeClientWithProvider = async ({
       runSignal,
       executionContext,
     ) => {
-      const ctx = getExecutionToolContext(agentId, executionContext) ?? {};
+      const ctx =
+        getRoutedToolContext(agentId, executionContext) ??
+        runFileBindings.getContext(agentId, executionContext) ??
+        {};
       logger.debug(`[ON_TOOL_EXECUTE] ctx found: ${!!ctx.userMCPAuthMap}, agent: ${ctx.agent?.id}`);
       logger.debug(`[ON_TOOL_EXECUTE] toolRegistry size: ${ctx.toolRegistry?.size ?? 'undefined'}`);
 

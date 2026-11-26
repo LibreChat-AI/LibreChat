@@ -1032,13 +1032,15 @@ function createToolEndCallback({
           (async () => {
             const filename = `${output.name}_img_${nanoid()}`;
             const file_id = output.artifact.file_ids?.[i];
-            const file = await saveBase64Image(url, {
+            const saving = saveBase64Image(url, {
               req,
               file_id,
               filename,
               endpoint: metadata.provider,
               context: FileContext.image_generation,
             });
+            queueGeneratedFile?.(saving, metadata);
+            const file = await saving;
             const fileMetadata = Object.assign(file, {
               messageId: metadata.run_id,
               toolCallId: output.tool_call_id,
@@ -1059,7 +1061,6 @@ function createToolEndCallback({
             return null;
           }),
         );
-        queueGeneratedFile?.(artifactPromises.at(-1), metadata);
       }
       return;
     }
@@ -1406,13 +1407,15 @@ function createResponsesToolEndCallback({
           (async () => {
             const filename = `${output.name}_img_${nanoid()}`;
             const file_id = output.artifact.file_ids?.[i];
-            const file = await saveBase64Image(url, {
+            const saving = saveBase64Image(url, {
               req,
               file_id,
               filename,
               endpoint: metadata.provider,
               context: FileContext.image_generation,
             });
+            queueGeneratedFile?.(saving, metadata);
+            const file = await saving;
             const fileMetadata = Object.assign(file, {
               toolCallId: output.tool_call_id,
             });
@@ -1441,7 +1444,6 @@ function createResponsesToolEndCallback({
             return null;
           }),
         );
-        queueGeneratedFile?.(artifactPromises.at(-1), metadata);
       }
       return;
     }

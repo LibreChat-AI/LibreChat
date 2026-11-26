@@ -1874,15 +1874,28 @@ describe('files a tool generates during the run', () => {
     expect(h.provisionToCodeEnv).not.toHaveBeenCalled();
   });
 
-  it('runs the code call without an image whose save failed', async () => {
+  it('fails the next code call once for images that could not be saved', async () => {
+    /* The code may need the image, so the call says it is missing instead of running without
+     * it. The image never reached storage, so later calls run with what was saved. */
     const h = harness([['agent-a', {}]]);
-    const failed = Promise.reject(new Error('storage unavailable'));
+    const outage = new Error('storage unavailable at s3://private-bucket');
+    const failed = Promise.reject(outage);
     failed.catch(() => undefined);
-    h.queue(Promise.resolve(null), { executingAgentId: 'agent-a' });
     h.queue(failed, { executingAgentId: 'agent-a' });
+    h.queue(Promise.resolve(null), { executingAgentId: 'agent-a' });
+    h.queue(Promise.resolve(image()), { executingAgentId: 'agent-a' });
 
-    await expect(h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a')).resolves.toEqual([]);
+    const call = h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    await expect(call).rejects.toMatchObject({
+      message: expect.stringMatching(/^Failed to save 2 generated file\(s\)/),
+      cause: outage,
+    });
+    await expect(call).rejects.not.toThrow(/private-bucket/);
     expect(h.provisionToCodeEnv).not.toHaveBeenCalled();
+
+    const provisioned = await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    expect(provisioned.map((codeFile) => codeFile.id)).toEqual(['remote-1']);
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the image with the agent that generated it', async () => {
@@ -1913,21 +1926,37 @@ describe('files a tool generates during the run', () => {
   });
 
   it('queues an image a routed child generated on that execution only', async () => {
+    const source: ProvisionToolContext = {};
     const shared: ProvisionToolContext = {};
     const routed: ProvisionToolContext = {};
     const executionContext = { rootRunId: 'root', depth: 1 } as SubagentExecutionContext;
-    const resolveExecutionContext = (
-      _agentId: string | undefined,
-      context: SubagentExecutionContext | undefined,
-    ) => (context === executionContext ? routed : undefined);
     const queue = createGeneratedFileQueue({
-      agentToolContexts: new Map([['agent-a', shared]]),
-      resolveExecutionContext,
+      agentToolContexts: new Map([['agent-a', source]]),
+      resolveExecutionContext: (_agentId, context) =>
+        context === executionContext ? routed : undefined,
+      resolveSharedContext: () => shared,
     });
 
     queue(Promise.resolve(image()), { executingAgentId: 'agent-a', executionContext });
 
     expect(routed.generatedFiles).toHaveLength(1);
     expect(shared.generatedFiles).toBeUndefined();
+    expect(source.generatedFiles).toBeUndefined();
+  });
+
+  it('queues an image a shared-file execution generated on that execution context', async () => {
+    /* With file sharing active, each execution provisions in a context of its own. */
+    const source: ProvisionToolContext = {};
+    const execution: ProvisionToolContext = {};
+    const queue = createGeneratedFileQueue({
+      agentToolContexts: new Map([['agent-a', source]]),
+      resolveExecutionContext: () => undefined,
+      resolveSharedContext: (agentId) => (agentId === 'agent-a' ? execution : undefined),
+    });
+
+    queue(Promise.resolve(image()), { executingAgentId: 'agent-a' });
+
+    expect(execution.generatedFiles).toHaveLength(1);
+    expect(source.generatedFiles).toBeUndefined();
   });
 });
