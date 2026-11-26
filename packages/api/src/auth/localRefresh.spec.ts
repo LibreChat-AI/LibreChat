@@ -5,6 +5,7 @@ import { createMethods, createModels } from '@librechat/data-schemas';
 import type { ISession, IUser } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import { createLocalRefreshHandler } from './localRefresh';
+import { createLogoutUser } from './logout';
 
 type Methods = ReturnType<typeof createMethods>;
 type Deps = Parameters<typeof createLocalRefreshHandler>[0];
@@ -241,6 +242,23 @@ describe('local refresh shared by several tabs', () => {
 
     expect(sent.status).toBe(401);
     expect(accessToken(sent)).toBeUndefined();
+  });
+
+  it('ends the session for a logout that carries the token another tab just replaced', async () => {
+    const userId = await createUser();
+    const { refreshToken: initial } = await methods.createSession(userId);
+    const deps = createDeps();
+    const first = await refresh(deps, initial);
+    const logout = createLogoutUser({
+      findSession: (query, options) => methods.findSession(query, options),
+      deleteSession: (query) => methods.deleteSession(query),
+    });
+
+    const result = await logout({ user: { _id: userId } }, initial);
+
+    expect(result.status).toBe(200);
+    expect(await mongoose.models.Session.countDocuments({ user: userId })).toBe(0);
+    expect((await refresh(deps, land(initial, first))).status).toBe(401);
   });
 
   it('refuses a refresh that lost the rotation to a revocation', async () => {

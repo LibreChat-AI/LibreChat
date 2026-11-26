@@ -25,6 +25,10 @@ const EXPIRED_REFRESH_MESSAGE = 'Refresh token expired or not found for this use
  */
 const DEFAULT_ROTATION_GRACE_MS = 60_000;
 
+/** The `REFRESH_TOKEN_GRACE_MS` window, read per call like `SESSION_EXPIRY`. */
+export const getRefreshGraceMs = (): number =>
+  math(process.env.REFRESH_TOKEN_GRACE_MS, DEFAULT_ROTATION_GRACE_MS);
+
 type UserIdentifier = string | { toString(): string };
 
 type RefreshUser = Pick<
@@ -127,13 +131,7 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
   };
 
   const findSession = (userId: string, refreshToken: string) =>
-    deps.findSession(
-      { userId, refreshToken },
-      {
-        lean: false,
-        graceMs: math(process.env.REFRESH_TOKEN_GRACE_MS, DEFAULT_ROTATION_GRACE_MS),
-      },
-    );
+    deps.findSession({ userId, refreshToken }, { lean: false, graceMs: getRefreshGraceMs() });
 
   const mintAccessToken = (user: RefreshUser) =>
     deps.generateToken(user, math(process.env.SESSION_EXPIRY, DEFAULT_SESSION_EXPIRY));

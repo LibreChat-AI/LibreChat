@@ -84,6 +84,10 @@ test.describe('session refresh from several tabs', () => {
     expectPassed('refuses the replaced token at once when REFRESH_TOKEN_GRACE_MS is 0');
   });
 
+  test('a logout that carries the token another tab just replaced still ends the session @scenario:refresh-logout-replaced-token-ends-session', () => {
+    expectPassed('ends the session for a logout that carries the token another tab just replaced');
+  });
+
   test('a replaced token does not outlive a revoked session, whenever the revocation lands @scenario:refresh-revoked-session-refused', () => {
     expectPassed('refuses the replaced token after the session was revoked');
     expectPassed('refuses a replaced token whose session is revoked after the lookup');
