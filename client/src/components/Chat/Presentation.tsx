@@ -9,6 +9,7 @@ import {
   sideChatBesideAtom,
   sideChatRequestAtom,
   useIsSubmitting,
+  activeRunFamily,
   activeSubagentPanel,
   SideChatHostProvider,
   ParentSubagentsProvider,
@@ -91,8 +92,9 @@ export default function Presentation({
   const previousConversationIdRef = useRef<string | null>(null);
 
   const latestMessageId = useLatestMessageId(0);
+  const runId = useAtomValue(activeRunFamily(0));
   useArtifactsRegistryLifetime(conversationId);
-  useArtifactsLiveReply(conversationId, isSubmitting, latestMessageId);
+  useArtifactsLiveReply(conversationId, isSubmitting, latestMessageId, runId);
 
   useEffect(
     () => () =>
