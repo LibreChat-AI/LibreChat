@@ -27,6 +27,7 @@ import type {
 } from 'librechat-data-provider';
 import type { Model, PipelineStage } from 'mongoose';
 import type { IAgent, IConversation, IMessage, IUser } from '~/types';
+import type { ExcludedPair } from './insightsAttribution';
 import type { ITransaction } from '~/schema/transaction';
 import { clearExcludedRecords } from './insightsAttribution';
 
@@ -436,7 +437,9 @@ const toUser = (
 };
 
 export function createInsightsMethods(mongoose: typeof import('mongoose')): InsightsMethods {
-  async function getInsights(options: InsightsOptions = {}): Promise<InsightsResult> {
+  async function buildInsights(
+    options: InsightsOptions,
+  ): Promise<{ result: InsightsResult; converting: ExcludedPair[] }> {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const User = mongoose.models.User as Model<IUser>;
     const Message = mongoose.models.Message as Model<IMessage>;
@@ -454,7 +457,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     const churnedActivityFrom = new Date(from.getTime() - churnedUserWindowDays * dayMs);
     const tenant = tenantMatch(options.tenantId);
     const reported = { ...tenant, insightsAgentId: { $in: agentIds } };
-    await clearExcludedRecords(mongoose, tenant, {
+    const converting = await clearExcludedRecords(mongoose, tenant, {
       Message: {
         ...reported,
         createdAt: { $gte: showDetails ? churnedActivityFrom : from, $lte: to },
@@ -872,7 +875,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       ),
     };
     if (!showDetails) {
-      return aggregate;
+      return { result: aggregate, converting };
     }
 
     const latestConversationOwners = latestRows
@@ -887,16 +890,17 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     const latestConversationMatches = latestConversationOwners.map(conversationOwnerMatch);
     const topUserIds = topMessageUsers.map(({ _id }) => _id);
     const churnedUserIds = churnedUserRows.map(({ _id }) => _id);
-    if (churnedUserIds.length > 0) {
-      await clearExcludedRecords(mongoose, tenant, {
-        Message: {
-          ...tenant,
-          user: { $in: churnedUserIds },
-          insightsAgentId: { $in: agentIds },
-          createdAt: { $lte: to },
-        },
-      });
-    }
+    const churnConverting =
+      churnedUserIds.length === 0
+        ? []
+        : await clearExcludedRecords(mongoose, tenant, {
+            Message: {
+              ...tenant,
+              user: { $in: churnedUserIds },
+              insightsAgentId: { $in: agentIds },
+              createdAt: { $lte: to },
+            },
+          });
     const userIds = new Set<string>([
       ...topUserIds,
       ...churnedUserIds,
@@ -1010,7 +1014,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       churnedUserSummaries.map((summary) => [summary._id, summary]),
     );
 
-    return {
+    const detailed: InsightsResult = {
       ...aggregate,
       topUsers: topMessageUsers.map((row) =>
         toUser(row._id, topConversationCountsByUser.get(row._id) ?? 0, users, row),
@@ -1051,6 +1055,18 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         pages: Math.max(1, Math.ceil(matchingConversations / pageSize)),
       },
     };
+    return { result: detailed, converting: [...converting, ...churnConverting] };
+  }
+
+  async function getInsights(options: InsightsOptions = {}): Promise<InsightsResult> {
+    const { result, converting } = await buildInsights(options);
+    if (converting.length === 0) return result;
+    const committed = await (mongoose.models.Conversation as Model<IConversation>).exists({
+      ...tenantMatch(options.tenantId),
+      isTemporary: true,
+      $or: converting,
+    });
+    return committed ? (await buildInsights(options)).result : result;
   }
 
   return { getInsights };

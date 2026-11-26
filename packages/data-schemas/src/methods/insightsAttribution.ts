@@ -228,6 +228,7 @@ export async function syncInsightsAttribution(
 }
 
 type ExcludedChat = { conversationId: string; user: string; tenantId?: string };
+export type ExcludedPair = Pick<ExcludedChat, 'conversationId' | 'user'>;
 
 const exclusionOf = ({ conversationId, user, tenantId }: ExcludedChat) => ({
   conversationId,
@@ -267,9 +268,10 @@ export async function clearExcludedRecords(
   mongoose: typeof import('mongoose'),
   tenant: FilterQuery<IConversation>,
   reported: Partial<Record<'Message' | 'Transaction', FilterQuery<IMessage>>>,
-): Promise<void> {
+): Promise<ExcludedPair[]> {
   const Exclusion = createInsightsExclusionModel(mongoose);
-  if (!(await Exclusion.exists(tenant))) return;
+  if (!(await Exclusion.exists(tenant))) return [];
+  const pending = new Map<string, ExcludedPair>();
   const clear = async (conversationIds: string[]) => {
     if (conversationIds.length === 0) return;
     const exclusions = await Exclusion.find(
@@ -281,14 +283,17 @@ export async function clearExcludedRecords(
     const live = await (mongoose.models.Conversation as Model<IConversation>)
       .find({ ...tenant, $or: pairs }, { _id: 0, conversationId: 1, user: 1, isTemporary: 1 })
       .lean<Array<Pick<IConversation, 'conversationId' | 'user' | 'isTemporary'>>>();
-    const pending = new Set(
+    const converting = new Set(
       live
         .filter(({ isTemporary }) => isTemporary !== true)
         .map(({ conversationId, user }) => JSON.stringify([conversationId, user])),
     );
-    const excluded = pairs.filter(
-      ({ conversationId, user }) => !pending.has(JSON.stringify([conversationId, user])),
-    );
+    const excluded: ExcludedPair[] = [];
+    for (const pair of pairs) {
+      const key = JSON.stringify([pair.conversationId, pair.user]);
+      if (converting.has(key)) pending.set(key, pair);
+      else excluded.push(pair);
+    }
     if (excluded.length === 0) return;
     const owned = excluded.filter(({ user }) => mongoose.isValidObjectId(user));
     const counted = { ...tenant, insightsAgentId: { $nin: ['', null] } };
@@ -324,4 +329,5 @@ export async function clearExcludedRecords(
     }
     await clear(batch);
   }
+  return [...pending.values()];
 }

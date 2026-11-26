@@ -352,6 +352,15 @@ describe('within a turn', () => {
   };
 
   const exclusions = () => createInsightsExclusionModel(mongoose);
+  const report = async () => {
+    const insights = createInsightsMethods(mongoose);
+    const { summary } = await insights.getInsights({ agentIds: ['agent-a'], showDetails: false });
+    return {
+      conversations: summary.totalConversations,
+      messages: summary.totalMessages,
+      counted: summary.spendUSD != null,
+    };
+  };
   const expire = () =>
     mongoose.models.Conversation.collection.deleteOne({ conversationId, user: userId });
   const saveTemporary = async () => void (await save());
@@ -559,21 +568,83 @@ describe('within a turn', () => {
       await reply('reply');
       await bill('reply');
     });
-    let during = -1;
+    let during: Awaited<ReturnType<typeof report>> | null = null;
     const conversion = jest
       .spyOn(mongoose.models.Conversation, 'updateOne')
       .mockImplementationOnce((() =>
-        totals().then(({ messages }) => {
-          during = messages;
+        report().then((counted) => {
+          during = counted;
           throw new Error('unavailable');
         })) as never);
     await expect(convert()).rejects.toThrow('unavailable');
     conversion.mockRestore();
-    expect(during).toBe(1);
+    expect(during).toEqual({ conversations: 1, messages: 1, counted: true });
     expect(await exclusions().countDocuments({})).toBe(0);
     expect((await totals()).messages).toBe(1);
     expect(await storedHints('Message')).toEqual(['agent-a']);
     expect(await storedHints('Transaction')).toEqual(['agent-a']);
+  });
+
+  it('leaves a chat out of a report when its conversion commits after the exclusion check', async () => {
+    await runTurn(async () => {
+      await reply('reply');
+      await bill('reply');
+    });
+    await exclusions().collection.insertOne({
+      conversationId,
+      user: userId,
+      createdAt: new Date(),
+    });
+    const { Conversation } = mongoose.models;
+    const find = Conversation.find.bind(Conversation);
+    let lookups = 0;
+    const lookup = jest.spyOn(Conversation, 'find').mockImplementation(((
+      ...args: Parameters<typeof find>
+    ) => ({
+      lean: async () => {
+        const rows = await find(...args).lean();
+        lookups += 1;
+        if (lookups === 2) {
+          await Conversation.collection.updateOne(
+            { conversationId, user: userId },
+            { $set: { isTemporary: true } },
+          );
+        }
+        return rows;
+      },
+    })) as never);
+    expect(await report()).toEqual({ conversations: 0, messages: 0, counted: false });
+    lookup.mockRestore();
+    expect(lookups).toBeGreaterThan(2);
+    expect(await storedHints('Message')).toEqual(['']);
+    expect(await storedHints('Transaction')).toEqual(['']);
+  });
+
+  it('keeps counting a saved chat whose conversion was interrupted after its marker', async () => {
+    await runTurn(async () => {
+      await reply('reply');
+      await bill('reply');
+    });
+    await exclusions().collection.insertOne({
+      conversationId,
+      user: userId,
+      createdAt: new Date(),
+    });
+    expect(await report()).toEqual({ conversations: 1, messages: 1, counted: true });
+    expect(await report()).toEqual({ conversations: 1, messages: 1, counted: true });
+    expect(await storedHints('Message')).toEqual(['agent-a']);
+    expect(await storedHints('Transaction')).toEqual(['agent-a']);
+  });
+
+  it('rewrites no messages when their deletion succeeds', async () => {
+    await runTurn(async () => {
+      await reply('reply');
+    });
+    const writes = jest.spyOn(mongoose.models.Message, 'updateMany');
+    await conversations.deleteConvos(userId, { conversationId });
+    expect(writes).not.toHaveBeenCalled();
+    writes.mockRestore();
+    expect(await mongoose.models.Message.countDocuments({})).toBe(0);
   });
 
   it('keeps counting a chat whose deletion failed', async () => {
