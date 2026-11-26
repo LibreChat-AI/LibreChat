@@ -469,6 +469,79 @@ describe('within a turn', () => {
     expect(stored?.isTemporary).toBe(true);
   });
 
+  const temporary = async () =>
+    (await mongoose.models.Conversation.collection.findOne({ conversationId }))?.isTemporary;
+
+  it.each([
+    ['its retention stamp', convert],
+    ['its conversation save', saveTemporary],
+  ])(
+    'keeps a chat normal while its exclusion cannot be saved, then excludes it when %s is retried',
+    async (_change, change) => {
+      await runTurn(async () => {
+        await reply('reply');
+        await bill('before');
+        const failure = jest
+          .spyOn(exclusions(), 'updateOne')
+          .mockRejectedValueOnce(new Error('unavailable'));
+        await change().catch(() => null);
+        failure.mockRestore();
+        expect(await exclusions().countDocuments({})).toBe(0);
+        expect(await temporary()).not.toBe(true);
+        await change();
+        expect(await temporary()).toBe(true);
+        await bill('late');
+      });
+      expect(await exclusions().countDocuments({ conversationId, user: userId })).toBe(1);
+      await expire();
+      expect((await totals()).spend).toBeNull();
+    },
+  );
+
+  it.each([
+    ['its retention stamp', 'updateOne', convert],
+    ['its conversation save', 'findOneAndUpdate', saveTemporary],
+  ] as const)(
+    'removes the exclusion when %s fails to convert the chat',
+    async (_change, write, change) => {
+      await reply('reply');
+      const failure = jest
+        .spyOn(mongoose.models.Conversation, write)
+        .mockRejectedValueOnce(new Error('unavailable'));
+      await change().catch(() => null);
+      failure.mockRestore();
+      expect(await temporary()).not.toBe(true);
+      expect(await exclusions().countDocuments({})).toBe(0);
+      expect((await totals()).messages).toBe(1);
+    },
+  );
+
+  it('clears the excluded chats of a large report in bounded batches, without one big filter', async () => {
+    const createdAt = new Date();
+    const chats = Array.from({ length: 2500 }, (_, index) => `excluded-${index}`);
+    await mongoose.models.Message.collection.insertMany(
+      chats.map((chat) => ({
+        conversationId: chat,
+        messageId: chat,
+        user: userId,
+        insightsAgentId: 'agent-a',
+        isCreatedByUser: true,
+        createdAt,
+      })),
+    );
+    await exclusions().collection.insertMany(
+      chats.map((chat) => ({ conversationId: chat, user: userId, createdAt })),
+    );
+    const writes = jest.spyOn(mongoose.models.Message, 'updateMany');
+    const aggregate = jest.spyOn(mongoose.models.Message, 'aggregate');
+    expect((await totals()).messages).toBe(0);
+    const filters = writes.mock.calls as unknown as Array<[{ $or: unknown[] }]>;
+    expect(filters.length).toBeGreaterThanOrEqual(3);
+    expect(Math.max(...filters.map(([filter]) => filter.$or.length))).toBeLessThanOrEqual(1000);
+    expect(JSON.stringify(aggregate.mock.calls)).not.toContain('$nor');
+    [writes, aggregate].forEach((spy) => spy.mockRestore());
+  });
+
   it('leaves no exclusion behind when a conversion is refused', async () => {
     await reply('reply');
     const refused = await conversations.saveConvo(ephemeral, {

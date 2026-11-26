@@ -27,7 +27,7 @@ import type {
 import type { Model, PipelineStage } from 'mongoose';
 import type { IAgent, IConversation, IMessage, IUser } from '~/types';
 import type { ITransaction } from '~/schema/transaction';
-import { readInsightsExclusions } from './insightsAttribution';
+import { clearExcludedRecords } from './insightsAttribution';
 
 export type InsightsOptions = TInsightsParams & {
   tenantId?: string;
@@ -264,12 +264,8 @@ function conversationScope(
   ];
 }
 
-function messageScope(
-  match: Record<string, unknown>,
-  agentIds: string[],
-  excluded: Record<string, unknown>,
-): PipelineStage[] {
-  return [{ $match: { ...match, ...excluded, insightsAgentId: { $in: agentIds } } }];
+function messageScope(match: Record<string, unknown>, agentIds: string[]): PipelineStage[] {
+  return [{ $match: { ...match, insightsAgentId: { $in: agentIds } } }];
 }
 
 function transactionScope(
@@ -437,7 +433,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     const churnedActivityFrom = new Date(from.getTime() - churnedUserWindowDays * dayMs);
     const tenant = tenantMatch(options.tenantId);
     const reported = { ...tenant, insightsAgentId: { $in: agentIds } };
-    const excluded = await readInsightsExclusions(mongoose, tenant, {
+    await clearExcludedRecords(mongoose, tenant, {
       Message: {
         ...reported,
         createdAt: { $gte: showDetails ? churnedActivityFrom : from, $lte: to },
@@ -460,7 +456,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       $gte: from,
       $lte: to,
     });
-    const messagePipeline = messageScope(messageMatch, agentIds, excluded.messages);
+    const messagePipeline = messageScope(messageMatch, agentIds);
 
     const requestedSearch = options.search?.trim().slice(0, INSIGHTS_SEARCH_MAX_LENGTH) ?? '';
     const search =
@@ -656,7 +652,6 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
                 createdAt: { $gte: churnedActivityFrom, $lte: to },
               },
               agentIds,
-              excluded.messages,
             ),
             { $group: { _id: '$user', lastSeen: { $max: '$createdAt' } } },
             { $match: { lastSeen: { $gte: churnedActivityFrom, $lte: churnedCutoff } } },
@@ -665,12 +660,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
           ])
         : Promise.resolve([] as ChurnedUserActivity[]),
       Transaction.aggregate<ModelSpend>([
-        ...transactionScope(
-          agentIds,
-          options.tenantId,
-          { $gte: from, $lte: to },
-          excluded.transactions,
-        ),
+        ...transactionScope(agentIds, options.tenantId, { $gte: from, $lte: to }),
         {
           $group: {
             _id: {
@@ -704,7 +694,6 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
             tokenType: 'completion',
             context: { $in: replyUsageContexts },
             messageId: { $exists: true, $nin: [null, ''] },
-            ...excluded.transactions,
           },
         ),
         { $sort: { createdAt: 1, _id: 1 } },
@@ -737,7 +726,6 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         ...messageScope(
           { ...messageMatch, isCreatedByUser: false, 'feedback.text': { $regex: /\S/ } },
           agentIds,
-          excluded.messages,
         ),
         { $sort: { createdAt: -1, _id: -1 } },
         { $limit: commentLimit },
@@ -878,6 +866,16 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     const latestConversationMatches = latestConversationOwners.map(conversationOwnerMatch);
     const topUserIds = topMessageUsers.map(({ _id }) => _id);
     const churnedUserIds = churnedUserRows.map(({ _id }) => _id);
+    if (churnedUserIds.length > 0) {
+      await clearExcludedRecords(mongoose, tenant, {
+        Message: {
+          ...tenant,
+          user: { $in: churnedUserIds },
+          insightsAgentId: { $in: agentIds },
+          createdAt: { $lte: to },
+        },
+      });
+    }
     const userIds = new Set<string>([
       ...topUserIds,
       ...churnedUserIds,
@@ -901,7 +899,6 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
                 $or: latestConversationMatches,
               },
               agentIds,
-              excluded.messages,
             ),
             {
               $group: {
@@ -923,7 +920,6 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
                 $or: latestConversationMatches,
               },
               agentIds,
-              excluded.messages,
             ),
             { $sort: { createdAt: 1, _id: 1 } },
             {
@@ -936,11 +932,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       topUserIds.length === 0
         ? Promise.resolve([] as UserConversationCount[])
         : Message.aggregate<UserConversationCount>([
-            ...messageScope(
-              { ...messageMatch, user: { $in: topUserIds } },
-              agentIds,
-              excluded.messages,
-            ),
+            ...messageScope({ ...messageMatch, user: { $in: topUserIds } }, agentIds),
             { $group: { _id: { user: '$user', conversationId: '$conversationId' } } },
             { $group: { _id: '$_id.user', conversations: { $sum: 1 } } },
           ]),
@@ -956,7 +948,6 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
                 createdAt: { $lte: to },
               },
               agentIds,
-              excluded.messages,
             ),
             {
               $group: {

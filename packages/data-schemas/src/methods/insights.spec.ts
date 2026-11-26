@@ -4,6 +4,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { TFeedbackTagKey } from 'librechat-data-provider';
 import { createInsightsMethods as createIndexedInsightsMethods } from './insights';
 import { backfillInsightsAttribution } from '../migrations/insightsAgentIds';
+import { createInsightsExclusionModel } from '../models/insightsExclusion';
 import { createTransactionModel } from '../models/transaction';
 import { createConversationModel } from '../models/convo';
 import { createMessageModel } from '../models/message';
@@ -957,6 +958,46 @@ describe('Insights methods', () => {
       },
     ]);
     expect(result.summary).not.toHaveProperty('churnedUsers');
+  });
+
+  it('leaves an excluded chat out of the full history of an inactive user', async () => {
+    const now = Date.now();
+    const daysAgo = (days: number) => new Date(now - days * 24 * 60 * 60 * 1000);
+    const user = new mongoose.Types.ObjectId().toString();
+    await fixtures.conversations.insertOne({
+      conversationId: 'kept',
+      user,
+      initial_agent_id: 'agent-a',
+      createdAt: daysAgo(29),
+    });
+    await fixtures.messages.insertMany([
+      {
+        messageId: 'kept-prompt',
+        conversationId: 'kept',
+        user,
+        createdAt: daysAgo(29),
+        isCreatedByUser: true,
+      },
+      ...['converted-first', 'converted-second'].map((messageId) => ({
+        messageId,
+        conversationId: 'converted',
+        user,
+        createdAt: daysAgo(60),
+        isCreatedByUser: true,
+        insightsAgentId: 'agent-a',
+      })),
+    ]);
+    await createInsightsExclusionModel(mongoose).create({
+      conversationId: 'converted',
+      user,
+      createdAt: daysAgo(59),
+    });
+
+    const { churnedUsers } = await createScopedInsightsMethods().getInsights({ range: '7d' });
+
+    expect(churnedUsers?.map(({ conversations, messages }) => [conversations, messages])).toEqual([
+      [1, 1],
+    ]);
   });
 
   it('keeps duplicate conversation IDs isolated by owner', async () => {

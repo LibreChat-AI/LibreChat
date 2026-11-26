@@ -51,15 +51,16 @@ import {
   createResponseConversationReplacement,
 } from './responseScope';
 import {
-  activeExpirationFilter,
-  buildRetentionVisibilityFilter,
-  createFallbackRetentionDate,
-} from '~/utils/retention';
-import {
+  includeInInsights,
   excludeFromInsights,
   rememberInsightsRoot,
   syncInsightsAttribution,
 } from './insightsAttribution';
+import {
+  activeExpirationFilter,
+  buildRetentionVisibilityFilter,
+  createFallbackRetentionDate,
+} from '~/utils/retention';
 import {
   refreshChatProjectStatsForUser,
   updateChatProjectLastConversationForUser,
@@ -2410,17 +2411,17 @@ export function createConversationMethods(
        * Conditional on the transition, so concurrent stamps release the bookmark counts once;
        * the released tags are cleared with it so a later delete cannot release them again.
        */
+      const identity = { conversationId, user: userId, tenantId: stored.tenantId };
+      const excluded = await excludeFromInsights(mongoose, identity);
       const converted = await Conversation.updateOne(
         { _id: stored._id, isTemporary: { $ne: true } },
         { $set: { isTemporary: true, expiredAt, tags: [] } },
         { timestamps: false },
-      );
-      stampedDeadline ||= converted.modifiedCount > 0;
-      await excludeFromInsights(mongoose, {
-        conversationId,
-        user: userId,
-        tenantId: stored.tenantId,
+      ).catch(async (error: unknown) => {
+        if (excluded) await includeInInsights(mongoose, identity);
+        throw error;
       });
+      stampedDeadline ||= converted.modifiedCount > 0;
       if (converted.modifiedCount > 0 && stored.tags?.length) {
         await decrementTagCounts(mongoose, userId, stored.tags);
       }
@@ -2496,6 +2497,7 @@ export function createConversationMethods(
       replyMessageId?: string;
     },
   ) {
+    let excluded: { conversationId: string; user: string; tenantId?: string } | null = null;
     try {
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
       const { getMessages } = getMessageMethods();
@@ -2673,6 +2675,12 @@ export function createConversationMethods(
             newConversationId || conversationId,
             stored?.expiredAt && stored.expiredAt < deadline ? stored.expiredAt : deadline,
           );
+        if (converted && stored) {
+          const identity = { conversationId, user: userId, tenantId: stored.tenantId };
+          if (await excludeFromInsights(mongoose, identity, deps?.saveSession)) {
+            excluded = identity;
+          }
+        }
       }
 
       const createdAtOnInsert =
@@ -2837,17 +2845,6 @@ export function createConversationMethods(
       }
 
       const created = conversationResult.lastErrorObject?.updatedExisting === false;
-      if (converted && !created && conversation.isTemporary === true) {
-        await excludeFromInsights(
-          mongoose,
-          {
-            conversationId: conversation.conversationId,
-            user: userId,
-            tenantId: conversation.tenantId,
-          },
-          deps?.saveSession,
-        );
-      }
       if (created || conversation.isTemporary === true) {
         const saved = {
           ...(conversation.toObject() as Record<string, unknown>),
@@ -3030,6 +3027,14 @@ export function createConversationMethods(
       return conversation.toObject();
     } catch (error) {
       if (deps?.saveSession) throw error;
+      if (excluded) {
+        await includeInInsights(mongoose, excluded).catch((cleanupError: unknown) =>
+          logger.error(
+            '[saveConvo] Failed to restore Insights for a refused conversion',
+            cleanupError,
+          ),
+        );
+      }
       logger.error('[saveConvo] Error saving conversation', error);
       if (metadata?.context) {
         logger.info(`[saveConvo] ${metadata.context}`);

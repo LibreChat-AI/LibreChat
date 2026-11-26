@@ -227,40 +227,76 @@ export async function syncInsightsAttribution(
   }
 }
 
+type ExcludedChat = { conversationId: string; user: string; tenantId?: string };
+
+const exclusionOf = ({ conversationId, user, tenantId }: ExcludedChat) => ({
+  conversationId,
+  user,
+  tenantId: tenantId ?? { $exists: false },
+});
+
 export async function excludeFromInsights(
   mongoose: typeof import('mongoose'),
-  { conversationId, user, tenantId }: { conversationId: string; user: string; tenantId?: string },
+  chat: ExcludedChat,
   session?: ClientSession,
-): Promise<void> {
+): Promise<boolean> {
   try {
-    await createInsightsExclusionModel(mongoose).updateOne(
-      { conversationId, user, tenantId: tenantId ?? { $exists: false } },
+    const { upsertedCount } = await createInsightsExclusionModel(mongoose).updateOne(
+      exclusionOf(chat),
       { $setOnInsert: { createdAt: new Date() } },
       { upsert: true, session },
     );
+    return upsertedCount > 0;
   } catch (error) {
-    if (!(error instanceof MongoServerError) || error.code !== 11000) throw error;
+    if (error instanceof MongoServerError && error.code === 11000) return false;
+    throw error;
   }
+}
+
+export async function includeInInsights(
+  mongoose: typeof import('mongoose'),
+  chat: ExcludedChat,
+  session?: ClientSession,
+): Promise<void> {
+  await createInsightsExclusionModel(mongoose).deleteOne(exclusionOf(chat), { session });
 }
 
 const exclusionBatchSize = 1000;
 
-export async function readInsightsExclusions(
+export async function clearExcludedRecords(
   mongoose: typeof import('mongoose'),
   tenant: FilterQuery<IConversation>,
-  reported: Record<'Message' | 'Transaction', FilterQuery<IMessage>>,
-): Promise<{ messages: FilterQuery<IMessage>; transactions: FilterQuery<IMessage> }> {
+  reported: Partial<Record<'Message' | 'Transaction', FilterQuery<IMessage>>>,
+): Promise<void> {
   const Exclusion = createInsightsExclusionModel(mongoose);
-  if (!(await Exclusion.exists(tenant))) return { messages: {}, transactions: {} };
-  const excluded = new Map<string, { conversationId: string; user: string }>();
-  const check = async (conversationIds: string[]) => {
+  if (!(await Exclusion.exists(tenant))) return;
+  const clear = async (conversationIds: string[]) => {
     if (conversationIds.length === 0) return;
-    const found = await Exclusion.find(
+    const excluded = await Exclusion.find(
       { ...tenant, conversationId: { $in: conversationIds } },
       { _id: 0, conversationId: 1, user: 1 },
     ).lean();
-    for (const entry of found)
-      excluded.set(JSON.stringify([entry.conversationId, entry.user]), entry);
+    if (excluded.length === 0) return;
+    const owned = excluded.filter(({ user }) => mongoose.isValidObjectId(user));
+    const counted = { ...tenant, insightsAgentId: { $nin: ['', null] } };
+    const update = { $set: { insightsAgentId: '' } };
+    await mongoose.models.Message.updateMany(
+      { ...counted, $or: excluded.map(({ conversationId, user }) => ({ conversationId, user })) },
+      update,
+      { timestamps: false },
+    );
+    if (owned.length === 0) return;
+    await mongoose.models.Transaction.updateMany(
+      {
+        ...counted,
+        $or: owned.map(({ conversationId, user }) => ({
+          conversationId,
+          user: new mongoose.Types.ObjectId(user),
+        })),
+      },
+      update,
+      { timestamps: false },
+    );
   };
   for (const [name, match] of Object.entries(reported)) {
     let batch: string[] = [];
@@ -270,24 +306,9 @@ export async function readInsightsExclusions(
     for await (const { _id } of conversations) {
       if (typeof _id === 'string') batch.push(_id);
       if (batch.length < exclusionBatchSize) continue;
-      await check(batch);
+      await clear(batch);
       batch = [];
     }
-    await check(batch);
+    await clear(batch);
   }
-  const entries = [...excluded.values()];
-  if (entries.length === 0) return { messages: {}, transactions: {} };
-  const owned = entries.filter(({ user }) => mongoose.isValidObjectId(user));
-  return {
-    messages: { $nor: entries.map(({ conversationId, user }) => ({ conversationId, user })) },
-    transactions:
-      owned.length === 0
-        ? {}
-        : {
-            $nor: owned.map(({ conversationId, user }) => ({
-              conversationId,
-              user: new mongoose.Types.ObjectId(user),
-            })),
-          },
-  };
 }
