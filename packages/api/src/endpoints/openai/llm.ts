@@ -1245,14 +1245,17 @@ export function getOpenAILLMConfig({
     llmConfig.useResponsesApi === true &&
     llmConfig.reasoning?.effort !== ReasoningEffort.none;
   /** GPT-5.1 and later take sampling controls only at effort `none`, and reject
-   * them alongside any other effort the request sends, on either API. */
+   * them alongside any other effort the request sends, on either API. A
+   * deployment known only by its declared efforts is treated the same way,
+   * since its name does not say which model it runs. */
   const sentEffort =
     llmConfig.useResponsesApi === true ? llmConfig.reasoning?.effort : modelKwargs.reasoning_effort;
-  const gpt5Reasoning =
-    versionedGpt5Pattern.test(llmConfig.model ?? '') &&
+  const rejectsSampling =
+    (versionedGpt5Pattern.test(llmConfig.model ?? '') ||
+      (reasoningEfforts != null && !takesReasoningEffort(llmConfig.model))) &&
     sentEffort != null &&
     sentEffort !== ReasoningEffort.none;
-  if ((!sol62 && solLunaResponsesReasoning) || gpt5Reasoning) {
+  if ((!sol62 && solLunaResponsesReasoning) || rejectsSampling) {
     for (const param of [
       'temperature',
       'topP',

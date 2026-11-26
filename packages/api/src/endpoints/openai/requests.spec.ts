@@ -638,7 +638,11 @@ describe('Chat Completions reasoning effort', () => {
     });
 
     /** Initializes the configured deployment as chat does and returns the request it sends. */
-    async function sendToDeployment(model: string, declared?: ReasoningEffort[]): Promise<Sent> {
+    async function sendToDeployment(
+      model: string,
+      declared?: ReasoningEffort[],
+      saved: Record<string, unknown> = {},
+    ): Promise<Sent> {
       const azure = validateAzureGroups([
         {
           group: 'test',
@@ -656,7 +660,7 @@ describe('Chat Completions reasoning effort', () => {
       expect(azure.isValid).toBe(true);
       const { llmConfig, configOptions } = await initializeOpenAI({
         endpoint: EModelEndpoint.azureOpenAI,
-        model_parameters: { model, reasoning_effort: ReasoningEffort.high },
+        model_parameters: { model, reasoning_effort: ReasoningEffort.high, ...saved },
         db: { getUserKey: jest.fn(), getUserKeyValues: jest.fn() },
         runtime: {
           appConfig: { endpoints: { azureOpenAI: azure } } as AppConfig,
@@ -690,6 +694,19 @@ describe('Chat Completions reasoning effort', () => {
       ]);
 
       expect(body).toMatchObject({ reasoning_effort: ReasoningEffort.high });
+    });
+
+    /** Its name cannot say whether it runs a model that rejects sampling beside an effort. */
+    it('drops the sampling controls beside an effort sent to a declared deployment', async () => {
+      const { body } = await sendToDeployment(
+        'production-west',
+        [ReasoningEffort.low, ReasoningEffort.high],
+        { temperature: 0.7, top_p: 0.9 },
+      );
+
+      expect(body).toMatchObject({ reasoning_effort: ReasoningEffort.high });
+      expect(body).not.toHaveProperty('temperature');
+      expect(body).not.toHaveProperty('top_p');
     });
 
     it('keeps a saved effort away from a deployment that declares none', async () => {

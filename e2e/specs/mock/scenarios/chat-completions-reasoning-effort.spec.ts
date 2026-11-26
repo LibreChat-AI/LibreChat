@@ -101,6 +101,10 @@ test.describe('reasoning effort on Chat Completions', () => {
   test('an effort reaches Azure deployments of reasoning models and deployments that declare efforts @scenario:azure-chat-completions-effort-reaches-deployments', () => {
     expectPassed(AZURE, 'sends the selected effort to a deployment of a reasoning model');
     expectPassed(AZURE, 'sends the selected effort to a deployment that declares its efforts');
+    expectPassed(
+      AZURE,
+      'drops the sampling controls beside an effort sent to a declared deployment',
+    );
     expectPassed(AZURE, 'keeps a saved effort away from a deployment that declares none');
     expectPassed(AZURE, 'keeps a saved effort away from an o1-mini deployment, which takes none');
   });
