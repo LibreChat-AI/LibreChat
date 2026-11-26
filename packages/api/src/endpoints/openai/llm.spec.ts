@@ -416,6 +416,29 @@ describe('getOpenAILLMConfig', () => {
 
       expect(result.tools).not.toContainEqual({ type: 'web_search' });
     });
+
+    it.each([
+      ['a saved false on the native endpoint', { useResponsesApi: false }, {}],
+      [
+        'a direct Chat Completions URL',
+        {},
+        { directEndpoint: true, baseURL: 'https://gateway.example.com/v1/chat/completions' },
+      ],
+    ])(
+      'should keep Chat Completions without the web_search tool after %s',
+      (_case, modelOptions, options) => {
+        const result = getOpenAILLMConfig({
+          apiKey: 'test-api-key',
+          streaming: true,
+          endpoint: EModelEndpoint.openAI,
+          ...options,
+          modelOptions: { model: 'gpt-4.1', web_search: true, ...modelOptions },
+        });
+
+        expect(result.llmConfig.useResponsesApi).not.toBe(true);
+        expect(result.tools).toEqual([]);
+      },
+    );
   });
 
   describe('GPT-5 max_tokens Handling', () => {

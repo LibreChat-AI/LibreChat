@@ -999,12 +999,33 @@ export function getOpenAILLMConfig({
     promptCacheTtlValue = undefined;
   }
 
+  /**
+   * Both GPT-5.6 and GPT-6 route by model, so a drop rule clearing a stored
+   * effort must not also disable their routing. Only an explicit
+   * `useResponsesApi` drop does that, and it also keeps web search from
+   * switching the API.
+   */
+  const responsesApiExplicitlyOptedOut =
+    dropParams != null && dropParams.includes('useResponsesApi');
+
   if (useOpenRouter && enableWebSearch) {
     /** OpenRouter expects web search as a plugins parameter */
     modelKwargs.plugins = [{ id: 'web' }];
     hasModelKwargs = true;
-  } else if (enableWebSearch) {
-    /** Standard OpenAI web search uses tools API */
+  } else if (
+    enableWebSearch &&
+    llmConfig.useResponsesApi !== false &&
+    !responsesApiExplicitlyOptedOut &&
+    !isExactChatCompletionsURL(directEndpoint, baseURL)
+  ) {
+    /**
+     * OpenAI's `web_search` tool exists only in the Responses API, and the client
+     * sends any request that carries it there. Web search turns that API on unless
+     * Chat Completions was chosen: a saved or configured `false`, a
+     * `useResponsesApi` drop, or a direct Chat Completions URL. The tool is then
+     * left out, like a reasoning summary, so a Chat Completions-only gateway still
+     * answers.
+     */
     llmConfig.useResponsesApi = true;
     tools.push({ type: 'web_search' });
   }
@@ -1022,13 +1043,7 @@ export function getOpenAILLMConfig({
    * Limited to first-party OpenAI: OpenRouter, custom gateways (non-canonical
    * base URL), and `reasoningFormat: 'disabled'` keep their existing Chat
    * Completions path.
-   *
-   * Both GPT-5.6 and GPT-6 route by model, so a drop rule clearing a stored
-   * effort must not also disable their routing. Only an explicit
-   * `useResponsesApi` drop does that.
    */
-  const responsesApiExplicitlyOptedOut =
-    dropParams != null && dropParams.includes('useResponsesApi');
   const cyber = isNativeCyberRequest({
     model: llmConfig.model,
     useOpenRouter,
