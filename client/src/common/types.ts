@@ -6,6 +6,7 @@ import type {
   PaneOptionSettings,
   MessageAudioProps,
   NewConversationParams,
+  NewConversationOptions,
 } from '@librechat/chat/react';
 import type { UseMutationResult } from '@tanstack/react-query';
 import type { MessageIconData } from '@librechat/chat/react';
@@ -398,7 +399,7 @@ export type TLoginLayoutContext = {
   setHeaderText: React.Dispatch<React.SetStateAction<string>>;
 };
 
-export type ConvoGenerator = (params: NewConversationParams) => void | t.TConversation;
+export type ConvoGenerator = (params: NewConversationOptions) => void | t.TConversation;
 
 export type { TResData, TBaseResData, TFinalResData } from '@librechat/chat';
 

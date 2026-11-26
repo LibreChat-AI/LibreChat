@@ -109,6 +109,20 @@ describe('useSelectAgent', () => {
     expect(mockFetchQuery).not.toHaveBeenCalled();
   });
 
+  it.each([EModelEndpoint.agents, EModelEndpoint.assistants])(
+    'hands the pick over as a change of the open chat’s target (from %s)',
+    async (endpoint) => {
+      mockGetConversation.mockResolvedValue({ conversationId: 'new', endpoint } as TConversation);
+      const { result } = renderHook(() => useSelectAgent());
+
+      await act(async () => {
+        await result.current.onSelect('agent-1');
+      });
+
+      expect(mockNewConversation).toHaveBeenCalledWith(expect.objectContaining({ retarget: true }));
+    },
+  );
+
   it('clears model spec display fields when selecting an agent', async () => {
     mockGetConversation.mockResolvedValue({
       endpoint: EModelEndpoint.openAI,

@@ -1,16 +1,18 @@
 import axios from 'axios';
-import { useSetAtom } from 'jotai';
-import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { ToastContext } from '@librechat/client';
-import { presetFamily } from '@librechat/chat/react';
+import { RecoilRoot, useSetRecoilState } from 'recoil';
 import { act, renderHook } from '@testing-library/react';
+import { filesFamily, presetFamily } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { TPreset } from 'librechat-data-provider';
+import type { TConversation, TPreset } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+import type { ExtendedFile } from '~/common';
 import translationEn from '~/locales/en/translation.json';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import usePresets from '../usePresets';
+import store from '~/store';
 
 /** Counts the times the library is actually evaluated, which only the lazy loader may trigger. */
 const mockEvaluated = jest.fn();
@@ -106,5 +108,48 @@ describe('exportPreset', () => {
     );
     expect(recover).toHaveBeenCalledTimes(1);
     expect(mockExportFromJSON).not.toHaveBeenCalled();
+  });
+});
+
+describe('onSelectPreset', () => {
+  beforeEach(() => {
+    jest.spyOn(axios, 'get').mockResolvedValue({ data: {} });
+  });
+
+  it('keeps the attachments of the unsent chat it is picked for', () => {
+    const upload = {
+      file_id: 'kept-upload',
+      temp_file_id: 'client-kept-upload',
+      filepath: '/uploads/kept.txt',
+      source: 'local',
+      progress: 1,
+    } as ExtendedFile;
+    const { result } = renderHook(
+      () => ({
+        presets: usePresets(),
+        files: useAtomValue(filesFamily(0)),
+        setFiles: useSetAtom(filesFamily(0)),
+        setConversation: useSetRecoilState(store.conversationByIndex(0)),
+      }),
+      { wrapper: wrapper() },
+    );
+    act(() => {
+      result.current.setConversation({
+        conversationId: 'new',
+        endpoint: 'openAI',
+        model: 'gpt-4o',
+      } as TConversation);
+      result.current.setFiles(new Map([['client-kept-upload', upload]]));
+    });
+
+    act(() =>
+      result.current.presets.onSelectPreset({
+        title: 'Claude preset',
+        endpoint: 'anthropic',
+        model: 'claude-sonnet-4-5',
+      } as TPreset),
+    );
+
+    expect(Array.from(result.current.files.keys())).toEqual(['client-kept-upload']);
   });
 });
