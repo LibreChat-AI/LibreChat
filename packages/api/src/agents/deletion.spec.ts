@@ -132,6 +132,9 @@ describe('Agent Management delete handler', () => {
     await createAgentManagementDeleteHandler(deps)(makeRequest(), response);
 
     expect(response.status).toHaveBeenCalledWith(404);
+    expect(response.json).toHaveBeenCalledWith({
+      error: { code: 'not_found', message: 'Agent not found' },
+    });
     expect(deps.checkPermission).not.toHaveBeenCalled();
     expect(deps.deleteAgent).not.toHaveBeenCalled();
   });

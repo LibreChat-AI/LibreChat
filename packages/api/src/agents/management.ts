@@ -4,7 +4,16 @@ import type {
   AgentSubagentGraphEdge,
   AgentSubagentsConfig,
 } from 'librechat-data-provider';
+import type { IUser } from '@librechat/data-schemas';
+import type {
+  AgentAccessErrorCode,
+  AgentAccessLevel,
+  AgentAccessRecord,
+  AuthorizeAgentDeps,
+  AuthorizeAgentResult,
+} from './access';
 import { agentCreateSchema, agentUpdateSchema, toolOptionsSchema } from './validation';
+import { authorizeAgent } from './access';
 
 const MAX_LIST_LIMIT = 100;
 const DEFAULT_LIST_LIMIT = 20;
@@ -346,6 +355,37 @@ const ERROR_MESSAGE: Record<AgentManagementErrorCode, string> = {
   internal_error: 'Internal server error',
   conflict: 'Resource conflict',
 };
+
+export type AgentManagementAccessDeps<T extends AgentAccessRecord> = Pick<
+  AuthorizeAgentDeps<T, IUser>,
+  'hasCapability' | 'checkPermission'
+> & {
+  getAgentWithVersionCount: (search: { id: string; tenantId: string }) => Promise<T | null>;
+};
+
+/** Run `authorizeAgent` against the agent with this public ID in the caller's tenant. */
+export function authorizeAgentManagementTarget<
+  R extends AgentAccessLevel,
+  T extends AgentAccessRecord,
+>(
+  params: { user: IUser; tenantId: string; agentId: string; required: R },
+  deps: AgentManagementAccessDeps<T>,
+): Promise<AuthorizeAgentResult<R, T>> {
+  const { user, tenantId, agentId, required } = params;
+  return authorizeAgent(
+    { user, agentId, required },
+    {
+      getAgent: (id) => deps.getAgentWithVersionCount({ id, tenantId }),
+      hasCapability: deps.hasCapability,
+      checkPermission: deps.checkPermission,
+    },
+  );
+}
+
+/** The Management error code for an `authorizeAgent` failure. */
+export function toAgentManagementAccessCode(code: AgentAccessErrorCode): AgentManagementErrorCode {
+  return code === 'not_found' ? 'not_found' : 'permission_denied';
+}
 
 /** Map known failure classes to a stable envelope without exposing internal error messages. */
 export function mapAgentManagementError(

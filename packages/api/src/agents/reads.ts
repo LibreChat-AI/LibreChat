@@ -1,4 +1,4 @@
-import { logger, ResourceCapabilityMap } from '@librechat/data-schemas';
+import { logger } from '@librechat/data-schemas';
 import {
   PermissionBits,
   Permissions,
@@ -12,10 +12,13 @@ import type { AgentManagementProjectionSource } from './management';
 import {
   agentManagementListSchema,
   mapAgentManagementError,
+  toAgentManagementAccessCode,
+  authorizeAgentManagementTarget,
   projectAgentManagementListResponse,
   projectAgentManagementResponse,
 } from './management';
 import { checkAccessWithRequestCache } from '../middleware/access';
+import { hasManageAgentsCapability } from './access';
 
 type AgentManagementRecord = AgentManagementProjectionSource & { _id: Types.ObjectId };
 
@@ -69,42 +72,6 @@ async function canUseAgents(req: Request, user: IUser, deps: AgentManagementRead
     permissions: [Permissions.USE],
     getRoleByName: deps.getRoleByName,
   });
-}
-
-async function canViewAgent(
-  user: IUser,
-  agent: AgentManagementRecord,
-  deps: AgentManagementReadDeps,
-  canManageAll: boolean,
-) {
-  if (canManageAll) {
-    return true;
-  }
-
-  return await deps.checkPermission({
-    userId: user.id,
-    role: user.role,
-    resourceType: ResourceType.AGENT,
-    resourceId: agent._id,
-    requiredPermission: PermissionBits.EDIT,
-  });
-}
-
-export async function hasManageAgentsCapability(
-  user: IUser,
-  deps: Pick<AgentManagementReadDeps, 'hasCapability'>,
-): Promise<boolean> {
-  const capability = ResourceCapabilityMap[ResourceType.AGENT];
-  try {
-    if (capability != null && (await deps.hasCapability(user, capability))) {
-      return true;
-    }
-  } catch (error) {
-    logger.warn(
-      `[AgentManagement] Agent capability check failed, denying bypass: ${(error as Error).message}`,
-    );
-  }
-  return false;
 }
 
 /** Typed management read handlers; the Express route supplies concrete database and ACL dependencies. */
@@ -162,25 +129,29 @@ export function createAgentManagementReadHandlers(deps: AgentManagementReadDeps)
         return sendError(res, 'permission_denied');
       }
 
-      const [canUse, canManageAll, agent] = await Promise.all([
+      /** Both checks start together, but a USE denial wins over an ACL outage. */
+      const [canUse, authorized] = await Promise.allSettled([
         canUseAgents(req, user, deps),
-        hasManageAgentsCapability(user, deps),
-        deps.getAgentWithVersionCount({
-          id: req.params.id,
-          tenantId: user.tenantId,
-        }),
+        authorizeAgentManagementTarget(
+          { user, tenantId: user.tenantId, agentId: req.params.id, required: 'EDIT' },
+          deps,
+        ),
       ]);
-      if (!canUse) {
+      if (canUse.status === 'rejected') {
+        throw canUse.reason;
+      }
+      if (!canUse.value) {
         return sendError(res, 'permission_denied');
       }
-      if (!agent) {
-        return sendError(res, 'not_found');
+      if (authorized.status === 'rejected') {
+        throw authorized.reason;
       }
-      if (!(await canViewAgent(user, agent, deps, canManageAll))) {
-        return sendError(res, 'permission_denied');
+      const authorization = authorized.value;
+      if (!authorization.ok) {
+        return sendError(res, toAgentManagementAccessCode(authorization.error.code));
       }
 
-      return res.status(200).json(projectAgentManagementResponse(agent));
+      return res.status(200).json(projectAgentManagementResponse(authorization.value.agent));
     } catch (error) {
       logger.error('[AgentManagement] Error retrieving Agent', error);
       return sendError(res, 'internal_error');

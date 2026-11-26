@@ -1,4 +1,4 @@
-import { logger, ResourceCapabilityMap } from '@librechat/data-schemas';
+import { logger } from '@librechat/data-schemas';
 import {
   PermissionBits,
   Permissions,
@@ -12,6 +12,8 @@ import type { AgentManagementProjectionSource } from './management';
 import {
   agentManagementUpdateSchema,
   mapAgentManagementError,
+  toAgentManagementAccessCode,
+  authorizeAgentManagementTarget,
   projectAgentManagementResponse,
 } from './management';
 import { checkAccessWithRequestCache } from '../middleware/access';
@@ -86,18 +88,6 @@ function createResponseAdapter(res: Response): {
   return { response: adapter, getResult: () => result };
 }
 
-async function hasManageAgentsCapability(user: IUser, deps: AgentManagementUpdateDeps) {
-  const capability = ResourceCapabilityMap[ResourceType.AGENT];
-  try {
-    return capability != null && (await deps.hasCapability(user, capability));
-  } catch (error) {
-    logger.warn(
-      `[AgentManagement] Agent capability check failed, denying bypass: ${(error as Error).message}`,
-    );
-    return false;
-  }
-}
-
 /** Validate and authorize Agent Management updates before reusing the browser update flow. */
 export function createAgentManagementUpdateHandler(
   deps: AgentManagementUpdateDeps,
@@ -120,26 +110,12 @@ export function createAgentManagementUpdateHandler(
         return sendError(res, 'permission_denied');
       }
 
-      const agent = await deps.getAgentWithVersionCount({
-        id: req.params.id,
-        tenantId: user.tenantId,
-      });
-      if (!agent) {
-        return sendError(res, 'not_found');
-      }
-
-      const canManageAll = await hasManageAgentsCapability(user, deps);
-      if (
-        !canManageAll &&
-        !(await deps.checkPermission({
-          userId: user.id,
-          role: user.role,
-          resourceType: ResourceType.AGENT,
-          resourceId: agent._id,
-          requiredPermission: PermissionBits.EDIT,
-        }))
-      ) {
-        return sendError(res, 'permission_denied');
+      const authorization = await authorizeAgentManagementTarget(
+        { user, tenantId: user.tenantId, agentId: req.params.id, required: 'EDIT' },
+        deps,
+      );
+      if (!authorization.ok) {
+        return sendError(res, toAgentManagementAccessCode(authorization.error.code));
       }
 
       const parsedBody = agentManagementUpdateSchema.safeParse(req.body);

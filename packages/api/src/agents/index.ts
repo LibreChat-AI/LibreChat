@@ -1,3 +1,4 @@
+export * from './access';
 export * from './avatars';
 export * from './attachments';
 export * from './chain';
