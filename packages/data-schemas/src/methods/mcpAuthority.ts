@@ -34,6 +34,7 @@ import type {
 } from '~/types';
 import { BASE_CONFIG_PRINCIPAL_ID } from '~/admin/capabilities';
 import { MCP_AUTHORITY_PROOF_VERSION } from '~/types';
+import { principalClauses } from '~/utils/principal';
 import { getTenantId } from '~/config/tenantContext';
 import logger from '~/config/winston';
 
@@ -1178,7 +1179,7 @@ export function createMCPAuthorityMethods(
       { $eq: [{ $indexOfCP: ['$$path', 'mcpSettings.'] }, 0] },
     ];
     const configQuery = Config.aggregate<AggregateBatch<ConfigProjection>>([
-      { $match: { $and: [tenantScope, { $or: slots }] } },
+      { $match: { $and: [tenantScope, { $or: principalClauses(slots) }] } },
       {
         $project: {
           _id: 1,
@@ -1316,7 +1317,7 @@ export function createMCPAuthorityMethods(
     let aclEntries: AclProjection[] = [];
     if (serverIds.length > 0 || agentIds.length > 0) {
       const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
-      const principals: RootFilterQuery<IAclEntry>[] = [
+      const principals = principalClauses([
         { principalType: PrincipalType.USER, principalId: new Types.ObjectId(userId) },
         { principalType: PrincipalType.ROLE, principalId: roleName },
         { principalType: PrincipalType.PUBLIC },
@@ -1324,7 +1325,7 @@ export function createMCPAuthorityMethods(
           principalType: PrincipalType.GROUP,
           principalId: group._id,
         })),
-      ];
+      ]);
       const resources: RootFilterQuery<IAclEntry>[] = [];
       if (serverIds.length > 0) {
         resources.push({ resourceType: ResourceType.MCPSERVER, resourceId: { $in: serverIds } });

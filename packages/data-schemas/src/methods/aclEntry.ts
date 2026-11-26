@@ -17,6 +17,7 @@ import type {
 import type { IAclEntry } from '~/types';
 import { tenantPartitionFilter } from '~/models/plugins/tenantIsolation';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { principalClauses } from '~/utils/principal';
 import { MAX_PERM_BITS } from '~/common/permissions';
 import { getSafeErrorFields } from '~/utils/errors';
 import { RoleBits } from '~/common/enum';
@@ -279,10 +280,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     readPrimary?: boolean,
   ): Promise<IAclEntry[]> {
     const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
-    const principalsQuery = principalsList.map((p) => ({
-      principalType: p.principalType,
-      ...(p.principalType !== PrincipalType.PUBLIC && { principalId: p.principalId }),
-    }));
+    const principalsQuery = principalClauses(principalsList);
 
     const query = AclEntry.find({
       $or: principalsQuery,
@@ -315,10 +313,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     permissionBit: number,
   ): Promise<boolean> {
     const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
-    const principalsQuery = principalsList.map((p) => ({
-      principalType: p.principalType,
-      ...(p.principalType !== PrincipalType.PUBLIC && { principalId: p.principalId }),
-    }));
+    const principalsQuery = principalClauses(principalsList);
 
     const entry = await AclEntry.findOne({
       $or: principalsQuery,
@@ -386,10 +381,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     }
 
     const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
-    const principalsQuery = principalsList.map((p) => ({
-      principalType: p.principalType,
-      ...(p.principalType !== PrincipalType.PUBLIC && { principalId: p.principalId }),
-    }));
+    const principalsQuery = principalClauses(principalsList);
 
     // Batch query for all resources at once
     const aclEntries = await AclEntry.find({
@@ -568,10 +560,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     readPrimary = false,
   ): Promise<Types.ObjectId[]> {
     const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
-    const principalsQuery = principalsList.map((p) => ({
-      principalType: p.principalType,
-      ...(p.principalType !== PrincipalType.PUBLIC && { principalId: p.principalId }),
-    }));
+    const principalsQuery = principalClauses(principalsList);
 
     const query = AclEntry.find({
       $or: principalsQuery,
