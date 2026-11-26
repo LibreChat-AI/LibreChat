@@ -219,6 +219,29 @@ describe('Insights methods', () => {
     expect(await active()).toEqual([2]);
   });
 
+  it('marks no version active when the running model differs from every saved one', async () => {
+    const agents = createAgentMethods(mongoose, {
+      removeAllPermissions: async () => {},
+      getActions: async () => [],
+      getSoleOwnedResourceIds: async () => [],
+      getUserPrincipals: async () => [],
+      findAccessibleResources: async () => [],
+    });
+    await agents.createAgent({
+      id: 'agent-a',
+      name: 'Root',
+      provider: 'openAI',
+      model: 'model-old',
+      author: new mongoose.Types.ObjectId(),
+    });
+    await agents.updateAgent({ id: 'agent-a' }, { model: 'model-new' }, { skipVersioning: true });
+    const { agentVersions } = await createInsightsMethods(mongoose).getInsights({
+      agentIds: ['agent-a'],
+      showDetails: false,
+    });
+    expect(agentVersions?.map(({ version, active }) => [version, active])).toEqual([[1, false]]);
+  });
+
   it.each([
     ['valid root', {}, [], 1, 1],
     ['legacy root', { agent_id: 'agent-a' }, ['initial_agent_id'], 1, 1],

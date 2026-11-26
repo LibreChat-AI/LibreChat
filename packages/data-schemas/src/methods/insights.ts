@@ -334,7 +334,12 @@ type VersionSettings = {
 
 const sorted = (list?: unknown[]) => list && [...list].sort();
 
+const runtimeSettings = ['model', 'provider', 'model_parameters'];
+
 const matchesCurrentSettings = (version: VersionSettings, current: VersionSettings) =>
+  runtimeSettings.every(
+    (field) => !(field in version) || _.isEqual(version[field], current[field]),
+  ) &&
   version.name === current.name &&
   version.description === current.description &&
   version.instructions === current.instructions &&
