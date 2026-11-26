@@ -386,20 +386,29 @@ function getReaderChecks(
   return [...checks.values()];
 }
 
-/** Applies the readers' checks to one document. */
+/**
+ * Applies the readers' checks to one document, as the primary agent's apply: their provider's PDF
+ * checks, Bedrock's document limits, and otherwise their configured size limit. A text part is no
+ * Bedrock document, so only the size limit applies to it.
+ */
 async function validateForReaders(
   checks: readonly DocumentCheck[],
   mimeType: string,
   size: number,
-  buffer?: Buffer,
+  buffer: Buffer | undefined,
+  textPart: boolean,
 ): Promise<void> {
   const isPdf = mimeType === 'application/pdf';
   for (const { provider, model, fileSizeLimit } of checks) {
     let validation: ValidationResult | undefined;
     if (isPdf && buffer) {
       validation = await validatePdf(buffer, size, provider, fileSizeLimit, model);
-    } else if (provider === Providers.BEDROCK) {
+    } else if (provider === Providers.BEDROCK && !textPart) {
       validation = await validateBedrockDocument(size, mimeType, buffer, fileSizeLimit, model);
+    } else if (fileSizeLimit && size > fileSizeLimit) {
+      throw new Error(
+        `File size (~${(size / 1024 / 1024).toFixed(1)}MB) exceeds the configured limit for ${provider}`,
+      );
     }
     if (validation?.isValid === false) {
       throw new Error(`${isPdf ? 'PDF' : 'Document'} validation failed: ${validation.error}`);
@@ -600,11 +609,15 @@ export async function encodeAndFormatDocuments(
     { provider, model, fileSizeLimit: configuredFileSizeLimit },
     readers,
   );
-  /** A textual file in a shared history reaches every reader as text, which no document limit covers. */
+  /** A textual file in a shared history reaches every reader as a text part. */
   const checkReaders = (mimeType: string, size: number, buffer?: Buffer) =>
-    shared && isAnthropicTextDocumentType(mimeType)
-      ? undefined
-      : validateForReaders(readerChecks, mimeType, size, buffer);
+    validateForReaders(
+      readerChecks,
+      mimeType,
+      size,
+      buffer,
+      shared && isAnthropicTextDocumentType(mimeType),
+    );
 
   /** Bedrock's limit per document, known before anything is read. Other providers read unbounded. */
   const readLimits = processableFiles.map((file) =>

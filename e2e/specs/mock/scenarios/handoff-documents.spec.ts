@@ -95,6 +95,10 @@ test.describe('attachments in a conversation shared by agents on different provi
       ENCODER,
       'treats Claude behind an OpenAI-compatible gateway as its own document format',
     );
+    expectPassed(
+      ENCODER,
+      "does not apply Bedrock's document limits to a text file shared as a text part",
+    );
   });
 
   test("an attachment one agent's provider cannot read is left out for that agent instead of failing its turn @scenario:handoff-unreadable-type-left-out", () => {
@@ -119,6 +123,7 @@ test.describe('attachments in a conversation shared by agents on different provi
       ENCODER,
       "checks a reader on the primary agent's own format whose model has a stricter limit",
     );
+    expectPassed(ENCODER, "applies a reader's configured size limit to every document type");
   });
 
   test('agents on one provider and API keep the document blocks they received before @scenario:single-format-documents-unchanged', () => {

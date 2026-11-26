@@ -1966,6 +1966,40 @@ describe('encodeAndFormatDocuments - agents sharing a history', () => {
     ).rejects.toThrow('PDF validation failed: over 4.5MB');
   });
 
+  it("applies a reader's configured size limit to every document type", async () => {
+    mockedGetConfiguredFileSizeLimit.mockImplementation((_req, params) =>
+      params.endpoint === 'small-gateway' ? 4 : undefined,
+    );
+    const docx = file(
+      'brief.docx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
+
+    await expect(
+      encodeAndFormatDocuments(
+        req,
+        [docx],
+        {
+          provider: Providers.OPENAI,
+          recipients: [{ provider: Providers.OPENAI, endpoint: 'small-gateway' }],
+        },
+        jest.fn(),
+      ),
+    ).rejects.toThrow('File size (~0.0MB) exceeds the configured limit for openAI');
+  });
+
+  it("does not apply Bedrock's document limits to a text file shared as a text part", async () => {
+    const result = await encodeAndFormatDocuments(
+      req,
+      [file('data.csv', 'text/csv')],
+      { provider: Providers.OPENAI, recipients: [bedrock] },
+      jest.fn(),
+    );
+
+    expect(result.documents).toEqual([{ type: 'text', text: `File: "data.csv"\n\n${csv}` }]);
+    expect(mockedValidateBedrockDocument).not.toHaveBeenCalled();
+  });
+
   it("does not repeat the primary agent's checks for a reader that shares them", async () => {
     await encodeAndFormatDocuments(
       req,
