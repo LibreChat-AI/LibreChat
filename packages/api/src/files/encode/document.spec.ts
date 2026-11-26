@@ -1,4 +1,5 @@
 import { Providers } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import { mbToBytes } from 'librechat-data-provider';
 import type { AppConfig, IMongoFile } from '@librechat/data-schemas';
 import type { BedrockDocumentBlock, ServerRequest } from '~/types';
@@ -1755,5 +1756,165 @@ describe('encodeAndFormatDocuments - files missing from storage', () => {
     );
     expect(onMissingFile).not.toHaveBeenCalled();
     expect(result.documents).toEqual([]);
+  });
+});
+
+describe('encodeAndFormatDocuments - agents sharing a history', () => {
+  const file = (filename: string, type: string): IMongoFile =>
+    ({
+      _id: new Types.ObjectId(),
+      user: new Types.ObjectId(),
+      file_id: `file-${filename}`,
+      filename,
+      type,
+      bytes: 1024,
+      object: 'file',
+      usage: 0,
+      source: 'local',
+      filepath: `/uploads/${filename}`,
+    }) as unknown as IMongoFile;
+  const req = { config: {} } as unknown as ServerRequest;
+  const pdfData = Buffer.from('%PDF-1.4').toString('base64');
+  const csv = 'a,b\n1,2';
+  const pdf = file('Q3 report (final).pdf', 'application/pdf');
+  const claude = { provider: Providers.ANTHROPIC, model_parameters: { model: 'claude-opus-4-1' } };
+  const responses = { provider: Providers.OPENAI, model_parameters: { useResponsesApi: true } };
+  const bedrock = { provider: Providers.BEDROCK, model_parameters: { model: 'amazon.nova-pro' } };
+  const sharedPdf = {
+    type: 'file',
+    source_type: 'base64',
+    mime_type: 'application/pdf',
+    data: pdfData,
+    metadata: {
+      name: 'Q3 report (final)_pdf',
+      filename: 'Q3 report (final).pdf',
+      context: 'File: "Q3 report (final).pdf"',
+      citations: { enabled: true },
+    },
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedValidatePdf.mockResolvedValue({ isValid: true });
+    mockedValidateBedrockDocument.mockResolvedValue({ isValid: true });
+    mockedGetFileStream.mockImplementation(async (_req, attachment) => ({
+      file: attachment,
+      content:
+        attachment.type === 'application/pdf' ? pdfData : Buffer.from(csv).toString('base64'),
+      metadata: attachment,
+    }));
+  });
+
+  it.each([
+    [
+      'Claude agents',
+      { provider: Providers.ANTHROPIC, recipients: [claude] },
+      {
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: pdfData },
+      },
+    ],
+    [
+      'Chat Completions agents',
+      { provider: Providers.OPENAI, recipients: [{ provider: Providers.XAI }] },
+      { type: 'file', file: { filename: pdf.filename, file_data: expect.any(String) } },
+    ],
+    [
+      'Responses API agents',
+      { provider: Providers.OPENAI, useResponsesApi: true, recipients: [responses] },
+      { type: 'input_file', filename: pdf.filename },
+    ],
+    [
+      'Gemini agents',
+      { provider: Providers.GOOGLE, recipients: [{ provider: Providers.VERTEXAI }] },
+      { type: 'media', mimeType: 'application/pdf', data: pdfData },
+    ],
+    [
+      'Bedrock agents',
+      { provider: Providers.BEDROCK, recipients: [bedrock] },
+      { type: 'file', metadata: { name: 'Q3 report (final)_pdf' } },
+    ],
+  ])('keeps the native block when only %s read the history', async (_name, params, block) => {
+    const result = await encodeAndFormatDocuments(req, [pdf], params, jest.fn());
+
+    expect(result.documents).toEqual([expect.objectContaining(block)]);
+    expect(result.documents[0]).not.toHaveProperty('metadata.filename');
+  });
+
+  it('builds a block every agent can read when an agent uses another API', async () => {
+    const result = await encodeAndFormatDocuments(
+      req,
+      [pdf, file('data.csv', 'text/csv')],
+      { provider: Providers.OPENAI, recipients: [responses] },
+      jest.fn(),
+    );
+
+    expect(result.documents).toEqual([
+      sharedPdf,
+      { type: 'text', text: `File: "data.csv"\n\n${csv}` },
+    ]);
+    expect(result.files).toHaveLength(2);
+  });
+
+  it('treats Claude behind an OpenAI-compatible gateway as its own document format', async () => {
+    const result = await encodeAndFormatDocuments(
+      req,
+      [file('data.csv', 'text/csv')],
+      {
+        provider: Providers.OPENAI,
+        model: 'gpt-4.1',
+        recipients: [{ provider: Providers.OPENROUTER, model_parameters: { model: 'claude-4' } }],
+      },
+      jest.fn(),
+    );
+
+    expect(result.documents).toEqual([{ type: 'text', text: `File: "data.csv"\n\n${csv}` }]);
+  });
+
+  it('leaves out a binary type a Bedrock agent cannot read and keeps the ones it can', async () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const docx = file(
+      'brief.docx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
+    const pptx = file(
+      'deck.pptx',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    );
+
+    const result = await encodeAndFormatDocuments(
+      req,
+      [pptx, docx, pdf],
+      { provider: Providers.OPENAI, recipients: [bedrock] },
+      jest.fn(),
+    );
+
+    expect(result.documents).toEqual([
+      expect.objectContaining({
+        mime_type: docx.type,
+        metadata: expect.objectContaining({ name: 'brief_docx' }),
+      }),
+      sharedPdf,
+    ]);
+    expect(result.files.map(({ filename }) => filename)).toEqual([docx.filename, pdf.filename]);
+    expect(mockedGetFileStream).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"deck.pptx"'));
+  });
+
+  it('does not count subagents, which never read the history, or agents without a provider', async () => {
+    const result = await encodeAndFormatDocuments(
+      req,
+      [pdf],
+      {
+        provider: Providers.ANTHROPIC,
+        recipients: [
+          { ...claude, subagentAgentConfigs: [{ provider: Providers.OPENAI }] },
+          { model_parameters: { useResponsesApi: true } },
+        ],
+      },
+      jest.fn(),
+    );
+
+    expect(result.documents).toEqual([expect.objectContaining({ type: 'document' })]);
   });
 });

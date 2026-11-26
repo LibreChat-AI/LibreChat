@@ -1,4 +1,7 @@
-const { Constants, ContentTypes, EModelEndpoint } = require('librechat-data-provider');
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const { Constants, ContentTypes, FileSources, EModelEndpoint } = require('librechat-data-provider');
 const BaseClientClass = require('../BaseClient');
 const {
   ContentFilterError,
@@ -4264,6 +4267,72 @@ describe('BaseClient', () => {
       expect(TestClient.mergeEditedContent(existing, completion, ContentTypes.TEXT)).toEqual([
         existing[0],
         completion[0],
+      ]);
+    });
+  });
+
+  describe('addDocuments for agents that share the history', () => {
+    const pdf = Buffer.from('%PDF-1.4\n1 0 obj << /Type /Page >> endobj\n%%EOF\n');
+    const file = {
+      file_id: 'file-invoice',
+      filename: 'invoice.pdf',
+      filepath: '/uploads/user-1/invoice.pdf',
+      source: FileSources.local,
+      type: 'application/pdf',
+      bytes: pdf.length,
+    };
+    let uploads;
+
+    beforeAll(async () => {
+      uploads = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'uploads-'));
+      await fs.promises.mkdir(path.join(uploads, 'user-1'));
+      await fs.promises.writeFile(path.join(uploads, 'user-1', 'invoice.pdf'), pdf);
+    });
+
+    afterAll(() => fs.promises.rm(uploads, { recursive: true, force: true }));
+
+    beforeEach(() => {
+      TestClient.options = {
+        endpoint: EModelEndpoint.agents,
+        req: { config: { paths: { uploads } } },
+        agent: {
+          provider: EModelEndpoint.anthropic,
+          endpoint: EModelEndpoint.anthropic,
+          model_parameters: { model: 'claude-sonnet-4-5' },
+        },
+      };
+      TestClient.modelOptions = { model: 'claude-sonnet-4-5' };
+    });
+
+    it("encodes the primary agent's own block when no other agent reads the history", async () => {
+      const message = {};
+      await TestClient.addDocuments(message, [file]);
+
+      expect(message.documents).toEqual([
+        expect.objectContaining({ type: 'document', context: 'File: "invoice.pdf"' }),
+      ]);
+    });
+
+    it('encodes a block every agent can read when a chained agent runs on another provider', async () => {
+      TestClient.agentConfigs = new Map([
+        ['agent_gpt', { provider: EModelEndpoint.openAI, model_parameters: { model: 'gpt-4.1' } }],
+      ]);
+      const message = {};
+      await TestClient.addDocuments(message, [file]);
+
+      expect(message.documents).toEqual([
+        {
+          type: 'file',
+          source_type: 'base64',
+          mime_type: 'application/pdf',
+          data: pdf.toString('base64'),
+          metadata: {
+            name: 'invoice_pdf',
+            filename: 'invoice.pdf',
+            context: 'File: "invoice.pdf"',
+            citations: { enabled: true },
+          },
+        },
       ]);
     });
   });

@@ -12,7 +12,9 @@ import type { BedrockDocumentFormat } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type {
   DocumentBlock,
+  SharedDocumentBlock,
   AnthropicDocumentBlock,
+  OpenAITextDocumentBlock,
   StrategyFunctions,
   DocumentResult,
   ServerRequest,
@@ -137,8 +139,14 @@ function renameDocumentParts(
   return renamed ?? parts;
 }
 
-interface DocumentRecipient extends ReachableAgent<DocumentRecipient> {
+/** An agent that reads a formatted history, with the parameters its initialization resolved. */
+export interface DocumentRecipient extends ReachableAgent<DocumentRecipient> {
   readonly provider?: string;
+  readonly model?: string | null;
+  readonly model_parameters?: {
+    readonly model?: string | null;
+    readonly useResponsesApi?: boolean | null;
+  } | null;
 }
 
 function isBedrockRecipient({ provider }: DocumentRecipient): boolean {
@@ -211,11 +219,126 @@ function getAnthropicDocumentSource(
  * Whether the model behind this provider is Claude, which accepts only PDFs as base64
  * documents. OpenAI-compatible gateways report an OpenAI-like provider for Claude models.
  */
-function usesAnthropicDocumentCapabilities(provider: Providers, model?: string): boolean {
+function usesAnthropicDocumentCapabilities(provider: string, model?: string | null): boolean {
   return (
     provider === Providers.ANTHROPIC ||
     (isOpenAILikeProvider(provider) && (model?.toLowerCase().includes('claude') ?? false))
   );
+}
+
+/** A textual document as a text part, which every provider reads as it is. */
+function formatTextDocument(content: string, filename = 'document'): OpenAITextDocumentBlock {
+  return {
+    type: 'text',
+    text: `File: "${filename}"\n\n${Buffer.from(content, 'base64').toString('utf8')}`,
+  };
+}
+
+/** Bedrock accepts only letters, digits, whitespace, hyphens, parentheses and brackets. */
+function getBedrockDocumentName(filename?: string): string {
+  return (filename || 'document')
+    .replace(/[^a-zA-Z0-9\s\-()[\]]/g, '_')
+    .slice(0, BEDROCK_DOCUMENT_NAME_LIMIT);
+}
+
+/** Which block an agent's provider path builds for a document (see `formatDocumentBlock`). */
+function getDocumentFormat(
+  provider: string,
+  useResponsesApi?: boolean | null,
+  model?: string | null,
+): string {
+  if (provider === Providers.GOOGLE || provider === Providers.VERTEXAI) {
+    return Providers.GOOGLE;
+  }
+  if (
+    provider === Providers.ANTHROPIC ||
+    provider === Providers.BEDROCK ||
+    !isDocumentSupportedProvider(provider)
+  ) {
+    return provider;
+  }
+  if (useResponsesApi) {
+    return 'responses';
+  }
+  return usesAnthropicDocumentCapabilities(provider, model) ? 'claude' : 'completions';
+}
+
+/**
+ * The document formats of every agent that reads the history: the primary agent's and those of
+ * its chain, handoff and added-conversation agents. Subagents see only their task and receive
+ * their files through the run file encoder, so they never read these blocks.
+ */
+function getReaderFormats(
+  primary: string,
+  recipients: Iterable<DocumentRecipient> = [],
+): Set<string> {
+  const formats = new Set([primary]);
+  for (const recipient of recipients) {
+    if (recipient?.provider == null) {
+      continue;
+    }
+    const params = recipient.model_parameters;
+    formats.add(
+      getDocumentFormat(
+        recipient.provider,
+        params?.useResponsesApi,
+        params?.model ?? recipient.model,
+      ),
+    );
+  }
+  return formats;
+}
+
+/**
+ * A document block every agent of a shared history can read. The agents SDK converts a standard
+ * file block into each agent's own document format before its request, leaving it out where the
+ * provider cannot read the type, and a text part reads the same everywhere.
+ */
+function formatSharedDocumentBlock(
+  mimeType: string,
+  content: string,
+  filename: string | undefined,
+): SharedDocumentBlock | OpenAITextDocumentBlock {
+  if (isAnthropicTextDocumentType(mimeType)) {
+    return formatTextDocument(content, filename);
+  }
+  return {
+    type: 'file',
+    source_type: 'base64',
+    mime_type: mimeType,
+    data: content,
+    metadata: {
+      name: getBedrockDocumentName(filename),
+      filename: filename ?? 'document',
+      ...(filename ? { context: `File: "${filename}"` } : {}),
+      citations: { enabled: true },
+    },
+  };
+}
+
+/**
+ * The agents SDK hands Bedrock every block unconverted, so a shared history that a Bedrock agent
+ * reads leaves out binary types outside Bedrock's document formats instead of failing its turns.
+ */
+function filterSharedDocumentFiles(files: IMongoFile[], formats: Set<string>): IMongoFile[] {
+  if (formats.size < 2 || !formats.has(Providers.BEDROCK)) {
+    return files;
+  }
+  const readable: IMongoFile[] = [];
+  const skipped: string[] = [];
+  for (const file of files) {
+    if (isAnthropicTextDocumentType(file.type) || isBedrockDocumentType(file.type)) {
+      readable.push(file);
+    } else {
+      skipped.push(`"${file.filename}" (${file.type})`);
+    }
+  }
+  if (skipped.length) {
+    logger.warn(
+      `Skipping attachment(s) a Bedrock agent in this conversation cannot read: ${skipped.join(', ')}`,
+    );
+  }
+  return readable;
 }
 
 /**
@@ -266,10 +389,7 @@ function formatDocumentBlock(
     isAnthropicTextDocumentType(mimeType) &&
     usesAnthropicDocumentCapabilities(provider, model)
   ) {
-    return {
-      type: 'text',
-      text: `File: "${resolvedFilename}"\n\n${Buffer.from(content, 'base64').toString('utf8')}`,
-    };
+    return formatTextDocument(content, resolvedFilename);
   }
 
   if (useResponsesApi) {
@@ -354,6 +474,8 @@ function getBase64DecodedByteCount(content: string): number {
  *   all others are skipped.
  * - **PDF**: Validated via `validatePdf` before encoding.
  * - **Generic types**: Encoded with a provider-specific size check.
+ * - **Shared history**: When `recipients` need another block than the primary agent's own,
+ *   every document becomes a block each of them can read (`formatSharedDocumentBlock`).
  */
 export async function encodeAndFormatDocuments(
   req: ServerRequest,
@@ -363,11 +485,13 @@ export async function encodeAndFormatDocuments(
     endpoint?: string;
     useResponsesApi?: boolean;
     model?: string;
+    /** The other agents that read the same history: chain, handoff and added conversation. */
+    recipients?: Iterable<DocumentRecipient>;
     onMissingFile?: MissingAttachmentHandler;
   },
   getStrategyFunctions: (source: string) => StrategyFunctions,
 ): Promise<DocumentResult> {
-  const { provider, endpoint, useResponsesApi, model, onMissingFile } = params;
+  const { provider, endpoint, useResponsesApi, model, recipients, onMissingFile } = params;
   if (!files?.length) {
     return { documents: [], files: [] };
   }
@@ -382,7 +506,17 @@ export async function encodeAndFormatDocuments(
     return result;
   }
 
-  const processableFiles = filterProviderDocumentFiles(provider, files, model);
+  const formats = getReaderFormats(getDocumentFormat(provider, useResponsesApi, model), recipients);
+  /** Agents on another provider or API read the history too, so no one agent's block serves all. */
+  const shared = formats.size > 1;
+  const formatBlock = (mimeType: string, content: string, filename?: string) =>
+    shared
+      ? formatSharedDocumentBlock(mimeType, content, filename)
+      : formatDocumentBlock(provider, mimeType, content, filename, useResponsesApi, model);
+  const processableFiles = filterSharedDocumentFiles(
+    filterProviderDocumentFiles(provider, files, model),
+    formats,
+  );
 
   if (!processableFiles.length) {
     return result;
@@ -466,18 +600,19 @@ export async function encodeAndFormatDocuments(
         throw new Error(`Document validation failed: ${validation.error}`);
       }
 
-      const sanitizedName = (file.filename || 'document')
-        .replace(/[^a-zA-Z0-9\s\-()[\]]/g, '_')
-        .slice(0, BEDROCK_DOCUMENT_NAME_LIMIT);
       /** Raw bytes would serialize as a number array in traces and checkpoints, and a restored
        *  checkpoint would hold a plain object instead of bytes; base64 stays a string. */
-      result.documents.push({
-        type: 'file',
-        source_type: 'base64',
-        mime_type: BEDROCK_DOCUMENT_MIME_TYPES[format],
-        data: content,
-        metadata: { name: sanitizedName },
-      });
+      result.documents.push(
+        shared
+          ? formatSharedDocumentBlock(mimeType, content, file.filename)
+          : {
+              type: 'file',
+              source_type: 'base64',
+              mime_type: BEDROCK_DOCUMENT_MIME_TYPES[format],
+              data: content,
+              metadata: { name: getBedrockDocumentName(file.filename) },
+            },
+      );
       result.files.push(metadata);
     } else if (file.type === 'application/pdf' && isDocSupported) {
       const pdfBuffer = Buffer.from(content, 'base64');
@@ -494,14 +629,7 @@ export async function encodeAndFormatDocuments(
         throw new Error(`PDF validation failed: ${validation.error}`);
       }
 
-      const block = formatDocumentBlock(
-        provider,
-        mimeType,
-        content,
-        file.filename,
-        useResponsesApi,
-        model,
-      );
+      const block = formatBlock(mimeType, content, file.filename);
       if (block) {
         result.documents.push(block);
         result.files.push(metadata);
@@ -514,14 +642,7 @@ export async function encodeAndFormatDocuments(
         );
       }
 
-      const block = formatDocumentBlock(
-        provider,
-        mimeType,
-        content,
-        file.filename,
-        useResponsesApi,
-        model,
-      );
+      const block = formatBlock(mimeType, content, file.filename);
       if (block) {
         result.documents.push(block);
         result.files.push(metadata);

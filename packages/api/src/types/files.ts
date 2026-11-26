@@ -116,13 +116,35 @@ export interface BedrockDocumentBlock {
   metadata: { name: string };
 }
 
+/**
+ * A document in a history that agents on different providers read, as LangChain's standard
+ * base64 file block. The agents SDK converts it into each agent's own document format, and
+ * leaves it out for a provider that cannot read its type.
+ */
+export interface SharedDocumentBlock {
+  type: 'file';
+  source_type: 'base64';
+  mime_type: string;
+  data: string;
+  metadata: {
+    /** The name Bedrock reads, in the characters it accepts. */
+    name: string;
+    /** The name OpenAI's file parts carry. */
+    filename: string;
+    /** Anthropic's document context and citations. */
+    context?: string;
+    citations: { enabled: boolean };
+  };
+}
+
 export type DocumentBlock =
   | AnthropicDocumentBlock
   | GoogleDocumentBlock
   | OpenAIFileBlock
   | OpenAITextDocumentBlock
   | OpenAIInputFileBlock
-  | BedrockDocumentBlock;
+  | BedrockDocumentBlock
+  | SharedDocumentBlock;
 
 export interface DocumentResult {
   documents: DocumentBlock[];
