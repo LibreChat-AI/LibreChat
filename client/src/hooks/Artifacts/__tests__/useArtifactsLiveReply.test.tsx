@@ -27,20 +27,32 @@ const mount = (initial: Pane) => {
 };
 
 describe('useArtifactsLiveReply', () => {
-  it('follows the reply while it generates and keeps it once the run ends', () => {
+  it('numbers each run and follows its reply through it', () => {
     const pane = mount({ conversationId: 'convo', isSubmitting: true, latestMessageId: 'prompt' });
-    expect(pane.reply()).toBe('prompt');
+    expect(pane.reply()).toEqual({ run: 1, messageId: 'prompt' });
 
     pane.rerender({ conversationId: 'convo', isSubmitting: true, latestMessageId: 'answer' });
-    expect(pane.reply()).toBe('answer');
+    expect(pane.reply()).toEqual({ run: 1, messageId: 'answer' });
 
     pane.rerender({ conversationId: 'convo', isSubmitting: false, latestMessageId: 'answer' });
-    expect(pane.reply()).toBe('answer');
+    expect(pane.reply()).toEqual({ run: 1, messageId: 'answer' });
+
+    pane.rerender({ conversationId: 'convo', isSubmitting: true, latestMessageId: 'next' });
+    expect(pane.reply()).toEqual({ run: 2, messageId: 'next' });
+  });
+
+  it('records a reply that becomes the tail in the render that ends the run', () => {
+    const pane = mount({ conversationId: 'convo', isSubmitting: true, latestMessageId: 'prompt' });
+    pane.rerender({ conversationId: 'convo', isSubmitting: false, latestMessageId: 'answer' });
+    expect(pane.reply()).toEqual({ run: 1, messageId: 'answer' });
+
+    pane.rerender({ conversationId: 'convo', isSubmitting: false, latestMessageId: 'later' });
+    expect(pane.reply()).toEqual({ run: 1, messageId: 'answer' });
   });
 
   it('records nothing for a conversation loaded while idle', () => {
     const pane = mount({ conversationId: 'convo', isSubmitting: false, latestMessageId: 'saved' });
-    expect(pane.reply()).toBeNull();
+    expect(pane.reply()).toEqual({ run: 0, messageId: null });
   });
 
   it('keeps the reply when a new chat takes its saved id', () => {
@@ -49,21 +61,17 @@ describe('useArtifactsLiveReply', () => {
       isSubmitting: true,
       latestMessageId: 'answer',
     });
-    pane.rerender({
-      conversationId: 'saved-convo',
-      isSubmitting: false,
-      latestMessageId: 'answer',
-    });
-    expect(pane.reply()).toBe('answer');
+    pane.rerender({ conversationId: 'saved-convo', isSubmitting: true, latestMessageId: 'answer' });
+    expect(pane.reply()).toEqual({ run: 1, messageId: 'answer' });
   });
 
   it('drops the reply when the pane moves to another conversation', () => {
     const pane = mount({ conversationId: 'convo', isSubmitting: true, latestMessageId: 'answer' });
     pane.rerender({ conversationId: 'convo', isSubmitting: false, latestMessageId: 'answer' });
     pane.rerender({ conversationId: 'other', isSubmitting: false, latestMessageId: 'old' });
-    expect(pane.reply()).toBeNull();
+    expect(pane.reply()).toEqual({ run: 1, messageId: null });
 
     pane.rerender({ conversationId: 'convo', isSubmitting: false, latestMessageId: 'answer' });
-    expect(pane.reply()).toBeNull();
+    expect(pane.reply()).toEqual({ run: 1, messageId: null });
   });
 });

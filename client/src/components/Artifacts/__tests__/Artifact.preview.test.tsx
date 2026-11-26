@@ -42,10 +42,16 @@ function Registry() {
   return null;
 }
 
-/** Records the main pane's live reply, as the pane's host does while it generates. */
-const liveReply = (messageId: string | null) =>
+/** Starts a main pane run whose tail is `messageId`, as the pane's host records it. */
+const startRun = (messageId: string) =>
   act(() => {
-    jotai.set(artifactsLiveReply, messageId);
+    jotai.set(artifactsLiveReply, (reply) => ({ run: reply.run + 1, messageId }));
+  });
+
+/** Moves the running reply to `messageId`, as the tail does when the run's reply arrives. */
+const followTail = (messageId: string) =>
+  act(() => {
+    jotai.set(artifactsLiveReply, (reply) => ({ run: reply.run, messageId }));
   });
 
 const reply = (messageId: string, content: string, isSubmitting = false) => (
@@ -73,7 +79,7 @@ const newVersion = `${header}\n\`\`\`markdown\nNew content\n\`\`\``;
 const artifactId = (messageId: string) => `chart_text/markdown_chart_${messageId}`;
 
 it('shows progress from the header and opens the closed artifact of the live reply, in the same card', () => {
-  liveReply('current');
+  startRun('current');
   const view = (content: string) => page(reply('current', content, true));
   const { rerender } = render(view('Here is the latest.'));
   expect(screen.queryByRole('status')).not.toBeInTheDocument();
@@ -110,7 +116,7 @@ it('leaves a completed artifact closed when its response loads or continues', ()
   expect(screen.getByRole('status')).toHaveTextContent('Ready');
   expect(registered?.[artifactId('saved')]?.content).toBe('Old content\n');
 
-  liveReply('saved');
+  startRun('saved');
   rerender(page(reply('saved', `${savedVersion}\n\nContinuing`, true)));
   expect(screen.getByRole('status')).toHaveTextContent('Ready');
   expect(selected).toBeNull();
@@ -126,7 +132,7 @@ it('keeps a source-code artifact click-to-open while its response generates', ()
     ':::',
     '',
   ].join('\n');
-  liveReply('current');
+  startRun('current');
   render(page(reply('current', script, true)));
   expect(screen.getByRole('status')).toHaveTextContent('Ready');
   expect(selected).toBeNull();
@@ -134,15 +140,38 @@ it('keeps a source-code artifact click-to-open while its response generates', ()
 });
 
 it('opens an artifact whose card only mounts after the live reply ended', () => {
-  liveReply('current');
+  startRun('current');
   render(page(reply('current', `${newVersion}\n:::`)));
   expect(screen.getByRole('status')).toHaveTextContent('Ready');
   expect(selected).toBe(artifactId('current'));
   expect(visible).toBe(true);
 });
 
+it('opens an artifact whose reply becomes the tail only as the run ends', () => {
+  startRun('prompt');
+  render(page(reply('current', `${newVersion}\n:::`)));
+  expect(screen.getByRole('status')).toHaveTextContent('Ready');
+  expect(selected).toBeNull();
+  followTail('current');
+  expect(selected).toBe(artifactId('current'));
+  expect(visible).toBe(true);
+});
+
+it('leaves an artifact the reply had before it was continued closed', () => {
+  startRun('other');
+  const { rerender } = render(page(reply('saved', `${savedVersion}\n`, true)));
+  rerender(page(reply('saved', `${savedVersion}\n`)));
+  expect(screen.getByRole('status')).toHaveTextContent('Ready');
+
+  startRun('saved');
+  rerender(page(reply('saved', `${savedVersion}\n\nContinuing`, true)));
+  expect(screen.getByRole('status')).toHaveTextContent('Ready');
+  expect(selected).toBeNull();
+  expect(visible).toBe(false);
+});
+
 it('opens nothing for a reply that is not the main pane live reply', () => {
-  liveReply('current');
+  startRun('current');
   render(page(reply('side', `${newVersion}\n:::\n`, true)));
   expect(screen.getByRole('status')).toHaveTextContent('Ready');
   expect(selected).toBeNull();
@@ -168,7 +197,7 @@ it.each([
 
 it('accepts a closing delimiter at EOF when the stream ends, and opens the artifact', () => {
   const content = `${newVersion}\n:::`;
-  liveReply('current');
+  startRun('current');
   const { rerender } = render(page(reply('current', content, true)));
   expect(registered).toBeNull();
   expect(selected).toBeNull();
