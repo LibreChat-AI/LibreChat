@@ -2774,7 +2774,7 @@ describe('refreshController – LibreChat path', () => {
         userId: 'local-user-id',
         refreshToken: expect.any(String),
       },
-      { lean: false },
+      { lean: false, graceMs: 60_000 },
     );
     expect(setAuthTokens).not.toHaveBeenCalled();
     expect(deleteSession).toHaveBeenCalledWith({ sessionId: 'session-id' });

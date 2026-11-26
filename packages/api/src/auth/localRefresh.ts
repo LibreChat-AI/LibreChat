@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from 'librechat-data-provider';
+import { hashToken, REFRESH_TOKEN_ROTATED, DEFAULT_SESSION_EXPIRY } from '@librechat/data-schemas';
 import type { ISession, OIDCTokens } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { TokenIssuance, TwoFactorAccount } from './twoFactor';
@@ -12,8 +13,16 @@ import {
   TOKEN_RETIREMENT_FIELDS,
 } from './twoFactor';
 import { clearSessionHintCookie } from '~/oauth/csrf';
+import { math } from '~/utils/math';
 
 const EXPIRED_REFRESH_MESSAGE = 'Refresh token expired or not found for this user';
+
+/**
+ * How long a refresh may still present the token that a rotation replaced. Tabs share one refresh
+ * cookie, so one tab can send it while another tab's refresh is replacing it. The window only has
+ * to outlast such a request; it matches the default of the OpenID refresh-token bridge.
+ */
+const ROTATION_GRACE_MS = 60_000;
 
 type UserIdentifier = string | { toString(): string };
 
@@ -29,7 +38,9 @@ type RefreshUser = Pick<
   | 'credentialsChangedAt'
 >;
 
-type RefreshSession = Pick<ISession, 'expiration'> & { _id: UserIdentifier };
+type RefreshSession = Pick<ISession, 'expiration' | 'previousRefreshTokenHash'> & {
+  _id: UserIdentifier;
+};
 type SessionDeletionResult = { deletedCount?: number };
 type AuthResponseSource = TwoFactorAccount & { __v?: number; federatedTokens?: OIDCTokens };
 
@@ -38,8 +49,10 @@ interface LocalRefreshDependencies {
   getUserById: (userId: string, projection: string) => Promise<RefreshUser | null>;
   findSession: (
     query: { userId: string; refreshToken: string },
-    options: { lean: false },
+    options: { lean: false; graceMs: number },
   ) => Promise<RefreshSession | null>;
+  /** Mints an access token without touching the refresh session. */
+  generateToken: (user: RefreshUser, expiresIn: number) => Promise<string>;
   setAuthTokens: (
     userId: string,
     res: Response,
@@ -109,6 +122,45 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
     return res.status(401).send(EXPIRED_REFRESH_MESSAGE);
   };
 
+  const findSession = (userId: string, refreshToken: string) =>
+    deps.findSession({ userId, refreshToken }, { lean: false, graceMs: ROTATION_GRACE_MS });
+
+  const mintAccessToken = (user: RefreshUser) =>
+    deps.generateToken(user, math(process.env.SESSION_EXPIRY, DEFAULT_SESSION_EXPIRY));
+
+  /**
+   * Rotates the session, unless another refresh already replaced the presented token. That refresh's
+   * response carries the new cookie, and rotating again would orphan whichever cookie lands first,
+   * so this refresh gets an access token alone.
+   */
+  const issueToken = async (
+    req: Request,
+    res: Response,
+    {
+      userId,
+      user,
+      session,
+      refreshToken,
+    }: { userId: string; user: RefreshUser; session: RefreshSession; refreshToken: string },
+  ): Promise<string | null> => {
+    const previous = session.previousRefreshTokenHash;
+    if (previous && previous === (await hashToken(refreshToken))) {
+      return mintAccessToken(user);
+    }
+
+    try {
+      return await deps.setAuthTokens(userId, res, session, req);
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code !== REFRESH_TOKEN_ROTATED) {
+        throw error;
+      }
+    }
+
+    /** A refresh that read the session at the same time rotated it first, unless it was revoked. */
+    const rotated = await findSession(userId, refreshToken);
+    return rotated && rotated.expiration > new Date() ? mintAccessToken(user) : null;
+  };
+
   return async (
     req: Request,
     res: Response,
@@ -153,7 +205,7 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
         return res.status(200).send({ token, user: sanitizeUserForAuthResponse(user) });
       }
 
-      const session = await deps.findSession({ userId, refreshToken }, { lean: false });
+      const session = await findSession(userId, refreshToken);
       if (session && session.expiration > new Date()) {
         if (requiresEnrollment(user)) {
           await deps.deleteSession({ sessionId: session._id.toString() });
@@ -177,15 +229,17 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
           });
         }
 
-        const token = await deps.setAuthTokens(userId, res, session, req);
-        const retired = await recheckMintedCredential(
-          () => isCredentialRetired(userId, credential),
-          () => revokeSession(res, user, userId),
-        );
-        if (retired) {
-          return withdrawSession(res, user, userId);
+        const token = await issueToken(req, res, { userId, user, session, refreshToken });
+        if (token != null) {
+          const retired = await recheckMintedCredential(
+            () => isCredentialRetired(userId, credential),
+            () => revokeSession(res, user, userId),
+          );
+          if (retired) {
+            return withdrawSession(res, user, userId);
+          }
+          return res.status(200).send({ token, user: sanitizeUserForAuthResponse(user) });
         }
-        return res.status(200).send({ token, user: sanitizeUserForAuthResponse(user) });
       }
       clearSessionHintCookie(res);
       if (req.query?.retry) {

@@ -40,6 +40,7 @@ const {
   findSession,
   updateUser,
   deleteTokens,
+  generateToken,
 } = require('~/models');
 const { getGraphApiToken } = require('~/server/services/GraphTokenService');
 const { getRefreshTokenBridge } = require('~/server/services/RefreshTokenBridge');
@@ -211,6 +212,7 @@ const refreshLocalSession = createLocalRefreshHandler({
   userProjection: AUTH_REFRESH_USER_PROJECTION,
   getUserById,
   findSession,
+  generateToken,
   setAuthTokens,
   deleteAllUserSessions,
   deleteSession,

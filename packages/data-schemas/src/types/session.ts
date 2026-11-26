@@ -2,6 +2,8 @@ import type { Document, Types } from 'mongoose';
 
 export interface ISession extends Document {
   refreshTokenHash: string;
+  previousRefreshTokenHash?: string;
+  rotatedAt?: Date;
   expiration: Date;
   user: Types.ObjectId;
   tenantId?: string;
@@ -26,6 +28,11 @@ export interface SessionSearchParams {
 
 export interface SessionQueryOptions {
   lean?: boolean;
+  /**
+   * Also match a refresh token that a rotation replaced at most this many milliseconds ago. Tabs
+   * share one refresh cookie, so a refresh can carry a token another tab's refresh just replaced.
+   */
+  graceMs?: number;
 }
 
 export interface DeleteSessionParams {
