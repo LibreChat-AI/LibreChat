@@ -214,6 +214,8 @@ jest.mock('~/server/services/ApiKeys/grants', () => ({
 jest.mock('@librechat/api', () => ({
   createApiModelCallbacks: (...args) =>
     jest.requireActual('@librechat/api').createApiModelCallbacks(...args),
+  createGeneratedFileQueue: (...args) =>
+    jest.requireActual('@librechat/api').createGeneratedFileQueue(...args),
   captureResponseAccountingUsage: (...args) =>
     jest.requireActual('@librechat/api').captureResponseAccountingUsage(...args),
   resolveResponseContinuation: (...args) =>
@@ -3597,7 +3599,10 @@ describe('createResponse controller', () => {
           require('~/server/controllers/agents/callbacks')[
             stream ? 'createResponsesToolEndCallback' : 'createToolEndCallback'
           ],
-        ).toHaveBeenCalled();
+        ).toHaveBeenCalledWith(
+          /* Generated images reach the producing agent's next code call. */
+          expect.objectContaining({ queueGeneratedFile: expect.any(Function) }),
+        );
         const callbacks = require('~/server/controllers/agents/callbacks');
         const artifactCallback =
           callbacks[

@@ -897,9 +897,17 @@ function writeAttachmentUpdate(res, streamId, attachment, expectedCreatedAt) {
  * @param {Promise<MongoFile | { filename: string; filepath: string; expires: number;} | null>[]} params.artifactPromises
  * @param {string | null} [params.streamId] - The stream ID for resumable mode, or null for standard mode.
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted attachments.
+ * @param {ReturnType<import('@librechat/api').createGeneratedFileQueue>} [params.queueGeneratedFile] - Hands each generated image to the code queue of the agent that produced it.
  * @returns {ToolEndCallback} The tool end callback.
  */
-function createToolEndCallback({ req, res, artifactPromises, streamId = null, jobCreatedAt }) {
+function createToolEndCallback({
+  req,
+  res,
+  artifactPromises,
+  streamId = null,
+  jobCreatedAt,
+  queueGeneratedFile,
+}) {
   /**
    * @type {ToolEndCallback}
    */
@@ -1051,6 +1059,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
             return null;
           }),
         );
+        queueGeneratedFile?.(artifactPromises.at(-1), metadata);
       }
       return;
     }
@@ -1270,9 +1279,16 @@ function writeResponsesAttachment(res, tracker, attachment, metadata) {
  * @param {ServerResponse} params.res
  * @param {Object} params.tracker - Response tracker with sequence number
  * @param {Promise<MongoFile | { filename: string; filepath: string; expires: number;} | null>[]} params.artifactPromises
+ * @param {ReturnType<import('@librechat/api').createGeneratedFileQueue>} [params.queueGeneratedFile] - Hands each generated image to the code queue of the agent that produced it.
  * @returns {ToolEndCallback} The tool end callback.
  */
-function createResponsesToolEndCallback({ req, res, tracker, artifactPromises }) {
+function createResponsesToolEndCallback({
+  req,
+  res,
+  tracker,
+  artifactPromises,
+  queueGeneratedFile,
+}) {
   /**
    * @type {ToolEndCallback}
    */
@@ -1425,6 +1441,7 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
             return null;
           }),
         );
+        queueGeneratedFile?.(artifactPromises.at(-1), metadata);
       }
       return;
     }

@@ -107,6 +107,7 @@ const {
   isTemporaryTurn,
   getModelEndUsage,
   hasEntityEmbeddings,
+  createGeneratedFileQueue,
 } = require('@librechat/api');
 const {
   createResponsesToolEndCallback,
@@ -1122,6 +1123,10 @@ const executeResponse = async (envelope, { req, res }) => {
           res,
           tracker,
           artifactPromises,
+          queueGeneratedFile: createGeneratedFileQueue({
+            agentToolContexts,
+            resolvePrimaryAgentId: () => primaryConfig.id,
+          }),
         });
 
         // Create tool execute options for event-driven tool execution
@@ -1364,6 +1369,10 @@ const executeResponse = async (envelope, { req, res }) => {
           res,
           artifactPromises,
           ...responseRuntime.toolContext(execution),
+          queueGeneratedFile: createGeneratedFileQueue({
+            agentToolContexts,
+            resolvePrimaryAgentId: () => primaryConfig.id,
+          }),
         });
 
         const toolExecuteOptions = {

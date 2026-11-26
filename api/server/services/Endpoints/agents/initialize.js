@@ -11,6 +11,7 @@ const {
   initializeAgent,
   primeInvokedSkillsForProfiles,
   createWorkspaceAttachmentPrimer,
+  createGeneratedFileQueue,
   validateAgentModel,
   extractManualSkills,
   GenerationJobManager,
@@ -283,13 +284,6 @@ const initializeClientWithProvider = async ({
   /** @type {Map<string, import('@librechat/api').ToolInputValidationError>} */
   const toolInputValidationErrors = new Map();
   const { contentParts, aggregateContent, stepMap } = createContentAggregator();
-  const artifactToolEndCallback = createToolEndCallback({
-    req,
-    res,
-    artifactPromises,
-    streamId,
-    jobCreatedAt,
-  });
 
   /** Query accessible skill IDs once per run (shared across all agents).
    *  Skills activate under strict opt-in semantics — see
@@ -418,6 +412,22 @@ const initializeClientWithProvider = async ({
   const getRoutedToolContext = (agentId, executionContext) =>
     subagentCodeRouting?.getToolContext(agentId, executionContext);
   let runFileBindings;
+  /** The context a tool call executes in, which is also the one its provisioning reads. */
+  const getExecutionToolContext = (agentId, executionContext) =>
+    getRoutedToolContext(agentId, executionContext) ??
+    runFileBindings.getContext(agentId, executionContext);
+  const artifactToolEndCallback = createToolEndCallback({
+    req,
+    res,
+    artifactPromises,
+    streamId,
+    jobCreatedAt,
+    queueGeneratedFile: createGeneratedFileQueue({
+      agentToolContexts,
+      resolvePrimaryAgentId: () => primaryConfig?.id,
+      resolveExecutionContext: getExecutionToolContext,
+    }),
+  });
   const resolveMcpServerName = (toolName, agentId) => {
     if (typeof toolName !== 'string' || typeof agentId !== 'string') {
       return undefined;
@@ -498,10 +508,7 @@ const initializeClientWithProvider = async ({
       runSignal,
       executionContext,
     ) => {
-      const ctx =
-        getRoutedToolContext(agentId, executionContext) ??
-        runFileBindings.getContext(agentId, executionContext) ??
-        {};
+      const ctx = getExecutionToolContext(agentId, executionContext) ?? {};
       logger.debug(`[ON_TOOL_EXECUTE] ctx found: ${!!ctx.userMCPAuthMap}, agent: ${ctx.agent?.id}`);
       logger.debug(`[ON_TOOL_EXECUTE] toolRegistry size: ${ctx.toolRegistry?.size ?? 'undefined'}`);
 

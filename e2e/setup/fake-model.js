@@ -149,6 +149,9 @@ const BACKGROUND_COLLECT_MARKER = 'E2E_BACKGROUND_COLLECT:';
 const TOOL_APPROVAL_MARKER = 'E2E_TOOL_APPROVAL:';
 /** `E2E_FLUX_IMAGE:<generate|finetuned>:<polling|legacy|foreign>:<label>` calls the Flux tool. */
 const FLUX_IMAGE_MARKER = 'E2E_FLUX_IMAGE:';
+/** `E2E_IMAGE_CODE:<both|code>:<label>`: `both` generates a Flux image and then runs bash_tool in
+ *  the same turn, `code` only runs bash_tool, for a turn after the image was generated. */
+const IMAGE_CODE_MARKER = 'E2E_IMAGE_CODE:';
 const FLUX_TOOL_NAME = 'flux';
 const INVALID_TOOL_ARGS_MARKER = 'E2E_INVALID_TOOL_ARGS:';
 const TOOL_APPROVAL_BATCH_MARKER = 'E2E_TOOL_APPROVAL_BATCH:';
@@ -2582,6 +2585,40 @@ function readThenBashResponses(text) {
   };
 }
 
+/** A bash_tool call that lists the sandbox after an image tool ran, in this turn (`both`) or an
+ *  earlier one (`code`). The scenario reads which files the fake code server mounted for it. */
+function imageCodeResponses(text, toolNames) {
+  const [step, label] = getMarkerValue(text, IMAGE_CODE_MARKER).split(':');
+  if (!label) return null;
+  const generate = step === 'both';
+  if (!toolNames.has(BASH_TOOL_NAME) || (generate && !toolNames.has(FLUX_TOOL_NAME))) {
+    return { responses: [`E2E image code unavailable: ${JSON.stringify([...toolNames])}`] };
+  }
+  const id = (phase) => `call_e2e_image_code_${phase}_${label}`;
+  const call = (phase, name, args) => ({
+    response: '',
+    toolCalls: [{ id: id(phase), name, args, type: 'tool_call' }],
+  });
+  return {
+    responses: [''],
+    resolveInvocation: (messages) => {
+      if (generate && !findLastToolMessage(messages, id('flux'))) {
+        return call('flux', FLUX_TOOL_NAME, {
+          action: 'generate',
+          prompt: `flux-e2e:polling:${label}`,
+          endpoint: '/v1/flux-dev',
+        });
+      }
+      if (!findLastToolMessage(messages, id('bash'))) {
+        return call('bash', BASH_TOOL_NAME, {
+          command: `ls /mnt/data\n# ${IMAGE_CODE_MARKER}${label}`,
+        });
+      }
+      return { response: `E2E image code complete: ${label}` };
+    },
+  };
+}
+
 function runFileVersionsResponses(text) {
   const marker = getMarkerValue(text, RUN_FILE_VERSIONS_MARKER);
   if (!marker) return null;
@@ -3978,6 +4015,9 @@ function resolveResponses({ graph, messages, text, toolNames }) {
 
   const readThenBash = readThenBashResponses(text);
   if (readThenBash) return readThenBash;
+
+  const imageCode = imageCodeResponses(text, toolNames);
+  if (imageCode) return imageCode;
 
   const runFileVersions = runFileVersionsResponses(text);
   if (runFileVersions) {

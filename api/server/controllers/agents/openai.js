@@ -82,6 +82,7 @@ const {
   isTemporaryTurn,
   getModelEndUsage,
   hasEntityEmbeddings,
+  createGeneratedFileQueue,
 } = require('@librechat/api');
 const {
   buildSummarizationHandlers,
@@ -888,6 +889,10 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         res,
         artifactPromises,
         streamId: null,
+        queueGeneratedFile: createGeneratedFileQueue({
+          agentToolContexts,
+          resolvePrimaryAgentId: () => primaryConfig.id,
+        }),
       });
 
       /* Stable for the turn: the primary prime list is fixed once

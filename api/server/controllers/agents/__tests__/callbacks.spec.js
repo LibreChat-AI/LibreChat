@@ -799,6 +799,44 @@ describe('createToolEndCallback', () => {
   );
 
   it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
+    '%s hands each saved image to the code queue of the agent that generated it',
+    async (factoryName) => {
+      const { saveBase64Image } = require('~/server/services/Files/process');
+      saveBase64Image.mockResolvedValue({ file_id: 'generated-image', type: 'image/png' });
+      const queueGeneratedFile = jest.fn();
+      const callback = require('../callbacks')[factoryName]({
+        req,
+        res,
+        artifactPromises,
+        queueGeneratedFile,
+      });
+      const metadata = {
+        run_id: 'run-image',
+        thread_id: 'thread-image',
+        executingAgentId: 'agent-a',
+      };
+      await callback(
+        {
+          output: {
+            name: 'image_gen_oai',
+            tool_call_id: 'image-call',
+            artifact: {
+              content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,image' } }],
+            },
+          },
+        },
+        metadata,
+      );
+
+      expect(queueGeneratedFile).toHaveBeenCalledTimes(1);
+      const [saved, owner] = queueGeneratedFile.mock.calls[0];
+      expect(saved).toBe(artifactPromises[0]);
+      expect(owner).toBe(metadata);
+      await expect(saved).resolves.toMatchObject({ file_id: 'generated-image' });
+    },
+  );
+
+  it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
     '%s preserves memory payloads and their execution owner',
     async (factoryName) => {
       const toolEndCallback = require('../callbacks')[factoryName]({ req, res, artifactPromises });
