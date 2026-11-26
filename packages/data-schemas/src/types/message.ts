@@ -73,6 +73,7 @@ export interface ISubagentTaskControlReceipt {
 export interface IMessage extends Document {
   /** Public content capture version and expected terminal watermark; never a transcript. */
   subagentContent?: { version: 1; throughSequence?: number; deleted?: boolean };
+  insightsAgentId?: string;
   messageId: string;
   conversationId: string;
   user: string;

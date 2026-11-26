@@ -1,6 +1,6 @@
 import React, { memo, useState, useCallback, useMemo, useEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { getTagsForRating } from 'librechat-data-provider';
+import { getTagsForRating, isOtherFeedback, resolveFeedbackTag } from 'librechat-data-provider';
 import {
   AlertCircle,
   PenTool,
@@ -103,7 +103,7 @@ function FeedbackButtons({
       e.preventDefault();
       upStore.hide();
       onFeedback({ rating: 'thumbsUp', tag });
-      if (tag.key === 'other') {
+      if (isOtherFeedback(tag.key)) {
         onOther?.();
       }
     },
@@ -128,7 +128,7 @@ function FeedbackButtons({
       e.preventDefault();
       downStore.hide();
       onFeedback({ rating: 'thumbsDown', tag });
-      if (tag.key === 'other') {
+      if (isOtherFeedback(tag.key)) {
         onOther?.();
       }
     },
@@ -221,11 +221,15 @@ function FeedbackButtons({
 function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }: FeedbackProps) {
   const localize = useLocalize();
   const [openDialog, setOpenDialog] = useState(false);
-  const [feedback, setFeedback] = useState<TFeedback | undefined>(initialFeedback);
+  const stored = useMemo(
+    () => initialFeedback && { ...initialFeedback, tag: resolveFeedbackTag(initialFeedback.tag) },
+    [initialFeedback],
+  );
+  const [feedback, setFeedback] = useState(stored);
 
   useEffect(() => {
-    setFeedback(initialFeedback);
-  }, [initialFeedback]);
+    setFeedback(stored);
+  }, [stored]);
 
   const propagateMinimal = useCallback(
     (fb: TFeedback | undefined) => {
@@ -237,7 +241,7 @@ function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }:
 
   const handleButtonFeedback = useCallback(
     (fb: TFeedback | undefined) => {
-      if (fb?.tag?.key === 'other') setOpenDialog(true);
+      if (isOtherFeedback(fb?.tag?.key)) setOpenDialog(true);
       else setOpenDialog(false);
       propagateMinimal(fb);
     },
@@ -251,7 +255,7 @@ function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }:
   };
 
   const handleDialogSave = useCallback(() => {
-    if (feedback?.tag?.key === 'other' && !feedback?.text?.trim()) {
+    if (isOtherFeedback(feedback?.tag?.key) && !feedback?.text?.trim()) {
       return;
     }
     propagateMinimal(feedback);
@@ -279,7 +283,7 @@ function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }:
             variant={isLast ? 'message-hover' : 'message-hover-reveal'}
             data-hover-active
             onClick={() => {
-              if (isThumbsUp) {
+              if (isThumbsUp && !isOtherFeedback(feedback.tag?.key)) {
                 handleButtonFeedback(undefined);
               } else {
                 setOpenDialog(true);

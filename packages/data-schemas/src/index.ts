@@ -201,6 +201,8 @@ export {
   backfillMCPServerNormalizedNames,
   backfillSearchTokens,
   warnOnMissingSearchTokens,
+  backfillInsightsAttribution,
+  createInsightsIndexes,
 } from './migrations';
 export type { SearchTokenBackfillResult } from './migrations';
 

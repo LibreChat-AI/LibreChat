@@ -51,6 +51,13 @@ import {
   createResponseConversationReplacement,
 } from './responseScope';
 import {
+  includeInInsights,
+  excludeFromInsights,
+  needsInsightsRepair,
+  rememberInsightsRoot,
+  syncInsightsAttribution,
+} from './insightsAttribution';
+import {
   activeExpirationFilter,
   buildRetentionVisibilityFilter,
   createFallbackRetentionDate,
@@ -778,7 +785,14 @@ export function createConversationMethods(
   ) {
     try {
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
-      return await Conversation.findOne({ conversationId }, fieldsToSelect).lean<IConversation>();
+      if (fieldsToSelect != null && !fieldsToSelect.startsWith('-')) {
+        return await Conversation.findOne({ conversationId }, fieldsToSelect).lean<IConversation>();
+      }
+      return rememberInsightsRoot(
+        await Conversation.findOne({ conversationId })
+          .select(`+initial_agent_id +insightsRepair ${fieldsToSelect ?? ''}`.trim())
+          .lean<IConversation>(),
+      );
     } catch (error) {
       logger.error('[searchConversation] Error searching conversation', error);
       throw new Error('Error searching conversation');
@@ -791,7 +805,11 @@ export function createConversationMethods(
   async function getConvo(user: string, conversationId: string) {
     try {
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
-      return await Conversation.findOne({ user, conversationId }).lean<IConversation>();
+      return rememberInsightsRoot(
+        await Conversation.findOne({ user, conversationId })
+          .select('+initial_agent_id +insightsRepair')
+          .lean<IConversation>(),
+      );
     } catch (error) {
       logger.error('[getConvo] Error getting single conversation', error);
       throw new Error('Error getting single conversation');
@@ -2394,11 +2412,16 @@ export function createConversationMethods(
        * Conditional on the transition, so concurrent stamps release the bookmark counts once;
        * the released tags are cleared with it so a later delete cannot release them again.
        */
+      const identity = { conversationId, user: userId, tenantId: stored.tenantId };
+      const excluded = await excludeFromInsights(mongoose, identity);
       const converted = await Conversation.updateOne(
         { _id: stored._id, isTemporary: { $ne: true } },
         { $set: { isTemporary: true, expiredAt, tags: [] } },
         { timestamps: false },
-      );
+      ).catch(async (error: unknown) => {
+        if (excluded) await includeInInsights(mongoose, identity);
+        throw error;
+      });
       stampedDeadline ||= converted.modifiedCount > 0;
       if (converted.modifiedCount > 0 && stored.tags?.length) {
         await decrementTagCounts(mongoose, userId, stored.tags);
@@ -2411,6 +2434,11 @@ export function createConversationMethods(
       );
       stampedDeadline = stamped.modifiedCount > 0;
     }
+    await syncInsightsAttribution(
+      mongoose,
+      { conversationId, user: userId, tenantId: stored.tenantId, isTemporary: true },
+      { converted: stored.isTemporary !== true },
+    );
 
     if (messageIds.length === 0) {
       return;
@@ -2470,6 +2498,7 @@ export function createConversationMethods(
       replyMessageId?: string;
     },
   ) {
+    let excluded: { conversationId: string; user: string; tenantId?: string } | null = null;
     try {
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
       const { getMessages } = getMessageMethods();
@@ -2618,11 +2647,13 @@ export function createConversationMethods(
       const responseDeadline =
         update.expiredAt instanceof Date ? update.expiredAt : retentionOnInsert?.expiredAt;
       const replacingConversationId = newConversationId && newConversationId !== conversationId;
+      let converted = false;
       if (responseDeadline || replacingConversationId) {
         const stored = await Conversation.findOne({ user: userId, conversationId })
           .session(deps?.saveSession ?? null)
-          .select('tenantId expiredAt')
-          .lean<Pick<IConversation, 'tenantId' | 'expiredAt'>>();
+          .select('tenantId expiredAt isTemporary')
+          .lean<Pick<IConversation, 'tenantId' | 'expiredAt' | 'isTemporary'>>();
+        converted = update.isTemporary === true && stored?.isTemporary !== true;
         const contextTenant = getTenantId();
         const responseOwner = {
           userId,
@@ -2645,6 +2676,12 @@ export function createConversationMethods(
             newConversationId || conversationId,
             stored?.expiredAt && stored.expiredAt < deadline ? stored.expiredAt : deadline,
           );
+        if (converted && stored) {
+          const identity = { conversationId, user: userId, tenantId: stored.tenantId };
+          if (await excludeFromInsights(mongoose, identity, deps?.saveSession)) {
+            excluded = identity;
+          }
+        }
       }
 
       const createdAtOnInsert =
@@ -2806,6 +2843,19 @@ export function createConversationMethods(
       if (!conversation) {
         logger.debug('[saveConvo] Conversation not found, skipping update');
         return null;
+      }
+
+      const created = conversationResult.lastErrorObject?.updatedExisting === false;
+      if (created || conversation.isTemporary === true || needsInsightsRepair(conversation)) {
+        const saved = {
+          ...(conversation.toObject() as Record<string, unknown>),
+          initial_agent_id: initialAgentId,
+        };
+        await syncInsightsAttribution(mongoose, saved, {
+          created,
+          converted,
+          session: deps?.saveSession,
+        });
       }
 
       /** `$setOnInsert` only reaches a chat this save creates, yet a chat whose earlier turns never
@@ -2978,6 +3028,14 @@ export function createConversationMethods(
       return conversation.toObject();
     } catch (error) {
       if (deps?.saveSession) throw error;
+      if (excluded) {
+        await includeInInsights(mongoose, excluded).catch((cleanupError: unknown) =>
+          logger.error(
+            '[saveConvo] Failed to restore Insights for a refused conversion',
+            cleanupError,
+          ),
+        );
+      }
       logger.error('[saveConvo] Error saving conversation', error);
       if (metadata?.context) {
         logger.info(`[saveConvo] ${metadata.context}`);
@@ -4420,6 +4478,23 @@ export function createConversationMethods(
         });
       } catch (error) {
         logger.error('[deleteConvos] Conversations deleted but message cleanup failed', error);
+      }
+      if (!deleteMessagesResult.acknowledged) {
+        try {
+          await retryCascadeOperation(() =>
+            (mongoose.models.Message as Model<IMessage>).updateMany(
+              {
+                user,
+                conversationId: { $in: conversationIds },
+                insightsAgentId: { $nin: ['', null] },
+              },
+              { $set: { insightsAgentId: '' } },
+              { timestamps: false },
+            ),
+          );
+        } catch (error) {
+          logger.error('[deleteConvos] Leftover messages are still counted in Insights', error);
+        }
       }
 
       try {

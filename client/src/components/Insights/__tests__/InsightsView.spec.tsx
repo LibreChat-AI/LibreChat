@@ -1,45 +1,100 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
-import { render, screen, waitFor } from '@testing-library/react';
-import type { TInsightsParams } from 'librechat-data-provider';
+import { FEEDBACK_REASON_KEYS } from 'librechat-data-provider';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type {
+  TInsightsSelectionResponse,
+  TInsightsDailyPoint,
+  TInsightsResponse,
+  TInsightsParams,
+} from 'librechat-data-provider';
 import InsightsView from '../InsightsView';
 
-const insightsData = {
+const insightsData: TInsightsResponse = {
   agents: [
     { id: 'agent-1', name: 'Alpha' },
     { id: 'agent-2', name: 'Beta' },
     { id: 'agent-3', name: 'Gamma' },
   ],
-  summary: { totalConversations: 4, totalUsers: 2, totalMessages: 8, totalTokens: 100 },
+  summary: {
+    totalConversations: 4,
+    totalUsers: 2,
+    totalMessages: 8,
+    totalTokens: 100,
+    totalResponses: 4,
+    completedResponses: 3,
+    failedResponses: 1,
+    interruptedResponses: 0,
+    lastUsed: '2026-10-01T12:00:00.000Z',
+    spendUSD: null,
+    feedback: {
+      thumbsUp: 0,
+      thumbsDown: 0,
+      categories: FEEDBACK_REASON_KEYS.map((key) => ({ key, count: 0 })),
+    },
+  },
   daily: [],
-  latest: { conversations: [], page: 1, pages: 1 },
+  models: [],
+  latest: { conversations: [], page: 1, pageSize: 10, pages: 1 },
   topUsers: [],
   churnedUsers: [],
 };
+const selection: TInsightsSelectionResponse = {
+  selectionRequired: true,
+  agents: insightsData.agents,
+};
 
-const mockUseInsightsQuery = jest.fn((params: TInsightsParams) => ({
-  data: insightsData,
-  isLoading: false,
-  isFetching: false,
-  error: null,
-  params,
-}));
+const mockUseInsightsQuery = jest.fn(
+  (
+    params: TInsightsParams,
+    _options?: { enabled?: boolean; retry?: boolean },
+  ): {
+    data?: TInsightsResponse | TInsightsSelectionResponse;
+    isLoading: boolean;
+    isFetching: boolean;
+    isPreviousData?: boolean;
+    isError?: boolean;
+    error: Error | null;
+    params: TInsightsParams;
+  } => ({
+    data: insightsData,
+    isLoading: false,
+    isFetching: false,
+    error: null,
+    params,
+  }),
+);
 
 jest.mock('~/data-provider', () => ({
   useGetStartupConfig: () => ({ data: { insightsEnabled: true }, isLoading: false }),
-  useInsightsQuery: (params: TInsightsParams) => mockUseInsightsQuery(params),
+  useInsightsQuery: (params: TInsightsParams, options?: { enabled?: boolean; retry?: boolean }) =>
+    mockUseInsightsQuery(params, options),
 }));
 
 jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string, options?: { count?: number; name?: string }) => {
-    if (options?.count != null) {
-      return `${key}:${options.count}`;
-    }
-    return options?.name ? `${key}:${options.name}` : key;
-  },
+  useLocalize:
+    () =>
+    (
+      key: string,
+      options?: {
+        count?: number;
+        name?: string;
+        label?: string;
+        versionNumber?: number;
+      },
+    ) => {
+      if (options?.count != null) {
+        return `${key}:${options.count}`;
+      }
+      if (options?.name) return `${key}:${options.name}`;
+      if (options?.label) return `${key}:${options.label}`;
+      if (options?.versionNumber != null) return `${key}:${options.versionNumber}`;
+      return key;
+    },
   useAuthContext: () => ({ user: { id: 'user-1' } }),
   useDocumentTitle: () => undefined,
+  useElementSize: () => ({ ref: jest.fn(), width: 0, height: 0 }),
 }));
 
 jest.mock('react-i18next', () => ({
@@ -59,12 +114,41 @@ function lastQueryParams(): TInsightsParams {
   return mockUseInsightsQuery.mock.calls[mockUseInsightsQuery.mock.calls.length - 1][0];
 }
 
-function renderView() {
+function queryResult(
+  params: TInsightsParams,
+  data?: TInsightsResponse | TInsightsSelectionResponse,
+) {
+  return { data, isLoading: false, isFetching: false, error: null, params };
+}
+
+function renderView(path = '/insights') {
   return render(
-    <MemoryRouter initialEntries={['/insights']}>
+    <MemoryRouter initialEntries={[path]}>
       <InsightsView />
     </MemoryRouter>,
   );
+}
+
+function metricCard(title: string) {
+  const card = screen.getByRole('heading', { name: title }).closest('section');
+  if (!card) throw new Error(`Missing metric card: ${title}`);
+  return within(card);
+}
+
+function dailyPoint(date: string, spendUSD: number | null): TInsightsDailyPoint {
+  return {
+    date,
+    conversations: 1,
+    users: 1,
+    messages: 3,
+    totalTokens: 50,
+    responses: 2,
+    completedResponses: 1,
+    failedResponses: 1,
+    interruptedResponses: 0,
+    feedback: insightsData.summary.feedback,
+    spendUSD,
+  };
 }
 
 async function openAgentMenu(user: ReturnType<typeof userEvent.setup>) {
@@ -73,6 +157,21 @@ async function openAgentMenu(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('InsightsView agent selection', () => {
+  it('opens with no agents selected and lets admins choose All agents explicitly', async () => {
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, params.agentIds?.length || params.allAgents ? insightsData : selection),
+    );
+    const user = userEvent.setup();
+    renderView();
+    expect(screen.getByText('com_insights_select_agents_to_load')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'com_insights_models' })).not.toBeInTheDocument();
+    await user.click(screen.getByText('com_insights_no_agents_selected'));
+    await user.click(screen.getByRole('button', { name: 'com_insights_select_all_agents' }));
+    await waitFor(() => expect(lastQueryParams().allAgents).toBe(true));
+    expect(lastQueryParams().agentIds).toBeUndefined();
+    expect(screen.queryByText('com_insights_select_agents_to_load')).not.toBeInTheDocument();
+  });
+
   beforeEach(() => {
     mockUseInsightsQuery.mockClear();
     mockUseInsightsQuery.mockImplementation((params) => ({
@@ -82,6 +181,201 @@ describe('InsightsView agent selection', () => {
       error: null,
       params,
     }));
+  });
+
+  it('keeps agent choices available but hides previous statistics while a new selection loads', () => {
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      ...queryResult(params, insightsData),
+      isFetching: true,
+      isPreviousData: true,
+    }));
+    renderView('/insights?agentIds=agent-2');
+    expect(screen.getByRole('combobox')).toHaveTextContent('Beta');
+    expect(screen.getByText('com_insights_loading')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'com_insights_models' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the conversation search mounted and focused while a new search loads', async () => {
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      ...queryResult(params, insightsData),
+      ...(params.search ? { isFetching: true, isPreviousData: true } : {}),
+    }));
+    const user = userEvent.setup();
+    renderView('/insights?agentIds=agent-1');
+    const search = screen.getByRole('textbox', { name: 'com_insights_search_placeholder' });
+    await user.type(search, 'abc');
+    await waitFor(() =>
+      expect(mockUseInsightsQuery).toHaveBeenLastCalledWith(
+        expect.objectContaining({ search: 'abc' }),
+        expect.anything(),
+      ),
+    );
+    expect(screen.getByRole('textbox', { name: 'com_insights_search_placeholder' })).toHaveFocus();
+    expect(screen.getByRole('heading', { name: 'com_insights_models' })).toBeInTheDocument();
+  });
+
+  it('renders an aggregate-only response without detail tables or identity search', () => {
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, {
+        agents: insightsData.agents,
+        summary: insightsData.summary,
+        daily: insightsData.daily,
+        models: insightsData.models,
+      }),
+    );
+    renderView();
+    expect(screen.getByText('com_insights_total_conversations')).toBeInTheDocument();
+    expect(screen.queryByText('com_insights_top_users')).not.toBeInTheDocument();
+    expect(screen.queryByText('com_insights_latest_conversations')).not.toBeInTheDocument();
+  });
+
+  it('shows the aggregate response, outcome, feedback and period-activity fields', () => {
+    const categoryCounts = new Map([
+      ['inaccurate', 1],
+      ['other', 1],
+      ['clear_well_written', 3],
+    ]);
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, {
+        agents: insightsData.agents,
+        summary: {
+          ...insightsData.summary,
+          feedback: {
+            thumbsUp: 5,
+            thumbsDown: 2,
+            categories: FEEDBACK_REASON_KEYS.map((key) => ({
+              key,
+              count: categoryCounts.get(key) ?? 0,
+            })),
+          },
+        },
+        daily: [dailyPoint('2026-10-01', null), dailyPoint('2026-10-02', null)],
+        models: [],
+      }),
+    );
+
+    renderView();
+
+    expect(metricCard('com_insights_responses').getByText('4')).toBeInTheDocument();
+    expect(metricCard('com_insights_completed').getByText('3')).toBeInTheDocument();
+    expect(metricCard('com_insights_failed').getByText('1')).toBeInTheDocument();
+    expect(metricCard('com_insights_interrupted').getByText('0')).toBeInTheDocument();
+    expect(metricCard('com_insights_thumbs_up').getByText('5')).toBeInTheDocument();
+    expect(metricCard('com_insights_thumbs_down').getByText('2')).toBeInTheDocument();
+    expect(
+      screen.getByText('com_ui_feedback_tag_other_issue').nextElementSibling,
+    ).toHaveTextContent('1');
+    expect(
+      screen.getByText('com_ui_feedback_tag_clear_well_written').nextElementSibling,
+    ).toHaveTextContent('3');
+    expect(screen.queryByText('com_ui_feedback_tag_bad_style')).not.toBeInTheDocument();
+    expect(screen.getByText('com_insights_last_used').querySelector('time')).toHaveAttribute(
+      'datetime',
+      insightsData.summary.lastUsed,
+    );
+
+    const responseTrend = metricCard('com_insights_responses').getByRole('img');
+    fireEvent.focus(responseTrend);
+    expect(within(responseTrend).getByText('2')).toBeInTheDocument();
+  });
+
+  it('shows the written feedback of the period, or says there is none', () => {
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, {
+        ...insightsData,
+        comments: [
+          {
+            agentId: 'agent-1',
+            agentName: 'Alpha',
+            date: '2026-10-01T12:00:00.000Z',
+            rating: 'thumbsUp',
+            tag: 'other_feedback',
+            text: 'Saved me an hour',
+          },
+        ],
+      }),
+    );
+    const { unmount } = renderView();
+
+    const comment = screen.getByText('Saved me an hour').closest('li');
+    expect(comment).not.toBeNull();
+    expect(within(comment as HTMLElement).getByRole('img')).toHaveAccessibleName(
+      'com_ui_feedback_positive',
+    );
+    expect(comment).not.toHaveTextContent('com_ui_feedback_tag_other_feedback');
+    expect(comment).toHaveTextContent('Alpha');
+    unmount();
+
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, { ...insightsData, comments: [] }),
+    );
+    renderView();
+    expect(screen.getByText('com_insights_no_feedback_comments')).toBeInTheDocument();
+  });
+
+  it('lists recorded models, an unknown-model row and missing spend as zero', () => {
+    const counts = {
+      completedResponses: 0,
+      failedResponses: 0,
+      interruptedResponses: 0,
+      thumbsUp: 0,
+      thumbsDown: 0,
+    };
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, {
+        ...insightsData,
+        models: [
+          {
+            ...counts,
+            model: 'gpt-4.1',
+            responses: 3,
+            completedResponses: 2,
+            failedResponses: 1,
+            thumbsUp: 1,
+            usageTokens: 1234,
+            spendUSD: 0.5,
+          },
+          { ...counts, model: 'title-model', responses: 0, usageTokens: 20, spendUSD: 0.01 },
+          {
+            ...counts,
+            model: null,
+            responses: 1,
+            interruptedResponses: 1,
+            thumbsDown: 1,
+            usageTokens: 0,
+            spendUSD: null,
+          },
+        ],
+      }),
+    );
+
+    renderView();
+
+    const panel = metricCard('com_insights_models');
+    expect(panel.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'com_insights_model',
+      'com_insights_responses',
+      'com_insights_completed',
+      'com_insights_failed',
+      'com_insights_interrupted',
+      'com_insights_thumbs_up',
+      'com_insights_thumbs_down',
+      'com_insights_usage_tokens',
+      'com_insights_spend',
+    ]);
+    const rows = panel
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) =>
+        within(row)
+          .getAllByRole('cell')
+          .map((cell) => cell.textContent),
+      );
+    expect(rows).toEqual([
+      ['gpt-4.1', '3', '2', '1', '0', '1', '0', '1,234', '$0.50'],
+      ['title-model', '0', '0', '0', '0', '0', '0', '20', '$0.01'],
+      ['com_insights_unknown_model', '1', '0', '0', '1', '0', '1', '0', '$0.00'],
+    ]);
   });
 
   it('filters names without changing selection and clears search on close', async () => {
@@ -111,7 +405,7 @@ describe('InsightsView agent selection', () => {
     await user.keyboard('{Escape}');
     await user.click(screen.getByText('com_insights_all_agents:12'));
     expect(screen.getByRole('textbox', { name: 'com_insights_search_agents' })).toHaveValue('');
-    expect(screen.getAllByRole('option')).toHaveLength(12);
+    expect(screen.getAllByRole('option')[0]).toHaveAttribute('aria-setsize', '12');
   });
 
   it('clears every agent without committing the empty selection', async () => {

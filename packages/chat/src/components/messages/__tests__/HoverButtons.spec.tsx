@@ -1,8 +1,8 @@
 /**
  * @jest-environment jsdom
  */
-import { render, screen } from '@testing-library/react';
 import { EModelEndpoint } from 'librechat-data-provider';
+import { fireEvent, render, screen } from '@testing-library/react';
 import type { TConversation, TMessage } from 'librechat-data-provider';
 import type { MessageAudioProps, MessagesHost } from '../../../react/messages/host';
 import type { ChatContract } from '../../../react/chat/contract';
@@ -65,7 +65,90 @@ function renderButtons(
   );
 }
 
+const saved = (feedback: Record<string, string>) =>
+  ({ ...answer, feedback }) as unknown as TMessage;
+
+function renderFeedback(message = answer) {
+  const handleFeedback = jest.fn();
+  const chat = { index: 0, isSubmitting: false, readOnly: false } as ChatContract;
+  render(
+    <ChatContext.Provider value={chat}>
+      <MessagesHostProvider host={createMessagesHost()}>
+        <HoverButtons
+          index={0}
+          isLast={true}
+          isEditing={false}
+          message={message}
+          conversation={conversation}
+          enterEdit={jest.fn()}
+          regenerate={jest.fn()}
+          handleContinue={jest.fn()}
+          copyToClipboard={jest.fn()}
+          getCanCopy={() => true}
+          latestMessageId={answer.messageId}
+          handleFeedback={handleFeedback}
+        />
+      </MessagesHostProvider>
+    </ChatContext.Provider>,
+  );
+  return handleFeedback;
+}
+
 describe('HoverButtons', () => {
+  it('asks for a comment when a thumbs up is other feedback', async () => {
+    const handleFeedback = renderFeedback();
+    fireEvent.click(screen.getByRole('button', { name: 'Love this' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Other feedback' }));
+    const comment = await screen.findByPlaceholderText(
+      'Please provide any additional feedback here',
+    );
+    fireEvent.change(comment, { target: { value: 'Saved me an hour' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(handleFeedback).toHaveBeenLastCalledWith({
+      feedback: expect.objectContaining({
+        rating: 'thumbsUp',
+        text: 'Saved me an hour',
+        tag: expect.objectContaining({ key: 'other_feedback' }),
+      }),
+    });
+  });
+
+  it('reopens the comment of a saved thumbs up instead of removing it', async () => {
+    const handleFeedback = renderFeedback(
+      saved({ rating: 'thumbsUp', tag: 'other_feedback', text: 'Kept' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Love this' }));
+
+    expect(await screen.findByDisplayValue('Kept')).toBeInTheDocument();
+    expect(handleFeedback).not.toHaveBeenCalled();
+  });
+
+  it('keeps the category of saved feedback when its comment is edited after a reload', async () => {
+    const handleFeedback = renderFeedback(
+      saved({ rating: 'thumbsDown', tag: 'other', text: 'First' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Needs improvement' }));
+    fireEvent.change(await screen.findByDisplayValue('First'), { target: { value: 'Edited' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(handleFeedback).toHaveBeenLastCalledWith({
+      feedback: expect.objectContaining({
+        rating: 'thumbsDown',
+        text: 'Edited',
+        tag: expect.objectContaining({ key: 'other' }),
+      }),
+    });
+  });
+
+  it('still removes a saved thumbs up without a comment', () => {
+    const handleFeedback = renderFeedback(saved({ rating: 'thumbsUp', tag: 'accurate_reliable' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Love this' }));
+
+    expect(handleFeedback).toHaveBeenCalledTimes(1);
+    expect(handleFeedback.mock.calls[0][0].feedback).toBeUndefined();
+  });
+
   it.each([false, true])('offers usage for a response, streaming=%s', (streaming) => {
     const renderMessageUsage = jest.fn(() => <span>Usage details</span>);
     renderButtons({ renderMessageUsage }, streaming);

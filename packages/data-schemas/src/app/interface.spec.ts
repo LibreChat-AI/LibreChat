@@ -4,6 +4,15 @@ import type { AppConfig } from '~/types';
 import { loadDefaultInterface, deriveSpecInterface } from './interface';
 
 describe('loadDefaultInterface', () => {
+  it('passes the configured Insights object through unchanged', async () => {
+    const insights = { enabled: true, showDetails: false };
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { insights } },
+      configDefaults: getConfigDefaults(),
+    });
+    expect(interfaceConfig?.insights).toEqual(insights);
+  });
+
   it('uses the schema default for URL auto-submit when not configured', async () => {
     const interfaceConfig = await loadDefaultInterface({
       config: {},

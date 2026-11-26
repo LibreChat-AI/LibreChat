@@ -108,7 +108,6 @@ afterEach(() => {
   delete process.env.ALLOW_EMAIL_CHANGE;
   delete process.env.RAG_API_URL;
   delete process.env.ADMIN_PANEL_URL;
-  delete process.env.ENABLE_INSIGHTS;
   delete process.env.ANALYTICS_GTM_ID;
   delete process.env.CUSTOM_FOOTER;
   delete process.env.HELP_AND_FAQ_URL;
@@ -758,7 +757,8 @@ describe('GET /api/config', () => {
       expect(response.body.conversationImportMaxFileSize).toBe(5000000);
     });
 
-    it('should advertise Insights only when ENABLE_INSIGHTS is enabled', async () => {
+    it('advertises Insights using YAML precedence over the legacy environment setting', async () => {
+      delete process.env.ENABLE_INSIGHTS;
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       const app = createApp(mockUser);
 
@@ -768,6 +768,47 @@ describe('GET /api/config', () => {
       process.env.ENABLE_INSIGHTS = 'true';
       response = await request(app).get('/api/config');
       expect(response.body.insightsEnabled).toBe(true);
+
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        interfaceConfig: { ...baseAppConfig.interfaceConfig, insights: { enabled: false } },
+      });
+      response = await request(app).get('/api/config');
+      expect(response.body.insightsEnabled).toBe(false);
+
+      process.env.ENABLE_INSIGHTS = 'false';
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        interfaceConfig: { ...baseAppConfig.interfaceConfig, insights: { enabled: true } },
+      });
+      response = await request(app).get('/api/config');
+      expect(response.body.insightsEnabled).toBe(true);
+      delete process.env.ENABLE_INSIGHTS;
+    });
+
+    it('reads Insights from the viewer’s scoped config without another lookup', async () => {
+      mockGetAppConfig.mockImplementation(async (options) => ({
+        ...baseAppConfig,
+        interfaceConfig: {
+          ...baseAppConfig.interfaceConfig,
+          insights: { enabled: options?.userId === 'selected-user', showDetails: false },
+        },
+      }));
+
+      const response = await request(
+        createApp({ ...mockUser, id: 'selected-user', tenantId: 'tenant-a' }),
+      ).get('/api/config');
+
+      expect(response.body.insightsEnabled).toBe(true);
+      expect(mockGetAppConfig.mock.calls.filter(([options]) => options?.userId)).toEqual([
+        [
+          expect.objectContaining({
+            userId: 'selected-user',
+            tenantId: 'tenant-a',
+            failClosed: true,
+          }),
+        ],
+      ]);
     });
 
     describe('pull requests', () => {

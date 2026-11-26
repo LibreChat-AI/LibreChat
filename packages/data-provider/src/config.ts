@@ -38,6 +38,7 @@ import {
   eReasoningParameterFormatSchema,
   eReasoningResponseKeySchema,
 } from './schemas';
+import { INSIGHTS_COMMENT_LIMIT, INSIGHTS_COMMENT_LIMIT_MAX } from './types/insights';
 import { runGrantResourceBindingSchema } from './types/runGrant';
 import { partialWithoutDefaults } from './zod';
 
@@ -3412,6 +3413,38 @@ const mcpServersSchema = z
   })
   .optional();
 
+const insightsConfigSchema = z
+  .object({
+    /** Enables Insights when configured; defaults to false when resolved. */
+    enabled: z.boolean().optional(),
+    /** Allows identity and conversation sections; defaults to false when resolved. */
+    showDetails: z.boolean().optional(),
+    /** Load all agents when admins or global READ_INSIGHTS holders open Insights (default false). */
+    adminAutoSelectAllAgents: z.boolean().optional(),
+    commentLimit: z.number().int().min(1).max(INSIGHTS_COMMENT_LIMIT_MAX).optional(),
+  })
+  .strict();
+
+export type TInsightsConfig = z.infer<typeof insightsConfigSchema>;
+export type TResolvedInsightsConfig = {
+  enabled: boolean;
+  showDetails: boolean;
+  adminAutoSelectAllAgents: boolean;
+  commentLimit: number;
+};
+
+export function resolveInsightsConfig(
+  config?: TInsightsConfig | null,
+  legacyEnabled = false,
+): TResolvedInsightsConfig {
+  return {
+    enabled: config?.enabled ?? legacyEnabled,
+    showDetails: config?.showDetails ?? false,
+    adminAutoSelectAllAgents: config?.adminAutoSelectAllAgents ?? false,
+    commentLimit: config?.commentLimit ?? INSIGHTS_COMMENT_LIMIT,
+  };
+}
+
 /** Values the trace viewer uses for any `interface.traceViewer` field left unset. */
 export const traceViewerDefaults = {
   enabled: false,
@@ -3732,6 +3765,7 @@ export const interfaceSchema = z
     fileSearch: z.boolean().optional(),
     fileCitations: z.boolean().optional(),
     traceViewer: traceViewerSchema.optional(),
+    insights: insightsConfigSchema.optional(),
     /** Tool keys (and `'mcp'` or an MCP server name) pinned to the prompt bar by default */
     defaultPinnedTools: z.array(z.string()).optional(),
     buildInfo: z.boolean().optional(),

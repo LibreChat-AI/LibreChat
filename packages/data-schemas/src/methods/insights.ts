@@ -1,23 +1,41 @@
+import _ from 'lodash';
 import {
+  FEEDBACK_TAGS,
+  CREDITS_PER_USD,
+  INSIGHTS_COMMENT_LIMIT,
   INSIGHTS_MAX_RANGE_DAYS,
   INSIGHTS_SEARCH_MAX_LENGTH,
   INSIGHTS_SEARCH_MIN_LENGTH,
 } from 'librechat-data-provider';
 import type {
+  TInsightsAggregateResponse,
+  TInsightsComment,
+  TFeedbackTagKey,
+  TFeedbackRating,
   TInsightsAgent,
+  TInsightsAgentVersion,
   TInsightsChurnedUser,
   TInsightsConversation,
   TInsightsDailyPoint,
+  TInsightsFeedback,
+  TInsightsModel,
   TInsightsParams,
   TInsightsResponse,
+  TInsightsResponseOutcomes,
+  TInsightsSummary,
   TInsightsUser,
 } from 'librechat-data-provider';
 import type { Model, PipelineStage } from 'mongoose';
-import type { IConversation, IMessage, IUser } from '~/types';
+import type { IAgent, IConversation, IMessage, IUser } from '~/types';
+import type { ExcludedPair } from './insightsAttribution';
+import type { ITransaction } from '~/schema/transaction';
+import { clearExcludedRecords } from './insightsAttribution';
 
 export type InsightsOptions = TInsightsParams & {
   tenantId?: string;
   agents?: TInsightsAgent[];
+  showDetails?: boolean;
+  commentLimit?: number;
 };
 
 export type InsightsResult = TInsightsResponse;
@@ -27,7 +45,21 @@ export type InsightsMethods = {
 };
 
 type CountResult = { total: number };
+type CommentRow = {
+  agentId: string;
+  date: Date;
+  rating: TFeedbackRating;
+  tag?: TFeedbackTagKey;
+  text: string;
+};
 type ConversationDay = { date: string; conversations: number };
+type ModelSpend = { date: string; model: unknown; credits: number; usageTokens: number };
+type ReplyIdentity = { conversationId: string; user: string; messageId: string };
+type ReplyModel = { _id: ReplyIdentity; model: unknown };
+type ReplyOutcome = ReplyIdentity & {
+  outcome: 'completed' | 'failed' | 'interrupted';
+  rating?: unknown;
+};
 type DailyUsers = { date: string; users: number };
 type UserMessageTotals = { messages: number };
 type RecentConversation = { conversationId: string; agentId: string; date: Date; userId: string };
@@ -44,7 +76,14 @@ type ConversationMessageSummary = UserMessageTotals & {
   totalTokens: number;
 };
 type UserConversationCount = { _id: string; conversations: number };
-type MessageDay = { date: string; messages: number; totalTokens: number };
+type MessageDay = TInsightsResponseOutcomes & {
+  date: string;
+  messages: number;
+  totalTokens: number;
+  responses: number;
+  lastUsed: Date;
+  feedback: TInsightsFeedback;
+};
 type FirstMessage = { _id: ConversationOwner; text: string };
 type UserSummary = {
   _id: { toString(): string };
@@ -58,15 +97,56 @@ const defaultRange = '7d';
 const churnedUserWindowDays = 28;
 const churnedUserLimit = 8;
 const dayMs = 24 * 60 * 60 * 1000;
+const replyUsageWindowMs = dayMs;
+const replyUsageContexts = ['message', 'abort', 'incomplete', 'reasoning', null];
+
+const isReply = {
+  $and: [
+    { $eq: ['$isCreatedByUser', false] },
+    { $eq: [{ $ifNull: ['$metadata.responseInputRole', null] }, null] },
+  ],
+};
+const finishReason = { $ifNull: ['$finish_reason', null] };
+const responseRating = { $cond: [isReply, '$feedback.rating', null] };
+const responseOutcome = {
+  $cond: [
+    isReply,
+    {
+      $cond: [
+        {
+          $or: [
+            { $eq: ['$error', true] },
+            { $in: ['error', { $ifNull: ['$content.type', []] }] },
+            { $eq: [finishReason, 'failed'] },
+          ],
+        },
+        'failed',
+        {
+          $cond: [
+            {
+              $or: [
+                { $eq: ['$unfinished', true] },
+                { $in: [finishReason, ['cancelled', 'incomplete']] },
+              ],
+            },
+            'interrupted',
+            'completed',
+          ],
+        },
+      ],
+    },
+    null,
+  ],
+};
+const outcomeCount = (outcome: string) => ({
+  $sum: { $cond: [{ $eq: ['$insightsOutcome', outcome] }, 1, 0] },
+});
+const ratingCount = (rating: string) => ({
+  $sum: { $cond: [{ $eq: ['$insightsFeedbackRating', rating] }, 1, 0] },
+});
 
 function tenantMatch(tenantId?: string) {
   return tenantId ? { tenantId } : { tenantId: { $exists: false } };
-}
-
-function joinedTenantMatch(tenantId?: string) {
-  return tenantId
-    ? { 'insightsConversation.tenantId': tenantId }
-    : { 'insightsConversation.tenantId': { $exists: false } };
 }
 
 function validTimeZone(timeZone?: string) {
@@ -170,91 +250,162 @@ const conversationOwnerMatch = ({ conversationId, userId }: ConversationOwner) =
   user: userId,
 });
 
-function conversationScope(match: Record<string, unknown>, agentIds: string[]): PipelineStage[] {
+function rootAgentMatch(agentIds: string[]) {
+  return {
+    $or: [
+      { initial_agent_id: { $in: agentIds } },
+      { initial_agent_id: { $exists: false }, agent_id: { $in: agentIds } },
+    ],
+  };
+}
+
+function conversationEligibility(agentIds: string[], tenantId?: string) {
+  return {
+    ...tenantMatch(tenantId),
+    conversationId: { $exists: true, $nin: [null, ''] },
+    user: { $exists: true, $nin: [null, ''] },
+    isTemporary: { $ne: true },
+    subagentThread: { $exists: false },
+    ...rootAgentMatch(agentIds),
+  };
+}
+
+function conversationScope(
+  agentIds: string[],
+  tenantId?: string,
+  createdAt?: { $gte: Date; $lte: Date },
+): PipelineStage[] {
   return [
     {
       $match: {
-        ...match,
-        $or: [
-          { initial_agent_id: { $in: agentIds } },
-          { initial_agent_id: { $exists: false }, agent_id: { $in: agentIds } },
-        ],
+        ...conversationEligibility(agentIds, tenantId),
+        ...(createdAt ? { createdAt } : {}),
       },
     },
     { $addFields: { insightsAgentId: { $ifNull: ['$initial_agent_id', '$agent_id'] } } },
   ];
 }
 
-function messageScope(
-  match: Record<string, unknown>,
+function messageScope(match: Record<string, unknown>, agentIds: string[]): PipelineStage[] {
+  return [{ $match: { ...match, insightsAgentId: { $in: agentIds } } }];
+}
+
+function transactionScope(
   agentIds: string[],
-  tenantId?: string,
+  tenantId: string | undefined,
+  createdAt: { $gte: Date; $lte: Date },
+  match: Record<string, unknown> = {},
 ): PipelineStage[] {
-  const attributedMatch =
-    match.isCreatedByUser === true
-      ? match
-      : {
-          $and: [
-            match,
-            {
-              $or: [
-                { isCreatedByUser: true },
-                { isCreatedByUser: { $ne: true }, model: { $in: agentIds } },
-              ],
-            },
-          ],
-        };
   return [
-    { $match: attributedMatch },
-    {
-      $lookup: {
-        from: 'conversations',
-        localField: 'conversationId',
-        foreignField: 'conversationId',
-        as: 'insightsConversation',
-      },
-    },
-    { $unwind: '$insightsConversation' },
-    {
-      $addFields: {
-        insightsOwnerMatches: { $eq: ['$user', '$insightsConversation.user'] },
-      },
-    },
     {
       $match: {
-        ...joinedTenantMatch(tenantId),
-        'insightsConversation.isTemporary': { $ne: true },
-        'insightsConversation.subagentThread': { $exists: false },
-        'insightsConversation.user': { $nin: [null, ''] },
-        insightsOwnerMatches: true,
-        $or: [
-          { isCreatedByUser: true, 'insightsConversation.initial_agent_id': { $in: agentIds } },
-          {
-            isCreatedByUser: true,
-            'insightsConversation.initial_agent_id': { $exists: false },
-            'insightsConversation.agent_id': { $in: agentIds },
-          },
-          {
-            isCreatedByUser: { $ne: true },
-            model: { $in: agentIds },
-            $or: [
-              {
-                'insightsConversation.initial_agent_id': {
-                  $exists: true,
-                  $nin: [null, ''],
-                },
-              },
-              {
-                'insightsConversation.initial_agent_id': { $exists: false },
-                'insightsConversation.agent_id': { $exists: true, $nin: [null, ''] },
-              },
-            ],
-          },
-        ],
+        ...tenantMatch(tenantId),
+        insightsAgentId: { $in: agentIds },
+        createdAt,
+        tokenType: { $in: ['prompt', 'completion'] },
+        tokenValue: { $gte: -Number.MAX_VALUE, $lte: 0 },
+        ...match,
       },
     },
   ];
 }
+
+const modelKey = (model: unknown): string | null =>
+  typeof model === 'string' && model.trim() !== '' ? model : null;
+
+const emptyModel = (model: string | null): TInsightsModel => ({
+  model,
+  responses: 0,
+  completedResponses: 0,
+  failedResponses: 0,
+  interruptedResponses: 0,
+  thumbsUp: 0,
+  thumbsDown: 0,
+  usageTokens: 0,
+  spendUSD: null,
+});
+
+type VersionSettings = {
+  [setting: string]: unknown;
+  tools?: unknown[];
+  capabilities?: unknown[];
+  updatedAt?: Date | string | null;
+};
+
+const sorted = (list?: unknown[]) => list && [...list].sort();
+
+const runtimeSettings = ['model', 'provider', 'model_parameters'];
+
+const matchesCurrentSettings = (version: VersionSettings, current: VersionSettings) =>
+  runtimeSettings.every(
+    (field) => !(field in version) || _.isEqual(version[field], current[field]),
+  ) &&
+  version.name === current.name &&
+  version.description === current.description &&
+  version.instructions === current.instructions &&
+  version.artifacts === current.artifacts &&
+  _.isEqual(version.instructionsPrompt ?? null, current.instructionsPrompt ?? null) &&
+  _.isEqual(version.edges ?? [], current.edges ?? []) &&
+  _.isEqual(sorted(version.tools), sorted(current.tools)) &&
+  _.isEqual(sorted(version.capabilities), sorted(current.capabilities));
+
+const unversioned = [
+  'id',
+  'author',
+  'authorName',
+  'is_promoted',
+  'mcpServerNames',
+  'tenantId',
+  'versions',
+];
+
+const restoredDifferences = (version: VersionSettings, current: VersionSettings) =>
+  Object.keys(version).filter(
+    (field) => field !== 'updatedAt' && !_.isEqual(version[field], current[field]),
+  ).length;
+
+async function getSavedVersions(
+  mongoose: typeof import('mongoose'),
+  agentId: string,
+  tenantId?: string,
+): Promise<TInsightsAgentVersion[]> {
+  const Agent = mongoose.models.Agent as Model<IAgent>;
+  const settings = [..._.difference(Object.keys(Agent.schema.obj), unversioned), 'capabilities'];
+  const agent = await Agent.findOne(
+    { id: agentId, ...tenantMatch(tenantId) },
+    {
+      _id: 0,
+      'versions.updatedAt': 1,
+      ...Object.fromEntries(
+        settings.flatMap((field) => [
+          [field, 1],
+          [`versions.${field}`, 1],
+        ]),
+      ),
+    },
+  ).lean<VersionSettings & { versions?: VersionSettings[] }>();
+  if (!agent) return [];
+  const versions = agent.versions ?? [];
+  const candidates = _.rangeRight(versions.length).filter((index) =>
+    matchesCurrentSettings(versions[index], agent),
+  );
+  const activeIndex = _.minBy(candidates, (index) => restoredDifferences(versions[index], agent));
+  return versions.map((snapshot, index) => {
+    const date = snapshot?.updatedAt == null ? null : new Date(snapshot.updatedAt);
+    return {
+      agentId,
+      version: index + 1,
+      savedAt: date != null && !Number.isNaN(date.getTime()) ? date.toISOString() : null,
+      active: index === activeIndex,
+    };
+  });
+}
+
+const emptyFeedback = (): TInsightsFeedback => ({
+  thumbsUp: 0,
+  thumbsDown: 0,
+  categories: FEEDBACK_TAGS.map(({ key }) => ({ key, count: 0 })),
+});
 
 const addDay = (days: Map<string, TInsightsDailyPoint>, date: string): TInsightsDailyPoint => {
   const current = days.get(date) ?? {
@@ -263,6 +414,12 @@ const addDay = (days: Map<string, TInsightsDailyPoint>, date: string): TInsights
     users: 0,
     messages: 0,
     totalTokens: 0,
+    responses: 0,
+    completedResponses: 0,
+    failedResponses: 0,
+    interruptedResponses: 0,
+    feedback: emptyFeedback(),
+    spendUSD: null,
   };
   days.set(date, current);
   return current;
@@ -285,36 +442,54 @@ const toUser = (
 };
 
 export function createInsightsMethods(mongoose: typeof import('mongoose')): InsightsMethods {
-  async function getInsights(options: InsightsOptions = {}): Promise<InsightsResult> {
+  async function buildInsights(
+    options: InsightsOptions,
+  ): Promise<{ result: InsightsResult; converting: ExcludedPair[] }> {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
-    const Message = mongoose.models.Message as Model<IMessage>;
     const User = mongoose.models.User as Model<IUser>;
+    const Message = mongoose.models.Message as Model<IMessage>;
+    const Transaction = mongoose.models.Transaction as Model<ITransaction>;
+    const showDetails = options.showDetails !== false;
     const page = Math.max(1, Math.floor(options.page ?? 1));
     const pageSize = Math.min(50, Math.max(5, Math.floor(options.pageSize ?? 10)));
     const agentIds = [...new Set(options.agentIds ?? [])].sort((a, b) => a.localeCompare(b));
     const { from, to } = resolveRange(options);
     const timeZone = validTimeZone(options.timeZone);
+    const createdDay = {
+      $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: timeZone },
+    };
     const churnedCutoff = new Date(to.getTime() - churnedUserWindowDays * dayMs);
     const churnedActivityFrom = new Date(from.getTime() - churnedUserWindowDays * dayMs);
     const tenant = tenantMatch(options.tenantId);
-    const conversationMatch = {
-      ...tenant,
-      isTemporary: { $ne: true },
-      subagentThread: { $exists: false },
-      user: { $nin: [null, ''] },
-      createdAt: { $gte: from, $lte: to },
-    };
+    const reported = { ...tenant, insightsAgentId: { $in: agentIds } };
+    const converting = await clearExcludedRecords(mongoose, tenant, {
+      Message: {
+        ...reported,
+        createdAt: { $gte: showDetails ? churnedActivityFrom : from, $lte: to },
+      },
+      Transaction: {
+        ...reported,
+        createdAt: {
+          $gte: new Date(from.getTime() - replyUsageWindowMs),
+          $lte: new Date(to.getTime() + replyUsageWindowMs),
+        },
+      },
+    });
     const messageMatch = {
       ...tenant,
       user: { $nin: [null, ''] },
       isTemporary: { $ne: true },
       createdAt: { $gte: from, $lte: to },
     };
-    const conversationPipeline = conversationScope(conversationMatch, agentIds);
-    const messagePipeline = messageScope(messageMatch, agentIds, options.tenantId);
+    const conversationPipeline = conversationScope(agentIds, options.tenantId, {
+      $gte: from,
+      $lte: to,
+    });
+    const messagePipeline = messageScope(messageMatch, agentIds);
 
     const requestedSearch = options.search?.trim().slice(0, INSIGHTS_SEARCH_MAX_LENGTH) ?? '';
-    const search = requestedSearch.length >= INSIGHTS_SEARCH_MIN_LENGTH ? requestedSearch : '';
+    const search =
+      showDetails && requestedSearch.length >= INSIGHTS_SEARCH_MIN_LENGTH ? requestedSearch : '';
     const searchRegex = search ? new RegExp(escapeRegex(search), 'i') : undefined;
     const searchedConversationPipeline: PipelineStage[] = searchRegex
       ? [
@@ -366,33 +541,40 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       dailyUsers,
       topMessageUsers,
       churnedUserRows,
+      spendRows,
+      replyModelRows,
+      replyRows,
+      commentRows,
+      agentVersions,
     ] = await Promise.all([
       Conversation.aggregate<ConversationDay>([
         ...conversationPipeline,
         {
           $group: {
-            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: timeZone } },
+            _id: createdDay,
             conversations: { $sum: 1 },
           },
         },
         { $project: { _id: 0, date: '$_id', conversations: 1 } },
         { $sort: { date: 1 } },
       ]),
-      Conversation.aggregate<RecentConversation>([
-        ...searchedConversationPipeline,
-        { $sort: { createdAt: -1, _id: -1 } },
-        { $skip: (page - 1) * pageSize },
-        { $limit: pageSize },
-        {
-          $project: {
-            _id: 0,
-            conversationId: 1,
-            agentId: '$insightsAgentId',
-            date: '$createdAt',
-            userId: '$user',
-          },
-        },
-      ]),
+      showDetails
+        ? Conversation.aggregate<RecentConversation>([
+            ...searchedConversationPipeline,
+            { $sort: { createdAt: -1, _id: -1 } },
+            { $skip: (page - 1) * pageSize },
+            { $limit: pageSize },
+            {
+              $project: {
+                _id: 0,
+                conversationId: 1,
+                agentId: '$insightsAgentId',
+                date: '$createdAt',
+                userId: '$user',
+              },
+            },
+          ])
+        : Promise.resolve([] as RecentConversation[]),
       searchRegex
         ? Conversation.aggregate<CountResult>([
             ...searchedConversationPipeline,
@@ -402,13 +584,63 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       Message.aggregate<MessageDay>([
         ...messagePipeline,
         {
-          $group: {
-            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: timeZone } },
-            messages: { $sum: 1 },
-            totalTokens: { $sum: { $ifNull: ['$tokenCount', 0] } },
+          $addFields: {
+            insightsFeedbackRating: responseRating,
+            insightsFeedbackTag: { $ifNull: ['$feedback.tag.key', '$feedback.tag'] },
+            insightsOutcome: responseOutcome,
           },
         },
-        { $project: { _id: 0, date: '$_id', messages: 1, totalTokens: 1 } },
+        {
+          $group: {
+            _id: createdDay,
+            messages: { $sum: 1 },
+            totalTokens: { $sum: { $ifNull: ['$tokenCount', 0] } },
+            responses: { $sum: { $cond: [{ $ne: ['$insightsOutcome', null] }, 1, 0] } },
+            completedResponses: outcomeCount('completed'),
+            failedResponses: outcomeCount('failed'),
+            interruptedResponses: outcomeCount('interrupted'),
+            lastUsed: { $max: '$createdAt' },
+            feedbackThumbsUp: ratingCount('thumbsUp'),
+            feedbackThumbsDown: ratingCount('thumbsDown'),
+            ...Object.fromEntries(
+              FEEDBACK_TAGS.map(({ key, direction }) => [
+                `feedback_${key}`,
+                {
+                  $sum: {
+                    $cond: [
+                      {
+                        $and: [
+                          { $eq: ['$insightsFeedbackRating', direction] },
+                          { $eq: ['$insightsFeedbackTag', key] },
+                        ],
+                      },
+                      1,
+                      0,
+                    ],
+                  },
+                },
+              ]),
+            ),
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            date: '$_id',
+            messages: 1,
+            totalTokens: 1,
+            responses: 1,
+            completedResponses: 1,
+            failedResponses: 1,
+            interruptedResponses: 1,
+            lastUsed: 1,
+            feedback: {
+              thumbsUp: '$feedbackThumbsUp',
+              thumbsDown: '$feedbackThumbsDown',
+              categories: FEEDBACK_TAGS.map(({ key }) => ({ key, count: `$feedback_${key}` })),
+            },
+          },
+        },
         { $sort: { date: 1 } },
       ]),
       Message.aggregate<CountResult>([
@@ -421,9 +653,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         {
           $group: {
             _id: {
-              date: {
-                $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: timeZone },
-              },
+              date: createdDay,
               user: '$user',
             },
           },
@@ -432,30 +662,236 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         { $project: { _id: 0, date: '$_id', users: 1 } },
         { $sort: { date: 1 } },
       ]),
-      Message.aggregate<MessageSummary>([
-        ...messagePipeline,
-        { $group: { _id: '$user', messages: { $sum: 1 } } },
-        { $sort: { messages: -1, _id: 1 } },
-        { $limit: 8 },
-      ]),
-      Message.aggregate<ChurnedUserActivity>([
-        ...messageScope(
-          {
-            ...tenant,
-            isTemporary: { $ne: true },
-            isCreatedByUser: true,
-            user: { $nin: [null, ''] },
-            createdAt: { $gte: churnedActivityFrom, $lte: to },
+      showDetails
+        ? Message.aggregate<MessageSummary>([
+            ...messagePipeline,
+            { $group: { _id: '$user', messages: { $sum: 1 } } },
+            { $sort: { messages: -1, _id: 1 } },
+            { $limit: 8 },
+          ])
+        : Promise.resolve([] as MessageSummary[]),
+      showDetails
+        ? Message.aggregate<ChurnedUserActivity>([
+            ...messageScope(
+              {
+                ...tenant,
+                isTemporary: { $ne: true },
+                isCreatedByUser: true,
+                user: { $nin: [null, ''] },
+                createdAt: { $gte: churnedActivityFrom, $lte: to },
+              },
+              agentIds,
+            ),
+            { $group: { _id: '$user', lastSeen: { $max: '$createdAt' } } },
+            { $match: { lastSeen: { $gte: churnedActivityFrom, $lte: churnedCutoff } } },
+            { $sort: { lastSeen: -1, _id: 1 } },
+            { $limit: churnedUserLimit },
+          ])
+        : Promise.resolve([] as ChurnedUserActivity[]),
+      Transaction.aggregate<ModelSpend>([
+        ...transactionScope(agentIds, options.tenantId, { $gte: from, $lte: to }),
+        {
+          $group: {
+            _id: {
+              date: createdDay,
+              model: { $ifNull: ['$model', null] },
+            },
+            credits: { $sum: { $multiply: ['$tokenValue', -1] } },
+            usageTokens: { $sum: { $abs: { $ifNull: ['$rawAmount', 0] } } },
           },
+        },
+        {
+          $project: {
+            _id: 0,
+            date: '$_id.date',
+            model: '$_id.model',
+            credits: 1,
+            usageTokens: 1,
+          },
+        },
+        { $sort: { date: 1, model: 1 } },
+      ]),
+      Transaction.aggregate<ReplyModel>([
+        ...transactionScope(
           agentIds,
           options.tenantId,
+          {
+            $gte: new Date(from.getTime() - replyUsageWindowMs),
+            $lte: new Date(to.getTime() + replyUsageWindowMs),
+          },
+          {
+            tokenType: 'completion',
+            context: { $in: replyUsageContexts },
+            messageId: { $exists: true, $nin: [null, ''] },
+          },
         ),
-        { $group: { _id: '$user', lastSeen: { $max: '$createdAt' } } },
-        { $match: { lastSeen: { $gte: churnedActivityFrom, $lte: churnedCutoff } } },
-        { $sort: { lastSeen: -1, _id: 1 } },
-        { $limit: churnedUserLimit },
+        { $sort: { createdAt: 1, _id: 1 } },
+        {
+          $group: {
+            _id: {
+              conversationId: '$conversationId',
+              user: { $convert: { input: '$user', to: 'string', onError: null, onNull: null } },
+              messageId: '$messageId',
+            },
+            model: { $last: '$model' },
+          },
+        },
       ]),
+      Message.aggregate<ReplyOutcome>([
+        ...messagePipeline,
+        {
+          $project: {
+            _id: 0,
+            conversationId: 1,
+            user: 1,
+            messageId: 1,
+            outcome: responseOutcome,
+            rating: responseRating,
+          },
+        },
+        { $match: { outcome: { $ne: null } } },
+      ]),
+      Message.aggregate<CommentRow>([
+        ...messageScope(
+          { ...messageMatch, isCreatedByUser: false, 'feedback.text': { $regex: /\S/ } },
+          agentIds,
+        ),
+        { $sort: { createdAt: -1, _id: -1 } },
+        {
+          $lookup: {
+            from: 'conversations',
+            localField: 'conversationId',
+            foreignField: 'conversationId',
+            as: 'chats',
+          },
+        },
+        { $addFields: { insightsLive: { $in: ['$user', '$chats.user'] } } },
+        { $match: { insightsLive: true } },
+        { $limit: options.commentLimit ?? INSIGHTS_COMMENT_LIMIT },
+        {
+          $project: {
+            _id: 0,
+            agentId: '$insightsAgentId',
+            date: '$createdAt',
+            rating: '$feedback.rating',
+            tag: { $ifNull: ['$feedback.tag.key', '$feedback.tag'] },
+            text: '$feedback.text',
+          },
+        },
+      ]),
+      agentIds.length === 1
+        ? getSavedVersions(mongoose, agentIds[0], options.tenantId)
+        : Promise.resolve(undefined),
     ]);
+
+    const days = new Map<string, TInsightsDailyPoint>();
+    const firstDay = dateKey(from, timeZone);
+    const lastDay = dateKey(to, timeZone);
+    for (let key = firstDay; key <= lastDay; key = addCalendarDaysToKey(key, 1)) {
+      addDay(days, key);
+    }
+    for (const row of conversationDays) addDay(days, row.date).conversations = row.conversations;
+    const summary: TInsightsSummary = {
+      totalUsers: userCount[0]?.total ?? 0,
+      totalConversations: conversationDays.reduce((total, row) => total + row.conversations, 0),
+      totalMessages: 0,
+      totalTokens: 0,
+      totalResponses: 0,
+      completedResponses: 0,
+      failedResponses: 0,
+      interruptedResponses: 0,
+      lastUsed: null,
+      feedback: emptyFeedback(),
+      spendUSD: null,
+    };
+    let lastUsed: Date | null = null;
+    for (const row of messageDays) {
+      const day = addDay(days, row.date);
+      day.messages = row.messages;
+      day.totalTokens = row.totalTokens;
+      day.responses = row.responses;
+      day.completedResponses = row.completedResponses;
+      day.failedResponses = row.failedResponses;
+      day.interruptedResponses = row.interruptedResponses;
+      day.feedback = row.feedback;
+      summary.totalMessages += row.messages;
+      summary.totalTokens += row.totalTokens;
+      summary.totalResponses += row.responses;
+      summary.completedResponses += row.completedResponses;
+      summary.failedResponses += row.failedResponses;
+      summary.interruptedResponses += row.interruptedResponses;
+      summary.feedback.thumbsUp += row.feedback.thumbsUp;
+      summary.feedback.thumbsDown += row.feedback.thumbsDown;
+      for (const [index, category] of row.feedback.categories.entries()) {
+        summary.feedback.categories[index].count += category.count;
+      }
+      if (lastUsed == null || row.lastUsed > lastUsed) lastUsed = row.lastUsed;
+    }
+    summary.lastUsed = lastUsed?.toISOString() ?? null;
+    const creditsByDay = new Map<string, number>();
+    const models = new Map<string | null, TInsightsModel>();
+    const creditsByModel = new Map<string | null, number>();
+    const modelRow = (model: unknown) => {
+      const key = modelKey(model);
+      const current = models.get(key) ?? emptyModel(key);
+      models.set(key, current);
+      return current;
+    };
+    for (const row of spendRows) {
+      creditsByDay.set(row.date, (creditsByDay.get(row.date) ?? 0) + row.credits);
+      const model = modelRow(row.model);
+      model.usageTokens += row.usageTokens;
+      creditsByModel.set(model.model, (creditsByModel.get(model.model) ?? 0) + row.credits);
+    }
+    for (const [date, credits] of creditsByDay) {
+      const spendUSD = credits / CREDITS_PER_USD;
+      addDay(days, date).spendUSD = spendUSD;
+      summary.spendUSD = (summary.spendUSD ?? 0) + spendUSD;
+    }
+    for (const [key, credits] of creditsByModel) {
+      const model = models.get(key);
+      if (model) model.spendUSD = credits / CREDITS_PER_USD;
+    }
+    const replyKey = ({ conversationId, user, messageId }: ReplyIdentity) =>
+      JSON.stringify([conversationId, user, messageId]);
+    const replyModels = new Map(replyModelRows.map((row) => [replyKey(row._id), row.model]));
+    for (const reply of replyRows) {
+      const target = modelRow(replyModels.get(replyKey(reply)));
+      target.responses += 1;
+      if (reply.outcome === 'completed') target.completedResponses += 1;
+      if (reply.outcome === 'failed') target.failedResponses += 1;
+      if (reply.outcome === 'interrupted') target.interruptedResponses += 1;
+      if (reply.rating === 'thumbsUp') target.thumbsUp += 1;
+      if (reply.rating === 'thumbsDown') target.thumbsDown += 1;
+    }
+    for (const row of dailyUsers) addDay(days, row.date).users = row.users;
+    const agentNames = new Map((options.agents ?? []).map((agent) => [agent.id, agent.name]));
+    const aggregate: TInsightsAggregateResponse = {
+      agents: options.agents ?? [],
+      summary,
+      daily: [...days.values()].sort((left, right) => left.date.localeCompare(right.date)),
+      ...(agentVersions !== undefined && { agentVersions }),
+      models: [...models.values()].sort(
+        (left, right) =>
+          Number(left.model == null) - Number(right.model == null) ||
+          right.responses - left.responses ||
+          (right.spendUSD ?? 0) - (left.spendUSD ?? 0) ||
+          (left.model ?? '').localeCompare(right.model ?? ''),
+      ),
+      comments: commentRows.map(
+        ({ agentId, date, rating, tag, text }): TInsightsComment => ({
+          agentId,
+          agentName: agentNames.get(agentId) ?? agentId,
+          date: date.toISOString(),
+          rating,
+          tag: tag ?? null,
+          text,
+        }),
+      ),
+    };
+    if (!showDetails) {
+      return { result: aggregate, converting };
+    }
 
     const latestConversationOwners = latestRows
       .filter(
@@ -469,6 +905,17 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     const latestConversationMatches = latestConversationOwners.map(conversationOwnerMatch);
     const topUserIds = topMessageUsers.map(({ _id }) => _id);
     const churnedUserIds = churnedUserRows.map(({ _id }) => _id);
+    const churnConverting =
+      churnedUserIds.length === 0
+        ? []
+        : await clearExcludedRecords(mongoose, tenant, {
+            Message: {
+              ...tenant,
+              user: { $in: churnedUserIds },
+              insightsAgentId: { $in: agentIds },
+              createdAt: { $lte: to },
+            },
+          });
     const userIds = new Set<string>([
       ...topUserIds,
       ...churnedUserIds,
@@ -492,7 +939,6 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
                 $or: latestConversationMatches,
               },
               agentIds,
-              options.tenantId,
             ),
             {
               $group: {
@@ -514,7 +960,6 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
                 $or: latestConversationMatches,
               },
               agentIds,
-              options.tenantId,
             ),
             { $sort: { createdAt: 1, _id: 1 } },
             {
@@ -527,11 +972,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       topUserIds.length === 0
         ? Promise.resolve([] as UserConversationCount[])
         : Message.aggregate<UserConversationCount>([
-            ...messageScope(
-              { ...messageMatch, user: { $in: topUserIds } },
-              agentIds,
-              options.tenantId,
-            ),
+            ...messageScope({ ...messageMatch, user: { $in: topUserIds } }, agentIds),
             { $group: { _id: { user: '$user', conversationId: '$conversationId' } } },
             { $group: { _id: '$_id.user', conversations: { $sum: 1 } } },
           ]),
@@ -547,7 +988,6 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
                 createdAt: { $lte: to },
               },
               agentIds,
-              options.tenantId,
             ),
             {
               $group: {
@@ -573,34 +1013,15 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     ]);
 
     const users = new Map(userRows.map((user) => [user._id.toString(), user]));
-    const agentNames = new Map((options.agents ?? []).map((agent) => [agent.id, agent.name]));
     const latestSummaries = new Map(
       latestMessageSummaries.map((summary) => [conversationOwnerKey(summary._id), summary]),
     );
     const firstByConversation = new Map(
       firstMessages.map((message) => [conversationOwnerKey(message._id), message.text]),
     );
-    const days = new Map<string, TInsightsDailyPoint>();
-    const firstDay = dateKey(from, timeZone);
-    const lastDay = dateKey(to, timeZone);
-    for (let key = firstDay; key <= lastDay; key = addCalendarDaysToKey(key, 1)) {
-      addDay(days, key);
-    }
-    for (const row of conversationDays) addDay(days, row.date).conversations = row.conversations;
-    for (const row of messageDays) {
-      const day = addDay(days, row.date);
-      day.messages = row.messages;
-      day.totalTokens = row.totalTokens;
-    }
-    for (const row of dailyUsers) addDay(days, row.date).users = row.users;
-
-    const totalConversations = conversationDays.reduce(
-      (total, row) => total + row.conversations,
-      0,
-    );
     const matchingConversations = searchRegex
       ? (searchedConversationCount[0]?.total ?? 0)
-      : totalConversations;
+      : summary.totalConversations;
     const topConversationCountsByUser = new Map(
       topConversationCounts.map((summary) => [summary._id, summary.conversations]),
     );
@@ -608,15 +1029,8 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       churnedUserSummaries.map((summary) => [summary._id, summary]),
     );
 
-    return {
-      agents: options.agents ?? [],
-      summary: {
-        totalUsers: userCount[0]?.total ?? 0,
-        totalConversations,
-        totalMessages: messageDays.reduce((total, row) => total + row.messages, 0),
-        totalTokens: messageDays.reduce((total, row) => total + row.totalTokens, 0),
-      },
-      daily: [...days.values()].sort((left, right) => left.date.localeCompare(right.date)),
+    const detailed: InsightsResult = {
+      ...aggregate,
       topUsers: topMessageUsers.map((row) =>
         toUser(row._id, topConversationCountsByUser.get(row._id) ?? 0, users, row),
       ),
@@ -656,6 +1070,18 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         pages: Math.max(1, Math.ceil(matchingConversations / pageSize)),
       },
     };
+    return { result: detailed, converting: [...converting, ...churnConverting] };
+  }
+
+  async function getInsights(options: InsightsOptions = {}): Promise<InsightsResult> {
+    const { result, converting } = await buildInsights(options);
+    if (converting.length === 0) return result;
+    const committed = await (mongoose.models.Conversation as Model<IConversation>).exists({
+      ...tenantMatch(options.tenantId),
+      isTemporary: true,
+      $or: converting,
+    });
+    return committed ? (await buildInsights(options)).result : result;
   }
 
   return { getInsights };

@@ -17,6 +17,7 @@ import {
   DEFAULT_STEER_ARM_CONFIRMATION_TIMEOUT_MS,
   codeEnvironmentUserConfigSchema,
   interfaceSchema,
+  resolveInsightsConfig,
   supportsConversationTitleOwnership,
   CODE_ENVIRONMENT_ADMISSION_MAX_MS,
   excludedKeys,
@@ -115,6 +116,48 @@ const endpointsConfig: TEndpointsConfig = {
   'Some Endpoint': { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
   Gemini: { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
 };
+
+describe('Insights configuration', () => {
+  it('retains omitted flags for partial configuration overrides', () => {
+    expect(interfaceSchema.parse({ insights: { enabled: true } }).insights).toEqual({
+      enabled: true,
+    });
+  });
+
+  it.each([
+    true,
+    { enabled: 'true' },
+    { adminAutoSelectAllAgents: 'false' },
+    { enabled: true, showDetail: false },
+    { commentLimit: 0 },
+    { commentLimit: 101 },
+    { commentLimit: 2.5 },
+    { commentLimit: '20' },
+  ])('rejects unsupported configuration %p', (insights) => {
+    expect(configSchema.safeParse({ version: '1.3.9', interface: { insights } }).success).toBe(
+      false,
+    );
+  });
+
+  it('resolves missing flags to disabled and aggregate-only defaults', () => {
+    const disabled = {
+      enabled: false,
+      showDetails: false,
+      adminAutoSelectAllAgents: false,
+      commentLimit: 20,
+    };
+    expect(resolveInsightsConfig()).toEqual(disabled);
+    expect(resolveInsightsConfig({ enabled: true })).toEqual({ ...disabled, enabled: true });
+  });
+
+  it('accepts a comment limit within bounds', () => {
+    const insights = { enabled: true, commentLimit: 100 };
+    expect(
+      configSchema.parse({ version: '1.3.9', interface: { insights } }).interface?.insights,
+    ).toEqual(insights);
+    expect(resolveInsightsConfig({ commentLimit: 5 }).commentLimit).toBe(5);
+  });
+});
 
 describe('host-side file edit limits', () => {
   it('keeps configuration optional and resolves safe defaults when configured', () => {

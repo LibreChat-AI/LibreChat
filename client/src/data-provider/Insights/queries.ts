@@ -1,17 +1,20 @@
 import { useQuery } from '@tanstack/react-query';
 import { QueryKeys, dataService } from 'librechat-data-provider';
 import type {
+  TInsightsSelectionResponse,
   TInsightsAccessResponse,
-  TInsightsParams,
   TInsightsResponse,
+  TInsightsParams,
 } from 'librechat-data-provider';
 import type { QueryObserverResult, UseQueryOptions } from '@tanstack/react-query';
 
+type InsightsQueryData = TInsightsResponse | TInsightsSelectionResponse;
+
 export const useInsightsQuery = (
   params: TInsightsParams,
-  config?: UseQueryOptions<TInsightsResponse>,
-): QueryObserverResult<TInsightsResponse> =>
-  useQuery<TInsightsResponse>([QueryKeys.insights, params], () => dataService.getInsights(params), {
+  config?: UseQueryOptions<InsightsQueryData>,
+): QueryObserverResult<InsightsQueryData> =>
+  useQuery<InsightsQueryData>([QueryKeys.insights, params], () => dataService.getInsights(params), {
     keepPreviousData: true,
     refetchOnWindowFocus: false,
     ...config,

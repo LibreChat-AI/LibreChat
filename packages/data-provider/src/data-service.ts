@@ -38,6 +38,12 @@ import type {
   Subscription,
 } from './types/subscriptions';
 import type {
+  TInsightsSelectionResponse,
+  TInsightsAccessResponse,
+  TInsightsResponse,
+  TInsightsParams,
+} from './types/insights';
+import type {
   TTracePage,
   TTracePageParams,
   TTraceAvailability,
@@ -55,7 +61,6 @@ import type {
   ChannelIdentityResult,
   ChannelLinkView,
 } from './types/channelIdentity';
-import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
 import type { CodeSetupAttempt, CodeSetupApprovalRequest } from './codeSetup';
 import type { RunGrantView, ConfirmRunGrant } from './types/runGrant';
 import type { TFileConfig } from './file-config';
@@ -302,7 +307,9 @@ export const channelIdentityClient: ChannelIdentityClient = {
     ),
 };
 
-export function getInsights(params: TInsightsParams = {}): Promise<TInsightsResponse> {
+export function getInsights(
+  params: TInsightsParams = {},
+): Promise<TInsightsResponse | TInsightsSelectionResponse> {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (Array.isArray(value)) {

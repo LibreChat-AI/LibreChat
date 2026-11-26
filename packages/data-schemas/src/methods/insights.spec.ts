@@ -1,12 +1,36 @@
 import mongoose from 'mongoose';
+import { FEEDBACK_TAGS } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import type { TFeedbackTagKey } from 'librechat-data-provider';
+import { createInsightsMethods as createIndexedInsightsMethods } from './insights';
+import { backfillInsightsAttribution } from '../migrations/insightsAgentIds';
+import { createInsightsExclusionModel } from '../models/insightsExclusion';
+import { createTransactionModel } from '../models/transaction';
 import { createConversationModel } from '../models/convo';
 import { createMessageModel } from '../models/message';
-import { createInsightsMethods } from './insights';
+import { createAgentModel } from '../models/agent';
 import { createUserModel } from '../models/user';
+import { createAgentMethods } from './agent';
 
 let mongoServer: MongoMemoryServer;
 const selectedAgents = [{ id: 'agent-a', name: 'Agent A' }];
+const feedbackCounts = (
+  thumbsUp = 0,
+  thumbsDown = 0,
+  counts: Partial<Record<TFeedbackTagKey, number>> = {},
+) => ({
+  thumbsUp,
+  thumbsDown,
+  categories: FEEDBACK_TAGS.map(({ key }) => ({ key, count: counts[key] ?? 0 })),
+});
+const noResponses = {
+  responses: 0,
+  completedResponses: 0,
+  failedResponses: 0,
+  interruptedResponses: 0,
+  feedback: feedbackCounts(),
+  spendUSD: null,
+};
 
 const fixtures = {
   conversations: {
@@ -33,6 +57,30 @@ const fixtures = {
   },
 };
 
+async function migrateInsightsAttribution() {
+  for (const collection of ['conversations', 'messages', 'transactions'] as const) {
+    let after: string | undefined;
+    do {
+      const result = await backfillInsightsAttribution(mongoose, {
+        collection,
+        batchSize: 1000,
+        after,
+        apply: true,
+      });
+      after = result.nextAfter;
+    } while (after);
+  }
+}
+
+function createInsightsMethods(connection: typeof mongoose) {
+  const methods = createIndexedInsightsMethods(connection);
+  const getInsights = async (options?: Parameters<typeof methods.getInsights>[0]) => {
+    await migrateInsightsAttribution();
+    return methods.getInsights(options);
+  };
+  return { ...methods, getInsights };
+}
+
 function createScopedInsightsMethods() {
   const methods = createInsightsMethods(mongoose);
   return {
@@ -48,6 +96,8 @@ beforeAll(async () => {
     createConversationModel(mongoose),
     createMessageModel(mongoose),
     createUserModel(mongoose),
+    createTransactionModel(mongoose),
+    createAgentModel(mongoose),
   ];
   await Promise.all(models.map((model) => model.init()));
 });
@@ -62,10 +112,641 @@ beforeEach(async () => {
     mongoose.models.Conversation.deleteMany({}),
     mongoose.models.Message.deleteMany({}),
     mongoose.models.User.deleteMany({}),
+    mongoose.models.Transaction.deleteMany({}),
+    mongoose.models.Agent.deleteMany({}),
   ]);
 });
 
 describe('Insights methods', () => {
+  it('returns only saved version numbers and dates for the selected tenant and agent', async () => {
+    const privateValue = 'private-snapshot-content';
+    await mongoose.models.Agent.collection.insertMany([
+      {
+        id: 'agent-a',
+        tenantId: 'tenant-a',
+        versions: [
+          {
+            updatedAt: new Date('2026-09-01T12:00:00Z'),
+            instructions: privateValue,
+            updatedBy: privateValue,
+          },
+          { instructions: privateValue },
+          { updatedAt: 'invalid-date' },
+          { updatedAt: new Date('2026-10-03T12:00:00Z') },
+        ],
+      },
+      {
+        id: 'agent-b',
+        tenantId: 'tenant-b',
+        versions: [{ updatedAt: new Date('2026-10-05T12:00:00Z') }],
+      },
+    ]);
+    const findAgent = jest.spyOn(mongoose.models.Agent, 'findOne');
+    const methods = createInsightsMethods(mongoose);
+    const options = {
+      tenantId: 'tenant-a',
+      agentIds: ['agent-a'],
+      showDetails: false as const,
+      range: 'custom' as const,
+      fromTimestamp: '2026-10-01T00:00:00Z',
+      toTimestamp: '2026-10-07T23:59:59Z',
+    };
+    const result = await methods.getInsights(options);
+    expect(result.agentVersions).toEqual([
+      { agentId: 'agent-a', version: 1, savedAt: '2026-09-01T12:00:00.000Z', active: false },
+      { agentId: 'agent-a', version: 2, savedAt: null, active: false },
+      { agentId: 'agent-a', version: 3, savedAt: null, active: false },
+      { agentId: 'agent-a', version: 4, savedAt: '2026-10-03T12:00:00.000Z', active: true },
+    ]);
+    expect(findAgent).toHaveBeenCalledWith(
+      { id: 'agent-a', tenantId: 'tenant-a' },
+      expect.objectContaining({ _id: 0, 'versions.updatedAt': 1, instructions: 1 }),
+    );
+    expect(JSON.stringify(result)).not.toContain(privateValue);
+    expect(
+      (await methods.getInsights({ ...options, agentIds: ['agent-b'] })).agentVersions,
+    ).toEqual([]);
+    expect((await methods.getInsights({ ...options, tenantId: undefined })).agentVersions).toEqual(
+      [],
+    );
+    findAgent.mockClear();
+    for (const agentIds of [['agent-a', 'agent-b'], []]) {
+      expect(await methods.getInsights({ ...options, agentIds })).not.toHaveProperty(
+        'agentVersions',
+      );
+    }
+    expect(findAgent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the model', { model: 'model-old' }, { model: 'model-new' }],
+    [
+      'model parameters',
+      { model_parameters: { effort: 'low' } },
+      { model_parameters: { effort: 'high' } },
+    ],
+    ['skills', { skills_enabled: true }, { skills_enabled: false }],
+    ['subagents', { subagents: { enabled: true } }, { subagents: { enabled: false } }],
+  ])('marks the restored version when versions only differ in %s', async (_, older, newer) => {
+    const agents = createAgentMethods(mongoose, {
+      removeAllPermissions: async () => {},
+      getActions: async () => [],
+      getSoleOwnedResourceIds: async () => [],
+      getUserPrincipals: async () => [],
+      findAccessibleResources: async () => [],
+    });
+    const active = async () => {
+      const { agentVersions } = await createInsightsMethods(mongoose).getInsights({
+        agentIds: ['agent-a'],
+        showDetails: false,
+      });
+      return agentVersions?.filter((version) => version.active).map(({ version }) => version);
+    };
+    await agents.createAgent({
+      id: 'agent-a',
+      name: 'Root',
+      provider: 'openAI',
+      model: 'model',
+      author: new mongoose.Types.ObjectId(),
+      ...older,
+    });
+    expect(await active()).toEqual([1]);
+    await agents.updateAgent({ id: 'agent-a' }, newer);
+    expect(await active()).toEqual([2]);
+    await agents.revertAgentVersion({ id: 'agent-a' }, 0);
+    expect(await active()).toEqual([1]);
+    await agents.revertAgentVersion({ id: 'agent-a' }, 1);
+    expect(await active()).toEqual([2]);
+  });
+
+  it('marks no version active when the running model differs from every saved one', async () => {
+    const agents = createAgentMethods(mongoose, {
+      removeAllPermissions: async () => {},
+      getActions: async () => [],
+      getSoleOwnedResourceIds: async () => [],
+      getUserPrincipals: async () => [],
+      findAccessibleResources: async () => [],
+    });
+    await agents.createAgent({
+      id: 'agent-a',
+      name: 'Root',
+      provider: 'openAI',
+      model: 'model-old',
+      author: new mongoose.Types.ObjectId(),
+    });
+    await agents.updateAgent({ id: 'agent-a' }, { model: 'model-new' }, { skipVersioning: true });
+    const { agentVersions } = await createInsightsMethods(mongoose).getInsights({
+      agentIds: ['agent-a'],
+      showDetails: false,
+    });
+    expect(agentVersions?.map(({ version, active }) => [version, active])).toEqual([[1, false]]);
+  });
+
+  it.each([
+    ['valid root', {}, [], 1, 1],
+    ['legacy root', { agent_id: 'agent-a' }, ['initial_agent_id'], 1, 1],
+    ['older conversation', { createdAt: new Date('2026-09-01T12:00:00Z') }, [], 0, 1],
+    ['temporary conversation', { isTemporary: true }, [], 0, 0],
+    ['subagent thread', { subagentThread: { parentConversationId: 'parent' } }, [], 0, 0],
+    ['foreign tenant', { tenantId: 'tenant-b' }, [], 0, 0],
+    ['another root agent', { initial_agent_id: 'agent-b', agent_id: 'agent-a' }, [], 0, 0],
+  ] as const)(
+    'uses one conversation eligibility rule across counts, messages and spend: %s',
+    async (_name, overrides, omitted, conversations, activityCount) => {
+      const user = new mongoose.Types.ObjectId();
+      const activity = new Date('2026-10-03T12:00:00Z');
+      const conversation: Record<string, unknown> = {
+        conversationId: 'shared-eligibility',
+        user: user.toString(),
+        tenantId: 'tenant-a',
+        initial_agent_id: 'agent-a',
+        agent_id: 'agent-b',
+        createdAt: activity,
+        updatedAt: new Date('2026-10-15T12:00:00Z'),
+        ...overrides,
+      };
+      for (const field of omitted) delete conversation[field];
+      // Native inserts deliberately exercise missing bindings that schema validation rejects.
+      await mongoose.models.Conversation.collection.insertOne(conversation);
+      const message = {
+        conversationId: conversation.conversationId,
+        user: user.toString(),
+        tenantId: 'tenant-a',
+        createdAt: activity,
+      };
+      await fixtures.messages.insertMany([
+        { ...message, messageId: 'scope-prompt', isCreatedByUser: true, tokenCount: 5 },
+        {
+          ...message,
+          messageId: 'scope-response',
+          isCreatedByUser: false,
+          model: 'agent-b',
+          tokenCount: 7,
+          error: true,
+          feedback: { rating: 'thumbsDown', tag: 'inaccurate' },
+        },
+      ]);
+      await mongoose.models.Transaction.collection.insertOne({
+        conversationId: conversation.conversationId,
+        user,
+        tenantId: 'tenant-a',
+        createdAt: activity,
+        tokenType: 'completion',
+        tokenValue: -250_000,
+      });
+      const result = await createInsightsMethods(mongoose).getInsights({
+        tenantId: 'tenant-a',
+        agentIds: ['agent-a'],
+        showDetails: false,
+        range: 'custom',
+        fromTimestamp: '2026-10-01T00:00:00Z',
+        toTimestamp: '2026-10-07T23:59:59Z',
+      });
+      expect(result.summary).toEqual({
+        totalConversations: conversations,
+        totalMessages: activityCount * 2,
+        totalUsers: activityCount,
+        totalTokens: activityCount * 12,
+        totalResponses: activityCount,
+        completedResponses: 0,
+        failedResponses: activityCount,
+        interruptedResponses: 0,
+        lastUsed: activityCount ? activity.toISOString() : null,
+        feedback: feedbackCounts(0, activityCount, { inaccurate: activityCount }),
+        spendUSD: activityCount ? 0.25 : null,
+      });
+      expect(result.daily.find((day) => day.date === '2026-10-03')).toEqual({
+        date: '2026-10-03',
+        conversations,
+        messages: activityCount * 2,
+        users: activityCount,
+        totalTokens: activityCount * 12,
+        responses: activityCount,
+        completedResponses: 0,
+        failedResponses: activityCount,
+        interruptedResponses: 0,
+        feedback: feedbackCounts(0, activityCount, { inaccurate: activityCount }),
+        spendUSD: activityCount ? 0.25 : null,
+      });
+      expect(Object.keys(result).sort()).toEqual([
+        'agentVersions',
+        'agents',
+        'comments',
+        'daily',
+        'models',
+        'summary',
+      ]);
+    },
+  );
+
+  it('returns the same aggregate totals without querying detail, identities or first-message text', async () => {
+    const now = new Date();
+    const userId = new mongoose.Types.ObjectId();
+    const privateValue = 'private-content-sentinel';
+    await mongoose.models.User.collection.insertOne({
+      _id: userId,
+      tenantId: 'tenant-a',
+      name: privateValue,
+      email: `${privateValue}@example.com`,
+    });
+    await fixtures.conversations.insertOne({
+      conversationId: privateValue,
+      user: userId.toString(),
+      tenantId: 'tenant-a',
+      initial_agent_id: 'agent-a',
+      createdAt: now,
+      updatedAt: now,
+      isTemporary: false,
+    });
+    await fixtures.messages.insertMany([
+      {
+        messageId: 'prompt',
+        conversationId: privateValue,
+        user: userId.toString(),
+        tenantId: 'tenant-a',
+        createdAt: now,
+        isCreatedByUser: true,
+        isTemporary: false,
+        text: privateValue,
+        tokenCount: 3,
+      },
+      {
+        messageId: 'response',
+        model: 'agent-b',
+        conversationId: privateValue,
+        user: userId.toString(),
+        tenantId: 'tenant-a',
+        createdAt: now,
+        isCreatedByUser: false,
+        isTemporary: false,
+        text: privateValue,
+        tokenCount: 5,
+        feedback: {
+          rating: 'thumbsDown',
+          tag: { key: 'inaccurate', label: privateValue, icon: privateValue },
+          text: 'A comment for the agent owners',
+        },
+      },
+    ]);
+    const methods = createInsightsMethods(mongoose);
+    const options = {
+      tenantId: 'tenant-a',
+      range: '7d' as const,
+      agents: selectedAgents,
+      agentIds: ['agent-a'],
+    };
+    await mongoose.models.Transaction.collection.insertOne({
+      conversationId: privateValue,
+      user: userId,
+      tenantId: 'tenant-a',
+      messageId: privateValue,
+      model: 'model-x',
+      tokenType: 'prompt',
+      tokenValue: -1_250_000,
+      createdAt: now,
+    });
+    const detailed = await methods.getInsights(options);
+    const userFind = jest.spyOn(mongoose.models.User, 'find');
+    const conversationAggregate = jest.spyOn(mongoose.models.Conversation, 'aggregate');
+    const messageAggregate = jest.spyOn(mongoose.models.Message, 'aggregate');
+    const transactionAggregate = jest.spyOn(mongoose.models.Transaction, 'aggregate');
+    const aggregate = await methods.getInsights({
+      ...options,
+      showDetails: false,
+      search: privateValue,
+      page: 50,
+      pageSize: 50,
+    });
+    expect(aggregate).toEqual({
+      agents: detailed.agents,
+      summary: detailed.summary,
+      comments: detailed.comments,
+      daily: detailed.daily,
+      models: detailed.models,
+      agentVersions: detailed.agentVersions,
+    });
+    expect(aggregate.summary).toEqual({
+      totalUsers: 1,
+      totalConversations: 1,
+      totalMessages: 2,
+      totalTokens: 8,
+      totalResponses: 1,
+      completedResponses: 1,
+      failedResponses: 0,
+      interruptedResponses: 0,
+      lastUsed: now.toISOString(),
+      feedback: feedbackCounts(0, 1, { inaccurate: 1 }),
+      spendUSD: 1.25,
+    });
+    expect(aggregate.models).toEqual([
+      {
+        model: 'model-x',
+        responses: 0,
+        completedResponses: 0,
+        failedResponses: 0,
+        interruptedResponses: 0,
+        thumbsUp: 0,
+        thumbsDown: 0,
+        usageTokens: 0,
+        spendUSD: 1.25,
+      },
+      {
+        model: null,
+        responses: 1,
+        completedResponses: 1,
+        failedResponses: 0,
+        interruptedResponses: 0,
+        thumbsUp: 0,
+        thumbsDown: 1,
+        usageTokens: 0,
+        spendUSD: null,
+      },
+    ]);
+    expect(Object.keys(aggregate).sort()).toEqual([
+      'agentVersions',
+      'agents',
+      'comments',
+      'daily',
+      'models',
+      'summary',
+    ]);
+    expect(aggregate.comments?.map(({ text, tag }) => [text, tag])).toEqual([
+      ['A comment for the agent owners', 'inaccurate'],
+    ]);
+    expect(JSON.stringify(aggregate)).not.toContain(privateValue);
+    expect(userFind).not.toHaveBeenCalled();
+    expect(conversationAggregate).toHaveBeenCalledTimes(1);
+    expect(messageAggregate).toHaveBeenCalledTimes(5);
+    const pipelines = [
+      ...conversationAggregate.mock.calls,
+      ...messageAggregate.mock.calls,
+      ...transactionAggregate.mock.calls,
+    ];
+    const isComments = (pipeline: unknown) => JSON.stringify(pipeline).includes('feedback.text');
+    expect(pipelines.filter(isComments)).toHaveLength(1);
+    const lists = pipelines.filter((pipeline) => !isComments(pipeline));
+    const serialized = JSON.stringify(lists);
+    expect(serialized).not.toContain('feedback.text');
+    expect(serialized).not.toContain('matchedIdentity');
+    expect(serialized).not.toContain('firstMessage');
+    expect(serialized).not.toContain('"$first"');
+    expect(serialized).not.toContain('"$limit"');
+  });
+
+  it('lists the latest written feedback of the selected agents, newest first', async () => {
+    const now = Date.now();
+    const user = new mongoose.Types.ObjectId().toString();
+    const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000);
+    await fixtures.conversations.insertMany([
+      { conversationId: 'chat', user, initial_agent_id: 'agent-a', createdAt: minutesAgo(60) },
+      {
+        conversationId: 'temporary',
+        user,
+        initial_agent_id: 'agent-a',
+        isTemporary: true,
+        createdAt: minutesAgo(60),
+      },
+      {
+        conversationId: 'elsewhere',
+        user,
+        initial_agent_id: 'agent-b',
+        agent_id: 'agent-b',
+        createdAt: minutesAgo(60),
+      },
+    ]);
+    const reply = (
+      messageId: string,
+      conversationId: string,
+      minutes: number,
+      feedback: Record<string, unknown>,
+    ) => ({
+      messageId,
+      conversationId,
+      user,
+      isCreatedByUser: false,
+      createdAt: minutesAgo(minutes),
+      feedback,
+    });
+    await fixtures.messages.insertMany([
+      ...Array.from({ length: 21 }, (_, index) =>
+        reply(`older-${index}`, 'chat', 30 + index, {
+          rating: 'thumbsDown',
+          tag: 'other',
+          text: `Older ${index}`,
+        }),
+      ),
+      reply('latest', 'chat', 1, {
+        rating: 'thumbsUp',
+        tag: { key: 'other_feedback' },
+        text: 'Great answer',
+      }),
+      reply('blank', 'chat', 2, { rating: 'thumbsDown', tag: 'inaccurate', text: '  ' }),
+      reply('untagged', 'chat', 3, { rating: 'thumbsUp', text: 'No category' }),
+      reply('temporary', 'temporary', 1, { rating: 'thumbsUp', text: 'Temporary chat' }),
+      reply('elsewhere', 'elsewhere', 1, { rating: 'thumbsUp', text: 'Another agent' }),
+      {
+        ...reply('orphan', 'deleted-chat', 1, {
+          rating: 'thumbsDown',
+          text: 'From a deleted chat',
+        }),
+        insightsAgentId: 'agent-a',
+      },
+      {
+        messageId: 'prompt',
+        conversationId: 'chat',
+        user,
+        isCreatedByUser: true,
+        createdAt: minutesAgo(1),
+        feedback: { rating: 'thumbsUp', text: 'On a prompt' },
+      },
+    ]);
+
+    const { comments } = await createScopedInsightsMethods().getInsights({ showDetails: false });
+
+    expect(comments).toHaveLength(20);
+    expect(comments?.slice(0, 3)).toEqual([
+      {
+        agentId: 'agent-a',
+        agentName: 'Agent A',
+        date: minutesAgo(1).toISOString(),
+        rating: 'thumbsUp',
+        tag: 'other_feedback',
+        text: 'Great answer',
+      },
+      {
+        agentId: 'agent-a',
+        agentName: 'Agent A',
+        date: minutesAgo(3).toISOString(),
+        rating: 'thumbsUp',
+        tag: null,
+        text: 'No category',
+      },
+      {
+        agentId: 'agent-a',
+        agentName: 'Agent A',
+        date: minutesAgo(30).toISOString(),
+        rating: 'thumbsDown',
+        tag: 'other',
+        text: 'Older 0',
+      },
+    ]);
+    expect(comments?.[19]?.text).toBe('Older 17');
+
+    const limited = await createScopedInsightsMethods().getInsights({
+      showDetails: false,
+      commentLimit: 2,
+    });
+    expect(limited.comments?.map(({ text }) => text)).toEqual(['Great answer', 'No category']);
+  });
+
+  it('counts stopped and Responses API replies by their final status, without caller inputs', async () => {
+    const createdAt = new Date(Date.now() - 60_000);
+    const user = new mongoose.Types.ObjectId().toString();
+    await fixtures.conversations.insertOne({
+      conversationId: 'responses',
+      user,
+      initial_agent_id: 'agent-a',
+      createdAt,
+    });
+    const message = { conversationId: 'responses', user, createdAt };
+    const reply = (messageId: string, finishReason: string) => ({
+      ...message,
+      messageId,
+      isCreatedByUser: false,
+      unfinished: false,
+      error: false,
+      finish_reason: finishReason,
+      feedback: { rating: 'thumbsUp' },
+    });
+    const input = (messageId: string, role: string) => ({
+      ...message,
+      messageId,
+      isCreatedByUser: false,
+      isUserSubmitted: true,
+      metadata: { responseInputRole: role },
+      feedback: { rating: 'thumbsDown' },
+    });
+    await fixtures.messages.insertMany([
+      { ...message, messageId: 'prompt', isCreatedByUser: true },
+      input('instructions', 'system'),
+      input('history', 'assistant'),
+      reply('completed', 'stop'),
+      reply('failed', 'failed'),
+      reply('cancelled', 'cancelled'),
+      reply('stopped', 'incomplete'),
+    ]);
+
+    const { summary, models } = await createScopedInsightsMethods().getInsights({
+      showDetails: false,
+    });
+
+    expect(summary).toEqual(
+      expect.objectContaining({
+        totalResponses: 4,
+        completedResponses: 1,
+        failedResponses: 1,
+        interruptedResponses: 2,
+        feedback: feedbackCounts(4),
+      }),
+    );
+    expect(models.map(({ responses }) => responses)).toEqual([4]);
+  });
+
+  it('isolates spend by conversation owner, tenant and eligibility before combining agents', async () => {
+    const now = new Date();
+    const first = new mongoose.Types.ObjectId();
+    const second = new mongoose.Types.ObjectId();
+    const outsider = new mongoose.Types.ObjectId();
+    const base = {
+      user: first.toString(),
+      tenantId: 'tenant-a',
+      createdAt: now,
+      initial_agent_id: 'agent-a',
+    };
+    await fixtures.conversations.insertMany([
+      { ...base, conversationId: 'shared-spend', agent_id: 'agent-b' },
+      {
+        ...base,
+        conversationId: 'shared-spend',
+        user: second.toString(),
+        initial_agent_id: 'agent-b',
+      },
+      { ...base, conversationId: 'shared-spend', tenantId: 'tenant-b' },
+      { ...base, conversationId: 'foreign-spend', tenantId: 'tenant-b' },
+      { ...base, conversationId: 'temporary-spend', isTemporary: true },
+      {
+        ...base,
+        conversationId: 'thread-spend',
+        subagentThread: { parentConversationId: 'shared-spend' },
+      },
+      { ...base, conversationId: 'null-spend', initial_agent_id: null },
+      { ...base, conversationId: 'empty-spend', initial_agent_id: '' },
+      { ...base, conversationId: 'other-root-spend', initial_agent_id: 'agent-c' },
+    ]);
+    await fixtures.conversations.insertOne({
+      conversationId: 'legacy-spend',
+      user: first.toString(),
+      createdAt: now,
+      initial_agent_id: 'agent-a',
+    });
+    const usage = {
+      conversationId: 'shared-spend',
+      user: first,
+      tenantId: 'tenant-a',
+      createdAt: now,
+      tokenType: 'completion',
+      tokenValue: -100_000_000,
+    };
+    await mongoose.models.Transaction.collection.insertMany([
+      { ...usage, tokenValue: -1_000_000 },
+      { ...usage, user: second, tokenValue: -2_000_000 },
+      { ...usage, user: outsider },
+      { ...usage, user: null },
+      { ...usage, user: { invalid: true } },
+      { ...usage, tenantId: 'tenant-b', tokenValue: -50_000_000 },
+      { ...usage, tenantId: null },
+      { ...usage, conversationId: 'foreign-spend' },
+      { ...usage, conversationId: 'temporary-spend' },
+      { ...usage, conversationId: 'thread-spend' },
+      { ...usage, conversationId: 'null-spend' },
+      { ...usage, conversationId: 'empty-spend' },
+      { ...usage, conversationId: 'other-root-spend' },
+      { ...usage, conversationId: 'missing-spend' },
+      { ...usage, conversationId: 'legacy-spend' },
+      {
+        conversationId: 'legacy-spend',
+        user: first,
+        createdAt: now,
+        tokenType: 'prompt',
+        tokenValue: -500_000,
+      },
+    ]);
+    const methods = createInsightsMethods(mongoose);
+    const options = { tenantId: 'tenant-a', showDetails: false as const };
+    expect(
+      (await methods.getInsights({ ...options, agentIds: ['agent-a'] })).summary.spendUSD,
+    ).toBe(1);
+    expect(
+      (await methods.getInsights({ ...options, agentIds: ['agent-b'] })).summary.spendUSD,
+    ).toBe(2);
+    expect(
+      (await methods.getInsights({ ...options, agentIds: ['agent-a', 'agent-b'] })).summary
+        .spendUSD,
+    ).toBe(3);
+    expect(
+      (
+        await methods.getInsights({
+          tenantId: 'tenant-b',
+          agentIds: ['agent-a'],
+          showDetails: false,
+        })
+      ).summary.spendUSD,
+    ).toBe(50);
+    expect(
+      (await methods.getInsights({ agentIds: ['agent-a'], showDetails: false })).summary.spendUSD,
+    ).toBe(0.5);
+  });
+
   it('counts active users from prompts and all messages for top users within the tenant', async () => {
     const now = new Date();
     const activeAt = new Date(now.getTime() - 24 * 60 * 60 * 1000);
@@ -368,6 +1049,46 @@ describe('Insights methods', () => {
     expect(result.summary).not.toHaveProperty('churnedUsers');
   });
 
+  it('leaves an excluded chat out of the full history of an inactive user', async () => {
+    const now = Date.now();
+    const daysAgo = (days: number) => new Date(now - days * 24 * 60 * 60 * 1000);
+    const user = new mongoose.Types.ObjectId().toString();
+    await fixtures.conversations.insertOne({
+      conversationId: 'kept',
+      user,
+      initial_agent_id: 'agent-a',
+      createdAt: daysAgo(29),
+    });
+    await fixtures.messages.insertMany([
+      {
+        messageId: 'kept-prompt',
+        conversationId: 'kept',
+        user,
+        createdAt: daysAgo(29),
+        isCreatedByUser: true,
+      },
+      ...['converted-first', 'converted-second'].map((messageId) => ({
+        messageId,
+        conversationId: 'converted',
+        user,
+        createdAt: daysAgo(60),
+        isCreatedByUser: true,
+        insightsAgentId: 'agent-a',
+      })),
+    ]);
+    await createInsightsExclusionModel(mongoose).create({
+      conversationId: 'converted',
+      user,
+      createdAt: daysAgo(59),
+    });
+
+    const { churnedUsers } = await createScopedInsightsMethods().getInsights({ range: '7d' });
+
+    expect(churnedUsers?.map(({ conversations, messages }) => [conversations, messages])).toEqual([
+      [1, 1],
+    ]);
+  });
+
   it('keeps duplicate conversation IDs isolated by owner', async () => {
     const now = new Date();
     const firstUserId = new mongoose.Types.ObjectId();
@@ -463,7 +1184,7 @@ describe('Insights methods', () => {
 
     const methods = createScopedInsightsMethods();
     const insights = await methods.getInsights({ tenantId: 'tenant-a', range: '7d' });
-    const byUser = new Map(insights.latest.conversations.map((row) => [row.userId, row]));
+    const byUser = new Map(insights.latest!.conversations.map((row) => [row.userId, row]));
 
     expect(byUser.get(firstUserId.toString())).toEqual(
       expect.objectContaining({
@@ -485,12 +1206,12 @@ describe('Insights methods', () => {
       range: '7d',
       search: 'first@example.com',
     });
-    expect(search.latest.conversations).toEqual([
+    expect(search.latest!.conversations).toEqual([
       expect.objectContaining({ userId: firstUserId.toString() }),
     ]);
   });
 
-  it('attributes conversations to their immutable primary agent and messages to their source', async () => {
+  it('attributes conversations, prompts, responses and tokens to the immutable root agent', async () => {
     const now = new Date();
     const userId = new mongoose.Types.ObjectId();
     await mongoose.models.User.collection.insertOne({
@@ -608,12 +1329,61 @@ describe('Insights methods', () => {
     });
 
     expect(agentAInsights.summary).toEqual(
-      expect.objectContaining({ totalConversations: 2, totalMessages: 1, totalTokens: 5 }),
+      expect.objectContaining({
+        totalConversations: 2,
+        totalMessages: 2,
+        totalTokens: 12,
+        totalUsers: 1,
+      }),
     );
     expect(agentAInsights.agents).toEqual(selectedAgents);
     expect(agentBInsights.summary).toEqual(
-      expect.objectContaining({ totalConversations: 0, totalMessages: 1, totalTokens: 7 }),
+      expect.objectContaining({
+        totalConversations: 0,
+        totalMessages: 0,
+        totalTokens: 0,
+        totalUsers: 0,
+      }),
     );
+    expect(
+      agentAInsights.daily.find((point) => point.date === now.toISOString().slice(0, 10)),
+    ).toEqual({
+      date: now.toISOString().slice(0, 10),
+      conversations: 2,
+      messages: 2,
+      users: 1,
+      totalTokens: 12,
+      responses: 1,
+      completedResponses: 1,
+      failedResponses: 0,
+      interruptedResponses: 0,
+      feedback: feedbackCounts(),
+      spendUSD: null,
+    });
+    expect(agentAInsights.topUsers).toEqual([
+      expect.objectContaining({
+        userId: userId.toString(),
+        conversations: 1,
+        messages: 2,
+      }),
+    ]);
+    expect(agentAInsights.latest!.conversations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          conversationId: 'primary-agent-a',
+          agentId: 'agent-a',
+          messages: 2,
+          totalTokens: 12,
+        }),
+      ]),
+    );
+    expect(agentBInsights.latest!.conversations).toEqual([]);
+    const combined = await methods.getInsights({
+      tenantId: 'tenant-a',
+      range: '7d',
+      agentIds: ['agent-a', 'agent-b'],
+    });
+    expect(combined.summary).toEqual(agentAInsights.summary);
   });
 
   it('bounds latest conversation message totals to a custom range', async () => {
@@ -697,7 +1467,7 @@ describe('Insights methods', () => {
       toTimestamp: to.toISOString(),
     });
 
-    expect(result.latest.conversations).toEqual([
+    expect(result.latest!.conversations).toEqual([
       expect.objectContaining({
         conversationId: 'historical-conversation',
         firstMessage: 'Historical prompt',
@@ -750,9 +1520,30 @@ describe('Insights methods', () => {
     });
 
     expect(result.daily).toEqual([
-      { date: '2026-08-01', conversations: 1, messages: 1, totalTokens: 0, users: 1 },
-      { date: '2026-08-02', conversations: 0, messages: 0, totalTokens: 0, users: 0 },
-      { date: '2026-08-03', conversations: 1, messages: 1, totalTokens: 0, users: 1 },
+      {
+        ...noResponses,
+        date: '2026-08-01',
+        conversations: 1,
+        messages: 1,
+        totalTokens: 0,
+        users: 1,
+      },
+      {
+        ...noResponses,
+        date: '2026-08-02',
+        conversations: 0,
+        messages: 0,
+        totalTokens: 0,
+        users: 0,
+      },
+      {
+        ...noResponses,
+        date: '2026-08-03',
+        conversations: 1,
+        messages: 1,
+        totalTokens: 0,
+        users: 1,
+      },
     ]);
   });
 
@@ -812,9 +1603,30 @@ describe('Insights methods', () => {
     });
 
     expect(result.daily).toEqual([
-      { date: '2026-03-07', conversations: 0, messages: 0, totalTokens: 0, users: 0 },
-      { date: '2026-03-08', conversations: 0, messages: 0, totalTokens: 0, users: 0 },
-      { date: '2026-03-09', conversations: 0, messages: 0, totalTokens: 0, users: 0 },
+      {
+        ...noResponses,
+        date: '2026-03-07',
+        conversations: 0,
+        messages: 0,
+        totalTokens: 0,
+        users: 0,
+      },
+      {
+        ...noResponses,
+        date: '2026-03-08',
+        conversations: 0,
+        messages: 0,
+        totalTokens: 0,
+        users: 0,
+      },
+      {
+        ...noResponses,
+        date: '2026-03-09',
+        conversations: 0,
+        messages: 0,
+        totalTokens: 0,
+        users: 0,
+      },
     ]);
   });
 
@@ -929,19 +1741,20 @@ describe('Insights methods', () => {
     });
 
     expect(byConversationId.summary.totalConversations).toBe(2);
-    expect(byConversationId.latest.conversations.map((row) => row.conversationId)).toEqual([
+    expect(byConversationId.latest!.conversations.map((row) => row.conversationId)).toEqual([
       'incident-review-123',
     ]);
-    expect(byUser.latest.conversations.map((row) => row.conversationId)).toEqual([
+    expect(byUser.latest!.conversations.map((row) => row.conversationId)).toEqual([
       'incident-review-123',
     ]);
-    expect(byMessage.latest.conversations).toEqual([]);
+    expect(byMessage.latest!.conversations).toEqual([]);
     expect(crossTenant.latest).toEqual(expect.objectContaining({ conversations: [], pages: 1 }));
   });
 
   it('uses focused DocumentDB-compatible aggregations during searches', async () => {
     const conversationAggregateSpy = jest.spyOn(mongoose.models.Conversation, 'aggregate');
     const messageAggregateSpy = jest.spyOn(mongoose.models.Message, 'aggregate');
+    const transactionAggregateSpy = jest.spyOn(mongoose.models.Transaction, 'aggregate');
 
     try {
       await createScopedInsightsMethods().getInsights({
@@ -965,9 +1778,12 @@ describe('Insights methods', () => {
       const allStages = [
         ...conversationPipelines.flat(),
         ...messageAggregateSpy.mock.calls.flatMap(([pipeline]) => pipeline as AggregationStage[]),
+        ...transactionAggregateSpy.mock.calls.flatMap(
+          ([pipeline]) => pipeline as AggregationStage[],
+        ),
       ];
       const searchedPipelines = conversationPipelines.filter((pipeline) =>
-        pipeline.some((stage) => stage.$lookup),
+        pipeline.some((stage) => stage.$lookup?.from === 'users'),
       );
       const unfilteredRecentPipelines = conversationPipelines.filter(
         (pipeline) =>
@@ -982,6 +1798,13 @@ describe('Insights methods', () => {
       ).toBe(true);
       expect(JSON.stringify(allStages)).not.toContain('"$expr"');
       expect(JSON.stringify(allStages)).not.toContain('"$type"');
+      expect(
+        allStages.every(
+          (stage) =>
+            stage.$lookup == null || (!('let' in stage.$lookup) && !('pipeline' in stage.$lookup)),
+        ),
+      ).toBe(true);
+      expect(messageAggregateSpy).toHaveBeenCalled();
       expect(
         conversationPipelines.every((pipeline) => {
           const firstMatch = pipeline.find((stage) => stage.$match)?.$match;
@@ -999,6 +1822,7 @@ describe('Insights methods', () => {
     } finally {
       conversationAggregateSpy.mockRestore();
       messageAggregateSpy.mockRestore();
+      transactionAggregateSpy.mockRestore();
     }
   });
 
@@ -1018,7 +1842,7 @@ describe('Insights methods', () => {
       };
       const searchedPipeline = aggregateSpy.mock.calls
         .map(([pipeline]) => pipeline as SearchStage[])
-        .find((pipeline) => pipeline.some((stage) => stage.$lookup));
+        .find((pipeline) => pipeline.some((stage) => stage.$lookup?.from === 'users'));
       const identityLookup = searchedPipeline?.find((stage) => stage.$lookup)?.$lookup;
       const ownerConversion = searchedPipeline?.find(
         (stage) => stage.$addFields?.insightsUserId,

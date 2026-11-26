@@ -13,6 +13,12 @@ export type InsightsAccessUser = {
   idOnTheSource?: string | null;
 };
 
+export type InsightsAccess = {
+  agents: TInsightsAgent[];
+  detailAgentIds: string[];
+  tenantWide?: true;
+};
+
 export type InsightsAgentAccessDeps = {
   getAgents: (
     filter: Record<string, unknown>,
@@ -41,17 +47,21 @@ const toChoice = (agent: AgentRecord): TInsightsAgent => ({
   name: agent.name?.trim() || agent.id,
 });
 
-export function createInsightsAgentAccessResolver(deps: InsightsAgentAccessDeps) {
-  return async (user: InsightsAccessUser): Promise<TInsightsAgent[]> => {
+const sortChoices = (agents: AgentRecord[]): TInsightsAgent[] =>
+  agents.map(toChoice).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+
+export function createInsightsAccessResolver(
+  deps: InsightsAgentAccessDeps,
+): (user: InsightsAccessUser) => Promise<InsightsAccess> {
+  return async (user: InsightsAccessUser): Promise<InsightsAccess> => {
     const tenantFilter = user.tenantId
       ? { tenantId: user.tenantId }
       : { tenantId: { $exists: false } };
     const agentsPromise = deps.getAgents(tenantFilter, '_id id name tenantId');
 
     if (user.role === SystemRoles.ADMIN) {
-      return (await agentsPromise)
-        .map(toChoice)
-        .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      const agents = sortChoices(await agentsPromise);
+      return { agents, detailAgentIds: agents.map((agent) => agent.id), tenantWide: true };
     }
 
     const principals = await deps.getUserPrincipals({
@@ -68,23 +78,48 @@ export function createInsightsAgentAccessResolver(deps: InsightsAgentAccessDeps)
       }),
     ]);
 
-    let accessibleAgents = agents;
-    if (!hasGlobalAccess && agents.length > 0) {
-      const privatePrincipals = principals.filter(
-        (principal) => principal.principalType !== PrincipalType.PUBLIC,
-      );
-      const resourceIds = await deps.findAccessibleResources(
+    if (hasGlobalAccess) {
+      const choices = sortChoices(agents);
+      return {
+        agents: choices,
+        detailAgentIds: choices.map((agent) => agent.id),
+        tenantWide: true,
+      };
+    }
+    const privatePrincipals = principals.filter(
+      (principal) => principal.principalType !== PrincipalType.PUBLIC,
+    );
+    if (agents.length === 0 || privatePrincipals.length === 0) {
+      return { agents: [], detailAgentIds: [] };
+    }
+
+    const candidates = agents.map((agent) => agent._id);
+    const [detailResources, editableResources] = await Promise.all([
+      deps.findAccessibleResources(
         privatePrincipals,
         ResourceType.AGENT,
         PermissionBits.VIEW | PermissionBits.VIEW_INSIGHTS,
-        agents.map((agent) => agent._id),
-      );
-      const allowed = new Set(resourceIds.map((id) => id.toString()));
-      accessibleAgents = agents.filter((agent) => allowed.has(agent._id.toString()));
-    }
-
-    return accessibleAgents
-      .map(toChoice)
-      .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+        candidates,
+      ),
+      deps.findAccessibleResources(
+        privatePrincipals,
+        ResourceType.AGENT,
+        PermissionBits.VIEW | PermissionBits.EDIT,
+        candidates,
+      ),
+    ]);
+    const detailIds = new Set(detailResources.map(String));
+    const editableIds = new Set(editableResources.map(String));
+    const detailAgentIds: string[] = [];
+    const choices = sortChoices(
+      agents.filter((agent) => {
+        if (detailIds.has(String(agent._id))) {
+          detailAgentIds.push(agent.id);
+          return true;
+        }
+        return editableIds.has(String(agent._id));
+      }),
+    );
+    return { agents: choices, detailAgentIds: detailAgentIds.sort() };
   };
 }

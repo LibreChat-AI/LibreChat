@@ -318,6 +318,7 @@ export interface IConversation extends Document {
   codeAttachmentEpoch?: number;
   /** Immutable primary persisted-agent attribution for Insights. */
   initial_agent_id?: string | null;
+  insightsRepair?: boolean;
   subagentThread?: TSubagentThreadLineage;
   /** Internal execution fence. Excluded from ordinary conversation reads. */
   subagentThreadLease?: ISubagentThreadLease;

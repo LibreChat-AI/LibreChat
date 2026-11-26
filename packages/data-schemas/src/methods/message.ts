@@ -11,6 +11,7 @@ import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { ISubagentContentChunk } from '~/models/subagentContent';
 import type { AppConfig, IConversation, IMessage } from '~/types';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
+import { lookupInsightsAttributions, insightsIdentityKey } from './insightsAttribution';
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
 import { fitBoundAppSnapshots, hasBoundAppSnapshots } from './appSnapshots';
 import { prepareSubagentContentDeletion } from './subagentContent';
@@ -279,13 +280,19 @@ function getSteerUserSubmittedPaths(content: unknown): string[] {
 function sanitizeMessageUpdate(update: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(update).filter(
-      ([key, value]) => value !== undefined && !['_id', 'tenantId', '__v'].includes(key),
+      ([key, value]) =>
+        value !== undefined && !['_id', 'tenantId', '__v', 'insightsAgentId'].includes(key),
     ),
   );
 }
 
 /** Conservatively admit any server-bound resource to the slow path, including legacy MIME forms. */
 const NO_BOUND_APPS = { 'attachments.ui_resources.serverBinding': { $exists: false } };
+
+type IndexedAttribution = {
+  insightsAgentId?: string;
+  refreshInsightsAttribution?: boolean;
+};
 
 /**
  * A terminal save that must drop a stored `contextMeta` unsets it in the same
@@ -294,7 +301,7 @@ const NO_BOUND_APPS = { 'attachments.ui_resources.serverBinding': { $exists: fal
  */
 function buildMessageSaveUpdate(
   update: Record<string, unknown>,
-  options: {
+  options: IndexedAttribution & {
     stampModelOutputOnInsert: boolean;
     unsetContextMeta: boolean;
     unsetPrivateText?: boolean;
@@ -302,7 +309,10 @@ function buildMessageSaveUpdate(
   },
 ): UpdateQuery<IMessage> {
   return {
-    $set: update,
+    $set: {
+      ...update,
+      ...(options.insightsAgentId !== undefined && { insightsAgentId: options.insightsAgentId }),
+    },
     $inc: { __v: 1 },
     ...((options.stampModelOutputOnInsert || options.retentionOnInsert != null) && {
       $setOnInsert: {
@@ -310,8 +320,12 @@ function buildMessageSaveUpdate(
         ...options.retentionOnInsert,
       },
     }),
-    ...((options.unsetContextMeta || options.unsetPrivateText) && {
+    ...((options.unsetContextMeta ||
+      options.unsetPrivateText ||
+      (options.refreshInsightsAttribution && options.insightsAgentId === undefined)) && {
       $unset: {
+        ...(options.refreshInsightsAttribution &&
+          options.insightsAgentId === undefined && { insightsAgentId: 1 }),
         ...(options.unsetContextMeta && { contextMeta: 1 }),
         ...(options.unsetPrivateText && {
           privateText: 1,
@@ -341,7 +355,7 @@ async function findOneAndMergeMessageProvenance(
   update: Record<string, unknown>,
   userSubmittedPaths: readonly string[],
   userSubmittedMessageFieldPaths: readonly UserSubmittedMessageFieldPath[],
-  options: {
+  options: IndexedAttribution & {
     session?: ClientSession;
     upsert: boolean;
     stampModelOutputOnInsert?: boolean;
@@ -416,22 +430,12 @@ async function findOneAndMergeMessageProvenance(
     try {
       const message = await Message.findOneAndUpdate(
         filter,
-        {
-          $set: admittedUpdate,
-          $inc: { __v: 1 },
-          ...(current == null &&
-            options.retentionOnInsert != null && { $setOnInsert: options.retentionOnInsert }),
-          ...((options.unsetContextMeta || options.unsetPrivateText) && {
-            $unset: {
-              ...(options.unsetContextMeta && { contextMeta: 1 }),
-              ...(options.unsetPrivateText && {
-                privateText: 1,
-                privacyRevision: 1,
-                ...(update.privateTextTokens === undefined && { privateTextTokens: 1 }),
-              }),
-            },
-          }),
-        },
+        buildMessageSaveUpdate(admittedUpdate, {
+          ...options,
+          stampModelOutputOnInsert: false,
+          unsetContextMeta: options.unsetContextMeta ?? false,
+          retentionOnInsert: current == null ? options.retentionOnInsert : undefined,
+        }),
         {
           upsert: options.upsert && current == null,
           new: true,
@@ -1158,7 +1162,7 @@ export function createMessageMethods(
   async function writeMessage(
     identity: FilterQuery<IMessage>,
     input: Record<string, unknown>,
-    options: {
+    options: IndexedAttribution & {
       upsert: boolean;
       stampModelOutputOnInsert?: boolean;
       unsetContextMeta?: boolean;
@@ -1170,6 +1174,22 @@ export function createMessageMethods(
   ): Promise<IMessage | null> {
     const Message = mongoose.models.Message as Model<IMessage>;
     const update = sanitizeMessageUpdate(input);
+    const attributionIdentity = {
+      conversationId: typeof update.conversationId === 'string' ? update.conversationId : undefined,
+      user: typeof update.user === 'string' ? update.user : undefined,
+      tenantId: tenantStorage.getStore()?.tenantId,
+    };
+    if (!attributionIdentity.user && typeof identity.user === 'string') {
+      attributionIdentity.user = identity.user;
+    }
+    if (attributionIdentity.conversationId && attributionIdentity.user) {
+      const { fresh, hints } = await lookupInsightsAttributions(mongoose, [attributionIdentity]);
+      options = {
+        ...options,
+        refreshInsightsAttribution: fresh,
+        insightsAgentId: hints.get(insightsIdentityKey(attributionIdentity)),
+      };
+    }
     const paths = normalizeUserSubmittedPaths(update.userSubmittedPaths);
     const fields = normalizeUserSubmittedMessageFieldPaths(update.userSubmittedMessageFieldPaths);
     delete update.userSubmittedPaths;
@@ -1191,6 +1211,8 @@ export function createMessageMethods(
         const fast = await Message.findOneAndUpdate(
           { ...identity, ...NO_BOUND_APPS },
           buildMessageSaveUpdate(update, {
+            insightsAgentId: options.insightsAgentId,
+            refreshInsightsAttribution: options.refreshInsightsAttribution,
             stampModelOutputOnInsert: options.stampModelOutputOnInsert ?? false,
             unsetContextMeta: options.unsetContextMeta ?? false,
             retentionOnInsert: options.retentionOnInsert,
@@ -1369,11 +1391,20 @@ export function createMessageMethods(
           throw new Error('A private message cannot use the ordinary insert-only writer.');
         }
         const now = new Date();
+        const attributionIdentity = {
+          conversationId,
+          user: userId,
+          tenantId: tenantStorage.getStore()?.tenantId,
+        };
+        const { hints } = await lookupInsightsAttributions(mongoose, [attributionIdentity]);
+        delete update.insightsAgentId;
+        const insightsAgentId = hints.get(insightsIdentityKey(attributionIdentity));
         const existingOrInserted = await Message.findOneAndUpdate(
           { messageId: params.messageId, user: userId },
           {
             $setOnInsert: {
               ...update,
+              ...(insightsAgentId !== undefined && { insightsAgentId }),
               ...(userSubmittedPaths.length > 0 && { userSubmittedPaths }),
               ...(userSubmittedMessageFieldPaths.length > 0 && { userSubmittedMessageFieldPaths }),
               ...retentionOnInsert,
@@ -1482,8 +1513,17 @@ export function createMessageMethods(
   ) {
     try {
       const Message = mongoose.models.Message as Model<IMessage>;
-      const bulkOps = messages.map((message) => {
+      const attributionIdentities = messages.map((message) => ({
+        conversationId:
+          typeof message.conversationId === 'string' ? message.conversationId : undefined,
+        user: typeof message.user === 'string' ? message.user : undefined,
+        tenantId: tenantStorage.getStore()?.tenantId,
+      }));
+      const { fresh, hints } = await lookupInsightsAttributions(mongoose, attributionIdentities);
+      const bulkOps = messages.map((message, index) => {
         const normalizedMessage = sanitizeMessageUpdate(message);
+        const hint = hints.get(insightsIdentityKey(attributionIdentities[index]));
+        if (hint !== undefined) normalizedMessage.insightsAgentId = hint;
         delete normalizedMessage.privateText;
         delete normalizedMessage.privacyRevision;
         delete normalizedMessage.privateTextTokens;
@@ -1529,6 +1569,10 @@ export function createMessageMethods(
               $set: normalizedMessage,
               $inc: { __v: 1 },
               $unset: {
+                ...(fresh &&
+                  hint == null &&
+                  attributionIdentities[index].conversationId &&
+                  attributionIdentities[index].user && { insightsAgentId: 1 }),
                 privateText: 1,
                 privacyRevision: 1,
                 ...(normalizedMessage.privateTextTokens == null && { privateTextTokens: 1 }),

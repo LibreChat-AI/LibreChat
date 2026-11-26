@@ -17,6 +17,7 @@ export const FEEDBACK_REASON_KEYS = [
   'creative_solution',
   'clear_well_written',
   'attention_to_detail',
+  'other_feedback',
 ] as const;
 
 export type TFeedbackTagKey = (typeof FEEDBACK_REASON_KEYS)[number];
@@ -98,7 +99,19 @@ export const FEEDBACK_TAGS: TFeedbackTag[] = [
     direction: 'thumbsUp',
     icon: 'Search',
   },
+  {
+    key: 'other_feedback',
+    label: 'com_ui_feedback_tag_other_feedback',
+    direction: 'thumbsUp',
+    icon: 'HelpCircle',
+  },
 ];
+
+const TEXT_TAGS: ReadonlySet<TFeedbackTagKey> = new Set(['other', 'other_feedback']);
+
+export function isOtherFeedback(key?: TFeedbackTagKey): boolean {
+  return key != null && TEXT_TAGS.has(key);
+}
 
 export function getTagsForRating(rating: TFeedbackRating): TFeedbackTag[] {
   return FEEDBACK_TAGS.filter((tag) => tag.direction === rating);
@@ -149,4 +162,8 @@ export function getTagByKey(key: TFeedbackTagKey | undefined): TFeedbackTag | un
     return undefined;
   }
   return FEEDBACK_TAGS.find((tag) => tag.key === key);
+}
+
+export function resolveFeedbackTag(tag?: TFeedbackTag | TFeedbackTagKey | null): TFeedback['tag'] {
+  return getTagByKey(typeof tag === 'string' ? tag : tag?.key);
 }

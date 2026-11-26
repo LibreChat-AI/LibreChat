@@ -1,6 +1,7 @@
 export function clearAgentFilters(searchParams: URLSearchParams): URLSearchParams {
   const nextParams = new URLSearchParams(searchParams);
   nextParams.delete('agentIds');
+  nextParams.delete('allAgents');
   return nextParams;
 }
 

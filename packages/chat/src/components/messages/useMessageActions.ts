@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { useLocalize } from '@librechat/client';
 import {
   getTagByKey,
+  resolveFeedbackTag,
   isAgentsEndpoint,
   isConfiguredSender,
   toMinimalFeedback,
@@ -84,7 +85,7 @@ export default function useMessageActions(props: TMessageActions): MessageAction
 
   const [feedback, setFeedback] = useState<TFeedback | undefined>(() => {
     if (message?.feedback) {
-      const tag = getTagByKey(message.feedback?.tag?.key);
+      const tag = resolveFeedbackTag(message.feedback?.tag);
       return {
         rating: message.feedback.rating,
         tag,

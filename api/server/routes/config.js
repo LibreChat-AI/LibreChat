@@ -34,6 +34,7 @@ const {
   EModelEndpoint,
   defaultSocialLogins,
   resolveMCPAppsPolicy,
+  resolveInsightsConfig,
 } = require('librechat-data-provider');
 const { logger, SystemCapabilities, configCapability } = require('@librechat/data-schemas');
 const { hasCapability, getHeldCapabilities } = require('~/server/middleware/roles/capabilities');
@@ -341,7 +342,10 @@ router.get('/', async function (req, res) {
       langfuseFanoutEnabled,
       ...getLangfuseSettingsAccess(canManageLangfuse),
       langfusePromptManageAccess,
-      insightsEnabled: isEnabled(process.env.ENABLE_INSIGHTS),
+      insightsEnabled: resolveInsightsConfig(
+        appConfig?.interfaceConfig?.insights,
+        isEnabled(process.env.ENABLE_INSIGHTS),
+      ).enabled,
       /** Lets the client skip the pull request lookup entirely when the feature is off. */
       ...resolvePullRequestCapabilities(appConfig, process.env),
       compactionEnabled: appConfig?.summarization?.enabled !== false,

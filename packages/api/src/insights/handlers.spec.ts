@@ -1,4 +1,5 @@
-import type { TInsightsAgent, TInsightsResponse } from 'librechat-data-provider';
+import { FEEDBACK_REASON_KEYS } from 'librechat-data-provider';
+import type { TInsightsAgent, TInsightsConfig, TInsightsResponse } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types';
 import { createInsightsAccessHandler, createInsightsHandler } from './handlers';
@@ -18,16 +19,37 @@ const emptyInsights: TInsightsResponse = {
     totalConversations: 0,
     totalMessages: 0,
     totalTokens: 0,
+    totalResponses: 0,
+    completedResponses: 0,
+    failedResponses: 0,
+    interruptedResponses: 0,
+    lastUsed: null,
+    spendUSD: null,
+    feedback: {
+      thumbsUp: 0,
+      thumbsDown: 0,
+      categories: FEEDBACK_REASON_KEYS.map((key) => ({ key, count: 0 })),
+    },
   },
   daily: [],
+  models: [],
   topUsers: [],
   churnedUsers: [],
   latest: { conversations: [], page: 1, pageSize: 10, pages: 1 },
 };
 
-const insightsEnabled = jest.fn(() => true);
-const insightsDisabled = jest.fn(() => false);
-const getAccessibleAgents = jest.fn().mockResolvedValue(agents);
+const enabledConfig: TInsightsConfig = {
+  enabled: true,
+  showDetails: true,
+  adminAutoSelectAllAgents: true,
+};
+const fullAccess = { agents, detailAgentIds: agents.map((agent) => agent.id) };
+const resolveAccess = async (user: { role?: string }) => ({
+  ...fullAccess,
+  ...(user.role === 'ADMIN' && { tenantWide: true as const }),
+});
+const getInsightsAccess = jest.fn(resolveAccess);
+const isLegacyInsightsEnabled = jest.fn(() => false);
 
 const createResponse = () => {
   const status = jest.fn();
@@ -40,32 +62,40 @@ const createResponse = () => {
   };
 };
 
-const createRequest = (query: ServerRequest['query'] = {}): ServerRequest =>
+const createRequest = (
+  query: ServerRequest['query'] = {},
+  insights: TInsightsConfig = enabledConfig,
+): ServerRequest =>
   ({
     query,
+    config: { interfaceConfig: { insights } },
     user: { id: 'user-id', role: 'USER', tenantId: 'tenant-a' },
   }) as ServerRequest;
 
 const createDashboardHandler = (getInsights = jest.fn().mockResolvedValue(emptyInsights)) => ({
   getInsights,
-  handler: createInsightsHandler({
-    isInsightsEnabled: insightsEnabled,
-    getAccessibleAgents,
-    getInsights,
-  }),
+  handler: createInsightsHandler({ getInsightsAccess, getInsights, isLegacyInsightsEnabled }),
 });
 
 describe('Insights handlers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    getAccessibleAgents.mockResolvedValue(agents);
+    isLegacyInsightsEnabled.mockReturnValue(false);
+    getInsightsAccess.mockImplementation(resolveAccess);
+  });
+
+  it('returns only agent choices without running statistics when an admin must choose agents', async () => {
+    const { handler, getInsights } = createDashboardHandler();
+    const req = createRequest({}, { ...enabledConfig, adminAutoSelectAllAgents: false });
+    req.user = { ...req.user, role: 'ADMIN' } as NonNullable<ServerRequest['user']>;
+    const { response, json } = createResponse();
+    await handler(req, response);
+    expect(getInsights).not.toHaveBeenCalled();
+    expect(json).toHaveBeenCalledWith({ selectionRequired: true, agents });
   });
 
   it('returns access when at least one agent is accessible', async () => {
-    const handler = createInsightsAccessHandler({
-      isInsightsEnabled: insightsEnabled,
-      getAccessibleAgents,
-    });
+    const handler = createInsightsAccessHandler({ getInsightsAccess, isLegacyInsightsEnabled });
     const { response, json } = createResponse();
 
     await handler(createRequest(), response);
@@ -74,11 +104,8 @@ describe('Insights handlers', () => {
   });
 
   it('returns 403 from the access endpoint when no agent is accessible', async () => {
-    getAccessibleAgents.mockResolvedValueOnce([]);
-    const handler = createInsightsAccessHandler({
-      isInsightsEnabled: insightsEnabled,
-      getAccessibleAgents,
-    });
+    getInsightsAccess.mockResolvedValueOnce({ agents: [], detailAgentIds: [] });
+    const handler = createInsightsAccessHandler({ getInsightsAccess, isLegacyInsightsEnabled });
     const { response, status } = createResponse();
 
     await handler(createRequest(), response);
@@ -87,34 +114,57 @@ describe('Insights handlers', () => {
   });
 
   it('returns 404 from the access endpoint when Insights is disabled', async () => {
-    const handler = createInsightsAccessHandler({
-      isInsightsEnabled: insightsDisabled,
-      getAccessibleAgents,
-    });
+    const handler = createInsightsAccessHandler({ getInsightsAccess, isLegacyInsightsEnabled });
     const { response, status, json } = createResponse();
 
-    await handler(createRequest(), response);
+    await handler(createRequest({}, { enabled: false }), response);
 
     expect(status).toHaveBeenCalledWith(404);
     expect(json).toHaveBeenCalledWith({ message: 'Not found' });
-    expect(getAccessibleAgents).not.toHaveBeenCalled();
+    expect(getInsightsAccess).not.toHaveBeenCalled();
   });
 
   it('returns 404 without resolving access when Insights is disabled', async () => {
     const getInsights = jest.fn();
     const handler = createInsightsHandler({
-      isInsightsEnabled: insightsDisabled,
-      getAccessibleAgents,
+      getInsightsAccess,
       getInsights,
+      isLegacyInsightsEnabled,
     });
     const { response, status } = createResponse();
 
-    await handler(createRequest(), response);
+    await handler(createRequest({}, { enabled: false }), response);
 
     expect(status).toHaveBeenCalledWith(404);
-    expect(getAccessibleAgents).not.toHaveBeenCalled();
+    expect(getInsightsAccess).not.toHaveBeenCalled();
     expect(getInsights).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [true, {}, true],
+    [true, { enabled: false }, false],
+    [false, { enabled: true }, true],
+    [false, {}, false],
+  ])(
+    'applies YAML precedence to both endpoints (legacy=%s, config=%p)',
+    async (legacy, config, enabled) => {
+      isLegacyInsightsEnabled.mockReturnValue(legacy);
+      const access = createResponse();
+      const dashboard = createResponse();
+      await createInsightsAccessHandler({ getInsightsAccess, isLegacyInsightsEnabled })(
+        createRequest({}, config),
+        access.response,
+      );
+      await createDashboardHandler().handler(createRequest({}, config), dashboard.response);
+      if (enabled) {
+        expect(access.json).toHaveBeenCalledWith({ access: true });
+        expect(dashboard.json).toHaveBeenCalledWith(emptyInsights);
+      } else {
+        expect(access.status).toHaveBeenCalledWith(404);
+        expect(dashboard.status).toHaveBeenCalledWith(404);
+      }
+    },
+  );
 
   it('loads all accessible agents for the authenticated tenant', async () => {
     const { handler, getInsights } = createDashboardHandler();
@@ -126,6 +176,7 @@ describe('Insights handlers', () => {
     );
 
     expect(getInsights).toHaveBeenCalledWith({
+      showDetails: true,
       page: 3,
       pageSize: 50,
       tenantId: 'tenant-a',
@@ -136,8 +187,20 @@ describe('Insights handlers', () => {
       fromTimestamp: undefined,
       toTimestamp: undefined,
       timeZone: undefined,
+      commentLimit: 20,
     });
     expect(json).toHaveBeenCalledWith(emptyInsights);
+  });
+
+  it('passes the configured comment limit to the data layer', async () => {
+    const { handler, getInsights } = createDashboardHandler();
+
+    await handler(
+      createRequest({}, { ...enabledConfig, commentLimit: 5 }),
+      createResponse().response,
+    );
+
+    expect(getInsights).toHaveBeenCalledWith(expect.objectContaining({ commentLimit: 5 }));
   });
 
   it('sorts and deduplicates an authorized agent subset', async () => {
@@ -218,4 +281,48 @@ describe('Insights handlers', () => {
 
     expect(getInsights).toHaveBeenCalledWith(expect.objectContaining({ search: undefined }));
   });
+
+  it.each([
+    ['only an agent with detail rights', ['agent-a'], true],
+    ['that agent plus one without detail rights', ['agent-a', 'agent-b'], false],
+    ['all agents (no selection)', undefined, false],
+  ] as const)(
+    'shows details only when every selected agent allows them: %s',
+    async (_name, selected, expectedDetail) => {
+      getInsightsAccess.mockResolvedValueOnce({ agents, detailAgentIds: ['agent-a'] });
+      const { handler, getInsights } = createDashboardHandler();
+      const { response } = createResponse();
+      await handler(createRequest(selected ? { agentIds: [...selected] } : {}), response);
+
+      expect(getInsights).toHaveBeenCalledWith(
+        expect.objectContaining({
+          showDetails: expectedDetail,
+          agentIds: selected ? [...selected] : ['agent-a', 'agent-b'],
+        }),
+      );
+      expect(getInsightsAccess).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    [
+      'access check',
+      createInsightsAccessHandler({ getInsightsAccess, isLegacyInsightsEnabled }),
+      'Failed to load insights access',
+    ],
+    [
+      'dashboard',
+      createInsightsHandler({ getInsightsAccess, getInsights: jest.fn(), isLegacyInsightsEnabled }),
+      'Failed to load insights',
+    ],
+  ] as const)(
+    'answers a failed %s with a generic message only',
+    async (_name, handler, message) => {
+      getInsightsAccess.mockRejectedValueOnce(new Error('private detail'));
+      const { response, status, json } = createResponse();
+      await handler(createRequest(), response);
+      expect(status).toHaveBeenCalledWith(500);
+      expect(json).toHaveBeenCalledWith({ message });
+    },
+  );
 });
