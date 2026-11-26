@@ -19,10 +19,10 @@ import {
   revealFoldHeader,
   FoldHeaderContext,
 } from './rail';
+import { NAV_CLEARANCE, FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
 import { scheduleMessageContentLayoutReconcile } from '../../react/messages/messageLayout';
 import { FailedRevealContext, FailedRevealPill, useFailedRevealTrigger } from './reveal';
 import { getOutcomeStatus, isSpanFailed, summarizeSpan } from '../../core/parts/outcome';
-import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
 import useExpandCollapse, { EXPAND_TRANSITION } from './useExpandCollapse';
 import { GeneratedToolLabelContext } from '../../react/parts/disclosure';
 import useLazyCollapseBody from '../../react/parts/useLazyCollapseBody';
@@ -538,6 +538,7 @@ export default function ActivityPhaseGroup({
          *  at the top of the viewport. The containing block is this card, so
          *  the header stops pinning where its own rows end. */
         className={cn(
+          NAV_CLEARANCE.pad,
           foldsIn && 'tool-call-expand',
           isExpanded && 'sticky top-0 z-[1]',
           isExpanded && messageSurface,

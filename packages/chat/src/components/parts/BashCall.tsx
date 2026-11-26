@@ -6,11 +6,11 @@ import type { CSSProperties } from 'react';
 import { toolPanelSpacingClassName, useToolContentPending } from '../../react/parts/disclosure';
 import { parseBackgroundHandle, splitBackgroundAttachments } from '../../core/parts/handle';
 import { parseJsonField, areToolCallArgsComplete } from '../../core/parts/parseJsonField';
+import { NAV_CLEARANCE, PANE_COPY_REVEAL, TOOL_ROW_CLASSES } from './rows';
 import useFollowScroll from '../../react/parts/useFollowScroll';
 import { parseCommandOutput } from '../../core/parts/command';
 import CommandTime, { useCommandClock } from './CommandTime';
 import { useToolCallIntent } from '../../react/parts/intent';
-import { PANE_COPY_REVEAL, TOOL_ROW_CLASSES } from './rows';
 import { useMessagePartsHost } from '../../react/host';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
@@ -259,7 +259,7 @@ export default function BashCall({
                 {/* With no row of its own, the time rides the command's line,
                     just inside the copy control. */}
                 {showPaneTime && (
-                  <span className="absolute end-9 top-2 z-[1]">
+                  <span className={cn('absolute end-9 top-2 z-[1]', NAV_CLEARANCE.edge)}>
                     <CommandTime phase={phase} ms={commandMs} />
                   </span>
                 )}
@@ -269,13 +269,17 @@ export default function BashCall({
                   isCopied={isCopied}
                   onClick={handleCopy}
                   disabled={contentPending}
-                  className={cn('bg-surface-code absolute inset-e-2 top-2 z-[1]', PANE_COPY_REVEAL)}
+                  className={cn(
+                    'bg-surface-code absolute inset-e-2 top-2 z-[1]',
+                    PANE_COPY_REVEAL,
+                    NAV_CLEARANCE.edge,
+                  )}
                   label={localize('com_ui_copy_code')}
                 />
                 <div
                   ref={commandPaneRef}
                   onScroll={onCommandPaneScroll}
-                  className="max-h-[18.75rem] overflow-auto"
+                  className={cn('max-h-[18.75rem] overflow-auto', NAV_CLEARANCE.edge)}
                 >
                   <pre
                     dir="ltr"

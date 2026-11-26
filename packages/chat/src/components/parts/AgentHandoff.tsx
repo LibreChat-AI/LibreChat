@@ -10,7 +10,7 @@ import {
   useToolContentPending,
   toolPanelSpacingClassName,
 } from '../../react/parts/disclosure';
-import { PANE_COPY_REVEAL, TOOL_ROW_CLASSES, ROW_GLYPH_SLOT } from './rows';
+import { NAV_CLEARANCE, PANE_COPY_REVEAL, TOOL_ROW_CLASSES, ROW_GLYPH_SLOT } from './rows';
 import { unescapeJsonString } from '../../core/parts/parseJsonField';
 import { useMessagePartsHost } from '../../react/host';
 import useExpandCollapse from './useExpandCollapse';
@@ -212,7 +212,12 @@ export default function AgentHandoff({
                 'group/copy border-border-light bg-surface-secondary overflow-hidden rounded-lg border p-3',
               )}
             >
-              <div className="mb-1.5 flex min-h-5 items-center justify-between gap-2">
+              <div
+                className={cn(
+                  'mb-1.5 flex min-h-5 items-center justify-between gap-2',
+                  NAV_CLEARANCE.pad,
+                )}
+              >
                 <span
                   id={headingId}
                   className="text-text-secondary text-3xs font-medium tracking-wide uppercase"

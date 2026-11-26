@@ -5,7 +5,9 @@ import type { ReactNode, RefObject } from 'react';
 import useDownloadCode from './useDownloadCode';
 import DownloadButton from './DownloadButton';
 import useCopyCode from './useCopyCode';
+import { NAV_CLEARANCE } from './rows';
 import CopyButton from './CopyButton';
+import { classes } from './classes';
 import LangIcon from './LangIcon';
 
 /** What a host's run button is told about the block it runs. */
@@ -44,7 +46,12 @@ const CodeBar: React.NamedExoticComponent<CodeBarProps> = React.memo(
     const { isDownloaded, handleDownload } = useDownloadCode(codeRef, lang);
 
     return (
-      <div className="bg-surface-code text-text-secondary flex items-center justify-between px-1.5 py-1.5 font-sans text-xs">
+      <div
+        className={classes(
+          'bg-surface-code text-text-secondary flex items-center justify-between px-1.5 py-1.5 font-sans text-xs',
+          NAV_CLEARANCE.pad,
+        )}
+      >
         <span className="flex items-center gap-1.5 ps-1.5 text-xs font-medium">
           <LangIcon lang={lang} className="size-3.5" />
           {lang}

@@ -18,6 +18,7 @@ import { useMessagesHost } from '../../react/messages/host';
 import { useMessagePartsHost } from '../../react/host';
 import { useBranchTail } from '../../react/latest';
 import { getMessageRowWidthClass } from './width';
+import { NAV_CLEARANCE } from '../parts/rows';
 import SteerPart from '../parts/SteerPart';
 
 /** Steers the server has not confirmed, at the tail of the reply they will join.
@@ -146,7 +147,7 @@ function PendingSteers({
     <div
       role="list"
       aria-label={localize('com_ui_steer_in_flight')}
-      className={`mx-auto min-w-0 px-4 ${getMessageRowWidthClass({ fullWidth })}`}
+      className={`mx-auto min-w-0 px-4 ${getMessageRowWidthClass({ fullWidth })} ${NAV_CLEARANCE.pad}`}
       data-testid="pending-steers"
     >
       {steers.map((steer) => {

@@ -9,7 +9,7 @@ import {
   hasRenderableOutput,
 } from '../../core/parts/output';
 import { useToolContentPending } from '../../react/parts/disclosure';
-import { PANE_COPY_REVEAL } from './rows';
+import { NAV_CLEARANCE, PANE_COPY_REVEAL } from './rows';
 import CopyButton from './CopyButton';
 
 export interface OutputSegment {
@@ -79,7 +79,7 @@ export default function OutputRenderer({
   const styled = terminal && segments != null && !error;
 
   return (
-    <div>
+    <div className={NAV_CLEARANCE.pad}>
       <div className="group/copy relative">
         {isJson ? (
           <pre dir="ltr" className="max-h-[18.75rem] overflow-auto rounded pe-6 text-xs">

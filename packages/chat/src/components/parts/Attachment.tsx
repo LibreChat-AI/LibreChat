@@ -14,13 +14,14 @@ import {
   isTextAttachment,
   renderAttachmentKey,
 } from './attachmentTypes';
-import { ARTIFACT_ROW_NAV_SPACING, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
+import { ARTIFACT_ROW_NAV_SPACING, NAV_CLEARANCE, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
 import { renderImage as defaultRenderImage } from '../renderers';
 import FileContainer from '../composer/files/FileContainer';
 import { useMessagePartsHost } from '../../react/host';
 import useExpandCollapse from './useExpandCollapse';
 import { useFilesHost } from '../../react/files';
 import { useVisibleAttachments } from './media';
+import { classes } from './classes';
 
 const PLACEHOLDER_ROW_CLASS = `${TOOL_ROW_CLASSES} ${ARTIFACT_ROW_NAV_SPACING} text-text-secondary text-sm`;
 
@@ -225,7 +226,10 @@ const FileAttachmentGroup = memo(({ attachments }: { attachments: TAttachment[] 
         aria-controls={panelId}
         aria-label={buttonLabel}
         onClick={() => setIsExpanded((prev) => !prev)}
-        className="text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle inline-flex w-full max-w-full items-center gap-2 rounded-lg py-1 pe-2 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+        className={classes(
+          'text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle inline-flex w-full max-w-full items-center gap-2 rounded-lg py-1 pe-2 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-hidden',
+          NAV_CLEARANCE.pad,
+        )}
       >
         <FilesIcon className="size-4 shrink-0" aria-hidden="true" />
         <span className="shrink-0 font-medium">{fileCount}</span>
@@ -336,7 +340,12 @@ const TextAttachment = memo(
         )}
         <div className="bg-surface-secondary overflow-hidden rounded-lg">
           {!showFileChip && (
-            <div className="border-border-inset flex items-center justify-between gap-2 border-b px-3 py-2">
+            <div
+              className={classes(
+                'border-border-inset flex items-center justify-between gap-2 border-b px-3 py-2',
+                NAV_CLEARANCE.pad,
+              )}
+            >
               <span className="min-w-0 truncate text-sm font-medium" title={visibleFilename}>
                 {visibleFilename}
               </span>

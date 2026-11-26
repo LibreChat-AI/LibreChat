@@ -24,6 +24,7 @@ import ToolIcon, { getToolIconType } from './ToolIcon';
 import { isDocumentId } from '../../core/documents';
 import SubagentProgress from './SubagentProgress';
 import OutputRenderer from './OutputRenderer';
+import { NAV_CLEARANCE } from './rows';
 
 const STATUS: Record<BackgroundTaskStatus, { label: TranslationKeys; dot: string }> = {
   dispatched: { label: 'com_ui_subagent_thread_status_dispatched', dot: 'bg-text-tertiary' },
@@ -183,7 +184,7 @@ function SubagentHeader({
     task.threadId,
   ]);
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+    <div className={cn('flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2', NAV_CLEARANCE.pad)}>
       <span
         className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full"
         aria-hidden="true"

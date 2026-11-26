@@ -198,6 +198,7 @@ export {
   PROGRESS_TEXT_CONTENT,
   PROGRESS_TEXT_WRAPPER,
   ARTIFACT_ROW_NAV_SPACING,
+  NAV_CLEARANCE,
 } from './components/parts/rows';
 export { default as AskOptions } from './components/parts/AskOptions';
 export { default as AskPopover } from './components/composer/ask/Popover';

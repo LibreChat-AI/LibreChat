@@ -1,5 +1,6 @@
 import { memo, useId, useLayoutEffect, useMemo, useState } from 'react';
 import { Download } from 'lucide-react';
+import { NAV_CLEARANCE } from '@librechat/chat/components';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import { fileToArtifact, TOOL_ARTIFACT_TYPES, toolArtifactKey } from '~/utils/artifacts';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
@@ -63,7 +64,7 @@ const ToolMermaidArtifact = memo(({ attachment, text }: ToolMermaidArtifactProps
   return (
     <div className="my-2 flex w-full flex-col gap-1">
       {!isRowMode && (attachment.filename || attachment.filepath) && (
-        <div className="flex items-center justify-between gap-2">
+        <div className={cn('flex items-center justify-between gap-2', NAV_CLEARANCE.pad)}>
           {attachment.filename && (
             <div
               className="text-text-secondary text-3xs truncate font-medium tracking-wide uppercase"

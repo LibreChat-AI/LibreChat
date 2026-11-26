@@ -234,9 +234,11 @@ export default function MessagesView({
      height. Composer panels that do float (an answer popover, a tool-approval review) are
      handled by the scroll control through `composerOverlayCountFamily`. */
   const overlayConversationId = conversationId ?? Constants.NEW_CONVO;
+  const nav = renderNav?.({ conversationId: treeConversationId, scrollableRef });
   return (
     <div className="relative flex-1 overflow-hidden overflow-y-auto">
-      <div className="relative h-full">
+      {/* `NAV_CLEARANCE` keys off this mark, so controls give way only where a rail is drawn. */}
+      <div className="relative h-full" data-message-nav={nav == null ? undefined : ''}>
         {/* While the mount hook pins the anchor row itself (document-space measurement), the
             browser's scroll anchoring is off: the two reacting to the same insertions would
             double-correct. Otherwise the browser holds the reader and the hook stands down. */}
@@ -314,7 +316,7 @@ export default function MessagesView({
           onNearBottomChange: handleNearBottom,
         })}
 
-        {renderNav?.({ conversationId: treeConversationId, scrollableRef })}
+        {nav}
       </div>
     </div>
   );
