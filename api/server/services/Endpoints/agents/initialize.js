@@ -63,6 +63,7 @@ const {
   getMCPRequestContext,
   createSubagentCodeRouting,
   hasEntityEmbeddings,
+  AgentNotFoundError,
 } = require('@librechat/api');
 const {
   resolveSubagents,
@@ -376,7 +377,7 @@ const initializeClientWithProvider = async ({
   const validatedPrimaryAgentPromise = Promise.resolve(primaryAgentPromise).then(
     async (primaryAgent) => {
       if (!primaryAgent) {
-        throw new Error('Agent not found');
+        throw new AgentNotFoundError();
       }
 
       const validationResult = await validateAgentModel({

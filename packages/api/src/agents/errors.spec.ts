@@ -13,6 +13,7 @@ import {
   getUserFacingProviderError,
   isFatalAgentInitializationError,
   getAgentErrorMetadata,
+  AgentNotFoundError,
   AgentModelPolicyError,
   AGENT_ATTACHMENT_LIMIT_EXCEEDED,
   AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE,
@@ -370,6 +371,16 @@ describe('getAgentErrorMetadata', () => {
       expect(error).not.toHaveProperty('statusCode');
     },
   );
+
+  it('names a missing agent with its status and the code the chat route answers with', () => {
+    const error = new AgentNotFoundError();
+
+    expect(getAgentErrorMetadata(error)).toEqual({
+      status: 404,
+      code: ErrorTypes.AGENT_NOT_FOUND,
+    });
+    expect(error.message).toBe('Agent not found');
+  });
 
   it('keeps status precedence and code-only provider failures', () => {
     expect(getAgentErrorMetadata({ status: 409, statusCode: 401, code: 'RUN_REPLACED' })).toEqual({

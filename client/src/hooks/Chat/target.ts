@@ -165,9 +165,12 @@ export default function useTarget(
     (needsAgent && agents.isError) ||
     (assistantEnabled && needsAssistant && assistants.isError) ||
     (needsModel && models.isError);
+  const agentStatus = isSavedAgent && agent.isError ? getResponseStatus(agent.error) : undefined;
   /** The server refused the selected agent rather than failing to load it. Retry still applies:
    *  access can be granted while the chat stays open. */
-  const denied = isSavedAgent && agent.isError && getResponseStatus(agent.error) === 403;
+  const denied = agentStatus === 403;
+  /** The selected agent no longer exists, so the chat cannot reach it until another is picked. */
+  const missing = agentStatus === 404;
   const ready = !!config && !!endpoints.data?.[endpoint] && targetReady;
   const retryRef = useRef(() => {});
   retryRef.current = () => {
@@ -228,11 +231,12 @@ export default function useTarget(
       ready,
       failed,
       denied,
+      missing,
       pending: !ready && !failed,
       retry,
       agent: agent.data,
       assistant: assistantDetailsReady ? assistant.data : undefined,
     }),
-    [ready, failed, denied, retry, agent.data, assistant.data, assistantDetailsReady],
+    [ready, failed, denied, missing, retry, agent.data, assistant.data, assistantDetailsReady],
   );
 }

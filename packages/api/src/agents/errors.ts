@@ -21,6 +21,20 @@ export class AgentModelPolicyError extends Error {
   }
 }
 
+/**
+ * The selected agent no longer exists. Thrown where a run first needs it, for requesters whose
+ * capability skips the chat route's agent check, so the turn names the same code that check's 404
+ * would have.
+ */
+export class AgentNotFoundError extends Error {
+  readonly status = 404;
+  readonly code: ErrorTypes.AGENT_NOT_FOUND = ErrorTypes.AGENT_NOT_FOUND;
+
+  constructor() {
+    super('Agent not found');
+  }
+}
+
 const FATAL_AGENT_INITIALIZATION_CODES = new Set(
   [
     AGENT_ATTACHMENT_LIMIT_EXCEEDED,

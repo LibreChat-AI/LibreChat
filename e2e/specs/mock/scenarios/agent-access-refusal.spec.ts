@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
-import type { Browser, BrowserContext, Page } from '@playwright/test';
+import type { Browser, BrowserContext, Page, Response } from '@playwright/test';
 import type { User } from '../../../types';
 import {
   MOCK_ENDPOINTS,
@@ -8,18 +8,21 @@ import {
   messagesView,
   getAccessToken,
   requestJson,
+  sendMessageAndWaitForCompletion,
 } from '../helpers';
 import { cleanupAgent, uniqueAgentName } from '../agents.helpers';
 import cleanupUser from '../../../setup/cleanupUser';
 import { withMongo } from '../db';
 
 /**
- * A chat whose agent the user may not view is refused by the server. The user is told it is an
- * access problem: in the composer while the agent cannot be loaded, and in the transcript when the
- * refusal only arrives with the send, instead of a model provider failure that reads "Forbidden".
+ * A chat whose agent the user may not view, or whose agent was deleted, is refused by the server.
+ * The user is told why: in the composer while the agent cannot be loaded, and in the transcript
+ * when the refusal only arrives with the send, instead of a model provider failure that reads
+ * "Forbidden" or "Not Found".
  */
 
 const ACCESS_REFUSED = 'You do not have access to this agent.';
+const AGENT_GONE = 'This agent is no longer available.';
 const PROVIDER_FAILURE = 'The model provider could not complete this request.';
 
 type Member = { user: User; id: string; context: BrowserContext; page: Page };
@@ -101,6 +104,43 @@ async function share(page: Page, agent: Agent, member: Member, grant: boolean) {
 const openAgentChat = (page: Page, agentId: string) =>
   page.goto(`${NEW_CHAT_PATH}?agent_id=${encodeURIComponent(agentId)}`, { timeout: 10000 });
 
+const isChatStart = (response: Response) =>
+  response.request().method() === 'POST' &&
+  new URL(response.url()).pathname.startsWith('/api/agents/chat');
+
+/** Sends what the composer holds and returns the chat route's answer to the start. */
+async function send(page: Page) {
+  const [start] = await Promise.all([
+    page.waitForResponse(isChatStart, { timeout: 30000 }),
+    page.getByRole('textbox', { name: 'Message input' }).press('Enter'),
+  ]);
+  return start;
+}
+
+/** The composer names a refused or deleted agent beside Retry and keeps the next send held. */
+async function expectComposerHolds(page: Page, copy: string) {
+  const composer = page
+    .getByRole('alert')
+    .filter({ hasText: copy })
+    .filter({ has: page.getByRole('button', { name: 'Retry' }) });
+  await expect(composer).toBeVisible({ timeout: 30000 });
+  await page.getByRole('textbox', { name: 'Message input' }).fill('hello again');
+  await expect(page.getByTestId('send-button')).toBeDisabled();
+}
+
+/** Once the refusal refetches the agent, the composer's alert, with its Retry, can sit in the
+ *  messages view beside the turn's card, so the card is the alert without one. */
+async function expectTurnSays(page: Page, copy: string, detail: string) {
+  const turn = messagesView(page).getByRole('alert').filter({ hasNotText: 'Retry' });
+  await expect(turn).toHaveText(copy, { timeout: 30000 });
+  await expect(page.getByText(PROVIDER_FAILURE)).toHaveCount(0);
+  await expect(page.getByText(detail, { exact: true })).toHaveCount(0);
+}
+
+/** Deletes the agent the way its owner would; a test that already deleted it cleans up quietly. */
+const deleteAgent = (page: Page, agent: Agent) =>
+  cleanupAgent(page, agent.id).catch(() => undefined);
+
 test.describe('agent access refusal', () => {
   /* Signing a member up and removing their account afterwards takes most of the default budget. */
   test.describe.configure({ timeout: 90000 });
@@ -119,12 +159,7 @@ test.describe('agent access refusal', () => {
 
     try {
       await openAgentChat(member.page, agent.id);
-      const alert = member.page.getByRole('alert').filter({ hasText: ACCESS_REFUSED });
-      await expect(alert).toBeVisible({ timeout: 30000 });
-      await expect(alert.getByRole('button', { name: 'Retry' })).toBeVisible();
-
-      await member.page.getByRole('textbox', { name: 'Message input' }).fill('hello');
-      await expect(member.page.getByTestId('send-button')).toBeDisabled();
+      await expectComposerHolds(member.page, ACCESS_REFUSED);
     } finally {
       await member.context.close().catch(() => undefined);
       await cleanupUser(member.user);
@@ -147,42 +182,103 @@ test.describe('agent access refusal', () => {
     try {
       await share(page, agent, member, true);
       await openAgentChat(member.page, agent.id);
-      const input = member.page.getByRole('textbox', { name: 'Message input' });
-      await input.fill('hello');
+      await member.page.getByRole('textbox', { name: 'Message input' }).fill('hello');
       await expect(member.page.getByTestId('send-button')).toBeEnabled({ timeout: 30000 });
 
       /* The chat loaded its agent while the share stood; the owner withdraws it before the send. */
       await share(page, agent, member, false);
-      const [start] = await Promise.all([
-        member.page.waitForResponse(
-          (response) =>
-            response.request().method() === 'POST' &&
-            new URL(response.url()).pathname.startsWith('/api/agents/chat'),
-          { timeout: 30000 },
-        ),
-        input.press('Enter'),
-      ]);
+      const start = await send(member.page);
       expect(start.status()).toBe(403);
 
-      /* Once the refusal refetches the agent, the composer's alert, with its Retry, can sit in this
-       * view beside the turn's card, so the card is the alert without one. */
-      const turn = messagesView(member.page).getByRole('alert').filter({ hasNotText: 'Retry' });
-      await expect(turn).toHaveText(ACCESS_REFUSED, { timeout: 30000 });
-      await expect(member.page.getByText(PROVIDER_FAILURE)).toHaveCount(0);
-      await expect(member.page.getByText('Forbidden', { exact: true })).toHaveCount(0);
-
+      await expectTurnSays(member.page, ACCESS_REFUSED, 'Forbidden');
       /* The refusal also reaches the composer, which holds the next send instead of offering it. */
-      const composer = member.page
-        .getByRole('alert')
-        .filter({ hasText: ACCESS_REFUSED })
-        .filter({ has: member.page.getByRole('button', { name: 'Retry' }) });
-      await expect(composer).toBeVisible({ timeout: 30000 });
-      await input.fill('hello again');
-      await expect(member.page.getByTestId('send-button')).toBeDisabled();
+      await expectComposerHolds(member.page, ACCESS_REFUSED);
     } finally {
       await member.context.close().catch(() => undefined);
       await cleanupUser(member.user);
       await cleanupAgent(page, agent.id);
+    }
+  });
+});
+
+test.describe('deleted agent', () => {
+  /* Signing a member up and removing their account afterwards takes most of the default budget. */
+  test.describe.configure({ timeout: 90000 });
+
+  test('a chat whose agent was deleted says the agent is gone and does not send @scenario:deleted-agent-is-named-in-the-composer', async ({
+    page,
+  }) => {
+    await page.goto(NEW_CHAT_PATH);
+    const agent = await createAgent(page);
+
+    try {
+      await openAgentChat(page, agent.id);
+      await sendMessageAndWaitForCompletion(page, 'hello');
+      await expect(page).toHaveURL(/\/c\/(?!new)/);
+
+      /* Deleted outside this page, so only opening the chat again reads the agent's details. */
+      await deleteAgent(page, agent);
+      await page.reload();
+      await expectComposerHolds(page, AGENT_GONE);
+      await expect(page.getByText('Unable to load this chat’s model or agent.')).toHaveCount(0);
+    } finally {
+      await deleteAgent(page, agent);
+    }
+  });
+
+  test('a send refused because the agent was deleted says so, not a provider failure @scenario:deleted-agent-turn-says-the-agent-is-gone', async ({
+    page,
+    browser,
+    baseURL,
+  }) => {
+    if (typeof baseURL !== 'string') {
+      throw new Error('baseURL must be configured for mock scenarios');
+    }
+    await page.goto(NEW_CHAT_PATH);
+    const agent = await createAgent(page);
+    const member = await signInMember(browser, baseURL);
+
+    try {
+      await share(page, agent, member, true);
+      await openAgentChat(member.page, agent.id);
+      await member.page.getByRole('textbox', { name: 'Message input' }).fill('hello');
+      await expect(member.page.getByTestId('send-button')).toBeEnabled({ timeout: 30000 });
+
+      /* The chat loaded its agent; the owner deletes it before the member sends. */
+      await deleteAgent(page, agent);
+      const start = await send(member.page);
+      expect(start.status()).toBe(404);
+
+      await expectTurnSays(member.page, AGENT_GONE, 'Not Found');
+      await expectComposerHolds(member.page, AGENT_GONE);
+    } finally {
+      await member.context.close().catch(() => undefined);
+      await cleanupUser(member.user);
+      await deleteAgent(page, agent);
+    }
+  });
+
+  test('a run started for a deleted agent by an agent manager says the agent is gone @scenario:deleted-agent-turn-says-the-agent-is-gone-for-an-agent-manager', async ({
+    page,
+  }) => {
+    /* The primary account is an admin, whose agent rights skip the chat route's agent check, so the
+     * deleted agent is only found missing once the run starts. */
+    await page.goto(NEW_CHAT_PATH);
+    const agent = await createAgent(page);
+
+    try {
+      await openAgentChat(page, agent.id);
+      await page.getByRole('textbox', { name: 'Message input' }).fill('hello');
+      await expect(page.getByTestId('send-button')).toBeEnabled({ timeout: 30000 });
+
+      await deleteAgent(page, agent);
+      const start = await send(page);
+      expect(start.status()).toBe(200);
+
+      await expectTurnSays(page, AGENT_GONE, 'Agent not found');
+      await expectComposerHolds(page, AGENT_GONE);
+    } finally {
+      await deleteAgent(page, agent);
     }
   });
 });

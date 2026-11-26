@@ -9,6 +9,7 @@ import {
 } from 'librechat-data-provider';
 import type { IRole, IUser } from '@librechat/data-schemas';
 import {
+  notFound,
   checkAccess,
   accessDenied,
   checkAccessWithRequestCache,
@@ -545,6 +546,23 @@ describe('access middleware', () => {
       expect(accessDenied(ResourceType.PROMPTGROUP)).toEqual({
         error: 'Forbidden',
         message: 'Insufficient permissions to access this promptGroup',
+      });
+    });
+  });
+
+  describe('notFound', () => {
+    it('names a missing agent with a code a failed chat can explain', () => {
+      expect(notFound(ResourceType.AGENT)).toEqual({
+        error: 'Not Found',
+        message: 'agent not found',
+        type: ErrorTypes.AGENT_NOT_FOUND,
+      });
+    });
+
+    it('keeps the plain body for every other resource', () => {
+      expect(notFound(ResourceType.PROMPTGROUP)).toEqual({
+        error: 'Not Found',
+        message: 'promptGroup not found',
       });
     });
   });

@@ -252,6 +252,7 @@ describe('canAccessAgentResource middleware', () => {
       expect(res.json).toHaveBeenCalledWith({
         error: 'Not Found',
         message: 'agent not found',
+        type: ErrorTypes.AGENT_NOT_FOUND,
       });
     });
 

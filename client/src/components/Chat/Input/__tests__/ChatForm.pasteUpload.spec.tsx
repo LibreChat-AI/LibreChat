@@ -141,7 +141,14 @@ function Harness() {
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
         <TargetContext.Provider
-          value={{ ready: true, pending: false, failed: false, denied: false, retry: () => {} }}
+          value={{
+            ready: true,
+            pending: false,
+            failed: false,
+            denied: false,
+            missing: false,
+            retry: () => {},
+          }}
         >
           <DragDropWrapper>
             <ChatForm

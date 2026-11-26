@@ -1,8 +1,8 @@
 import { useMemo, useState, useCallback } from 'react';
 import { useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
-import { getStreamStartFailureText } from '@librechat/chat';
 import { ErrorTypes, QueryKeys } from 'librechat-data-provider';
+import { classifyErrorText, getStreamStartFailureText } from '@librechat/chat';
 import {
   useUsageHandler,
   toResumableUsage,
@@ -18,21 +18,26 @@ import { markStreamStartFailedMetadata } from '~/utils';
 import { reopenTermsOnRefusal } from '~/utils/terms';
 import useLocalize from '~/hooks/useLocalize';
 
+/** The codes a send fails with when its agent is refused or no longer exists. */
+const agentRefusals = new Set<string>([ErrorTypes.AGENT_ACCESS, ErrorTypes.AGENT_NOT_FOUND]);
+
 /**
- * A send refused for its agent proves the agent details the composer holds stale. Refetching them
- * lets the composer say the agent is refused and hold the next send, instead of offering it again.
+ * A send refused for its agent, or sent to an agent that no longer exists, proves the agent details
+ * the composer holds stale. Refetching them lets the composer say why and hold the next send,
+ * instead of offering it again. `text` is the failed turn's error text, read as its card reads it:
+ * a refusal before the stream starts and a run that fails once started name the code alike.
  */
 const refetchRefusedAgents = (
   queryClient: QueryClient,
   { conversation, addedConvo }: Pick<TSubmission, 'conversation' | 'addedConvo'>,
-  errorData: unknown,
+  text: unknown,
 ) => {
-  const refused =
-    errorData != null &&
-    typeof errorData === 'object' &&
-    'type' in errorData &&
-    errorData.type === ErrorTypes.AGENT_ACCESS;
-  if (!refused) {
+  if (typeof text !== 'string') {
+    return;
+  }
+  const read = classifyErrorText(text);
+  const code = read.kind === 'payload' ? read.code : undefined;
+  if (code == null || !agentRefusals.has(code)) {
     return;
   }
   for (const id of [conversation?.agent_id, addedConvo?.agent_id]) {
@@ -137,7 +142,7 @@ export default function useResumableEvents({
         } else if (reopenTermsOnRefusal(queryClient, errorData)) {
           text = localize('com_error_terms_not_accepted');
         }
-        refetchRefusedAgents(queryClient, failedSubmission, errorData);
+        refetchRefusedAgents(queryClient, failedSubmission, getStreamStartFailureText(errorData));
         errorHandler({
           data: getStreamStartFailureData(errorData, text),
           submission: failedSubmission as EventSubmission,
@@ -155,11 +160,13 @@ export default function useResumableEvents({
       clearStepMaps,
       flushPendingDeltas,
       resetLive,
-      showError: (text, errorSubmission) =>
+      showError: (text, errorSubmission) => {
+        refetchRefusedAgents(queryClient, errorSubmission, text);
         errorHandler({
           data: { text } as unknown as Parameters<typeof errorHandler>[0]['data'],
           submission: errorSubmission as EventSubmission,
-        }),
+        });
+      },
     }),
     [
       localize,

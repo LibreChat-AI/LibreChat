@@ -69,7 +69,7 @@ function Harness({
   routePending?: boolean;
   targetReady?: boolean;
   /** Why the target could not be resolved, when it could not. */
-  failure?: 'failed' | 'denied';
+  failure?: 'failed' | 'denied' | 'missing';
   onAsk?: typeof ask;
   /** Mirrors the real `ask`, which reads `isSubmitting` from the render it was created in. */
   refusesWhileSubmitting?: boolean;
@@ -129,6 +129,7 @@ function Harness({
             pending: !targetReady && failure == null,
             failed: failure != null,
             denied: failure === 'denied',
+            missing: failure === 'missing',
             retry: () => {},
           }}
         >
@@ -163,7 +164,7 @@ function mountComposer(
     query?: string;
     routePending?: boolean;
     targetReady?: boolean;
-    failure?: 'failed' | 'denied';
+    failure?: 'failed' | 'denied' | 'missing';
     speechSettingsInitialized?: boolean;
     liveRun?: boolean;
   } = {},
@@ -272,6 +273,7 @@ afterEach(() => {
 describe('ChatForm target failure', () => {
   it.each([
     ['denied', 'You do not have access to this agent.'],
+    ['missing', 'This agent is no longer available.'],
     ['failed', 'Unable to load this chat’s model or agent.'],
   ] as const)('states a %s agent in the composer alert beside Retry', (failure, copy) => {
     mountComposer(agentConversation, { targetReady: false, failure, query: '' });

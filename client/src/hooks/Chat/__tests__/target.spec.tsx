@@ -276,6 +276,7 @@ it('keeps a denied agent selected and allows retry without opening another conve
   expect(result.current.value?.agent_id).toBe('agent_one');
   expect(result.current.target.ready).toBe(false);
   expect(result.current.target.denied).toBe(true);
+  expect(result.current.target.missing).toBe(false);
   getAgent.mockResolvedValue({ id: 'agent_one' } as Agent);
   act(() => result.current.target.retry());
   await waitFor(() => expect(result.current.target.ready).toBe(true));
@@ -334,7 +335,20 @@ it('keeps a missing remembered agent selected rather than using a catalog fallba
   await waitFor(() => expect(result.current.target.failed).toBe(true));
   expect(result.current.value?.agent_id).toBe('agent_missing');
   expect(result.current.target.denied).toBe(false);
+  expect(result.current.target.missing).toBe(true);
   expect(dataService.listAgents).not.toHaveBeenCalled();
+});
+
+it('names neither a refusal nor a missing agent when the agent fails for another reason', async () => {
+  jest
+    .spyOn(dataService, 'getAgentById')
+    .mockRejectedValue(Object.assign(new Error('bad request'), { status: 400 }));
+  const { result } = setup(
+    conversation({ endpoint: EModelEndpoint.agents, agent_id: 'agent_unreadable' }),
+  );
+  await waitFor(() => expect(result.current.target.failed).toBe(true));
+  expect(result.current.target.denied).toBe(false);
+  expect(result.current.target.missing).toBe(false);
 });
 
 it('retries a successfully loaded catalog when the selected endpoint is absent', async () => {

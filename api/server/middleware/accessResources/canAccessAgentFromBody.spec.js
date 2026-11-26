@@ -163,6 +163,35 @@ describe('canAccessAgentFromBody middleware', () => {
     });
 
     test.each([
+      { label: 'selected', setup: () => (req.body.agent_id = 'agent_deleted') },
+      {
+        label: 'enforced model spec',
+        setup: () => {
+          req.body.spec = 'retired-agent';
+          req.config = {
+            modelSpecs: {
+              enforce: true,
+              list: [{ name: 'retired-agent', preset: { agent_id: 'agent_retired' } }],
+            },
+          };
+        },
+      },
+    ])('names a missing $label agent with the agent not found code', async ({ setup }) => {
+      setup();
+
+      const middleware = canAccessAgentFromBody({ requiredPermission: 1 });
+      await middleware(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'Not Found',
+        message: 'agent not found',
+        type: ErrorTypes.AGENT_NOT_FOUND,
+      });
+    });
+
+    test.each([
       {
         label: 'inferred agents endpoint',
         preset: { agent_id: 'agent_restricted' },
@@ -382,6 +411,11 @@ describe('canAccessAgentFromBody middleware', () => {
 
       expect(next).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'Not Found',
+        message: 'agent not found',
+        type: ErrorTypes.AGENT_NOT_FOUND,
+      });
     });
 
     test('proceeds when requester has ACL for the added agent', async () => {
