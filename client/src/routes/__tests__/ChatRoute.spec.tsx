@@ -1,8 +1,10 @@
 import React from 'react';
+import { getDefaultStore } from 'jotai';
+import { submissionByIndex } from '@librechat/chat/react';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { TConversation } from 'librechat-data-provider';
+import type { TConversation, TSubmission } from 'librechat-data-provider';
 import ChatRoute from '../ChatRoute';
 
 const mockSetConversation = jest.fn();
@@ -28,8 +30,11 @@ const mockRoles = { USER: {} };
 let mockAssistantListMap = {};
 const mockNewConversation = jest.fn(({ template }: { template?: Partial<TConversation> }) => {
   mockConversation = { conversationId: 'new', ...template };
+  getDefaultStore().set(submissionByIndex(0), {} as TSubmission);
   mockSetConversation();
 });
+/** A first turn's submission, as the pane holds it from the send until the pane is reset. */
+const firstTurn = { conversation: { conversationId: 'new' } } as TSubmission;
 
 jest.mock('recoil', () => ({
   useRecoilValue: () => false,
@@ -142,6 +147,7 @@ beforeEach(() => {
   mockHasSetConversation.current = true;
   mockAssistantListMap = {};
   mockFetchConversation.mockImplementation(async (id: string) => ({ conversationId: id }));
+  getDefaultStore().set(submissionByIndex(0), null);
 });
 
 it('reconciles Back and Forward with each route, including new chat', async () => {
@@ -180,6 +186,59 @@ it('does not reset a new conversation when its server id arrives before the URL'
   });
   expect(mockNewConversation).not.toHaveBeenCalled();
   expect(mockFetchConversation).not.toHaveBeenCalled();
+});
+
+it('starts a new chat when Back leaves a named first turn for the new chat it was sent from', async () => {
+  mockConversation = { conversationId: 'new' };
+  const { router } = setup(['/c/new']);
+  /** The send opens its own entry; its run then names the conversation and renames that entry's
+   * address without the router, which still reads `new`. */
+  await act(async () => {
+    getDefaultStore().set(submissionByIndex(0), firstTurn);
+    await router.navigate('/c/new');
+  });
+  act(() => {
+    mockConversation = { conversationId: 'created-chat' };
+    mockSetConversation();
+  });
+  expect(mockNewConversation).not.toHaveBeenCalled();
+
+  await act(async () => {
+    await router.navigate(-1);
+  });
+  await waitFor(() => expect(screen.getByTestId('composer')).toHaveTextContent('new'));
+  expect(mockNewConversation).toHaveBeenCalledTimes(1);
+  expect(getDefaultStore().get(submissionByIndex(0))).toEqual({});
+  expect(mockFetchConversation).not.toHaveBeenCalled();
+});
+
+it('starts a new chat when Back leaves a first turn its run has not named yet', async () => {
+  mockConversation = { conversationId: 'new' };
+  const { router } = setup(['/c/new']);
+  await act(async () => {
+    getDefaultStore().set(submissionByIndex(0), firstTurn);
+    await router.navigate('/c/new');
+  });
+
+  await act(async () => {
+    await router.navigate(-1);
+  });
+  await waitFor(() => expect(mockNewConversation).toHaveBeenCalledTimes(1));
+  expect(getDefaultStore().get(submissionByIndex(0))).toEqual({});
+  expect(screen.getByTestId('composer')).toBeVisible();
+});
+
+it('keeps an unsent new chat when history moves between new-chat entries', async () => {
+  mockConversation = { conversationId: 'new' };
+  const { router } = setup(['/c/new', '/c/new']);
+  await act(async () => {
+    await router.navigate(-1);
+  });
+  await act(async () => {
+    await router.navigate(1);
+  });
+  expect(mockNewConversation).not.toHaveBeenCalled();
+  expect(screen.getByTestId('composer')).toBeVisible();
 });
 
 it('reuses the full cached record when returning through history', async () => {
