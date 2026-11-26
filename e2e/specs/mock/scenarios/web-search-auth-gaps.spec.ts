@@ -79,11 +79,13 @@ test.describe('web search authentication gaps in the server log', () => {
 
   test('a credential store failure is logged as unreadable rather than as a missing key @scenario:web-search-store-failure-reads-as-unreadable', () => {
     expectPassed('reports a failed credential lookup as unreadable, not as a missing key');
+    expectPassed('reports Keenable values that could not be read as unreadable');
     expectPassed('reports saved selections that could not be read');
   });
 
   test('a user URL the SSRF check blocks is logged as rejected without the URL @scenario:web-search-blocked-url-logged-without-value', () => {
     expectPassed('reports a user URL the SSRF check blocks as rejected');
+    expectPassed('reports a blocked Keenable URL as rejected in both categories that use it');
   });
 
   test('a configuration that authenticates logs no gap, and a failed category lists only its own services @scenario:web-search-authenticated-logs-no-gap', () => {

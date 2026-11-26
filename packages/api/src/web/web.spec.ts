@@ -4091,6 +4091,63 @@ describe('web.ts', () => {
       expect(JSON.stringify(debug.mock.calls)).not.toContain('169.254.169.254');
     });
 
+    it('reports a blocked Keenable URL as rejected in both categories that use it', async () => {
+      mockIsSSRFTarget.mockReturnValue(true);
+
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig({
+          searchProvider: SearchProviders.KEENABLE,
+          scraperProvider: ScraperProviders.KEENABLE,
+          rerankerType: RerankerTypes.NONE,
+        }),
+        loadAuthValues: authValuesFor({ KEENABLE_API_URL: 'http://169.254.169.254/v1/search' }),
+      });
+
+      expect(result.authenticated).toBe(false);
+      expect(result.gaps).toEqual(
+        [SearchCategories.PROVIDERS, SearchCategories.SCRAPERS].map((category) => ({
+          category,
+          service: SearchProviders.KEENABLE,
+          field: 'keenableApiUrl',
+          reason: 'rejected',
+        })),
+      );
+      expect(JSON.stringify(debug.mock.calls)).not.toContain('169.254.169.254');
+    });
+
+    it('reports Keenable values that could not be read as unreadable', async () => {
+      const loadAuthValues = jest.fn(
+        async ({
+          authFields,
+          failOnOptionalError,
+        }: {
+          authFields: string[];
+          failOnOptionalError?: boolean;
+        }) => {
+          if (failOnOptionalError && authFields.includes('KEENABLE_API_URL')) {
+            throw new Error('Credential store unavailable');
+          }
+          return {};
+        },
+      );
+
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig({
+          searchProvider: SearchProviders.KEENABLE,
+          scraperProvider: ScraperProviders.KEENABLE,
+          rerankerType: RerankerTypes.NONE,
+        }),
+        loadAuthValues,
+      });
+
+      expect(result.authenticated).toBe(false);
+      expect(debug).toHaveBeenCalledWith(
+        '[loadWebSearchAuth] Web search is not authenticated for providers (keenable): saved settings could not be read; scrapers (keenable): saved settings could not be read',
+      );
+    });
+
     it('reports saved selections that could not be read', async () => {
       const loadAuthValues = jest.fn(async ({ failOnOptionalError }) => {
         if (failOnOptionalError) {
