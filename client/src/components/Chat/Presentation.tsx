@@ -9,6 +9,7 @@ import {
   sideChatBesideAtom,
   sideChatRequestAtom,
   useIsSubmitting,
+  activeRunFamily,
   activeSubagentPanel,
   SideChatHostProvider,
   ParentSubagentsProvider,
@@ -16,8 +17,10 @@ import {
 import type { SideChat } from '@librechat/chat/react';
 import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
+import useArtifactsLiveReply from '~/hooks/Artifacts/useArtifactsLiveReply';
 import DragDropWrapper from '~/components/Chat/Input/Files/DragDropWrapper';
 import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
+import { useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
 import { appSideChatHost } from '~/Providers/SideChatHostContext';
 import { artifactsUndocked } from '~/components/Artifacts/state';
 import { EditorProvider, ArtifactsProvider } from '~/Providers';
@@ -59,8 +62,9 @@ export default function Presentation({
   // when *something* is actively focused. Conversation navigation
   // resets `currentArtifactId` to null, so the panel stays closed when
   // a user revisits an old conversation full of artifacts. New artifacts
-  // arriving via SSE auto-focus through `ToolArtifactCard`'s mount effect
-  // (gated on `isSubmitting`), restoring the legacy streaming UX.
+  // arriving via SSE auto-focus through `ToolArtifactCard` (gated on its
+  // response generating) and, for an authored `:::artifact`, `ArtifactButton`
+  // (gated on the live reply recorded below), restoring the legacy streaming UX.
   const currentArtifactId = useRecoilValue(store.currentArtifactId);
   const conversationId = useRecoilValue(store.conversationIdByIndex(0));
   const conversationEndpoint = useRecoilValue(store.effectiveEndpointByIndex(0));
@@ -87,7 +91,10 @@ export default function Presentation({
   );
   const previousConversationIdRef = useRef<string | null>(null);
 
+  const latestMessageId = useLatestMessageId(0);
+  const runId = useAtomValue(activeRunFamily(0));
   useArtifactsRegistryLifetime(conversationId);
+  useArtifactsLiveReply(conversationId, isSubmitting, latestMessageId, runId);
 
   useEffect(
     () => () =>

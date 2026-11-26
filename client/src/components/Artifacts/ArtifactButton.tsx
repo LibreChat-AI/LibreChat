@@ -1,14 +1,15 @@
-import { memo, useEffect, useMemo } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import { selectAtom } from 'jotai/utils';
 import { Button } from '@librechat/client';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { useAtomValue, useSetAtom, useStore } from 'jotai';
 import { LangIcon, hasLangIcon } from '@librechat/chat/components';
 import { ArrowUpRight, CircleAlert, FileCode2, LoaderCircle } from 'lucide-react';
 import type { Artifact } from '~/common';
 import { useOptionalMessagesOperations } from '~/Providers/MessagesViewContext';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { artifactRowKind } from '~/utils/artifacts';
+import { artifactRowKind, isCodeOnlyArtifact } from '~/utils/artifacts';
 import { useMessageContext } from '~/Providers';
+import { artifactsLiveReply } from './state';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -34,6 +35,13 @@ const ArtifactButton = memo(function ArtifactButton({
   const { getMessages } = useOptionalMessagesOperations();
   const { currentArtifactId, registered, register, open, close } =
     useMessagePartsHost().useArtifactPanel(artifact?.id ?? '');
+  const jotai = useStore();
+  const live = useAtomValue(
+    useMemo(
+      () => selectAtom(artifactsLiveReply, (reply) => reply.messageId === messageId),
+      [messageId],
+    ),
+  );
   const needsPrevious = artifact == null && canOpen && Boolean(identifier);
   const ancestors = useMemo(() => {
     if (!needsPrevious || conversationId == null) {
@@ -111,6 +119,43 @@ const ArtifactButton = memo(function ArtifactButton({
       register(artifact);
     }
   }, [archiveEntry, artifact, canOpen, register, registered, setArchive]);
+
+  /**
+   * When this card first saw its artifact complete: during which of the main pane's runs, and
+   * whether the archive already had it, as it does for a card remounted after the reader saw it.
+   * Read before the effects above have archived it in the same commit.
+   */
+  const sighting = useRef<{ id: string; run: number; known: boolean; opened: boolean } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (artifact == null || sighting.current?.id === artifact.id) {
+      return;
+    }
+    const { run } = jotai.get(artifactsLiveReply);
+    sighting.current = { id: artifact.id, run, known: archiveEntry != null, opened: false };
+  }, [archiveEntry, artifact, jotai]);
+
+  /**
+   * An artifact that completes during the main pane's live reply opens the pane once, as a tool's
+   * file does: an edit saved to it later leaves the reader's choice alone. One the reply already
+   * had, from history or before it was continued, stays closed, and so does one a remounted card
+   * finds archived. Source code stays click-to-open.
+   */
+  useEffect(() => {
+    const sight = sighting.current;
+    if (artifact == null || !canOpen || !live || sight?.id !== artifact.id || sight.opened) {
+      return;
+    }
+    if (sight.known || sight.run !== jotai.get(artifactsLiveReply).run) {
+      return;
+    }
+    if (isCodeOnlyArtifact(artifact.type)) {
+      return;
+    }
+    sight.opened = true;
+    open(artifact.id);
+  }, [artifact, canOpen, jotai, live, open]);
 
   const previous = artifact == null ? archiveEntry : null;
   const target = artifact ?? previous;
