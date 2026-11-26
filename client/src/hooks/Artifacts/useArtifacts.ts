@@ -269,15 +269,6 @@ export default function useArtifacts() {
     setCurrentArtifactId(latestAutoOpenArtifactId);
   }, [latestAutoOpenArtifactId, orderedArtifactIds, resetCurrentArtifactId, setCurrentArtifactId]);
 
-  /** Runs before the tab effects below, so a pane opened mid-reply keeps what they detect. */
-  useEffect(() => {
-    if (latestMessageId !== lastRunMessageIdRef.current) {
-      lastRunMessageIdRef.current = latestMessageId;
-      hasEnclosedArtifactRef.current = false;
-      hasAutoSwitchedToCodeRef.current = false;
-    }
-  }, [latestMessageId]);
-
   /**
    * Manage artifact selection and code tab switching for non-enclosed artifacts
    * Runs when artifact content changes
@@ -302,7 +293,8 @@ export default function useArtifacts() {
     if (latestArtifact?.messageId !== latestMessageId) {
       return;
     }
-    if (latestArtifact.content === lastContentRef.current && !justFinishedSubmitting) {
+    /* Nothing new, even as the reply ends: an artifact the reader chose meanwhile stays open. */
+    if (latestArtifact.content === lastContentRef.current) {
       return;
     }
     lastContentRef.current = latestArtifact?.content ?? null;
@@ -346,6 +338,14 @@ export default function useArtifacts() {
       hasAutoSwitchedToCodeRef.current = false;
     }
   }, [isSubmitting, latestMessageText, setActiveTab]);
+
+  useEffect(() => {
+    if (latestMessageId !== lastRunMessageIdRef.current) {
+      lastRunMessageIdRef.current = latestMessageId;
+      hasEnclosedArtifactRef.current = false;
+      hasAutoSwitchedToCodeRef.current = false;
+    }
+  }, [latestMessageId]);
 
   const currentArtifact = currentArtifactId != null ? artifacts?.[currentArtifactId] : null;
 

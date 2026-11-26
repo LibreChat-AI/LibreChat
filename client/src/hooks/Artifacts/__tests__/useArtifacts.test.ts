@@ -567,6 +567,37 @@ describe('useArtifacts', () => {
       expect(mockSetCurrentArtifactId).toHaveBeenCalledWith('artifact-2');
     });
 
+    it("keeps the reader's choice when the reply ends with nothing new", () => {
+      const artifact1 = createArtifact({ id: 'artifact-1', lastUpdateTime: 1000, content: 'c1' });
+      const artifact2 = createArtifact({ id: 'artifact-2', lastUpdateTime: 2000, content: 'c2' });
+      (useRecoilValue as jest.Mock).mockReturnValue({
+        'artifact-1': artifact1,
+        'artifact-2': artifact2,
+      });
+      (useRecoilState as jest.Mock).mockReturnValue(['artifact-2', mockSetCurrentArtifactId]);
+      (useArtifactsContext as jest.Mock).mockReturnValue({
+        ...defaultContext,
+        isSubmitting: true,
+        latestMessageId: 'msg-1',
+      });
+
+      const { rerender } = renderHook(() => useArtifacts());
+      expect(mockSetCurrentArtifactId).toHaveBeenCalledWith('artifact-2');
+
+      /* The reader opens the earlier artifact just before the reply ends. */
+      (useRecoilState as jest.Mock).mockReturnValue(['artifact-1', mockSetCurrentArtifactId]);
+      rerender();
+      mockSetCurrentArtifactId.mockClear();
+      (useArtifactsContext as jest.Mock).mockReturnValue({
+        ...defaultContext,
+        isSubmitting: false,
+        latestMessageId: 'msg-1',
+      });
+      rerender();
+
+      expect(mockSetCurrentArtifactId).not.toHaveBeenCalled();
+    });
+
     it('does not select a historical sibling artifact when regeneration begins', () => {
       const selected = createArtifact({
         id: 'selected',
