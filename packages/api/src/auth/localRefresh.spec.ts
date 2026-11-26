@@ -44,6 +44,14 @@ async function createUser(): Promise<string> {
   return String(user._id);
 }
 
+/** `AuthService.setAuthTokens` as production wires it: a session it is handed gets rotated. */
+async function setAuthTokens(_userId: string, res: Response, session: ISession | null) {
+  if (session) {
+    res.cookie('refreshToken', await methods.generateRefreshToken(session));
+  }
+  return 'set-auth-tokens-access-token';
+}
+
 function createDeps(overrides: Partial<Deps> = {}): Deps {
   return {
     userProjection: '-password -__v -totpSecret -backupCodes -federatedTokens',
@@ -51,7 +59,7 @@ function createDeps(overrides: Partial<Deps> = {}): Deps {
     findSession: (query, options) => methods.findSession(query, options),
     generateRefreshToken: (session) => methods.generateRefreshToken(session as ISession),
     generateToken: (user, expiresIn) => methods.generateToken(user as IUser, expiresIn),
-    setAuthTokens: jest.fn(),
+    setAuthTokens,
     setCloudFrontAuthCookies: jest.fn(),
     deleteSession: (query) => methods.deleteSession(query),
     deleteAllUserSessions: (query) => methods.deleteAllUserSessions(query),
