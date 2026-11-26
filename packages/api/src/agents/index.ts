@@ -119,3 +119,4 @@ export * from './turn';
 
 export { createSdkFileHost, createChatSdkFileSession } from './remoteSdk/attachments';
 export type { SdkFileHost, SdkFileSession } from './remoteSdk/attachments';
+export { withProductModelCallbacks } from './product';

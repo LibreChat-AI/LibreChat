@@ -160,7 +160,7 @@ export interface ActivityLabelHookOptions {
    * aggregator per call, `collect()` invoked after a successful response so
    * label calls participate in usage accounting like titles do.
    */
-  getInvokeCallbacks?: () => ActivityLabelInvokeCallbacks;
+  getInvokeCallbacks?: (llm: ActivityLabelLLM) => ActivityLabelInvokeCallbacks;
   /** Cap on labels per run (cost guard). Default 20. */
   maxPerRun?: number;
   /** Per-entry output truncation for the prompt. Default 600 chars. */
@@ -597,7 +597,7 @@ export function createActivityLabelHook(
             provider,
             clientOptions: { ...clientOptions, streaming: false } as ClientOptions,
           });
-          const invokeCallbacks = opts.getInvokeCallbacks?.();
+          const invokeCallbacks = opts.getInvokeCallbacks?.({ provider, clientOptions });
           directPromptText = buildPrompt(
             input.entries,
             charLimit,
