@@ -125,23 +125,26 @@ const ArtifactButton = memo(function ArtifactButton({
    * whether the archive already had it, as it does for a card remounted after the reader saw it.
    * Read before the effects above have archived it in the same commit.
    */
-  const sighting = useRef<{ id: string; run: number; known: boolean } | null>(null);
+  const sighting = useRef<{ id: string; run: number; known: boolean; opened: boolean } | null>(
+    null,
+  );
   useEffect(() => {
     if (artifact == null || sighting.current?.id === artifact.id) {
       return;
     }
     const { run } = jotai.get(artifactsLiveReply);
-    sighting.current = { id: artifact.id, run, known: archiveEntry != null };
+    sighting.current = { id: artifact.id, run, known: archiveEntry != null, opened: false };
   }, [archiveEntry, artifact, jotai]);
 
   /**
-   * An artifact that completes during the main pane's live reply opens the pane, as a tool's file
-   * does. One the reply already had, from history or before it was continued, stays closed,
-   * and so does one a remounted card finds archived. Source code stays click-to-open.
+   * An artifact that completes during the main pane's live reply opens the pane once, as a tool's
+   * file does: an edit saved to it later leaves the reader's choice alone. One the reply already
+   * had, from history or before it was continued, stays closed, and so does one a remounted card
+   * finds archived. Source code stays click-to-open.
    */
   useEffect(() => {
     const sight = sighting.current;
-    if (artifact == null || !canOpen || !live || sight?.id !== artifact.id) {
+    if (artifact == null || !canOpen || !live || sight?.id !== artifact.id || sight.opened) {
       return;
     }
     if (sight.known || sight.run !== jotai.get(artifactsLiveReply).run) {
@@ -150,6 +153,7 @@ const ArtifactButton = memo(function ArtifactButton({
     if (isCodeOnlyArtifact(artifact.type)) {
       return;
     }
+    sight.opened = true;
     open(artifact.id);
   }, [artifact, canOpen, jotai, live, open]);
 

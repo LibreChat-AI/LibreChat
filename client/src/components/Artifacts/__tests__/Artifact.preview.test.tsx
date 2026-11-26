@@ -126,6 +126,21 @@ it('keeps a dismissed artifact closed when a new chat takes its saved URL', () =
   expect(visible).toBe(false);
 });
 
+it('keeps the pane where the reader left it when an edit is saved to the artifact', () => {
+  startRun('current');
+  const view = (content: string, submitting = false) => page(reply('current', content, submitting));
+  const { rerender } = render(view(`${newVersion}\n:::\n`, true));
+  expect(selected).toBe(artifactId('current'));
+  rerender(view(`${newVersion}\n:::\n`));
+  fireEvent.click(screen.getByRole('button', { name: /^Close artifact: Chart/ }));
+  expect(selected).toBeNull();
+
+  rerender(view(`${header}\n\`\`\`markdown\nEdited content\n\`\`\`\n:::\n`));
+  expect(registered?.[artifactId('current')]?.content).toBe('Edited content\n');
+  expect(selected).toBeNull();
+  expect(visible).toBe(false);
+});
+
 it('leaves a completed artifact closed when its response loads or continues', () => {
   const { rerender } = render(page(reply('saved', savedVersion)));
   expect(screen.getByRole('status')).toHaveTextContent('Ready');
