@@ -1988,16 +1988,19 @@ describe('encodeAndFormatDocuments - agents sharing a history', () => {
     ).rejects.toThrow('File size (~0.0MB) exceeds the configured limit for openAI');
   });
 
-  it("does not apply Bedrock's document limits to a text file shared as a text part", async () => {
-    const result = await encodeAndFormatDocuments(
-      req,
-      [file('data.csv', 'text/csv')],
-      { provider: Providers.OPENAI, recipients: [bedrock] },
-      jest.fn(),
-    );
+  it("refuses a file over a Bedrock reader's limit from its recorded size, without reading it", async () => {
+    const large = { ...pdf, bytes: 8 * 1024 * 1024 } as IMongoFile;
+    const llama = { provider: Providers.BEDROCK, model_parameters: { model: 'meta.llama3-70b' } };
 
-    expect(result.documents).toEqual([{ type: 'text', text: `File: "data.csv"\n\n${csv}` }]);
-    expect(mockedValidateBedrockDocument).not.toHaveBeenCalled();
+    await expect(
+      encodeAndFormatDocuments(
+        req,
+        [large],
+        { provider: Providers.OPENAI, recipients: [llama] },
+        jest.fn(),
+      ),
+    ).rejects.toBeInstanceOf(AttachmentSizeError);
+    expect(mockedGetFileStream).not.toHaveBeenCalled();
   });
 
   it("does not repeat the primary agent's checks for a reader that shares them", async () => {
