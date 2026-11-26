@@ -81,7 +81,7 @@ const staged = (over: Partial<ExtendedFile> = {}): ExtendedFile =>
   ({ file_id: 'other', size: MB, progress: 1, ...over }) as ExtendedFile;
 
 const attach = (
-  target: TFile = file(),
+  target: TFile | TFile[] = file(),
   resolved: Partial<Parameters<typeof useAttachExisting>[0]> = {},
 ) => {
   const { result } = renderHook(() =>
@@ -146,6 +146,61 @@ describe('useAttachExisting', () => {
       }),
     );
     expect(mockShowToast).not.toHaveBeenCalled();
+  });
+
+  it('stages multiple selected files in one call', () => {
+    const files = [
+      file({ file_id: 'f1', filename: 'one.pdf' }),
+      file({ file_id: 'f2', filename: 'two.pdf' }),
+      file({ file_id: 'f3', filename: 'three.pdf' }),
+    ];
+
+    attach(files);
+
+    expect(mockAddFile).toHaveBeenCalledTimes(3);
+    expect(mockAddFile).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ file_id: 'f1', filename: 'one.pdf' }),
+    );
+    expect(mockAddFile).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ file_id: 'f2', filename: 'two.pdf' }),
+    );
+    expect(mockAddFile).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({ file_id: 'f3', filename: 'three.pdf' }),
+    );
+    expect(mockShowToast).not.toHaveBeenCalled();
+  });
+
+  it('attaches valid files while rejecting an unsupported file in the batch', () => {
+    const files = [
+      file({ file_id: 'f1', filename: 'first.pdf' }),
+      file({
+        file_id: 'f2',
+        filename: 'archive.zip',
+        type: 'application/zip',
+      }),
+      file({ file_id: 'f3', filename: 'third.pdf' }),
+    ];
+
+    attach(files);
+
+    expect(mockAddFile).toHaveBeenCalledTimes(2);
+    expect(mockAddFile).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ file_id: 'f1', filename: 'first.pdf' }),
+    );
+    expect(mockAddFile).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ file_id: 'f3', filename: 'third.pdf' }),
+    );
+    expect(mockShowToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('com_ui_attach_error_type'),
+        status: 'error',
+      }),
+    );
   });
 
   /* The palette's short recent request routinely beats the unbounded file-map

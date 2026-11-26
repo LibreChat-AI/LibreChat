@@ -96,6 +96,10 @@ export function usePaletteSources(input: PaletteSourcesInput): PaletteSources {
             input.closeCatalog();
             recent.attach(file);
           }}
+          onAttachSelected={(files) => {
+            input.closeCatalog();
+            recent.attach(files);
+          }}
         />
       </>
     ),

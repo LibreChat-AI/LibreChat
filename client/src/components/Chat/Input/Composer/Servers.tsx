@@ -100,6 +100,7 @@ export function ServersCatalog({ open, onClose, entries, returnFocusRef }: Serve
       onClose={onClose}
       entries={entries}
       onAttach={noop}
+      onAttachSelected={noop}
       returnFocusRef={returnFocusRef}
     />
   );
