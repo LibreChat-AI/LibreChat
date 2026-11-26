@@ -195,6 +195,25 @@ describe('InsightsView agent selection', () => {
     expect(screen.queryByRole('heading', { name: 'com_insights_models' })).not.toBeInTheDocument();
   });
 
+  it('keeps the conversation search mounted and focused while a new search loads', async () => {
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      ...queryResult(params, insightsData),
+      ...(params.search ? { isFetching: true, isPreviousData: true } : {}),
+    }));
+    const user = userEvent.setup();
+    renderView('/insights?agentIds=agent-1');
+    const search = screen.getByRole('textbox', { name: 'com_insights_search_placeholder' });
+    await user.type(search, 'abc');
+    await waitFor(() =>
+      expect(mockUseInsightsQuery).toHaveBeenLastCalledWith(
+        expect.objectContaining({ search: 'abc' }),
+        expect.anything(),
+      ),
+    );
+    expect(screen.getByRole('textbox', { name: 'com_insights_search_placeholder' })).toHaveFocus();
+    expect(screen.getByRole('heading', { name: 'com_insights_models' })).toBeInTheDocument();
+  });
+
   it('renders an aggregate-only response without detail tables or identity search', () => {
     mockUseInsightsQuery.mockImplementation((params) =>
       queryResult(params, {

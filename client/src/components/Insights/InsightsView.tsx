@@ -401,6 +401,15 @@ export default function InsightsView() {
     enabled: !!user && insightsFeatureEnabled,
     retry: false,
   });
+  const view = useMemo(
+    () => JSON.stringify({ ...insightsParams, page: 1, search: '' }),
+    [insightsParams],
+  );
+  const [shown, setShown] = useState<string | null>(null);
+  useEffect(() => {
+    if (insights.data && !insights.isPreviousData) setShown(view);
+  }, [insights.data, insights.isPreviousData, view]);
+  const stale = insights.isPreviousData === true && shown !== view;
   const response = insights.data;
   const selectionRequired = response != null && 'selectionRequired' in response;
   const data = selectionRequired ? undefined : response;
@@ -676,14 +685,14 @@ export default function InsightsView() {
               </span>
             </Panel>
           )}
-          {selectionRequired && !insights.isPreviousData && (
+          {selectionRequired && !stale && (
             <Panel>
               <p className="text-text-secondary text-sm">
                 {localize('com_insights_select_agents_to_load')}
               </p>
             </Panel>
           )}
-          {data && !insights.isPreviousData && (
+          {data && !stale && (
             <>
               <p className="text-text-secondary text-sm">
                 {localize('com_insights_last_used')}{' '}
