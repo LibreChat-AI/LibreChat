@@ -4,6 +4,7 @@ import {
   allowedAddressesSchema,
   agentsEndpointSchema,
   agentBuilderConfigSchema,
+  AGENT_BUILDER_FIELDS,
   BASE_ONLY_CONFIG_PATHS,
   BASE_ONLY_CONFIG_SECTIONS,
   DEPLOYMENT_ONLY_CONFIG_PATHS,
@@ -444,6 +445,74 @@ describe('steer escalation confirmation timeout', () => {
         interface: { steerArmConfirmationTimeoutMs: value },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('agent builder configuration', () => {
+  const parse = (agentBuilder: unknown) =>
+    configSchema.safeParse({ version: '1.0.0', endpoints: { agents: { agentBuilder } } });
+  const issuePaths = (agentBuilder: unknown) => {
+    const result = parse(agentBuilder);
+    return result.success ? [] : [...new Set(result.error.issues.map((i) => i.path.join('.')))];
+  };
+
+  it('has no block by default, which offers no write operation', () => {
+    expect(agentsEndpointSchema.parse({}).agentBuilder).toBeUndefined();
+    expect(agentsEndpointSchema.parse({ agentBuilder: {} }).agentBuilder).toEqual({});
+  });
+
+  it('accepts a create operation that lists provider and model', () => {
+    const result = parse({ create: { fields: ['name', 'provider', 'model', 'tools'] } });
+    expect(result.success).toBe(true);
+    expect(result.data?.endpoints?.agents?.agentBuilder).toEqual({
+      create: { fields: ['name', 'provider', 'model', 'tools'] },
+    });
+  });
+
+  it('accepts create next to list in the same block', () => {
+    const result = parse({ list: { maxLimit: 10 }, create: { fields: ['provider', 'model'] } });
+    expect(result.data?.endpoints?.agents?.agentBuilder).toEqual({
+      list: { defaultLimit: 10, maxLimit: 10 },
+      create: { fields: ['provider', 'model'] },
+    });
+  });
+
+  it('rejects a field name the code does not know', () => {
+    expect(issuePaths({ create: { fields: ['provider', 'model', 'avatar'] } })).toEqual([
+      'endpoints.agents.agentBuilder.create.fields.2',
+    ]);
+  });
+
+  it('rejects create.fields without provider and model', () => {
+    expect(issuePaths({ create: { fields: ['name', 'model'] } })).toEqual([
+      'endpoints.agents.agentBuilder.create.fields',
+    ]);
+    expect(issuePaths({ create: { fields: ['name', 'provider'] } })).toEqual([
+      'endpoints.agents.agentBuilder.create.fields',
+    ]);
+  });
+
+  it('requires fields for a listed operation', () => {
+    expect(issuePaths({ create: {} })).toEqual(['endpoints.agents.agentBuilder.create.fields']);
+    expect(issuePaths({ create: { fields: [] } })).toEqual([
+      'endpoints.agents.agentBuilder.create.fields',
+    ]);
+  });
+
+  it('rejects an operation or option it does not know', () => {
+    expect(parse({ delete: { fields: ['name'] } }).success).toBe(false);
+    expect(parse({ create: { fields: ['provider', 'model'], all: true } }).success).toBe(false);
+  });
+
+  it('knows exactly the documented fields', () => {
+    expect(AGENT_BUILDER_FIELDS).toEqual([
+      'name',
+      'description',
+      'instructions',
+      'provider',
+      'model',
+      'tools',
+    ]);
   });
 });
 

@@ -923,7 +923,8 @@ export enum AgentCapabilities {
   ocr = 'ocr',
   run_in_background = 'run_in_background',
   tool_intents = 'tool_intents',
-  /** Read-only Agent Builder tools; off unless listed in `endpoints.agents.capabilities`. */
+  /** Agent Builder tools; off unless listed in `endpoints.agents.capabilities`. Read-only
+   * unless `endpoints.agents.agentBuilder` lists write operations. */
   agent_builder = 'agent_builder',
 }
 
@@ -1944,9 +1945,52 @@ export const AGENT_BUILDER_LIST_LIMIT_CEILING = 100;
 
 const agentBuilderListLimitSchema = z.number().int().min(1).max(AGENT_BUILDER_LIST_LIMIT_CEILING);
 
-/** `endpoints.agents.agentBuilder`: limits for the tools behind the `agent_builder` capability. */
+/** The Agent Builder tool that creates an agent; see {@link agentBuilderConfigSchema}. */
+export const CREATE_AGENT_TOOL_NAME = 'create_agent';
+
+/** Agent fields an Agent Builder write operation can list in `fields`. */
+export const AGENT_BUILDER_FIELDS = [
+  'name',
+  'description',
+  'instructions',
+  'provider',
+  'model',
+  'tools',
+] as const;
+
+export type AgentBuilderField = (typeof AGENT_BUILDER_FIELDS)[number];
+
+/** Fields a new agent cannot be saved without. */
+export const AGENT_BUILDER_CREATE_REQUIRED_FIELDS: readonly AgentBuilderField[] = [
+  'provider',
+  'model',
+];
+
+/** One write operation. `fields` is required, so a release that adds a field widens no install. */
+export const agentBuilderOperationSchema = z
+  .object({ fields: z.array(z.enum(AGENT_BUILDER_FIELDS)).min(1) })
+  .strict();
+
+/**
+ * `endpoints.agents.agentBuilder`: settings for the tools behind the `agent_builder`
+ * capability. With no write operation listed, the builder is read-only; an operation that is
+ * not listed is not offered, and its tool schema holds only the listed fields. Approval
+ * comes from `toolApproval`; recommended:
+ * `toolApproval: { enabled: true, ask: [create_agent, update_agent] }`.
+ */
 export const agentBuilderConfigSchema = z
   .object({
+    /** `create_agent`. `fields` must include `provider` and `model`. */
+    create: agentBuilderOperationSchema
+      .refine(
+        ({ fields }) =>
+          AGENT_BUILDER_CREATE_REQUIRED_FIELDS.every((field) => fields.includes(field)),
+        {
+          message: `create.fields must include ${AGENT_BUILDER_CREATE_REQUIRED_FIELDS.join(' and ')}`,
+          path: ['fields'],
+        },
+      )
+      .optional(),
     list: z
       .object({
         /** Omitted: the smaller of the default page size and `maxLimit`. */

@@ -24,7 +24,7 @@
  */
 
 import { logger } from '@librechat/data-schemas';
-import { Tools, Constants } from 'librechat-data-provider';
+import { Tools, Constants, CREATE_AGENT_TOOL_NAME } from 'librechat-data-provider';
 import {
   Constants as AgentConstants,
   INTENT_LABEL_MARKER,
@@ -61,6 +61,7 @@ export const NATIVE_INTENT_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   EDIT_FILE_TOOL_NAME,
   SET_MEMORY_TOOL_NAME,
   DELETE_MEMORY_TOOL_NAME,
+  CREATE_AGENT_TOOL_NAME,
 ]);
 
 /**

@@ -424,7 +424,7 @@
   "com_a11y_summarize_completed": "Context summarized.",
   "com_a11y_summarize_failed": "Summarization failed, continuing with available context.",
   "com_a11y_summarize_started": "Summarizing context.",
-  "com_agents_agent_builder_info": "Lets the agent list and read the agents you can access.",
+  "com_agents_agent_builder_info": "Lets the agent list and read the agents you can access, and create agents when your administrator allows it.",
   "com_agents_agent_card_label": "{{name}} agent. {{description}}",
   "com_agents_all": "All Agents",
   "com_agents_all_category": "All",

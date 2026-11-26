@@ -1140,6 +1140,62 @@ describe('mergeConfigOverrides', () => {
  * maps without replacing the whole map: deep merge cannot drop a lower layer's key, and atomic
  * record merging would change what every stored partial map means.
  */
+describe('agent builder overrides', () => {
+  const override = (agentBuilder: unknown) => ({ endpoints: { agents: { agentBuilder } } });
+  const paths = (issues: Array<{ path: string }>) => issues.map((issue) => issue.path);
+  const prefix = 'endpoints.agents.agentBuilder.create.fields';
+
+  it('accepts a create operation that lists provider and model', () => {
+    expect(
+      getConfigOverrideIssues(override({ create: { fields: ['name', 'provider', 'model'] } })),
+    ).toEqual([]);
+  });
+
+  it('rejects an unknown field, a create without provider and model, and empty fields', () => {
+    expect(
+      paths(getConfigOverrideIssues(override({ create: { fields: ['provider', 'model', 'x'] } }))),
+    ).toEqual([`${prefix}.2`]);
+    expect(
+      paths(getConfigOverrideIssues(override({ create: { fields: ['name', 'model'] } }))),
+    ).toEqual([prefix]);
+    expect(paths(getConfigOverrideIssues(override({ create: { fields: [] } })))).toEqual([prefix]);
+  });
+
+  /** The builder offers an operation only with its `fields`, so an incomplete one stays off. */
+  it('accepts a create without fields only as a partial that another layer completes', () => {
+    expect(getConfigOverrideIssues(override({ create: {} }))).toEqual([]);
+    const merged = mergeConfigOverrides({ endpoints: { agents: {} } } as unknown as AppConfig, [
+      fakeConfig(override({ create: {} }), 10),
+    ]);
+    expect(merged.endpoints?.agents?.agentBuilder?.create?.fields).toBeUndefined();
+  });
+
+  it('keeps the base operation when a stored override fails the rules', () => {
+    const base = {
+      endpoints: { agents: { agentBuilder: { create: { fields: ['provider', 'model'] } } } },
+    } as unknown as AppConfig;
+    for (const stored of [
+      { create: { fields: ['provider', 'model', 'avatar'] } },
+      { create: { fields: ['name'] } },
+      { create: {} },
+    ]) {
+      const merged = mergeConfigOverrides(base, [fakeConfig(override(stored), 10)]);
+      expect(merged.endpoints?.agents?.agentBuilder).toEqual({
+        create: { fields: ['provider', 'model'] },
+      });
+    }
+  });
+
+  it('applies a valid stored operation', () => {
+    const merged = mergeConfigOverrides({ endpoints: { agents: {} } } as unknown as AppConfig, [
+      fakeConfig(override({ create: { fields: ['name', 'provider', 'model'] } }), 10),
+    ]);
+    expect(merged.endpoints?.agents?.agentBuilder).toEqual({
+      create: { fields: ['name', 'provider', 'model'] },
+    });
+  });
+});
+
 describe('mergeConfigOverrides: removing inherited MCP record keys', () => {
   const github = {
     type: 'streamable-http',

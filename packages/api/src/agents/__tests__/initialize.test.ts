@@ -7409,12 +7409,14 @@ describe('initializeAgent — agent_builder marker', () => {
   async function initialize(
     toolOptions: Agent['tool_options'],
     agentBuilderEnabled: boolean,
-    config?: ServerRequest['config'],
+    builder: { agentBuilder?: unknown; agentsCreate?: boolean } = {},
   ): Promise<Awaited<ReturnType<typeof initializeAgent>>> {
     const { agent, req, res, loadTools, db } = createMocks();
-    if (config) {
-      req.config = config;
-    }
+    req.user = { id: 'user-1', role: 'USER' } as never;
+    req.config = { endpoints: { agents: { agentBuilder: builder.agentBuilder } } } as never;
+    db.getRoleByName = jest.fn().mockResolvedValue({
+      permissions: { AGENTS: { USE: true, CREATE: builder.agentsCreate ?? true } },
+    });
     agent.tools = [AgentCapabilities.agent_builder];
     agent.tool_options = toolOptions;
     loadTools.mockResolvedValue({
@@ -7462,13 +7464,56 @@ describe('initializeAgent — agent_builder marker', () => {
   });
 
   it('sizes list_agents pages from endpoints.agents.agentBuilder', async () => {
-    const config = {
-      endpoints: { agents: { agentBuilder: { list: { defaultLimit: 4, maxLimit: 8 } } } },
-    } as ServerRequest['config'];
-    const listAgents = byName(await initialize(undefined, true, config)).get('list_agents');
+    const agentBuilder = { list: { defaultLimit: 4, maxLimit: 8 } };
+    const listAgents = byName(await initialize(undefined, true, { agentBuilder })).get(
+      'list_agents',
+    );
     const { limit } = (listAgents?.parameters as { properties: Record<string, object> }).properties;
 
     expect(limit).toMatchObject({ maximum: 8, description: 'Page size, default 4.' });
+  });
+
+  it('offers no write tool without an agentBuilder block', async () => {
+    const tools = byName(await initialize(undefined, true));
+
+    expect(tools.has('create_agent')).toBe(false);
+  });
+
+  it('offers create_agent with the listed fields when configured and the role may create', async () => {
+    const agentBuilder = { create: { fields: ['name', 'provider', 'model'] } };
+    const tools = byName(await initialize(undefined, true, { agentBuilder }));
+
+    expect([...tools.keys()]).toEqual(['list_agents', 'get_agent', 'create_agent']);
+    expect(Object.keys(tools.get('create_agent')?.parameters?.properties ?? {})).toEqual([
+      'name',
+      'provider',
+      'model',
+    ]);
+  });
+
+  it('keeps create_agent direct-only even when tool options allow code callers', async () => {
+    const agentBuilder = { create: { fields: ['name', 'provider', 'model'] } };
+    const tools = byName(
+      await initialize(
+        {
+          '*': { allowed_callers: ['code_execution'] },
+          [AgentCapabilities.agent_builder]: { allowed_callers: ['code_execution'] },
+          create_agent: { allowed_callers: ['code_execution'] },
+        },
+        true,
+        { agentBuilder },
+      ),
+    );
+
+    expect(tools.get('create_agent')?.allowed_callers).toEqual(['direct']);
+  });
+
+  it('offers no write tool when the role lacks AGENTS CREATE', async () => {
+    const agentBuilder = { create: { fields: ['name', 'provider', 'model'] } };
+    const tools = byName(await initialize(undefined, true, { agentBuilder, agentsCreate: false }));
+
+    expect(tools.has('create_agent')).toBe(false);
+    expect(tools.has('list_agents')).toBe(true);
   });
 
   it('registers nothing when the loader dropped the marker', async () => {

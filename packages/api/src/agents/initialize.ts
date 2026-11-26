@@ -129,6 +129,7 @@ import { extractAgentContent, extractSkillContent } from '../protection/adapters
 import { selectCodeFileGenerations, planCodeSnapshotMounts } from '~/files/code/destinations';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
+import { registerAgentBuilderTools, resolveAgentBuilderWrites } from './builder';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
 import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
 import { isValidInstructionsPromptLink } from './instructions/linked';
@@ -152,7 +153,6 @@ import { hasActiveFileFieldPolicy } from '~/protection';
 import { applyBackgroundToolCalls } from './background';
 import { admitCurrentFileBudget } from './files/budget';
 import { allowsFileResource } from '~/files/consumers';
-import { registerAgentBuilderTools } from './builder';
 import { applyDeferredToolLoading } from './deferral';
 import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
@@ -2549,10 +2549,17 @@ export async function initializeAgent(
   }
 
   if (agentBuilderEnabled === true) {
+    const builderConfig = appConfig?.endpoints?.[EModelEndpoint.agents]?.agentBuilder;
     const builderResult = registerAgentBuilderTools({
       toolRegistry,
       toolDefinitions,
-      config: appConfig?.endpoints?.agents?.agentBuilder,
+      config: builderConfig,
+      writes: await resolveAgentBuilderWrites({
+        config: builderConfig,
+        req: params.req as Request | undefined,
+        user,
+        getRoleByName: db.getRoleByName,
+      }),
     });
     toolDefinitions = builderResult.toolDefinitions;
     recordCapabilityToolNames(AgentCapabilities.agent_builder, builderResult.toolNames);
