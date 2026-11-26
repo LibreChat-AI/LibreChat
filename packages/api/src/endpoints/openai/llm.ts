@@ -132,15 +132,31 @@ function isOpenAIEndpoint(endpoint?: EModelEndpoint | string | null): boolean {
   return endpoint === EModelEndpoint.openAI || endpoint === EModelEndpoint.azureOpenAI;
 }
 
+const reasoningModelPattern = /(?:^|[/._-])(?:o\d|gpt-(?:[5-9]|\d{2,})|gpt-oss)(?:[-.]|$)/i;
+/** ChatGPT's `-chat` and the `-search` snapshots do not reason. */
+const nonReasoningVariantPattern = /-(?:chat|search)(?:[-.]|$)/i;
+
+/**
+ * Whether an OpenAI model takes a reasoning effort: the o-series, GPT-5 onward
+ * and gpt-oss. Other models, such as GPT-4o, GPT-4.1 and `gpt-5-chat-latest`,
+ * reject the parameter, so a stored effort must not reach them.
+ */
+export function isReasoningModel(model?: string | null): boolean {
+  return (
+    typeof model === 'string' &&
+    reasoningModelPattern.test(model) &&
+    !nonReasoningVariantPattern.test(model)
+  );
+}
+
 /**
  * GPT-5.6 models reason by default and reject function tools alongside
  * reasoning in `/v1/chat/completions` (400: "To use function tools, use
  * /v1/responses or set reasoning_effort to 'none'"). Tools are bound after
- * config time, and the Chat Completions client never transmits the flat
- * `reasoning_effort` this config sets, so a request there always runs at the
- * provider's default effort, whether the user chose `none`, another effort, or
- * nothing. GPT-5.6 therefore defaults to the Responses API, which carries the
- * selected effort as `reasoning.effort`.
+ * config time, so a Chat Completions request with tools fails unless the
+ * effort is `none`, including when the user chose nothing. GPT-5.6 therefore
+ * defaults to the Responses API, which carries the selected effort as
+ * `reasoning.effort`.
  */
 const responsesApiRequiredPattern = /\bgpt-5\.6\b/;
 
@@ -702,12 +718,14 @@ export function getOpenAILLMConfig({
   useOpenRouter,
   directEndpoint,
   requestIdentity,
+  reasoningEfforts,
   reasoningFormat = ReasoningParameterFormat.reasoningEffort,
   modelOptions: _modelOptions,
 }: {
   apiKey: string;
   streaming: boolean;
   requestIdentity?: t.OpenAIConfigOptions['requestIdentity'];
+  reasoningEfforts?: t.OpenAIConfigOptions['reasoningEfforts'];
   baseURL?: string | null;
   endpoint?: EModelEndpoint | string | null;
   modelOptions: Partial<t.OpenAIParameters>;
@@ -1105,6 +1123,9 @@ export function getOpenAILLMConfig({
   const solLunaRulesApply =
     firstPartyEndpoint && (tier === 'sol' || tier === 'terra' || tier === 'luna');
   const sol62 = firstPartyEndpoint && gpt6Release(llmConfig.model)?.toLowerCase() === 'gpt-6.2-sol';
+  /** An Azure deployment name does not identify its model, so its declared
+   * efforts are evidence of taking one too. */
+  const takesEffort = reasoningEfforts != null || isReasoningModel(llmConfig.model);
   if (!useOpenRouter) {
     hasModelKwargs =
       applyReasoningConfig({
@@ -1117,17 +1138,6 @@ export function getOpenAILLMConfig({
         reasoningMode,
         reasoningContext,
       }) || hasModelKwargs;
-  }
-
-  /** Flat effort is an ignored constructor field in Chat Completions. Convert
-   * after shaping (including nested defaults), before administrator drops. */
-  if (solLunaRulesApply && llmConfig.useResponsesApi !== true) {
-    const effort = llmConfig.reasoning_effort ?? llmConfig.reasoning?.effort;
-    if (effort != null && effort !== '') {
-      modelKwargs.reasoning_effort = effort;
-      hasModelKwargs = true;
-    }
-    delete llmConfig.reasoning_effort;
   }
 
   /** DeepSeek thinking-mode requires `reasoning_content` replay on tool turns (#13366). */
@@ -1187,6 +1197,26 @@ export function getOpenAILLMConfig({
     combinedDropParams.forEach((param) => deleteConfigParam({ param, llmConfig, modelKwargs }));
   } else if (dropParams && Array.isArray(dropParams)) {
     dropParams.forEach((param) => deleteConfigParam({ param, llmConfig, modelKwargs }));
+  }
+
+  /** Chat Completions never sends the flat `reasoning_effort` shaped above: the
+   * client reads effort from `reasoning`, which Azure also ignores for a
+   * deployment name without a model family, or from `modelKwargs`. The selected
+   * effort therefore goes in `modelKwargs`, ahead of a configured
+   * `reasoning.effort` as on the Responses API, which is aligned so the client
+   * cannot send it instead. Models that take no effort reject the parameter and
+   * never receive it. Runs after administrator drops, so dropping `reasoning`
+   * also drops the effort it carried. */
+  if (isOpenAIEndpoint(endpoint) && !useOpenRouter && llmConfig.useResponsesApi !== true) {
+    const effort = llmConfig.reasoning_effort ?? llmConfig.reasoning?.effort;
+    delete llmConfig.reasoning_effort;
+    if (takesEffort && effort != null && effort !== '') {
+      modelKwargs.reasoning_effort = effort;
+      hasModelKwargs = true;
+      if (llmConfig.reasoning != null) {
+        llmConfig.reasoning = { ...llmConfig.reasoning, effort };
+      }
+    }
   }
 
   /** Normalize the final effective value in either API, regardless of whether

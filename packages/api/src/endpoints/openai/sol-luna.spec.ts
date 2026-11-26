@@ -233,13 +233,8 @@ describe.each(models)('$model requests', ({ model, cost }) => {
       config({ modelOptions: saved, dropParams: ['reasoning_effort'] }).reasoning,
     ).toBeUndefined();
     expect(
-      (
-        config({ modelOptions: saved, baseURL: 'https://gateway.example/v1' }) as Record<
-          string,
-          unknown
-        >
-      ).reasoning_effort,
-    ).toBe('minimal');
+      config({ modelOptions: saved, baseURL: 'https://gateway.example/v1' }).modelKwargs,
+    ).toHaveProperty('reasoning_effort', 'minimal');
     expect(
       config({ modelOptions: saved, azure, endpoint: EModelEndpoint.azureOpenAI }).reasoning,
     ).toEqual({ effort: 'low' });

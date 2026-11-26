@@ -987,6 +987,65 @@ describe('summarization reasoning effort', () => {
       reasoning_effort: '',
     });
   });
+
+  describe("on another model of the agent's OpenAI endpoint", () => {
+    /** The request the summary client sends, built as the SDK builds it: the summary
+     *  parameters over the agent's resolved client options. */
+    async function summaryRequest(
+      agentParameters: Record<string, unknown>,
+      model: string,
+    ): Promise<Record<string, unknown>> {
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: EModelEndpoint.openAI,
+            endpoint: EModelEndpoint.openAI,
+            model: 'o3',
+            model_parameters: { model: 'o3', ...agentParameters },
+          }),
+        ],
+        summarizationConfig: { provider: EModelEndpoint.openAI, model },
+      });
+      const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+      const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+      const summaryModel = new ChatOpenAI({
+        ...mainClientOptions,
+        ...(summaryConfig.parameters as Record<string, unknown>),
+        apiKey: 'test-key',
+        model,
+      } as never);
+      return summaryModel.invocationParams() as Record<string, unknown>;
+    }
+
+    it('leaves the Chat Completions effort behind for a model that takes none', async () => {
+      const request = await summaryRequest(
+        { modelKwargs: { reasoning_effort: 'high' } },
+        'gpt-4.1',
+      );
+
+      expect(request).toMatchObject({ model: 'gpt-4.1' });
+      expect(request).not.toHaveProperty('reasoning_effort');
+    });
+
+    it('leaves the Responses reasoning object behind for a model that takes none', async () => {
+      const request = await summaryRequest(
+        { useResponsesApi: true, reasoning: { effort: 'high', summary: 'auto' } },
+        'gpt-4.1',
+      );
+
+      expect(request).toMatchObject({ model: 'gpt-4.1' });
+      expect(request.reasoning).toBeUndefined();
+    });
+
+    it('keeps the effort for a model that takes one', async () => {
+      const request = await summaryRequest(
+        { modelKwargs: { reasoning_effort: 'high' } },
+        'gpt-5-mini',
+      );
+
+      expect(request).toMatchObject({ model: 'gpt-5-mini', reasoning_effort: 'high' });
+    });
+  });
 });
 
 type CapturedRequest = {

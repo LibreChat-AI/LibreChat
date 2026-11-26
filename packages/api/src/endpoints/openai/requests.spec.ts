@@ -1,7 +1,9 @@
 import { Providers, initializeModel } from '@librechat/agents';
-import { EModelEndpoint, ReasoningEffort } from 'librechat-data-provider';
+import { EModelEndpoint, ReasoningEffort, validateAzureGroups } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
 import type { OpenAI } from 'openai';
-import type { OpenAIConfiguration } from '~/types';
+import type { OpenAIConfiguration, OAIClientOptions } from '~/types';
+import { initializeOpenAI } from './initialize';
 import { getOpenAIConfig } from './config';
 
 describe('Azure Astra requests', () => {
@@ -409,5 +411,222 @@ describe('Gemini-compatible custom endpoint requests', () => {
     );
 
     expect(body).toMatchObject({ reasoning_effort: 'high' });
+  });
+});
+
+describe('Chat Completions reasoning effort', () => {
+  type Sent = { url: URL; body: Record<string, unknown> };
+
+  /** Records each request and answers it the way Chat Completions does. */
+  function recorder() {
+    const requests: Sent[] = [];
+    const fetch: NonNullable<NonNullable<OpenAIConfiguration>['fetch']> = async (url, init) => {
+      requests.push({ url: new URL(String(url)), body: JSON.parse(String(init?.body)) });
+      return Response.json({
+        id: 'chatcmpl_test',
+        object: 'chat.completion',
+        created: 1,
+        model: 'test',
+        choices: [
+          { index: 0, message: { role: 'assistant', content: 'Four.' }, finish_reason: 'stop' },
+        ],
+        usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
+      });
+    };
+    return { requests, fetch };
+  }
+
+  /** Sends one message through the real client and returns the request the provider receives. */
+  async function send(
+    modelOptions: object,
+    options: Partial<NonNullable<Parameters<typeof getOpenAIConfig>[1]>> = {},
+    endpoint: EModelEndpoint = EModelEndpoint.openAI,
+  ): Promise<Sent> {
+    const { requests, fetch } = recorder();
+    const { llmConfig, configOptions } = getOpenAIConfig(
+      'test-key',
+      { streaming: false, reverseProxyUrl: 'https://api.openai.com/v1', modelOptions, ...options },
+      endpoint,
+    );
+    const model = initializeModel({
+      provider: options.azure ? Providers.AZURE : Providers.OPENAI,
+      clientOptions: {
+        ...llmConfig,
+        verbosity: undefined,
+        configuration: { ...configOptions, fetch },
+      },
+    });
+
+    await model.invoke('What is 2 + 2?');
+
+    expect(requests).toHaveLength(1);
+    return requests[0];
+  }
+
+  it.each([
+    ['o3', ReasoningEffort.high],
+    ['o4-mini', ReasoningEffort.low],
+    ['gpt-5', ReasoningEffort.minimal],
+    ['gpt-5.1', ReasoningEffort.none],
+    ['gpt-5.5', ReasoningEffort.xhigh],
+  ])('sends the effort selected for %s', async (model, effort) => {
+    const { url, body } = await send({ model, reasoning_effort: effort });
+
+    expect(url.pathname).toBe('/v1/chat/completions');
+    expect(body).toMatchObject({ model, reasoning_effort: effort });
+  });
+
+  it('sends the effort selected for GPT-5.6 after Chat Completions was chosen', async () => {
+    const { url, body } = await send({
+      model: 'gpt-5.6',
+      reasoning_effort: ReasoningEffort.high,
+      useResponsesApi: false,
+    });
+
+    expect(url.pathname).toBe('/v1/chat/completions');
+    expect(body).toMatchObject({ reasoning_effort: ReasoningEffort.high });
+  });
+
+  it('sends the selected effort to a gateway on the OpenAI endpoint', async () => {
+    const { url, body } = await send(
+      { model: 'o3', reasoning_effort: ReasoningEffort.high },
+      { reverseProxyUrl: 'https://gateway.example.com/v1' },
+    );
+
+    expect(url.origin + url.pathname).toBe('https://gateway.example.com/v1/chat/completions');
+    expect(body).toMatchObject({ reasoning_effort: ReasoningEffort.high });
+  });
+
+  it.each(['gpt-4o', 'gpt-4.1', 'gpt-5-chat-latest'])(
+    'keeps a saved effort away from %s, which takes none',
+    async (model) => {
+      const { body } = await send({ model, reasoning_effort: ReasoningEffort.high });
+
+      expect(body).toMatchObject({ model });
+      expect(body).not.toHaveProperty('reasoning_effort');
+    },
+  );
+
+  it.each(['o3', 'gpt-6-sol'])(
+    'sends the effort selected for %s over a configured reasoning.effort',
+    async (model) => {
+      const { body } = await send(
+        { model, reasoning_effort: ReasoningEffort.high, useResponsesApi: false },
+        { addParams: { reasoning: { effort: ReasoningEffort.low } } },
+      );
+
+      expect(body).toMatchObject({ reasoning_effort: ReasoningEffort.high });
+    },
+  );
+
+  it('sends a configured reasoning.effort when no effort is selected', async () => {
+    const { body } = await send(
+      { model: 'o3' },
+      { addParams: { reasoning: { effort: ReasoningEffort.low } } },
+    );
+
+    expect(body).toMatchObject({ reasoning_effort: ReasoningEffort.low });
+  });
+
+  it('sends no effort after a reasoning_effort drop', async () => {
+    const { body } = await send(
+      { model: 'o3', reasoning_effort: ReasoningEffort.high },
+      { dropParams: ['reasoning_effort'] },
+    );
+
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('sends no configured effort after a reasoning drop', async () => {
+    const { body } = await send(
+      { model: 'o3' },
+      { addParams: { reasoning: { effort: ReasoningEffort.low } }, dropParams: ['reasoning'] },
+    );
+
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  describe('on Azure', () => {
+    it('sends the selected effort to a deployment of a reasoning model', async () => {
+      const { url, body } = await send(
+        { model: 'o3', reasoning_effort: ReasoningEffort.high },
+        {
+          reverseProxyUrl: undefined,
+          azure: {
+            azureOpenAIApiInstanceName: 'test-instance',
+            azureOpenAIApiDeploymentName: 'production-deployment',
+            azureOpenAIApiVersion: '2025-04-01-preview',
+            azureOpenAIApiKey: 'test-azure-key',
+          },
+        },
+        EModelEndpoint.azureOpenAI,
+      );
+
+      expect(url.origin + url.pathname).toBe(
+        'https://test-instance.openai.azure.com/openai/deployments/production-deployment/chat/completions',
+      );
+      expect(body).toMatchObject({ reasoning_effort: ReasoningEffort.high });
+    });
+
+    /** Initializes the configured deployment as chat does and returns the request it sends. */
+    async function sendToDeployment(model: string, declared?: ReasoningEffort[]): Promise<Sent> {
+      const azure = validateAzureGroups([
+        {
+          group: 'test',
+          apiKey: 'test-azure-key',
+          instanceName: 'test-instance',
+          version: '2025-04-01-preview',
+          models: {
+            [model]: {
+              deploymentName: 'production-deployment',
+              ...(declared ? { reasoningEfforts: declared } : {}),
+            },
+          },
+        },
+      ]);
+      expect(azure.isValid).toBe(true);
+      const { llmConfig, configOptions } = await initializeOpenAI({
+        endpoint: EModelEndpoint.azureOpenAI,
+        model_parameters: { model, reasoning_effort: ReasoningEffort.high },
+        db: { getUserKey: jest.fn(), getUserKeyValues: jest.fn() },
+        runtime: {
+          appConfig: { endpoints: { azureOpenAI: azure } } as AppConfig,
+          requestBody: {},
+        },
+      });
+      const { requests, fetch } = recorder();
+      const client = initializeModel<Providers>({
+        provider: Providers.AZURE,
+        clientOptions: {
+          ...(llmConfig as OAIClientOptions),
+          streaming: false,
+          verbosity: undefined,
+          configuration: { ...configOptions, fetch },
+        },
+      });
+
+      await client.invoke('What is 2 + 2?');
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0].url.pathname).toBe(
+        '/openai/deployments/production-deployment/chat/completions',
+      );
+      return requests[0];
+    }
+
+    it('sends the selected effort to a deployment that declares its efforts', async () => {
+      const { body } = await sendToDeployment('production-west', [
+        ReasoningEffort.low,
+        ReasoningEffort.high,
+      ]);
+
+      expect(body).toMatchObject({ reasoning_effort: ReasoningEffort.high });
+    });
+
+    it('keeps a saved effort away from a deployment that declares none', async () => {
+      const { body } = await sendToDeployment('production-chat');
+
+      expect(body).not.toHaveProperty('reasoning_effort');
+    });
   });
 });

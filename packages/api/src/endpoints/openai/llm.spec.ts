@@ -8,7 +8,12 @@ import {
   ReasoningParameterFormat,
 } from 'librechat-data-provider';
 import type * as t from '~/types';
-import { getOpenAILLMConfig, extractDefaultParams, applyDefaultParams } from './llm';
+import {
+  isReasoningModel,
+  getOpenAILLMConfig,
+  extractDefaultParams,
+  applyDefaultParams,
+} from './llm';
 
 describe('getOpenAILLMConfig', () => {
   describe('Basic Configuration', () => {
@@ -315,7 +320,8 @@ describe('getOpenAILLMConfig', () => {
         },
       });
 
-      expect(result.llmConfig).toHaveProperty('reasoning_effort', ReasoningEffort.high);
+      expect(result.llmConfig.modelKwargs).toHaveProperty('reasoning_effort', ReasoningEffort.high);
+      expect(result.llmConfig).not.toHaveProperty('reasoning_effort');
       expect(result.llmConfig).not.toHaveProperty('temperature');
     });
   });
@@ -475,7 +481,8 @@ describe('getOpenAILLMConfig', () => {
   });
 
   describe('Reasoning Parameters', () => {
-    it('should handle reasoning_effort for OpenAI endpoint', () => {
+    /** The Chat Completions client never reads a flat `reasoning_effort`. */
+    it('should send reasoning_effort through modelKwargs for the OpenAI endpoint', () => {
       const result = getOpenAILLMConfig({
         apiKey: 'test-api-key',
         streaming: true,
@@ -486,7 +493,8 @@ describe('getOpenAILLMConfig', () => {
         },
       });
 
-      expect(result.llmConfig).toHaveProperty('reasoning_effort', ReasoningEffort.high);
+      expect(result.llmConfig.modelKwargs).toHaveProperty('reasoning_effort', ReasoningEffort.high);
+      expect(result.llmConfig).not.toHaveProperty('reasoning_effort');
     });
 
     it('should pass reasoning_effort through modelKwargs for custom endpoints', () => {
@@ -726,7 +734,8 @@ describe('getOpenAILLMConfig', () => {
       /** Chat Completions uses reasoning_effort; mode/context are Responses-only
        *  and must never leak as top-level params or a reasoning object. */
       expect(result.llmConfig).not.toHaveProperty('reasoning');
-      expect(result.llmConfig).toHaveProperty('reasoning_effort', ReasoningEffort.high);
+      expect(result.llmConfig.modelKwargs).toEqual({ reasoning_effort: ReasoningEffort.high });
+      expect(result.llmConfig).not.toHaveProperty('reasoning_effort');
       expect(result.llmConfig).not.toHaveProperty('reasoning_mode');
       expect(result.llmConfig).not.toHaveProperty('reasoning_context');
     });
@@ -978,8 +987,8 @@ describe('getOpenAILLMConfig', () => {
       expect(result.llmConfig).not.toHaveProperty('reasoning');
     });
 
-    /** The Chat Completions client drops the flat `reasoning_effort`, so `none`
-     * only reaches OpenAI, and only avoids the tool rejection, as `reasoning.effort`. */
+    /** GPT-5.6 defaults to the Responses API whatever the effort, so `none`
+     * reaches OpenAI there as `reasoning.effort`. */
     it('should default to Responses API when reasoning_effort is none', () => {
       const result = getOpenAILLMConfig({
         apiKey: 'test-api-key',
@@ -1084,11 +1093,12 @@ describe('getOpenAILLMConfig', () => {
       });
 
       expect(result.llmConfig).toHaveProperty('useResponsesApi', false);
-      expect(result.llmConfig).toHaveProperty('reasoning_effort', ReasoningEffort.high);
+      expect(result.llmConfig.modelKwargs).toHaveProperty('reasoning_effort', ReasoningEffort.high);
+      expect(result.llmConfig).not.toHaveProperty('reasoning_effort');
       expect(result.llmConfig).not.toHaveProperty('reasoning');
     });
 
-    it.each(['gpt-5', 'gpt-5-pro', 'gpt-5.4-nano', 'gpt-5.5-preview', 'gpt-5-chat', 'o3-mini'])(
+    it.each(['gpt-5', 'gpt-5-pro', 'gpt-5.4-nano', 'gpt-5.5-preview', 'o3-mini'])(
       'should NOT default to Responses API for %s',
       (model) => {
         const result = getOpenAILLMConfig({
@@ -1102,9 +1112,30 @@ describe('getOpenAILLMConfig', () => {
         });
 
         expect(result.llmConfig).not.toHaveProperty('useResponsesApi');
-        expect(result.llmConfig).toHaveProperty('reasoning_effort', ReasoningEffort.high);
+        expect(result.llmConfig.modelKwargs).toHaveProperty(
+          'reasoning_effort',
+          ReasoningEffort.high,
+        );
+        expect(result.llmConfig).not.toHaveProperty('reasoning_effort');
       },
     );
+
+    /** `gpt-5-chat` does not reason and rejects the parameter. */
+    it('should NOT default to Responses API for gpt-5-chat, which takes no effort', () => {
+      const result = getOpenAILLMConfig({
+        apiKey: 'test-api-key',
+        streaming: true,
+        endpoint: EModelEndpoint.openAI,
+        modelOptions: {
+          model: 'gpt-5-chat',
+          reasoning_effort: ReasoningEffort.high,
+        },
+      });
+
+      expect(result.llmConfig).not.toHaveProperty('useResponsesApi');
+      expect(result.llmConfig).not.toHaveProperty('reasoning_effort');
+      expect(result.llmConfig.modelKwargs?.reasoning_effort).toBeUndefined();
+    });
 
     it('should NOT default to Responses API for non-OpenAI endpoints', () => {
       const result = getOpenAILLMConfig({
@@ -1174,7 +1205,9 @@ describe('getOpenAILLMConfig', () => {
 
       expect(result.llmConfig).toHaveProperty('model', 'gpt-4.1');
       expect(result.llmConfig).not.toHaveProperty('useResponsesApi');
-      expect(result.llmConfig).toHaveProperty('reasoning_effort', ReasoningEffort.high);
+      /** GPT-4.1 takes no effort, so the one saved for GPT-5.6 stays unsent. */
+      expect(result.llmConfig).not.toHaveProperty('reasoning_effort');
+      expect(result.llmConfig.modelKwargs?.reasoning_effort).toBeUndefined();
     });
 
     it('should still default to Responses API when dropParams removes reasoning_effort', () => {
@@ -1225,7 +1258,8 @@ describe('getOpenAILLMConfig', () => {
 
       expect(result.llmConfig).not.toHaveProperty('useResponsesApi');
       expect(result.llmConfig).not.toHaveProperty('reasoning');
-      expect(result.llmConfig).toHaveProperty('reasoning_effort', ReasoningEffort.high);
+      expect(result.llmConfig.modelKwargs).toHaveProperty('reasoning_effort', ReasoningEffort.high);
+      expect(result.llmConfig).not.toHaveProperty('reasoning_effort');
     });
 
     it('should NOT default to Responses API for OpenRouter-backed OpenAI endpoints', () => {
@@ -1283,7 +1317,8 @@ describe('getOpenAILLMConfig', () => {
       });
 
       expect(result.llmConfig).not.toHaveProperty('useResponsesApi');
-      expect(result.llmConfig).toHaveProperty('reasoning_effort', ReasoningEffort.high);
+      expect(result.llmConfig.modelKwargs).toHaveProperty('reasoning_effort', ReasoningEffort.high);
+      expect(result.llmConfig).not.toHaveProperty('reasoning_effort');
     });
 
     it('should default to Responses API for the canonical OpenAI base URL', () => {
@@ -2034,5 +2069,41 @@ describe('applyDefaultParams', () => {
       maxTokens: 4096,
       topP: 0.9,
     });
+  });
+});
+
+describe('isReasoningModel', () => {
+  it.each([
+    'o1',
+    'o3',
+    'o3-mini',
+    'o4-mini',
+    'gpt-5',
+    'gpt-5-mini',
+    'gpt-5.1',
+    'gpt-5.5-pro',
+    'gpt-6-sol',
+    'gpt-oss-120b',
+    'openai/o3',
+    'openai/gpt-5.2',
+  ])('treats %s as taking a reasoning effort', (model) => {
+    expect(isReasoningModel(model)).toBe(true);
+  });
+
+  it.each([
+    'gpt-4o',
+    'gpt-4o-mini',
+    'gpt-4.1',
+    'chatgpt-4o-latest',
+    'chat-latest',
+    'gpt-5-chat-latest',
+    'gpt-5.1-chat-latest',
+    'gpt-5-search-api',
+    'gpt-3.5-turbo',
+    'production-west',
+    '',
+    undefined,
+  ])('treats %s as taking none', (model) => {
+    expect(isReasoningModel(model)).toBe(false);
   });
 });
