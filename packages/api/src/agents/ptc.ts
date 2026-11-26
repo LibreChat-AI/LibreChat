@@ -89,6 +89,7 @@ export interface InstrumentPtcToolMapParams {
   toolCallId: string;
   runId?: string;
   telemetry?: ToolExecutionIdentity;
+  observe?: typeof observeToolExecution;
   signal?: AbortSignal;
   /**
    * Whether argument and failure previews may ride the stream. False when the
@@ -123,6 +124,7 @@ export function instrumentPtcToolMap({
   toolCallId,
   runId,
   telemetry,
+  observe = observeToolExecution,
   signal,
   includePreviews = true,
   traceExclusions,
@@ -172,7 +174,7 @@ export function instrumentPtcToolMap({
                   config,
                 );
               const result = telemetry
-                ? await observeToolExecution(
+                ? await observe(
                     {
                       ...telemetry,
                       toolName: name,
