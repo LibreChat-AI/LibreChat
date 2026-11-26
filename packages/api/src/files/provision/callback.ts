@@ -489,6 +489,7 @@ export function createProvisionFilesCallback({
                   null,
                   sandboxFilename,
                 ]),
+                uniqueRemote: true,
                 operation: async (_claim, onUploadStart) => {
                   const { refUpdate, sandboxFilename: storedSandboxFilename } = batchMember
                     ? await batchMember.upload(onUploadStart)
