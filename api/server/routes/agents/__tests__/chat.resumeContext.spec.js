@@ -15,6 +15,10 @@ jest.mock('@librechat/api', () => ({
   validateChatMessageIds: (...args) => mockPass(...args),
   generateCheckAccess: () => mockPass,
   createMessageFilterPii: () => mockFollowingMiddleware,
+  createOpenIDTokenRefresh: () => mockPass,
+}));
+jest.mock('~/server/services/OpenIDSessionRefresh', () => ({
+  createOpenIDSessionTokenProvider: jest.fn(),
 }));
 jest.mock('~/server/middleware', () => ({
   moderateText: (...args) => mockPass(...args),

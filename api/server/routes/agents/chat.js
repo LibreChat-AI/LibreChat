@@ -11,6 +11,7 @@ const {
   getSafeErrorMetadata,
   validateChatMessageIds,
   admitAssistantRequest,
+  createOpenIDTokenRefresh,
 } = require('@librechat/api');
 const { PermissionTypes, Permissions, PermissionBits } = require('librechat-data-provider');
 const {
@@ -20,6 +21,7 @@ const {
   buildEndpointOption,
   canAccessAgentFromBody,
 } = require('~/server/middleware');
+const { createOpenIDSessionTokenProvider } = require('~/server/services/OpenIDSessionRefresh');
 const { initializeClient } = require('~/server/services/Endpoints/agents');
 const guardSubagentThreadTurn = require('~/server/middleware/validate/subagentThreadTurn');
 const AgentController = require('~/server/controllers/agents/request');
@@ -63,6 +65,7 @@ router.use(checkAgentResourceAccess);
 router.use(validateConvoAccess);
 router.use(guardSubagentThreadTurn);
 router.use(buildEndpointOption);
+router.use(createOpenIDTokenRefresh({ createOpenIDSessionTokenProvider }));
 
 const controller = async (req, res, next) => {
   await AgentController(req, res, next, initializeClient, addTitle);

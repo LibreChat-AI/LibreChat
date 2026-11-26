@@ -22,6 +22,7 @@ jest.mock('@librechat/api', () => ({
   ).validateChatMessageIds,
   createMessageFilterPii: mockCreateMessageFilterPii,
   generateCheckAccess: jest.fn(() => (_req, _res, next) => next()),
+  createOpenIDTokenRefresh: jest.fn(() => (_req, _res, next) => next()),
   skipAgentCheck: jest.fn(),
   createChatResumeContext: jest.requireActual('../../../../../packages/api/src/agents/hitl/context')
     .createChatResumeContext,
@@ -42,6 +43,9 @@ jest.mock('~/server/middleware/validate/subagentThreadTurn', () => (_req, _res, 
 
 jest.mock('~/server/services/Endpoints/agents', () => ({
   initializeClient: jest.fn(),
+}));
+jest.mock('~/server/services/OpenIDSessionRefresh', () => ({
+  createOpenIDSessionTokenProvider: jest.fn(),
 }));
 jest.mock('~/server/controllers/agents/request', () => jest.fn());
 jest.mock('~/server/controllers/agents/resume', () => jest.fn());
