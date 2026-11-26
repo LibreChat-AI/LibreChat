@@ -17,6 +17,7 @@ import {
 } from '@librechat/chat';
 import type { ShortcutBinding } from '@librechat/chat';
 import type { ShortcutOverride } from '~/store/misc';
+import useOpenConversationId from '~/hooks/Conversations/useOpenConversationId';
 import { useArchiveConvoMutation, useGetStartupConfig } from '~/data-provider';
 import { mainTextareaId, NotificationSeverity } from '~/common';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
@@ -529,6 +530,8 @@ export function useShortcutActions(): ShortcutAction[] {
   const isRetentionEnforced = isForcedTemporaryRetention(startupConfig?.interface?.retentionMode);
 
   const archiveMutation = useArchiveConvoMutation();
+  /** The archive outlives the key press: the chat it replaces is the one open when it lands. */
+  const getOpenConversationId = useOpenConversationId();
 
   const handleShowShortcuts = useCallback(() => {
     setShowShortcutsDialog((prev) => !prev);
@@ -789,6 +792,9 @@ export function useShortcutActions(): ShortcutAction[] {
       { conversationId: convoId, isArchived: true },
       {
         onSuccess: () => {
+          if (getOpenConversationId() !== convoId) {
+            return;
+          }
           newConversation();
           navigate('/c/new', { replace: true });
         },
@@ -807,6 +813,7 @@ export function useShortcutActions(): ShortcutAction[] {
     showToast,
     routeConvoId,
     archiveMutation,
+    getOpenConversationId,
     newConversation,
     navigate,
     conversation?.conversationId,

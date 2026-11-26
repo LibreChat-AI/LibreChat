@@ -17,6 +17,7 @@ import {
   useDuplicateConversationMutation,
 } from '~/data-provider';
 import { findConvoInAllQueries, isTemporaryConversation, hasRealTitle } from '~/utils';
+import useOpenConversationId from '~/hooks/Conversations/useOpenConversationId';
 import DeleteButton from '~/components/Conversations/ConvoOptions/DeleteButton';
 import { useLocalize, useNavigateToConvo, useNewConvo } from '~/hooks';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
@@ -72,9 +73,8 @@ export default function useChatOptions({
   const { data: startupConfig } = useGetStartupConfig();
   const { data: activeJobs } = useActiveJobs();
   const { conversationId: routeConversationId } = useParams();
-  /** A request outlives the click: the route that matters is the one open when it resolves. */
-  const openConvoIdRef = useRef(routeConversationId);
-  openConvoIdRef.current = routeConversationId;
+  /** A request outlives the click: the chat that matters is the one open when it resolves. */
+  const getOpenConversationId = useOpenConversationId();
   const exportShare = useExportShare({ isSharedButtonEnabled });
   const conversation = useRecoilValue(store.conversationByIndex(0));
 
@@ -204,9 +204,8 @@ export default function useChatOptions({
             isStatus: true,
           });
           /** An archived chat leaves the list, so the open one is replaced; a restored one stays.
-           *  Another chat opened since the click is left alone. */
-          const openConvoId = openConvoIdRef.current;
-          if (!isArchived && (openConvoId === conversationId || openConvoId === 'new')) {
+           *  Another chat opened since the click, an unsent one included, is left alone. */
+          if (!isArchived && getOpenConversationId() === conversationId) {
             newConversation();
             navigate('/c/new', { replace: true });
           }
@@ -321,10 +320,10 @@ export default function useChatOptions({
             title={title}
             retainView={noop}
             triggerRef={deleteRef}
-            getCurrentConversationId={() => openConvoIdRef.current}
+            getCurrentConversationId={getOpenConversationId}
             setMenuOpen={() => {
               /** A delete that settles after another chat opened must not close that chat's menu. */
-              if (openConvoIdRef.current === conversationId) {
+              if (getOpenConversationId() === conversationId) {
                 closeMenu();
               }
             }}
