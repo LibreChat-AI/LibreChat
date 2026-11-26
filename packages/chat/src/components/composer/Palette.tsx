@@ -9,7 +9,7 @@ import React, {
 } from 'react';
 import { useSetAtom } from 'jotai';
 import * as Ariakit from '@ariakit/react';
-import { Star, Plus, Search, ChevronDown } from 'lucide-react';
+import { Star, Plus, Search, ChevronDown, X } from 'lucide-react';
 import {
   Button,
   cn,
@@ -233,8 +233,8 @@ function Palette({
      was up reopened it instead of closing it. */
   /* Above the composer on a phone, where the composer sits at the bottom of the
      screen; the lift below exists only to make room for the downward popup. */
-  const opensUp = useMediaQuery('(max-width: 767px)');
-  const popover = Ariakit.usePopoverStore({ placement: opensUp ? 'top-start' : 'bottom-start' });
+  const mobile = useMediaQuery('(max-width: 767px), (pointer: coarse)');
+  const popover = Ariakit.usePopoverStore({ placement: mobile ? 'top-start' : 'bottom-start' });
   const open = popover.useState('open');
   useEffect(() => {
     if (open) {
@@ -309,6 +309,8 @@ function Palette({
    *  or `null` before any. The device's primary pointer cannot answer this: a
    *  tablet with a hardware keyboard stays `(pointer: coarse)` while typing. */
   const touchInteractionRef = useRef<boolean | null>(null);
+  const isTouch = () =>
+    touchInteractionRef.current ?? window.matchMedia('(pointer: coarse)').matches;
   const recordPointer = useCallback((event: { pointerType?: string }) => {
     if (typeof event.pointerType === 'string') {
       touchInteractionRef.current = event.pointerType !== 'mouse';
@@ -333,6 +335,7 @@ function Palette({
   const liftAtom = useMemo(() => composerLiftFamily(index), [index]);
   const setLift = useSetAtom(liftAtom);
   const { ref: popoverRef, height: popupHeight } = useElementSize<HTMLDivElement>();
+  const { ref: measureList, height: mobileListHeight } = useElementSize<HTMLDivElement>();
   const reducedMotion = useReducedMotion();
 
   /* Rather than let the popup push the document taller (which puts a scrollbar
@@ -382,7 +385,7 @@ function Palette({
   useEffect(() => () => applyLift(0), [applyLift]);
   const baselineRef = useRef<number | null>(null);
   const updateLift = useCallback(() => {
-    if (!mounted || opensUp) {
+    if (!mounted || mobile) {
       baselineRef.current = null;
       applyLift(0);
       return;
@@ -403,12 +406,12 @@ function Palette({
       viewport != null ? viewport.offsetTop + viewport.height : window.innerHeight;
     applyLift(Math.max(0, Math.ceil(needed - (viewportBottom - baselineRef.current))));
     follow();
-  }, [mounted, opensUp, popupHeight, applyLift, anchorRef, follow]);
+  }, [mounted, mobile, popupHeight, applyLift, anchorRef, follow]);
 
   useLayoutEffect(updateLift, [updateLift]);
 
   useEffect(() => {
-    if (!mounted) {
+    if (!mounted || mobile) {
       return;
     }
     const viewport = window.visualViewport;
@@ -427,7 +430,7 @@ function Palette({
       viewport?.removeEventListener('resize', updateLift);
       viewport?.removeEventListener('scroll', updateLift);
     };
-  }, [mounted, updateLift, anchorRef]);
+  }, [mounted, mobile, updateLift, anchorRef]);
 
   const query = search.trim().toLowerCase();
 
@@ -1202,6 +1205,8 @@ function Palette({
     ],
   );
 
+  const desiredListHeight = Math.min(layout.height, LIST_MAX_HEIGHT);
+  const listHeight = mobile ? Math.min(desiredListHeight, mobileListHeight) : desiredListHeight;
   const disclosureLabel = dictating
     ? localize('com_ui_cancel')
     : localize('com_ui_composer_palette');
@@ -1244,11 +1249,19 @@ function Palette({
               onPointerDown={recordPointer}
               onKeyDown={recordKeyboard}
               onClick={(event) => {
-                if (!dictating) {
+                if (dictating) {
+                  event.preventDefault();
+                  onCancel?.();
                   return;
                 }
-                event.preventDefault();
-                onCancel?.();
+                // A shortcut or keyboard activation dispatches a click without a pointer.
+                if (event.detail === 0) {
+                  recordKeyboard();
+                }
+                if (!popover.getState().open && isTouch()) {
+                  // Safari does not focus a tapped button. Release the message field if typing.
+                  event.currentTarget.focus({ preventScroll: true });
+                }
               }}
               render={
                 <TooltipAnchor
@@ -1282,9 +1295,11 @@ function Palette({
             preserveTabOrder
             fixed
             gutter={POPOVER_GUTTER}
-            ref={popoverRef}
+            ref={mobile ? undefined : popoverRef}
             unmountOnHide
             initialFocus={inputRef}
+            // Touch opens for browsing. Only a tap on search should raise the keyboard.
+            autoFocusOnShow={() => !isTouch()}
             /* Ariakit otherwise restores focus to the disclosure, leaving the
                composer inert after Escape, an outside click, or a terminal
                upload row. Keep a touch close from summoning the on-screen
@@ -1300,8 +1315,7 @@ function Palette({
                   openingCatalogRef.current = false;
                   return;
                 }
-                const touch =
-                  touchInteractionRef.current ?? window.matchMedia('(pointer: coarse)').matches;
+                const touch = isTouch();
                 /* Each opening answers for itself: a later one opened by the
                    upload shortcut must not inherit this session's input. */
                 touchInteractionRef.current = null;
@@ -1329,12 +1343,26 @@ function Palette({
             hideOnInteractOutside={(event) =>
               !disclosureRef.current?.contains(event.target as Node)
             }
-            /* Anchored to the composer, not the `+` button, so the menu spans
-               the composer's width and sits flush above it. */
-            getAnchorRect={() => anchorRef.current?.getBoundingClientRect() ?? null}
+            getAnchorRect={() => {
+              const rect = anchorRef.current?.getBoundingClientRect() ?? null;
+              const viewport = window.visualViewport;
+              if (!mobile || rect == null || viewport == null) {
+                return rect;
+              }
+              // Convert pageTop to client coordinates, including Safari's panned viewport.
+              const top = document.documentElement.getBoundingClientRect().top + viewport.pageTop;
+              const bottom = top + viewport.height;
+              // If the keyboard covers the composer, anchor to the visible bottom instead.
+              return rect.top < top || rect.bottom > bottom
+                ? new DOMRect(rect.x, bottom, rect.width, 0)
+                : rect;
+            }}
             aria-label={localize('com_ui_composer_palette')}
             style={{ width: 'var(--popover-anchor-width)' }}
-            className="animate-composer-popover border-border-menu bg-surface-menu rounded-theme-popover z-50 flex max-w-[95vw] flex-col overflow-hidden border shadow-lg outline-hidden"
+            className={cn(
+              'animate-composer-popover border-border-menu bg-surface-menu rounded-theme-popover z-50 flex max-w-[95vw] flex-col overflow-hidden border shadow-lg outline-hidden',
+              mobile && 'max-h-[var(--popover-available-height)]',
+            )}
           >
             {/* The whole row is the search target, not just the input: the icon
                 and the padding around it read as part of the field, so clicking
@@ -1347,9 +1375,9 @@ function Palette({
             <div
               onClick={(event) => {
                 event.stopPropagation();
-                inputRef.current?.focus();
+                inputRef.current?.focus({ preventScroll: true });
               }}
-              className="border-border-light flex cursor-text items-center gap-2 border-b px-3 py-2"
+              className="border-border-light flex shrink-0 cursor-text items-center gap-2 border-b px-3 py-2"
             >
               <Search className="text-text-secondary h-4 w-4 shrink-0" aria-hidden="true" />
               <input
@@ -1374,8 +1402,16 @@ function Palette({
                 onChange={(e) => setSearch(e.target.value)}
                 onKeyDown={handleKeyDown}
                 data-testid="composer-palette-search"
-                className="text-text-primary placeholder:text-text-secondary focus-visible:ring-focus-control w-full rounded-md border-0 bg-transparent text-sm shadow-none ring-0 focus:border-0 focus:ring-0 focus:outline-hidden focus-visible:ring-2 focus-visible:outline-hidden"
+                className="text-text-primary placeholder:text-text-secondary focus-visible:ring-focus-control w-full min-w-0 rounded-md border-0 bg-transparent text-sm shadow-none ring-0 focus:border-0 focus:ring-0 focus:outline-hidden focus-visible:ring-2 focus-visible:outline-hidden"
               />
+              {mobile && (
+                <Ariakit.PopoverDismiss
+                  onClick={(event) => event.stopPropagation()}
+                  render={<IconButton label={localize('com_ui_close')} size="md" />}
+                >
+                  <X className="size-4" aria-hidden="true" />
+                </Ariakit.PopoverDismiss>
+              )}
               <span id={helpId} className="sr-only">
                 {favoritesEnabled
                   ? localize('com_ui_composer_palette_help', { 0: FAVORITE_MODIFIER })
@@ -1400,47 +1436,56 @@ function Palette({
               className={cn(
                 'composer-palette-rows',
                 rows.length > 0 && 'p-1.5',
-                instant && 'composer-palette-instant',
+                (instant || mobile) && 'composer-palette-instant',
+                mobile && 'flex min-h-0 flex-col',
               )}
             >
-              {renderPaletteList != null ? (
-                renderPaletteList({
-                  listRef,
-                  rowCount: rows.length,
-                  rowHeight: measureRow,
-                  rowRenderer,
-                  height: Math.min(layout.height, LIST_MAX_HEIGHT),
-                  scrollToIndex: scrollToActive ? activeIndex : undefined,
-                  id: listId,
-                  ariaLabel: localize('com_ui_composer_palette'),
-                  className: cn(
-                    'focus:outline-hidden',
-                    layout.height > LIST_MAX_HEIGHT && 'composer-palette-scroll',
-                  ),
-                })
-              ) : (
-                /* The same grid the windowed list draws, with every row mounted. A presentational
+              {/* Size the virtualizer from the space left after the search bar, not from the
+                  unclipped list. Otherwise the last rows can be unreachable when scrolling. */}
+              <div
+                ref={mobile ? measureList : undefined}
+                className={mobile ? 'min-h-0' : undefined}
+                style={mobile ? { height: desiredListHeight } : undefined}
+              >
+                {renderPaletteList != null ? (
+                  renderPaletteList({
+                    listRef,
+                    rowCount: rows.length,
+                    rowHeight: measureRow,
+                    rowRenderer,
+                    height: listHeight,
+                    scrollToIndex: scrollToActive ? activeIndex : undefined,
+                    id: listId,
+                    ariaLabel: localize('com_ui_composer_palette'),
+                    className: cn(
+                      'focus:outline-hidden',
+                      layout.height > listHeight && 'composer-palette-scroll',
+                    ),
+                  })
+                ) : (
+                  /* The same grid the windowed list draws, with every row mounted. A presentational
                    scroller between the grid and its rows cannot be made transparent: it always
                    renders `aria-label` and `aria-readonly`, which only a grid may carry. */
-                <div
-                  id={listId}
-                  role="grid"
-                  aria-label={localize('com_ui_composer_palette')}
-                  aria-rowcount={rows.length}
-                  tabIndex={-1}
-                  style={{ height: Math.min(layout.height, LIST_MAX_HEIGHT) }}
-                  className={cn(
-                    'overflow-y-auto focus:outline-hidden',
-                    layout.height > LIST_MAX_HEIGHT && 'composer-palette-scroll',
-                  )}
-                >
-                  <div role="rowgroup">
-                    {rows.map((row, index) =>
-                      rowRenderer({ index, key: row.key, style: { height: rowHeight(row) } }),
+                  <div
+                    id={listId}
+                    role="grid"
+                    aria-label={localize('com_ui_composer_palette')}
+                    aria-rowcount={rows.length}
+                    tabIndex={-1}
+                    style={{ height: listHeight }}
+                    className={cn(
+                      'overflow-y-auto focus:outline-hidden',
+                      layout.height > listHeight && 'composer-palette-scroll',
                     )}
+                  >
+                    <div role="rowgroup">
+                      {rows.map((row, index) =>
+                        rowRenderer({ index, key: row.key, style: { height: rowHeight(row) } }),
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           </Ariakit.Popover>
         </Ariakit.PopoverProvider>

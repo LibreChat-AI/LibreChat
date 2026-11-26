@@ -282,3 +282,69 @@ test.describe('composer palette', () => {
     await expect(messageInput).toBeFocused();
   });
 });
+
+test.describe('composer palette on touch', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test('browses without a keyboard and fits above it when searching', async ({ page }) => {
+    await selectMockChat(page);
+    const message = page.getByRole('textbox', { name: 'Message input' });
+    // Open while already typing, so we also check that the message field gives up focus.
+    await message.focus();
+    await paletteButton(page).tap();
+    await expect(palette(page)).toBeVisible();
+    const search = paletteSearch(page);
+    await expect(search).not.toBeFocused();
+    await expect(message).not.toBeFocused();
+
+    await search.tap();
+    await expect(search).toBeFocused();
+    // Playwright has no OS keyboard. Shrink and pan just the visual viewport, not the page.
+    const { top, bottom } = await page.evaluate(() => {
+      const viewport = window.visualViewport!;
+      const height = 280;
+      const offset = 40;
+      Object.defineProperties(viewport, {
+        height: { configurable: true, value: height },
+        offsetTop: { configurable: true, value: offset },
+        pageTop: { configurable: true, value: scrollY + offset },
+      });
+      viewport.dispatchEvent(new Event('resize'));
+      viewport.dispatchEvent(new Event('scroll'));
+      return { top: offset, bottom: offset + height };
+    });
+    const panel = palette(page);
+    const grid = panel.getByRole('grid');
+    await expect
+      .poll(async () => {
+        const box = await panel.boundingBox();
+        return box != null && box.y >= top && box.y + box.height <= bottom;
+      })
+      .toBe(true);
+    await expect
+      .poll(() => grid.evaluate((el) => el.scrollHeight > el.clientHeight && el.clientHeight > 0))
+      .toBe(true);
+    // Virtualization must use the smaller grid height, or scrolling stops before the last rows.
+    await grid.evaluate((el) => {
+      el.scrollTop = el.scrollHeight;
+    });
+    await expect
+      .poll(() =>
+        grid.evaluate((el) => {
+          const box = el.getBoundingClientRect();
+          return (
+            box.bottom <= window.visualViewport!.offsetTop + window.visualViewport!.height &&
+            el.scrollHeight - el.scrollTop - el.clientHeight <= 1
+          );
+        }),
+      )
+      .toBe(true);
+
+    await search.fill('Run Code');
+    await expect(panel.getByRole('button', { name: /^Run Code\b/ })).toBeInViewport();
+    await expect(search).toBeFocused();
+    await panel.getByRole('button', { name: 'Close', exact: true }).tap();
+    await expect(panel).toBeHidden();
+    await expect(message).not.toBeFocused();
+  });
+});
