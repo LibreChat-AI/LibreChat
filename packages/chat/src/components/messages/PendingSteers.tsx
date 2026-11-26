@@ -1,7 +1,7 @@
 import { memo, useMemo, useRef, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { Clock, TextQuote, X } from 'lucide-react';
-import { Button, TooltipAnchor, useLocalize } from '@librechat/client';
+import { cn, Button, TooltipAnchor, useLocalize } from '@librechat/client';
 import type { ReactElement, NamedExoticComponent } from 'react';
 import type { TMessage } from 'librechat-data-provider';
 import type { SteerReceiptState } from '../composer/steering/Receipt';
@@ -147,7 +147,7 @@ function PendingSteers({
     <div
       role="list"
       aria-label={localize('com_ui_steer_in_flight')}
-      className={`mx-auto min-w-0 px-4 ${getMessageRowWidthClass({ fullWidth })} ${NAV_CLEARANCE.pad}`}
+      className={`mx-auto min-w-0 px-4 ${getMessageRowWidthClass({ fullWidth })}`}
       data-testid="pending-steers"
     >
       {steers.map((steer) => {
@@ -171,7 +171,12 @@ function PendingSteers({
               receiptState={steer.status === 'failed' ? null : receiptState}
             />
             {steer.status === 'failed' ? (
-              <div className="-mt-2 mb-2 flex flex-wrap items-center justify-end gap-3 text-xs">
+              <div
+                className={cn(
+                  '-mt-2 mb-2 flex flex-wrap items-center justify-end gap-3 text-xs',
+                  NAV_CLEARANCE.pad,
+                )}
+              >
                 {quoteCount > 0 && (
                   <span className="text-text-secondary flex items-center gap-0.5">
                     <TextQuote className="h-3.5 w-3.5" aria-hidden="true" />
@@ -213,7 +218,12 @@ function PendingSteers({
                 )}
               </div>
             ) : (
-              <div className="text-text-secondary -mt-2 mb-2 flex flex-wrap items-center justify-end gap-0.5 text-xs">
+              <div
+                className={cn(
+                  'text-text-secondary -mt-2 mb-2 flex flex-wrap items-center justify-end gap-0.5 text-xs',
+                  NAV_CLEARANCE.pad,
+                )}
+              >
                 {/* Only a `pending` steer can be armed: `sending` has no server id
                     yet, and one already interrupting has nothing left to escalate. */}
                 {steer.status === 'pending' && steer.preempt !== true && (
