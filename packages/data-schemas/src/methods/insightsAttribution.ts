@@ -296,6 +296,15 @@ export async function includeInInsights(
   chat: ExcludedChat,
   session?: ClientSession,
 ): Promise<void> {
+  const converted = await (mongoose.models.Conversation as Model<IConversation>)
+    .exists({
+      conversationId: chat.conversationId,
+      user: chat.user,
+      tenantId: chat.tenantId ?? { $exists: false },
+      isTemporary: true,
+    })
+    .session(session ?? null);
+  if (converted) return;
   await createInsightsExclusionModel(mongoose).deleteOne(exclusionOf(chat), { session });
 }
 

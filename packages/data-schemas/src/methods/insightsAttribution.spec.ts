@@ -594,6 +594,23 @@ describe('within a turn', () => {
     [writes, aggregate].forEach((spy) => spy.mockRestore());
   });
 
+  it('keeps the marker when another request converted the chat before this write failed', async () => {
+    await runTurn(async () => {
+      await reply('reply');
+    });
+    const { Conversation } = mongoose.models;
+    const conversion = jest.spyOn(Conversation, 'updateOne').mockImplementationOnce((async () => {
+      await Conversation.collection.updateOne(
+        { conversationId, user: userId },
+        { $set: { isTemporary: true } },
+      );
+      throw new Error('unavailable');
+    }) as never);
+    await expect(convert()).rejects.toThrow('unavailable');
+    conversion.mockRestore();
+    expect(await exclusions().countDocuments({ conversationId, user: userId })).toBe(1);
+  });
+
   it('leaves no exclusion behind when a conversion is refused', async () => {
     await reply('reply');
     const refused = await conversations.saveConvo(ephemeral, {
