@@ -10,9 +10,10 @@ import { inOneProject, repoRoot } from './lint.helpers';
  * provide one, so the client refreshes its session and retries.
  *
  * The mock harness signs in with a local account and has no identity provider, so the verdicts
- * come from one run of two specs. The route spec drives the real chat router and middleware with
- * the session provider standing in for the IdP-backed session. The session spec drives the real
- * session refresh service, with only the IdP token endpoint answering from a fake.
+ * come from one run of two specs. The route spec signs in through the application's OpenID token
+ * handling and sends the turn through the express session, `openidJwt`, the chat router, its
+ * middleware and controller on a real database, with only the identity provider and the model
+ * faked. The session spec drives the session refresh service against a fake token endpoint.
  */
 
 type JestAssertion = { fullName: string; status: string };
@@ -70,10 +71,7 @@ test.describe('OpenID access token forwarded by a model endpoint', () => {
 
   test('a turn after the sign-in access token expired sends a refreshed token to the endpoint @scenario:openid-header-expired-token-refreshed', () => {
     expectPassed(
-      'refreshes an expired OpenID access token before / resolves the custom endpoint header',
-    );
-    expectPassed(
-      'refreshes an expired OpenID access token before /resume resolves the custom endpoint header',
+      'refreshes an expired OpenID access token before the turn forwards it to the endpoint',
     );
     expectPassed(
       `${SESSION} refreshes an expired session access token before the model header resolves`,
@@ -81,14 +79,13 @@ test.describe('OpenID access token forwarded by a model endpoint', () => {
   });
 
   test('a turn whose session can no longer refresh is answered 401 before it starts @scenario:openid-header-unrefreshable-session-401', () => {
-    expectPassed('answers 401 before the turn starts when the session can no longer refresh');
+    expectPassed('answers 401 before the turn starts when the OpenID session has lapsed');
     expectPassed(`${SESSION} asks for sign-in when the session no longer holds OpenID tokens`);
   });
 
   test('a turn on an endpoint that does not forward the token never waits on the session @scenario:openid-header-other-endpoint-unaffected', () => {
     expectPassed(
-      'accepts a turn on an endpoint that does not forward the token without the session',
+      'starts a turn on an endpoint that does not forward the token without the session',
     );
-    expectPassed('does not consult the session while the stored access token is current');
   });
 });
