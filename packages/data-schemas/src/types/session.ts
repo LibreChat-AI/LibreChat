@@ -1,9 +1,13 @@
 import type { Document, Types } from 'mongoose';
 
+export interface ReplacedRefreshToken {
+  hash: string;
+  rotatedAt: Date;
+}
+
 export interface ISession extends Document {
   refreshTokenHash: string;
-  previousRefreshTokenHash?: string;
-  rotatedAt?: Date;
+  previousRefreshTokens?: ReplacedRefreshToken[];
   expiration: Date;
   user: Types.ObjectId;
   tenantId?: string;

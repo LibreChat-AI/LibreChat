@@ -53,24 +53,40 @@ describe('session rotation', () => {
     ).not.toBeNull();
   });
 
-  it('stops matching a replaced token after the window or a further rotation', async () => {
+  it('matches every token replaced inside the window, and none once it has passed', async () => {
     const { refreshToken: initial } = await methods.createSession(userId);
     const second = await rotate(initial);
+    const third = await rotate(second);
+    const find = (refreshToken: string) =>
+      methods.findSession({ userId, refreshToken }, { graceMs: 60_000 });
+
+    for (const token of [initial, second, third]) {
+      expect(await find(token)).not.toBeNull();
+    }
+
     await mongoose.models.Session.updateOne(
       { user: userId },
-      { $set: { rotatedAt: new Date(Date.now() - 61_000) } },
+      { $set: { 'previousRefreshTokens.$[].rotatedAt': new Date(Date.now() - 61_000) } },
     );
-    expect(
-      await methods.findSession({ userId, refreshToken: initial }, { graceMs: 60_000 }),
-    ).toBeNull();
+    expect(await find(initial)).toBeNull();
+    expect(await find(second)).toBeNull();
+    expect(await find(third)).not.toBeNull();
+  });
 
-    await rotate(second);
-    expect(
-      await methods.findSession({ userId, refreshToken: initial }, { graceMs: 60_000 }),
-    ).toBeNull();
-    expect(
-      await methods.findSession({ userId, refreshToken: second }, { graceMs: 60_000 }),
-    ).not.toBeNull();
+  it('keeps only the latest replaced tokens', async () => {
+    const { refreshToken: initial } = await methods.createSession(userId);
+    const tokens = [initial];
+    for (let round = 0; round < 11; round++) {
+      /** Tokens minted in the same millisecond are identical. */
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      tokens.push(await rotate(tokens[tokens.length - 1]));
+    }
+    const find = (refreshToken: string) =>
+      methods.findSession({ userId, refreshToken }, { graceMs: 60_000 });
+
+    expect(new Set(tokens).size).toBe(tokens.length);
+    expect(await find(tokens[0])).toBeNull();
+    expect(await find(tokens[1])).not.toBeNull();
   });
 
   it('lets only the first of two rotations from the same read replace the token', async () => {

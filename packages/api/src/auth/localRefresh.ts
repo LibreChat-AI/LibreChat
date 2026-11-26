@@ -39,7 +39,7 @@ type RefreshUser = Pick<
   | 'credentialsChangedAt'
 >;
 
-type RefreshSession = Pick<ISession, 'expiration' | 'previousRefreshTokenHash'> & {
+type RefreshSession = Pick<ISession, 'expiration' | 'previousRefreshTokens'> & {
   _id: UserIdentifier;
 };
 type SessionDeletionResult = { deletedCount?: number };
@@ -149,9 +149,12 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
     session: RefreshSession,
     refreshToken: string,
   ): Promise<{ refreshToken?: string } | null> => {
-    const previous = session.previousRefreshTokenHash;
-    if (previous && previous === (await hashToken(refreshToken))) {
-      return {};
+    const replaced = session.previousRefreshTokens;
+    if (replaced?.length) {
+      const hash = await hashToken(refreshToken);
+      if (replaced.some((entry) => entry.hash === hash)) {
+        return {};
+      }
     }
 
     try {

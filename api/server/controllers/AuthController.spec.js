@@ -3032,7 +3032,9 @@ describe('refreshController – LibreChat path', () => {
     findSession.mockResolvedValue({
       _id: 'session-id',
       expiration: new Date(Date.now() + 60_000),
-      previousRefreshTokenHash: createHash('sha256').update(presented).digest('hex'),
+      previousRefreshTokens: [
+        { hash: createHash('sha256').update(presented).digest('hex'), rotatedAt: new Date() },
+      ],
     });
 
     await refreshController(req, res);

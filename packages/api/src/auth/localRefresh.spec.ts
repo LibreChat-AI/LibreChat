@@ -148,6 +148,20 @@ describe('local refresh shared by several tabs', () => {
     expect(later.status).toBe(200);
   });
 
+  it('serves a slow refresh whose token two later refreshes have replaced since', async () => {
+    const userId = await createUser();
+    const { refreshToken: initial } = await methods.createSession(userId);
+    const deps = createDeps();
+    const first = await refresh(deps, initial);
+    const second = await refresh(deps, land(initial, first));
+
+    const slow = await refresh(deps, initial);
+
+    expect(slow.status).toBe(200);
+    expect(slow.cookies).not.toHaveProperty('refreshToken');
+    expect((await refresh(deps, land(initial, first, second, slow))).status).toBe(200);
+  });
+
   it('refuses the replaced token once the grace window has passed', async () => {
     const userId = await createUser();
     const { refreshToken: initial } = await methods.createSession(userId);
@@ -155,7 +169,7 @@ describe('local refresh shared by several tabs', () => {
     const first = await refresh(deps, initial);
     await mongoose.models.Session.updateOne(
       { user: userId },
-      { $set: { rotatedAt: new Date(Date.now() - 61_000) } },
+      { $set: { 'previousRefreshTokens.$[].rotatedAt': new Date(Date.now() - 61_000) } },
     );
 
     const stale = await refresh(deps, initial);

@@ -63,7 +63,11 @@ describe('single-field lookups use an index', () => {
         user,
         $or: [
           { refreshTokenHash: 'abc' },
-          { previousRefreshTokenHash: 'abc', rotatedAt: { $gt: new Date(Date.now() - 60_000) } },
+          {
+            previousRefreshTokens: {
+              $elemMatch: { hash: 'abc', rotatedAt: { $gt: new Date(Date.now() - 60_000) } },
+            },
+          },
         ],
         expiration: { $gt: new Date() },
       },
@@ -73,7 +77,12 @@ describe('single-field lookups use an index', () => {
           refreshTokenHash: `other-${i}`,
           expiration,
         })),
-        { user, refreshTokenHash: 'def', previousRefreshTokenHash: 'abc', expiration },
+        {
+          user,
+          refreshTokenHash: 'def',
+          previousRefreshTokens: [{ hash: 'abc', rotatedAt: new Date() }],
+          expiration,
+        },
       ],
     );
     expect(scan).toBe('user_1_refreshTokenHash_1');

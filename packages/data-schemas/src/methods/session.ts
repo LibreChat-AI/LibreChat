@@ -19,6 +19,13 @@ export const DEFAULT_REFRESH_TOKEN_EXPIRY: number = 1000 * 60 * 60 * 24 * 7;
 /** `SessionError` code for a rotation that another request completed first. */
 export const REFRESH_TOKEN_ROTATED = 'REFRESH_TOKEN_ROTATED';
 
+/**
+ * How many replaced tokens a session keeps for `findSession`'s grace window. A session rotates once
+ * per refresh round, so more rounds than this inside one window are not expected; the cap only
+ * bounds the document.
+ */
+const MAX_PREVIOUS_REFRESH_TOKENS = 10;
+
 // Factory function that takes mongoose instance and returns the methods
 export function createSessionMethods(mongoose: typeof import('mongoose')): {
   findSession: (
@@ -139,11 +146,13 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
       if (params.refreshToken) {
         const tokenHash = await hashToken(params.refreshToken);
         if (options.graceMs) {
+          const rotatedAfter = new Date(Date.now() - options.graceMs);
           query.$or = [
             { refreshTokenHash: tokenHash },
             {
-              previousRefreshTokenHash: tokenHash,
-              rotatedAt: { $gt: new Date(Date.now() - options.graceMs) },
+              previousRefreshTokens: {
+                $elemMatch: { hash: tokenHash, rotatedAt: { $gt: rotatedAfter } },
+              },
             },
           ];
         } else {
@@ -303,17 +312,22 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
        * hash: if both did, the stored hash and the cookie the browser keeps could name different
        * tokens, and every later refresh would be refused.
        */
-      const rotatedAt = new Date();
       const { matchedCount } = await mongoose.models.Session.updateOne(
         { _id: session._id, refreshTokenHash: replaced },
-        { $set: { refreshTokenHash, previousRefreshTokenHash: replaced, rotatedAt } },
+        {
+          $set: { refreshTokenHash },
+          $push: {
+            previousRefreshTokens: {
+              $each: [{ hash: replaced, rotatedAt: new Date() }],
+              $slice: -MAX_PREVIOUS_REFRESH_TOKENS,
+            },
+          },
+        },
       );
       if (!matchedCount) {
         throw new SessionError('Refresh token was already rotated', REFRESH_TOKEN_ROTATED);
       }
       session.refreshTokenHash = refreshTokenHash;
-      session.previousRefreshTokenHash = replaced;
-      session.rotatedAt = rotatedAt;
 
       return refreshToken;
     } catch (error) {
