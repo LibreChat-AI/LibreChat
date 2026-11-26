@@ -1186,6 +1186,23 @@ describe('agent builder overrides', () => {
     }
   });
 
+  it('applies a valid stored update and keeps the base one when a stored update fails', () => {
+    const base = {
+      endpoints: { agents: { agentBuilder: { update: { fields: ['description'] } } } },
+    } as unknown as AppConfig;
+    expect(
+      paths(getConfigOverrideIssues(override({ update: { fields: ['description', 'x'] } }))),
+    ).toEqual(['endpoints.agents.agentBuilder.update.fields.1']);
+    expect(
+      mergeConfigOverrides(base, [fakeConfig(override({ update: { fields: ['avatar'] } }), 10)])
+        .endpoints?.agents?.agentBuilder,
+    ).toEqual({ update: { fields: ['description'] } });
+    expect(
+      mergeConfigOverrides(base, [fakeConfig(override({ update: { fields: ['tools'] } }), 10)])
+        .endpoints?.agents?.agentBuilder,
+    ).toEqual({ update: { fields: ['tools'] } });
+  });
+
   it('applies a valid stored operation', () => {
     const merged = mergeConfigOverrides({ endpoints: { agents: {} } } as unknown as AppConfig, [
       fakeConfig(override({ create: { fields: ['name', 'provider', 'model'] } }), 10),

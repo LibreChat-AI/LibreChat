@@ -191,6 +191,16 @@ describe('applyIntentLabels', () => {
     expect(Object.keys(toolDefinitions[0].parameters?.properties ?? {})[0]).toBe(INTENT_ARG);
   });
 
+  it('labels update_agent by default as a native tool', () => {
+    expect(NATIVE_INTENT_TOOL_NAMES.has('update_agent')).toBe(true);
+    const { intentToolNames } = applyIntentLabels({
+      toolDefinitions: [{ ...mcpDef('update_agent'), allowed_callers: ['direct'] }],
+      toolRegistry: undefined,
+      toolOptions: undefined,
+    });
+    expect(intentToolNames).toEqual(['update_agent']);
+  });
+
   it('covers every advertised native tool name', () => {
     const defs = [...NATIVE_INTENT_TOOL_NAMES].map((name) => mcpDef(name));
     const { intentToolNames } = applyIntentLabels({

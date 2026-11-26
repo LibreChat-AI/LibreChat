@@ -499,6 +499,21 @@ describe('agent builder configuration', () => {
     ]);
   });
 
+  it('accepts an update operation with any known fields and requires its fields', () => {
+    const result = parse({ update: { fields: ['description', 'tools'] } });
+    expect(result.success).toBe(true);
+    expect(result.data?.endpoints?.agents?.agentBuilder).toEqual({
+      update: { fields: ['description', 'tools'] },
+    });
+    expect(issuePaths({ update: {} })).toEqual(['endpoints.agents.agentBuilder.update.fields']);
+    expect(issuePaths({ update: { fields: [] } })).toEqual([
+      'endpoints.agents.agentBuilder.update.fields',
+    ]);
+    expect(issuePaths({ update: { fields: ['description', 'avatar'] } })).toEqual([
+      'endpoints.agents.agentBuilder.update.fields.1',
+    ]);
+  });
+
   it('rejects an operation or option it does not know', () => {
     expect(parse({ delete: { fields: ['name'] } }).success).toBe(false);
     expect(parse({ create: { fields: ['provider', 'model'], all: true } }).success).toBe(false);

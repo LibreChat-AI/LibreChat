@@ -1948,6 +1948,9 @@ const agentBuilderListLimitSchema = z.number().int().min(1).max(AGENT_BUILDER_LI
 /** The Agent Builder tool that creates an agent; see {@link agentBuilderConfigSchema}. */
 export const CREATE_AGENT_TOOL_NAME = 'create_agent';
 
+/** The Agent Builder tool that updates an agent; see {@link agentBuilderConfigSchema}. */
+export const UPDATE_AGENT_TOOL_NAME = 'update_agent';
+
 /** Agent fields an Agent Builder write operation can list in `fields`. */
 export const AGENT_BUILDER_FIELDS = [
   'name',
@@ -1991,6 +1994,8 @@ export const agentBuilderConfigSchema = z
         },
       )
       .optional(),
+    /** `update_agent`. Listing `tools` offers `add_tools` and `remove_tools`. */
+    update: agentBuilderOperationSchema.optional(),
     list: z
       .object({
         /** Omitted: the smaller of the default page size and `maxLimit`. */

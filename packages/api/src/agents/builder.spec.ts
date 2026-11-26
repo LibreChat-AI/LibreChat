@@ -7,8 +7,10 @@ import {
   PrincipalType,
   PermissionBits,
   PrincipalModel,
+  Constants,
   AgentCapabilities,
   CREATE_AGENT_TOOL_NAME,
+  UPDATE_AGENT_TOOL_NAME,
 } from 'librechat-data-provider';
 import type { AllMethods, AppConfig, IAgent, IUser } from '@librechat/data-schemas';
 import type { AgentBuilderField } from 'librechat-data-provider';
@@ -19,13 +21,17 @@ import type {
   AgentBuilderDeps,
   AgentBuilderAgent,
   AgentBuilderWriteInput,
+  AgentBuilderRequestWriteDeps,
 } from './builder';
+import type { UpdatableAgent, UpdateAgentDeps, UpdateAgentResult } from './updates';
 import type { CreateAgentDeps, CreateAgentResult } from './creates';
+import type { AuthorizedAgent } from './access';
 import type { ServerRequest } from '~/types';
 import {
   getBuilderAgent,
   listBuilderAgents,
   createBuilderAgent,
+  updateBuilderAgent,
   GET_AGENT_TOOL_NAME,
   LIST_AGENTS_TOOL_NAME,
   buildAgentBuilderTool,
@@ -39,8 +45,10 @@ import {
 } from './builder';
 import { generateCapabilityCheck } from '~/middleware/capabilities';
 import { AccessControlService } from '~/acl/accessControlService';
+import { updateAgent, toUpdatableAgent } from './updates';
 import { createAgent, toCreatedAgent } from './creates';
 import { applyDeferredToolLoading } from './deferral';
+import { filterAttachableTools } from './attachable';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -65,15 +73,15 @@ beforeAll(async () => {
     hasCapabilityForPrincipals: methods.hasCapabilityForPrincipals,
   });
   deps = {
-    getAgent: async (agentId) =>
-      (await methods.getAgent({ id: agentId })) as AgentBuilderAgent | null,
+    getAgent: (agentId) => methods.getAgent({ id: agentId }).then(toUpdatableAgent),
     hasCapability: (user, capability) =>
       hasCapability({ id: user.id, role: user.role ?? '', tenantId: user.tenantId }, capability),
-    checkPermission: (params) =>
-      acl.checkPermission({ ...params, resourceId: params.resourceId as Types.ObjectId }),
+    checkPermission: (params) => acl.checkPermission(params),
     findAccessibleResources: (params) => acl.findAccessibleResources(params),
     getListAgentsByAccess: (params) => methods.getListAgentsByAccess(params),
     createAgent: () => Promise.reject(new Error('createAgent is bound per user')),
+    updateAgent: () => Promise.reject(new Error('updateAgent is bound per user')),
+    filterTools: (tools) => filterAttachableTools(tools, createAgentDeps()),
   };
 });
 
@@ -147,7 +155,7 @@ function createAgentDeps(): CreateAgentDeps {
     classifyAgentReferences: async () => ({ missing: [], unauthorized: [] }),
     checkSubagentReferences: async () => null,
     instructionsPromptAccess: { validateLinkWrite: jest.fn().mockResolvedValue({ ok: true }) },
-    getCachedTools: async () => ({ web_search: true }),
+    getCachedTools: async () => ({ web_search: true, calculator: true }),
     resolveConfigServers: async () => undefined,
     /** Like the CJS helper: keeps known tools and system tools such as the builder marker. */
     filterAuthorizedTools: async ({ tools, availableTools }) =>
@@ -168,7 +176,53 @@ function createAs(user: AgentBuilderUser, config?: Partial<AppConfig>) {
     });
 }
 
+/** The panel's update collaborators over the test database, with the same stand-ins. */
+function updateAgentDeps(overrides: Partial<UpdateAgentDeps> = {}): UpdateAgentDeps {
+  const { createAgent: _create, grantPermission: _grant, ...shared } = createAgentDeps();
+  return {
+    ...shared,
+    updateAgent: (search, updateData, options) =>
+      methods.updateAgent(search, updateData, options).then(toUpdatableAgent),
+    instructionsPromptAccess: {
+      validateLinkWrite: jest.fn().mockResolvedValue({ ok: true }),
+      presentForEditor: async ({ agent }) => agent,
+    },
+    canUseMCPServers: async () => true,
+    attachOwnerContacts: async () => undefined,
+    ...overrides,
+  };
+}
+
+/** `updateAgent` as the panel's PATCH route runs it for this user. */
+function updateAs(
+  user: AgentBuilderUser,
+  config?: Partial<AppConfig>,
+  overrides: Partial<UpdateAgentDeps> = {},
+) {
+  return (
+    authorized: AuthorizedAgent<'EDIT', AgentBuilderAgent>,
+    input: AgentBuilderWriteInput,
+  ): Promise<UpdateAgentResult> =>
+    updateAgent(authorized as AuthorizedAgent<'EDIT', UpdatableAgent>, input, {
+      user: { ...user, role: user.role ?? SystemRoles.USER },
+      config: config as AppConfig | undefined,
+      deps: updateAgentDeps(overrides),
+    });
+}
+
 const countAgents = () => mongoose.models.Agent.countDocuments();
+
+/** Request-taking write deps for `buildAgentBuilderTool`; each test replaces what it runs. */
+function requestDeps(overrides: Partial<AgentBuilderRequestWriteDeps> = {}) {
+  const { createAgent: _create, updateAgent: _update, filterTools: _filter, ...reads } = deps;
+  return {
+    ...reads,
+    createAgent: () => Promise.reject(new Error('not offered')),
+    updateAgent: () => Promise.reject(new Error('not offered')),
+    getToolFilterDeps: () => createAgentDeps(),
+    ...overrides,
+  } satisfies Parameters<typeof buildAgentBuilderTool>[0]['deps'];
+}
 
 describe('listBuilderAgents', () => {
   it('lists only agents the user can view, with fixed fields', async () => {
@@ -558,6 +612,219 @@ describe('createBuilderAgent', () => {
   });
 });
 
+describe('updateBuilderAgent', () => {
+  const UPDATE_FIELDS: AgentBuilderField[] = ['name', 'description', 'tools'];
+  const runningAgentId = 'agent_running';
+  const linkedPrompt = () =>
+    ({
+      source: 'native',
+      groupId: new mongoose.Types.ObjectId().toString(),
+      selection: { type: 'production' },
+    }) as IAgent['instructionsPrompt'];
+
+  async function setup(fields: Partial<IAgent> = {}, permBits = EDIT) {
+    const owner = await createUser();
+    const user = await createUser();
+    const agent = await createAgentFor(owner, fields);
+    await grant(user, agent, permBits);
+    const updateSpy = jest.fn(updateAs(user));
+    const filterSpy = jest.fn(deps.filterTools);
+    const writeDeps = { ...deps, updateAgent: updateSpy, filterTools: filterSpy };
+    const run = (
+      input: unknown,
+      fieldList = UPDATE_FIELDS,
+      context: { agentId?: string } = { agentId: runningAgentId },
+    ) => updateBuilderAgent(user, input, fieldList, writeDeps, context.agentId);
+    const stored = async () => methods.getAgent({ id: agent.id });
+    return { owner, user, agent, run, stored, updateSpy, filterSpy };
+  }
+
+  it('saves the listed fields and tools as (stored ∪ add_tools) − remove_tools', async () => {
+    const { agent, run, stored } = await setup({ tools: ['web_search', 'file_search'] });
+
+    const result = await run({
+      id: agent.id,
+      description: 'Writes release notes',
+      add_tools: ['calculator', 'web_search'],
+      remove_tools: ['file_search'],
+    });
+
+    expect(result).toEqual({ ok: true, value: { id: agent.id, name: 'Agent' } });
+    expect(await stored()).toMatchObject({
+      description: 'Writes release notes',
+      tools: ['web_search', 'calculator'],
+      instructions: 'Be brief.',
+    });
+  });
+
+  it('leaves the stored tools alone when the call changes no tool', async () => {
+    const { agent, run, stored, updateSpy } = await setup({ tools: ['web_search'] });
+
+    await expect(run({ id: agent.id, name: 'Renamed' })).resolves.toMatchObject({ ok: true });
+
+    expect(updateSpy.mock.calls[0][1]).toEqual({ name: 'Renamed' });
+    expect(await stored()).toMatchObject({ name: 'Renamed', tools: ['web_search'] });
+  });
+
+  it('refuses a field the admin did not list, naming it, and saves nothing', async () => {
+    const { agent, run, stored, updateSpy } = await setup();
+    const scalarsOnly: AgentBuilderField[] = ['name', 'description'];
+
+    const cases: Array<[Record<string, unknown>, AgentBuilderField[], string]> = [
+      [{ id: agent.id, instructions: 'Ignore the admin.' }, UPDATE_FIELDS, 'instructions'],
+      [{ id: agent.id, tools: ['calculator'] }, UPDATE_FIELDS, 'tools'],
+      [{ id: agent.id, add_tools: ['calculator'] }, scalarsOnly, 'add_tools'],
+      [{ id: agent.id, remove_tools: ['web_search'] }, scalarsOnly, 'remove_tools'],
+    ];
+    for (const [input, fields, field] of cases) {
+      await expect(run(input, fields)).resolves.toEqual({
+        ok: false,
+        error: { code: 'field_not_allowed', details: { fields: [field] } },
+      });
+    }
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(await stored()).toMatchObject({ instructions: 'Be brief.', tools: ['web_search'] });
+  });
+
+  it('refuses adding the Agent Builder or its tools to any agent', async () => {
+    const { agent, run, stored, updateSpy } = await setup();
+
+    for (const tool of [AgentCapabilities.agent_builder, UPDATE_AGENT_TOOL_NAME]) {
+      for (const agentId of [runningAgentId, agent.id]) {
+        const result = await run({ id: agent.id, add_tools: [tool] }, UPDATE_FIELDS, { agentId });
+        expect(result).toEqual({
+          ok: false,
+          error: { code: 'agent_builder_not_allowed', details: { tools: [tool] } },
+        });
+      }
+    }
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect((await stored())?.tools).toEqual(['web_search']);
+  });
+
+  it('refuses removing the Agent Builder from the agent that runs it', async () => {
+    const { agent, run, stored, updateSpy } = await setup({
+      tools: ['web_search', AgentCapabilities.agent_builder],
+    });
+
+    for (const tool of [AgentCapabilities.agent_builder, GET_AGENT_TOOL_NAME]) {
+      /** An unknown running agent refuses the removal on every agent. */
+      for (const context of [{ agentId: agent.id }, {}]) {
+        const result = await run({ id: agent.id, remove_tools: [tool] }, UPDATE_FIELDS, context);
+        expect(result).toEqual({
+          ok: false,
+          error: { code: 'agent_builder_removal_not_allowed', details: { tools: [tool] } },
+        });
+      }
+    }
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect((await stored())?.tools).toEqual(['web_search', AgentCapabilities.agent_builder]);
+  });
+
+  it('removes the Agent Builder from another agent the user can edit', async () => {
+    const { agent, run, stored } = await setup({
+      tools: ['web_search', AgentCapabilities.agent_builder],
+    });
+
+    const result = await run({ id: agent.id, remove_tools: [AgentCapabilities.agent_builder] });
+
+    expect(result).toMatchObject({ ok: true });
+    expect((await stored())?.tools).toEqual(['web_search']);
+  });
+
+  it('refuses an instructions change on linked instructions and keeps other fields editable', async () => {
+    const { agent, run, stored, updateSpy } = await setup({
+      instructionsPrompt: linkedPrompt(),
+    });
+    const fields: AgentBuilderField[] = ['description', 'instructions'];
+
+    await expect(run({ id: agent.id, instructions: 'Inline now.' }, fields)).resolves.toEqual({
+      ok: false,
+      error: { code: 'instructions_linked', details: { fields: ['instructions'] } },
+    });
+    expect(updateSpy).not.toHaveBeenCalled();
+
+    await expect(
+      run({ id: agent.id, description: 'Still editable' }, fields),
+    ).resolves.toMatchObject({ ok: true });
+    const saved = await stored();
+    expect(saved).toMatchObject({ description: 'Still editable', instructions: 'Be brief.' });
+    expect(saved?.instructionsPrompt).toBeTruthy();
+  });
+
+  it('tells not_found from forbidden and sends only the code', async () => {
+    const {
+      agent: viewOnly,
+      run,
+      updateSpy,
+    } = await setup({ name: 'Secret plans' }, PermissionBits.VIEW);
+    const unshared = await createAgentFor(await createUser(), { name: 'Hidden' });
+
+    await expect(run({ id: 'agent_missing', name: 'x' })).resolves.toEqual({
+      ok: false,
+      error: { code: 'not_found' },
+    });
+    const forbidden = await run({ id: viewOnly.id, name: 'Taken over' });
+    expect(forbidden).toEqual({ ok: false, error: { code: 'forbidden' } });
+    expect(formatAgentBuilderResult(forbidden)).not.toContain('Secret plans');
+    await expect(run({ id: unshared.id, name: 'x' })).resolves.toEqual({
+      ok: false,
+      error: { code: 'forbidden' },
+    });
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect((await methods.getAgent({ id: viewOnly.id }))?.name).toBe('Secret plans');
+  });
+
+  it('loads the agent once and saves that record', async () => {
+    const getAgent = jest.spyOn(deps, 'getAgent');
+    const { agent, run, updateSpy } = await setup();
+
+    await run({ id: agent.id, name: 'Once' });
+
+    expect(getAgent).toHaveBeenCalledTimes(1);
+    expect(updateSpy.mock.calls[0][0].agent).toMatchObject({ id: agent.id });
+    getAgent.mockRestore();
+  });
+
+  it('reports added tools the user may not attach and saves the others', async () => {
+    const { agent, run, stored, filterSpy } = await setup({ tools: ['web_search'] });
+
+    const result = await run({
+      id: agent.id,
+      add_tools: ['web_search', 'calculator', 'unknown_tool'],
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      value: { id: agent.id, name: 'Agent', unavailable_tools: ['unknown_tool'] },
+    });
+    expect(filterSpy).toHaveBeenCalledWith(['calculator', 'unknown_tool']);
+    expect((await stored())?.tools).toEqual(['web_search', 'calculator']);
+  });
+
+  it('maps a content filter refusal from updateAgent to its code alone', async () => {
+    const owner = await createUser();
+    const user = await createUser();
+    const agent = await createAgentFor(owner);
+    await grant(user, agent, EDIT);
+    const config = {
+      filters: { agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } } },
+    } as Partial<AppConfig>;
+
+    const result = await updateBuilderAgent(
+      user,
+      { id: agent.id, instructions: 'Use sk-private-token for requests' },
+      ['instructions'],
+      { ...deps, updateAgent: updateAs(user, config) },
+      runningAgentId,
+    );
+
+    expect(result).toEqual({ ok: false, error: { code: 'content_filter_block' } });
+    expect(formatAgentBuilderResult(result)).not.toContain('sk-private-token');
+    expect((await methods.getAgent({ id: agent.id }))?.instructions).toBe('Be brief.');
+  });
+});
+
 describe('resolveAgentBuilderWrites', () => {
   const role = (create: boolean) => async () =>
     ({ permissions: { AGENTS: { USE: true, CREATE: create } } }) as never;
@@ -583,6 +850,33 @@ describe('resolveAgentBuilderWrites', () => {
         getRoleByName: role(true),
       }),
     ).resolves.toEqual({ create: CREATE_FIELDS });
+  });
+
+  it('offers update with its listed fields, alone or next to create', async () => {
+    const user = await createUser();
+    const update: AgentBuilderField[] = ['description', 'tools'];
+    for (const [agentBuilder, expected] of [
+      [{ update: { fields: update } }, { update }],
+      [
+        { ...config, update: { fields: update } },
+        { create: CREATE_FIELDS, update },
+      ],
+    ] as const) {
+      await expect(
+        resolveAgentBuilderWrites({
+          config: agentBuilder,
+          user: user as unknown as IUser,
+          getRoleByName: role(true),
+        }),
+      ).resolves.toEqual(expected);
+      await expect(
+        resolveAgentBuilderWrites({
+          config: agentBuilder,
+          user: user as unknown as IUser,
+          getRoleByName: role(false),
+        }),
+      ).resolves.toEqual({});
+    }
   });
 
   it('offers no write for an operation without fields', async () => {
@@ -647,6 +941,41 @@ describe('registerAgentBuilderTools', () => {
       'provider',
       'model',
     ]);
+  });
+
+  it('registers update_agent, direct-only, with id, the listed fields and tool changes', () => {
+    const toolRegistry: LCToolRegistry = new Map();
+    const result = registerAgentBuilderTools({
+      toolRegistry,
+      toolDefinitions: [],
+      writes: { update: ['description', 'tools', 'name'] },
+    });
+
+    expect(result.toolNames).toEqual([
+      LIST_AGENTS_TOOL_NAME,
+      GET_AGENT_TOOL_NAME,
+      UPDATE_AGENT_TOOL_NAME,
+    ]);
+    const update = toolRegistry.get(UPDATE_AGENT_TOOL_NAME);
+    expect(update?.allowed_callers).toEqual(['direct']);
+    expect(update?.parameters).toMatchObject({
+      type: 'object',
+      required: ['id'],
+      additionalProperties: false,
+    });
+    expect(Object.keys(update?.parameters?.properties ?? {})).toEqual([
+      'id',
+      'name',
+      'description',
+      'add_tools',
+      'remove_tools',
+    ]);
+
+    const scalars = registerAgentBuilderTools({
+      toolRegistry: new Map(),
+      writes: { update: ['instructions'] },
+    }).toolDefinitions.find((def) => def.name === UPDATE_AGENT_TOOL_NAME);
+    expect(Object.keys(scalars?.parameters?.properties ?? {})).toEqual(['id', 'instructions']);
   });
 
   it('registers the read tools as direct-only definitions and reports their names', () => {
@@ -825,7 +1154,7 @@ describe('agent builder runtime tools', () => {
         toolRegistry: 'toolRegistry' in overrides ? overrides.toolRegistry : registry(),
         capabilityEnabled: async () => overrides.capability ?? true,
         getRoleByName: roleWith(overrides.agentsUse ?? true),
-        deps: { ...deps, createAgent: () => Promise.reject(new Error('not a write tool')) },
+        deps: requestDeps(),
       });
     }
 
@@ -847,17 +1176,20 @@ describe('agent builder runtime tools', () => {
   });
 
   describe('createAgentBuilderToolResolver', () => {
-    function createResolver(capability = true) {
+    function createResolver(capability = true, create = false) {
       const checkCapability = jest.fn(async () => capability);
       const resolveTool = createAgentBuilderToolResolver({
-        getAgent: (filter) => deps.getAgent(filter.id),
+        getAgent: (filter) => methods.getAgent(filter).then(toUpdatableAgent),
         hasCapability: deps.hasCapability,
         checkPermission: deps.checkPermission,
         findAccessibleResources: deps.findAccessibleResources,
         getListAgentsByAccess: deps.getListAgentsByAccess,
-        getRoleByName: async () => ({ permissions: { AGENTS: { USE: true } } }) as never,
+        getRoleByName: async () =>
+          ({ permissions: { AGENTS: { USE: true, CREATE: create } } }) as never,
         checkCapability,
         createAgent: jest.fn(),
+        updateAgent: jest.fn(),
+        getToolFilterDeps: () => createAgentDeps(),
       });
       return { resolveTool, checkCapability };
     }
@@ -919,6 +1251,90 @@ describe('agent builder runtime tools', () => {
       await expect(built?.invoke({ limit: 3 })).rejects.toThrow();
       await expect(built?.invoke({ limit: 2 })).resolves.toEqual(expect.any(String));
     });
+
+    it('passes the running agent to update_agent, so it keeps its own builder', async () => {
+      const { resolveTool } = createResolver(true, true);
+      const req = await requestFor({
+        endpoints: { agents: { agentBuilder: { update: { fields: ['tools'] } } } },
+      } as ServerRequest['config']);
+      const owner = { id: req.user?.id ?? '', role: SystemRoles.USER };
+      const running = await createAgentFor(owner, {
+        tools: ['web_search', AgentCapabilities.agent_builder],
+      });
+      await grant(owner, running, EDIT);
+      const toolRegistry: LCToolRegistry = new Map();
+      registerAgentBuilderTools({ toolRegistry, writes: { update: ['tools'] } });
+
+      const factory = resolveTool({
+        tool: UPDATE_AGENT_TOOL_NAME,
+        req,
+        agentId: running.id,
+        toolRegistry,
+      });
+      const built = await factory?.();
+      const output = JSON.parse(
+        String(
+          await built?.invoke({ id: running.id, remove_tools: [AgentCapabilities.agent_builder] }),
+        ),
+      );
+
+      expect(output).toEqual({
+        error: {
+          code: 'agent_builder_removal_not_allowed',
+          details: { tools: [AgentCapabilities.agent_builder] },
+        },
+      });
+      expect((await methods.getAgent({ id: running.id }))?.tools).toContain(
+        AgentCapabilities.agent_builder,
+      );
+    });
+
+    it('updates the loaded agent as its owner, as a panel save does', async () => {
+      const req = await requestFor({
+        endpoints: { agents: { agentBuilder: { update: { fields: ['description', 'tools'] } } } },
+      } as ServerRequest['config']);
+      const owner = { id: req.user?.id ?? '', role: SystemRoles.USER };
+      const mcpTool = `search${Constants.mcp_delimiter}github`;
+      const agent = await createAgentFor(owner, {
+        tools: ['web_search', mcpTool],
+        mcpServerNames: ['github'],
+      });
+      const other = await createAgentFor(owner, {
+        tools: ['web_search', mcpTool],
+        mcpServerNames: ['github'],
+      });
+      await Promise.all([grant(owner, agent, EDIT), grant(owner, other, EDIT)]);
+      const { createAgent: _create, updateAgent: _update, filterTools: _filter, ...reads } = deps;
+      const resolveTool = createAgentBuilderToolResolver({
+        ...reads,
+        getAgent: (filter) => methods.getAgent(filter).then(toUpdatableAgent),
+        getRoleByName: async () =>
+          ({ permissions: { AGENTS: { USE: true, CREATE: true } } }) as never,
+        checkCapability: async () => true,
+        createAgent: jest.fn(),
+        updateAgent: (request, authorized, input) =>
+          updateAs(owner, request.config, { canUseMCPServers: async () => false })(
+            authorized,
+            input,
+          ),
+        getToolFilterDeps: () => createAgentDeps(),
+      });
+      const toolRegistry: LCToolRegistry = new Map();
+      registerAgentBuilderTools({ toolRegistry, writes: { update: ['description', 'tools'] } });
+      const built = await resolveTool({ tool: UPDATE_AGENT_TOOL_NAME, req, toolRegistry })?.();
+
+      const removed = await built?.invoke({ id: agent.id, remove_tools: [mcpTool] });
+      const described = await built?.invoke({ id: other.id, description: 'Renamed' });
+
+      expect(JSON.parse(String(removed))).toEqual({ id: agent.id, name: 'Agent' });
+      expect(JSON.parse(String(described))).toEqual({ id: other.id, name: 'Agent' });
+      for (const { id } of [agent, other]) {
+        expect(await methods.getAgent({ id })).toMatchObject({
+          tools: ['web_search'],
+          mcpServerNames: [],
+        });
+      }
+    });
   });
 });
 
@@ -954,7 +1370,7 @@ describe('create_agent runtime tool', () => {
       toolRegistry: registry(),
       capabilityEnabled: async () => true,
       getRoleByName: roleWith(overrides.create ?? true),
-      deps: { ...deps, createAgent: createForRequest },
+      deps: requestDeps({ createAgent: createForRequest }),
     });
     return { built, user, req, createForRequest };
   }
@@ -1012,5 +1428,113 @@ describe('create_agent runtime tool', () => {
 
     expect(JSON.parse(output)).toEqual({ error: { code: 'unavailable' } });
     expect(output).not.toContain('10.0.0.2');
+  });
+});
+
+describe('update_agent runtime tool', () => {
+  const UPDATE_FIELDS: AgentBuilderField[] = ['description', 'tools'];
+  const registry = (): LCToolRegistry => {
+    const toolRegistry: LCToolRegistry = new Map();
+    registerAgentBuilderTools({ toolRegistry, writes: { update: UPDATE_FIELDS } });
+    return toolRegistry;
+  };
+  const roleWith = (create: boolean) => async () =>
+    ({ permissions: { AGENTS: { USE: true, CREATE: create } } }) as never;
+
+  async function build(overrides: { agentBuilder?: unknown; create?: boolean } = {}) {
+    const user = await createUser();
+    const agent = await createAgentFor(user, {
+      tools: ['web_search', AgentCapabilities.agent_builder],
+    });
+    await grant(user, agent, EDIT);
+    const config = {
+      endpoints: {
+        agents: {
+          agentBuilder:
+            'agentBuilder' in overrides
+              ? overrides.agentBuilder
+              : { update: { fields: UPDATE_FIELDS } },
+        },
+      },
+    } as unknown as AppConfig;
+    const req = { user: { ...user, _id: user.id } as unknown as IUser, config } as ServerRequest;
+    const updateForRequest = jest.fn(
+      (
+        request: ServerRequest,
+        authorized: AuthorizedAgent<'EDIT', AgentBuilderAgent>,
+        input: AgentBuilderWriteInput,
+      ) =>
+        updateAs({ id: request.user?.id ?? '', role: request.user?.role }, request.config)(
+          authorized,
+          input,
+        ),
+    );
+    const built = await buildAgentBuilderTool({
+      toolName: UPDATE_AGENT_TOOL_NAME,
+      req,
+      agentId: agent.id,
+      toolRegistry: registry(),
+      capabilityEnabled: async () => true,
+      getRoleByName: roleWith(overrides.create ?? true),
+      deps: requestDeps({ updateAgent: updateForRequest }),
+    });
+    return { built, agent, req, updateForRequest };
+  }
+
+  it('updates through the request-bound updateAgent and returns { id, name }', async () => {
+    const { built, agent, req, updateForRequest } = await build();
+
+    const output = await built?.invoke({
+      id: agent.id,
+      description: 'Updated by the builder',
+      add_tools: ['calculator'],
+    });
+
+    expect(JSON.parse(String(output))).toEqual({ id: agent.id, name: 'Agent' });
+    expect(updateForRequest).toHaveBeenCalledWith(req, expect.any(Object), expect.any(Object));
+    expect(await methods.getAgent({ id: agent.id })).toMatchObject({
+      description: 'Updated by the builder',
+      tools: ['web_search', AgentCapabilities.agent_builder, 'calculator'],
+    });
+  });
+
+  it('refuses removing the builder from the agent that runs it', async () => {
+    const { built, agent, updateForRequest } = await build();
+
+    const output = await built?.invoke({
+      id: agent.id,
+      remove_tools: [AgentCapabilities.agent_builder],
+    });
+
+    expect(JSON.parse(String(output))).toEqual({
+      error: {
+        code: 'agent_builder_removal_not_allowed',
+        details: { tools: [AgentCapabilities.agent_builder] },
+      },
+    });
+    expect(updateForRequest).not.toHaveBeenCalled();
+    expect((await methods.getAgent({ id: agent.id }))?.tools).toContain(
+      AgentCapabilities.agent_builder,
+    );
+  });
+
+  it('refuses an unlisted field at run time instead of stripping it', async () => {
+    const { built, agent } = await build();
+
+    const output = await built?.invoke({ id: agent.id, name: 'Renamed' });
+
+    expect(JSON.parse(String(output))).toEqual({
+      error: { code: 'field_not_allowed', details: { fields: ['name'] } },
+    });
+    expect((await methods.getAgent({ id: agent.id }))?.name).toBe('Agent');
+  });
+
+  it('is not built when the config lists only create', async () => {
+    const agentBuilder = { create: { fields: ['provider', 'model'] } };
+    await expect(build({ agentBuilder }).then(({ built }) => built)).resolves.toBeNull();
+  });
+
+  it('is not built when the role lacks AGENTS CREATE', async () => {
+    await expect(build({ create: false }).then(({ built }) => built)).resolves.toBeNull();
   });
 });

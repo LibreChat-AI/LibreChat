@@ -1,6 +1,7 @@
 export * from './access';
 export * from './avatars';
 export * from './attachments';
+export * from './attachable';
 export * from './chain';
 export * from './callerCapabilities';
 export * from './client';

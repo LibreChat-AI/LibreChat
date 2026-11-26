@@ -30,10 +30,19 @@ jest.mock('~/server/services/Files/Code/process', () => ({
   primeFiles: (...args) => mockPrimeCodeFiles(...args),
 }));
 
-jest.mock('@librechat/api', () => ({
-  ...jest.requireActual('@librechat/api'),
-  loadWebSearchAuth: (...args) => mockLoadWebSearchAuth(...args),
-}));
+let mockAgentBuilderDeps;
+
+jest.mock('@librechat/api', () => {
+  const actual = jest.requireActual('@librechat/api');
+  return {
+    ...actual,
+    loadWebSearchAuth: (...args) => mockLoadWebSearchAuth(...args),
+    createAgentBuilderToolResolver: (deps) => {
+      mockAgentBuilderDeps = deps;
+      return actual.createAgentBuilderToolResolver(deps);
+    },
+  };
+});
 
 jest.mock('~/server/services/PluginService', () => mockPluginService);
 
@@ -96,7 +105,7 @@ const { Calculator } = require('@librechat/agents');
 const { Tools, Constants } = require('librechat-data-provider');
 const { ASK_USER_QUESTION_TOOL_NAME, STANDARD_MCP_CAPABILITY_PROFILE } = require('@librechat/api');
 
-const { User } = require('~/db/models');
+const { User, Agent } = require('~/db/models');
 const PluginService = require('~/server/services/PluginService');
 const { loadTools, loadToolWithAuth } = require('./handleTools');
 const { StructuredSD, availableTools, FluxAPI } = require('../');
@@ -1084,6 +1093,24 @@ describe('Tool Handlers', () => {
 
       expect(toolMap[Tools.web_search]).toBeUndefined();
       expect(mockCreateSearchTool).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('agent builder resolver', () => {
+    it('loads agents with string ids, as the panel update loader does', async () => {
+      const id = `agent_${new mongoose.Types.ObjectId().toString()}`;
+      const stored = await Agent.create({
+        id,
+        name: 'Agent',
+        provider: 'openai',
+        model: 'gpt-4o',
+        author: fakeUser._id,
+      });
+
+      const agent = await mockAgentBuilderDeps.getAgent({ id });
+
+      expect(agent).toMatchObject({ id, _id: stored._id.toString() });
+      expect(agent.author).toBe(fakeUser._id.toString());
     });
   });
 });

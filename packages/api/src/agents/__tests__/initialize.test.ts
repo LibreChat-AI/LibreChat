@@ -7508,11 +7508,46 @@ describe('initializeAgent — agent_builder marker', () => {
     expect(tools.get('create_agent')?.allowed_callers).toEqual(['direct']);
   });
 
+  it('offers update_agent with id, the listed fields and tool changes when configured', async () => {
+    const agentBuilder = { update: { fields: ['description', 'tools'] } };
+    const tools = byName(await initialize(undefined, true, { agentBuilder }));
+
+    expect([...tools.keys()]).toEqual(['list_agents', 'get_agent', 'update_agent']);
+    expect(tools.get('update_agent')?.allowed_callers).toEqual(['direct']);
+    expect(Object.keys(tools.get('update_agent')?.parameters?.properties ?? {})).toEqual([
+      'id',
+      'description',
+      'add_tools',
+      'remove_tools',
+    ]);
+  });
+
+  it('keeps update_agent direct-only even when tool options allow code callers', async () => {
+    const agentBuilder = { update: { fields: ['description'] } };
+    const tools = byName(
+      await initialize(
+        {
+          '*': { allowed_callers: ['code_execution'] },
+          [AgentCapabilities.agent_builder]: { allowed_callers: ['code_execution'] },
+          update_agent: { allowed_callers: ['code_execution'] },
+        },
+        true,
+        { agentBuilder },
+      ),
+    );
+
+    expect(tools.get('update_agent')?.allowed_callers).toEqual(['direct']);
+  });
+
   it('offers no write tool when the role lacks AGENTS CREATE', async () => {
-    const agentBuilder = { create: { fields: ['name', 'provider', 'model'] } };
+    const agentBuilder = {
+      create: { fields: ['name', 'provider', 'model'] },
+      update: { fields: ['description'] },
+    };
     const tools = byName(await initialize(undefined, true, { agentBuilder, agentsCreate: false }));
 
     expect(tools.has('create_agent')).toBe(false);
+    expect(tools.has('update_agent')).toBe(false);
     expect(tools.has('list_agents')).toBe(true);
   });
 
