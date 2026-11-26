@@ -1,10 +1,12 @@
 import { Providers } from '@librechat/agents';
+import type { AllowedCaller, GenericTool } from '@librechat/agents';
 import type { AgentToolOptions } from 'librechat-data-provider';
-import type { GenericTool } from '@librechat/agents';
-import type { CodeEnvironmentConfig } from '~/agents/execution';
+import type { CodeEnvironmentConfig, CodeExecutionContext } from '~/agents/execution';
 import type { LCToolRegistry } from './classification';
 import {
   buildToolRegistryFromAgentOptions,
+  createProgrammaticToolResolver,
+  registerProgrammaticTool,
   aliasMCPToolOptions,
   agentHasProgrammaticTools,
   buildToolClassification,
@@ -812,3 +814,93 @@ test.each(['oauth', 'other'] as const)(
     expect(getToolApprovalAuthKind(plain.toolRegistry!.get('query_mcp_db')!)).toBe(kind);
   },
 );
+
+describe('registerProgrammaticTool', () => {
+  const PTC = 'run_tools_with_bash';
+  const reads = () => [
+    { name: 'list_agents', allowed_callers: ['direct', 'code_execution'] as AllowedCaller[] },
+    { name: 'create_agent', allowed_callers: ['direct'] as AllowedCaller[] },
+  ];
+  const available = () =>
+    createProgrammaticToolResolver({ programmaticToolsEnabled: true, codeExecutionEnabled: true });
+
+  it('registers run_tools_with_bash, direct-only, when a definition allows code callers', async () => {
+    const toolRegistry: LCToolRegistry = new Map();
+    const result = await registerProgrammaticTool({
+      toolDefinitions: reads(),
+      toolRegistry,
+      resolveProgrammaticTool: available(),
+    });
+
+    expect(result.registered).toBe(true);
+    expect((result.toolDefinitions ?? []).map((def) => def.name)).toEqual([
+      'list_agents',
+      'create_agent',
+      PTC,
+    ]);
+    expect(result.toolDefinitions?.[2].parameters).toBeDefined();
+    expect(toolRegistry.get(PTC)).toEqual({ name: PTC, allowed_callers: ['direct'] });
+  });
+
+  it('leaves the definitions alone when no definition allows code callers', async () => {
+    const toolDefinitions = [
+      { name: 'list_agents', allowed_callers: ['direct'] as AllowedCaller[] },
+    ];
+    const resolveProgrammaticTool = jest.fn(available());
+    const result = await registerProgrammaticTool({
+      toolDefinitions,
+      toolRegistry: new Map(),
+      resolveProgrammaticTool,
+    });
+
+    expect(result).toEqual({ toolDefinitions, registered: false });
+    expect(resolveProgrammaticTool).not.toHaveBeenCalled();
+  });
+
+  it('does not register the tool twice', async () => {
+    const toolRegistry: LCToolRegistry = new Map([
+      [PTC, { name: PTC, allowed_callers: ['direct'] }],
+    ]);
+    const toolDefinitions = [...reads(), { name: PTC }];
+    const result = await registerProgrammaticTool({
+      toolDefinitions,
+      toolRegistry,
+      resolveProgrammaticTool: available(),
+    });
+
+    expect(result).toEqual({ toolDefinitions, registered: false });
+  });
+
+  it.each([
+    ['the programmatic_tools capability is off', { programmaticToolsEnabled: false }],
+    ['code execution is off', { codeExecutionEnabled: false }],
+  ])('registers nothing when %s', async (_label, override) => {
+    const toolRegistry: LCToolRegistry = new Map();
+    const result = await registerProgrammaticTool({
+      toolDefinitions: reads(),
+      toolRegistry,
+      resolveProgrammaticTool: createProgrammaticToolResolver({
+        programmaticToolsEnabled: true,
+        codeExecutionEnabled: true,
+        ...override,
+      }),
+    });
+
+    expect(result.registered).toBe(false);
+    expect(toolRegistry.has(PTC)).toBe(false);
+  });
+
+  it('registers nothing for an attached environment without a selected workspace', async () => {
+    const result = await registerProgrammaticTool({
+      toolDefinitions: reads(),
+      toolRegistry: new Map(),
+      resolveProgrammaticTool: createProgrammaticToolResolver({
+        programmaticToolsEnabled: true,
+        codeExecutionEnabled: true,
+        codeExecutionContext: { environmentType: 'attached' } as CodeExecutionContext,
+      }),
+    });
+
+    expect(result.registered).toBe(false);
+  });
+});

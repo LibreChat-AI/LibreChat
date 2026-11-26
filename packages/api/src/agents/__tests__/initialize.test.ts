@@ -33,7 +33,7 @@ jest.mock('@librechat/agents', () => ({
     enableToolOutputReferences === true ? 'bash {{tool<idx>turn<turn>}}' : 'bash',
 }));
 
-import { Providers } from '@librechat/agents';
+import { Providers, Constants as AgentConstants } from '@librechat/agents';
 import { createHash } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
 import { createRepositoryInstructionLoader } from '../../code/instructions';
@@ -65,6 +65,12 @@ import type { ProjectFileRecord } from '../../projects/resources';
 import { toCanonicalProjectResource } from '../../projects/resources';
 import { DEFAULT_MAX_CONTEXT_TOKENS } from '../initialize';
 import { discoverConnectedAgents, resolveSubagentGraphs } from '../discovery';
+import type { ProgrammaticToolResolver } from '~/tools/classification';
+import {
+  createProgrammaticToolResolver,
+  buildToolRegistryFromAgentOptions,
+} from '~/tools/classification';
+import { synthesizeToggleToolOptions } from '../toggles';
 
 // Mock logger — `format` must be a callable factory so @librechat/data-schemas
 // dist module-load completes cleanly; see api/test/__mocks__/logger.js.
@@ -7409,7 +7415,11 @@ describe('initializeAgent — agent_builder marker', () => {
   async function initialize(
     toolOptions: Agent['tool_options'],
     agentBuilderEnabled: boolean,
-    builder: { agentBuilder?: unknown; agentsCreate?: boolean } = {},
+    builder: {
+      agentBuilder?: unknown;
+      agentsCreate?: boolean;
+      resolveProgrammaticTool?: ProgrammaticToolResolver;
+    } = {},
   ): Promise<Awaited<ReturnType<typeof initializeAgent>>> {
     const { agent, req, res, loadTools, db } = createMocks();
     req.user = { id: 'user-1', role: 'USER' } as never;
@@ -7427,6 +7437,7 @@ describe('initializeAgent — agent_builder marker', () => {
       hasDeferredTools: false,
       deferredToolsEnabled: true,
       agentBuilderEnabled,
+      resolveProgrammaticTool: builder.resolveProgrammaticTool,
     });
     return initializeAgent(
       {
@@ -7551,6 +7562,101 @@ describe('initializeAgent — agent_builder marker', () => {
     expect(tools.has('list_agents')).toBe(true);
   });
 
+  describe('code callers', () => {
+    const agentBuilder = {
+      create: { fields: ['name', 'provider', 'model'] },
+      update: { fields: ['description'] },
+    };
+    const available = () =>
+      createProgrammaticToolResolver({
+        programmaticToolsEnabled: true,
+        codeExecutionEnabled: true,
+      });
+    const callers = (result: Awaited<ReturnType<typeof initializeAgent>>, name: string) =>
+      result.toolRegistry?.get(name)?.allowed_callers ?? ['direct'];
+
+    const PTC = AgentConstants.BASH_PROGRAMMATIC_TOOL_CALLING;
+    const codeCallers = (result: Awaited<ReturnType<typeof initializeAgent>>) => {
+      const tools = byName(result);
+      const names = ['list_agents', 'get_agent', 'create_agent', 'update_agent', PTC];
+      return Object.fromEntries(
+        names.map((name) => [
+          name,
+          {
+            offered: tools.has(name),
+            definition: tools.get(name)?.allowed_callers ?? ['direct'],
+            registry: callers(result, name),
+          },
+        ]),
+      );
+    };
+    const direct = { offered: true, definition: ['direct'], registry: ['direct'] };
+    const fromCode = {
+      offered: true,
+      definition: ['direct', 'code_execution'],
+      registry: ['direct', 'code_execution'],
+    };
+    const readsFromCode = {
+      list_agents: fromCode,
+      get_agent: fromCode,
+      create_agent: direct,
+      update_agent: direct,
+      [PTC]: direct,
+    };
+
+    it('opens the read tools to code under a model-spec wildcard, with no MCP tools', async () => {
+      const result = await initialize(
+        synthesizeToggleToolOptions({ modelSpec: { programmaticTools: true } }),
+        true,
+        { agentBuilder, resolveProgrammaticTool: available() },
+      );
+      expect(codeCallers(result)).toEqual(readsFromCode);
+    });
+
+    it('opens the read tools to code when a model-spec list names the marker', async () => {
+      const result = await initialize(
+        synthesizeToggleToolOptions({
+          modelSpec: { programmaticTools: [AgentCapabilities.agent_builder] },
+        }),
+        true,
+        { agentBuilder, resolveProgrammaticTool: available() },
+      );
+      expect(codeCallers(result)).toEqual(readsFromCode);
+    });
+
+    it('opens the read tools to code through the agent_builder marker option', async () => {
+      const result = await initialize(
+        { [AgentCapabilities.agent_builder]: { allowed_callers: ['direct', 'code_execution'] } },
+        true,
+        { agentBuilder, resolveProgrammaticTool: available() },
+      );
+      expect(codeCallers(result)).toEqual(readsFromCode);
+    });
+
+    it('adds no programmatic tool when no tool allows code callers', async () => {
+      const tools = byName(
+        await initialize(undefined, true, { agentBuilder, resolveProgrammaticTool: available() }),
+      );
+      expect(tools.has(AgentConstants.BASH_PROGRAMMATIC_TOOL_CALLING)).toBe(false);
+    });
+
+    it('adds no programmatic tool when the capabilities do not allow it', async () => {
+      const result = await initialize(
+        synthesizeToggleToolOptions({ modelSpec: { programmaticTools: true } }),
+        true,
+        {
+          agentBuilder,
+          resolveProgrammaticTool: createProgrammaticToolResolver({
+            programmaticToolsEnabled: false,
+            codeExecutionEnabled: true,
+          }),
+        },
+      );
+      expect(byName(result).has(AgentConstants.BASH_PROGRAMMATIC_TOOL_CALLING)).toBe(false);
+      expect(result.toolRegistry?.has(AgentConstants.BASH_PROGRAMMATIC_TOOL_CALLING)).toBe(false);
+    });
+  });
+
   it('registers nothing when the loader dropped the marker', async () => {
     const tools = byName(await initialize(undefined, false));
 
@@ -7592,6 +7698,80 @@ describe('initializeAgent — deferral without a loader registry', () => {
     expect(result.toolRegistry?.get('bash_tool')).toBe(bash);
     expect(result.toolRegistry?.has('tool_search')).toBe(true);
     expect(result.hasDeferredTools).toBe(true);
+  });
+});
+
+describe('initializeAgent — tool callers', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  const MCP_TOOL = `search${Constants.mcp_delimiter}github`;
+
+  /** A loader result shaped like the definitions-only loader's: an MCP tool and a built-in. */
+  async function initialize(
+    toolOptions: Agent['tool_options'],
+  ): Promise<Awaited<ReturnType<typeof initializeAgent>>> {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.tools = [MCP_TOOL, Tools.web_search, Tools.execute_code];
+    agent.tool_options = toolOptions;
+    loadTools.mockImplementation(async () => {
+      const toolRegistry = buildToolRegistryFromAgentOptions(
+        [{ name: MCP_TOOL, description: 'search', parameters: { type: 'object' } }],
+        toolOptions ?? {},
+      );
+      const webSearch = { name: Tools.web_search, parameters: { type: 'object' as const } };
+      toolRegistry.set(Tools.web_search, { ...webSearch, allowed_callers: ['direct'] });
+      return {
+        tools: [],
+        toolContextMap: {},
+        userMCPAuthMap: undefined,
+        toolRegistry,
+        toolDefinitions: [...toolRegistry.values()].filter((def) => def.name !== Tools.web_search),
+        hasDeferredTools: false,
+      };
+    });
+    return initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        codeEnvAvailable: true,
+      },
+      db,
+    );
+  }
+
+  const callers = (result: Awaited<ReturnType<typeof initializeAgent>>, name: string) =>
+    result.toolRegistry?.get(name)?.allowed_callers ?? ['direct'];
+
+  it('keeps every tool direct when no caller policy is set', async () => {
+    const result = await initialize(undefined);
+    for (const name of [MCP_TOOL, Tools.web_search, 'bash_tool', 'read_file']) {
+      expect(callers(result, name)).toEqual(['direct']);
+    }
+  });
+
+  it('lets a model-spec wildcard reach MCP tools and leaves host tools direct', async () => {
+    const result = await initialize(
+      synthesizeToggleToolOptions({ modelSpec: { programmaticTools: true } }),
+    );
+    expect(callers(result, MCP_TOOL)).toEqual(['direct', 'code_execution']);
+    for (const name of [Tools.web_search, 'bash_tool', 'read_file']) {
+      expect(callers(result, name)).toEqual(['direct']);
+    }
+  });
+
+  it('does not widen host tools through their capability marker', async () => {
+    const result = await initialize({
+      [Tools.execute_code]: { allowed_callers: ['direct', 'code_execution'] },
+    });
+    expect(callers(result, 'bash_tool')).toEqual(['direct']);
+    expect(callers(result, 'read_file')).toEqual(['direct']);
   });
 });
 

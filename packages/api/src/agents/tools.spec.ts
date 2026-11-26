@@ -74,6 +74,7 @@ import fs from 'fs';
 import path from 'path';
 import { CODE_EXECUTION_TOOLS, ReadFileToolDefinition } from '@librechat/agents';
 import type { LCTool, LCToolRegistry } from '@librechat/agents';
+import type { AgentToolOptions } from 'librechat-data-provider';
 import { CODE_WORKSPACE_OPERATIONS, Constants } from 'librechat-data-provider';
 import {
   buildToolSet,
@@ -406,6 +407,21 @@ describe('buildHistoricalToolNames', () => {
         'check_background_task',
       ]),
     );
+  });
+
+  it('predicts the programmatic tool from a caller wildcard', () => {
+    const lookup = `lookup${Constants.mcp_delimiter}warehouse`;
+    const names = (toolOptions: AgentToolOptions) =>
+      buildHistoricalToolNames({
+        configuredToolNames: [lookup],
+        toolOptions,
+        codeExecutionAvailable: true,
+        programmaticToolsAvailable: true,
+      });
+    expect(names({ '*': { allowed_callers: ['direct', 'code_execution'] } })).toContain(
+      'run_tools_with_bash',
+    );
+    expect(names({ '*': { allowed_callers: ['direct'] } })).not.toContain('run_tools_with_bash');
   });
 
   it('keeps skill file access without exposing the skill invocation tool', () => {

@@ -19,11 +19,11 @@ import type { LCToolRegistry, JsonSchemaType, LCTool, GenericTool } from '@libre
 import type { AgentToolOptions } from 'librechat-data-provider';
 import type { CodeEnvironmentConfig, CodeExecutionContext } from '~/agents/execution';
 import type { CodeCapabilityConfigLoader } from '~/code/capabilities';
-import type { MCPToolAlias, ToolDefinition } from './classification';
+import type { ProgrammaticToolResolver, MCPToolAlias, ToolDefinition } from './classification';
 import { resolveJsonSchemaRefs, normalizeJsonSchema, sanitizeGeminiSchema } from '~/mcp/zod';
 import { DEFAULT_LOOKUP_CONCURRENCY } from '~/utils/concurrency';
 import { mapWithConcurrency } from '~/utils/promise';
-import { buildToolClassification } from './classification';
+import { createProgrammaticToolResolver, buildToolClassification } from './classification';
 import { getToolDefinition } from './registry/definitions';
 import { toolkitExpansion } from './toolkits/mapping';
 import { isMCPAllPlaceholder } from '~/mcp/utils';
@@ -130,6 +130,8 @@ export interface LoadToolDefinitionsResult {
    * tool order (the OAuth sign-in prompts) takes its order from this list.
    */
   mcpServerLookupOrder: string[];
+  /** Resolves `run_tools_with_bash` for tools that allow code callers after classification. */
+  resolveProgrammaticTool: ProgrammaticToolResolver;
 }
 
 /**
@@ -262,6 +264,13 @@ export async function loadToolDefinitions(
     return isGoogle ? sanitizeGeminiSchema(normalized) : normalized;
   };
 
+  const resolveProgrammaticTool = createProgrammaticToolResolver({
+    programmaticToolsEnabled,
+    codeExecutionEnabled,
+    codeExecutionContext,
+    codeEnvironments,
+    getAppConfig,
+  });
   const emptyResult: LoadToolDefinitionsResult = {
     toolDefinitions: [],
     toolRegistry: new Map(),
@@ -270,6 +279,7 @@ export async function loadToolDefinitions(
     mcpResolution: { expectedToolCount: 0, resolvedToolCount: 0 },
     oauthActionToolNames: [],
     mcpServerLookupOrder: [],
+    resolveProgrammaticTool,
   };
 
   if (!tools || tools.length === 0) {
@@ -593,5 +603,6 @@ export async function loadToolDefinitions(
     },
     oauthActionToolNames,
     mcpServerLookupOrder,
+    resolveProgrammaticTool,
   };
 }

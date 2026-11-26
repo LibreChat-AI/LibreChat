@@ -29,7 +29,7 @@ import {
   buildAttachedWorkspaceBashSchema,
   buildAttachedWorkspaceBashDescription,
 } from '~/code/command';
-import { TOOL_SELECTION_WILDCARD, resolveToolOption } from './selection';
+import { TOOL_SELECTION_WILDCARD, resolveToolCallers, resolveToolOption } from './selection';
 import { toolkitExpansion } from '~/tools/toolkits/mapping';
 import { normalizeAgentToolKeys } from '~/mcp/utils';
 import { collectReachableAgents } from './traversal';
@@ -231,20 +231,25 @@ export function buildHistoricalToolNames(config: BuildHistoricalToolNamesConfig)
 
   const options = normalizedOptions;
   const wildcard = config.toolOptions?.[TOOL_SELECTION_WILDCARD];
-  const deferralPolicy: AgentToolOptions = wildcard
+  const selectionPolicy: AgentToolOptions = wildcard
     ? { [TOOL_SELECTION_WILDCARD]: wildcard, ...options }
     : options;
   const hasDeferredTool = [...toolNames].some(
     (name) =>
       !CAPABILITY_MARKERS.has(name) &&
       isDeferrableToolName(name) &&
-      resolveToolOption(name, 'defer_loading', deferralPolicy, capabilityToolNames)?.value === true,
+      resolveToolOption(name, 'defer_loading', selectionPolicy, capabilityToolNames)?.value ===
+        true,
   );
   if (config.deferredToolsAvailable === true && hasDeferredTool) {
     toolNames.add('tool_search');
   }
-  const hasProgrammaticTool = [...toolNames].some((name) =>
-    options[name]?.allowed_callers?.includes('code_execution'),
+  /** A superset of the run's real selection: the names carry no caller declarations here. */
+  const hasProgrammaticTool = [...toolNames].some(
+    (name) =>
+      resolveToolCallers(name, selectionPolicy, capabilityToolNames)?.value.includes(
+        'code_execution',
+      ) === true,
   );
   if (
     config.programmaticToolsAvailable === true &&

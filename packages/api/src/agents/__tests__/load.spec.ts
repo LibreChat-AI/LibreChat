@@ -1299,6 +1299,77 @@ describe('loadAgent', () => {
     });
   });
 
+  describe('model spec programmaticTools', () => {
+    const { EPHEMERAL_AGENT_ID } = Constants;
+
+    const buildReq = (): LoadAgentParams['req'] =>
+      ({
+        user: { id: 'user123' },
+        body: {},
+        config: {
+          config: {},
+          fileStrategy: FileSources.local,
+          imageOutputType: 'png',
+          modelSpecs: {
+            list: [
+              {
+                name: 'callers-spec',
+                label: 'callers-spec',
+                preset: { endpoint: 'openai', model: 'gpt-4' },
+                programmaticTools: ['execute_code'],
+              },
+            ],
+          },
+        },
+      }) as unknown as LoadAgentParams['req'];
+
+    test('synthesizes caller tool options for the ephemeral agent', async () => {
+      const result = await loadAgent(
+        {
+          req: buildReq(),
+          spec: 'callers-spec',
+          agent_id: EPHEMERAL_AGENT_ID as string,
+          endpoint: 'openai',
+          model_parameters: { model: 'gpt-4' } as unknown as AgentModelParameters,
+        },
+        deps,
+      );
+
+      expect(result?.tool_options).toEqual({
+        '*': { allowed_callers: ['direct'] },
+        execute_code: { allowed_callers: ['direct', 'code_execution'] },
+      });
+    });
+
+    test("leaves a saved agent's stored tool_options unchanged", async () => {
+      const agentId = `agent_${uuidv4()}`;
+      const storedToolOptions = { web_search: { defer_loading: true } };
+      await createAgent({
+        id: agentId,
+        name: 'Saved Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: new mongoose.Types.ObjectId(),
+        tools: ['web_search', 'execute_code'],
+        tool_options: storedToolOptions,
+      });
+
+      const result = await loadAgent(
+        {
+          req: buildReq(),
+          spec: 'callers-spec',
+          agent_id: agentId,
+          endpoint: 'openai',
+          model_parameters: { model: 'gpt-4' } as unknown as AgentModelParameters,
+        },
+        deps,
+      );
+
+      expect(result?.id).toBe(agentId);
+      expect(result?.tool_options).toEqual(storedToolOptions);
+    });
+  });
+
   describe('a hidden badge row makes the spec unconditional (#15277)', () => {
     const { EPHEMERAL_AGENT_ID } = Constants;
 

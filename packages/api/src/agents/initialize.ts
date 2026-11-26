@@ -61,6 +61,7 @@ import type {
 } from '~/types';
 import type { ResolveLinkedInstructions, LinkedInstructionsFacts } from './instructions/linked';
 import type { LCAvailableTools, RequestScopedMCPConnectionStore } from '../mcp/types';
+import type { ProgrammaticToolResolver, MCPToolAlias } from '~/tools/classification';
 import type { ContentTraversalLimitError } from '../protection/adapters/nested';
 import type { SkillContentInput } from '../protection/adapters/submissions';
 import type { RepositoryInstructionSource } from '../code/instructions';
@@ -69,7 +70,6 @@ import type { TextContentFragment } from '../protection/types';
 import type { CheckAccessParams } from '../middleware/access';
 import type { GetProjectFiles } from '../projects/resources';
 import type { CodeContextEntry } from '~/files/code/priming';
-import type { MCPToolAlias } from '~/tools/classification';
 import type { CodeExecutionContext } from './execution';
 import type { AgentExecutionContext } from './runtime';
 import {
@@ -140,6 +140,7 @@ import { applyIntentLabels, sanitizeIntentLabels } from './intent';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { narrowGrantedTools } from '~/agents/authority/execution';
 import { getGoogleInputTokenLimit } from '~/endpoints/google/llm';
+import { registerProgrammaticTool } from '~/tools/classification';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { resolveToolRoleGrants } from '~/tools/rolePermissions';
 import { createRequestAgentExecutionContext } from './runtime';
@@ -158,6 +159,7 @@ import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
 import { getAgentInferencePolicy } from './input';
 import { getProviderConfig } from '~/endpoints';
+import { applyToolCallers } from './callers';
 import { primeResources } from './resources';
 import { pinAgentModel } from './pin';
 
@@ -1023,6 +1025,8 @@ export interface InitializeAgentParams {
     deferredToolsEnabled?: boolean;
     /** Whether the loader kept the `agent_builder` marker (capability on, role allowed). */
     agentBuilderEnabled?: boolean;
+    /** Resolves `run_tools_with_bash` when a tool registered after classification allows code callers. */
+    resolveProgrammaticTool?: ProgrammaticToolResolver;
     mcpToolAliases?: MCPToolAlias[];
     actionsEnabled?: boolean;
     /** Action tool names backed by OAuth — excluded from background dispatch. */
@@ -2365,6 +2369,7 @@ export async function initializeAgent(
     hasDeferredTools: loadedHasDeferredTools,
     deferredToolsEnabled,
     agentBuilderEnabled,
+    resolveProgrammaticTool,
     mcpToolAliases,
     actionsEnabled,
     oauthActionToolNames,
@@ -2820,6 +2825,24 @@ export async function initializeAgent(
     activeSkillNames = skillResult.activeSkillNames;
     recordCapabilityToolNames(AgentCapabilities.skills, skillResult.toolNames);
   }
+
+  /**
+   * Callers resolve once every registration step above has run, so a marker
+   * or model-spec wildcard reaches the tools a capability expanded into. The
+   * intent pass below reads the result: a tool code alone may call gets no
+   * label.
+   */
+  toolDefinitions = applyToolCallers({
+    toolDefinitions,
+    toolRegistry,
+    toolOptions: agent.tool_options,
+    capabilityToolNames,
+  }).toolDefinitions;
+  /** Classification adds `run_tools_with_bash` only for programmatic MCP tools; a tool the
+   *  callers pass opened to code (an `agent_builder` read tool) needs it as well. */
+  toolDefinitions = (
+    await registerProgrammaticTool({ toolDefinitions, toolRegistry, resolveProgrammaticTool })
+  ).toolDefinitions;
 
   /**
    * Intent labels run LAST, after every registration step — the skill
