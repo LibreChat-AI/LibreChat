@@ -1,21 +1,22 @@
-const { z } = require('zod');
 const { load } = require('js-yaml');
 const fs = require('fs').promises;
 const { nanoid } = require('nanoid');
 const { logger } = require('@librechat/data-schemas');
 const {
   createAgent,
+  updateAgent,
   refreshS3Url,
   toCreatedAgent,
   sendAgentRefusal,
   checkAgentContent,
+  toUpdatableAgent,
+  createAgentUpdateHandler,
   createAgentPanelCreateHandler,
   getAgentReferenceErrorResponse,
   isCodeInterpreterCapabilityEnabled,
   splitMCPToolKey,
   buildServerNameAliases,
   findShadowedServerNames,
-  agentUpdateSchema,
   agentSubagentsSchema,
   resolveAvatarRefresh,
   applyCachedAvatarUrl,
@@ -27,10 +28,7 @@ const {
   getAgentUploadTools,
   getAgentChatParameters,
   getAgentListAvatarRefreshKey,
-  mergeAgentOcrConversion,
-  applyAgentInferenceInput,
   collectToolResourceFileIds,
-  convertOcrToContextInPlace,
   normalizeToolResourceFiles,
   stripFileIdsFromToolResources,
   inspectContent,
@@ -42,16 +40,12 @@ const {
   contentFilterUninspectableResponse,
   getBlockedUninspectableFileField,
   isActiveAgentWorkspaceConfiguration,
-  reconcileAgentWorkspaceDefault,
   resolveAgentWorkspaceRestoreConfiguration,
-  shouldValidateAgentWorkspaceDefaultBinding,
   validateStatefulCodeEnvironment,
   validateAgentCodeEnvironmentAllowlist,
   marketplaceMineFilter,
   resolveMarketplaceListQuery,
   mapMarketplaceListError,
-  checkInstructionsPromptWrite,
-  applyInstructionsPromptUnset,
   instructionsContentForScan,
   authorizeAgentRestore,
   applySdkAgentBindingWrite,
@@ -78,7 +72,6 @@ const {
   hasActivePiiFields,
   hasActivePiiPatterns,
   openapiToFunction,
-  removeNullishValues,
 } = require('librechat-data-provider');
 const {
   findPubliclyAccessibleResources,
@@ -833,396 +826,51 @@ const getAgentVersionsHandler = async (req, res) => {
 };
 
 /**
- * Updates an Agent.
- * @route PATCH /Agents/:id
- * @param {object} req - Express Request
- * @param {object} req.params - Request params
- * @param {string} req.params.id - Agent identifier.
- * @param {AgentUpdateParams} req.body - The Agent update parameters.
- * @returns {Promise<Agent>} 200 - success response - application/json
+ * Runs the shared update service on an agent the caller authorized for EDIT, with this
+ * request's user, config and CJS collaborators.
+ * @param {ServerRequest} req
+ * @param {import('@librechat/api').AuthorizedAgent<'EDIT'>} authorized
+ * @param {unknown} input - Agent update payload.
  */
-const updateAgentHandler = async (req, res) => {
-  try {
-    const id = req.params.id;
-    /** See the create path: retain hydrated file IDs through validation. */
-    normalizeToolResourceFiles(req.body?.tool_resources);
-    const validatedData = agentUpdateSchema.parse(req.body);
-    if (
-      sendAgentRefusal(
-        res,
-        validateAgentCodeEnvironmentAllowlist(req.config, validatedData.code_environment_ids),
-      )
-    ) {
-      return;
-    }
-    // Preserve explicit null for avatar to allow resetting the avatar
-    const {
-      avatar: avatarField,
-      code_environment_id: codeEnvironmentIdField,
-      git_identity: gitIdentityField,
-      // Preserve explicit `null` (link removal); `removeNullishValues` would drop it.
-      instructionsPrompt: instructionsPromptField,
-      _id,
-      ...rest
-    } = validatedData;
-    let updateData = removeNullishValues(rest);
-    applySdkAgentBindingWrite(
-      updateData,
-      validatedData.sdk_runtime,
-      req.config?.endpoints?.agents,
-      req.user?.role,
-    );
-    if (codeEnvironmentIdField !== undefined) {
-      updateData.code_environment_id = codeEnvironmentIdField;
-    }
-    if (gitIdentityField !== undefined) {
-      updateData.git_identity = gitIdentityField;
-    }
-    if (instructionsPromptField !== undefined) {
-      updateData.instructionsPrompt = instructionsPromptField;
-    }
-    let existingAgent;
-
-    const includesStatefulConfiguration =
-      updateData.stateful_code_sessions !== undefined ||
-      updateData.stateful_code_environment !== undefined ||
-      updateData.code_environment_id !== undefined;
-    const includesWorkspaceConfiguration = updateData.code_workspace_id !== undefined;
-    const includesToolsConfiguration = Array.isArray(updateData.tools);
-    const includesToolOptionsConfiguration = updateData.tool_options !== undefined;
-    if (
-      includesStatefulConfiguration ||
-      includesWorkspaceConfiguration ||
-      includesToolsConfiguration ||
-      includesToolOptionsConfiguration
-    ) {
-      existingAgent = await db.getAgent({ id }, {});
-      if (!existingAgent) {
-        return res.status(404).json({ error: 'Agent not found' });
-      }
-
-      const codeEnvironmentSelectionChanged =
-        updateData.code_environment_id !== undefined &&
-        updateData.code_environment_id !== existingAgent.code_environment_id;
-      updateData = reconcileAgentWorkspaceDefault({
-        update: updateData,
-        request: validatedData,
-        currentEnvironmentId: existingAgent.code_environment_id,
-      });
-      const statefulConfigurationChanged =
-        (updateData.stateful_code_sessions !== undefined &&
-          (updateData.stateful_code_sessions === true) !==
-            (existingAgent.stateful_code_sessions === true)) ||
-        (updateData.stateful_code_environment !== undefined &&
-          (updateData.stateful_code_environment ?? 'user') !==
-            (existingAgent.stateful_code_environment ?? 'user')) ||
-        codeEnvironmentSelectionChanged;
-      const activatesCodeExecution =
-        includesToolsConfiguration &&
-        updateData.tools.includes(Tools.execute_code) &&
-        existingAgent.tools?.includes(Tools.execute_code) !== true;
-      const effectiveCodeWorkspaceId =
-        updateData.code_workspace_id ?? existingAgent.code_workspace_id;
-      const selectsWorkspaceDefault =
-        includesWorkspaceConfiguration &&
-        shouldValidateAgentWorkspaceDefaultBinding({
-          workspaceId: effectiveCodeWorkspaceId,
-          environmentId:
-            updateData.code_environment_id === null
-              ? undefined
-              : (updateData.code_environment_id ?? existingAgent.code_environment_id),
-          currentWorkspaceId: existingAgent.code_workspace_id,
-          currentEnvironmentId: existingAgent.code_environment_id,
-        });
-      if (statefulConfigurationChanged || selectsWorkspaceDefault || activatesCodeExecution) {
-        const effectiveStatefulSessions =
-          updateData.stateful_code_sessions ?? existingAgent.stateful_code_sessions;
-        const effectiveStatefulEnvironment =
-          updateData.stateful_code_environment ?? existingAgent.stateful_code_environment;
-        const effectiveCodeEnvironmentId =
-          updateData.code_environment_id === null
-            ? undefined
-            : (updateData.code_environment_id ?? existingAgent.code_environment_id);
-        if (
-          sendAgentRefusal(
-            res,
-            validateStatefulCodeEnvironment(req.config, {
-              enabled: effectiveStatefulSessions,
-              environment: effectiveStatefulEnvironment,
-              environmentId: effectiveCodeEnvironmentId,
-              environmentIdSelected: codeEnvironmentSelectionChanged,
-              workspaceId: effectiveCodeWorkspaceId,
-              currentWorkspaceId: existingAgent.code_workspace_id,
-              currentEnvironmentId: existingAgent.code_environment_id,
-            }),
-          )
-        ) {
-          return;
-        }
-      }
-
-      if (includesToolsConfiguration || includesToolOptionsConfiguration) {
-        const effectiveTools = updateData.tools ?? existingAgent.tools;
-        const effectiveToolOptions = updateData.tool_options ?? existingAgent.tool_options;
-        if (
-          (!isCodeInterpreterCapabilityEnabled(req.config) ||
-            !effectiveTools?.includes(Tools.execute_code)) &&
-          effectiveToolOptions != null
-        ) {
-          updateData.tool_options = removeCodeExecutionCaller(effectiveToolOptions);
-        }
-      }
-    }
-
-    if (avatarField === null) {
-      updateData.avatar = avatarField;
-    }
-
-    if (updateData.edges !== undefined) {
-      updateData.edges = replaceEdgeSourceId(updateData.edges, '', id);
-    }
-    if (updateData.subagents !== undefined) {
-      updateData.subagents = replaceAndValidateSubagentGraphAgentId(updateData.subagents, '', id);
-    }
-    if (updateData.edges?.length) {
-      const { id: userId, role: userRole } = req.user;
-      const { missing, unauthorized } = await validateEdgeAgentReferences(
-        updateData.edges,
-        userId,
-        userRole,
-        undefined,
-        req.config?.modelSpecs?.list,
-      );
-      if (missing.length > 0) {
-        return res.status(400).json({
-          error: 'One or more agents referenced in edges do not exist',
-          agent_ids: missing,
-        });
-      }
-      if (unauthorized.length > 0) {
-        return res.status(403).json({
-          error: 'You do not have access to one or more agents referenced in edges',
-          agent_ids: unauthorized,
-        });
-      }
-    }
-
-    /** Same guard as the create path: capability on the endpoint,
-     *  AND `subagents.enabled === true` on the payload (runtime's
-     *  truthy check treats `undefined` / `null` / `false` as
-     *  disabled, so the ACL check must too). Missing or explicitly-
-     *  disabled payloads always pass the gate — that preserves the
-     *  "can always save a disable edit" behavior a user might need
-     *  after losing VIEW on a referenced child. */
-    const subagentReferenceError = await getSubagentReferenceError(updateData.subagents, req);
-    if (subagentReferenceError) {
-      return res.status(subagentReferenceError.status).json(subagentReferenceError.body);
-    }
-
-    // Convert OCR to context in incoming updateData
-    convertOcrToContextInPlace(updateData);
-
-    existingAgent ??= await db.getAgent({ id }, {});
-
-    if (!existingAgent) {
-      return res.status(404).json({ error: 'Agent not found' });
-    }
-
-    applyAgentInferenceInput(updateData, existingAgent, req.config);
-
-    const instructionsPromptError = await checkInstructionsPromptWrite({
-      access: instructionsPromptAccess,
-      operation: 'update',
-      user: req.user,
-      previous: existingAgent.instructionsPrompt,
-      next: instructionsPromptField,
-      filters: req.config?.filters,
-      linkedInstructions: req.config?.endpoints?.agents?.linkedInstructions,
-      logger,
-      req,
-    });
-    if (instructionsPromptError) {
-      return res.status(instructionsPromptError.status).json(instructionsPromptError.body);
-    }
-
-    // Convert legacy OCR tool resource to context format in existing agent
-    const ocrConversion = mergeAgentOcrConversion(existingAgent, updateData);
-    if (ocrConversion.tool_resources) {
-      updateData.tool_resources = ocrConversion.tool_resources;
-    }
-    if (ocrConversion.tools) {
-      updateData.tools = ocrConversion.tools;
-    }
-
-    if (updateData.tool_resources) {
-      await pruneToolResourceFileIdsForAgent({
-        tool_resources: updateData.tool_resources,
-        ownerIds: req.user.id,
-        existingToolResources: existingAgent.tool_resources,
-        logPrefix: `[/Agents/:id] Agent ${id}`,
-      });
-    }
-
-    if (
-      sendAgentRefusal(
-        res,
-        await checkAgentContentForRequest(
-          req,
-          instructionsContentForScan('update', {
-            data: updateData,
-            existing: existingAgent,
-            nextLink: instructionsPromptField,
-          }),
-        ),
-      )
-    ) {
-      return;
-    }
-
-    const isMCPTool = (t) =>
-      typeof t === 'string' && t.includes(Constants.mcp_delimiter) && !isActionTool(t);
-    const hasToolUpdate = updateData.tools !== undefined;
-    const editingOwnAgent = existingAgent.author?.toString() === req.user.id;
-    const existingTools = existingAgent.tools ?? [];
-    const effectiveTools = (hasToolUpdate ? updateData.tools : existingAgent.tools) ?? [];
-    const requestedMCPTools = effectiveTools.filter(isMCPTool);
-    const existingMCPTools = existingTools.filter(isMCPTool);
-
-    if (requestedMCPTools.length > 0 || (hasToolUpdate && existingMCPTools.length > 0)) {
-      const mcpPermissionContext = createMCPPermissionContext(req);
-      if (!(await mcpPermissionContext.canUseServers(req.user))) {
-        if (editingOwnAgent) {
-          updateData.tools = effectiveTools.filter((t) => !isMCPTool(t));
-          /** Every MCP tool just went away, so nothing should stay indexed. */
-          updateData.mcpServerNames = [];
-        } else if (hasToolUpdate) {
-          const existingMCPToolSet = new Set(existingMCPTools);
-          const nextTools = updateData.tools.filter(
-            (t) => !isMCPTool(t) || existingMCPToolSet.has(t),
-          );
-          const nextToolSet = new Set(nextTools);
-          for (const existingMCPTool of existingMCPTools) {
-            if (!nextToolSet.has(existingMCPTool)) {
-              nextTools.push(existingMCPTool);
-            }
-          }
-          updateData.tools = nextTools;
-          /** Retained strings alone cannot authorize a previously unindexed server. */
-          updateData.mcpServerNames = existingAgent.mcpServerNames ?? [];
-        }
-      } else if (hasToolUpdate) {
-        const existingToolSet = new Set(existingTools);
-        const indexedNames = existingAgent.mcpServerNames ?? [];
-        const newMCPTools = requestedMCPTools.filter((tool) => {
-          const [, name] = splitMCPToolKey(tool, indexedNames);
-          return !existingToolSet.has(tool) || !indexedNames.includes(name);
-        });
-        /** Names resolved during authorization of the newly added tools. */
-        const resolvedServerNames = new Set();
-
-        if (newMCPTools.length > 0) {
-          const [availableTools, configServers] = await Promise.all([
-            getCachedTools().then((t) => t ?? {}),
-            resolveConfigServers(req),
-          ]);
-          const approvedNew = await filterAuthorizedTools({
-            tools: newMCPTools,
-            userId: req.user.id,
-            role: req.user.role,
-            user: req.user,
-            mcpPermissionContext,
-            availableTools,
-            configServers,
-            resolvedServerNames,
-          });
-          const rejectedSet = new Set(newMCPTools.filter((t) => !approvedNew.includes(t)));
-          if (rejectedSet.size > 0) {
-            updateData.tools = updateData.tools.filter((t) => !rejectedSet.has(t));
-          }
-        }
-
-        /** Rebuild the index from the tools that survive this edit: carry a prior name
-         *  forward only while some retained tool still resolves to it, so detaching every
-         *  tool for a server revokes agent-scoped access to it. The agent's own persisted
-         *  names are the candidate set, which needs neither a registry query nor a guess. */
-        const priorNames = existingAgent.mcpServerNames ?? [];
-        if (priorNames.length > 0) {
-          const priorNameSet = new Set(priorNames);
-          for (const tool of updateData.tools ?? []) {
-            if (typeof tool !== 'string' || !tool.includes(Constants.mcp_delimiter)) {
-              continue;
-            }
-            const [, retainedName] = splitMCPToolKey(tool, priorNames);
-            if (retainedName && priorNameSet.has(retainedName)) {
-              resolvedServerNames.add(retainedName);
-            }
-          }
-        }
-        if (hasToolUpdate) {
-          updateData.mcpServerNames = Array.from(resolvedServerNames);
-        }
-      }
-    }
-
-    if (updateData.code_environment_id === null) {
-      delete updateData.code_environment_id;
-      updateData.$unset = { code_environment_id: 1 };
-    }
-    if (updateData.git_identity === null) {
-      delete updateData.git_identity;
-      updateData.$unset = { ...updateData.$unset, git_identity: 1 };
-    }
-    updateData = applyInstructionsPromptUnset(updateData);
-
-    let updatedAgent =
-      Object.keys(updateData).length > 0
-        ? await db.updateAgent({ id }, updateData, {
-            updatingUserId: req.user.id,
-            expectedMCPAccess: {
-              names: existingAgent.mcpServerNames ?? [],
-              updatedAt: existingAgent.updatedAt,
-            },
-          })
-        : existingAgent;
-
-    // Add version count to the response
-    updatedAgent.version = updatedAgent.versions ? updatedAgent.versions.length : 0;
-
-    if (updatedAgent.author) {
-      updatedAgent.author = updatedAgent.author.toString();
-    }
-
-    await attachOwnerContacts([updatedAgent]);
-
-    if (updatedAgent.author !== req.user.id) {
-      delete updatedAgent.author;
-    }
-
-    // Same EDIT-scoped restricted-stub treatment as the GET handler.
-    const presentedAgent = await instructionsPromptAccess.presentForEditor({
-      user: req.user,
-      agent: updatedAgent,
-    });
-
-    return res.json(presentedAgent);
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      logger.error('[/Agents/:id] Validation error', error.issues);
-      return res.status(400).json({ error: 'Invalid request data', details: error.issues });
-    }
-
-    logger.error('[/Agents/:id] Error updating Agent', error);
-
-    if (error.statusCode === 409) {
-      return res.status(409).json({
-        error: error.message,
-        details: error.details,
-      });
-    }
-
-    res.status(500).json({ error: error.message });
-  }
+const updateAgentForRequest = (req, authorized, input) => {
+  /** Request-scoped, so the MCP use check and tool authorization share one context. */
+  const mcpPermissionContext = createMCPPermissionContext(req);
+  return updateAgent(authorized, input, {
+    user: req.user,
+    config: req.config,
+    request: req,
+    deps: {
+      updateAgent: (search, updateData, options) =>
+        db.updateAgent(search, updateData, options).then(toUpdatableAgent),
+      getFiles: (filter, sort, select) => db.getFiles(filter, sort, select),
+      pruneToolResourceFileIds: pruneToolResourceFileIdsForAgent,
+      replaceSubagentGraphAgentId: replaceAndValidateSubagentGraphAgentId,
+      classifyAgentReferences: (agentIds) =>
+        classifyAgentReferences(agentIds, req.user.id, req.user.role),
+      checkSubagentReferences: (subagents, allowedMissingIds) =>
+        checkSubagentReferences(subagents, req, allowedMissingIds),
+      instructionsPromptAccess,
+      getCachedTools: () => getCachedTools(),
+      resolveConfigServers: () => resolveConfigServers(req),
+      canUseMCPServers: () => mcpPermissionContext.canUseServers(req.user),
+      filterAuthorizedTools: (params) =>
+        filterAuthorizedTools({
+          ...params,
+          userId: req.user.id,
+          role: req.user.role,
+          user: req.user,
+          mcpPermissionContext,
+        }),
+      attachOwnerContacts,
+    },
+  });
 };
+
+/**
+ * Updates an Agent. `canAccessAgentResource` has authorized and loaded it for EDIT.
+ * @route PATCH /Agents/:id
+ */
+const updateAgentHandler = createAgentUpdateHandler({ updateAgent: updateAgentForRequest });
 
 /**
  * Duplicates an Agent based on the provided ID.
@@ -2106,6 +1754,7 @@ const getAgentCategories = async (_req, res) => {
 module.exports = {
   createAgent: createAgentHandler,
   createAgentForRequest,
+  updateAgentForRequest,
   getAgent: (req, res) => getAgentHandler(req, res, false),
   getAgentExpanded: (req, res) => getAgentHandler(req, res, true),
   getAgentVersions: getAgentVersionsHandler,
