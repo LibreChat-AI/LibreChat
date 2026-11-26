@@ -77,8 +77,6 @@ describe('session rotation', () => {
     const { refreshToken: initial } = await methods.createSession(userId);
     const tokens = [initial];
     for (let round = 0; round < 11; round++) {
-      /** Tokens minted in the same millisecond are identical. */
-      await new Promise((resolve) => setTimeout(resolve, 2));
       tokens.push(await rotate(tokens[tokens.length - 1]));
     }
     const find = (refreshToken: string) =>

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type * as t from '~/types/session';
 import { createIndexesWithRetry } from '~/utils/retry';
 import { signPayload, hashToken } from '~/crypto';
@@ -294,6 +295,9 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
           /** `iat` is whole seconds, too coarse to order this token against a password reset that
            * lands in the same second. `isTokenRetired` reads this claim to settle that exactly. */
           issuedAtMs: Date.now(),
+          /** Tokens minted in the same millisecond would otherwise be identical, and a rotation
+           * that reproduced the current token would leave its hash, and so the race, open. */
+          jti: randomUUID(),
         },
         secret: process.env.JWT_REFRESH_SECRET!,
         expirationTime: Math.floor((expiresIn - Date.now()) / 1000),
