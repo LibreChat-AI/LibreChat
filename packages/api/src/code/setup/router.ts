@@ -329,7 +329,7 @@ export function createCodeSetupRouter(deps: SetupRouterDependencies): Router {
       // Cleanup must keep running after an operator withdraws the capability.
       let interval = 10_000;
       try {
-        interval = (await current.policy.deployment()).config.reconcileIntervalMs;
+        interval = (await current.policy.deployment({ refresh: false })).config.reconcileIntervalMs;
       } catch {
         /* Frozen cleanup destinations remain server-owned durable intent. */
       }
