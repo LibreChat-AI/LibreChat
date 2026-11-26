@@ -222,6 +222,27 @@ describe('local refresh shared by several tabs', () => {
     expect((await refresh(deps, initial)).status).toBe(401);
   });
 
+  it('refuses a replaced token whose session is revoked after the lookup', async () => {
+    const userId = await createUser();
+    const { refreshToken: initial } = await methods.createSession(userId);
+    await refresh(createDeps(), initial);
+    let reads = 0;
+    const deps = createDeps({
+      findSession: async (query, options) => {
+        const session = await methods.findSession(query, options);
+        if (++reads === 1) {
+          await methods.deleteAllUserSessions({ userId });
+        }
+        return session;
+      },
+    });
+
+    const sent = await refresh(deps, initial);
+
+    expect(sent.status).toBe(401);
+    expect(accessToken(sent)).toBeUndefined();
+  });
+
   it('refuses a refresh that lost the rotation to a revocation', async () => {
     const userId = await createUser();
     const { refreshToken: initial } = await methods.createSession(userId);

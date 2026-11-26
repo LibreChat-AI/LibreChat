@@ -138,36 +138,39 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
   const mintAccessToken = (user: RefreshUser) =>
     deps.generateToken(user, math(process.env.SESSION_EXPIRY, DEFAULT_SESSION_EXPIRY));
 
+  const isReplaced = async (session: RefreshSession, refreshToken: string) => {
+    const replaced = session.previousRefreshTokens;
+    if (!replaced?.length) {
+      return false;
+    }
+    const hash = await hashToken(refreshToken);
+    return replaced.some((entry) => entry.hash === hash);
+  };
+
   /**
    * Rotates the session and returns the new refresh token. It is absent when another refresh already
    * replaced the presented token, or replaces it first: that refresh's response carries the new
-   * cookie, and rotating again would orphan whichever cookie lands first. `null` means the session
-   * ended meanwhile.
+   * cookie, and rotating again would orphan whichever cookie lands first. Such a refresh reads the
+   * session again, so a logout or revocation since the lookup refuses it as it refuses a rotation.
+   * `null` means the session ended.
    */
   const rotate = async (
     userId: string,
     session: RefreshSession,
     refreshToken: string,
   ): Promise<{ refreshToken?: string } | null> => {
-    const replaced = session.previousRefreshTokens;
-    if (replaced?.length) {
-      const hash = await hashToken(refreshToken);
-      if (replaced.some((entry) => entry.hash === hash)) {
-        return {};
+    if (!(await isReplaced(session, refreshToken))) {
+      try {
+        return { refreshToken: await deps.generateRefreshToken(session) };
+      } catch (error) {
+        if ((error as { code?: unknown } | null)?.code !== REFRESH_TOKEN_ROTATED) {
+          throw error;
+        }
       }
     }
 
-    try {
-      return { refreshToken: await deps.generateRefreshToken(session) };
-    } catch (error) {
-      if ((error as { code?: unknown } | null)?.code !== REFRESH_TOKEN_ROTATED) {
-        throw error;
-      }
-    }
-
-    /** A refresh that read the session at the same time rotated it first, unless it was revoked. */
-    const rotated = await findSession(userId, refreshToken);
-    return rotated && rotated.expiration > new Date() ? {} : null;
+    const current = await findSession(userId, refreshToken);
+    return current && current.expiration > new Date() ? {} : null;
   };
 
   return async (

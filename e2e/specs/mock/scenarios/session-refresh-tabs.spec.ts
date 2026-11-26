@@ -84,8 +84,9 @@ test.describe('session refresh from several tabs', () => {
     expectPassed('refuses the replaced token at once when REFRESH_TOKEN_GRACE_MS is 0');
   });
 
-  test('a replaced token does not outlive a revoked session, before or during a rotation @scenario:refresh-revoked-session-refused', () => {
+  test('a replaced token does not outlive a revoked session, whenever the revocation lands @scenario:refresh-revoked-session-refused', () => {
     expectPassed('refuses the replaced token after the session was revoked');
+    expectPassed('refuses a replaced token whose session is revoked after the lookup');
     expectPassed('refuses a refresh that lost the rotation to a revocation');
   });
 });
