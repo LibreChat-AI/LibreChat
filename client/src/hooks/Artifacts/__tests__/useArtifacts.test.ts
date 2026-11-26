@@ -339,6 +339,30 @@ describe('useArtifacts', () => {
 
       expect(secondCallCount).toBe(firstCallCount);
     });
+
+    it('stays on preview when the reply ends right after the pane opened mid-stream', () => {
+      const content = 'const App = () => <div>Test</div>';
+      const latestMessageText = `:::artifact{title="Test"}\n${content}\n:::\n`;
+      (useRecoilValue as jest.Mock).mockReturnValue({ 'artifact-1': createArtifact({ content }) });
+      (useRecoilState as jest.Mock).mockReturnValue(['artifact-1', mockSetCurrentArtifactId]);
+      (useArtifactsContext as jest.Mock).mockReturnValue({
+        ...defaultContext,
+        isSubmitting: true,
+        latestMessageText,
+      });
+
+      const { result, rerender } = renderHook(() => useArtifacts());
+      expect(result.current.activeTab).toBe('preview');
+
+      (useArtifactsContext as jest.Mock).mockReturnValue({
+        ...defaultContext,
+        isSubmitting: false,
+        latestMessageText,
+      });
+      rerender();
+
+      expect(result.current.activeTab).toBe('preview');
+    });
   });
 
   describe('tab switching - non-enclosed artifacts', () => {

@@ -1,17 +1,23 @@
 import React from 'react';
 import { useResetAtom } from 'jotai/utils';
 import { MemoryRouter } from 'react-router-dom';
-import { Provider as JotaiProvider } from 'jotai';
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import { PartsPreviewContext } from '@librechat/chat/react';
+import { createStore, Provider as JotaiProvider } from 'jotai';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
 import type { MessagesOperations } from '~/Providers/MessagesViewContext';
 import type { Artifact } from '~/common';
-import { artifactsState, currentArtifactId, visibleArtifacts } from '~/store/artifacts';
+import {
+  artifactsState,
+  currentArtifactId,
+  visibleArtifacts,
+  artifactsVisibility,
+} from '~/store/artifacts';
 import { loadRehypeModules } from '~/components/Chat/Messages/Content/rehype';
 import { MessagesOperationsContext } from '~/Providers/MessagesViewContext';
 import Markdown from '~/components/Chat/Messages/Content/Markdown';
+import { artifactsLiveReply } from '~/components/Artifacts/state';
 import { MessageContext } from '~/Providers';
 
 beforeAll(() => loadRehypeModules());
@@ -20,14 +26,27 @@ const header = ':::artifact{identifier="chart" title="Chart" type="text/markdown
 const conversationId = 'conversation-1';
 let registered: Record<string, Artifact | undefined> | null;
 let selected: string | null;
+let visible: boolean;
 let resetArchive: () => void;
+let jotai = createStore();
+
+beforeEach(() => {
+  jotai = createStore();
+});
 
 function Registry() {
   registered = useRecoilValue(artifactsState);
   selected = useRecoilValue(currentArtifactId);
+  visible = useRecoilValue(artifactsVisibility);
   resetArchive = useResetAtom(visibleArtifacts);
   return null;
 }
+
+/** Records the main pane's live reply, as the pane's host does while it generates. */
+const liveReply = (messageId: string | null) =>
+  act(() => {
+    jotai.set(artifactsLiveReply, messageId);
+  });
 
 const reply = (messageId: string, content: string, isSubmitting = false) => (
   <MessageContext.Provider value={{ messageId, conversationId, isExpanded: false, isSubmitting }}>
@@ -35,9 +54,10 @@ const reply = (messageId: string, content: string, isSubmitting = false) => (
   </MessageContext.Provider>
 );
 
+/** The reader closed the pane earlier: an artifact that opens itself has to reveal it. */
 const page = (ui: React.ReactNode, operations?: MessagesOperations) => (
-  <JotaiProvider>
-    <RecoilRoot>
+  <JotaiProvider store={jotai}>
+    <RecoilRoot initializeState={({ set }) => set(artifactsVisibility, false)}>
       <MemoryRouter initialEntries={[`/c/${conversationId}`]}>
         <MessagesOperationsContext.Provider value={operations}>
           <Registry />
@@ -52,7 +72,8 @@ const savedVersion = `${header}\n\`\`\`markdown\nOld content\n\`\`\`\n:::`;
 const newVersion = `${header}\n\`\`\`markdown\nNew content\n\`\`\``;
 const artifactId = (messageId: string) => `chart_text/markdown_chart_${messageId}`;
 
-it('shows progress from the header and opens only the closed artifact, in the same card', () => {
+it('shows progress from the header and opens the closed artifact of the live reply, in the same card', () => {
+  liveReply('current');
   const view = (content: string) => page(reply('current', content, true));
   const { rerender } = render(view('Here is the latest.'));
   expect(screen.queryByRole('status')).not.toBeInTheDocument();
@@ -66,14 +87,66 @@ it('shows progress from the header and opens only the closed artifact, in the sa
   rerender(view(`Here is the latest.\n${newVersion}\n:::`));
   expect(status).toHaveTextContent('Creating artifact…');
   expect(registered).toBeNull();
+  expect(selected).toBeNull();
 
   rerender(view(`Here is the latest.\n${newVersion}\n:::\n`));
   expect(status).toBe(screen.getByRole('status'));
   expect(status).toHaveTextContent('Ready');
+  expect(selected).toBe(artifactId('current'));
+  expect(visible).toBe(true);
+  expect(registered?.[artifactId('current')]?.content).toBe('New content\n');
+
+  fireEvent.click(screen.getByRole('button', { name: /^Close artifact: Chart/ }));
   expect(selected).toBeNull();
+  rerender(view(`Here is the latest.\n${newVersion}\n:::\nThat is all.`));
+  expect(selected).toBeNull();
+  expect(visible).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: /^Open artifact: Chart/ }));
   expect(selected).toBe(artifactId('current'));
-  expect(registered?.[artifactId('current')]?.content).toBe('New content\n');
+});
+
+it('leaves a completed artifact closed when its response loads or continues', () => {
+  const { rerender } = render(page(reply('saved', savedVersion)));
+  expect(screen.getByRole('status')).toHaveTextContent('Ready');
+  expect(registered?.[artifactId('saved')]?.content).toBe('Old content\n');
+
+  liveReply('saved');
+  rerender(page(reply('saved', `${savedVersion}\n\nContinuing`, true)));
+  expect(screen.getByRole('status')).toHaveTextContent('Ready');
+  expect(selected).toBeNull();
+  expect(visible).toBe(false);
+});
+
+it('keeps a source-code artifact click-to-open while its response generates', () => {
+  const script = [
+    ':::artifact{identifier="script" title="script.py" type="application/vnd.code"}',
+    '```python',
+    'print(1)',
+    '```',
+    ':::',
+    '',
+  ].join('\n');
+  liveReply('current');
+  render(page(reply('current', script, true)));
+  expect(screen.getByRole('status')).toHaveTextContent('Ready');
+  expect(selected).toBeNull();
+  expect(visible).toBe(false);
+});
+
+it('opens an artifact whose card only mounts after the live reply ended', () => {
+  liveReply('current');
+  render(page(reply('current', `${newVersion}\n:::`)));
+  expect(screen.getByRole('status')).toHaveTextContent('Ready');
+  expect(selected).toBe(artifactId('current'));
+  expect(visible).toBe(true);
+});
+
+it('opens nothing for a reply that is not the main pane live reply', () => {
+  liveReply('current');
+  render(page(reply('side', `${newVersion}\n:::\n`, true)));
+  expect(screen.getByRole('status')).toHaveTextContent('Ready');
+  expect(selected).toBeNull();
+  expect(visible).toBe(false);
 });
 
 it.each([
@@ -93,13 +166,17 @@ it.each([
   expect(registered).toBeNull();
 });
 
-it('accepts a closing delimiter at EOF when the stream ends', () => {
+it('accepts a closing delimiter at EOF when the stream ends, and opens the artifact', () => {
   const content = `${newVersion}\n:::`;
+  liveReply('current');
   const { rerender } = render(page(reply('current', content, true)));
   expect(registered).toBeNull();
+  expect(selected).toBeNull();
   rerender(page(reply('current', content)));
   expect(screen.getByRole('status')).toHaveTextContent('Ready');
   expect(registered?.[artifactId('current')]?.content).toBe('New content\n');
+  expect(selected).toBe(artifactId('current'));
+  expect(visible).toBe(true);
 });
 
 it('opens the closest completed ancestor, not a sibling, even after interruption', () => {

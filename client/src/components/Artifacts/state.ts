@@ -43,3 +43,11 @@ export const artifactsOpenedArtifactId = atom<string | null>(null);
  * document of whichever window they were sent to.
  */
 export const artifactsPaneFocusRequest = atom(false);
+
+/**
+ * The main pane's reply that is generating, or last generated, in the conversation on screen.
+ * An artifact the model writes in it opens the pane, as a tool's file does. The record outlives
+ * the run because a card can mount after the stream has ended: a fast or unstreamed reply
+ * arrives whole, and the card never sees it generating.
+ */
+export const artifactsLiveReply = atom<string | null>(null);

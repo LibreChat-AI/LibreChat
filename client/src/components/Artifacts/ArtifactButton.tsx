@@ -7,8 +7,9 @@ import { ArrowUpRight, CircleAlert, FileCode2, LoaderCircle } from 'lucide-react
 import type { Artifact } from '~/common';
 import { useOptionalMessagesOperations } from '~/Providers/MessagesViewContext';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { artifactRowKind } from '~/utils/artifacts';
+import { artifactRowKind, isCodeOnlyArtifact } from '~/utils/artifacts';
 import { useMessageContext } from '~/Providers';
+import { artifactsLiveReply } from './state';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -34,6 +35,9 @@ const ArtifactButton = memo(function ArtifactButton({
   const { getMessages } = useOptionalMessagesOperations();
   const { currentArtifactId, registered, register, open, close } =
     useMessagePartsHost().useArtifactPanel(artifact?.id ?? '');
+  const live = useAtomValue(
+    useMemo(() => selectAtom(artifactsLiveReply, (reply) => reply === messageId), [messageId]),
+  );
   const needsPrevious = artifact == null && canOpen && Boolean(identifier);
   const ancestors = useMemo(() => {
     if (!needsPrevious || conversationId == null) {
@@ -111,6 +115,20 @@ const ArtifactButton = memo(function ArtifactButton({
       register(artifact);
     }
   }, [archiveEntry, artifact, canOpen, register, registered, setArchive]);
+
+  /**
+   * An artifact the main pane's live reply completes opens the pane, as a tool's file does. One
+   * already archived was complete before the reply reached it: a continued reply leaves it closed,
+   * and so does a card remounted after the reader closed the pane. Source code stays
+   * click-to-open.
+   */
+  const archived = archiveEntry != null;
+  useEffect(() => {
+    if (artifact == null || !canOpen || !live || archived || isCodeOnlyArtifact(artifact.type)) {
+      return;
+    }
+    open(artifact.id);
+  }, [archived, artifact, canOpen, live, open]);
 
   const previous = artifact == null ? archiveEntry : null;
   const target = artifact ?? previous;
