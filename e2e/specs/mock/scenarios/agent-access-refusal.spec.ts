@@ -164,8 +164,10 @@ test.describe('agent access refusal', () => {
       ]);
       expect(start.status()).toBe(403);
 
-      const turn = messagesView(member.page).getByRole('alert');
-      await expect(turn).toContainText(ACCESS_REFUSED, { timeout: 30000 });
+      /* Once the refusal refetches the agent, the composer's alert, with its Retry, can sit in this
+       * view beside the turn's card, so the card is the alert without one. */
+      const turn = messagesView(member.page).getByRole('alert').filter({ hasNotText: 'Retry' });
+      await expect(turn).toHaveText(ACCESS_REFUSED, { timeout: 30000 });
       await expect(member.page.getByText(PROVIDER_FAILURE)).toHaveCount(0);
       await expect(member.page.getByText('Forbidden', { exact: true })).toHaveCount(0);
 
