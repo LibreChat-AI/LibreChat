@@ -1,8 +1,17 @@
-import { MemoryRouter } from 'react-router-dom';
-import { RecoilRoot, useRecoilValue } from 'recoil';
+import { dataService } from 'librechat-data-provider';
+import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
 import { bindingDisplayString, bindingToString } from '@librechat/chat';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, act, cleanup, renderHook, fireEvent, screen } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import {
+  render,
+  act,
+  cleanup,
+  waitFor,
+  renderHook,
+  fireEvent,
+  screen,
+} from '@testing-library/react';
 import type { SettingDefinition, TConversation } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import type { ReactNode } from 'react';
@@ -67,10 +76,17 @@ jest.mock('copy-to-clipboard', () => ({
   __esModule: true,
   default: (text: string, options?: { format?: string }) => mockCopy(text, options),
 }));
+const mockNewConversation = jest.fn();
 jest.mock('./useNewConvo', () => ({
   __esModule: true,
-  default: () => ({ newConversation: jest.fn() }),
+  default: () => ({ newConversation: mockNewConversation }),
 }));
+
+/** A copy, so a test can hold an archive request open with `jest.spyOn`. */
+jest.mock('librechat-data-provider', () => {
+  const actual = jest.requireActual('librechat-data-provider');
+  return { ...actual, dataService: { ...actual.dataService } };
+});
 
 const STORAGE_KEY = 'customKeyboardShortcuts';
 let queryClient: QueryClient;
@@ -1071,6 +1087,107 @@ describe('composer submit shortcuts', () => {
 
     expect(sendClick).toHaveBeenCalledTimes(1);
     expect(event.defaultPrevented).toBe(true);
+  });
+});
+
+describe('archive shortcut', () => {
+  let landArchive: () => void = () => undefined;
+
+  beforeEach(() => {
+    mockNewConversation.mockClear();
+    jest.spyOn(dataService, 'archiveConversation').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          landArchive = () => resolve({ conversationId: 'test-convo', isArchived: true } as never);
+        }),
+    );
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  /** Lets the request through once it is in flight; its callbacks have run once it reports success. */
+  const archiveLanded = async () => {
+    await waitFor(() => expect(dataService.archiveConversation).toHaveBeenCalledTimes(1));
+    await act(async () => landArchive());
+    await waitFor(() =>
+      expect(queryClient.getMutationCache().getAll()[0]?.state.status).toBe('success'),
+    );
+  };
+
+  function renderArchive() {
+    const conversation = buildConversation('test-convo', 'My Chat');
+    return renderHook(
+      () => ({
+        archive: useShortcutActions().find((action) => action.id === 'archiveConversation')?.run,
+        navigate: useNavigate(),
+        location: useLocation(),
+        setChat: useSetRecoilState(store.conversationByIndex(0)),
+      }),
+      {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <QueryClientProvider client={queryClient}>
+            <RecoilRoot
+              initializeState={({ set }) => set(store.conversationByIndex(0), conversation)}
+            >
+              <MemoryRouter initialEntries={['/c/test-convo']}>
+                <Routes>
+                  <Route path="/c/:conversationId" element={children} />
+                </Routes>
+              </MemoryRouter>
+            </RecoilRoot>
+          </QueryClientProvider>
+        ),
+      },
+    );
+  }
+
+  it('opens a new chat once the archive of the chat on screen lands', async () => {
+    const { result } = renderArchive();
+
+    act(() => {
+      expect(result.current.archive?.()).toBe(true);
+    });
+    await archiveLanded();
+
+    expect(dataService.archiveConversation).toHaveBeenCalledWith({
+      conversationId: 'test-convo',
+      isArchived: true,
+    });
+    expect(mockNewConversation).toHaveBeenCalledTimes(1);
+    expect(result.current.location.pathname).toBe('/c/new');
+  });
+
+  it('leaves a chat opened while the archive was in flight', async () => {
+    const { result } = renderArchive();
+
+    act(() => {
+      result.current.archive?.();
+    });
+    act(() => {
+      result.current.navigate('/c/other-convo');
+      result.current.setChat(buildConversation('other-convo', 'Other'));
+    });
+    await archiveLanded();
+
+    expect(mockNewConversation).not.toHaveBeenCalled();
+    expect(result.current.location.pathname).toBe('/c/other-convo');
+  });
+
+  it('leaves a new chat opened while the archive was in flight', async () => {
+    const { result } = renderArchive();
+
+    act(() => {
+      result.current.archive?.();
+    });
+    act(() => {
+      result.current.navigate('/c/new');
+      result.current.setChat(buildConversation('new', ''));
+    });
+    await archiveLanded();
+
+    expect(mockNewConversation).not.toHaveBeenCalled();
   });
 });
 

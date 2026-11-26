@@ -53,10 +53,14 @@ jest.mock('recoil', () => {
     ...recoil,
     useRecoilValue: (atom: RecoilValue<unknown>) => {
       const value = recoil.useRecoilValue(atom);
-      const conversationAtom = jest
-        .requireActual<typeof import('~/store')>('~/store')
-        .default.conversationByIndex(0);
-      return atom === conversationAtom ? mockState.conversation : value;
+      const { default: store } = jest.requireActual<typeof import('~/store')>('~/store');
+      if (atom === store.conversationByIndex(0)) {
+        return mockState.conversation;
+      }
+      if (atom === store.conversationIdByIndex(0)) {
+        return mockState.conversation?.conversationId ?? null;
+      }
+      return value;
     },
   };
 });
@@ -698,6 +702,34 @@ describe('useChatOptions', () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
+  /** A new chat has no id of its own, so it is never the chat that was archived: replacing it
+   *  would clear what its composer holds. */
+  it('leaves a new chat opened while the archive request was in flight', () => {
+    const { result, rerender } = setup();
+
+    act(() => find(result.current.items, 'Archive').onClick?.({} as never));
+    mockState.route = Constants.NEW_CONVO;
+    mockState.conversation = { conversationId: Constants.NEW_CONVO };
+    rerender();
+    act(() => mockArchive.mock.calls[0][1].onSuccess());
+
+    expect(mockNewConversation).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  /** A first reply renames the address past the router, so the route still reads `new` while
+   *  the chat on screen already carries its id. */
+  it('leaves a chat whose first reply is still streaming for a new one once its archive lands', () => {
+    mockState.route = Constants.NEW_CONVO;
+    const { result } = setup();
+
+    act(() => find(result.current.items, 'Archive').onClick?.({} as never));
+    act(() => mockArchive.mock.calls[0][1].onSuccess());
+
+    expect(mockNewConversation).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('/c/new', { replace: true });
+  });
+
   it('hides history-only actions for a temporary chat', () => {
     mockState.conversation = {
       conversationId: 'convo-1',
@@ -767,6 +799,12 @@ describe('useChatOptions', () => {
     rerender();
 
     expect(props?.getCurrentConversationId()).toBe('convo-2');
+
+    mockState.route = Constants.NEW_CONVO;
+    mockState.conversation = { conversationId: Constants.NEW_CONVO };
+    rerender();
+
+    expect(props?.getCurrentConversationId()).toBe(Constants.NEW_CONVO);
   });
 
   it('keeps a newer chat dialog open when an earlier delete settles', () => {
