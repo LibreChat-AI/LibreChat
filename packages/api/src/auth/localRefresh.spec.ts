@@ -44,19 +44,15 @@ async function createUser(): Promise<string> {
   return String(user._id);
 }
 
-/** `AuthService.setAuthTokens` for a found session: rotate it and hand the new token to the cookie. */
-const setAuthTokens: Deps['setAuthTokens'] = async (_userId, res, session) => {
-  res.cookie('refreshToken', await methods.generateRefreshToken(session as ISession));
-  return 'rotated-access-token';
-};
-
 function createDeps(overrides: Partial<Deps> = {}): Deps {
   return {
     userProjection: '-password -__v -totpSecret -backupCodes -federatedTokens',
     getUserById: (userId, projection) => methods.getUserById(userId, projection),
     findSession: (query, options) => methods.findSession(query, options),
+    generateRefreshToken: (session) => methods.generateRefreshToken(session as ISession),
     generateToken: (user, expiresIn) => methods.generateToken(user as IUser, expiresIn),
-    setAuthTokens,
+    setAuthTokens: jest.fn(),
+    setCloudFrontAuthCookies: jest.fn(),
     deleteSession: (query) => methods.deleteSession(query),
     deleteAllUserSessions: (query) => methods.deleteAllUserSessions(query),
     clearCloudFrontCookies: jest.fn(),
@@ -139,6 +135,9 @@ describe('local refresh shared by several tabs', () => {
     expect(typeof accessToken(b)).toBe('string');
     const rotations = [a, b].filter((sent) => sent.cookies.refreshToken != null);
     expect(rotations).toHaveLength(1);
+    expect(deps.setCloudFrontAuthCookies).toHaveBeenCalledTimes(1);
+    /** Losing the race is expected, so nothing reports it as a failure. */
+    expect(deps.error).not.toHaveBeenCalled();
 
     /** Whichever response the browser applies last, the cookie it keeps still refreshes. */
     for (const cookie of [land(initial, a, b), land(initial, b, a)]) {
@@ -200,9 +199,9 @@ describe('local refresh shared by several tabs', () => {
     const userId = await createUser();
     const { refreshToken: initial } = await methods.createSession(userId);
     const deps = createDeps({
-      setAuthTokens: async (id, res, session, req) => {
+      generateRefreshToken: async (session) => {
         await methods.deleteAllUserSessions({ userId });
-        return setAuthTokens(id, res, session, req);
+        return methods.generateRefreshToken(session as ISession);
       },
     });
 

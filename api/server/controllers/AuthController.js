@@ -41,6 +41,7 @@ const {
   updateUser,
   deleteTokens,
   generateToken,
+  generateRefreshToken,
 } = require('~/models');
 const { getGraphApiToken } = require('~/server/services/GraphTokenService');
 const { getRefreshTokenBridge } = require('~/server/services/RefreshTokenBridge');
@@ -213,7 +214,9 @@ const refreshLocalSession = createLocalRefreshHandler({
   getUserById,
   findSession,
   generateToken,
+  generateRefreshToken,
   setAuthTokens,
+  setCloudFrontAuthCookies,
   deleteAllUserSessions,
   deleteSession,
   generateTwoFactorSetupToken,

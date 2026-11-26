@@ -12,7 +12,7 @@ import {
   isTwoFactorEnrollmentRequired,
   TOKEN_RETIREMENT_FIELDS,
 } from './twoFactor';
-import { clearSessionHintCookie } from '~/oauth/csrf';
+import { clearSessionHintCookie, setLocalSessionCookies } from '~/oauth/csrf';
 import { math } from '~/utils/math';
 
 const EXPIRED_REFRESH_MESSAGE = 'Refresh token expired or not found for this user';
@@ -52,14 +52,17 @@ interface LocalRefreshDependencies {
     query: { userId: string; refreshToken: string },
     options: { lean: false; graceMs: number },
   ) => Promise<RefreshSession | null>;
-  /** Mints an access token without touching the refresh session. */
+  /** Rotates a found session; rejects with `REFRESH_TOKEN_ROTATED` if another refresh did first. */
+  generateRefreshToken: (session: RefreshSession) => Promise<string>;
   generateToken: (user: RefreshUser, expiresIn: number) => Promise<string>;
-  setAuthTokens: (
-    userId: string,
-    res: Response,
-    session: RefreshSession | null,
+  /** Issues the tokens of a new session, which only the CI shortcut uses. */
+  setAuthTokens: (userId: string, res: Response, session: null, req: Request) => Promise<string>;
+  setCloudFrontAuthCookies: (
     req: Request,
-  ) => Promise<string>;
+    res: Response,
+    user: RefreshUser,
+    scope: { userId: string },
+  ) => void;
   deleteSession: (query: { sessionId: string }) => Promise<SessionDeletionResult>;
   deleteAllUserSessions: (query: { userId: string }) => Promise<SessionDeletionResult>;
   clearCloudFrontCookies: (
@@ -136,27 +139,23 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
     deps.generateToken(user, math(process.env.SESSION_EXPIRY, DEFAULT_SESSION_EXPIRY));
 
   /**
-   * Rotates the session, unless another refresh already replaced the presented token. That refresh's
-   * response carries the new cookie, and rotating again would orphan whichever cookie lands first,
-   * so this refresh gets an access token alone.
+   * Rotates the session and returns the new refresh token. It is absent when another refresh already
+   * replaced the presented token, or replaces it first: that refresh's response carries the new
+   * cookie, and rotating again would orphan whichever cookie lands first. `null` means the session
+   * ended meanwhile.
    */
-  const issueToken = async (
-    req: Request,
-    res: Response,
-    {
-      userId,
-      user,
-      session,
-      refreshToken,
-    }: { userId: string; user: RefreshUser; session: RefreshSession; refreshToken: string },
-  ): Promise<string | null> => {
+  const rotate = async (
+    userId: string,
+    session: RefreshSession,
+    refreshToken: string,
+  ): Promise<{ refreshToken?: string } | null> => {
     const previous = session.previousRefreshTokenHash;
     if (previous && previous === (await hashToken(refreshToken))) {
-      return mintAccessToken(user);
+      return {};
     }
 
     try {
-      return await deps.setAuthTokens(userId, res, session, req);
+      return { refreshToken: await deps.generateRefreshToken(session) };
     } catch (error) {
       if ((error as { code?: unknown } | null)?.code !== REFRESH_TOKEN_ROTATED) {
         throw error;
@@ -165,7 +164,7 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
 
     /** A refresh that read the session at the same time rotated it first, unless it was revoked. */
     const rotated = await findSession(userId, refreshToken);
-    return rotated && rotated.expiration > new Date() ? mintAccessToken(user) : null;
+    return rotated && rotated.expiration > new Date() ? {} : null;
   };
 
   return async (
@@ -236,8 +235,18 @@ export function createLocalRefreshHandler(deps: LocalRefreshDependencies) {
           });
         }
 
-        const token = await issueToken(req, res, { userId, user, session, refreshToken });
-        if (token != null) {
+        const rotation = await rotate(userId, session, refreshToken);
+        if (rotation) {
+          const token = await mintAccessToken(user);
+          if (rotation.refreshToken) {
+            setLocalSessionCookies(res, {
+              refreshToken: rotation.refreshToken,
+              expires: session.expiration,
+              userId,
+              tenantId: user.tenantId,
+            });
+            deps.setCloudFrontAuthCookies(req, res, user, { userId });
+          }
           const retired = await recheckMintedCredential(
             () => isCredentialRetired(userId, credential),
             () => revokeSession(res, user, userId),
