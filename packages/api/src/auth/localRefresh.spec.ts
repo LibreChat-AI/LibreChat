@@ -15,7 +15,11 @@ type Sent = { status?: number; body?: unknown; cookies: Record<string, string | 
 let mongoServer: MongoMemoryServer;
 let methods: Methods;
 
+/** CI exports `NODE_ENV=CI`, which sends the handler down its sessionless shortcut. */
+const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
+
 beforeAll(async () => {
+  process.env.NODE_ENV = 'test';
   process.env.JWT_SECRET = process.env.JWT_SECRET ?? 'access-secret';
   process.env.JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET ?? 'refresh-secret';
   mongoServer = await MongoMemoryServer.create();
@@ -25,6 +29,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  process.env.NODE_ENV = ORIGINAL_NODE_ENV;
   await mongoose.disconnect();
   await mongoServer?.stop();
 });
