@@ -242,6 +242,7 @@ router.get('/', async function (req, res) {
         ...preLoginPayload,
         socialLogins: baseConfig?.registration?.socialLogins ?? defaultSocialLogins,
         turnstile: baseConfig?.turnstileConfig,
+        productTracking: req.productTracking,
         rum: getRumConfig(baseConfig?.config?.telemetry),
         clientLimits: getClientLimits(baseConfig?.config?.clientLimits),
       };
@@ -360,6 +361,7 @@ router.get('/', async function (req, res) {
       ...resolveCodeWorkspaceInheritanceCapability(process.env.CODE_ENVIRONMENT_DECISION_VERSION),
       ...(codeEnvironmentTransitionVersion != null ? { codeEnvironmentTransitionVersion } : {}),
       ...(cloudFront ? { cloudFront } : {}),
+      productTracking: req.productTracking,
       rum: getRumConfig(appConfig?.config?.telemetry),
       clientLimits: getClientLimits(appConfig?.config?.clientLimits),
       fileUploadSseEnabled: isEnabled(process.env.FILE_UPLOAD_SSE_ENABLED),
