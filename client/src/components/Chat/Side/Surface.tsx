@@ -51,9 +51,10 @@ export default function SideChatSurface({
       ready: target.ready,
       pending: target.pending,
       failed: target.failed,
+      denied: target.denied,
       retry: target.retry,
     }),
-    [target.ready, target.pending, target.failed, target.retry],
+    [target.ready, target.pending, target.failed, target.denied, target.retry],
   );
   const sendable = ready && target.ready;
   const conversationId = conversation?.conversationId ?? '';

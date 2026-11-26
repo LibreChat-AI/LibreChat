@@ -1,3 +1,4 @@
+const { accessDenied } = require('@librechat/api');
 const { logger, ResourceCapabilityMap } = require('@librechat/data-schemas');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { checkPermission } = require('~/server/services/PermissionService');
@@ -148,10 +149,7 @@ const canAccessResource = (options) => {
           `(required permission: ${requiredPermission})`,
       );
 
-      return res.status(403).json({
-        error: 'Forbidden',
-        message: `Insufficient permissions to access this ${resourceType}`,
-      });
+      return res.status(403).json(accessDenied(resourceType));
     } catch (error) {
       logger.error(`[canAccessResource] Error checking access for ${resourceType}:`, error);
       return res.status(500).json({

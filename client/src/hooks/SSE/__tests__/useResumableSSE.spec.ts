@@ -4,6 +4,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { renderHook as renderBareHook, act, waitFor } from '@testing-library/react';
 import {
   Constants,
+  ErrorTypes,
   ContentTypes,
   LocalStorageKeys,
   QueryKeys,
@@ -339,7 +340,8 @@ function renderHook<Result, Props>(
 const CONV_ID = 'conv-abc-123';
 
 type PartialSubmission = {
-  conversation: { conversationId?: string };
+  conversation: { conversationId?: string; agent_id?: string };
+  addedConvo?: { conversationId?: string; agent_id?: string };
   isRegenerate?: boolean;
   compact?: boolean;
   editedContent?: Record<string, unknown>;
@@ -3708,6 +3710,41 @@ describe('useResumableSSE', () => {
     await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
     expect(mockInvalidateQueries).toHaveBeenCalledWith([QueryKeys.userTerms]);
     expect(mockInvalidateQueries).toHaveBeenCalledWith([QueryKeys.startupConfig]);
+    unmount();
+  });
+
+  it('refetches the selected agents when a send is refused for agent access', async () => {
+    (request.post as jest.Mock).mockRejectedValueOnce({
+      response: {
+        status: 403,
+        data: {
+          error: 'Forbidden',
+          message: 'Insufficient permissions to access this agent',
+          type: ErrorTypes.AGENT_ACCESS,
+        },
+      },
+    });
+    const submission = buildSubmission({
+      conversation: { conversationId: CONV_ID, agent_id: 'agent_main' },
+      addedConvo: { conversationId: CONV_ID, agent_id: 'agent_added' },
+    });
+    const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+    await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
+    expect(mockInvalidateQueries).toHaveBeenCalledWith([QueryKeys.agent, 'agent_main']);
+    expect(mockInvalidateQueries).toHaveBeenCalledWith([QueryKeys.agent, 'agent_added']);
+    unmount();
+  });
+
+  it('leaves agent details alone when a send is refused for another reason', async () => {
+    (request.post as jest.Mock).mockRejectedValueOnce({
+      response: { status: 403, data: { error: 'Forbidden', message: 'Forbidden' } },
+    });
+    const submission = buildSubmission({
+      conversation: { conversationId: CONV_ID, agent_id: 'agent_main' },
+    });
+    const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+    await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
+    expect(mockInvalidateQueries).not.toHaveBeenCalledWith([QueryKeys.agent, 'agent_main']);
     unmount();
   });
 

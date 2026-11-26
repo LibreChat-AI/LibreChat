@@ -2,6 +2,7 @@ import { useMemo, useState, useCallback } from 'react';
 import { useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { getStreamStartFailureText } from '@librechat/chat';
+import { ErrorTypes, QueryKeys } from 'librechat-data-provider';
 import {
   useUsageHandler,
   toResumableUsage,
@@ -9,12 +10,37 @@ import {
   showStopButtonByIndex,
 } from '@librechat/chat/react';
 import type { ResumableRun, ResumableEvents, ResumableUsage } from '@librechat/chat';
+import type { EventSubmission, TSubmission } from 'librechat-data-provider';
 import type { EventHandlerParams } from '@librechat/chat/react';
-import type { EventSubmission } from 'librechat-data-provider';
+import type { QueryClient } from '@tanstack/react-query';
 import type { TResData, TFinalResData } from '~/common';
 import { markStreamStartFailedMetadata } from '~/utils';
 import { reopenTermsOnRefusal } from '~/utils/terms';
 import useLocalize from '~/hooks/useLocalize';
+
+/**
+ * A send refused for its agent proves the agent details the composer holds stale. Refetching them
+ * lets the composer say the agent is refused and hold the next send, instead of offering it again.
+ */
+const refetchRefusedAgents = (
+  queryClient: QueryClient,
+  { conversation, addedConvo }: Pick<TSubmission, 'conversation' | 'addedConvo'>,
+  errorData: unknown,
+) => {
+  const refused =
+    errorData != null &&
+    typeof errorData === 'object' &&
+    'type' in errorData &&
+    errorData.type === ErrorTypes.AGENT_ACCESS;
+  if (!refused) {
+    return;
+  }
+  for (const id of [conversation?.agent_id, addedConvo?.agent_id]) {
+    if (id) {
+      void queryClient.invalidateQueries([QueryKeys.agent, id]);
+    }
+  }
+};
 
 const getStreamStartFailureData = (errorData?: unknown, termsRefusalText?: string): TResData =>
   ({
@@ -111,6 +137,7 @@ export default function useResumableEvents({
         } else if (reopenTermsOnRefusal(queryClient, errorData)) {
           text = localize('com_error_terms_not_accepted');
         }
+        refetchRefusedAgents(queryClient, failedSubmission, errorData);
         errorHandler({
           data: getStreamStartFailureData(errorData, text),
           submission: failedSubmission as EventSubmission,

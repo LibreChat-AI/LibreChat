@@ -6,6 +6,7 @@ import { EModelEndpoint, ErrorTypes, ViolationTypes } from 'librechat-data-provi
 import type { Agent, TEndpointsConfig, TMessage } from 'librechat-data-provider';
 import type { MessagePartsHost, SetKeyDialogProps } from '../../../react/host';
 import type { ErrorEnvironment } from '../../../core/errors';
+import { getStreamStartFailureText } from '../../../core/resumable/errors';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import ErrorMessage, { ERROR_CONNECTION_TEXT } from '../ErrorMessage';
 import { MessagePartsHostProvider } from '../../../react/host';
@@ -163,6 +164,22 @@ describe('an error with the host members', () => {
 });
 
 describe('error text', () => {
+  it('says a chat start refused for its agent is an access problem, not a provider failure', () => {
+    /* The body the agents chat route answers a refused agent with, as a failed start keeps it. */
+    const refusal = getStreamStartFailureText({
+      error: 'Forbidden',
+      message: 'Insufficient permissions to access this agent',
+      type: ErrorTypes.AGENT_ACCESS,
+    });
+    draw(
+      <ErrorText text={refusal} message={{ endpoint: EModelEndpoint.agents, model: 'agent_1' }} />,
+    );
+
+    expect(screen.getByText('You do not have access to this agent.')).toBeInTheDocument();
+    expect(screen.queryByText(/model provider could not complete/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Forbidden')).not.toBeInTheDocument();
+  });
+
   it('treats a payload typed with an inherited name as unexplained, not as a card', () => {
     draw(<ErrorText text={text({ type: 'constructor' })} />);
 
