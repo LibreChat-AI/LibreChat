@@ -6051,6 +6051,10 @@ export enum ErrorTypes {
    */
   AGENT_ACCESS = 'agent_access',
   /**
+   * The selected agent no longer exists
+   */
+  AGENT_NOT_FOUND = 'agent_not_found',
+  /**
    * Missing model selection
    */
   MISSING_MODEL = 'missing_model',

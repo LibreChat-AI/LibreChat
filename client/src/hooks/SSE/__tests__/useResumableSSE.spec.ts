@@ -3713,25 +3713,54 @@ describe('useResumableSSE', () => {
     unmount();
   });
 
-  it('refetches the selected agents when a send is refused for agent access', async () => {
-    (request.post as jest.Mock).mockRejectedValueOnce({
-      response: {
-        status: 403,
-        data: {
-          error: 'Forbidden',
-          message: 'Insufficient permissions to access this agent',
-          type: ErrorTypes.AGENT_ACCESS,
-        },
+  it.each([
+    {
+      reason: 'agent access',
+      status: 403,
+      data: {
+        error: 'Forbidden',
+        message: 'Insufficient permissions to access this agent',
+        type: ErrorTypes.AGENT_ACCESS,
       },
-    });
+    },
+    {
+      reason: 'a deleted agent',
+      status: 404,
+      data: { error: 'Not Found', message: 'agent not found', type: ErrorTypes.AGENT_NOT_FOUND },
+    },
+  ])(
+    'refetches the selected agents when a send is refused for $reason',
+    async ({ status, data }) => {
+      (request.post as jest.Mock).mockRejectedValueOnce({ response: { status, data } });
+      const submission = buildSubmission({
+        conversation: { conversationId: CONV_ID, agent_id: 'agent_main' },
+        addedConvo: { conversationId: CONV_ID, agent_id: 'agent_added' },
+      });
+      const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
+      await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
+      expect(mockInvalidateQueries).toHaveBeenCalledWith([QueryKeys.agent, 'agent_main']);
+      expect(mockInvalidateQueries).toHaveBeenCalledWith([QueryKeys.agent, 'agent_added']);
+      unmount();
+    },
+  );
+
+  it('refetches the selected agent when a started run fails because its agent is gone', async () => {
     const submission = buildSubmission({
       conversation: { conversationId: CONV_ID, agent_id: 'agent_main' },
-      addedConvo: { conversationId: CONV_ID, agent_id: 'agent_added' },
     });
     const { unmount } = renderHook(() => useResumableSSE(submission, buildChatHelpers()));
-    await waitFor(() => expect(mockSetSubmission).toHaveBeenCalledWith(null));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    /* An agent manager skips the chat route's agent check, so the run's own start fails instead. */
+    const failure = { status: 404, code: ErrorTypes.AGENT_NOT_FOUND, error: 'Agent not found' };
+    await act(async () => {
+      getLastSSE()._emit('error', { data: JSON.stringify({ error: JSON.stringify(failure) }) });
+    });
+
+    expect(mockErrorHandler).toHaveBeenCalledTimes(1);
     expect(mockInvalidateQueries).toHaveBeenCalledWith([QueryKeys.agent, 'agent_main']);
-    expect(mockInvalidateQueries).toHaveBeenCalledWith([QueryKeys.agent, 'agent_added']);
     unmount();
   });
 

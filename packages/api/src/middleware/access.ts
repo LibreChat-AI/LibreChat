@@ -28,6 +28,23 @@ export function accessDenied(resourceType: string): {
   return { error: 'Forbidden', message };
 }
 
+/**
+ * The 404 body for a resource a permission check could not find. A missing agent carries
+ * `ErrorTypes.AGENT_NOT_FOUND`, so a chat turn sent to a deleted agent says the agent is gone
+ * instead of reading as a provider failure; other resources keep the plain body.
+ */
+export function notFound(resourceType: string): {
+  error: 'Not Found';
+  message: string;
+  type?: ErrorTypes.AGENT_NOT_FOUND;
+} {
+  const message = `${resourceType} not found`;
+  if (resourceType === ResourceType.AGENT) {
+    return { error: 'Not Found', message, type: ErrorTypes.AGENT_NOT_FOUND };
+  }
+  return { error: 'Not Found', message };
+}
+
 export function skipAgentCheck(req?: ServerRequest): boolean {
   if (!req || !req?.body?.endpoint) {
     return false;

@@ -849,6 +849,7 @@
   "com_error_assistant_output_unsupported": "Assistant reply protection requires a new text-only turn in Agent chat. Send a new message without attachments instead of regenerating or continuing.",
   "com_error_assistant_output_withheld": "The reply was withheld because it could not pass privacy checks. Try rephrasing your request.",
   "com_error_agent_access": "You do not have access to this agent.",
+  "com_error_agent_not_found": "This agent is no longer available.",
   "com_error_agent_contact_email": "Email {{0}}",
   "com_error_auth_banned": "Access is blocked for this account or address. Ask an administrator to review it.",
   "com_error_auth_failed": "Your session could not be verified. Sign in again, then resend the message.",

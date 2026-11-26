@@ -102,6 +102,17 @@ const SkillsCommand = lazyWithRecovery(() => import('./SkillsCommand'));
 const ToolDialogs = lazyWithRecovery(() => import('./ToolDialogs'));
 const Mention = lazyWithRecovery(() => import('./Mention'));
 
+/** Why the composer cannot send to the chat's model or agent, as the sentence it shows. */
+function targetFailureKey({ denied, missing }: { denied: boolean; missing: boolean }) {
+  if (denied) {
+    return 'com_error_agent_access';
+  }
+  if (missing) {
+    return 'com_error_agent_not_found';
+  }
+  return 'com_ui_chat_target_failed';
+}
+
 interface ChatFormProps {
   index: number;
   placeholder?: string;
@@ -879,7 +890,7 @@ const ChatForm = memo(function ChatForm({
       )}
       {target.failed && (
         <p role="alert" className="text-text-secondary px-5 pb-2 text-sm">
-          {localize(target.denied ? 'com_error_agent_access' : 'com_ui_chat_target_failed')}{' '}
+          {localize(targetFailureKey(target))}{' '}
           <button type="button" className="underline" onClick={target.retry}>
             {localize('com_ui_retry')}
           </button>

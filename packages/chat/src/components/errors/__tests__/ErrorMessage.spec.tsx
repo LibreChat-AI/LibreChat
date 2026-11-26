@@ -180,6 +180,31 @@ describe('error text', () => {
     expect(screen.queryByText('Forbidden')).not.toBeInTheDocument();
   });
 
+  it.each([
+    [
+      'refused by the chat route',
+      /* The body the agents chat route answers a deleted agent with, as a failed start keeps it. */
+      getStreamStartFailureText({
+        error: 'Not Found',
+        message: 'agent not found',
+        type: ErrorTypes.AGENT_NOT_FOUND,
+      }),
+    ],
+    [
+      'failed once its run started',
+      /* An agent manager skips the route's check, so the run's own start names the code. */
+      text({ status: 404, code: ErrorTypes.AGENT_NOT_FOUND, error: 'Agent not found' }),
+    ],
+  ])('says a turn sent to a deleted agent, %s, is about the agent', (_case, failure) => {
+    draw(
+      <ErrorText text={failure} message={{ endpoint: EModelEndpoint.agents, model: 'agent_1' }} />,
+    );
+
+    expect(screen.getByText('This agent is no longer available.')).toBeInTheDocument();
+    expect(screen.queryByText(/model provider could not complete/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/not found/i)).not.toBeInTheDocument();
+  });
+
   it('treats a payload typed with an inherited name as unexplained, not as a card', () => {
     draw(<ErrorText text={text({ type: 'constructor' })} />);
 
