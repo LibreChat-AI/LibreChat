@@ -275,9 +275,11 @@ it('keeps a denied agent selected and allows retry without opening another conve
   await waitFor(() => expect(result.current.target.failed).toBe(true));
   expect(result.current.value?.agent_id).toBe('agent_one');
   expect(result.current.target.ready).toBe(false);
+  expect(result.current.target.denied).toBe(true);
   getAgent.mockResolvedValue({ id: 'agent_one' } as Agent);
   act(() => result.current.target.retry());
   await waitFor(() => expect(result.current.target.ready).toBe(true));
+  expect(result.current.target.denied).toBe(false);
 });
 
 it('hydrates an assistant by id without requiring the assistant list', async () => {
@@ -331,6 +333,7 @@ it('keeps a missing remembered agent selected rather than using a catalog fallba
   );
   await waitFor(() => expect(result.current.target.failed).toBe(true));
   expect(result.current.value?.agent_id).toBe('agent_missing');
+  expect(result.current.target.denied).toBe(false);
   expect(dataService.listAgents).not.toHaveBeenCalled();
 });
 

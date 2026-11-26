@@ -236,6 +236,7 @@ function ChatViewPane({
       ready: target.ready && (addedChatHelpers.conversation == null || addedTarget.ready),
       pending: target.pending || (addedChatHelpers.conversation != null && addedTarget.pending),
       failed: target.failed || (addedChatHelpers.conversation != null && addedTarget.failed),
+      denied: target.denied || (addedChatHelpers.conversation != null && addedTarget.denied),
       retry: () => {
         target.retry();
         if (addedChatHelpers.conversation) addedTarget.retry();

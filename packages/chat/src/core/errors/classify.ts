@@ -32,6 +32,7 @@ function errorCopy(): Record<string, string> {
   copyKeys ??= {
     [ErrorTypes.ASSISTANT_OUTPUT_UNSUPPORTED]: 'com_error_assistant_output_unsupported',
     [ErrorTypes.ASSISTANT_OUTPUT_WITHHELD]: 'com_error_assistant_output_withheld',
+    [ErrorTypes.AGENT_ACCESS]: 'com_error_agent_access',
     [ErrorTypes.MODERATION]: 'com_error_moderation',
     [ErrorTypes.INVALID_ACTION]: 'com_error_invalid_action_error',
     [ErrorTypes.MODELS_NOT_LOADED]: 'com_error_models_not_loaded',

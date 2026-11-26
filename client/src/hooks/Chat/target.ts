@@ -23,6 +23,7 @@ import {
 } from '~/data-provider';
 import { updateConvoInAllQueries, conversationTarget, hasRetiredSavedSpec } from '~/utils/convos';
 import { navigationGenerationAtom } from '~/store/navigation';
+import { getResponseStatus } from '~/utils/errors';
 import { assistantKey } from './ask/guards';
 
 const viewAgents = { requiredPermission: PermissionBits.VIEW };
@@ -164,6 +165,9 @@ export default function useTarget(
     (needsAgent && agents.isError) ||
     (assistantEnabled && needsAssistant && assistants.isError) ||
     (needsModel && models.isError);
+  /** The server refused the selected agent rather than failing to load it. Retry still applies:
+   *  access can be granted while the chat stays open. */
+  const denied = isSavedAgent && agent.isError && getResponseStatus(agent.error) === 403;
   const ready = !!config && !!endpoints.data?.[endpoint] && targetReady;
   const retryRef = useRef(() => {});
   retryRef.current = () => {
@@ -223,11 +227,12 @@ export default function useTarget(
     () => ({
       ready,
       failed,
+      denied,
       pending: !ready && !failed,
       retry,
       agent: agent.data,
       assistant: assistantDetailsReady ? assistant.data : undefined,
     }),
-    [ready, failed, retry, agent.data, assistant.data, assistantDetailsReady],
+    [ready, failed, denied, retry, agent.data, assistant.data, assistantDetailsReady],
   );
 }

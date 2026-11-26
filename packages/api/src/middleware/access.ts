@@ -1,13 +1,32 @@
 import { logger } from '@librechat/data-schemas';
 import {
+  ErrorTypes,
   Permissions,
   EndpointURLs,
+  ResourceType,
   EModelEndpoint,
   PermissionTypes,
   isAgentsEndpoint,
 } from 'librechat-data-provider';
 import type { NextFunction, Request as ServerRequest, Response as ServerResponse } from 'express';
 import type { IRole, IUser } from '@librechat/data-schemas';
+
+/**
+ * The 403 body for a refused resource permission check. A refused agent carries
+ * `ErrorTypes.AGENT_ACCESS`, so a chat turn the refusal stops says why instead of reading as a
+ * provider failure; other resources keep the plain refusal their callers read by status.
+ */
+export function accessDenied(resourceType: string): {
+  error: 'Forbidden';
+  message: string;
+  type?: ErrorTypes.AGENT_ACCESS;
+} {
+  const message = `Insufficient permissions to access this ${resourceType}`;
+  if (resourceType === ResourceType.AGENT) {
+    return { error: 'Forbidden', message, type: ErrorTypes.AGENT_ACCESS };
+  }
+  return { error: 'Forbidden', message };
+}
 
 export function skipAgentCheck(req?: ServerRequest): boolean {
   if (!req || !req?.body?.endpoint) {

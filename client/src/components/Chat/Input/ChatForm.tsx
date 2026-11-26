@@ -879,7 +879,7 @@ const ChatForm = memo(function ChatForm({
       )}
       {target.failed && (
         <p role="alert" className="text-text-secondary px-5 pb-2 text-sm">
-          {localize('com_ui_chat_target_failed')}{' '}
+          {localize(target.denied ? 'com_error_agent_access' : 'com_ui_chat_target_failed')}{' '}
           <button type="button" className="underline" onClick={target.retry}>
             {localize('com_ui_retry')}
           </button>

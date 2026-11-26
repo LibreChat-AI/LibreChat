@@ -6047,6 +6047,10 @@ export enum ErrorTypes {
    */
   INVALID_AGENT_PROVIDER = 'invalid_agent_provider',
   /**
+   * The requester lacks permission on the selected agent
+   */
+  AGENT_ACCESS = 'agent_access',
+  /**
    * Missing model selection
    */
   MISSING_MODEL = 'missing_model',

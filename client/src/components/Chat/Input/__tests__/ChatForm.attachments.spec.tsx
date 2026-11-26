@@ -184,7 +184,7 @@ function Harness() {
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
         <TargetContext.Provider
-          value={{ ready: true, pending: false, failed: false, retry: () => {} }}
+          value={{ ready: true, pending: false, failed: false, denied: false, retry: () => {} }}
         >
           <Profiler id="composer" onRender={() => (commits += 1)}>
             <ChatForm

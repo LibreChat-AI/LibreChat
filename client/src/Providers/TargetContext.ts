@@ -2,11 +2,12 @@ import { createContext, useContext } from 'react';
 import type useTarget from '~/hooks/Chat/target';
 
 export const TargetContext = createContext<
-  Pick<ReturnType<typeof useTarget>, 'ready' | 'pending' | 'failed' | 'retry'>
+  Pick<ReturnType<typeof useTarget>, 'ready' | 'pending' | 'failed' | 'denied' | 'retry'>
 >({
   ready: false,
   pending: true,
   failed: false,
+  denied: false,
   retry: () => {},
 });
 

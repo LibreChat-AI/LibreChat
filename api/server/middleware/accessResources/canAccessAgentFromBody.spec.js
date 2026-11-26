@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const {
+  ErrorTypes,
   ResourceType,
   SystemRoles,
   PrincipalType,
@@ -128,6 +129,37 @@ describe('canAccessAgentFromBody middleware', () => {
       await middleware(req, res, next);
 
       expect(next).toHaveBeenCalled();
+    });
+
+    test('names a refused primary agent with the agent access code', async () => {
+      const privateAgent = await createAgent({
+        id: 'agent_private',
+        name: 'Private Agent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: otherUser._id,
+      });
+      await AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: otherUser._id,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.AGENT,
+        resourceId: privateAgent._id,
+        permBits: 15,
+        grantedBy: otherUser._id,
+      });
+      req.body.agent_id = privateAgent.id;
+
+      const middleware = canAccessAgentFromBody({ requiredPermission: 1 });
+      await middleware(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'Forbidden',
+        message: 'Insufficient permissions to access this agent',
+        type: ErrorTypes.AGENT_ACCESS,
+      });
     });
 
     test.each([
@@ -331,11 +363,11 @@ describe('canAccessAgentFromBody middleware', () => {
 
       expect(next).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(403);
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: 'Insufficient permissions to access this agent',
-        }),
-      );
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'Forbidden',
+        message: 'Insufficient permissions to access this agent',
+        type: ErrorTypes.AGENT_ACCESS,
+      });
     });
 
     test('returns 404 when added agent does not exist', async () => {
