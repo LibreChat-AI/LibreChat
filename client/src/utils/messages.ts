@@ -113,6 +113,9 @@ export const clearMessagesCache = (
     queryClient.removeQueries([QueryKeys.messages, convoId], { exact: true });
   }
 
+  /** A load of the new-chat cache answers with what the cache held when it started, so one still
+   * in flight would put back the transcript this reset clears. */
+  void queryClient.cancelQueries([QueryKeys.messages, Constants.NEW_CONVO], { exact: true });
   queryClient.setQueryData<TMessage[]>([QueryKeys.messages, Constants.NEW_CONVO], []);
 };
 

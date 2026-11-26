@@ -1148,6 +1148,28 @@ describe('useCachedMessages', () => {
   });
 });
 
+describe('new-chat cache reset', () => {
+  it('stays empty when a load of the new-chat cache was already in flight', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryKey = [QueryKeys.messages, Constants.NEW_CONVO];
+    const departed = [message({ conversationId: 'departed-convo' })];
+    queryClient.setQueryData(queryKey, departed);
+
+    /** Opening the new chat's view loads its cache, and the load answers with what it found. */
+    const load = queryClient.prefetchQuery(queryKey, () =>
+      loadConversationMessages(queryClient, Constants.NEW_CONVO, {
+        pathname: '/c/new',
+        isStreaming: () => false,
+      }),
+    );
+    clearMessagesCache(queryClient, 'departed-convo');
+    await load;
+
+    expect(queryClient.getQueryData(queryKey)).toEqual([]);
+    queryClient.clear();
+  });
+});
+
 describe('early session reply proof', () => {
   const conversationId = 'early-session-proof';
   const stamp = '2026-11-09T12:00:00.000Z';
