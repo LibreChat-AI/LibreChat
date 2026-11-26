@@ -417,20 +417,31 @@ describe('Gemini-compatible custom endpoint requests', () => {
 describe('Chat Completions reasoning effort', () => {
   type Sent = { url: URL; body: Record<string, unknown> };
 
-  /** Records each request and answers it the way Chat Completions does. */
+  /** Records each request and answers it the way either API does. */
   function recorder() {
     const requests: Sent[] = [];
     const fetch: NonNullable<NonNullable<OpenAIConfiguration>['fetch']> = async (url, init) => {
       requests.push({ url: new URL(String(url)), body: JSON.parse(String(init?.body)) });
+      const text = 'Four.';
       return Response.json({
-        id: 'chatcmpl_test',
-        object: 'chat.completion',
+        id: 'resp_test',
+        object: 'response',
+        status: 'completed',
         created: 1,
         model: 'test',
         choices: [
-          { index: 0, message: { role: 'assistant', content: 'Four.' }, finish_reason: 'stop' },
+          { index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' },
         ],
-        usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
+        output: [
+          {
+            type: 'message',
+            id: 'msg_test',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text, annotations: [] }],
+          },
+        ],
+        usage: { prompt_tokens: 5, completion_tokens: 1, input_tokens: 5, output_tokens: 1 },
       });
     };
     return { requests, fetch };
@@ -497,7 +508,7 @@ describe('Chat Completions reasoning effort', () => {
     expect(body).toMatchObject({ reasoning_effort: ReasoningEffort.high });
   });
 
-  it.each(['gpt-4o', 'gpt-4.1', 'gpt-5-chat-latest'])(
+  it.each(['gpt-4o', 'gpt-4.1', 'gpt-5-chat-latest', 'o1-mini'])(
     'keeps a saved effort away from %s, which takes none',
     async (model) => {
       const { body } = await send({ model, reasoning_effort: ReasoningEffort.high });
@@ -506,6 +517,45 @@ describe('Chat Completions reasoning effort', () => {
       expect(body).not.toHaveProperty('reasoning_effort');
     },
   );
+
+  it.each(['gpt-5.1', 'gpt-5.2'])(
+    'drops the sampling controls %s rejects alongside a selected effort',
+    async (model) => {
+      const { url, body } = await send(
+        { model, reasoning_effort: ReasoningEffort.high, temperature: 0.7, top_p: 0.9 },
+        { addParams: { logprobs: true, topLogprobs: 2 } },
+      );
+
+      expect(url.pathname).toBe('/v1/chat/completions');
+      expect(body).toMatchObject({ model, reasoning_effort: ReasoningEffort.high });
+      for (const key of ['temperature', 'top_p', 'logprobs', 'top_logprobs']) {
+        expect(body).not.toHaveProperty(key);
+      }
+    },
+  );
+
+  it('keeps the sampling controls of GPT-5.1 at effort none', async () => {
+    const { body } = await send({
+      model: 'gpt-5.1',
+      reasoning_effort: ReasoningEffort.none,
+      temperature: 0.7,
+    });
+
+    expect(body).toMatchObject({ reasoning_effort: ReasoningEffort.none, temperature: 0.7 });
+  });
+
+  it('drops the sampling controls GPT-5.1 rejects alongside an effort on the Responses API', async () => {
+    const { url, body } = await send({
+      model: 'gpt-5.1',
+      reasoning_effort: ReasoningEffort.high,
+      temperature: 0.7,
+      useResponsesApi: true,
+    });
+
+    expect(url.pathname).toBe('/v1/responses');
+    expect(body).toMatchObject({ reasoning: { effort: ReasoningEffort.high } });
+    expect(body).not.toHaveProperty('temperature');
+  });
 
   it.each(['o3', 'gpt-6-sol'])(
     'sends the effort selected for %s over a configured reasoning.effort',
@@ -566,6 +616,25 @@ describe('Chat Completions reasoning effort', () => {
         'https://test-instance.openai.azure.com/openai/deployments/production-deployment/chat/completions',
       );
       expect(body).toMatchObject({ reasoning_effort: ReasoningEffort.high });
+    });
+
+    it('keeps a saved effort away from an o1-mini deployment, which takes none', async () => {
+      const { url, body } = await send(
+        { model: 'o1-mini', reasoning_effort: ReasoningEffort.high },
+        {
+          reverseProxyUrl: undefined,
+          azure: {
+            azureOpenAIApiInstanceName: 'test-instance',
+            azureOpenAIApiDeploymentName: 'production-deployment',
+            azureOpenAIApiVersion: '2025-04-01-preview',
+            azureOpenAIApiKey: 'test-azure-key',
+          },
+        },
+        EModelEndpoint.azureOpenAI,
+      );
+
+      expect(url.pathname).toBe('/openai/deployments/production-deployment/chat/completions');
+      expect(body).not.toHaveProperty('reasoning_effort');
     });
 
     /** Initializes the configured deployment as chat does and returns the request it sends. */

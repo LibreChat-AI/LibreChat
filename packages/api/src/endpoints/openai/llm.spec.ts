@@ -9,10 +9,10 @@ import {
 } from 'librechat-data-provider';
 import type * as t from '~/types';
 import {
-  isReasoningModel,
   getOpenAILLMConfig,
   extractDefaultParams,
   applyDefaultParams,
+  takesReasoningEffort,
 } from './llm';
 
 describe('getOpenAILLMConfig', () => {
@@ -2072,7 +2072,7 @@ describe('applyDefaultParams', () => {
   });
 });
 
-describe('isReasoningModel', () => {
+describe('takesReasoningEffort', () => {
   it.each([
     'o1',
     'o3',
@@ -2087,7 +2087,7 @@ describe('isReasoningModel', () => {
     'openai/o3',
     'openai/gpt-5.2',
   ])('treats %s as taking a reasoning effort', (model) => {
-    expect(isReasoningModel(model)).toBe(true);
+    expect(takesReasoningEffort(model)).toBe(true);
   });
 
   it.each([
@@ -2099,11 +2099,14 @@ describe('isReasoningModel', () => {
     'gpt-5-chat-latest',
     'gpt-5.1-chat-latest',
     'gpt-5-search-api',
+    'o1-mini',
+    'o1-mini-2024-09-12',
+    'o1-preview',
     'gpt-3.5-turbo',
     'production-west',
     '',
     undefined,
   ])('treats %s as taking none', (model) => {
-    expect(isReasoningModel(model)).toBe(false);
+    expect(takesReasoningEffort(model)).toBe(false);
   });
 });

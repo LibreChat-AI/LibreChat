@@ -79,10 +79,21 @@ test.describe('reasoning effort on Chat Completions', () => {
       'sends the effort selected for GPT-5.6 after Chat Completions was chosen',
     );
     expectPassed(REQUESTS, 'sends the selected effort to a gateway on the OpenAI endpoint');
+    for (const model of ['gpt-5.1', 'gpt-5.2']) {
+      expectPassed(
+        REQUESTS,
+        `drops the sampling controls ${model} rejects alongside a selected effort`,
+      );
+    }
+    expectPassed(REQUESTS, 'keeps the sampling controls of GPT-5.1 at effort none');
+    expectPassed(
+      REQUESTS,
+      'drops the sampling controls GPT-5.1 rejects alongside an effort on the Responses API',
+    );
   });
 
   test('a saved effort stays behind for a model that rejects it @scenario:chat-completions-effort-skips-models-without-effort', () => {
-    for (const model of ['gpt-4o', 'gpt-4.1', 'gpt-5-chat-latest']) {
+    for (const model of ['gpt-4o', 'gpt-4.1', 'gpt-5-chat-latest', 'o1-mini']) {
       expectPassed(REQUESTS, `keeps a saved effort away from ${model}, which takes none`);
     }
   });
@@ -91,6 +102,7 @@ test.describe('reasoning effort on Chat Completions', () => {
     expectPassed(AZURE, 'sends the selected effort to a deployment of a reasoning model');
     expectPassed(AZURE, 'sends the selected effort to a deployment that declares its efforts');
     expectPassed(AZURE, 'keeps a saved effort away from a deployment that declares none');
+    expectPassed(AZURE, 'keeps a saved effort away from an o1-mini deployment, which takes none');
   });
 
   test('the chosen effort wins over a configured reasoning.effort and drops still remove it @scenario:chat-completions-chosen-effort-precedence', () => {

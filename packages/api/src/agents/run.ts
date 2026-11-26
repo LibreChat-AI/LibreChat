@@ -95,7 +95,7 @@ import {
   resolveAttachedCodeApprovalMode,
 } from '~/agents/hitl/byom';
 import {
-  isReasoningModel,
+  takesReasoningEffort,
   extractDefaultParams,
   getOpenAILLMConfig,
   isNativeCyberRequest,
@@ -1568,7 +1568,7 @@ function shapeSummarizationConfig(
     provider === fallbackProvider &&
     isNonEmptyString(model) &&
     model !== fallbackModel &&
-    !isReasoningModel(model);
+    !takesReasoningEffort(model);
   /** Placed first so an explicit user `modelKwargs` still replaces the agent's wholesale. */
   const modelKwargs =
     provider === fallbackProvider

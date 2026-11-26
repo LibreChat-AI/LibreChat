@@ -133,19 +133,20 @@ function isOpenAIEndpoint(endpoint?: EModelEndpoint | string | null): boolean {
 }
 
 const reasoningModelPattern = /(?:^|[/._-])(?:o\d|gpt-(?:[5-9]|\d{2,})|gpt-oss)(?:[-.]|$)/i;
-/** ChatGPT's `-chat` and the `-search` snapshots do not reason. */
-const nonReasoningVariantPattern = /-(?:chat|search)(?:[-.]|$)/i;
+/** ChatGPT's `-chat` and the `-search` snapshots do not reason, and the o1
+ * previews reason without taking an effort. */
+const effortlessPattern = /-(?:chat|search)(?:[-.]|$)|(?:^|[/._-])o1-(?:mini|preview)(?:[-.]|$)/i;
+/** GPT-5.1 and later GPT-5 releases. */
+const versionedGpt5Pattern = /(?:^|[/._-])gpt-5\.\d/i;
 
 /**
  * Whether an OpenAI model takes a reasoning effort: the o-series, GPT-5 onward
- * and gpt-oss. Other models, such as GPT-4o, GPT-4.1 and `gpt-5-chat-latest`,
- * reject the parameter, so a stored effort must not reach them.
+ * and gpt-oss. Other models, such as GPT-4o, GPT-4.1, `gpt-5-chat-latest` and
+ * `o1-mini`, reject the parameter, so a stored effort must not reach them.
  */
-export function isReasoningModel(model?: string | null): boolean {
+export function takesReasoningEffort(model?: string | null): boolean {
   return (
-    typeof model === 'string' &&
-    reasoningModelPattern.test(model) &&
-    !nonReasoningVariantPattern.test(model)
+    typeof model === 'string' && reasoningModelPattern.test(model) && !effortlessPattern.test(model)
   );
 }
 
@@ -1125,7 +1126,7 @@ export function getOpenAILLMConfig({
   const sol62 = firstPartyEndpoint && gpt6Release(llmConfig.model)?.toLowerCase() === 'gpt-6.2-sol';
   /** An Azure deployment name does not identify its model, so its declared
    * efforts are evidence of taking one too. */
-  const takesEffort = reasoningEfforts != null || isReasoningModel(llmConfig.model);
+  const takesEffort = reasoningEfforts != null || takesReasoningEffort(llmConfig.model);
   if (!useOpenRouter) {
     hasModelKwargs =
       applyReasoningConfig({
@@ -1243,7 +1244,15 @@ export function getOpenAILLMConfig({
     solLunaRulesApply &&
     llmConfig.useResponsesApi === true &&
     llmConfig.reasoning?.effort !== ReasoningEffort.none;
-  if (!sol62 && solLunaResponsesReasoning) {
+  /** GPT-5.1 and later take sampling controls only at effort `none`, and reject
+   * them alongside any other effort the request sends, on either API. */
+  const sentEffort =
+    llmConfig.useResponsesApi === true ? llmConfig.reasoning?.effort : modelKwargs.reasoning_effort;
+  const gpt5Reasoning =
+    versionedGpt5Pattern.test(llmConfig.model ?? '') &&
+    sentEffort != null &&
+    sentEffort !== ReasoningEffort.none;
+  if ((!sol62 && solLunaResponsesReasoning) || gpt5Reasoning) {
     for (const param of [
       'temperature',
       'topP',
