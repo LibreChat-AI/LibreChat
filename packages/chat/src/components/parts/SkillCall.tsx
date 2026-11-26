@@ -6,10 +6,10 @@ import type { CSSProperties } from 'react';
 import { toolPanelSpacingClassName } from '../../react/parts/disclosure';
 import { parseJsonField } from '../../core/parts/parseJsonField';
 import { useToolCallIntent } from '../../react/parts/intent';
+import { NAV_CLEARANCE, TOOL_ROW_CLASSES } from './rows';
 import { useMessagePartsHost } from '../../react/host';
 import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
-import { TOOL_ROW_CLASSES } from './rows';
 import ProgressText from './ProgressText';
 import BareStatus from './BareStatus';
 import Stdout from './Stdout';
@@ -121,7 +121,12 @@ export default function SkillCall({
               )}
             >
               <div className="p-3 text-xs">
-                <div className="mb-1.5 flex min-h-5 items-center justify-between gap-2">
+                <div
+                  className={cn(
+                    'mb-1.5 flex min-h-5 items-center justify-between gap-2',
+                    NAV_CLEARANCE.pad,
+                  )}
+                >
                   <span className="text-text-secondary text-3xs font-medium tracking-wide uppercase">
                     {/* The library's current record, which may have changed since the call ran. */}
                     {localize(instructions ? 'com_ui_skill_current_version' : 'com_ui_output')}

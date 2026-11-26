@@ -5,6 +5,7 @@ import type { CodeBarProps } from './CodeBar';
 import useDownloadCode from './useDownloadCode';
 import DownloadButton from './DownloadButton';
 import useCopyCode from './useCopyCode';
+import { NAV_CLEARANCE } from './rows';
 import CopyButton from './CopyButton';
 
 interface FloatingCodeBarProps extends CodeBarProps {
@@ -33,6 +34,7 @@ const FloatingCodeBar: React.NamedExoticComponent<FloatingCodeBarProps> = React.
       <div
         className={cn(
           'text-text-secondary absolute inset-e-2 bottom-2 flex items-center gap-2 font-sans text-xs transition-opacity duration-150',
+          NAV_CLEARANCE.edge,
           isVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
       >

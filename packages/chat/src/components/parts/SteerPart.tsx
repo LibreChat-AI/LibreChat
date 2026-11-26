@@ -10,6 +10,7 @@ import { useMessagePartsHost } from '../../react/host';
 import CollapsibleText from '../CollapsibleText';
 import MessageFiles from '../messages/Files';
 import MessageQuotes from './MessageQuotes';
+import { NAV_CLEARANCE } from './rows';
 
 export interface SteerPartProps {
   steer: string;
@@ -115,7 +116,12 @@ const SteerPart: NamedExoticComponent<SteerPartProps> = memo(function SteerPart(
       className="group relative my-5 flex w-full justify-end"
       data-testid="steer-part"
     >
-      <div className="user-turn relative flex w-fit max-w-[90%] min-w-0 flex-col items-end sm:max-w-[85%]">
+      <div
+        className={cn(
+          'user-turn relative flex w-fit max-w-[90%] min-w-0 flex-col items-end sm:max-w-[85%]',
+          NAV_CLEARANCE.edge,
+        )}
+      >
         <h2 className="sr-only">{label}</h2>
         {(files?.length ?? 0) > 0 && (
           <div

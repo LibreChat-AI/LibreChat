@@ -2,7 +2,9 @@ import { useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
 import { useLocalize } from '@librechat/client';
 import { useToolContentPending } from '../../react/parts/disclosure';
+import { NAV_CLEARANCE } from './rows';
 import CopyButton from './CopyButton';
+import { classes } from './classes';
 import LangIcon from './LangIcon';
 
 export interface CodeWindowHeaderProps {
@@ -37,7 +39,12 @@ export default function CodeWindowHeader({
   }, [code, contentPending]);
 
   return (
-    <div className="text-text-secondary flex items-center justify-between px-1.5 py-1.5 font-sans text-xs">
+    <div
+      className={classes(
+        'text-text-secondary flex items-center justify-between px-1.5 py-1.5 font-sans text-xs',
+        NAV_CLEARANCE.pad,
+      )}
+    >
       <span className="flex min-w-0 items-center gap-1.5 ps-1.5 text-xs font-medium">
         <LangIcon lang={language} className="size-3.5 shrink-0" />
         <span className="min-w-0 truncate" dir="ltr">

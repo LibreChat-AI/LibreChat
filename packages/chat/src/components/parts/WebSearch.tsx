@@ -31,6 +31,7 @@ import useLazyCollapseBody from '../../react/parts/useLazyCollapseBody';
 import { parseJsonField } from '../../core/parts/parseJsonField';
 import { useToolCallIntent } from '../../react/parts/intent';
 import { useSearchContext } from '../../react/parts/search';
+import { NAV_CLEARANCE, ROW_GLYPH_SLOT } from './rows';
 import useRowHandoff from '../../react/parts/handoff';
 import Favicon, { StackedFavicons } from './Favicon';
 import useExpandCollapse from './useExpandCollapse';
@@ -38,7 +39,6 @@ import { useToolPreparation } from './preparation';
 import { isError } from '../../core/parts/output';
 import { HeaderActionSlotContext } from './slot';
 import SearchVerticals from './verticals';
-import { ROW_GLYPH_SLOT } from './rows';
 import { classes } from './classes';
 import ToolCall from './ToolCall';
 
@@ -371,7 +371,13 @@ export default function WebSearch({
         <span className="sr-only" aria-live="polite" aria-atomic="true">
           {completedText}
         </span>
-        <div className={classes('relative flex items-center gap-1.5', bare ? 'h-0' : 'my-1.5 h-5')}>
+        <div
+          className={classes(
+            'relative flex items-center gap-1.5',
+            NAV_CLEARANCE.pad,
+            bare ? 'h-0' : 'my-1.5 h-5',
+          )}
+        >
           {!bare && (
             <Button
               ref={rowRef}
