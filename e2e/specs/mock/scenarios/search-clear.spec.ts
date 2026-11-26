@@ -124,10 +124,23 @@ async function send(page: Page, label: string): Promise<SentPayload> {
   return payload;
 }
 
+/** Spelled out in full, since the verifier finds a scenario by its literal tag. */
+const draftModes = [
+  {
+    saveDrafts: true,
+    mode: 'with',
+    tag: '@scenario:clearing-a-search-keeps-the-unsent-chat-attachment-with-saved-drafts',
+  },
+  {
+    saveDrafts: false,
+    mode: 'without',
+    tag: '@scenario:clearing-a-search-keeps-the-unsent-chat-attachment-without-saved-drafts',
+  },
+];
+
 test.describe('clearing the sidebar search', () => {
-  for (const saveDrafts of [true, false]) {
-    const mode = saveDrafts ? 'with' : 'without';
-    test(`returns to the unsent chat with its attachment, drafts ${saveDrafts ? 'saved' : 'not saved'} @scenario:clearing-a-search-keeps-the-unsent-chat-attachment-${mode}-saved-drafts`, async ({
+  for (const { saveDrafts, mode, tag } of draftModes) {
+    test(`returns to the unsent chat with its attachment, drafts ${saveDrafts ? 'saved' : 'not saved'} ${tag}`, async ({
       page,
       isMobile,
     }) => {
