@@ -137,6 +137,23 @@ export function rememberInsightsRoot(conversation: IConversation | null): IConve
   return conversation;
 }
 
+async function markForRepair(
+  mongoose: typeof import('mongoose'),
+  records: readonly InsightsRecordIdentity[],
+): Promise<void> {
+  const chats = records.flatMap(({ conversationId, user, tenantId }) =>
+    typeof conversationId === 'string' && user != null
+      ? [{ conversationId, user: user.toString(), tenantId: tenantId ?? { $exists: false } }]
+      : [],
+  );
+  if (chats.length === 0) return;
+  await (mongoose.models.Conversation as Model<IConversation>)
+    .updateMany({ $or: chats }, { $set: { insightsRepair: true } }, { timestamps: false })
+    .catch((error: unknown) =>
+      logger.error('[lookupInsightsAttributions] Failed to mark chats for repair', error),
+    );
+}
+
 export async function lookupInsightsAttributions(
   mongoose: typeof import('mongoose'),
   records: readonly InsightsRecordIdentity[],
@@ -150,6 +167,7 @@ export async function lookupInsightsAttributions(
     return { fresh: unread.length === missing.length, hints };
   } catch (error) {
     logger.error('[lookupInsightsAttributions] Failed to read Insights attribution', error);
+    await markForRepair(mongoose, unread);
     return { fresh: false, hints };
   }
 }

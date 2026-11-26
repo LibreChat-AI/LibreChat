@@ -447,6 +447,34 @@ describe('within a turn', () => {
     expect(await repairMark()).toBeUndefined();
   });
 
+  it('repairs a charge saved while its chat could not be read, on the next turn', async () => {
+    await runTurn(async () => {
+      await reply('reply');
+    });
+    const reads = jest.spyOn(mongoose.models.Conversation, 'find').mockImplementationOnce(() => {
+      throw new Error('unavailable');
+    });
+    await runTurn(async () => {
+      await bill('late');
+    });
+    reads.mockRestore();
+    const charge = () => mongoose.models.Transaction.collection.findOne({ messageId: 'late' });
+    const repairMark = async () =>
+      (
+        await mongoose.models.Conversation.findOne({ conversationId })
+          .select('+insightsRepair')
+          .lean<{ insightsRepair?: boolean }>()
+      )?.insightsRepair;
+    expect((await charge())?.insightsAgentId).toBeUndefined();
+    expect(await repairMark()).toBe(true);
+    await runTurn(async () => {
+      await conversations.getConvo(userId, conversationId);
+      await conversations.saveConvo({ userId }, { conversationId, endpoint: 'agents' });
+    });
+    expect((await charge())?.insightsAgentId).toBe('agent-a');
+    expect(await repairMark()).toBeUndefined();
+  });
+
   it('records one exclusion per converted chat and nothing more in its later turns', async () => {
     await runTurn(async () => {
       await reply('reply');
