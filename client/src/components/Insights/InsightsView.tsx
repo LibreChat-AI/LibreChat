@@ -28,6 +28,7 @@ import { formatExactValue, formatValue } from './format';
 import { getRollingDateRange } from './dateRange';
 import FeedbackCategories from './Feedback';
 import { getMetricCards } from './metrics';
+import FeedbackComments from './Comments';
 import ModelsTable from './Models';
 import { KpiCard } from './Card';
 import { cn } from '~/utils';
@@ -735,6 +736,7 @@ export default function InsightsView() {
                   ))}
                 </div>
                 <FeedbackCategories categories={data.summary.feedback.categories} locale={locale} />
+                {data.comments && <FeedbackComments comments={data.comments} locale={locale} />}
               </section>
               <ModelsTable rows={data.models} localize={localize} locale={locale} />
               {(data.topUsers || data.churnedUsers) && (

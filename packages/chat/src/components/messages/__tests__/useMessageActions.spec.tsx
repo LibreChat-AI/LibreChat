@@ -250,6 +250,30 @@ describe('useMessageActions', () => {
       expect(result.current.feedback).toMatchObject({ rating: 'thumbsUp', text: 'nice' });
     });
 
+    it('keeps the category of feedback loaded from the server when its comment is edited', () => {
+      const write = jest.fn();
+      const stored = { rating: 'thumbsDown', tag: 'other', text: 'First' };
+      const { result } = run(
+        { ...reply, feedback: stored } as unknown as TMessage,
+        chatContextOf({}),
+        {
+          messages: { useMessageFeedback: () => write },
+        },
+      );
+      expect(result.current.feedback?.tag?.key).toBe('other');
+
+      act(() =>
+        result.current.handleFeedback?.({
+          feedback: { rating: 'thumbsDown', tag: result.current.feedback?.tag, text: 'Edited' },
+        }),
+      );
+
+      expect(write).toHaveBeenCalledWith(
+        { feedback: { rating: 'thumbsDown', tag: 'other', text: 'Edited' } },
+        expect.anything(),
+      );
+    });
+
     it('clears the feedback state when the server returns none', () => {
       const write = (_payload: unknown, events: MessageFeedbackEvents): void =>
         events.onSuccess({ messageId: 'reply-1', conversationId: 'convo-1' });

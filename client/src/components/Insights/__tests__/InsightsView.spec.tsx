@@ -260,6 +260,40 @@ describe('InsightsView agent selection', () => {
     expect(within(responseTrend).getByText('2')).toBeInTheDocument();
   });
 
+  it('shows the written feedback of the period, or says there is none', () => {
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, {
+        ...insightsData,
+        comments: [
+          {
+            agentId: 'agent-1',
+            agentName: 'Alpha',
+            date: '2026-10-01T12:00:00.000Z',
+            rating: 'thumbsUp',
+            tag: 'other_feedback',
+            text: 'Saved me an hour',
+          },
+        ],
+      }),
+    );
+    const { unmount } = renderView();
+
+    const comment = screen.getByText('Saved me an hour').closest('li');
+    expect(comment).not.toBeNull();
+    expect(within(comment as HTMLElement).getByRole('img')).toHaveAccessibleName(
+      'com_ui_feedback_positive',
+    );
+    expect(comment).not.toHaveTextContent('com_ui_feedback_tag_other_feedback');
+    expect(comment).toHaveTextContent('Alpha');
+    unmount();
+
+    mockUseInsightsQuery.mockImplementation((params) =>
+      queryResult(params, { ...insightsData, comments: [] }),
+    );
+    renderView();
+    expect(screen.getByText('com_insights_no_feedback_comments')).toBeInTheDocument();
+  });
+
   it('lists recorded models, an unknown-model row and missing spend as zero', () => {
     const counts = {
       completedResponses: 0,

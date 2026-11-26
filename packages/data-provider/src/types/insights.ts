@@ -1,4 +1,4 @@
-import type { TFeedbackTagKey } from '../feedback';
+import type { TFeedbackRating, TFeedbackTagKey } from '../feedback';
 
 export type InsightsRange = '24h' | '7d' | '30d' | 'custom';
 
@@ -99,6 +99,15 @@ export type TInsightsModel = TInsightsResponseOutcomes & {
   spendUSD: number | null;
 };
 
+export type TInsightsComment = {
+  agentId: string;
+  agentName: string;
+  date: string;
+  rating: TFeedbackRating;
+  tag: TFeedbackTagKey | null;
+  text: string;
+};
+
 export type TInsightsSelectionResponse = {
   selectionRequired: true;
   agents: TInsightsAgent[];
@@ -109,6 +118,7 @@ export type TInsightsAggregateResponse = {
   summary: TInsightsSummary;
   daily: TInsightsDailyPoint[];
   models: TInsightsModel[];
+  comments?: TInsightsComment[];
   agentVersions?: TInsightsAgentVersion[];
 };
 

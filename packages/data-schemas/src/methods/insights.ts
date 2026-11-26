@@ -8,6 +8,9 @@ import {
 } from 'librechat-data-provider';
 import type {
   TInsightsAggregateResponse,
+  TInsightsComment,
+  TFeedbackTagKey,
+  TFeedbackRating,
   TInsightsAgent,
   TInsightsAgentVersion,
   TInsightsChurnedUser,
@@ -39,6 +42,13 @@ export type InsightsMethods = {
 };
 
 type CountResult = { total: number };
+type CommentRow = {
+  agentId: string;
+  date: Date;
+  rating: TFeedbackRating;
+  tag?: TFeedbackTagKey;
+  text: string;
+};
 type ConversationDay = { date: string; conversations: number };
 type ModelSpend = { date: string; model: unknown; credits: number; usageTokens: number };
 type ReplyIdentity = { conversationId: string; user: string; messageId: string };
@@ -83,6 +93,7 @@ const rangeDays = { '24h': 1, '7d': 7, '30d': 30 };
 const defaultRange = '7d';
 const churnedUserWindowDays = 28;
 const churnedUserLimit = 8;
+const commentLimit = 20;
 const dayMs = 24 * 60 * 60 * 1000;
 const replyUsageWindowMs = dayMs;
 const replyUsageContexts = ['message', 'abort', 'incomplete', 'reasoning', null];
@@ -508,6 +519,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       spendRows,
       replyModelRows,
       replyRows,
+      commentRows,
       agentVersions,
     ] = await Promise.all([
       Conversation.aggregate<ConversationDay>([
@@ -721,6 +733,25 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
         },
         { $match: { outcome: { $ne: null } } },
       ]),
+      Message.aggregate<CommentRow>([
+        ...messageScope(
+          { ...messageMatch, isCreatedByUser: false, 'feedback.text': { $regex: /\S/ } },
+          agentIds,
+          excluded.messages,
+        ),
+        { $sort: { createdAt: -1, _id: -1 } },
+        { $limit: commentLimit },
+        {
+          $project: {
+            _id: 0,
+            agentId: '$insightsAgentId',
+            date: '$createdAt',
+            rating: '$feedback.rating',
+            tag: { $ifNull: ['$feedback.tag.key', '$feedback.tag'] },
+            text: '$feedback.text',
+          },
+        },
+      ]),
       agentIds.length === 1
         ? getSavedVersions(mongoose, agentIds[0], options.tenantId)
         : Promise.resolve(undefined),
@@ -807,6 +838,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       if (reply.rating === 'thumbsDown') target.thumbsDown += 1;
     }
     for (const row of dailyUsers) addDay(days, row.date).users = row.users;
+    const agentNames = new Map((options.agents ?? []).map((agent) => [agent.id, agent.name]));
     const aggregate: TInsightsAggregateResponse = {
       agents: options.agents ?? [],
       summary,
@@ -818,6 +850,16 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
           right.responses - left.responses ||
           (right.spendUSD ?? 0) - (left.spendUSD ?? 0) ||
           (left.model ?? '').localeCompare(right.model ?? ''),
+      ),
+      comments: commentRows.map(
+        ({ agentId, date, rating, tag, text }): TInsightsComment => ({
+          agentId,
+          agentName: agentNames.get(agentId) ?? agentId,
+          date: date.toISOString(),
+          rating,
+          tag: tag ?? null,
+          text,
+        }),
       ),
     };
     if (!showDetails) {
@@ -940,7 +982,6 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     ]);
 
     const users = new Map(userRows.map((user) => [user._id.toString(), user]));
-    const agentNames = new Map((options.agents ?? []).map((agent) => [agent.id, agent.name]));
     const latestSummaries = new Map(
       latestMessageSummaries.map((summary) => [conversationOwnerKey(summary._id), summary]),
     );

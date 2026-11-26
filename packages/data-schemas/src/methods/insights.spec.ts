@@ -307,6 +307,7 @@ describe('Insights methods', () => {
       expect(Object.keys(result).sort()).toEqual([
         'agentVersions',
         'agents',
+        'comments',
         'daily',
         'models',
         'summary',
@@ -359,7 +360,7 @@ describe('Insights methods', () => {
         feedback: {
           rating: 'thumbsDown',
           tag: { key: 'inaccurate', label: privateValue, icon: privateValue },
-          text: privateValue,
+          text: 'A comment for the agent owners',
         },
       },
     ]);
@@ -395,6 +396,7 @@ describe('Insights methods', () => {
     expect(aggregate).toEqual({
       agents: detailed.agents,
       summary: detailed.summary,
+      comments: detailed.comments,
       daily: detailed.daily,
       models: detailed.models,
       agentVersions: detailed.agentVersions,
@@ -439,24 +441,125 @@ describe('Insights methods', () => {
     expect(Object.keys(aggregate).sort()).toEqual([
       'agentVersions',
       'agents',
+      'comments',
       'daily',
       'models',
       'summary',
     ]);
+    expect(aggregate.comments?.map(({ text, tag }) => [text, tag])).toEqual([
+      ['A comment for the agent owners', 'inaccurate'],
+    ]);
     expect(JSON.stringify(aggregate)).not.toContain(privateValue);
     expect(userFind).not.toHaveBeenCalled();
     expect(conversationAggregate).toHaveBeenCalledTimes(1);
-    expect(messageAggregate).toHaveBeenCalledTimes(4);
+    expect(messageAggregate).toHaveBeenCalledTimes(5);
     const pipelines = [
       ...conversationAggregate.mock.calls,
       ...messageAggregate.mock.calls,
       ...transactionAggregate.mock.calls,
     ];
-    const serialized = JSON.stringify(pipelines);
+    const isComments = (pipeline: unknown) => JSON.stringify(pipeline).includes('feedback.text');
+    expect(pipelines.filter(isComments)).toHaveLength(1);
+    const lists = pipelines.filter((pipeline) => !isComments(pipeline));
+    const serialized = JSON.stringify(lists);
+    expect(serialized).not.toContain('feedback.text');
     expect(serialized).not.toContain('matchedIdentity');
     expect(serialized).not.toContain('firstMessage');
     expect(serialized).not.toContain('"$first"');
     expect(serialized).not.toContain('"$limit"');
+  });
+
+  it('lists the latest written feedback of the selected agents, newest first', async () => {
+    const now = Date.now();
+    const user = new mongoose.Types.ObjectId().toString();
+    const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000);
+    await fixtures.conversations.insertMany([
+      { conversationId: 'chat', user, initial_agent_id: 'agent-a', createdAt: minutesAgo(60) },
+      {
+        conversationId: 'temporary',
+        user,
+        initial_agent_id: 'agent-a',
+        isTemporary: true,
+        createdAt: minutesAgo(60),
+      },
+      {
+        conversationId: 'elsewhere',
+        user,
+        initial_agent_id: 'agent-b',
+        agent_id: 'agent-b',
+        createdAt: minutesAgo(60),
+      },
+    ]);
+    const reply = (
+      messageId: string,
+      conversationId: string,
+      minutes: number,
+      feedback: Record<string, unknown>,
+    ) => ({
+      messageId,
+      conversationId,
+      user,
+      isCreatedByUser: false,
+      createdAt: minutesAgo(minutes),
+      feedback,
+    });
+    await fixtures.messages.insertMany([
+      ...Array.from({ length: 21 }, (_, index) =>
+        reply(`older-${index}`, 'chat', 30 + index, {
+          rating: 'thumbsDown',
+          tag: 'other',
+          text: `Older ${index}`,
+        }),
+      ),
+      reply('latest', 'chat', 1, {
+        rating: 'thumbsUp',
+        tag: { key: 'other_feedback' },
+        text: 'Great answer',
+      }),
+      reply('blank', 'chat', 2, { rating: 'thumbsDown', tag: 'inaccurate', text: '  ' }),
+      reply('untagged', 'chat', 3, { rating: 'thumbsUp', text: 'No category' }),
+      reply('temporary', 'temporary', 1, { rating: 'thumbsUp', text: 'Temporary chat' }),
+      reply('elsewhere', 'elsewhere', 1, { rating: 'thumbsUp', text: 'Another agent' }),
+      {
+        messageId: 'prompt',
+        conversationId: 'chat',
+        user,
+        isCreatedByUser: true,
+        createdAt: minutesAgo(1),
+        feedback: { rating: 'thumbsUp', text: 'On a prompt' },
+      },
+    ]);
+
+    const { comments } = await createScopedInsightsMethods().getInsights({ showDetails: false });
+
+    expect(comments).toHaveLength(20);
+    expect(comments?.slice(0, 3)).toEqual([
+      {
+        agentId: 'agent-a',
+        agentName: 'Agent A',
+        date: minutesAgo(1).toISOString(),
+        rating: 'thumbsUp',
+        tag: 'other_feedback',
+        text: 'Great answer',
+      },
+      {
+        agentId: 'agent-a',
+        agentName: 'Agent A',
+        date: minutesAgo(3).toISOString(),
+        rating: 'thumbsUp',
+        tag: null,
+        text: 'No category',
+      },
+      {
+        agentId: 'agent-a',
+        agentName: 'Agent A',
+        date: minutesAgo(30).toISOString(),
+        rating: 'thumbsDown',
+        tag: 'other',
+        text: 'Older 0',
+      },
+    ]);
+    expect(comments?.[19]?.text).toBe('Older 17');
   });
 
   it('isolates spend by conversation owner, tenant and eligibility before combining agents', async () => {
