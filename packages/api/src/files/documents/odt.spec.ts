@@ -65,7 +65,7 @@ describe('contentToText', () => {
       row(cell(paragraph('EU')), cell(paragraph('10')), cell(paragraph('20'))),
     );
 
-    expect(text(body)).toBe('Region,Sales,\n,Q1,Q2\nEU,10,20');
+    expect(text(body)).toBe('Region,Sales\n,Q1,Q2\nEU,10,20');
   });
 
   it('pads a row past a cell merged across columns', () => {
@@ -126,6 +126,15 @@ describe('contentToText', () => {
 
   it('renders a table of empty cells as nothing', () => {
     expect(text(paragraph('Before.') + grid(['', ''], ['', '']))).toBe('Before.');
+  });
+
+  it('keeps the paragraphs of a table whose rows each hold one merged cell', () => {
+    const merged = (text: string): string =>
+      row(cell(paragraph(text), 'table:number-columns-spanned="2"'), covered());
+
+    expect(
+      text(paragraph('Before.') + table(merged('Note: this, that'), merged('Second line.'))),
+    ).toBe('Before.\nNote: this, that\nSecond line.');
   });
 
   it('reads a one-column table as if its text stood outside it', () => {

@@ -125,6 +125,12 @@ export function contentToText(xml: string): string {
   };
 
   const render = (table: Table<Scope>): string => {
+    // A position under a merge ends no row, as in a .docx, so a box of merged rows is one column.
+    for (const fields of table.rows) {
+      while (fields.length > 0 && fields[fields.length - 1]?.covered !== false) {
+        fields.pop();
+      }
+    }
     if (width(table) < 2) {
       return table.rows.map((fields) => fields[0]?.text ?? '').join('');
     }
