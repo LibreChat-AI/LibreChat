@@ -54,7 +54,11 @@ export const webSearchAuth = {
       /** Optional (0) */
       jinaApiUrl: 0 as const,
     },
-    cohere: { cohereApiKey: 1 as const },
+    cohere: {
+      cohereApiKey: 1 as const,
+      /** Optional (0) */
+      cohereApiUrl: 0 as const,
+    },
   },
 };
 
@@ -95,6 +99,7 @@ export const webSearchUrlApiKeys: ReadonlyMap<TWebSearchKeys, TWebSearchKeys> = 
   ['tavilySearchUrl', 'tavilyApiKey'],
   ['tavilyExtractUrl', 'tavilyApiKey'],
   ['keenableApiUrl', 'keenableApiKey'],
+  ['cohereApiUrl', 'cohereApiKey'],
 ]);
 
 /** Every web search URL that receives an API key, and every key sent to one. */
@@ -242,6 +247,7 @@ export function loadWebSearchConfig(
   const jinaApiKey = config?.jinaApiKey ?? '${JINA_API_KEY}';
   const jinaApiUrl = config?.jinaApiUrl ?? '${JINA_API_URL}';
   const cohereApiKey = config?.cohereApiKey ?? '${COHERE_API_KEY}';
+  const cohereApiUrl = config?.cohereApiUrl ?? '${COHERE_API_URL}';
   const safeSearch = config?.safeSearch ?? SafeSearchTypes.MODERATE;
   const rerankerType = config?.rerankerType;
   const searxngSearchOptions = config?.searxngSearchOptions && {
@@ -256,6 +262,7 @@ export function loadWebSearchConfig(
     jinaApiKey,
     jinaApiUrl,
     cohereApiKey,
+    cohereApiUrl,
     serperApiKey,
     searxngApiKey,
     tavilyApiKey,
