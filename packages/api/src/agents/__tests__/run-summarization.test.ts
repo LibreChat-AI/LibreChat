@@ -871,6 +871,47 @@ describe('summarization reasoning effort', () => {
     expect(request.reasoning_effort).toBe('low');
   });
 
+  it.each(['o3', 'gpt-5-mini'])(
+    "overrides the agent's Chat Completions effort for a summary on %s",
+    async (model) => {
+      /** Initialization replaces the saved parameters with the resolved client options. */
+      const { llmConfig } = getOpenAIConfig(
+        'test-key',
+        { modelOptions: { model: 'o3', reasoning_effort: ReasoningEffort.high } },
+        EModelEndpoint.openAI,
+      );
+      expect(llmConfig.modelKwargs).toEqual({ reasoning_effort: ReasoningEffort.high });
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: EModelEndpoint.openAI,
+            endpoint: EModelEndpoint.openAI,
+            model: 'o3',
+            model_parameters: { ...llmConfig },
+          }),
+        ],
+        summarizationConfig: {
+          provider: EModelEndpoint.openAI,
+          model,
+          parameters: { reasoning_effort: 'low' },
+        },
+      });
+
+      const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+      const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+      const summaryModel = new ChatOpenAI({
+        ...mainClientOptions,
+        ...(summaryConfig.parameters as Record<string, unknown>),
+        apiKey: 'test-key',
+        model,
+      } as never);
+      const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+      /** The client applies `reasoning.effort` after spreading `modelKwargs`. */
+      expect(request).toMatchObject({ model, reasoning_effort: 'low' });
+    },
+  );
+
   it('maps effort to verbosity for OpenRouter adaptive Anthropic models', async () => {
     const agents = await callAndCapture({
       agents: [
@@ -990,18 +1031,23 @@ describe('summarization reasoning effort', () => {
 
   describe("on another model of the agent's OpenAI endpoint", () => {
     /** The request the summary client sends, built as the SDK builds it: the summary
-     *  parameters over the agent's resolved client options. */
+     *  parameters over the client options initialization resolves from the saved ones. */
     async function summaryRequest(
-      agentParameters: Record<string, unknown>,
+      saved: { reasoning_effort: ReasoningEffort; useResponsesApi?: boolean },
       model: string,
     ): Promise<Record<string, unknown>> {
+      const { llmConfig } = getOpenAIConfig(
+        'test-key',
+        { modelOptions: { model: 'o3', ...saved } },
+        EModelEndpoint.openAI,
+      );
       const agents = await callAndCapture({
         agents: [
           makeReasoningAgent({
             provider: EModelEndpoint.openAI,
             endpoint: EModelEndpoint.openAI,
             model: 'o3',
-            model_parameters: { model: 'o3', ...agentParameters },
+            model_parameters: { ...llmConfig },
           }),
         ],
         summarizationConfig: { provider: EModelEndpoint.openAI, model },
@@ -1018,10 +1064,7 @@ describe('summarization reasoning effort', () => {
     }
 
     it('leaves the Chat Completions effort behind for a model that takes none', async () => {
-      const request = await summaryRequest(
-        { modelKwargs: { reasoning_effort: 'high' } },
-        'gpt-4.1',
-      );
+      const request = await summaryRequest({ reasoning_effort: ReasoningEffort.high }, 'gpt-4.1');
 
       expect(request).toMatchObject({ model: 'gpt-4.1' });
       expect(request).not.toHaveProperty('reasoning_effort');
@@ -1029,7 +1072,7 @@ describe('summarization reasoning effort', () => {
 
     it('leaves the Responses reasoning object behind for a model that takes none', async () => {
       const request = await summaryRequest(
-        { useResponsesApi: true, reasoning: { effort: 'high', summary: 'auto' } },
+        { reasoning_effort: ReasoningEffort.high, useResponsesApi: true },
         'gpt-4.1',
       );
 
@@ -1039,7 +1082,7 @@ describe('summarization reasoning effort', () => {
 
     it('keeps the effort for a model that takes one', async () => {
       const request = await summaryRequest(
-        { modelKwargs: { reasoning_effort: 'high' } },
+        { reasoning_effort: ReasoningEffort.high },
         'gpt-5-mini',
       );
 
