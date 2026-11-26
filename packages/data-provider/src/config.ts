@@ -923,6 +923,8 @@ export enum AgentCapabilities {
   ocr = 'ocr',
   run_in_background = 'run_in_background',
   tool_intents = 'tool_intents',
+  /** Read-only Agent Builder tools; off unless listed in `endpoints.agents.capabilities`. */
+  agent_builder = 'agent_builder',
 }
 
 export const defaultAssistantsVersion = {
@@ -1933,6 +1935,40 @@ export type TSubagentActivityConfig = z.infer<typeof subagentActivityConfigSchem
 /** The longest `endpoints.agents.eventDriven.idlePolling.maxIntervalMs` may ask a loop to wait: one hour. */
 export const MAX_IDLE_POLLING_INTERVAL_MS = 60 * 60_000;
 
+/** Default `list_agents` page size. */
+export const AGENT_BUILDER_LIST_DEFAULT_LIMIT = 20;
+/** Default largest `list_agents` page size the model may request. */
+export const AGENT_BUILDER_LIST_MAX_LIMIT = 50;
+/** Highest page size `endpoints.agents.agentBuilder.list` accepts. */
+export const AGENT_BUILDER_LIST_LIMIT_CEILING = 100;
+
+const agentBuilderListLimitSchema = z.number().int().min(1).max(AGENT_BUILDER_LIST_LIMIT_CEILING);
+
+/** `endpoints.agents.agentBuilder`: limits for the tools behind the `agent_builder` capability. */
+export const agentBuilderConfigSchema = z
+  .object({
+    list: z
+      .object({
+        /** Omitted: the smaller of the default page size and `maxLimit`. */
+        defaultLimit: agentBuilderListLimitSchema.optional(),
+        maxLimit: agentBuilderListLimitSchema.default(AGENT_BUILDER_LIST_MAX_LIMIT),
+      })
+      .strict()
+      .refine((list) => list.defaultLimit == null || list.defaultLimit <= list.maxLimit, {
+        message: '`defaultLimit` must not be greater than `maxLimit`',
+        path: ['defaultLimit'],
+      })
+      .transform((list) => ({
+        defaultLimit:
+          list.defaultLimit ?? Math.min(AGENT_BUILDER_LIST_DEFAULT_LIMIT, list.maxLimit),
+        maxLimit: list.maxLimit,
+      }))
+      .optional(),
+  })
+  .strict();
+
+export type TAgentBuilderConfig = z.infer<typeof agentBuilderConfigSchema>;
+
 export const agentsEndpointSchema = baseEndpointSchema
   .omit({ baseURL: true })
   .merge(
@@ -2202,6 +2238,7 @@ export const agentsEndpointSchema = baseEndpointSchema
         .array(z.nativeEnum(AgentCapabilities))
         .optional()
         .default(defaultAgentCapabilities),
+      agentBuilder: agentBuilderConfigSchema.optional(),
       /** Controls which workspace-sharing scopes users may select for stateful code sessions.
        *  Omit this block to preserve the legacy behavior of allowing every scope. */
       statefulCodeSessions: z

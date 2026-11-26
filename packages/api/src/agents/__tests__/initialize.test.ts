@@ -7401,6 +7401,84 @@ describe('initializeAgent — deferred system tools', () => {
   });
 });
 
+describe('initializeAgent — agent_builder marker', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  async function initialize(
+    toolOptions: Agent['tool_options'],
+    agentBuilderEnabled: boolean,
+    config?: ServerRequest['config'],
+  ): Promise<Awaited<ReturnType<typeof initializeAgent>>> {
+    const { agent, req, res, loadTools, db } = createMocks();
+    if (config) {
+      req.config = config;
+    }
+    agent.tools = [AgentCapabilities.agent_builder];
+    agent.tool_options = toolOptions;
+    loadTools.mockResolvedValue({
+      tools: [],
+      toolContextMap: {},
+      toolRegistry: new Map(),
+      toolDefinitions: [],
+      hasDeferredTools: false,
+      deferredToolsEnabled: true,
+      agentBuilderEnabled,
+    });
+    return initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+  }
+
+  const byName = (result: Awaited<ReturnType<typeof initializeAgent>>) =>
+    new Map((result.toolDefinitions ?? []).map((def) => [def.name, def]));
+
+  it('expands the marker into direct-only read tools that stay bound by default', async () => {
+    const tools = byName(await initialize(undefined, true));
+
+    expect([...tools.keys()]).toEqual(['list_agents', 'get_agent']);
+    expect(tools.get('list_agents')?.allowed_callers).toEqual(['direct']);
+    expect(tools.get('list_agents')?.defer_loading).toBeUndefined();
+  });
+
+  it('defers the marker tools when tool_options opts the marker in', async () => {
+    const result = await initialize({ agent_builder: { defer_loading: true } }, true);
+    const tools = byName(result);
+
+    expect(tools.get('list_agents')?.defer_loading).toBe(true);
+    expect(tools.get('get_agent')?.defer_loading).toBe(true);
+    expect(tools.has('tool_search')).toBe(true);
+    expect(result.toolRegistry?.get('get_agent')).toBe(tools.get('get_agent'));
+  });
+
+  it('sizes list_agents pages from endpoints.agents.agentBuilder', async () => {
+    const config = {
+      endpoints: { agents: { agentBuilder: { list: { defaultLimit: 4, maxLimit: 8 } } } },
+    } as ServerRequest['config'];
+    const listAgents = byName(await initialize(undefined, true, config)).get('list_agents');
+    const { limit } = (listAgents?.parameters as { properties: Record<string, object> }).properties;
+
+    expect(limit).toMatchObject({ maximum: 8, description: 'Page size, default 4.' });
+  });
+
+  it('registers nothing when the loader dropped the marker', async () => {
+    const tools = byName(await initialize(undefined, false));
+
+    expect(tools.has('list_agents')).toBe(false);
+    expect(tools.has('get_agent')).toBe(false);
+  });
+});
+
 describe('initializeAgent — deferral without a loader registry', () => {
   beforeEach(() => {
     jest.clearAllMocks();

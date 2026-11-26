@@ -22,6 +22,8 @@ export type BuiltinId =
    * in `selectors.ts` / `mutations.ts`.
    */
   | 'ask_user_question'
+  /** Capability marker in `agent.tools`, toggled like `ask_user_question`. */
+  | `${AgentCapabilities.agent_builder}`
   | `${AgentCapabilities.subagent_graphs}`
   | `${AgentCapabilities.subagents}`
   | 'handoffs';

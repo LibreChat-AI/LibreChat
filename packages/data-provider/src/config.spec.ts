@@ -3,6 +3,7 @@ import type { TEndpointsConfig } from './types';
 import {
   allowedAddressesSchema,
   agentsEndpointSchema,
+  agentBuilderConfigSchema,
   BASE_ONLY_CONFIG_PATHS,
   BASE_ONLY_CONFIG_SECTIONS,
   DEPLOYMENT_ONLY_CONFIG_PATHS,
@@ -174,6 +175,49 @@ describe('skill deletion worker config', () => {
     expect(
       configSchema.safeParse({ version: '1.0', skillDeletion: { recheckIntervalMs: 999 } }).success,
     ).toBe(false);
+  });
+});
+
+describe('agent builder config', () => {
+  it('is absent by default and fills the list defaults when the block is present', () => {
+    expect(agentsEndpointSchema.parse({}).agentBuilder).toBeUndefined();
+    expect(agentsEndpointSchema.parse({ agentBuilder: { list: {} } }).agentBuilder).toEqual({
+      list: { defaultLimit: 20, maxLimit: 50 },
+    });
+    expect(agentBuilderConfigSchema.parse({ list: { maxLimit: 80 } })).toEqual({
+      list: { defaultLimit: 20, maxLimit: 80 },
+    });
+  });
+
+  it('caps an omitted defaultLimit at a smaller maxLimit', () => {
+    expect(agentBuilderConfigSchema.parse({ list: { maxLimit: 10 } })).toEqual({
+      list: { defaultLimit: 10, maxLimit: 10 },
+    });
+  });
+
+  it('accepts a default equal to the maximum', () => {
+    expect(
+      agentBuilderConfigSchema.safeParse({ list: { defaultLimit: 5, maxLimit: 5 } }).success,
+    ).toBe(true);
+  });
+
+  it.each([
+    { defaultLimit: 30, maxLimit: 10 },
+    { defaultLimit: 60 },
+    { defaultLimit: 0 },
+    { maxLimit: 101 },
+    { defaultLimit: 2.5 },
+    { pageSize: 10 },
+  ])('rejects list %p', (list) => {
+    expect(agentBuilderConfigSchema.safeParse({ list }).success).toBe(false);
+  });
+
+  it('reports a default above the maximum on defaultLimit', () => {
+    const result = agentBuilderConfigSchema.safeParse({ list: { defaultLimit: 30, maxLimit: 10 } });
+    expect(result.success === false && result.error.issues[0]?.path).toEqual([
+      'list',
+      'defaultLimit',
+    ]);
   });
 });
 

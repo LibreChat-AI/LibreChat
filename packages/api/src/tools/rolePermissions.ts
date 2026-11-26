@@ -2,9 +2,10 @@ import { logger } from '@librechat/data-schemas';
 import {
   Tools,
   Permissions,
-  EToolResources,
   ToolCallTypes,
+  EToolResources,
   PermissionTypes,
+  AgentCapabilities,
 } from 'librechat-data-provider';
 import type { Request as ServerRequest } from 'express';
 import type { CheckAccessParams } from '../middleware/access';
@@ -19,6 +20,8 @@ export const toolRolePermissions: Partial<Record<string, PermissionTypes>> = {
   [Tools.file_search]: PermissionTypes.FILE_SEARCH,
   [Tools.execute_code]: PermissionTypes.RUN_CODE,
   [Tools.web_search]: PermissionTypes.WEB_SEARCH,
+  /** The marker's tools run as the user, so they need the agent routes' `AGENTS.USE`. */
+  [AgentCapabilities.agent_builder]: PermissionTypes.AGENTS,
 };
 
 /**

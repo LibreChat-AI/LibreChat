@@ -13,6 +13,7 @@ import {
   Layers,
   Network,
   Waypoints,
+  Bot,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { AgentItem } from './types';
@@ -60,6 +61,10 @@ const BUILTIN_ICONS: Record<string, ItemIcon> = {
   ask_user_question: {
     Icon: MessageCircleQuestion,
     colorClass: 'bg-series-3/15 text-series-3',
+  },
+  agent_builder: {
+    Icon: Bot,
+    colorClass: 'bg-series-2/15 text-series-2',
   },
 };
 

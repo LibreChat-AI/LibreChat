@@ -64,6 +64,7 @@ const {
   PrincipalType,
   EToolResources,
   isActionTool,
+  AgentCapabilities,
   PermissionBits,
   actionDelimiter,
   EModelEndpoint,
@@ -102,6 +103,7 @@ const systemTools = {
   [Tools.file_search]: true,
   [Tools.web_search]: true,
   [Tools.memory]: true,
+  [AgentCapabilities.agent_builder]: true,
 };
 
 const MAX_SEARCH_LEN = 100;

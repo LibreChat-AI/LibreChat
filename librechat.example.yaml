@@ -976,8 +976,13 @@ endpoints:
   #   # Both require WEB_SEARCH.USE, seeded by interface.webSearch. See UPGRADING.md.
   #   capabilities: ["deferred_tools", "execute_code", "file_search", "web_search", "artifacts", "subagents", "actions", "context", "skills", "memory", "ask_user_question", "tools", "ocr"]
   #   # The following capabilities are opt-in and must be added explicitly:
-  #   # "programmatic_tools", "stateful_code_sessions", "run_in_background", "tool_intents", "subagent_graphs"
+  #   # "programmatic_tools", "stateful_code_sessions", "run_in_background", "tool_intents", "subagent_graphs", "agent_builder"
   #   # "stateful_code_sessions" is highly experimental and may change substantially.
+  #   # (optional) Page sizes for the Agent Builder's list_agents tool ("agent_builder" capability).
+  #   # Both accept 1-100; defaultLimit must not be greater than maxLimit.
+  #   # An omitted defaultLimit is 20, or maxLimit when that is smaller.
+  #   agentBuilder:
+  #     list: { defaultLimit: 20, maxLimit: 50 }
   #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
   #   statefulCodeSessions:
   #     # Let new chats choose an attached machine from their agent's explicit machine allowlist.

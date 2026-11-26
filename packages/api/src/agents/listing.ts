@@ -1,12 +1,19 @@
 import { PermissionBits, ResourceType } from 'librechat-data-provider';
-import type { IUser, SystemCapability } from '@librechat/data-schemas';
+import type { SystemCapability } from '@librechat/data-schemas';
 import { hasManageAgentsCapability } from './access';
 
 /** ACL implementations may return either plain IDs or objects with a string representation. */
 type ResourceId = string | { toString(): string };
 
-type AgentListAccessDeps = {
-  hasCapability: (user: IUser, capability: SystemCapability) => Promise<boolean>;
+/** The user fields the listing ACL read needs. */
+export interface AgentListUser {
+  id: string;
+  role?: string;
+  idOnTheSource?: string;
+}
+
+export type AgentListAccessDeps<U extends AgentListUser = AgentListUser> = {
+  hasCapability: (user: U, capability: SystemCapability) => Promise<boolean>;
   findAccessibleResources: (params: {
     userId: string;
     role?: string;
@@ -16,10 +23,10 @@ type AgentListAccessDeps = {
   }) => Promise<ResourceId[]>;
 };
 
-export async function getAgentListAccess(
-  user: IUser,
+export async function getAgentListAccess<U extends AgentListUser>(
+  user: U,
   requiredPermissions: PermissionBits,
-  deps: AgentListAccessDeps,
+  deps: AgentListAccessDeps<U>,
 ): Promise<{ accessibleIds: string[] | null; editableIds: string[] | null }> {
   if (typeof requiredPermissions !== 'number' || requiredPermissions < 1) {
     throw new Error('requiredPermissions must be a positive number');

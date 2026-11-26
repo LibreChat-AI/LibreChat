@@ -1532,6 +1532,38 @@ describe('ToolService - Action Capability Gating', () => {
       expect(callArgs.tools).toContain('ask_user_question');
     });
 
+    it.each([
+      ['capability off', false, [AgentCapabilities.tools], true],
+      [
+        'AGENTS.USE denied',
+        false,
+        [AgentCapabilities.tools, AgentCapabilities.agent_builder],
+        false,
+      ],
+      [
+        'capability on and AGENTS.USE granted',
+        true,
+        [AgentCapabilities.tools, AgentCapabilities.agent_builder],
+        true,
+      ],
+    ])('agent_builder marker: %s', async (_label, kept, capabilities, agentsUse) => {
+      mockGetRoleByName.mockResolvedValue(
+        buildRole({ [PermissionTypes.AGENTS]: { [Permissions.USE]: agentsUse } }),
+      );
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      await loadAgentTools({
+        req: createMockReq(capabilities),
+        res: {},
+        agent: { id: 'agent_123', tools: [regularTool, AgentCapabilities.agent_builder] },
+        definitionsOnly: true,
+      });
+
+      const [callArgs] = mockLoadToolDefinitions.mock.calls[0];
+      expect(callArgs.tools).toContain(regularTool);
+      expect(callArgs.tools.includes(AgentCapabilities.agent_builder)).toBe(kept);
+    });
+
     it('should not filter MCP tools whose name contains _action (cross-delimiter collision)', async () => {
       const mcpToolWithAction = `get_action${Constants.mcp_delimiter}myserver`;
       const capabilities = [AgentCapabilities.tools];
@@ -4582,6 +4614,7 @@ describe('ToolService - Action Capability Gating', () => {
       expect(defaultAgentCapabilities).toContain(AgentCapabilities.ask_user_question);
       expect(defaultAgentCapabilities).toContain(AgentCapabilities.tools);
       expect(defaultAgentCapabilities).not.toContain(AgentCapabilities.chain);
+      expect(defaultAgentCapabilities).not.toContain(AgentCapabilities.agent_builder);
       expect(defaultAgentCapabilities).toContain(AgentCapabilities.ocr);
     });
   });

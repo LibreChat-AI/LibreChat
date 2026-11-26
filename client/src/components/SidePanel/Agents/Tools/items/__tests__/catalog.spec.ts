@@ -9,7 +9,14 @@ const emptyInputs: BuildCatalogInputs = {
   mcpServersMap: new Map(),
   skills: [],
   actions: [],
-  permissions: { mcp: true, skills: true, webSearch: true, runCode: true, fileSearch: true },
+  permissions: {
+    mcp: true,
+    skills: true,
+    webSearch: true,
+    runCode: true,
+    fileSearch: true,
+    agentBuilder: true,
+  },
 };
 
 const toolInputs: BuildCatalogInputs = {
@@ -95,6 +102,30 @@ describe('buildCatalog', () => {
       ),
     ).toBeUndefined();
   });
+
+  test.each([
+    { capability: true, create: true, shown: true },
+    { capability: true, create: false, shown: false },
+    { capability: false, create: true, shown: false },
+    { capability: false, create: false, shown: false },
+  ])(
+    'agent_builder card: capability $capability, agents CREATE $create -> shown $shown',
+    ({ capability, create, shown }) => {
+      const item = buildCatalog({
+        ...emptyInputs,
+        agentsConfig: { capabilities: capability ? [AgentCapabilities.agent_builder] : [] },
+        permissions: { ...emptyInputs.permissions, agentBuilder: create },
+      }).find((i) => i.kind === 'builtin' && i.id === AgentCapabilities.agent_builder);
+      expect(item != null).toBe(shown);
+      if (shown) {
+        expect(item).toMatchObject({
+          name: 'com_ui_agent_builder',
+          description: 'com_agents_agent_builder_info',
+          iconKey: 'agent_builder',
+        });
+      }
+    },
+  );
 
   test('hides MCP items when the user lacks MCP permission', () => {
     const map = new Map();

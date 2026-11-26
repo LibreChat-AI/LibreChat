@@ -152,6 +152,7 @@ import { hasActiveFileFieldPolicy } from '~/protection';
 import { applyBackgroundToolCalls } from './background';
 import { admitCurrentFileBudget } from './files/budget';
 import { allowsFileResource } from '~/files/consumers';
+import { registerAgentBuilderTools } from './builder';
 import { applyDeferredToolLoading } from './deferral';
 import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
@@ -1020,6 +1021,8 @@ export interface InitializeAgentParams {
     hasDeferredTools?: boolean;
     /** Whether the `deferred_tools` capability is enabled for this agent's run. */
     deferredToolsEnabled?: boolean;
+    /** Whether the loader kept the `agent_builder` marker (capability on, role allowed). */
+    agentBuilderEnabled?: boolean;
     mcpToolAliases?: MCPToolAlias[];
     actionsEnabled?: boolean;
     /** Action tool names backed by OAuth — excluded from background dispatch. */
@@ -2361,6 +2364,7 @@ export async function initializeAgent(
     requestScopedConnections,
     hasDeferredTools: loadedHasDeferredTools,
     deferredToolsEnabled,
+    agentBuilderEnabled,
     mcpToolAliases,
     actionsEnabled,
     oauthActionToolNames,
@@ -2542,6 +2546,16 @@ export async function initializeAgent(
     logger.debug(
       `[initializeAgent] Agent "${agent.id}" requests memory but memoryAvailable=${String(params.memoryAvailable)}; skipping set_memory + delete_memory registration.`,
     );
+  }
+
+  if (agentBuilderEnabled === true) {
+    const builderResult = registerAgentBuilderTools({
+      toolRegistry,
+      toolDefinitions,
+      config: appConfig?.endpoints?.agents?.agentBuilder,
+    });
+    toolDefinitions = builderResult.toolDefinitions;
+    recordCapabilityToolNames(AgentCapabilities.agent_builder, builderResult.toolNames);
   }
 
   if (skillAuthoringAvailable) {
