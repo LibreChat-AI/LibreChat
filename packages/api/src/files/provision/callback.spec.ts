@@ -409,6 +409,17 @@ describe('createProvisionFilesCallback', () => {
         'Failed to provision',
       );
       expect(harness.fileStorage.releaseFileProvision).not.toHaveBeenCalled();
+      const [unknownClaim] = harness.fileStorage.acquireFileProvision.mock.calls[0];
+      if (destination === 'code') {
+        /* Each Code API upload opens its own session, so the next call uploads again beside
+         * the unknown attempt instead of waiting on it, and that attempt's claim stays stored. */
+        await expect(harness.provisionFiles(toolNames, 'agent-a')).resolves.toHaveLength(1);
+        expect(harness.upload).toHaveBeenCalledTimes(2);
+        expect(harness.fileStorage.acquireFileProvision).toHaveBeenCalledTimes(2);
+        expect(harness.fileStorage.releaseFileProvision).toHaveBeenCalledTimes(1);
+        expect(harness.fileStorage.releaseFileProvision).not.toHaveBeenCalledWith(unknownClaim);
+        return;
+      }
       await expect(harness.provisionFiles(toolNames, 'agent-a')).rejects.toThrow(
         'Failed to provision',
       );

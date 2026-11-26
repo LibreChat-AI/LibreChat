@@ -708,6 +708,7 @@ const primeFiles = async (options) => {
             sourceRef.kind === 'skill' ? sourceRef.version : null,
             sandboxName,
           ]),
+          uniqueRemote: true,
           operation: async (_claim, onUploadStart) => {
             const { getDownloadStream } = getStrategyFunctions(file.source);
             const { handleFileUpload: uploadCodeEnvFile } = getStrategyFunctions(

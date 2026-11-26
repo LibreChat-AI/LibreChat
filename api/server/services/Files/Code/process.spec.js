@@ -3776,6 +3776,67 @@ describe('Code Process', () => {
         expect(failureLogs).not.toContain(dbFile.filepath);
       },
     );
+
+    it('re-uploads an agent file on the next turn after an upload with an unknown outcome', async () => {
+      const dbFile = {
+        file_id: 'agent-module',
+        user: 'user-123',
+        filename: 'raise_table.py',
+        filepath: '/uploads/raise_table.py',
+        source: 'local',
+        context: 'agents',
+        metadata: {
+          codeEnvRef: {
+            kind: 'agent',
+            id: 'agent-id',
+            storage_session_id: 'EXPIRED_SESSION',
+            file_id: 'EXPIRED_ID',
+          },
+        },
+      };
+      const serverError = Object.assign(new Error('Request failed with status code 500'), {
+        isAxiosError: true,
+        response: { status: 500 },
+      });
+      const handleFileUpload = jest
+        .fn()
+        .mockImplementationOnce(async ({ onUploadStart }) => {
+          onUploadStart();
+          throw serverError;
+        })
+        .mockImplementationOnce(async ({ onUploadStart }) => {
+          onUploadStart();
+          return { storage_session_id: 'NEW_SESSION', file_id: 'NEW_ID' };
+        });
+      const getDownloadStream = jest.fn(async () => Readable.from(['print("table")']));
+      getStrategyFunctions.mockImplementation((source) =>
+        source === 'execute_code' ? { handleFileUpload } : { getDownloadStream },
+      );
+      getFiles.mockResolvedValue([dbFile]);
+      updateFile.mockResolvedValue({});
+      /* The Code API refuses reads of a session whose cache key has lapsed. */
+      mockAxios.mockRejectedValue(
+        Object.assign(new Error('Request failed with status code 403'), {
+          response: { status: 403 },
+        }),
+      );
+      const turn = () =>
+        primeFiles({
+          req: { user: { id: 'user-123', role: 'USER' } },
+          tool_resources: { execute_code: { file_ids: [dbFile.file_id], files: [] } },
+          agentId: 'agent-id',
+        });
+
+      await expect(turn()).rejects.toMatchObject({
+        code: ErrorTypes.RESOURCE_RECOVERY_REQUIRED,
+      });
+      const result = await turn();
+
+      expect(handleFileUpload).toHaveBeenCalledTimes(2);
+      expect(result.files).toEqual([
+        expect.objectContaining({ id: 'NEW_ID', storage_session_id: 'NEW_SESSION', kind: 'agent' }),
+      ]);
+    });
   });
 
   describe('primeFiles toolContext for model-visible code files', () => {

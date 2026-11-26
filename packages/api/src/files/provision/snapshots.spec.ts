@@ -699,7 +699,7 @@ describe('generated-file snapshots in the code environment', () => {
     expectStoredBytes(next.mounted, files);
   });
 
-  it('keeps the claim of a file the service stored a batch without answering for', async () => {
+  it('keeps the claim of a file a batch stored without answering for and uploads it again', async () => {
     const files = snapshots(3);
     fixture.state.omitNames.add('edit-1.png');
 
@@ -718,11 +718,15 @@ describe('generated-file snapshots in the code environment', () => {
 
     fixture.state.omitNames.clear();
     const next = await turn();
+    expect(next.error).toBeUndefined();
     expect(next.queued).toEqual([files[1].file_id]);
-    expect(next.uploads).toEqual([]);
-    expect((next.error as { errors: unknown[] }).errors).toEqual([
-      expect.any(FileProvisionOutcomeUnknownError),
-    ]);
+    /* Every batch opens its own session, so the next one cannot meet the unanswered copy,
+     * whose claim stays held for manual recovery. */
+    expect(next.uploads).toHaveLength(1);
+    expect(next.uploads[0].files).toEqual(['edit-1.png']);
+    expectStoredBytes(next.mounted, files);
+    expect(fileStorage.acquireFileProvision).toHaveBeenCalledTimes(4);
+    expect(fileStorage.releaseFileProvision).toHaveBeenCalledTimes(3);
   });
 
   it('never holds more than one request may carry, however many records understate their size', async () => {
