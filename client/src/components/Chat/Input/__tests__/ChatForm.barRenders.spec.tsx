@@ -291,6 +291,27 @@ describe('ChatForm action bar', () => {
     20000,
   );
 
+  test.each([
+    { name: 'a new chat', conversationId: 'new', submitting: false },
+    { name: 'a saved chat with a run in flight', conversationId: 'saved-chat', submitting: true },
+  ])(
+    'the form body does not re-run while the draft is typed in $name',
+    async (scenario) => {
+      renderComposer(scenario);
+      const textarea = await screen.findByTestId('text-input');
+      await userEvent.click(textarea);
+      await userEvent.keyboard('h');
+      const runsBefore = mockFormBody.runs;
+      expect(runsBefore).toBeGreaterThan(0);
+
+      await userEvent.keyboard('ello');
+
+      expect(textarea).toHaveValue('hello');
+      expect(mockFormBody.runs).toBe(runsBefore);
+    },
+    20000,
+  );
+
   test('send follows the draft', async () => {
     renderComposer();
     const textarea = await screen.findByTestId('text-input');

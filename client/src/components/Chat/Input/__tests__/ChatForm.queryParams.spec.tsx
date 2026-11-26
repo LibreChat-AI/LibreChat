@@ -750,7 +750,7 @@ describe('ChatForm URL submission', () => {
     expect(screen.getByTestId('text-input')).toHaveValue('hi');
     expect(screen.getByTestId('text-input')).toBeDisabled();
     expect(screen.getByTestId('send-button')).toBeDisabled();
-    expect(screen.getByText('Sending...')).toHaveAttribute('role', 'status');
+    expect(screen.getByText('Sending...').closest('[role="status"]')).not.toBeNull();
     await act(async () => {
       fireEvent.submit(screen.getByTestId('text-input').closest('form') as HTMLFormElement);
     });
@@ -762,10 +762,9 @@ describe('ChatForm URL submission', () => {
     await act(async () => jest.advanceTimersByTime(100));
     await act(async () => jest.advanceTimersByTime(3000));
     expect(screen.getByTestId('text-input')).toHaveValue('hi');
-    expect(screen.getByText(/Chat settings could not be applied/)).toHaveAttribute(
-      'role',
-      'status',
-    );
+    expect(
+      screen.getByText(/Chat settings could not be applied/).closest('[role="status"]'),
+    ).not.toBeNull();
     expect(ask).not.toHaveBeenCalled();
     await act(async () => {
       fireEvent.submit(screen.getByTestId('text-input').closest('form') as HTMLFormElement);
