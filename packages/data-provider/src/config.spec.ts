@@ -129,6 +129,10 @@ describe('Insights configuration', () => {
     { enabled: 'true' },
     { adminAutoSelectAllAgents: 'false' },
     { enabled: true, showDetail: false },
+    { commentLimit: 0 },
+    { commentLimit: 101 },
+    { commentLimit: 2.5 },
+    { commentLimit: '20' },
   ])('rejects unsupported configuration %p', (insights) => {
     expect(configSchema.safeParse({ version: '1.3.9', interface: { insights } }).success).toBe(
       false,
@@ -136,9 +140,22 @@ describe('Insights configuration', () => {
   });
 
   it('resolves missing flags to disabled and aggregate-only defaults', () => {
-    const disabled = { enabled: false, showDetails: false, adminAutoSelectAllAgents: false };
+    const disabled = {
+      enabled: false,
+      showDetails: false,
+      adminAutoSelectAllAgents: false,
+      commentLimit: 20,
+    };
     expect(resolveInsightsConfig()).toEqual(disabled);
     expect(resolveInsightsConfig({ enabled: true })).toEqual({ ...disabled, enabled: true });
+  });
+
+  it('accepts a comment limit within bounds', () => {
+    const insights = { enabled: true, commentLimit: 100 };
+    expect(
+      configSchema.parse({ version: '1.3.9', interface: { insights } }).interface?.insights,
+    ).toEqual(insights);
+    expect(resolveInsightsConfig({ commentLimit: 5 }).commentLimit).toBe(5);
   });
 });
 

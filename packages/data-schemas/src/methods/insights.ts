@@ -2,6 +2,7 @@ import _ from 'lodash';
 import {
   FEEDBACK_TAGS,
   CREDITS_PER_USD,
+  INSIGHTS_COMMENT_LIMIT,
   INSIGHTS_MAX_RANGE_DAYS,
   INSIGHTS_SEARCH_MAX_LENGTH,
   INSIGHTS_SEARCH_MIN_LENGTH,
@@ -33,6 +34,7 @@ export type InsightsOptions = TInsightsParams & {
   tenantId?: string;
   agents?: TInsightsAgent[];
   showDetails?: boolean;
+  commentLimit?: number;
 };
 
 export type InsightsResult = TInsightsResponse;
@@ -93,23 +95,42 @@ const rangeDays = { '24h': 1, '7d': 7, '30d': 30 };
 const defaultRange = '7d';
 const churnedUserWindowDays = 28;
 const churnedUserLimit = 8;
-const commentLimit = 20;
 const dayMs = 24 * 60 * 60 * 1000;
 const replyUsageWindowMs = dayMs;
 const replyUsageContexts = ['message', 'abort', 'incomplete', 'reasoning', null];
 
-const responseRating = { $cond: [{ $eq: ['$isCreatedByUser', false] }, '$feedback.rating', null] };
+const isReply = {
+  $and: [
+    { $eq: ['$isCreatedByUser', false] },
+    { $eq: [{ $ifNull: ['$metadata.responseInputRole', null] }, null] },
+  ],
+};
+const finishReason = { $ifNull: ['$finish_reason', null] };
+const responseRating = { $cond: [isReply, '$feedback.rating', null] };
 const responseOutcome = {
   $cond: [
-    { $eq: ['$isCreatedByUser', false] },
+    isReply,
     {
       $cond: [
         {
-          $or: [{ $eq: ['$error', true] }, { $in: ['error', { $ifNull: ['$content.type', []] }] }],
+          $or: [
+            { $eq: ['$error', true] },
+            { $in: ['error', { $ifNull: ['$content.type', []] }] },
+            { $eq: [finishReason, 'failed'] },
+          ],
         },
         'failed',
         {
-          $cond: [{ $eq: ['$unfinished', true] }, 'interrupted', 'completed'],
+          $cond: [
+            {
+              $or: [
+                { $eq: ['$unfinished', true] },
+                { $in: [finishReason, ['cancelled', 'incomplete']] },
+              ],
+            },
+            'interrupted',
+            'completed',
+          ],
         },
       ],
     },
@@ -728,7 +749,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
           agentIds,
         ),
         { $sort: { createdAt: -1, _id: -1 } },
-        { $limit: commentLimit },
+        { $limit: options.commentLimit ?? INSIGHTS_COMMENT_LIMIT },
         {
           $project: {
             _id: 0,

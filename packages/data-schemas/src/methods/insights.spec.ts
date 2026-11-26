@@ -561,6 +561,65 @@ describe('Insights methods', () => {
       },
     ]);
     expect(comments?.[19]?.text).toBe('Older 17');
+
+    const limited = await createScopedInsightsMethods().getInsights({
+      showDetails: false,
+      commentLimit: 2,
+    });
+    expect(limited.comments?.map(({ text }) => text)).toEqual(['Great answer', 'No category']);
+  });
+
+  it('counts stopped and Responses API replies by their final status, without caller inputs', async () => {
+    const createdAt = new Date(Date.now() - 60_000);
+    const user = new mongoose.Types.ObjectId().toString();
+    await fixtures.conversations.insertOne({
+      conversationId: 'responses',
+      user,
+      initial_agent_id: 'agent-a',
+      createdAt,
+    });
+    const message = { conversationId: 'responses', user, createdAt };
+    const reply = (messageId: string, finishReason: string) => ({
+      ...message,
+      messageId,
+      isCreatedByUser: false,
+      unfinished: false,
+      error: false,
+      finish_reason: finishReason,
+      feedback: { rating: 'thumbsUp' },
+    });
+    const input = (messageId: string, role: string) => ({
+      ...message,
+      messageId,
+      isCreatedByUser: false,
+      isUserSubmitted: true,
+      metadata: { responseInputRole: role },
+      feedback: { rating: 'thumbsDown' },
+    });
+    await fixtures.messages.insertMany([
+      { ...message, messageId: 'prompt', isCreatedByUser: true },
+      input('instructions', 'system'),
+      input('history', 'assistant'),
+      reply('completed', 'stop'),
+      reply('failed', 'failed'),
+      reply('cancelled', 'cancelled'),
+      reply('stopped', 'incomplete'),
+    ]);
+
+    const { summary, models } = await createScopedInsightsMethods().getInsights({
+      showDetails: false,
+    });
+
+    expect(summary).toEqual(
+      expect.objectContaining({
+        totalResponses: 4,
+        completedResponses: 1,
+        failedResponses: 1,
+        interruptedResponses: 2,
+        feedback: feedbackCounts(4),
+      }),
+    );
+    expect(models.map(({ responses }) => responses)).toEqual([4]);
   });
 
   it('isolates spend by conversation owner, tenant and eligibility before combining agents', async () => {

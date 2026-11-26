@@ -226,6 +226,8 @@ interface:
   #   # READ_INSIGHTS capability) opens Insights (default: false). When false, they choose
   #   # agents first; All agents can still be selected explicitly.
   #   adminAutoSelectAllAgents: false
+  #   # Number of the latest written feedback comments to list (default: 20, max: 100).
+  #   commentLimit: 20
 
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
   # What heads the welcome screen when an agent, assistant or model spec is selected (default: entity).

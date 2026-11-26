@@ -110,6 +110,7 @@ export function createInsightsHandler({
         enabled,
         showDetails: configuredShowDetails,
         adminAutoSelectAllAgents,
+        commentLimit,
       } = resolveInsightsConfig(req.config?.interfaceConfig?.insights, isLegacyInsightsEnabled());
       if (!enabled) {
         res.status(404).json({ message: 'Not found' });
@@ -168,6 +169,7 @@ export function createInsightsHandler({
         fromTimestamp: stringValue(req.query.fromTimestamp),
         toTimestamp: stringValue(req.query.toTimestamp),
         timeZone: timeZoneValue(req.query.timeZone),
+        commentLimit,
       });
       res.json(insights);
     } catch (error) {

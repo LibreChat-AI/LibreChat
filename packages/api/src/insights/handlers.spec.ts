@@ -187,8 +187,20 @@ describe('Insights handlers', () => {
       fromTimestamp: undefined,
       toTimestamp: undefined,
       timeZone: undefined,
+      commentLimit: 20,
     });
     expect(json).toHaveBeenCalledWith(emptyInsights);
+  });
+
+  it('passes the configured comment limit to the data layer', async () => {
+    const { handler, getInsights } = createDashboardHandler();
+
+    await handler(
+      createRequest({}, { ...enabledConfig, commentLimit: 5 }),
+      createResponse().response,
+    );
+
+    expect(getInsights).toHaveBeenCalledWith(expect.objectContaining({ commentLimit: 5 }));
   });
 
   it('sorts and deduplicates an authorized agent subset', async () => {

@@ -38,6 +38,7 @@ import {
   eReasoningParameterFormatSchema,
   eReasoningResponseKeySchema,
 } from './schemas';
+import { INSIGHTS_COMMENT_LIMIT, INSIGHTS_COMMENT_LIMIT_MAX } from './types/insights';
 import { runGrantResourceBindingSchema } from './types/runGrant';
 import { partialWithoutDefaults } from './zod';
 
@@ -3420,6 +3421,7 @@ const insightsConfigSchema = z
     showDetails: z.boolean().optional(),
     /** Load all agents when admins or global READ_INSIGHTS holders open Insights (default false). */
     adminAutoSelectAllAgents: z.boolean().optional(),
+    commentLimit: z.number().int().min(1).max(INSIGHTS_COMMENT_LIMIT_MAX).optional(),
   })
   .strict();
 
@@ -3428,6 +3430,7 @@ export type TResolvedInsightsConfig = {
   enabled: boolean;
   showDetails: boolean;
   adminAutoSelectAllAgents: boolean;
+  commentLimit: number;
 };
 
 export function resolveInsightsConfig(
@@ -3438,6 +3441,7 @@ export function resolveInsightsConfig(
     enabled: config?.enabled ?? legacyEnabled,
     showDetails: config?.showDetails ?? false,
     adminAutoSelectAllAgents: config?.adminAutoSelectAllAgents ?? false,
+    commentLimit: config?.commentLimit ?? INSIGHTS_COMMENT_LIMIT,
   };
 }
 

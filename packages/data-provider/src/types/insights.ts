@@ -3,6 +3,8 @@ import type { TFeedbackRating, TFeedbackTagKey } from '../feedback';
 export type InsightsRange = '24h' | '7d' | '30d' | 'custom';
 
 export const INSIGHTS_MAX_RANGE_DAYS = 30;
+export const INSIGHTS_COMMENT_LIMIT = 20;
+export const INSIGHTS_COMMENT_LIMIT_MAX = 100;
 export const INSIGHTS_SEARCH_MIN_LENGTH = 3;
 export const INSIGHTS_SEARCH_MAX_LENGTH = 200;
 export const INSIGHTS_AGENT_ID_MAX_LENGTH = 256;
