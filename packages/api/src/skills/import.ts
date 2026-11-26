@@ -27,6 +27,7 @@ import type {
   TextContentFragment,
   SkillContentInput,
 } from '~/protection';
+import type { ServerRequest as TrackingRequest } from '~/types';
 import type { SkillBlobReservation } from './reservation';
 import type { SkillUploadIntentDeps } from './intent';
 import type { ImportLimits } from './limits';
@@ -44,6 +45,7 @@ import {
 } from '~/protection';
 import { deleteSkillWithRetry, mergeDeleteSkillResults } from './cleanup';
 import { contentFilterBlockResponse } from '~/middleware/contentFilter';
+import { trackRequestProductFact } from '~/tracking/request';
 import { resolveRequestTenantId } from '~/middleware/tenant';
 import { createConcurrencyLimiter } from '~/utils/promise';
 import { DEFAULT_SKILL_IMPORT_LIMITS } from './limits';
@@ -162,7 +164,9 @@ export interface ImportSkillDeps extends SkillUploadIntentDeps {
   }) => Promise<unknown>;
 }
 
-interface ServerRequest extends Request {
+interface ServerRequest
+  extends Request,
+    Pick<TrackingRequest, 'productTracking' | 'productTracker' | 'productTrackingContext'> {
   tenantId?: string;
   config?: AppConfig;
   user: {
@@ -472,6 +476,12 @@ async function handleMarkdown(
     return res.status(500).json({ error: grant.error });
   }
 
+  trackRequestProductFact(req, {
+    name: 'librechat.skills.added',
+    feature: 'skills',
+    skillId: skill._id.toString(),
+    source: skill.source ?? 'inline',
+  });
   return res.status(201).json(skill);
 }
 
@@ -1305,6 +1315,12 @@ async function handleZip(
   // Re-read the skill to get the current version/fileCount (bumped by each upsertSkillFile)
   const refreshed = (await deps.getSkillById(skill._id)) ?? skill;
 
+  trackRequestProductFact(req, {
+    name: 'librechat.skills.added',
+    feature: 'skills',
+    skillId: refreshed._id.toString(),
+    source: refreshed.source ?? 'inline',
+  });
   return res.status(201).json({
     ...refreshed,
     _importSummary: {

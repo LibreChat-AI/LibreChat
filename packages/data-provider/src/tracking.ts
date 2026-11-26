@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { TProductTrackingPolicy, TTelemetryConfig } from './config';
 import { promptBrowserFacts, promptServerFacts } from './tracking/prompts';
+import { skillBrowserFacts, skillServerFacts } from './tracking/skills';
 import { chatBrowserFacts, chatServerFacts } from './tracking/chat';
 import { PRODUCT_TRACKING_SESSION_DEFAULTS } from './config';
 import { agentServerFacts } from './tracking/agents';
@@ -10,6 +11,7 @@ export type { ProductBuiltinToolName } from './tracking/privacy';
 
 export type { ChatSubmissionKind, ChatBrowserFact, ChatServerFact } from './tracking/chat';
 export type { ProductPromptReference } from './tracking/prompts';
+export type { SkillServerFact, SkillSyncFact } from './tracking/skills';
 
 /** Product events are off unless the deployment explicitly enables them. */
 export function getProductTrackingConfig(telemetry?: TTelemetryConfig): TProductTrackingPolicy {
@@ -32,6 +34,7 @@ const id = z.string().min(1).max(128);
 export const browserProductFactSchema = z.discriminatedUnion('name', [
   ...chatBrowserFacts,
   ...promptBrowserFacts,
+  ...skillBrowserFacts,
   z.strictObject({
     name: z.literal('librechat.session.activity'),
     feature: z.literal('session'),
@@ -46,6 +49,7 @@ export const serverProductFactSchema = z.discriminatedUnion('name', [
   ...chatServerFacts,
   ...agentServerFacts,
   ...promptServerFacts,
+  ...skillServerFacts,
   z.strictObject({
     name: z.literal('librechat.langfuse.connection.updated'),
     enabled: z.boolean(),

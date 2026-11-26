@@ -29,6 +29,7 @@ describe('skill delete handler', () => {
       found: true,
       deleted: true,
       skillAbsent: true,
+      removed: true,
       cleanupComplete: true,
       failedSteps: [],
     };
@@ -42,7 +43,12 @@ describe('skill delete handler', () => {
   it('delegates deletion through the claimed service before returning success', async () => {
     const { id, deps } = deletionHarness();
     const handlers = createSkillsHandlers(deps as unknown as SkillsHandlersDeps);
-    const req = { params: { id } } as unknown as ServerRequest;
+    const productTracker = jest.fn();
+    const req = {
+      params: { id },
+      productTracking: { enabled: true },
+      productTracker,
+    } as unknown as ServerRequest;
     const res = mockResponse();
 
     await handlers.delete(req, res);
@@ -50,6 +56,33 @@ describe('skill delete handler', () => {
     expect(deps.deleteSkillById).toHaveBeenCalledWith(id);
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({ id, deleted: true, cleanupComplete: true });
+    expect(productTracker).toHaveBeenCalledWith({
+      name: 'librechat.skills.removed',
+      feature: 'skills',
+      skillId: id,
+    });
+  });
+
+  it('does not report removal again when completed cleanup is retried', async () => {
+    const { id, deps } = deletionHarness();
+    deps.deleteSkillById.mockResolvedValueOnce({
+      found: true,
+      deleted: true,
+      skillAbsent: true,
+      cleanupComplete: true,
+      failedSteps: [],
+    });
+    const productTracker = jest.fn();
+    const handlers = createSkillsHandlers(deps as unknown as SkillsHandlersDeps);
+    await handlers.delete(
+      {
+        params: { id },
+        productTracking: { enabled: true },
+        productTracker,
+      } as unknown as ServerRequest,
+      mockResponse(),
+    );
+    expect(productTracker).not.toHaveBeenCalled();
   });
 
   it('leaves the deletion pending when non-file cleanup is incomplete', async () => {
@@ -62,13 +95,19 @@ describe('skill delete handler', () => {
       failedSteps: ['permissions'],
     });
     const handlers = createSkillsHandlers(deps as unknown as SkillsHandlersDeps);
-    const req = { params: { id } } as unknown as ServerRequest;
+    const productTracker = jest.fn();
+    const req = {
+      params: { id },
+      productTracking: { enabled: true },
+      productTracker,
+    } as unknown as ServerRequest;
     const res = mockResponse();
 
     await handlers.delete(req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({ id, deleted: true, cleanupComplete: false });
+    expect(productTracker).not.toHaveBeenCalled();
   });
 
   it('reports pending cleanup when another worker holds the claim', async () => {
@@ -81,7 +120,12 @@ describe('skill delete handler', () => {
       failedSteps: [],
     });
     const handlers = createSkillsHandlers(deps as unknown as SkillsHandlersDeps);
-    const req = { params: { id } } as unknown as ServerRequest;
+    const productTracker = jest.fn();
+    const req = {
+      params: { id },
+      productTracking: { enabled: true },
+      productTracker,
+    } as unknown as ServerRequest;
     const res = mockResponse();
 
     await handlers.delete(req, res);
@@ -89,6 +133,7 @@ describe('skill delete handler', () => {
     expect(deps.deleteSkillById).toHaveBeenCalledWith(id);
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({ id, deleted: true, cleanupComplete: false });
+    expect(productTracker).not.toHaveBeenCalled();
   });
 });
 
@@ -260,7 +305,10 @@ describe('skill create handler', () => {
       }),
       deleteSkill,
     } as unknown as SkillsHandlersDeps);
+    const productTracker = jest.fn();
     const req = {
+      productTracking: { enabled: true },
+      productTracker,
       body: { name: 'permission-failure', description: 'Rollback test', body: '# Test' },
       user: { id: 'user-1', _id: new Types.ObjectId(), name: 'Test User' },
     } as unknown as ServerRequest;
@@ -270,6 +318,7 @@ describe('skill create handler', () => {
 
     expect(deleteSkill).toHaveBeenCalledTimes(2);
     expect(res.status).toHaveBeenCalledWith(500);
+    expect(productTracker).not.toHaveBeenCalled();
   });
 });
 
@@ -365,3 +414,46 @@ describe('skill file delete handler', () => {
     expect(res.json).toHaveBeenCalledWith({ error: 'SKILL_DELETING' });
   });
 });
+
+it.each(['create', 'patch'] as const)(
+  '%s retains the business version but exports only the stable skill identity',
+  async (operation) => {
+    const skill = {
+      _id: new Types.ObjectId(),
+      author: new Types.ObjectId(),
+      name: 'private-skill',
+      description: 'private description',
+      body: 'private body',
+      version: 7,
+      source: 'inline',
+    };
+    const updateSkill = jest.fn().mockResolvedValue({ status: 'updated', skill, warnings: [] });
+    const handlers = createSkillsHandlers({
+      createSkill: jest.fn().mockResolvedValue({ skill, warnings: [] }),
+      grantPermission: jest.fn().mockResolvedValue(undefined),
+      updateSkill,
+    } as unknown as SkillsHandlersDeps);
+    const productTracker = jest.fn();
+    const req = {
+      user: { id: skill.author.toString() },
+      params: { id: skill._id.toString() },
+      body: { name: skill.name, description: skill.description, expectedVersion: 6 },
+      productTracking: { enabled: true },
+      productTracker,
+    } as unknown as ServerRequest;
+    const res = mockResponse();
+    if (operation === 'patch') {
+      await handlers.patch(req, res, { includePublicStatus: false });
+      expect(updateSkill).toHaveBeenCalledWith(expect.objectContaining({ expectedVersion: 6 }));
+    } else {
+      await handlers.create(req, res);
+    }
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ version: 7 }));
+    expect(productTracker).toHaveBeenCalledWith({
+      name: operation === 'create' ? 'librechat.skills.added' : 'librechat.skills.updated',
+      feature: 'skills',
+      skillId: skill._id.toString(),
+      source: 'inline',
+    });
+  },
+);

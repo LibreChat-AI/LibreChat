@@ -34,12 +34,14 @@ import type {
 } from './adapters/types';
 import type { GitHubRepoAdapterConfig } from './adapters/github';
 import type { SkillBlobReservation } from '../reservation';
+import type { SkillSyncProductTracker } from './tracking';
 import type { SkillUploadIntentDeps } from '../intent';
 import {
   GITHUB_FINE_GRAINED_TOKEN_RECOMMENDATION,
   createGitHubRepoAdapter,
 } from './adapters/github';
 import { DEFAULT_SKILL_IMPORT_LIMITS } from '../limits';
+import { createSkillSyncTracking } from './tracking';
 import { makeSourceAuthorId } from '~/utils/author';
 import { withSkillUploadIntent } from '../intent';
 import { parseSkillMarkdown } from '../parse';
@@ -164,6 +166,8 @@ type SyncSkillFilesResult = Pick<SyncCounters, 'syncedFileCount' | 'deletedFileC
 type MaybePromise<T> = T | Promise<T>;
 
 export type GitHubSkillSyncDeps = SkillUploadIntentDeps & {
+  /** The host supplies a policy-gated system actor sink. No user token is inferred. */
+  trackProductFact?: SkillSyncProductTracker;
   queueCommittedSkillUploadCleanup: (fileId: string) => Promise<void>;
   markSkillUploadIntentCleaned: (fileId: string) => Promise<void>;
   finishSkillUploadCleanupHold: (
@@ -1631,6 +1635,7 @@ async function syncSource(params: {
   const { deps, source, fetchFn, assertNotCancelled } = params;
   const createAdapter = deps.createAdapter ?? createGitHubRepoAdapter;
   const startedAt = new Date();
+  const tracking = createSkillSyncTracking(deps.trackProductFact, source);
   const counts: SyncCounters = {
     syncedSkillCount: 0,
     syncedFileCount: 0,
@@ -1641,7 +1646,23 @@ async function syncSource(params: {
   };
   const skippedSkills: ISkillSyncSkippedSkill[] = [];
   const skippedFiles: ISkillSyncSkippedFile[] = [];
-  await deps.upsertStatus(makeStatusInput({ source, status: 'running', startedAt }));
+  const finish = (write: Promise<ISkillSyncStatus>, status: 'succeeded' | 'partial' | 'failed') =>
+    write.then(
+      (result) => {
+        tracking.finish(status, counts);
+        return result;
+      },
+      (error: unknown) => {
+        tracking.finish('failed', counts);
+        throw error;
+      },
+    );
+  await deps
+    .upsertStatus(makeStatusInput({ source, status: 'running', startedAt }))
+    .catch((error: unknown) => {
+      tracking.finish('failed', counts);
+      throw error;
+    });
   try {
     assertNotCancelled();
     const allowServerCredentials = deps.allowServerCredentials !== false;
@@ -1890,8 +1911,13 @@ async function syncSource(params: {
         existingSyncedSkills = staleConflictCleanup.remainingSkills;
         counts.deletedSkillCount += staleConflictCleanup.deletedSkillCount;
         counts.deletedFileCount += staleConflictCleanup.deletedFileCount;
+        if (staleConflictCleanup.deletedSkill) {
+          const deleted = staleConflictCleanup.deletedSkill.skill;
+          tracking.changed(deleted._id.toString(), 'removed');
+        }
       }
       counts.syncedSkillCount++;
+      tracking.unchanged();
       recordUnsupportedFiles(discovered);
     };
 
@@ -1977,7 +2003,7 @@ async function syncSource(params: {
             counts.deletedSkillCount += staleConflictCleanup.deletedSkillCount;
             counts.deletedFileCount += staleConflictCleanup.deletedFileCount;
           }
-          await commitExistingRemoteSkillAfterFileSync(
+          const committed = await commitExistingRemoteSkillAfterFileSync(
             deps,
             {
               ...effectivePrepared,
@@ -1988,6 +2014,15 @@ async function syncSource(params: {
               logSkillWarnings,
             },
           );
+          if (committed.skill.version !== beforeFileSync.version) {
+            tracking.changed(committed.skill._id.toString(), 'updated');
+          } else {
+            tracking.unchanged();
+          }
+          if (staleConflictCleanup?.deletedSkill) {
+            const deleted = staleConflictCleanup.deletedSkill.skill;
+            tracking.changed(deleted._id.toString(), 'removed');
+          }
         } catch (error) {
           let rollbackFailed = false;
           await restoreExistingSkillFiles({
@@ -2008,6 +2043,8 @@ async function syncSource(params: {
             /* The old mirror's blobs and permissions are gone. A replacement
                row pointing at those deleted blobs would be corrupt; the next
                source run must rebuild from upstream instead. */
+            const deleted = staleConflictCleanup.deletedSkill.skill;
+            tracking.changed(deleted._id.toString(), 'removed');
             rollbackFailed = true;
           }
           throw rollbackFailed ? makeRollbackFailure(error) : error;
@@ -2046,6 +2083,7 @@ async function syncSource(params: {
         });
         await ensurePublicViewer(deps, skill._id);
         logSkillWarnings(skill.name, upserted.warnings);
+        tracking.changed(skill._id.toString(), 'added');
         counts.syncedSkillCount++;
         counts.syncedFileCount += fileCounts.syncedFileCount;
         counts.deletedFileCount += fileCounts.deletedFileCount;
@@ -2120,18 +2158,22 @@ async function syncSource(params: {
       }
       counts.deletedFileCount += await deleteSyncedSkill(deps, skill);
       counts.deletedSkillCount++;
+      tracking.changed(skill._id.toString(), 'removed');
     }
 
     if (counts.skippedSkillCount === 0 && counts.skippedFileCount === 0) {
       logSuppressedPerSkillWarningSummaries();
-      return deps.upsertStatus(
-        makeStatusInput({
-          source,
-          status: 'succeeded',
-          startedAt,
-          finishedAt: new Date(),
-          counts,
-        }),
+      return finish(
+        deps.upsertStatus(
+          makeStatusInput({
+            source,
+            status: 'succeeded',
+            startedAt,
+            finishedAt: new Date(),
+            counts,
+          }),
+        ),
+        'succeeded',
       );
     }
     /* Nothing published and something skipped means the source produced no
@@ -2146,41 +2188,47 @@ async function syncSource(params: {
     logger.warn(
       `[GitHubSkillSync] Source "${source.id}" synced ${counts.syncedSkillCount} skill(s), skipped ${counts.skippedSkillCount} skill(s) and ${counts.skippedFileCount} file(s)`,
     );
-    return deps.upsertStatus(
-      makeStatusInput({
-        source,
-        status: publishedNothing ? 'failed' : 'partial',
-        startedAt,
-        finishedAt: new Date(),
-        counts,
-        skippedSkills,
-        skippedFiles: skippedFiles.length > 0 ? skippedFiles : undefined,
-        errorCode: publishedNothing ? firstSkip?.errorCode : undefined,
-        errorMessage: publishedNothing ? firstSkip?.errorMessage : undefined,
-      }),
+    return finish(
+      deps.upsertStatus(
+        makeStatusInput({
+          source,
+          status: publishedNothing ? 'failed' : 'partial',
+          startedAt,
+          finishedAt: new Date(),
+          counts,
+          skippedSkills,
+          skippedFiles: skippedFiles.length > 0 ? skippedFiles : undefined,
+          errorCode: publishedNothing ? firstSkip?.errorCode : undefined,
+          errorMessage: publishedNothing ? firstSkip?.errorMessage : undefined,
+        }),
+      ),
+      publishedNothing ? 'failed' : 'partial',
     );
   } catch (error) {
     const sanitized = sanitizeError(error);
     logger.error(`[GitHubSkillSync] Source "${source.id}" failed: ${sanitized.message}`);
-    return deps.upsertStatus(
-      makeStatusInput({
-        source,
-        status: 'failed',
-        startedAt,
-        finishedAt: new Date(),
-        counts: {
-          syncedSkillCount: 0,
-          syncedFileCount: 0,
-          deletedSkillCount: 0,
-          deletedFileCount: 0,
-          skippedSkillCount: counts.skippedSkillCount,
-          skippedFileCount: counts.skippedFileCount,
-        },
-        skippedSkills: skippedSkills.length > 0 ? skippedSkills : undefined,
-        skippedFiles: skippedFiles.length > 0 ? skippedFiles : undefined,
-        errorCode: sanitized.code,
-        errorMessage: sanitized.message,
-      }),
+    return finish(
+      deps.upsertStatus(
+        makeStatusInput({
+          source,
+          status: 'failed',
+          startedAt,
+          finishedAt: new Date(),
+          counts: {
+            syncedSkillCount: 0,
+            syncedFileCount: 0,
+            deletedSkillCount: 0,
+            deletedFileCount: 0,
+            skippedSkillCount: counts.skippedSkillCount,
+            skippedFileCount: counts.skippedFileCount,
+          },
+          skippedSkills: skippedSkills.length > 0 ? skippedSkills : undefined,
+          skippedFiles: skippedFiles.length > 0 ? skippedFiles : undefined,
+          errorCode: sanitized.code,
+          errorMessage: sanitized.message,
+        }),
+      ),
+      'failed',
     );
   }
 }

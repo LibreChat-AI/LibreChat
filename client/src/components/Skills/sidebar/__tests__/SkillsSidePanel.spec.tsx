@@ -5,6 +5,8 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import SkillsSidePanel from '../SkillsSidePanel';
 
 const mockFetchNextPage = jest.fn();
+const mockTrack = jest.fn();
+let mockSidebarExpanded = true;
 const mockUseNavScrolling = jest.fn((_options?: object) => ({
   containerRef: { current: null },
 }));
@@ -18,7 +20,11 @@ const mockUseSkillsInfiniteQuery = jest.fn((_params?: object) => ({
 }));
 
 jest.mock('recoil', () => ({
-  useRecoilValue: () => true,
+  useRecoilValue: () => mockSidebarExpanded,
+}));
+
+jest.mock('~/Providers/TrackingContext', () => ({
+  useProductTracking: () => mockTrack,
 }));
 
 jest.mock('~/store', () => ({
@@ -65,6 +71,58 @@ jest.mock('../../lists/SkillListItem', () => ({
 describe('SkillsSidePanel', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSidebarExpanded = true;
+  });
+
+  it('records visible opens and reopening, but not a mounted hidden sidebar', () => {
+    mockSidebarExpanded = false;
+    const view = (
+      <MemoryRouter>
+        <SkillsSidePanel />
+      </MemoryRouter>
+    );
+    const { rerender } = render(view);
+    expect(mockTrack).not.toHaveBeenCalled();
+    mockSidebarExpanded = true;
+    rerender(
+      <MemoryRouter>
+        <SkillsSidePanel />
+      </MemoryRouter>,
+    );
+    expect(mockTrack).toHaveBeenCalledTimes(1);
+    expect(mockTrack).toHaveBeenLastCalledWith({
+      name: 'librechat.skills.opened',
+      feature: 'skills',
+      entryPoint: 'sidebar',
+    });
+    rerender(
+      <MemoryRouter>
+        <SkillsSidePanel />
+      </MemoryRouter>,
+    );
+    expect(mockTrack).toHaveBeenCalledTimes(1);
+    mockSidebarExpanded = false;
+    rerender(
+      <MemoryRouter>
+        <SkillsSidePanel />
+      </MemoryRouter>,
+    );
+    mockSidebarExpanded = true;
+    rerender(
+      <MemoryRouter>
+        <SkillsSidePanel />
+      </MemoryRouter>,
+    );
+    expect(mockTrack).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not record an open on the insights route', () => {
+    render(
+      <MemoryRouter initialEntries={['/insights']}>
+        <SkillsSidePanel />
+      </MemoryRouter>,
+    );
+    expect(mockTrack).not.toHaveBeenCalled();
   });
 
   it('disables automatic pagination while My Skills is collapsed', () => {
