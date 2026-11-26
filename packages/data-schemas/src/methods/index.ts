@@ -1,4 +1,7 @@
+import type { AuthenticationMethods } from '../postgres/auth/backend';
+import type { TokenQueries } from '../postgres/auth/tokenQueries';
 import { createPermissionPrincipalMethods, type PermissionPrincipalStorage } from './provisioning';
+import { createMongoTokenQueries } from '../postgres/auth/tokenQueries';
 export type {
   PermissionPrincipalStorage,
   PermissionPrincipalChange,
@@ -253,6 +256,7 @@ import {
 /* Config */
 import { createConfigMethods, type ConfigMethods } from './config';
 import { createPrincipalMethods, type PrincipalMethods } from './principal';
+import type { SelectMCPAuthorityTokenReader } from './mcpAuthority';
 import {
   createMCPAuthorityMethods,
   MCPAuthorityProofError,
@@ -318,7 +322,8 @@ export {
   AgentQueuedTurnLaneRetiredError,
 };
 
-export type AllMethods = PermissionPrincipalStorage &
+export type AllMethods = TokenQueries &
+  PermissionPrincipalStorage &
   SubagentContentMethods &
   ToolApprovalGrantStorage &
   UserMethods &
@@ -375,8 +380,14 @@ export type AllMethods = PermissionPrincipalStorage &
   MCPAuthorityMethods &
   InsightsMethods;
 
+export interface AuthenticationSelection {
+  methods: AuthenticationMethods;
+  selectMCPAuthorityTokenReader: SelectMCPAuthorityTokenReader;
+}
+
 /** Dependencies injected from the api layer into createMethods */
 export interface CreateMethodsDeps {
+  authentication?: AuthenticationMethods | AuthenticationSelection;
   toolFavorites?: ToolFavoriteMethods;
   getChannelStorageConfig?: () => Promise<Partial<ChannelStorageConfig>>;
   /** Matches a model name to a canonical key. From @librechat/api. */
@@ -407,6 +418,12 @@ export function createMethods(
   mongoose: typeof import('mongoose'),
   deps: CreateMethodsDeps = {},
 ): AllMethods {
+  const auth = deps.authentication;
+  const [authentication, proofTokens] =
+    auth && 'methods' in auth
+      ? ([auth.methods, () => auth.selectMCPAuthorityTokenReader()] as const)
+      : ([auth, auth] as const);
+
   // Tier 3: tx methods need matchModelName and findMatchingPattern
   const txDeps: TxDeps = {
     matchModelName: deps.matchModelName ?? (() => undefined),
@@ -574,15 +591,18 @@ export function createMethods(
       getCache: deps.getCache,
       getChannelStorageConfig: deps.getChannelStorageConfig,
     }),
-    ...createToolApprovalGrantMethods(mongoose),
-    ...createSessionMethods(mongoose),
-    ...createTokenMethods(mongoose),
-    ...createTokenListMethods(mongoose),
-    ...createRefreshTokenBridgeMethods(mongoose),
-    ...createOpenIDRefreshFlightMethods(mongoose),
+    ...createToolApprovalGrantMethods(mongoose, authentication),
+    ...(authentication ?? {
+      ...createSessionMethods(mongoose),
+      ...createTokenMethods(mongoose),
+      ...createTokenListMethods(mongoose),
+      ...createRefreshTokenBridgeMethods(mongoose),
+      ...createOpenIDRefreshFlightMethods(mongoose),
+      ...createPasskeyMethods(mongoose),
+      ...createMongoTokenQueries(mongoose),
+    }),
     ...createResourceLockMethods(mongoose),
     ...createSubagentContentMethods(mongoose),
-    ...createPasskeyMethods(mongoose),
     ...roleMethods,
     ...createKeyMethods(mongoose),
     ...createFileMethods(mongoose),
@@ -593,6 +613,7 @@ export function createMethods(
     ...createAgentApiKeyMethods(mongoose),
     ...createAgentChannelMethods(mongoose, deps.getChannelStorageConfig),
     ...createMCPServerMethods(mongoose, {
+      tokenQueries: authentication,
       getSoleOwnedResourceIds: aclEntryMethods.getSoleOwnedResourceIds,
     }),
     ...createCodeEnvironmentMethods(mongoose),
@@ -635,7 +656,7 @@ export function createMethods(
     ...createConfigMethods(mongoose),
     ...createPrincipalMethods(mongoose),
     /* MCP authority proofs */
-    ...createMCPAuthorityMethods(mongoose),
+    ...createMCPAuthorityMethods(mongoose, {}, proofTokens),
     /* Insights */
     ...createInsightsMethods(mongoose),
   };

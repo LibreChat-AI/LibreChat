@@ -1313,3 +1313,35 @@ describe('token method failure logging', () => {
     spy.mockRestore();
   });
 });
+
+describe('internal Token storage revisions', () => {
+  it('increments each successful update and replacement without exposing the revision', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const created = await methods.createToken({
+      userId,
+      token: 'A',
+      scope: 'revision',
+      expiresIn: 60,
+    });
+    const raw = () => Token.findById(created._id).lean();
+    expect((await raw())?.__v).toBe(0);
+    await methods.updateToken({ scope: 'revision' }, { token: 'B' });
+    expect((await raw())?.__v).toBe(1);
+    await methods.updateToken({ scope: 'revision' }, { token: 'A' });
+    expect((await raw())?.__v).toBe(2);
+    expect(await methods.findToken({ scope: 'revision' })).not.toHaveProperty('__v');
+    await methods.replaceTokenIfCurrent('revision', 'A', { userId, token: 'next', expiresIn: 60 });
+    expect((await raw())?.__v).toBe(3);
+    await methods.replaceTokenIfCurrent('revision', null, { userId, token: 'next', expiresIn: 60 });
+    await methods.updateToken({ scope: 'revision' }, {});
+    expect((await raw())?.__v).toBe(3);
+    expect(
+      await methods.replaceTokenIfCurrent('revision', 'stale', {
+        userId,
+        token: 'lost',
+        expiresIn: 60,
+      }),
+    ).toBe(false);
+    expect((await raw())?.__v).toBe(3);
+  });
+});

@@ -75,7 +75,16 @@ describe('createPasskey', () => {
 
     await expect(
       methods.createPasskey(passkeyData({ user: otherUserId.toString(), name: 'Someone else' })),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({ code: 'PASSKEY_ALREADY_REGISTERED' });
+  });
+
+  it.each([
+    Object.assign(new Error('primary key conflict'), { code: 11000, keyPattern: { _id: 1 } }),
+    Object.assign(new Error('unknown unique index'), { code: 11000 }),
+    new Error('database unavailable'),
+  ])('does not translate other database failures: %s', async (error) => {
+    jest.spyOn(mongoose.models.Passkey, 'create').mockRejectedValueOnce(error);
+    await expect(methods.createPasskey(passkeyData())).rejects.toBe(error);
   });
 
   it('builds the unique credential index itself when auto-indexing never ran', async () => {
@@ -88,7 +97,7 @@ describe('createPasskey', () => {
       freshMethods.createPasskey(
         passkeyData({ user: otherUserId.toString(), name: 'Someone else' }),
       ),
-    ).rejects.toThrow(/duplicate key/);
+    ).rejects.toMatchObject({ code: 'PASSKEY_ALREADY_REGISTERED' });
     expect(await mongoose.models.Passkey.countDocuments({ credentialId: 'credential-one' })).toBe(
       1,
     );

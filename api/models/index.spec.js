@@ -1,4 +1,7 @@
 jest.mock('@librechat/data-schemas', () => ({
+  createMongoAuthenticationMethods:
+    jest.requireActual('@librechat/data-schemas').createMongoAuthenticationMethods,
+  createPostgresAuthenticationBackend: jest.fn(),
   createPostgresFavoriteBackend: jest.fn(),
   createMethods: jest.fn((_mongoose, deps) => ({ ...deps.toolFavorites })),
   createToolFavoriteMethods: jest.fn(() => ({
@@ -10,8 +13,12 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('../../packages/api/src/app/persistence'),
+  ...jest.requireActual('../../packages/api/src/app/authentication'),
   createFavoriteRuntime: jest.fn(
     jest.requireActual('../../packages/api/src/app/persistence').createFavoriteRuntime,
+  ),
+  createAuthenticationRuntime: jest.fn(
+    jest.requireActual('../../packages/api/src/app/authentication').createAuthenticationRuntime,
   ),
   matchModelName: jest.fn(),
   findMatchingPattern: jest.fn(),
@@ -34,6 +41,7 @@ const {
   isSharedLinksEnabled,
   createMessageBudgetReader,
   createFavoriteRuntime,
+  createAuthenticationRuntime,
   createChannelStorageConfigReader,
 } = require('@librechat/api');
 const models = require('./index');
@@ -42,6 +50,7 @@ const reader = createMessageBudgetReader.mock.results[0].value;
 const channelStorageConfigReader = createChannelStorageConfigReader.mock.results[0].value;
 const dependencies = createMethods.mock.calls[0][1];
 const runtimeDependencies = createFavoriteRuntime.mock.calls[0];
+const authenticationRuntime = createAuthenticationRuntime.mock.results[0].value;
 const { getMCPAppMessageBudget, getChannelStorageConfig: channelStorageConfigDependency } =
   dependencies;
 const mongoFavorites = createToolFavoriteMethods.mock.results[0].value;
@@ -72,6 +81,18 @@ describe('favorites composition root', () => {
     expect(models.deleteUserToolFavorites).toBe(captured);
     await models.closeFavorites();
     await expect(captured('user')).rejects.toThrow('not initialized');
+  });
+});
+
+describe('authentication composition root', () => {
+  it('passes the runtime with its proof reader selection, not just its methods', async () => {
+    const runtime = authenticationRuntime;
+    expect(dependencies.authentication).toBe(runtime);
+    expect(runtime.selectMCPAuthorityTokenReader).toThrow('not initialized');
+    await models.initializeAuthentication(null);
+    expect(runtime.selectMCPAuthorityTokenReader()).toBeNull();
+    await models.closeAuthentication();
+    expect(runtime.selectMCPAuthorityTokenReader).toThrow('not initialized');
   });
 });
 

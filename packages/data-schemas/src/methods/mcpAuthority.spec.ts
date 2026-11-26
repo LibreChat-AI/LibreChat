@@ -18,6 +18,7 @@ import {
   createMCPAuthorityMethods,
   createMCPAuthorityBootRevision,
 } from './mcpAuthority';
+import { createMongoTokenQueries } from '~/postgres/auth/tokenQueries';
 import { BASE_CONFIG_PRINCIPAL_ID } from '~/admin/capabilities';
 import { tenantStorage } from '~/config/tenantContext';
 import { createModels } from '~/models';
@@ -218,7 +219,10 @@ function expectReason(reason: MCPAuthorityProofError['reason']) {
 }
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+  mongoServer = await MongoMemoryReplSet.create({
+    replSet: { count: 1 },
+    instanceOpts: [{ args: ['--nounixsocket'] }],
+  });
   const uri = new URL(mongoServer.getUri());
   uri.searchParams.set('readPreference', 'secondaryPreferred');
   await mongoose.connect(uri.href);
@@ -570,6 +574,35 @@ describe('MCP authority proofs', () => {
         }),
       ),
     ).rejects.toEqual(expectReason('access_revoked'));
+  });
+
+  test('reads the selected Mongo tokens from the snapshot pinned before a concurrent update', async () => {
+    const select = jest.fn(() => null);
+    const generation = 'oauth-generation-2';
+    const snapshot = createMCPAuthorityMethods(
+      mongoose,
+      {
+        afterPrincipalSnapshot: async () => {
+          await models.Token.updateMany(
+            { userId },
+            { $set: { 'metadata.credential_set_id': generation } },
+          );
+        },
+      },
+      select,
+    );
+
+    const proof = await inTenant(() =>
+      snapshot.resolveMCPAuthorityProof({
+        userId: userId.toHexString(),
+        tenantId: TENANT_ID,
+        boot,
+        targets: [target()],
+      }),
+    );
+    expect(proof.servers[0].oauthGrantGeneration).toBe('oauth-generation-1');
+    expect(select).toHaveBeenCalledTimes(1);
+    await expect(assertCurrent(proof)).rejects.toEqual(expectReason('oauth_grant_changed'));
   });
 
   test('keeps query count bounded by collection for many selected servers', async () => {
@@ -1288,5 +1321,75 @@ describe('MCP authority proofs', () => {
     );
 
     await expect(assertCurrent(proof)).rejects.toEqual(expectReason('access_revoked'));
+  });
+});
+
+test('reads injected token authority even when the Mongo Token collection is empty', async () => {
+  await inTenant(async () => {
+    const input = {
+      userId: userId.toHexString(),
+      tenantId: TENANT_ID,
+      serverNames: [SERVER_NAME],
+      limit: 96,
+    };
+    const snapshot = await createMongoTokenQueries(mongoose).getMCPAuthorityTokens(input);
+    await models.Token.deleteMany({});
+    const getMCPAuthorityTokens = jest.fn().mockResolvedValue(snapshot);
+    const selected = createMCPAuthorityMethods(mongoose, {}, { getMCPAuthorityTokens });
+    await selected.resolveMCPAuthorityProof({
+      userId: userId.toHexString(),
+      tenantId: TENANT_ID,
+      boot,
+      targets: [target()],
+    });
+    expect(getMCPAuthorityTokens).toHaveBeenCalledTimes(2);
+    expect(getMCPAuthorityTokens).toHaveBeenCalledWith(input);
+  });
+});
+
+test('rejects a selected token generation changed across the Mongo snapshot', async () => {
+  await inTenant(async () => {
+    const snapshot = await createMongoTokenQueries(mongoose).getMCPAuthorityTokens({
+      userId: userId.toHexString(),
+      tenantId: TENANT_ID,
+      serverNames: [SERVER_NAME],
+      limit: 96,
+    });
+    const changed = {
+      ...snapshot,
+      tokens: snapshot.tokens.map((token) => ({
+        ...token,
+        metadata: { ...token.metadata, credential_set_id: 'changed' },
+      })),
+    };
+    const supplied = await mongoose.startSession();
+    let crossedSnapshot = false;
+    const getMCPAuthorityTokens = jest.fn().mockImplementation(async () => {
+      expect(supplied.inTransaction()).toBe(false);
+      return crossedSnapshot ? changed : snapshot;
+    });
+    const selected = createMCPAuthorityMethods(
+      mongoose,
+      {
+        afterPrincipalSnapshot: () => {
+          crossedSnapshot = true;
+        },
+      },
+      { getMCPAuthorityTokens },
+    );
+    try {
+      await expect(
+        selected.resolveMCPAuthorityProof({
+          userId: userId.toHexString(),
+          tenantId: TENANT_ID,
+          boot,
+          targets: [target()],
+          session: supplied,
+        }),
+      ).rejects.toEqual(expectReason('proof_unavailable'));
+      expect(getMCPAuthorityTokens).toHaveBeenCalledTimes(2);
+    } finally {
+      await supplied.endSession();
+    }
   });
 });

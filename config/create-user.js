@@ -3,12 +3,13 @@ const mongoose = require('mongoose');
 const { User } = require('@librechat/data-schemas').createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 const { registerUser } = require('~/server/services/AuthService');
+const { runAuthenticationOperation, getSafeErrorMetadata } = require('@librechat/api');
+const methods = require('~/models');
+const loadCustomConfig = require('~/server/services/Config/loadCustomConfig');
 const { askQuestion, silentExit } = require('./helpers');
 const connect = require('./connect');
 
-(async () => {
-  await connect();
-
+const createUser = async () => {
   console.purple('--------------------------');
   console.purple('Create a new user account!');
   console.purple('--------------------------');
@@ -55,7 +56,7 @@ const connect = require('./connect');
   }
   if (!email.includes('@')) {
     console.red('Error: Invalid email address!');
-    silentExit(1);
+    return 1;
   }
 
   const defaultName = email.split('@')[0];
@@ -102,7 +103,7 @@ or the user will need to attempt logging in to have a verification link sent to 
   const userExists = await User.findOne({ $or: [{ email }, { username }] });
   if (userExists) {
     console.red('Error: A user with that email or username already exists!');
-    silentExit(1);
+    return 1;
   }
 
   const user = { email, password, name, username, confirm_password: password };
@@ -111,27 +112,43 @@ or the user will need to attempt logging in to have a verification link sent to 
   try {
     result = await registerUser(user, additionalData);
   } catch (error) {
-    console.red('Error: ' + error.message);
-    silentExit(1);
+    console.error('Error creating user:', getSafeErrorMetadata(error));
+    return 1;
   }
 
   if (result.status !== 200) {
     console.red('Error: ' + result.message);
-    silentExit(1);
+    return 1;
   }
 
   const userCreated = await User.findOne({ $or: [{ email }, { username }] });
   if (userCreated) {
     console.green('User created successfully!');
     console.green(`Email verified: ${userCreated.emailVerified}`);
-    silentExit(0);
+    return 0;
   }
-})();
+  return 1;
+};
+
+runAuthenticationOperation(
+  {
+    initialize: async () => {
+      await connect();
+      await methods.initializeAuthentication(
+        await loadCustomConfig(false, { storageSelection: true }),
+      );
+    },
+    close: () => methods.closeAuthentication(),
+    disconnect: () => mongoose.disconnect(),
+    error: console.error,
+  },
+  createUser,
+).then((code) => silentExit(code));
 
 process.on('uncaughtException', (err) => {
   if (!err.message.includes('fetch failed')) {
     console.error('There was an uncaught error:');
-    console.error(err);
+    console.error(getSafeErrorMetadata(err));
   }
 
   if (err.message.includes('fetch failed')) {

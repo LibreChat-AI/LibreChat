@@ -198,10 +198,13 @@ const decodeUserHandle = (userHandle: string | undefined): string | null => {
   }
 };
 
-type MongoWriteError = { code?: number | string } | null | undefined;
-
-const isDuplicateKeyError = (err: MongoWriteError): boolean =>
-  err?.code === 11000 || err?.code === 'E11000';
+const isRegistrationConflict = (error: unknown): boolean => {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return false;
+  // Legacy Mongo/DocumentDB callers may omit index metadata.
+  return (
+    error.code === 'PASSKEY_ALREADY_REGISTERED' || error.code === 11000 || error.code === 'E11000'
+  );
+};
 
 /** Responds 403 when the authenticated account is not a local one. */
 const requireLocalAccount = (req: AuthenticatedPasskeyRequest, res: Response): boolean => {
@@ -491,7 +494,7 @@ export function createPasskeyHandlers(deps: PasskeyHandlersDeps): PasskeyHandler
       await auditRegistered();
       return res.status(201).json({ passkey: serializePasskey(passkey) });
     } catch (err) {
-      if (isDuplicateKeyError(err as MongoWriteError)) {
+      if (isRegistrationConflict(err)) {
         return res.status(409).json({ message: 'This passkey is already registered' });
       }
       logger.error('[registerPasskeyVerify]', err);

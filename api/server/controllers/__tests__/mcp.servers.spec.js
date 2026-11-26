@@ -60,7 +60,7 @@ const {
   deleteMCPServerController,
 } = require('~/server/controllers/mcp');
 const { grantPermission } = require('~/server/services/PermissionService');
-const { seedDefaultRoles } = require('~/models');
+const { seedDefaultRoles, initializeAuthentication, closeAuthentication } = require('~/models');
 
 let mongoServer;
 let SystemGrant;
@@ -106,10 +106,12 @@ beforeAll(async () => {
   AclEntry = dbModels.AclEntry;
   User = dbModels.User;
 
+  await initializeAuthentication({});
   await seedDefaultRoles();
 });
 
 afterAll(async () => {
+  await closeAuthentication();
   await mongoose.disconnect();
   await mongoServer?.stop();
 });
@@ -572,9 +574,9 @@ describe('DB-backed server mutation fencing', () => {
     mockRegistryInstance.getServerConfig.mockResolvedValue(createDbConfig(dbId));
     mockRegistryInstance.removeServer.mockResolvedValue(undefined);
     const tokenSnapshot = jest
-      .spyOn(mongoose.models.Token, 'distinct')
+      .spyOn(require('~/models'), 'findMCPTokenUserIds')
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([new mongoose.Types.ObjectId(sharedUser.id)]);
+      .mockResolvedValueOnce([sharedUser.id]);
 
     try {
       await deleteMCPServerController(

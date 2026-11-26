@@ -18,7 +18,6 @@ import type {
   IAgent,
   IAclEntry,
   IPluginAuth,
-  IToken,
   MCPServerDocument,
   MCPAuthorityProofV1,
   MCPAuthorityBootRevision,
@@ -32,6 +31,8 @@ import type {
   MCPAuthorityImmutableConfig,
   MCPAuthorityServerSource,
 } from '~/types';
+import type { TokenQueries, MCPAuthorityTokenRecord } from '~/postgres/auth/tokenQueries';
+import { createMongoTokenQueries } from '~/postgres/auth/tokenQueries';
 import { BASE_CONFIG_PRINCIPAL_ID } from '~/admin/capabilities';
 import { MCP_AUTHORITY_PROOF_VERSION } from '~/types';
 import { getTenantId } from '~/config/tenantContext';
@@ -137,15 +138,13 @@ interface PluginAuthProjection {
   updatedAt?: Date;
 }
 
-interface TokenProjection {
-  _id: Types.ObjectId;
-  type?: string;
-  identifier?: string;
-  token: string;
-  metadata?: Map<string, unknown> | Record<string, unknown>;
-  createdAt: Date;
-  expiresAt: Date;
-}
+type TokenProjection = MCPAuthorityTokenRecord;
+type TokenReader = Pick<TokenQueries, 'getMCPAuthorityTokens'>;
+type TokenInput = Parameters<TokenReader['getMCPAuthorityTokens']>[0];
+type TokenBatch = Awaited<ReturnType<TokenReader['getMCPAuthorityTokens']>>;
+
+/** Only a selected in-snapshot authority returns null. Unavailable authorities must throw. */
+export type SelectMCPAuthorityTokenReader = () => TokenReader | null;
 
 interface AggregateBatch<Projection> {
   _id: null;
@@ -969,7 +968,7 @@ function buildOAuthProof(
       }
       generations.add(generation);
       return {
-        id: token._id.toHexString(),
+        id: token._id,
         type,
         identifier,
         generation,
@@ -1035,9 +1034,16 @@ const AUTHORITY_SNAPSHOT_MODELS = [
   'Token',
 ] as const;
 
+async function readAuthorityTokens(reader: TokenReader, input: TokenInput): Promise<TokenBatch> {
+  const batch = await reader.getMCPAuthorityTokens(input);
+  assertCompleteBatch(batch.tokens, batch.count, input.limit, 'Selected MCP OAuth grants');
+  return batch;
+}
+
 export function createMCPAuthorityMethods(
   mongoose: typeof import('mongoose'),
   hooks: MCPAuthorityMethodHooks = {},
+  tokenSource?: TokenReader | SelectMCPAuthorityTokenReader,
 ): MCPAuthorityDatabaseMethods {
   let snapshotNamespacesReady: Promise<void> | undefined;
   let snapshotNamespacesFailure: { error: unknown; at: number } | undefined;
@@ -1096,12 +1102,13 @@ export function createMCPAuthorityMethods(
   }
 
   async function loadCurrentProof(
-    userId: string,
-    tenantId: string | undefined,
+    tokenInput: TokenInput,
     boot: MCPAuthorityBootRevision,
     targets: readonly PreparedTarget[],
     session: ClientSession,
+    capturedTokens: TokenBatch | null,
   ): Promise<MCPAuthorityProofV1> {
+    const { userId, tenantId } = tokenInput;
     if (!Types.ObjectId.isValid(userId)) {
       reject('malformed_input', 'MCP authority user identity is invalid');
     }
@@ -1160,15 +1167,11 @@ export function createMCPAuthorityMethods(
     const lookupNames = [
       ...new Set(targets.flatMap((target) => [target.serverName, target.normalizedServerName])),
     ];
-    const oauthSelectors = targets
-      .filter((target) => target.requiresOAuth)
-      .flatMap((target) => oauthTokenIdentities(target.serverName));
 
     const Config = mongoose.models.Config as Model<IConfig>;
     const MCPServer = mongoose.models.MCPServer as Model<MCPServerDocument>;
     const Agent = mongoose.models.Agent as Model<IAgent>;
     const PluginAuth = mongoose.models.PluginAuth as Model<IPluginAuth>;
-    const Token = mongoose.models.Token as Model<IToken>;
     const selectedServerNames = targets.map((target) => target.serverName);
     const selectedDatabaseServerNames = targets
       .filter((target) => target.source === 'database')
@@ -1264,18 +1267,6 @@ export function createMCPAuthorityMethods(
       .select('_id pluginKey authField value createdAt updatedAt')
       .limit(MAX_MCP_AUTHORITY_CREDENTIALS + 1)
       .setOptions({ singleBatch: true });
-    const tokenFilter = {
-      userId: new Types.ObjectId(userId),
-      ...tenantScope,
-      $or: oauthSelectors.length > 0 ? oauthSelectors : [{ _id: null }],
-    };
-    const tokenCountQuery = Token.countDocuments(tokenFilter).limit(
-      MAX_MCP_AUTHORITY_TARGETS * OAUTH_TOKEN_TYPES.length + 1,
-    );
-    const tokenQuery = Token.find(tokenFilter)
-      .select('_id type identifier token metadata createdAt expiresAt')
-      .limit(MAX_MCP_AUTHORITY_TARGETS * OAUTH_TOKEN_TYPES.length + 1)
-      .setOptions({ singleBatch: true });
     const configBatch = await pinAuthoritativeRead(configQuery, session);
     const configs = unwrapAggregateBatch(configBatch, slots.length, 'Applicable MCP configuration');
     const serverCount = await pinAuthoritativeRead(serverCountQuery, session);
@@ -1302,14 +1293,10 @@ export function createMCPAuthorityMethods(
       MAX_MCP_AUTHORITY_CREDENTIALS,
       'Selected MCP credentials',
     );
-    const tokenCount = await pinAuthoritativeRead(tokenCountQuery, session);
-    const tokens = await pinAuthoritativeRead(tokenQuery, session).lean<TokenProjection[]>();
-    assertCompleteBatch(
-      tokens,
-      tokenCount,
-      MAX_MCP_AUTHORITY_TARGETS * OAUTH_TOKEN_TYPES.length,
-      'Selected MCP OAuth grants',
-    );
+    const { tokens } =
+      capturedTokens === null
+        ? await readAuthorityTokens(createMongoTokenQueries(mongoose, session), tokenInput)
+        : capturedTokens;
 
     const serverIds = servers.map((server) => server._id);
     const agentIds = agents.map((agent) => agent._id);
@@ -1634,7 +1621,19 @@ export function createMCPAuthorityMethods(
     if (suppliedSession?.inTransaction()) {
       reject('proof_unavailable', 'MCP authority reads cannot use a caller transaction snapshot');
     }
+    const external = typeof tokenSource === 'function' ? tokenSource() : (tokenSource ?? null);
     await ensureSnapshotNamespaces();
+    const tokenInput = {
+      userId,
+      tenantId,
+      serverNames: targets
+        .filter((target) => target.requiresOAuth)
+        .map((target) => target.serverName),
+      limit: MAX_MCP_AUTHORITY_TARGETS * OAUTH_TOKEN_TYPES.length,
+    };
+    const capturedTokens =
+      external === null ? null : await readAuthorityTokens(external, tokenInput);
+    const tokenDigest = capturedTokens === null ? null : digestMCPAuthorityValue(capturedTokens);
     const session = suppliedSession ?? (await mongoose.startSession());
     const ownsSession = suppliedSession == null;
     try {
@@ -1643,8 +1642,14 @@ export function createMCPAuthorityMethods(
         readConcern: { level: 'snapshot' },
         writeConcern: { w: 'majority' },
       });
-      const proof = await loadCurrentProof(userId, tenantId, boot, targets, session);
+      const proof = await loadCurrentProof(tokenInput, boot, targets, session, capturedTokens);
       await session.commitTransaction();
+      if (external !== null) {
+        const currentTokens = await readAuthorityTokens(external, tokenInput);
+        if (digestMCPAuthorityValue(currentTokens) !== tokenDigest) {
+          reject('proof_unavailable', 'MCP OAuth grants changed during the authority snapshot');
+        }
+      }
       return proof;
     } catch (error) {
       if (session.inTransaction()) {

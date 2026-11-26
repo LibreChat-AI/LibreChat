@@ -36,6 +36,7 @@ const {
 const permissionService = require('~/server/services/PermissionService');
 const { deleteUserMcpServers } = require('~/server/controllers/UserController');
 const { AclEntry, AccessRole } = require('~/db/models');
+const { initializeAuthentication, closeAuthentication } = require('~/models');
 
 let MCPServer;
 
@@ -47,6 +48,7 @@ describe('deleteUserMcpServers', () => {
     const mongoUri = mongoServer.getUri();
     MCPServer = mongoose.models.MCPServer || mongoose.model('MCPServer', mcpServerSchema);
     await mongoose.connect(mongoUri);
+    await initializeAuthentication({});
 
     await AccessRole.create({
       accessRoleId: AccessRoleIds.MCPSERVER_OWNER,
@@ -65,6 +67,7 @@ describe('deleteUserMcpServers', () => {
   }, 20000);
 
   afterAll(async () => {
+    await closeAuthentication();
     await mongoose.disconnect();
     await mongoServer?.stop();
   });

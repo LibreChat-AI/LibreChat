@@ -96,6 +96,8 @@ jobs:
           "$chrome" --version
           echo "CHROME_PATH=$chrome" >> "$GITHUB_ENV"
       - run: npm run e2e:prepare
+      - name: Test cleanup authentication lifecycle
+        run: node --test e2e/setup-authority.test.mts
       - name: Audit serial database latency
         id: audit
         shell: bash

@@ -250,7 +250,7 @@ describe('opt-in two-factor confirmation', () => {
       verifyTOTP: async (_secret, token) => token === '123456',
       updateUser: (id, update, expectedState) =>
         writeUser(id, update, expectedState) as Promise<StoredTwoFactorAccount | null>,
-      findSession: (query, options) => methods.findSession(query, options),
+      findSession: (query) => methods.findSession(query),
       deleteAllUserSessions: (query, options) => methods.deleteAllUserSessions(query, options),
       awaitAuthUserDocEviction: async () => {
         evicted.push(Date.now());
@@ -315,6 +315,35 @@ describe('opt-in two-factor confirmation', () => {
     expect(rotated).toEqual([String(caller?._id)]);
     expect(await mongoose.models.Session.countDocuments({ user: userId })).toBe(1);
     expect(await mongoose.models.Session.exists({ _id: caller?._id })).toBeTruthy();
+  });
+
+  it('rotates the plain Mongo-backed session in place after opt-in enrollment', async () => {
+    const userId = await createUser({ pendingTotpSecret: PENDING_SECRET });
+    const req = await createReq(userId);
+    const previousRefreshToken = req.cookies.refreshToken as string;
+    const previous = await methods.findSession({ userId, refreshToken: previousRefreshToken });
+    let refreshToken = '';
+    const { deps } = createDeps({
+      setAuthTokens: async (_id, _res, session) => {
+        expect(typeof session._id).toBe('string');
+        expect(typeof session.user).toBe('string');
+        expect(session).not.toHaveProperty('save');
+        refreshToken = await methods.generateRefreshToken(Object.freeze(session));
+        return 'rotated-access-token';
+      },
+    });
+    await tick();
+    const res = createRes();
+
+    await createOptInTwoFactorConfirmation(deps)(req, res as unknown as Response);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(refreshToken).not.toBe(previousRefreshToken);
+    expect(await methods.findSession({ userId, refreshToken: previousRefreshToken })).toBeNull();
+    expect(await methods.findSession({ userId, refreshToken })).toEqual(
+      expect.objectContaining({ _id: previous?._id, user: userId }),
+    );
+    expect(await mongoose.models.Session.countDocuments({ user: userId })).toBe(1);
   });
 
   it('retires a credential minted while the promoting write is in flight', async () => {
@@ -565,9 +594,9 @@ describe('opt-in two-factor confirmation', () => {
         }
         return methods.getUserById(id, projection) as Promise<StoredTwoFactorAccount | null>;
       },
-      findSession: async (query, options) => {
+      findSession: async (query) => {
         sessionRead();
-        return methods.findSession(query, options);
+        return methods.findSession(query);
       },
     });
     const req = await createReq(userId);

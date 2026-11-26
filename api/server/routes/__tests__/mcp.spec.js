@@ -134,6 +134,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('~/models', () => ({
+  findMCPTokenUserIds: jest.fn().mockResolvedValue([]),
   findToken: jest.fn(),
   updateToken: jest.fn(),
   createToken: jest.fn(),

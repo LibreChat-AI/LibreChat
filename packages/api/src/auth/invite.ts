@@ -1,5 +1,6 @@
 import { Types } from 'mongoose';
 import { logger, hashToken, getRandomValues } from '@librechat/data-schemas';
+import type { TokenMethods } from '@librechat/data-schemas';
 
 export interface InviteDeps {
   createToken: (data: {
@@ -9,7 +10,7 @@ export interface InviteDeps {
     createdAt: number;
     expiresIn: number;
   }) => Promise<unknown>;
-  findToken: (filter: { token: string; email: string }) => Promise<unknown>;
+  findToken: TokenMethods['findToken'];
 }
 
 /** Creates a new user invite and returns the encoded token. */
@@ -54,7 +55,7 @@ export async function getInvite(
 
     const token = decodeURIComponent(encodedToken);
     const hash = await hashToken(token);
-    const invite = await deps.findToken({ token: hash, email });
+    const invite = await deps.findToken({ token: hash, email }, { unexpired: true });
 
     if (!invite) {
       throw new Error('Invite not found or email does not match');

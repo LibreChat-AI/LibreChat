@@ -33,3 +33,15 @@ export interface RefreshTokenBridgeDeleteData {
   tenantId?: string;
   version?: string;
 }
+
+export interface BridgeRecord {
+  _id: string;
+  oldRefreshTokenHash: string;
+  encryptedNewRefreshToken: string;
+  userId: string;
+  tenantId?: string;
+  openidIssuer?: string;
+  version?: string;
+  createdAt: Date;
+  expiresAt: Date;
+}
