@@ -111,6 +111,21 @@ it('shows progress from the header and opens the closed artifact of the live rep
   expect(selected).toBe(artifactId('current'));
 });
 
+it('keeps a dismissed artifact closed when a new chat takes its saved URL', () => {
+  startRun('current');
+  const view = (content: string, submitting = true) => page(reply('current', content, submitting));
+  const { rerender } = render(view(`${newVersion}\n:::\n`));
+  expect(selected).toBe(artifactId('current'));
+  fireEvent.click(screen.getByRole('button', { name: /^Close artifact: Chart/ }));
+  expect(selected).toBeNull();
+
+  /* Leaving /c/new for the saved URL resets the archive while the reply finishes. */
+  act(() => resetArchive());
+  rerender(view(`${newVersion}\n:::\nDone.`, false));
+  expect(selected).toBeNull();
+  expect(visible).toBe(false);
+});
+
 it('leaves a completed artifact closed when its response loads or continues', () => {
   const { rerender } = render(page(reply('saved', savedVersion)));
   expect(screen.getByRole('status')).toHaveTextContent('Ready');
