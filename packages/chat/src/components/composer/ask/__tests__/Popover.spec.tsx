@@ -187,6 +187,74 @@ describe('AskPopover', () => {
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Composer' }));
   });
 
+  it('focuses the draft when a single question is moved in from the chat', () => {
+    function Opening() {
+      const [visible, setVisible] = useState(false);
+      const textAreaRef = React.useRef<HTMLTextAreaElement>(null);
+      return (
+        <>
+          <button onClick={() => setVisible(true)}>open</button>
+          <textarea ref={textAreaRef} aria-label="Composer" />
+          <AskPopover
+            conversationId="c-1"
+            ask={view({ popoverVisible: visible })}
+            useComposerText={() => ''}
+            textAreaRef={textAreaRef}
+            renderQuestions={() => null}
+          />
+        </>
+      );
+    }
+    render(<Opening />);
+    const open = screen.getByRole('button', { name: 'open' });
+    open.focus();
+
+    act(() => {
+      fireEvent.click(open);
+    });
+
+    expect(screen.getByText('Which environment?')).toBeInTheDocument();
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Composer' }));
+  });
+
+  it('leaves focus to the host card when a batch is moved in', () => {
+    function Opening() {
+      const [visible, setVisible] = useState(false);
+      const textAreaRef = React.useRef<HTMLTextAreaElement>(null);
+      return (
+        <>
+          <button onClick={() => setVisible(true)}>open</button>
+          <textarea ref={textAreaRef} aria-label="Composer" />
+          <AskPopover
+            conversationId="c-1"
+            ask={view({
+              popoverVisible: visible,
+              liveAsk: {
+                actionId: 'ask-1',
+                messageId: 'm-1',
+                question: { question: 'unused' },
+                questions: [{ id: 'q1', question: 'First?' }],
+              },
+            })}
+            useComposerText={() => ''}
+            textAreaRef={textAreaRef}
+            renderQuestions={() => <p>batch card</p>}
+          />
+        </>
+      );
+    }
+    render(<Opening />);
+    const open = screen.getByRole('button', { name: 'open' });
+    open.focus();
+
+    act(() => {
+      fireEvent.click(open);
+    });
+
+    expect(screen.getByText('batch card')).toBeInTheDocument();
+    expect(document.activeElement).toBe(open);
+  });
+
   it('renders nothing while the question sits in the chat', () => {
     const { container } = render(
       <AskPopover

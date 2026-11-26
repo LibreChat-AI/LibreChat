@@ -1,29 +1,6 @@
 import type * as t from 'librechat-data-provider';
 
-export { filterAttachmentsForPart } from '@librechat/chat';
-
-/** Maps Attachments by `toolCallId` for quick lookup */
-export function mapAttachments(attachments: Array<t.TAttachment | null | undefined>) {
-  const attachmentMap: Record<string, t.TAttachment[] | undefined> = {};
-
-  for (const attachment of attachments) {
-    if (attachment === null || attachment === undefined) {
-      continue;
-    }
-    const key = attachment.toolCallId || '';
-    if (key.length === 0) {
-      continue;
-    }
-
-    if (!attachmentMap[key]) {
-      attachmentMap[key] = [];
-    }
-
-    attachmentMap[key]?.push(attachment);
-  }
-
-  return attachmentMap;
-}
+export { mapAttachments, filterAttachmentsForPart } from '@librechat/chat';
 
 /** Maps Files by `file_id` for quick lookup */
 export function mapFiles(files: t.TFile[]) {

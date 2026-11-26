@@ -184,7 +184,7 @@ test.describe('message hover actions', () => {
      *  Escape hands focus back to the trigger, so drop it before measuring the fade
      *  or `group-focus-within` keeps the row lit on its own. */
     await page.keyboard.press('Escape');
-    await expect(page.locator('.popover-animate')).toHaveCount(0);
+    await expect(page.getByRole('dialog', { name: 'Fork conversation' })).toHaveCount(0);
     await page.locator('body').click({ position: { x: 5, y: 5 } });
     await page.mouse.move(0, 0);
     await expect(copyButton).toHaveCSS('opacity', '0');

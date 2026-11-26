@@ -2,14 +2,23 @@ jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), debug: jest.fn(), info: jest.fn() },
 }));
 jest.mock('@librechat/api', () => {
-  const { getModelRefusalInfo, getModelEndUsage } = jest.requireActual('@librechat/api');
+  const {
+    getModelRefusalInfo,
+    recordModelTruncation,
+    getModelEndUsage,
+    captureResponseAccountingUsage,
+    collectGoogleThoughtSignatures,
+  } = jest.requireActual('@librechat/api');
   return {
     sendEvent: jest.fn(),
     emitEvent: jest.fn(),
     createToolExecuteHandler: jest.fn(),
     markSummarizationUsage: (usage) => usage,
     getModelRefusalInfo,
+    recordModelTruncation,
     getModelEndUsage,
+    captureResponseAccountingUsage,
+    collectGoogleThoughtSignatures,
   };
 });
 jest.mock('~/server/services/Files/Citations', () => ({
@@ -32,12 +41,34 @@ const buildGraph = () => ({
   }),
 });
 
-describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 follow-up)', () => {
+describe('ModelEndHandler: Google thoughtSignature capture (issue #13006 follow-up)', () => {
   it('leaves usage usable when graph context is unavailable', () => {
     const usage = { input_tokens: 10, output_tokens: 5 };
 
-    expect(contextualizeModelUsage(usage, undefined, undefined)).toEqual(usage);
-    expect(contextualizeModelUsage(usage, undefined, null)).toEqual(usage);
+    expect(contextualizeModelUsage(usage, undefined, undefined)).toEqual({
+      ...usage,
+      accountingIdentity: { modelSource: 'unknown' },
+    });
+    expect(contextualizeModelUsage(usage, undefined, null)).toEqual({
+      ...usage,
+      accountingIdentity: { modelSource: 'unknown' },
+    });
+  });
+
+  it('captures configured provenance before billing fills the model and keeps it on repeated contextualization', () => {
+    const usage = { input_tokens: 10, output_tokens: 5 };
+    const context = { provider: 'bedrock', clientOptions: { model: 'configured-model' } };
+    const first = contextualizeModelUsage(usage, undefined, context);
+    expect(first.model).toBe('configured-model');
+    expect(first.accountingIdentity).toEqual({
+      model: 'configured-model',
+      provider: 'bedrock',
+      modelSource: 'configured',
+    });
+    expect(contextualizeModelUsage(first, undefined, context).accountingIdentity).toEqual(
+      first.accountingIdentity,
+    );
+    expect(usage).not.toHaveProperty('accountingIdentity');
   });
 
   it('prefers the actually invoked fallback provider and model', () => {
@@ -60,6 +91,11 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
       provider: 'anthropic',
       model: 'claude-fallback',
       agentId: 'agent-1',
+      accountingIdentity: {
+        model: 'claude-fallback',
+        provider: 'anthropic',
+        modelSource: 'runtime_reported',
+      },
     });
   });
 
@@ -73,7 +109,7 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
     ).toBe('reported-model');
   });
 
-  it('maps non-empty signatures onto tool_call_ids in order', async () => {
+  it('does not guess call ownership from ambiguous positional signatures', async () => {
     const collectedUsage = [];
     const collectedThoughtSignatures = {};
     const handler = new ModelEndHandler(collectedUsage, collectedThoughtSignatures);
@@ -94,7 +130,7 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
       buildGraph(),
     );
 
-    expect(collectedThoughtSignatures).toEqual({ tc_a: 'SIG_A', tc_b: 'SIG_B' });
+    expect(collectedThoughtSignatures).toEqual({});
     expect(collectedUsage).toHaveLength(1);
   });
 
@@ -109,7 +145,9 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
         output: {
           usage_metadata: { input_tokens: 5, output_tokens: 5, total_tokens: 10 },
           tool_calls: [{ id: 'tc_step1', name: 'a', args: {} }],
-          additional_kwargs: { signatures: ['SIG_step1'] },
+          additional_kwargs: {
+            __gemini_function_call_thought_signatures__: { tc_step1: 'SIG_step1' },
+          },
         },
       },
       { ls_model_name: 'g', user_id: 'u' },
@@ -121,7 +159,9 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
         output: {
           usage_metadata: { input_tokens: 5, output_tokens: 5, total_tokens: 10 },
           tool_calls: [{ id: 'tc_step2', name: 'b', args: {} }],
-          additional_kwargs: { signatures: ['SIG_step2'] },
+          additional_kwargs: {
+            __gemini_function_call_thought_signatures__: { tc_step2: 'SIG_step2' },
+          },
         },
       },
       { ls_model_name: 'g', user_id: 'u' },
@@ -129,9 +169,23 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
     );
 
     expect(collectedThoughtSignatures).toEqual({
-      tc_step1: 'SIG_step1',
-      tc_step2: 'SIG_step2',
+      calls: { tc_step1: 'SIG_step1', tc_step2: 'SIG_step2' },
     });
+  });
+
+  it('captures signed text even without token usage', async () => {
+    const { AIMessage } = require('@langchain/core/messages');
+    const { captureGeminiReplayParts } = require('@librechat/agents');
+    const output = new AIMessage('Signed answer');
+    captureGeminiReplayParts(output, [{ text: 'Signed answer', thoughtSignature: 'opaque' }]);
+    const collected = {};
+    await new ModelEndHandler([], collected).handle(
+      'on_chat_model_end',
+      { output },
+      {},
+      buildGraph(),
+    );
+    expect(collected.turns[0][0].thoughtSignature).toBe('opaque');
   });
 
   it('is a no-op for signatures when collectedThoughtSignatures is null', async () => {
@@ -276,5 +330,69 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
 
   it('throws when collectedUsage is not an array (existing contract)', () => {
     expect(() => new ModelEndHandler(null)).toThrow('collectedUsage must be an array');
+  });
+});
+
+describe('ModelEndHandler: Gemini output budget (issue #18649)', () => {
+  const usage_metadata = { input_tokens: 68641, output_tokens: 65536, total_tokens: 134177 };
+  const metadata = { ls_model_name: 'gemini-3-pro', user_id: 'u', run_id: 'r', thread_id: 't' };
+
+  it('records a reasoning-only MAX_TOKENS call without failing the run', async () => {
+    const collectedUsage = [];
+    const truncationSink = {};
+    const handler = new ModelEndHandler(collectedUsage, {}, null, truncationSink);
+
+    await expect(
+      handler.handle(
+        'on_chat_model_end',
+        {
+          output: {
+            content: '',
+            usage_metadata,
+            additional_kwargs: { reasoning: 'Thinking about the question...' },
+            response_metadata: { index: 0, finishReason: 'MAX_TOKENS' },
+          },
+        },
+        metadata,
+        buildGraph(),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(truncationSink).toEqual({ calls: { '': 'exhausted' } });
+    expect(collectedUsage).toHaveLength(1);
+  });
+
+  it('clears an earlier truncation when a later call completes', async () => {
+    const truncationSink = { calls: { '': 'exhausted' } };
+    const handler = new ModelEndHandler([], {}, null, truncationSink);
+
+    await handler.handle(
+      'on_chat_model_end',
+      { output: { content: 'Done', usage_metadata, response_metadata: { finishReason: 'STOP' } } },
+      metadata,
+      buildGraph(),
+    );
+
+    expect(truncationSink).toEqual({ calls: { '': 'complete' } });
+  });
+
+  it('leaves the sink to answer calls when a summarization call is truncated', async () => {
+    const truncationSink = {};
+    const handler = new ModelEndHandler([], {}, null, truncationSink);
+
+    await handler.handle(
+      'on_chat_model_end',
+      {
+        output: {
+          content: '',
+          usage_metadata,
+          response_metadata: { finishReason: 'MAX_TOKENS' },
+        },
+      },
+      { ...metadata, langgraph_node: 'summarize=agent_1' },
+      buildGraph(),
+    );
+
+    expect(truncationSink).toEqual({});
   });
 });

@@ -4,6 +4,7 @@ import type {
   TSubmission,
   TConversation,
   TPendingSteer,
+  TPromotedSteer,
   TAttachment,
   ChatTransport,
   ChatTransportRequest,
@@ -15,9 +16,6 @@ import type {
   TTokenUsageEvent,
   TContextUsageEvent,
   TSteerUpdatedEvent,
-  TSteerAppliedEvent,
-  TActivityLabelEvent,
-  TReasoningLabelEvent,
 } from 'librechat-data-provider';
 import type { GenerationProtocolVersion } from '../protocol';
 import type { RunEnd } from '../steer/types';
@@ -151,6 +149,9 @@ export interface ResumableSteers {
     steers: TPendingSteer[],
     options?: SteerQueueOptions,
   ) => void;
+  /** Retires the chips of steers the server promoted to durable queued turns and shows
+   *  those turns in the queue; returns every id the promoted steers are known by. */
+  adoptPromoted: (conversationId: string, promoted: TPromotedSteer[]) => string[];
   /** Sweeps the pane's local chips into queued follow-ups. */
   convertLocalToQueued: (
     conversationId: string,
@@ -302,6 +303,8 @@ export interface ResumableEvents {
 /** The run's token usage: the live estimate while it streams and the totals it settles to. */
 export interface ResumableUsage {
   bindResponse: (submission: TSubmission) => void;
+  /** A run step named the id the turn's reply row takes; see `nameStepResponse`. */
+  nameResponse?: (responseId: string, submission: TSubmission) => void;
   contextHandler: (data: TContextUsageEvent, submission: TSubmission) => void;
   usageHandler: (data: TTokenUsageEvent, submission: TSubmission) => void;
   tapStream: (data: { delta?: { content?: unknown } }, submission: TSubmission) => void;
@@ -310,39 +313,17 @@ export interface ResumableUsage {
   backfillUsage: (entries: TTokenUsageEvent[], submission: TSubmission) => void;
   /** Seeds the live estimate with the output a resume snapshot already holds. */
   seedLiveFromContent: (content: unknown[] | undefined, submission: TSubmission) => void;
+  /**
+   * Forgets what was counted for a reply that ended with no final frame to settle it. Called by
+   * what follows a core `Chat`; main chat's session does the same through its events.
+   */
+  resetLive?: (submission: TSubmission) => void;
 }
 
 /** The pane's message list. */
 export interface ResumableMessages {
   get: () => TMessage[] | undefined;
   set: (messages: TMessage[]) => void;
-}
-
-/**
- * How the app places the parts a run reports beside its deltas onto a response message, and
- * finds the response each one targets among the pane's messages.
- */
-export interface ResumableParts {
-  applySteer: (message: TMessage, event: TSteerAppliedEvent) => TMessage;
-  findSteerTarget: (
-    messages: TMessage[],
-    event: TSteerAppliedEvent,
-    fallbackMessageIds?: readonly (string | null | undefined)[],
-  ) => number;
-  applyActivityLabel: (message: TMessage, event: TActivityLabelEvent) => TMessage;
-  findActivityLabelTarget: (
-    messages: TMessage[],
-    event: TActivityLabelEvent,
-    fallbackMessageIds?: readonly (string | null | undefined)[],
-  ) => number;
-  /** Shifts a phase label's end boundary past an edit's retained prefix. */
-  offsetActivityPhaseBoundary: (
-    endIndex: number,
-    prefixLength: number,
-    foldedFirstPart: boolean,
-  ) => number;
-  applyReasoningLabel: (message: TMessage, event: TReasoningLabelEvent) => TMessage;
-  findReasoningLabelTarget: (messages: TMessage[], event: TReasoningLabelEvent) => number;
 }
 
 /** Everything a resumable run needs from the app it runs in. */
@@ -353,7 +334,6 @@ export interface ResumableHost extends SubscriptionHost {
   steers: ResumableSteers;
   events: ResumableEvents;
   messages: ResumableMessages;
-  parts: ResumableParts;
   usage: ResumableUsage;
   /** The stream side of the app's transport, bound to the signed-in user. */
   stream: ChatTransport;

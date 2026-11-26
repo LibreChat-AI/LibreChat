@@ -6,12 +6,11 @@ import {
   PrincipalType,
   defaultAgentCapabilities,
 } from 'librechat-data-provider';
-
 import type { AppConfig, IConfig } from '@librechat/data-schemas';
 import type { AppConfigServiceDeps } from '~/app/service';
 import type { EndpointsConfigDeps } from './endpoints';
 import type { ServerRequest } from '~/types';
-
+import { resolveToolApprovalPolicy } from '~/agents/hitl/policy';
 import { createEndpointsConfigService } from './endpoints';
 import { createAppConfigService } from '~/app/service';
 
@@ -95,6 +94,60 @@ describe('createEndpointsConfigService', () => {
       );
     });
 
+    it('serves only the declared Azure efforts, not the deployment details', async () => {
+      const deps = createMockDeps({
+        getAppConfig: jest.fn().mockResolvedValue(
+          appConfig({
+            endpoints: {
+              [EModelEndpoint.azureOpenAI]: {
+                groupMap: {
+                  first: {
+                    apiKey: 'secret',
+                    models: {
+                      'production-west': {
+                        deploymentName: 'private-deployment',
+                        reasoningEfforts: ['low', 'high'],
+                      },
+                      'production-chat': { deploymentName: 'chat-deployment' },
+                      'boolean-model': true,
+                    },
+                  },
+                  second: { models: { 'production-east': { reasoningEfforts: ['medium'] } } },
+                },
+              },
+            },
+          }),
+        ),
+      });
+      const { getEndpointsConfig } = createEndpointsConfigService(deps);
+      const result = await getEndpointsConfig(fakeReq());
+
+      expect(result?.[EModelEndpoint.azureOpenAI]?.modelReasoningEfforts).toEqual({
+        'production-west': ['low', 'high'],
+        'production-east': ['medium'],
+      });
+      expect(JSON.stringify(result)).not.toContain('private-deployment');
+      expect(JSON.stringify(result)).not.toContain('secret');
+    });
+
+    it('adds no Azure efforts when no deployment declares any', async () => {
+      const deps = createMockDeps({
+        getAppConfig: jest.fn().mockResolvedValue(
+          appConfig({
+            endpoints: {
+              [EModelEndpoint.azureOpenAI]: {
+                groupMap: { first: { models: { 'production-chat': true } } },
+              },
+            },
+          }),
+        ),
+      });
+      const { getEndpointsConfig } = createEndpointsConfigService(deps);
+      const result = await getEndpointsConfig(fakeReq());
+
+      expect(result?.[EModelEndpoint.azureOpenAI]).not.toHaveProperty('modelReasoningEfforts');
+    });
+
     it('adds azureAssistants when azure has assistants config', async () => {
       const deps = createMockDeps({
         getAppConfig: jest.fn().mockResolvedValue(
@@ -163,6 +216,12 @@ describe('createEndpointsConfigService', () => {
             endpoints: {
               [EModelEndpoint.agents]: {
                 allowedProviders: ['openAI', 'anthropic'],
+                sdkRuntimes: {
+                  private: {
+                    remote: { url: 'wss://private/sdk', secret: 'private-server-secret' },
+                    roles: ['ADMIN'],
+                  },
+                },
                 capabilities: [AgentCapabilities.execute_code],
                 maxSubagents: 20,
               },
@@ -175,7 +234,47 @@ describe('createEndpointsConfigService', () => {
 
       expect(result?.[EModelEndpoint.agents]?.allowedProviders).toEqual(['openAI', 'anthropic']);
       expect(result?.[EModelEndpoint.agents]?.maxSubagents).toBe(20);
+      expect(result?.[EModelEndpoint.agents]).not.toHaveProperty('sdkRuntimes');
     });
+
+    it.each([true, false, undefined])(
+      'exposes only channel availability to the agent builder when enabled=%s',
+      async (enabled) => {
+        const channels =
+          enabled == null
+            ? undefined
+            : {
+                enabled,
+                leaseMs: 60_000,
+                cleanup: { batchSize: 25 },
+                nativeSessions: true,
+                lifecycleReactions: true,
+                signatureToleranceSeconds: 60,
+                socketReconnectDelayMs: 100,
+                slackApp: {
+                  enabled: true,
+                  clientSecret: 'private-slack-client-secret',
+                  signingSecret: 'private-slack-signing-secret',
+                },
+              };
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest
+            .fn()
+            .mockResolvedValue(appConfig({ endpoints: { [EModelEndpoint.agents]: { channels } } })),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+
+        const result = await getEndpointsConfig(fakeReq());
+
+        expect(result?.[EModelEndpoint.agents]).toEqual(
+          expect.objectContaining({ channels: { enabled: enabled === true } }),
+        );
+        expect(JSON.stringify(result)).not.toContain('private-slack');
+      },
+    );
 
     it.each([true, false])(
       'exposes file sharing policy to the agent builder when enabled=%s',
@@ -314,6 +413,63 @@ describe('createEndpointsConfigService', () => {
         ],
       });
     });
+
+    it.each([undefined, false, true])(
+      'public approval metadata preserves attached runtime wiring with endpoint enabled=%s',
+      async (enabled) => {
+        const toolApproval = enabled == null ? undefined : { enabled };
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest.fn().mockResolvedValue(
+            appConfig({
+              endpoints: {
+                [EModelEndpoint.agents]: {
+                  toolApproval,
+                  capabilities: [
+                    AgentCapabilities.execute_code,
+                    AgentCapabilities.stateful_code_sessions,
+                  ],
+                  statefulCodeSessions: {
+                    allowedEnvironments: ['user'],
+                    environments: [
+                      {
+                        id: 'attached',
+                        name: 'Machine',
+                        type: 'attached',
+                        default: true,
+                        owner: 'principal',
+                        baseURL: 'https://internal-code.example.com',
+                      },
+                    ],
+                  },
+                },
+              },
+            }),
+          ),
+        });
+        const result = await createEndpointsConfigService(deps).getEndpointsConfig(fakeReq());
+        const wire: typeof result = JSON.parse(JSON.stringify(result));
+        expect(wire?.[EModelEndpoint.agents]).toMatchObject({
+          toolApproval: { enabled: enabled === true },
+          statefulCodeSessions: {
+            approvalsEnabled: enabled !== false,
+            environments: [{ id: 'attached', type: 'attached', default: true }],
+          },
+        });
+        expect(
+          wire?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments?.[0],
+        ).not.toHaveProperty('baseURL');
+        expect(
+          wire?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments?.[0],
+        ).not.toHaveProperty('owner');
+        expect(result?.[EModelEndpoint.agents]?.statefulCodeSessions?.approvalsEnabled).toBe(
+          resolveToolApprovalPolicy({ endpoint: toolApproval, attachedCodeEnvironment: true })
+            ?.enabled,
+        );
+      },
+    );
 
     it('does not expose a pairing-only control plane as an execution environment', async () => {
       const deps = createMockDeps({

@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import {
   MOCK_ENDPOINTS,
@@ -7,6 +6,11 @@ import {
   selectMockEndpoint,
   sendMessage,
 } from './helpers';
+import { expect, test } from './fixtures';
+import { deleteProjects } from './db';
+
+/** Projects this file created, deleted after each test so later specs start without them. */
+const created: string[] = [];
 
 /**
  * Creates a project from the all-projects page and returns its id.
@@ -23,12 +27,17 @@ async function createProject(page: Page, name: string): Promise<string> {
   await expect(page.getByRole('heading', { name: new RegExp(escapeRegExp(name)) })).toBeVisible();
   const projectId = new URL(page.url()).pathname.split('/projects/')[1];
   expect(projectId).toBeTruthy();
+  created.push(projectId);
   return projectId;
 }
 
 const uniqueName = (prefix: string) => `${prefix} ${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
 
 test.describe('chat projects', () => {
+  test.afterEach(async () => {
+    await deleteProjects(created.splice(0));
+  });
+
   test('creates a project with full-width instructions when RAG is disabled', async ({ page }) => {
     test.setTimeout(60000);
     const name = uniqueName('E2E Project');

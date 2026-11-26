@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useStore } from 'jotai';
 import type {
   TMessage,
@@ -29,6 +29,7 @@ import {
   MESSAGE_UPDATE_INTERVAL,
 } from '../../core';
 import { ptcTraceByToolCallId, EMPTY_PTC_TRACE, PTC_TRACE_MAX_ENTRIES, ptcTraceKey } from './ptc';
+import { phaseReceipts, visitPhaseStamps } from './receipt';
 import { sandboxStartingByToolCallId } from './sandbox';
 
 type TUseStepHandler = {
@@ -67,6 +68,17 @@ export function useStepHandler({
 }: TUseStepHandler): StepHandlers {
   const subagentStore = useStore();
   const stream = useRef<StreamState>(createStreamState());
+  const receiptKeys = useRef(new Set<string>());
+  const clearPhaseReceipts = useCallback(() => {
+    if (receiptKeys.current.size === 0) return;
+    subagentStore.set(phaseReceipts, (current) => {
+      const next = new Map(current);
+      for (const key of receiptKeys.current) next.delete(key);
+      return next;
+    });
+    receiptKeys.current.clear();
+  }, [subagentStore]);
+  useEffect(() => clearPhaseReceipts, [clearPhaseReceipts]);
   /** Coalesces rapid-fire summarize delta renders into a single rAF frame */
   const summarizeDeltaRaf = useRef<number | null>(null);
   /** Coalesces per-token message/reasoning delta cache writes into one rAF frame.
@@ -338,6 +350,16 @@ export function useStepHandler({
   const stepHandler = useCallback(
     (stepEvent: StepEvent, submission: EventSubmission) => {
       const currentTime = Date.now();
+      visitPhaseStamps(stepEvent, stream.current, (stepId, stamp) => {
+        receiptKeys.current.add(stepId);
+        const current = subagentStore.get(phaseReceipts);
+        const stamps = current.get(stepId);
+        if (stamps?.has(stamp)) return;
+        subagentStore.set(
+          phaseReceipts,
+          new Map(current).set(stepId, new Map(stamps).set(stamp, currentTime)),
+        );
+      });
       if (currentTime - lastAnnouncementTimeRef.current > MESSAGE_UPDATE_INTERVAL) {
         announcePolite({ message: 'composing', isStatus: true });
         lastAnnouncementTimeRef.current = currentTime;
@@ -345,7 +367,14 @@ export function useStepHandler({
       const ctx: StepContext = { submission, getMessages, setMessages };
       applyEffects(reduceStep(stream.current, stepEvent, ctx), ctx);
     },
-    [getMessages, setMessages, announcePolite, applyEffects, lastAnnouncementTimeRef],
+    [
+      getMessages,
+      setMessages,
+      announcePolite,
+      applyEffects,
+      lastAnnouncementTimeRef,
+      subagentStore,
+    ],
   );
 
   /** Cancels a queued delta flush so it can't overwrite a terminal write:
@@ -385,6 +414,7 @@ export function useStepHandler({
       summarizeDeltaRaf.current = null;
     }
     cancelPendingDeltaFlush();
+    clearPhaseReceipts();
     resetStreamState(stream.current);
     closeParentSubagentStreams();
     /** Unlike subagent atoms below, sandbox-starting flags are transient
@@ -400,7 +430,7 @@ export function useStepHandler({
      *  persisted `subagent_content` takes over for historical messages
      *  once the conversation is saved, and we prevent unbounded
      *  atomFamily growth across multi-conversation sessions. */
-  }, [cancelPendingDeltaFlush, closeParentSubagentStreams, resetSandboxAtoms]);
+  }, [cancelPendingDeltaFlush, clearPhaseReceipts, closeParentSubagentStreams, resetSandboxAtoms]);
 
   /**
    * Sync a message into the step handler's streaming copy.

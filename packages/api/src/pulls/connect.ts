@@ -25,6 +25,7 @@ import {
   validateOAuthSession,
 } from '~/oauth/csrf';
 import { isPullRequestFeatureActive, resolvePullRequestOAuth } from './settings';
+import { createTermsRouteGate } from '~/middleware/terms';
 import { readPullRequestSettings } from './handler';
 import { getSafeErrorMetadata } from '~/utils';
 import { getBasePath } from '~/utils/path';
@@ -304,8 +305,19 @@ export function createPullRequestConnectionRouter(
   /** Behind `requireJwtAuth`, which puts the signed-in user on the request. */
   const authed = (handler: (req: ServerRequest, res: Response) => Promise<void>) =>
     handler as unknown as RequestHandler;
+  /**
+   * The terms gate lets reads through, but connecting starts an OAuth flow, so this route checks
+   * for itself.
+   */
+  const termsGate = createTermsRouteGate({ getAppConfig: deps.getAppConfig });
   router.get('/oauth/callback', deps.markNavigation, deps.callbackLimiter, handlers.callback);
-  router.get('/oauth/connect', deps.requireJwtAuth, setOAuthSession, authed(handlers.connect));
+  router.get(
+    '/oauth/connect',
+    deps.requireJwtAuth,
+    termsGate,
+    setOAuthSession,
+    authed(handlers.connect),
+  );
   router.get('/oauth/status', deps.requireJwtAuth, authed(handlers.status));
   router.delete('/oauth', deps.requireJwtAuth, authed(handlers.disconnect));
   return router;

@@ -3812,7 +3812,7 @@ describe('steady-state sync of an unchanged source', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await server.stop();
+    await server?.stop();
   });
 
   beforeEach(async () => {

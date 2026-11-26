@@ -36,6 +36,12 @@ import { checkAppConfigTheme } from './theme';
 
 const BASE_CONFIG_KEY = '_BASE_';
 
+/**
+ * Sentinel stored in the override cache when a principal has no DB overrides.
+ * Avoids storing duplicate serialized copies of the full base config per user.
+ */
+export const BASE_OVERRIDE_SENTINEL = '__BASE_OVERRIDE__';
+
 /** A base-config load: the config it serves, and why it failed when that is the last good one. */
 interface BaseConfigLoad {
   config: AppConfig;
@@ -312,6 +318,16 @@ function withSpecInterface(
   return interfaceConfig === config.interfaceConfig ? config : { ...config, interfaceConfig };
 }
 
+/** Base-only policy must share the same SDK buffer across cached principal configs. */
+function withBaseOutputProtection(config: AppConfig, base: AppConfig): AppConfig {
+  const policy = base.config?.outputProtection;
+  if (config.config?.outputProtection === policy) return config;
+  const yaml = { ...config.config };
+  if (policy == null) delete yaml.outputProtection;
+  else yaml.outputProtection = policy;
+  return { ...config, config: yaml };
+}
+
 /** Re-derive only spec-dependent controls before principal overrides are applied. */
 function scopeBaseConfig(config: AppConfig, tenantId?: string): AppConfig {
   const scoped = scopeCustomEndpoints(config, tenantId);
@@ -472,6 +488,8 @@ interface CacheStore {
   opts?: {
     store?: {
       keys?: () => IterableIterator<string>;
+      /** Local retention policy; Redis and custom stores keep their existing behavior. */
+      configure?: (limits?: TCustomConfig['configCache']) => void;
     };
   };
 }
@@ -616,7 +634,7 @@ export function _resetOverrideStrictCache(): void {
   _warnedNoTenantInStrictMode = false;
 }
 
-/** Versioned so older heads cannot supply entries built without the local base identity. */
+/** Versioned so older replicas expecting config objects cannot read base-config sentinels. */
 function overrideCacheKey(
   role: string | undefined,
   userId: string | undefined,
@@ -626,7 +644,7 @@ function overrideCacheKey(
   const tenant = tenantId ? `${tenantId}:tenant` : '__default__:global';
   const principal =
     userId && role ? `${role}:${userId}` : userId || role || BASE_CONFIG_PRINCIPAL_ID;
-  return `_OVERRIDE_:${tenant}:${principal}:base-v2:${scopeVersion}`;
+  return `_OVERRIDE_:${tenant}:${principal}:base-v3:${scopeVersion}`;
 }
 
 /**
@@ -883,6 +901,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     if (generation !== baseGeneration) {
       return baseConfig;
     }
+    cache.opts?.store?.configure?.(baseConfig.config?.configCache);
     if ((await cache.set(BASE_CONFIG_KEY, baseConfig)) === false) {
       throw new Error('Base cache refused configuration publication.');
     }
@@ -1043,10 +1062,13 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     }
 
     const augment = async (appConfig: AppConfig): Promise<AppConfig> => {
-      const scopedConfig = scopeCustomEndpoints(appConfig, effectiveTenantId, hiddenEndpoints);
+      const scopedConfig = withBaseOutputProtection(
+        scopeCustomEndpoints(appConfig, effectiveTenantId, hiddenEndpoints),
+        scopedBaseConfig,
+      );
       if (augmentConfig == null || skipRuntimeAugmentation === true) return scopedConfig;
       try {
-        return scopeCustomEndpoints(
+        const augmented = scopeCustomEndpoints(
           await augmentConfig({
             appConfig: scopedConfig,
             baseConfig: scopedBaseConfig,
@@ -1056,6 +1078,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
           effectiveTenantId,
           hiddenEndpoints,
         );
+        return withBaseOutputProtection(augmented, scopedBaseConfig);
       } catch (error) {
         if (failClosed) throw error;
         logger.error('[getAppConfig] Error augmenting principal config:', error);
@@ -1078,9 +1101,12 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
      */
     let cacheable = bypassOverrideCache !== true && (resolvedPrincipals == null || !!userId);
     if (cacheable && !refresh) {
-      let cachedMerged: AppConfig | undefined;
+      let cachedMerged: AppConfig | typeof BASE_OVERRIDE_SENTINEL | undefined;
       try {
-        cachedMerged = (await cache.get(cacheKey)) as AppConfig | undefined;
+        cachedMerged = (await cache.get(cacheKey)) as
+          | AppConfig
+          | typeof BASE_OVERRIDE_SENTINEL
+          | undefined;
       } catch (error) {
         cacheable = false;
         logger.warn(
@@ -1089,14 +1115,19 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
         );
       }
       if (cachedMerged) {
+        if (cachedMerged === BASE_OVERRIDE_SENTINEL) {
+          return await augment(withRuntimeSecrets(scopedBaseConfig));
+        }
         return await augment(withRuntimeSecrets(cachedMerged));
       }
     }
 
     let merged = scopedBaseConfig;
+    let hasOverrides = false;
     try {
       const configs = await getApplicableConfigs(principals);
       if (configs.length > 0) {
+        hasOverrides = true;
         const { appConfig: layered, raw } = mergeOverrideLayersWithSource(
           scopedBaseConfig,
           configs,
@@ -1133,7 +1164,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
 
     if (cacheable && getOverrideGeneration(cacheTenantId) === generation) {
       try {
-        await cache.set(cacheKey, merged, overrideCacheTtl);
+        await cache.set(cacheKey, hasOverrides ? merged : BASE_OVERRIDE_SENTINEL, overrideCacheTtl);
         if (getOverrideGeneration(cacheTenantId) !== generation) {
           await cache.delete(cacheKey);
         }

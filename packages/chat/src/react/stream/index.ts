@@ -2,7 +2,7 @@ export { default as useAdaptiveSSE } from './adaptive';
 export { default as useResumableSSE } from './resumable';
 export { StreamHostProvider, useStreamHost } from './host';
 export { useStepHandler } from './step';
-export { useUsageHandler } from './usage';
+export { useUsageHandler, toResumableUsage } from './usage';
 export { useContentHandler } from './content';
 export { settleFinishedRun } from './resume/finished';
 export { useResumeAnnouncements } from './resume/announcements';
@@ -40,6 +40,7 @@ export type {
   DraftServices,
   EventServices,
   FileServices,
+  LegacyStreamServices,
   TitleServices,
   FocusServices,
   AbortRunRequest,
@@ -55,3 +56,4 @@ export { useEventHandlers } from './events/handlers';
 export type { EventHandlers } from './events/handlers';
 export type { EventHandlerParams } from './events/context';
 export type { TSyncData, TTitleEvent } from './events/opening';
+export { useLegacyStream } from './legacy';

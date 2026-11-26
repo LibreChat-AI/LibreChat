@@ -33,10 +33,20 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('@librechat/client', () => {
-  const { CheckboxGlyph, TooltipAnchor, cn } = jest.requireActual('@librechat/client');
+  const {
+    CheckboxGlyph,
+    TooltipAnchor,
+    cn,
+    mergeComposerClasses,
+    disabledFillClasses,
+    disabledInkClasses,
+  } = jest.requireActual('@librechat/client');
   return {
     cn,
     CheckboxGlyph,
+    mergeComposerClasses,
+    disabledFillClasses,
+    disabledInkClasses,
     composerControlClasses: () => 'composer-control',
     useToastContext: () => ({ showToast: mockShowToast }),
     TooltipAnchor,
@@ -78,6 +88,7 @@ function workspace(overrides: Partial<CodeWorkspaceResult> = {}): CodeWorkspaceR
     resolveSelections: () => [selected],
     resolveSubmission: () => ({ codeEnvironmentMode: 'attached', codeWorkspaces: [selected] }),
     rememberSelection: jest.fn(),
+    readInputs: jest.fn(),
     ...overrides,
   };
 }
@@ -538,6 +549,39 @@ describe('CodeWorkspaceMenu', () => {
     expect(screen.getByRole('menuitemradio', { name: /Repo.*repo-copy/ })).toBeInTheDocument();
     /** A unique name stays one compact line. */
     expect(screen.getByRole('menuitemradio', { name: 'Solo' })).toBeInTheDocument();
+  });
+
+  test('tells machines that share a display name apart by id', async () => {
+    const twin = (id: string) => ({ ...environment, id, name: 'Laptop' });
+    const graph = workspace({ machineOptions: [twin('vm-a'), twin('vm-b'), environment] });
+    graph.environments = ['vm-a', 'vm-b'].map((id) => ({
+      environment: twin(id),
+      state: 'ready' as const,
+      workspaces: [
+        {
+          id: 'repo',
+          name: 'Repo',
+          environment: { fingerprint: 'f', repo: 'org/repo', ref: 'main', actions: [] },
+        },
+      ],
+      selected: { environmentId: id, workspaceId: 'repo' },
+    }));
+    renderMenu(
+      <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
+    );
+    await userEvent.click(screen.getByTestId('code-machine'));
+    expect(screen.getByRole('menuitem', { name: /^Laptop\s*vm-a$/ })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /^Laptop\s*vm-b$/ })).toBeInTheDocument();
+    /** A unique name stays bare. */
+    expect(screen.getByRole('menuitem', { name: 'Personal VM' })).toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    for (const id of ['vm-a', 'vm-b']) {
+      /** Each machine's rows sit in a group its label names, so the pick names its machine. */
+      const section = screen.getByRole('group', { name: new RegExp(`^Laptop\\s*${id}$`) });
+      expect(within(section).getByRole('menuitemradio', { name: /^Repo/ })).toBeInTheDocument();
+    }
   });
 
   test('hides Git context when continuing without an attached workspace', () => {

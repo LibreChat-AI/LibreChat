@@ -507,7 +507,7 @@ test.describe('compaction rerun controls', () => {
       await page.locator(`[id="edit-${chainedId}"]`).click();
       const editor = page.getByTestId('message-text-editor');
       await expect(editor).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Save' })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Rerun', exact: true })).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Update & rerun' })).toHaveCount(0);
       /* ...and the footer says why the action it usually carries is gone. */
@@ -545,7 +545,7 @@ test.describe('compaction rerun controls', () => {
       await page.locator(`[id="edit-${rootReplyId}"]`).click();
       const editor = page.getByTestId('message-text-editor');
       await expect(editor).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Save' })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
       await expect(page.getByRole('button', { name: 'Rerun', exact: true })).toHaveCount(0);
       await expect(
         page.getByText('Rerunning replays the user message before a response', { exact: false }),

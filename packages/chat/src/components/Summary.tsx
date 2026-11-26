@@ -5,6 +5,7 @@ import { cn, Button, MorphIcon, useLocalize, TooltipAnchor } from '@librechat/cl
 import type { MouseEvent, FocusEvent, NamedExoticComponent } from 'react';
 import type { SummaryContentPart } from 'librechat-data-provider';
 import { useMessagePartsHost } from '../react/host';
+import { NAV_CLEARANCE } from './parts/rows';
 
 type SummaryProps = Pick<
   SummaryContentPart,
@@ -73,16 +74,18 @@ const SummaryButton = memo(
     const fontSize = useFontSize();
 
     return (
-      <div className="group/summary flex w-full items-center justify-between gap-2">
+      <div
+        className={cn(
+          'group/summary flex w-full items-center justify-between gap-2',
+          NAV_CLEARANCE.pad,
+        )}
+      >
         <Button
-          variant="disclosure"
+          variant="disclosure-line"
           onClick={onClick}
           aria-expanded={isExpanded}
           aria-controls={contentId}
-          className={cn(
-            'group/button flex-1 gap-0 rounded-lg leading-[18px] font-normal',
-            fontSize,
-          )}
+          className="group/button flex-1"
         >
           <span className="relative mr-1.5 inline-flex h-[1.125rem] w-[1.125rem] items-center justify-center">
             <ScrollText
@@ -97,27 +100,33 @@ const SummaryButton = memo(
               aria-hidden="true"
             />
           </span>
-          <span>{label}</span>
+          <span className={fontSize}>{label}</span>
         </Button>
         {content && showCopyButton && (
-          <Button
-            variant="message-action"
-            onClick={onCopy}
-            aria-label={
-              isCopied ? localize('com_ui_copied_to_clipboard') : localize('com_ui_copy_summary')
-            }
+          /** Revealed with the expanded summary on hover or focus, and by keyboard focus alone
+           *  while collapsed. */
+          <span
             className={cn(
-              isExpanded
-                ? 'opacity-0 group-focus-within/summary-container:opacity-100 group-hover/summary-container:opacity-100'
-                : 'opacity-0',
-              'focus-visible:opacity-100',
+              'inline-flex opacity-0 has-[:focus-visible]:opacity-100',
+              isExpanded &&
+                'group-focus-within/summary-container:opacity-100 group-hover/summary-container:opacity-100',
             )}
           >
-            <span className="sr-only">
-              {isCopied ? localize('com_ui_copied_to_clipboard') : localize('com_ui_copy_summary')}
-            </span>
-            <MorphIcon icon={isCopied ? Check : Copy} className="h-[1.125rem] w-[1.125rem]" />
-          </Button>
+            <Button
+              variant="message-action"
+              onClick={onCopy}
+              aria-label={
+                isCopied ? localize('com_ui_copied_to_clipboard') : localize('com_ui_copy_summary')
+              }
+            >
+              <span className="sr-only">
+                {isCopied
+                  ? localize('com_ui_copied_to_clipboard')
+                  : localize('com_ui_copy_summary')}
+              </span>
+              <MorphIcon icon={isCopied ? Check : Copy} className="h-[1.125rem] w-[1.125rem]" />
+            </Button>
+          </span>
         )}
       </div>
     );
@@ -151,6 +160,7 @@ const FloatingSummaryBar = memo(
       <div
         className={cn(
           'absolute right-3 bottom-3 flex items-center gap-2 transition-opacity duration-150',
+          NAV_CLEARANCE.edge,
           isVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
       >
@@ -294,10 +304,10 @@ const Summary: NamedExoticComponent<SummaryProps> = memo(
             role="region"
             aria-label={label}
             aria-hidden={!isExpanded || undefined}
-            className={cn('grid transition-all duration-300 ease-out', isExpanded && 'mb-4')}
-            style={{
-              gridTemplateRows: isExpanded ? '1fr' : '0fr',
-            }}
+            className={cn(
+              'grid transition-all duration-300 ease-out',
+              isExpanded ? 'mb-4 grid-rows-[1fr]' : 'grid-rows-[0fr]',
+            )}
           >
             <div className="relative overflow-hidden">
               <SummaryContent meta={meta}>{text}</SummaryContent>

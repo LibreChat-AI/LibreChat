@@ -41,6 +41,10 @@ jest.mock('~/server/services/Agents/triggers', () => ({
   initializeAgentTriggerService: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('~/server/services/Events/reconcile', () => ({
+  initialize: jest.fn(),
+  stop: jest.fn().mockResolvedValue(undefined),
+}));
 jest.mock('~/server/services/Schedules', () => ({
   initializeScheduleEngine: jest.fn().mockResolvedValue(undefined),
 }));
@@ -125,15 +129,36 @@ describe('Startup readiness wiring', () => {
 
   it('starts code-environment lifecycle reconciliation only after Mongo connects', () => {
     const connectIndex = source.indexOf('await connectDb();');
-    const reconcileIndex = source.indexOf('startCodeEnvironmentLifecycleReconciler({ mongoose });');
+    const reconcileIndex = source.indexOf(
+      'startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });',
+    );
     const listenIndex = source.indexOf('const server = app.listen');
 
     expect(connectIndex).toBeGreaterThan(-1);
     expect(reconcileIndex).toBeGreaterThan(connectIndex);
     expect(listenIndex).toBeGreaterThan(reconcileIndex);
     expect(
-      source.match(/startCodeEnvironmentLifecycleReconciler\(\{ mongoose \}\);/g),
+      source.match(/startCodeEnvironmentLifecycleReconciler\(\{ mongoose, idleCeilingMs \}\);/g),
     ).toHaveLength(1);
+  });
+
+  it('reads the deployment-wide idle ceiling from the base config before it starts an idle loop', () => {
+    const configIndex = source.indexOf('const appConfig = await getAppConfig({ baseOnly: true });');
+    const ceilingIndex = source.indexOf(
+      'const idleCeilingMs = appConfig?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs;',
+    );
+    const reconcileIndex = source.indexOf(
+      'startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });',
+    );
+    const triggerStart = source.indexOf('await initializeAgentTriggerService({');
+
+    expect(configIndex).toBeGreaterThan(-1);
+    expect(ceilingIndex).toBeGreaterThan(configIndex);
+    expect(reconcileIndex).toBeGreaterThan(ceilingIndex);
+    expect(source.slice(triggerStart, source.indexOf('});', triggerStart))).toContain(
+      'idleCeilingMs,',
+    );
+    expect(source).toContain('await initializeScheduleEngine({ idleCeilingMs })');
   });
 
   it('configures social logins with the app config loaded at startup in both server entries', () => {
@@ -252,6 +277,9 @@ describe('Startup readiness wiring', () => {
   });
 });
 
+// A narrowed CI shard boots this on a cold Jest cache: 24-34 s there, over 60 s on a busy host.
+const BOOT_TIMEOUT_MS = 120_000;
+
 describe('Server Configuration', () => {
   // Increase the default timeout to allow for Mongo cleanup
   jest.setTimeout(30_000);
@@ -277,6 +305,7 @@ describe('Server Configuration', () => {
   });
 
   beforeAll(async () => {
+    const bootDeadline = Date.now() + BOOT_TIMEOUT_MS;
     // Create the required directories and files for the test
     const fs = require('fs');
     const path = require('path');
@@ -304,14 +333,16 @@ describe('Server Configuration', () => {
     app = require('~/server');
 
     // Wait for the app to be healthy
-    await healthCheckPoll(app);
+    await healthCheckPoll(app, bootDeadline);
     server = listenSpy.mock.results[0].value;
     listenSpy.mockRestore();
-  });
+  }, BOOT_TIMEOUT_MS);
 
   afterAll(async () => {
-    await promisify(server.close).call(server);
-    await mongoServer.stop();
+    if (server) {
+      await promisify(server.close).call(server);
+    }
+    await mongoServer?.stop();
     await mongoose.disconnect();
     delete process.env.CUSTOM_FOOTER;
   });
@@ -385,6 +416,22 @@ describe('Server Configuration', () => {
     expect(response.headers['content-type']).toMatch(/html/);
   });
 
+  it('serves the app shell at /oauth/error when a connect callback names an error', async () => {
+    const response = await request(app).get('/oauth/error?error=invalid_state&flow=flow-a');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toMatch(/html/);
+    expect(response.headers.location).toBeUndefined();
+    expect(response.text).toContain('<div id="root"></div>');
+  });
+
+  it('still sends a social login failure at /oauth/error to the login screen', async () => {
+    const response = await request(app).get('/oauth/error');
+
+    expect(response.status).toBe(302);
+    expect(response.headers.location).toMatch(/\/login\?redirect=false&error=auth_failed$/);
+  });
+
   it('should gate React Query Devtools config in SPA HTML by debug header', async () => {
     const defaultResponse = await request(app).get('/this/does/not/exist');
     const debugResponse = await request(app)
@@ -449,9 +496,8 @@ describe('Server Configuration', () => {
   });
 });
 
-// Polls the /health endpoint every 30ms for up to 10 seconds to wait for the server to start completely
-async function healthCheckPoll(app, retries = 0) {
-  const maxRetries = Math.floor(10000 / 30); // 10 seconds / 30ms
+// Polls the /health endpoint every 30ms until the server is healthy or the boot deadline passes
+async function healthCheckPoll(app, deadline) {
   try {
     const response = await request(app).get('/health');
     if (response.status === 200) {
@@ -461,10 +507,10 @@ async function healthCheckPoll(app, retries = 0) {
     // Ignore connection errors during polling
   }
 
-  if (retries < maxRetries) {
+  if (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 30));
-    await healthCheckPoll(app, retries + 1);
+    await healthCheckPoll(app, deadline);
   } else {
-    throw new Error('App did not become healthy within 10 seconds.');
+    throw new Error(`App did not become healthy within ${BOOT_TIMEOUT_MS / 1000} seconds.`);
   }
 }

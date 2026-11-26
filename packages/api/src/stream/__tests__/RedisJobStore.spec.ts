@@ -304,7 +304,8 @@ describe('RedisJobStore', () => {
     expect(lrange).not.toHaveBeenCalled();
   });
 
-  test('writes initial metadata in the atomic job creation', async () => {
+  const retentionDeadlines = ['2030-01-01T00:00:00.000Z', '', 'invalid'];
+  test.each(retentionDeadlines)('round-trips job metadata %p', async (retentionExpiresAt) => {
     const evalJobCreation = jest
       .fn()
       .mockImplementation((...args: unknown[]) => ['', '', args[Number(args[1]) + 3]]);
@@ -337,7 +338,9 @@ describe('RedisJobStore', () => {
       agent_id: 'agent-1',
       compact: true,
       isTemporary: false,
-      retentionExpiresAt: '2030-01-01T00:00:00.000Z',
+      isNewConversation: false,
+      retentionExpiresAt,
+      responseCheckpointConfigJSON: '{"type":"mongo","checkpointCollectionName":"responses"}',
       agentEventDeliveryKey: 'completion-delivery-1',
       agentEventInvocationKey: 'original-delivery-1',
       agentEventInvocationGenerationCreatedAt: 987654,
@@ -456,7 +459,9 @@ describe('RedisJobStore', () => {
       model: 'test-model',
       agent_id: 'agent-1',
       isTemporary: false,
-      retentionExpiresAt: '2030-01-01T00:00:00.000Z',
+      isNewConversation: false,
+      retentionExpiresAt,
+      responseCheckpointConfigJSON: '{"type":"mongo","checkpointCollectionName":"responses"}',
       scheduleId: 'schedule-1',
       scheduleMCPCompletion: {
         scheduleId: 'original-schedule',
@@ -525,7 +530,9 @@ describe('RedisJobStore', () => {
       }),
       agent_id: 'agent-1',
       isTemporary: '0',
-      retentionExpiresAt: '2030-01-01T00:00:00.000Z',
+      isNewConversation: '0',
+      retentionExpiresAt,
+      responseCheckpointConfigJSON: '{"type":"mongo","checkpointCollectionName":"responses"}',
       scheduleId: 'schedule-1',
       scheduledFor: '2026-08-17T12:00:00.000Z',
       scheduleConfigRevision: '4',
@@ -616,6 +623,70 @@ describe('RedisJobStore', () => {
     await expect(store.getJob('stream-detached-terminal')).resolves.toMatchObject({
       agentEventDetachedTerminalEvidence: evidence,
     });
+  });
+
+  describe('the trigger that started a run', () => {
+    const trigger = {
+      subject: { kind: 'key' as const, id: 'key-1' },
+      delivery: {
+        key: 'trigger_abc',
+        event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+      },
+    };
+    const stored = (fields: Record<string, string>) =>
+      new RedisJobStore({
+        isCluster: true,
+        hgetall: jest.fn().mockResolvedValue({
+          streamId: 'stream-trigger',
+          userId: 'user-1',
+          status: 'requires_action',
+          createdAt: '100',
+          syncSent: '0',
+          ...fields,
+        }),
+      } as unknown as Cluster);
+
+    test('is written as one hash field and read back', async () => {
+      const evalJobCreation = jest
+        .fn()
+        .mockImplementation((...args: unknown[]) => ['', '', args[Number(args[1]) + 3]]);
+      const store = new RedisJobStore({
+        isCluster: true,
+        eval: evalJobCreation,
+        hgetall: jest.fn(() => jobHashFromCreationCall(evalJobCreation.mock.calls[0])),
+        sadd: jest.fn().mockResolvedValue(1),
+        srem: jest.fn().mockResolvedValue(1),
+        expire: jest.fn().mockResolvedValue(1),
+      } as unknown as Cluster);
+
+      const job = await store.createJob('stream-trigger', 'user-1', 'conversation-1', undefined, {
+        trigger,
+      });
+
+      expect(jobHashFromCreationCall(evalJobCreation.mock.calls[0]).trigger).toBe(
+        JSON.stringify(trigger),
+      );
+      expect(job.trigger).toEqual(trigger);
+      await expect(store.getJob('stream-trigger')).resolves.toMatchObject({ trigger });
+    });
+
+    test('is absent on a job saved without it, whose schedule fields read as before', async () => {
+      const job = await stored({ scheduleId: 'schedule-1', scheduleManual: '1' }).getJob(
+        'stream-trigger',
+      );
+
+      expect(job).toMatchObject({ scheduleId: 'schedule-1', scheduleManual: true });
+      expect(job?.trigger).toBeUndefined();
+    });
+
+    test.each(['null', '"key-1"', '{', '{"subject":{"kind":"user","id":"owner"}}'])(
+      'is never read as an ordinary job when it is malformed: %s',
+      async (value) => {
+        await expect(stored({ trigger: value }).getJob('stream-trigger')).rejects.toThrow(
+          'run_trigger_invalid',
+        );
+      },
+    );
   });
 
   test('atomically resets predecessor state when creating a replacement', async () => {
@@ -737,6 +808,25 @@ describe('RedisJobStore', () => {
     await expect(store.createJob('stream-terminal-create', 'user-1')).rejects.toThrow(
       'Generation job was replaced during creation',
     );
+  });
+
+  test('copies the content of a hosted run without touching Redis', async () => {
+    const redis = { isCluster: true, eval: jest.fn() } as unknown as Cluster;
+    const store = new RedisJobStore(redis);
+    const live = [{ type: 'text', text: 'one ' }];
+    store.setContentParts('stream-host-copy', live as never, 101);
+
+    const copy = store.copyHostContent('stream-host-copy', 101);
+    /** The run keeps writing; the copy holds what it had at the call. */
+    live[0] = { type: 'text', text: 'one two ' };
+
+    expect(copy).toEqual([{ type: 'text', text: 'one ' }]);
+    await expect(store.getContentParts('stream-host-copy', 101)).resolves.toEqual({
+      content: [{ type: 'text', text: 'one two ' }],
+    });
+    expect(store.copyHostContent('stream-host-copy', 100)).toBeNull();
+    expect(store.copyHostContent('stream-not-hosted')).toBeNull();
+    expect(redis.eval).not.toHaveBeenCalled();
   });
 
   test('guards local content caches by creation epoch', async () => {

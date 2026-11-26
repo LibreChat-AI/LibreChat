@@ -1,8 +1,8 @@
 import { randomUUID } from 'crypto';
-import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { getE2EUser } from '../../../setup/user';
 import { deleteConversations, deleteMessagesByConversation, seedConversations } from '../db';
+import { expect, test } from '../fixtures';
 
 /**
  * The document says whether the deployment configured a footer, and the composer

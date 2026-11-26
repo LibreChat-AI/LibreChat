@@ -144,6 +144,26 @@ describe('BaseClient', () => {
     ).toEqual(expect.objectContaining({ subagentTriggerProjection: projection }));
   });
 
+  test('puts what the server recorded of a triggered turn on its first message, and nothing else', () => {
+    const trigger = {
+      event: { type: 'subagent.completion', occurredAt: '2026-11-20T10:00:00.000Z' },
+    };
+    const turn = {
+      messageId: 'wake:user',
+      parentMessageId: 'parent',
+      conversationId: 'thread',
+      text: 'A task has settled.',
+      trigger: { event: { type: 'forged' } },
+    };
+    TestClient.options.req = { _messageTrigger: trigger, body: { trigger: turn.trigger } };
+
+    expect(TestClient.createUserMessage(turn).trigger).toBe(trigger);
+
+    TestClient.options.req = { body: { trigger: turn.trigger } };
+
+    expect(TestClient.createUserMessage(turn)).not.toHaveProperty('trigger');
+  });
+
   test('returns the input messages without instructions when addInstructions() is called with empty instructions', () => {
     const messages = [{ content: 'Hello' }, { content: 'How are you?' }, { content: 'Goodbye' }];
     const instructions = '';
@@ -330,6 +350,136 @@ describe('BaseClient', () => {
       receiver.shouldSummarize = false;
       receiver.addPreviousAttachments = async (messages) => messages;
       receiver.previous_summary = undefined;
+    });
+
+    describe('with the link rows the request middleware already read', () => {
+      const conversationId = 'convo-1';
+      const row = (messageId, parentMessageId, isCreatedByUser = false) => ({
+        messageId,
+        parentMessageId,
+        isCreatedByUser,
+        conversationId,
+        user: 'user-1',
+        text: `text ${messageId}`,
+      });
+      const linear = [
+        row('u1', Constants.NO_PARENT, true),
+        row('a1', 'u1'),
+        row('u2', 'a1', true),
+        row('a2', 'u2'),
+      ];
+      const branched = [...linear, row('u2b', 'a1', true), row('a2b', 'u2b')];
+      const broken = [
+        row('a1', 'gone'),
+        row('u2', 'a1', true),
+        row('a2', 'u2'),
+        row('x', 'a1', true),
+      ];
+      const looped = [row('a', 'b'), row('b', 'a'), row('c', 'a')];
+      const linksFor = (parentMessageId, rows) => ({
+        user: 'user-1',
+        conversationId,
+        parentMessageId,
+        rows: rows.map((stored) => ({
+          messageId: stored.messageId,
+          parentMessageId: stored.parentMessageId,
+          isCreatedByUser: stored.isCreatedByUser,
+        })),
+      });
+      /** Answers the filters `loadHistory` issues from the conversation as stored. */
+      const storedConversation = (rows) => async (filter) =>
+        rows.filter(
+          (stored) =>
+            stored.conversationId === filter.conversationId &&
+            stored.user === filter.user &&
+            (filter.messageId == null || filter.messageId.$in.includes(stored.messageId)),
+        );
+      const clientFor = (req) =>
+        Object.assign(Object.create(BaseClientClass.prototype), {
+          user: 'user-1',
+          options: { req },
+          getMessageMapMethod: null,
+          shouldSummarize: false,
+          addPreviousAttachments: async (messages) => messages,
+          onHistoryLoaded: jest.fn(),
+        });
+      const wholeConversationQuery = [
+        { conversationId, user: 'user-1' },
+        '+privateTextTokens +trigger',
+      ];
+      const messageIds = (messages) => messages.map((message) => message.messageId);
+
+      test('fetches only the active branch, and hands that branch to the history consumer', async () => {
+        const req = { branchLinks: linksFor('a2b', branched) };
+        const client = clientFor(req);
+        getMessages.mockImplementationOnce(storedConversation(branched));
+
+        const result = await client.loadHistory(conversationId, 'a2b');
+
+        expect(getMessages).toHaveBeenCalledTimes(1);
+        const [filter, select] = getMessages.mock.calls[0];
+        expect(filter).toMatchObject({ conversationId, user: 'user-1' });
+        expect([...filter.messageId.$in].sort()).toEqual(['a1', 'a2b', 'u1', 'u2b']);
+        expect(select).toBe('+privateTextTokens +trigger');
+        expect(messageIds(result)).toEqual(['u1', 'a1', 'u2b', 'a2b']);
+        expect(messageIds(client.onHistoryLoaded.mock.calls[0][0])).toEqual([
+          'u1',
+          'a1',
+          'u2b',
+          'a2b',
+        ]);
+        expect(req.branchLinks).toBeUndefined();
+      });
+
+      test('reads the whole conversation when the request carries no links', async () => {
+        getMessages.mockImplementationOnce(storedConversation(branched));
+
+        await clientFor({}).loadHistory(conversationId, 'a2b');
+
+        expect(getMessages).toHaveBeenCalledWith(...wholeConversationQuery);
+      });
+
+      test.each([
+        ['a linear conversation', linear, linear, 'a2', false],
+        ['a branched conversation', branched, branched, 'a2b', true],
+        ['a broken chain', broken, broken, 'a2', true],
+        ['a cycle', looped, looped, 'b', true],
+        ['a head the links do not know', [...branched, row('a3', 'a2b')], branched, 'a3', false],
+        [
+          'a message deleted between the two reads',
+          branched.filter((stored) => stored.messageId !== 'a1'),
+          branched,
+          'a2b',
+          true,
+        ],
+      ])(
+        'returns the history a whole read returns for %s',
+        async (_label, stored, linked, head, narrowed) => {
+          const req = { branchLinks: linksFor(head, linked) };
+          getMessages
+            .mockImplementationOnce(storedConversation(stored))
+            .mockImplementationOnce(storedConversation(stored));
+
+          const fromLinks = await clientFor(req).loadHistory(conversationId, head);
+          const fromWholeRead = await clientFor({}).loadHistory(conversationId, head);
+
+          expect(fromWholeRead.length).toBeGreaterThan(0);
+          expect(messageIds(fromLinks)).toEqual(messageIds(fromWholeRead));
+          expect(fromLinks).toEqual(fromWholeRead);
+          expect(getMessages.mock.calls[0][0].messageId != null).toBe(narrowed);
+          expect(getMessages.mock.calls[1]).toEqual(wholeConversationQuery);
+        },
+      );
+
+      test('reads the whole conversation when the history starts from another head, as an edit does', async () => {
+        const req = { branchLinks: linksFor('a2b', branched) };
+        getMessages.mockImplementationOnce(storedConversation(branched));
+
+        await clientFor(req).loadHistory(conversationId, 'a2');
+
+        expect(getMessages).toHaveBeenCalledWith(...wholeConversationQuery);
+        expect(req.branchLinks).toBeUndefined();
+      });
     });
   });
 
@@ -671,6 +821,16 @@ describe('BaseClient', () => {
       parentMessageId = response.messageId;
       conversationId = response.conversationId;
       expect(response).toEqual(expectedResult);
+    });
+
+    test('carries the finish reason the run recorded in `metadata` onto the response', async () => {
+      TestClient.metadata = { finish_reason: 'length' };
+      try {
+        const response = await TestClient.sendMessage(userMessage);
+        expect(response.finish_reason).toBe('length');
+      } finally {
+        TestClient.metadata = undefined;
+      }
     });
 
     test('persists exact provenance paths for edited and steered assistant content', async () => {
@@ -1600,7 +1760,10 @@ describe('BaseClient', () => {
 
       const chatMessages = await TestClient.loadHistory(conversationId, '1');
 
-      expect(getMessages).toHaveBeenCalledWith({ conversationId, user }, '+privateTextTokens');
+      expect(getMessages).toHaveBeenCalledWith(
+        { conversationId, user },
+        '+privateTextTokens +trigger',
+      );
       expect(chatMessages).toHaveLength(1);
       expect(chatMessages[0].text).toBe('Hello');
     });
@@ -3286,7 +3449,12 @@ describe('BaseClient', () => {
         {},
       );
       expect(TestClient.addFileContextToMessage).toHaveBeenCalledWith(message, [ownerFile]);
-      expect(TestClient.processAttachments).toHaveBeenCalledWith(message, [ownerFile]);
+      expect(TestClient.processAttachments).toHaveBeenCalledWith(
+        message,
+        [ownerFile],
+        undefined,
+        expect.any(Function),
+      );
       expect(message.fileContext).toBe('authorized owner text');
       expect(message.files).toEqual([
         expect.objectContaining({
@@ -3627,6 +3795,122 @@ describe('BaseClient', () => {
       expect(TestClient.modelBoundHistoricalSteerFiles).toEqual([modelFile, modelFile]);
     });
 
+    describe('files the conversation leaves out', () => {
+      const keptFile = { ...ownerFile, metadata: undefined };
+      const leftFile = {
+        ...ownerFile,
+        metadata: undefined,
+        file_id: 'left-out-file',
+        filename: 'left-out.txt',
+        _id: 'left-out-mongo-id',
+      };
+
+      beforeEach(() => {
+        TestClient.options.excludedFiles = [leftFile.file_id];
+      });
+
+      afterEach(() => {
+        delete TestClient.options.excludedFiles;
+        delete TestClient.assertHistoricalAttachmentLimits;
+      });
+
+      test('replays what is kept, counts the left-out file toward no limit, and still shows it', async () => {
+        getFiles.mockResolvedValueOnce([keptFile, leftFile]);
+        TestClient.assertHistoricalAttachmentLimits = jest.fn(async (files) => files);
+
+        const [message] = await TestClient.addPreviousAttachments([
+          {
+            messageId: 'msg-1',
+            text: 'Use the attachments',
+            files: [{ file_id: keptFile.file_id }, { file_id: leftFile.file_id }],
+          },
+        ]);
+
+        expect(TestClient.assertHistoricalAttachmentLimits).toHaveBeenCalledWith([keptFile]);
+        expect(TestClient.addFileContextToMessage).toHaveBeenCalledWith(message, [keptFile]);
+        expect(TestClient.processAttachments.mock.calls[0][1]).toEqual([keptFile]);
+        expect(TestClient.authorizedHistoricalReplayFiles.has(leftFile.file_id)).toBe(false);
+        expect(message.files).toEqual([
+          expect.objectContaining({ file_id: keptFile.file_id }),
+          expect.objectContaining({ file_id: leftFile.file_id }),
+        ]);
+      });
+
+      test('replays nothing of a message whose only file is left out', async () => {
+        getFiles.mockResolvedValueOnce([leftFile]);
+        TestClient.assertHistoricalAttachmentLimits = jest.fn(async (files) => files);
+
+        const [message] = await TestClient.addPreviousAttachments([
+          { messageId: 'msg-1', text: '', files: [{ file_id: leftFile.file_id }] },
+        ]);
+
+        expect(TestClient.assertHistoricalAttachmentLimits).toHaveBeenCalledWith([]);
+        expect(TestClient.addFileContextToMessage).not.toHaveBeenCalled();
+        expect(TestClient.processAttachments).not.toHaveBeenCalled();
+        expect(message.files).toEqual([expect.objectContaining({ file_id: leftFile.file_id })]);
+      });
+
+      test('leaves a left-out file out of a steer replay', async () => {
+        getFiles.mockResolvedValueOnce([keptFile, leftFile]);
+        TestClient.assertHistoricalAttachmentLimits = jest.fn(async (files) => files);
+
+        await TestClient.addPreviousAttachments([
+          {
+            messageId: 'msg-steer',
+            content: [
+              {
+                type: 'steer',
+                steer: 'Use these',
+                files: [{ file_id: keptFile.file_id }, { file_id: leftFile.file_id }],
+              },
+            ],
+          },
+        ]);
+
+        expect(TestClient.assertHistoricalAttachmentLimits).toHaveBeenCalledWith([keptFile]);
+        expect(TestClient.modelBoundHistoricalSteerFiles).toEqual([keptFile]);
+        expect(TestClient.authorizedHistoricalReplayFiles.has(leftFile.file_id)).toBe(false);
+      });
+
+      test('holds for a client that applies no admission step of its own', async () => {
+        getFiles.mockResolvedValueOnce([keptFile, leftFile]);
+
+        const [message] = await TestClient.addPreviousAttachments([
+          {
+            messageId: 'msg-1',
+            text: 'Use the attachments',
+            files: [{ file_id: keptFile.file_id }, { file_id: leftFile.file_id }],
+          },
+        ]);
+
+        expect(TestClient.addFileContextToMessage).toHaveBeenCalledWith(message, [keptFile]);
+        expect(TestClient.authorizedHistoricalReplayFiles.has(leftFile.file_id)).toBe(false);
+      });
+
+      test('keeps the left-out file out of the stored view the content guard checks', () => {
+        const stored = [
+          {
+            messageId: 'msg-1',
+            files: [{ file_id: keptFile.file_id }, { file_id: leftFile.file_id }],
+          },
+          { messageId: 'msg-2', text: 'no files' },
+        ];
+
+        const view = TestClient.getModelBoundStoredMessages(stored);
+
+        expect(view[0].files).toEqual([{ file_id: keptFile.file_id }]);
+        expect(view[1]).toBe(stored[1]);
+        expect(stored[0].files).toHaveLength(2);
+      });
+
+      test('gives the content guard the stored messages themselves when nothing is left out', () => {
+        delete TestClient.options.excludedFiles;
+        const stored = [{ messageId: 'msg-1', files: [{ file_id: keptFile.file_id }] }];
+
+        expect(TestClient.getModelBoundStoredMessages(stored)).toBe(stored);
+      });
+    });
+
     test('keeps canonical byte metadata for processed historical survivors', async () => {
       const modelFile = { ...ownerFile, metadata: undefined, bytes: 120 * 1024 * 1024 };
       getFiles.mockResolvedValueOnce([modelFile]);
@@ -3678,6 +3962,83 @@ describe('BaseClient', () => {
       expect(message.attachments[0]._id).toBeUndefined();
       expect(JSON.stringify(message)).not.toContain('forged-artifact');
       expect(JSON.stringify(message)).not.toContain('forged artifact text');
+    });
+  });
+
+  describe('sendMessage skill metadata', () => {
+    test.each([
+      [
+        'manual',
+        { manualSkills: ['manual-skill', '', 42] },
+        {},
+        { manualSkills: ['manual-skill'] },
+      ],
+      [
+        'always-applied',
+        { alwaysAppliedSkills: ['untrusted-skill'] },
+        { alwaysApplySkillPrimes: [{ name: 'always-skill' }, { name: '' }, {}] },
+        { alwaysAppliedSkills: ['always-skill'] },
+      ],
+      [
+        'combined',
+        { manualSkills: ['manual-skill'] },
+        { alwaysApplySkillPrimes: [{ name: 'always-skill' }] },
+        { manualSkills: ['manual-skill'], alwaysAppliedSkills: ['always-skill'] },
+      ],
+    ])(
+      'attaches %s skills before start callbacks and preserves them on save',
+      async (_label, body, agent, expected) => {
+        TestClient.options = { ...TestClient.options, req: { body }, agent };
+        TestClient.saveMessageToDatabase = jest.fn().mockResolvedValue({ message: {} });
+        const starts = [];
+        const capture = (message) =>
+          starts.push({
+            manualSkills: message.manualSkills,
+            alwaysAppliedSkills: message.alwaysAppliedSkills,
+          });
+
+        await TestClient.sendMessage('Hello with skills', {
+          getReqData: ({ userMessage: message }) => {
+            if (message) capture(message);
+          },
+          onStart: capture,
+        });
+
+        expect(starts.length).toBeGreaterThanOrEqual(2);
+        for (const start of starts) {
+          expect(start).toMatchObject(expected);
+        }
+        const userSave = TestClient.saveMessageToDatabase.mock.calls.find(
+          ([message]) => message.isCreatedByUser,
+        );
+        expect(userSave[0]).toMatchObject(expected);
+      },
+    );
+
+    test('preserves historical skill metadata on a rerun', async () => {
+      const historical = [
+        ...messageHistory.map((message) => ({ ...message })),
+        { role: 'assistant', messageId: 'response-0', parentMessageId: '3', text: 'Previous' },
+      ];
+      historical[2].manualSkills = ['original-manual'];
+      historical[2].alwaysAppliedSkills = ['original-always'];
+      const client = initializeFakeClient(apiKey, options, historical);
+      client.options = {
+        ...client.options,
+        req: { body: { manualSkills: ['new-manual'] } },
+        agent: { alwaysApplySkillPrimes: [{ name: 'new-always' }] },
+      };
+
+      const result = await client.handleStartMethods('Rerun', {
+        conversationId: 'conversation-1',
+        parentMessageId: '3',
+        responseMessageId: 'response-0',
+        isEdited: true,
+        isContinued: true,
+      });
+
+      expect(result.userMessage.manualSkills).toEqual(['original-manual']);
+      expect(result.userMessage.alwaysAppliedSkills).toEqual(['original-always']);
     });
   });
 
@@ -4528,7 +4889,7 @@ describe('BaseClient', () => {
 
       expect(result).toEqual([file]);
       expect(message.documents).toEqual([{ type: 'file' }]);
-      expect(TestClient.addDocuments).toHaveBeenCalledWith(message, [file]);
+      expect(TestClient.addDocuments).toHaveBeenCalledWith(message, [file], undefined);
     });
   });
 });

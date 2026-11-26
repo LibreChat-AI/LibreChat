@@ -64,6 +64,14 @@ type PreconfiguredOAuthDiscoveryResult = {
 const PRECONFIGURED_DISCOVERY_TIMEOUT_MS = 5_000;
 const OAUTH_REVOCATION_TIMEOUT_MS = 5_000;
 
+/** The token endpoint refused the refresh grant without an outage status; a new authorization can recover. */
+class MCPTokenRefreshRejectedError extends Error {
+  constructor(status: number, statusText: string, body: string) {
+    super(`Token refresh failed: ${status} ${statusText} - ${body}`);
+    this.name = 'MCPTokenRefreshRejectedError';
+  }
+}
+
 export class MCPOAuthHandler {
   private static readonly FLOW_TYPE = 'mcp_oauth';
 
@@ -219,7 +227,10 @@ export class MCPOAuthHandler {
       token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
     };
 
-    logger.debug(`[MCPOAuth] Using fallback metadata:`, fallbackMetadata);
+    logger.debug('[MCPOAuth] Using fallback authorization capabilities', {
+      grant_types_supported: fallbackMetadata.grant_types_supported,
+      token_endpoint_auth_methods_supported: fallbackMetadata.token_endpoint_auth_methods_supported,
+    });
     return {
       metadata: fallbackMetadata,
       resourceMetadata,
@@ -1013,9 +1024,13 @@ export class MCPOAuthHandler {
           ...(tenantId && { tenantId }),
         };
 
-        logger.debug(
-          `[MCPOAuth] Authorization URL generated: ${sanitizeUrlForLogging(authorizationUrl.toString())}`,
-        );
+        logger.debug('[MCPOAuth] Authorization flow ready', {
+          flowId,
+          serverName,
+          clientSource: flowMetadata.clientSource,
+          hasClientSecret: Boolean(clientInfo.client_secret),
+          hasResourceMetadata: Boolean(resourceMetadata),
+        });
         return {
           authorizationUrl: authorizationUrl.toString(),
           flowId,
@@ -1111,7 +1126,7 @@ export class MCPOAuthHandler {
         } catch (error) {
           logger.warn(
             `[MCPOAuth] Failed to look up existing client registration, falling back to new registration`,
-            { error, serverName, userId },
+            { ...getSafeErrorMetadata(error), serverName, userId },
           );
         }
       }
@@ -1155,9 +1170,6 @@ export class MCPOAuthHandler {
         codeVerifier = authResult.codeVerifier;
 
         logger.debug(`[MCPOAuth] startAuthorization completed successfully`);
-        logger.debug(
-          `[MCPOAuth] Authorization URL: ${sanitizeUrlForLogging(authorizationUrl.toString())}`,
-        );
 
         /** Add cryptographic state parameter to the authorization URL */
         authorizationUrl.searchParams.set('state', state);
@@ -1227,19 +1239,19 @@ export class MCPOAuthHandler {
         ...(tenantId && { tenantId }),
       };
 
-      logger.debug(
-        `[MCPOAuth] Authorization URL generated for ${serverName}: ${sanitizeUrlForLogging(authorizationUrl.toString())}`,
-      );
-
       const result = {
         authorizationUrl: authorizationUrl.toString(),
         flowId,
         flowMetadata,
       };
 
-      logger.debug(
-        `[MCPOAuth] Returning from initiateOAuthFlow with result ${flowId} for ${serverName}`,
-      );
+      logger.debug('[MCPOAuth] Authorization flow ready', {
+        flowId,
+        serverName,
+        clientSource,
+        hasClientSecret: Boolean(clientInfo.client_secret),
+        hasResourceMetadata: Boolean(resourceMetadata),
+      });
       return result;
     } catch (error) {
       logger.error('[MCPOAuth] Failed to initiate OAuth flow', {
@@ -1315,7 +1327,9 @@ export class MCPOAuthHandler {
           );
         } else if (metadata.resourceMetadata.resource) {
           resource = new URL(metadata.resourceMetadata.resource);
-          logger.debug(`[MCPOAuth] Resource URL for flow ${flowId}: ${resource.toString()}`);
+          logger.debug(
+            `[MCPOAuth] Resource URL for flow ${flowId}: ${sanitizeUrlForLogging(resource)}`,
+          );
         }
       }
 
@@ -1784,9 +1798,7 @@ export class MCPOAuthHandler {
     /** Body is consumed here, so this branch must either retry or throw — never fall through. */
     const errorText = await response.text();
     if (!this.isScopeParameterRejection(response.status, errorText)) {
-      throw new Error(
-        `Token refresh failed: ${response.status} ${response.statusText} - ${errorText}`,
-      );
+      throw new MCPTokenRefreshRejectedError(response.status, response.statusText, errorText);
     }
 
     logger.warn(
@@ -2060,9 +2072,7 @@ export class MCPOAuthHandler {
 
         if (!response.ok) {
           const errorText = await response.text();
-          throw new Error(
-            `Token refresh failed: ${response.status} ${response.statusText} - ${errorText}`,
-          );
+          throw new MCPTokenRefreshRejectedError(response.status, response.statusText, errorText);
         }
 
         const tokens = await response.json();
@@ -2149,9 +2159,7 @@ export class MCPOAuthHandler {
 
         if (!response.ok) {
           const errorText = await response.text();
-          throw new Error(
-            `Token refresh failed: ${response.status} ${response.statusText} - ${errorText}`,
-          );
+          throw new MCPTokenRefreshRejectedError(response.status, response.statusText, errorText);
         }
 
         const tokens = await response.json();
@@ -2220,15 +2228,14 @@ export class MCPOAuthHandler {
       await this.assertRefreshEndpointAvailable(response, metadata.serverName);
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(
-          `Token refresh failed: ${response.status} ${response.statusText} - ${errorText}`,
-        );
+        throw new MCPTokenRefreshRejectedError(response.status, response.statusText, errorText);
       }
 
       const tokens = await response.json();
       return this.processRefreshResponse(tokens, metadata.serverName, 'auto-discovered OAuth');
     } catch (error) {
-      logger.error(
+      /** A rejected grant sends the user back through authorization; outages stay errors. */
+      logger[error instanceof MCPTokenRefreshRejectedError ? 'warn' : 'error'](
         `[MCPOAuth] Failed to refresh tokens for ${metadata.serverName}`,
         getSafeErrorMetadata(error),
       );

@@ -1,3 +1,6 @@
+import os from 'os';
+import path from 'path';
+import { promises as fs } from 'fs';
 import { FileContext, FileSources } from 'librechat-data-provider';
 import {
   assertSavedSkillBlobMatchesReservation,
@@ -7,6 +10,7 @@ import {
   reserveSkillBlob,
 } from './reservation';
 import { extractFirebaseBlobPath } from '~/storage/ownedBlobDelete';
+import { saveLocalBuffer } from '~/storage/local';
 import { getS3Key } from '~/storage/s3/crud';
 
 describe('Skill blob reservation', () => {
@@ -20,6 +24,31 @@ describe('Skill blob reservation', () => {
       fileName: 'id__note.md',
     });
     expect(extractFirebaseBlobPath(firebase.filepath)).toBe('uploads/owner/id__note.md');
+  });
+
+  it('reserves the encoded path the local store returns for a name that changes under encoding', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'skill-reservation-'));
+    try {
+      const fileName = 'id__my note #1.md';
+      const reservation = await reserveSkillBlob({
+        source: FileSources.local,
+        userId: 'owner',
+        fileName,
+      });
+      const saved = await saveLocalBuffer({
+        paths: { publicPath: path.join(root, 'public'), uploads: path.join(root, 'uploads') },
+        userId: 'owner',
+        buffer: Buffer.from('note'),
+        fileName,
+        basePath: 'uploads',
+      });
+
+      expect(reservation.filepath).toBe('/uploads/owner/id__my%20note%20%231.md');
+      expect(saved).toBe(reservation.filepath);
+      expect(() => assertSavedSkillBlobMatchesReservation(reservation, saved)).not.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   it.each([FileSources.s3, FileSources.cloudfront, FileSources.azure_blob])(

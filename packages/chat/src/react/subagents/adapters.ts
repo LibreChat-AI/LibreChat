@@ -13,7 +13,7 @@ import type {
   FullToolCall,
 } from 'librechat-data-provider';
 import type { SubagentProgress } from './state';
-import { REDACTED_REASONING_MARKER } from './state';
+import { REDACTED_REASONING_MARKER } from './redaction';
 
 export type ChildActivityItem =
   | Extract<SubagentActivityItem, { type: 'steer' }>
@@ -79,6 +79,8 @@ export type ChildActivity = {
 
 export type ChildConversationTurn = {
   taskId: string;
+  /** The parent is still writing this turn's brief; the child has not been started. */
+  briefing?: boolean;
   outcome?: SubagentThreadMessage;
   contentRecoveryAvailable?: boolean;
   trigger: SubagentThreadTurn['trigger'];

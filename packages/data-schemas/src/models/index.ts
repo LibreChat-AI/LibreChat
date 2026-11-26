@@ -1,4 +1,10 @@
+import {
+  createChannelReplyModel,
+  createChannelFeedbackEventModel,
+  createChannelFeedbackModel,
+} from './channelFeedback';
 import { createAgentQueuedTurnModel, createAgentQueuedTurnSequenceModel } from './queuedTurn';
+import { createChannelRunModel, createChannelLaneModel } from './channelRun';
 import { createAgentTriggerLaneSequenceModel } from './triggerLaneSequence';
 import { createScheduleModel, createScheduleRunModel } from './schedule';
 import { getTenantIndexMigrationHint } from '~/migrations/tenantIndexes';
@@ -7,15 +13,21 @@ import { createOpenIDRefreshFlightModel } from './openidRefreshFlight';
 import { createAgentTriggerUserPurgeModel } from './triggerUserPurge';
 import { createRefreshTokenBridgeModel } from './refreshTokenBridge';
 import { createAgentTriggerDeliveryModel } from './triggerDelivery';
+import { createAgentEventSubscriptionModel } from './subscription';
 import { createToolApprovalGrantModel } from './toolApprovalGrant';
 import { createSkillUploadIntentModel } from './skillUploadIntent';
+import { createAgentEventConnectionModel } from './connection';
 import { createSubagentContentModel } from './subagentContent';
+import { createChannelIdentityModel } from './channelIdentity';
 import { createSkillSyncStatusModel } from './skillSyncStatus';
 import { createConversationTagModel } from './conversationTag';
 import { createCodeEnvironmentModel } from './codeEnvironment';
 import { createSkillDeletionModel } from './skillDeletion';
 import { createAgentCategoryModel } from './agentCategory';
+import { createResponseScopeModel } from './responseScope';
+import { createChannelScopeModel } from './channelScope';
 import { createResourceLockModel } from './resourceLock';
+import { createStoredResponseModel } from './response';
 import { createChatProjectModel } from './chatProject';
 import { createAgentApiKeyModel } from './agentApiKey';
 import { createTransactionModel } from './transaction';
@@ -25,6 +37,7 @@ import { createPluginAuthModel } from './pluginAuth';
 import { createSharedLinkModel } from './sharedLink';
 import { createAccessRoleModel } from './accessRole';
 import { createToolFavoriteModel } from './favorite';
+import { createAgentChannelModel } from './channel';
 import { createMCPServerModel } from './mcpServer';
 import { createAssistantModel } from './assistant';
 import { createSkillFileModel } from './skillFile';
@@ -32,6 +45,7 @@ import { createConversationModel } from './convo';
 import { createToolCallModel } from './toolCall';
 import { createAclEntryModel } from './aclEntry';
 import { createAuditLogModel } from './auditLog';
+import { createMCPNameModel } from './mcpName';
 import { createSessionModel } from './session';
 import { createPasskeyModel } from './passkey';
 import { createBalanceModel } from './balance';
@@ -57,6 +71,8 @@ import logger from '~/config/winston';
  */
 export function createModels(mongoose: typeof import('mongoose')): {
   User: ReturnType<typeof createUserModel>;
+  StoredResponse: ReturnType<typeof createStoredResponseModel>;
+  ResponseScope: ReturnType<typeof createResponseScopeModel>;
   ToolApprovalGrant: ReturnType<typeof createToolApprovalGrantModel>;
   Token: ReturnType<typeof createTokenModel>;
   Session: ReturnType<typeof createSessionModel>;
@@ -69,7 +85,16 @@ export function createModels(mongoose: typeof import('mongoose')): {
   SubagentContent: ReturnType<typeof createSubagentContentModel>;
   Agent: ReturnType<typeof createAgentModel>;
   AgentApiKey: ReturnType<typeof createAgentApiKeyModel>;
+  AgentChannel: ReturnType<typeof createAgentChannelModel>;
+  ChannelIdentity: ReturnType<typeof createChannelIdentityModel>;
+  ChannelScope: ReturnType<typeof createChannelScopeModel>;
+  ChannelRun: ReturnType<typeof createChannelRunModel>;
+  ChannelLane: ReturnType<typeof createChannelLaneModel>;
+  ChannelReply: ReturnType<typeof createChannelReplyModel>;
+  ChannelFeedbackEvent: ReturnType<typeof createChannelFeedbackEventModel>;
+  ChannelFeedback: ReturnType<typeof createChannelFeedbackModel>;
   AgentCategory: ReturnType<typeof createAgentCategoryModel>;
+  MCPName: ReturnType<typeof createMCPNameModel>;
   MCPServer: ReturnType<typeof createMCPServerModel>;
   Role: ReturnType<typeof createRoleModel>;
   Action: ReturnType<typeof createActionModel>;
@@ -104,6 +129,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
   AgentTriggerUserPurge: ReturnType<typeof createAgentTriggerUserPurgeModel>;
   AgentQueuedTurn: ReturnType<typeof createAgentQueuedTurnModel>;
   AgentQueuedTurnSequence: ReturnType<typeof createAgentQueuedTurnSequenceModel>;
+  AgentEventConnection: ReturnType<typeof createAgentEventConnectionModel>;
+  AgentEventSubscription: ReturnType<typeof createAgentEventSubscriptionModel>;
   Schedule: ReturnType<typeof createScheduleModel>;
   ScheduleRun: ReturnType<typeof createScheduleRunModel>;
   RefreshTokenBridge: ReturnType<typeof createRefreshTokenBridgeModel>;
@@ -112,6 +139,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
 } {
   const models = {
     User: createUserModel(mongoose),
+    StoredResponse: createStoredResponseModel(mongoose),
+    ResponseScope: createResponseScopeModel(mongoose),
     ToolApprovalGrant: createToolApprovalGrantModel(mongoose),
     Token: createTokenModel(mongoose),
     Session: createSessionModel(mongoose),
@@ -124,7 +153,16 @@ export function createModels(mongoose: typeof import('mongoose')): {
     SubagentContent: createSubagentContentModel(mongoose),
     Agent: createAgentModel(mongoose),
     AgentApiKey: createAgentApiKeyModel(mongoose),
+    AgentChannel: createAgentChannelModel(mongoose),
+    ChannelIdentity: createChannelIdentityModel(mongoose),
+    ChannelScope: createChannelScopeModel(mongoose),
+    ChannelRun: createChannelRunModel(mongoose),
+    ChannelLane: createChannelLaneModel(mongoose),
+    ChannelReply: createChannelReplyModel(mongoose),
+    ChannelFeedbackEvent: createChannelFeedbackEventModel(mongoose),
+    ChannelFeedback: createChannelFeedbackModel(mongoose),
     AgentCategory: createAgentCategoryModel(mongoose),
+    MCPName: createMCPNameModel(mongoose),
     MCPServer: createMCPServerModel(mongoose),
     Role: createRoleModel(mongoose),
     Action: createActionModel(mongoose),
@@ -159,6 +197,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
     AgentTriggerUserPurge: createAgentTriggerUserPurgeModel(mongoose),
     AgentQueuedTurn: createAgentQueuedTurnModel(mongoose),
     AgentQueuedTurnSequence: createAgentQueuedTurnSequenceModel(mongoose),
+    AgentEventConnection: createAgentEventConnectionModel(mongoose),
+    AgentEventSubscription: createAgentEventSubscriptionModel(mongoose),
     Schedule: createScheduleModel(mongoose),
     ScheduleRun: createScheduleRunModel(mongoose),
     RefreshTokenBridge: createRefreshTokenBridgeModel(mongoose),

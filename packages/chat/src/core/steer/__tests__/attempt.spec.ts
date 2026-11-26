@@ -30,6 +30,12 @@ describe('steerAttemptChip', () => {
     });
   });
 
+  it('keeps the approval mode the steer was sent under for a later retry', () => {
+    expect(
+      steerAttemptChip({ ...attempt, codeApprovalMode: 'ask' }, { steerId: 's', status: 'failed' }),
+    ).toMatchObject({ codeApprovalMode: 'ask' });
+  });
+
   it('omits absent files, epoch and origin', () => {
     const chip = steerAttemptChip(
       { ...attempt, files: undefined, generationCreatedAt: undefined, carried: {} },

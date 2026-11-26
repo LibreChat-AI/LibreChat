@@ -1,6 +1,7 @@
 import { memo, useMemo } from 'react';
 import { cn } from '@librechat/client';
 import type { ReactNode, NamedExoticComponent } from 'react';
+import { renderMarkdown as defaultRenderMarkdown } from './renderers';
 import { useMessagePartsHost } from '../react/host';
 import CollapsibleText from './CollapsibleText';
 
@@ -15,8 +16,12 @@ const TextPart: NamedExoticComponent<TextPartProps> = memo(function TextPart({
   isCreatedByUser,
   showCursor,
 }: TextPartProps) {
-  const { useMessage, useUserTextPreferences, useSmoothStreaming, renderMarkdown } =
-    useMessagePartsHost();
+  const {
+    useMessage,
+    useSmoothStreaming,
+    useUserTextPreferences,
+    renderMarkdown = defaultRenderMarkdown,
+  } = useMessagePartsHost();
   const { isSubmitting = false, isLatestMessage = false } = useMessage();
   const { enableUserMsgMarkdown, collapseLongUserMessages } = useUserTextPreferences();
   const smoothStreaming = useSmoothStreaming();

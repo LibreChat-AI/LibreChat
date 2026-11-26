@@ -13,6 +13,10 @@ const {
   auditCacheStores,
   formatMemoryUsage,
   createSingleFlight,
+  createRegionalRoleCache,
+  reportRoleCacheError,
+  shouldSweepMemoryCaches,
+  selectExpiringMemoryStores,
 } = require('@librechat/api');
 
 /** No-op store for cache namespaces that are deliberately disabled. */
@@ -23,6 +27,7 @@ const disabledCache = {
   clear: async () => undefined,
 };
 
+const roleCacheBase = standardCache(CacheKeys.ROLES);
 const namespaces = {
   [ViolationTypes.GENERAL]: new Keyv({ store: logFile, namespace: 'violations' }),
   [ViolationTypes.LOGINS]: violationCache(ViolationTypes.LOGINS),
@@ -49,7 +54,10 @@ const namespaces = {
   [CacheKeys.OPENID_SESSION]: sessionCache(CacheKeys.OPENID_SESSION),
   [CacheKeys.SAML_SESSION]: sessionCache(CacheKeys.SAML_SESSION),
 
-  [CacheKeys.ROLES]: standardCache(CacheKeys.ROLES),
+  [CacheKeys.ROLES]: createRegionalRoleCache({
+    cache: roleCacheBase,
+    onError: reportRoleCacheError,
+  }),
   [CacheKeys.USER_PRINCIPALS]: userPrincipalsCache() ?? disabledCache,
   /** Authorization IDs stay uncached because a failed shared invalidation cannot fail closed. */
   [CacheKeys.PROMPT_GROUPS_ACCESS]: disabledCache,
@@ -90,14 +98,8 @@ const namespaces = {
  * Gets all cache stores that have TTL configured
  * @returns {Keyv[]}
  */
-function getTTLStores() {
-  return Object.values(namespaces).filter(
-    (store) =>
-      store instanceof Keyv &&
-      parseInt(store.opts?.ttl ?? '0') > 0 &&
-      !store.opts?.store?.constructor?.name?.includes('Redis'), // Only include non-Redis stores
-  );
-}
+const getTTLStores = () =>
+  selectExpiringMemoryStores([...Object.values(namespaces), roleCacheBase]);
 
 /**
  * Clears entries older than the cache's TTL
@@ -173,7 +175,7 @@ async function clearAllExpiredFromCache() {
   }
 }
 
-if (!cacheConfig.USE_REDIS && !cacheConfig.CI) {
+if (shouldSweepMemoryCaches(cacheConfig)) {
   /** @type {Set<NodeJS.Timeout>} */
   const cleanupIntervals = new Set();
 

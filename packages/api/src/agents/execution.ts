@@ -68,6 +68,8 @@ export interface CodeExecutionContext {
     maxCommandTimeoutMs?: number;
     /** Edit features the worker negotiated with the Code API. Omitted by older workers. */
     editFileFeatures?: WorkspaceEditFileFeature[];
+    /** The worker negotiated detached commands and the environment has not opted out. */
+    detachedCommands?: boolean;
     instructions?: CodeWorkspaceDescriptor['instructions'];
     environment?: CodeWorkspaceDescriptor['environment'];
   };

@@ -37,6 +37,33 @@ async function box(locator: Locator) {
   return rect;
 }
 
+/** Resolves once the element's own animations have run to their end. */
+async function animationsFinished(locator: Locator) {
+  await locator.evaluate((node) =>
+    Promise.all(node.getAnimations().map((animation) => animation.finished.catch(() => null))),
+  );
+}
+
+/**
+ * Where a field and its counter start and end, from one layout read so both describe the
+ * same frame. Boxes fetched in separate round trips each land on a different frame of an
+ * animation that is still running.
+ */
+async function fieldAndCounter(input: Locator, counter: Locator) {
+  const counterHandle = await counter.elementHandle();
+  if (counterHandle == null) {
+    throw new Error('expected a laid out element');
+  }
+  return input.evaluate((fieldNode, counterNode) => {
+    const field = fieldNode.getBoundingClientRect();
+    const count = counterNode.getBoundingClientRect();
+    return {
+      field: { left: field.left, right: field.right },
+      counter: { left: count.left, right: count.right },
+    };
+  }, counterHandle);
+}
+
 /** Drags a separator horizontally by `dx` pixels with the pointer. */
 async function dragSeparator(page: Page, separator: Locator, dx: number) {
   const rect = await box(separator);
@@ -231,18 +258,23 @@ test('a prompt command keeps its typed text clear of the counter under RTL @scen
   await input.fill('a'.repeat(40));
   const counter = input.locator('xpath=../..').getByText(/^\d+\/\d+$/);
   await expect(counter).toBeVisible();
+  /* The dialog scales in over 200ms, and the row inside it keeps moving until that lands. */
+  await animationsFinished(page.getByRole('dialog'));
 
   /* LTR: the counter sits after the field, at the right. */
-  expect((await box(input)).x + (await box(input)).width).toBeLessThanOrEqual(
-    (await box(counter)).x + 1,
-  );
+  const ltr = await fieldAndCounter(input, counter);
+  expect(ltr.field.right).toBeLessThanOrEqual(ltr.counter.left + 1);
 
   await setDirection(page, 'rtl');
   /* RTL: the counter moves to the left and the field ends before it. */
-  await expect.poll(async () => (await box(counter)).x).toBeLessThan((await box(input)).x);
-  const field = await box(input);
-  const count = await box(counter);
-  expect(count.x + count.width).toBeLessThanOrEqual(field.x + 1);
+  await expect
+    .poll(async () => {
+      const { field, counter: count } = await fieldAndCounter(input, counter);
+      return count.left < field.left;
+    })
+    .toBe(true);
+  const rtl = await fieldAndCounter(input, counter);
+  expect(rtl.counter.right).toBeLessThanOrEqual(rtl.field.left + 1);
 });
 
 test('marketplace category tabs follow the visual arrow direction under RTL @scenario:rtl-category-tabs-arrow-keys', async ({

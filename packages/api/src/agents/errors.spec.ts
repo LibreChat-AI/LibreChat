@@ -13,6 +13,7 @@ import {
   getUserFacingProviderError,
   isFatalAgentInitializationError,
   getAgentErrorMetadata,
+  AgentModelPolicyError,
   AGENT_ATTACHMENT_LIMIT_EXCEEDED,
   AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE,
   isStepLimitError,
@@ -135,6 +136,44 @@ describe('LangChain provider error text', () => {
       expect(resolveLangChainError(error)).toBe(JSON.stringify({ type }));
     });
 
+    it('carries the provider message as info when the caller allows it', () => {
+      const error = Object.assign(
+        new Error(
+          `429 Budget exhausted, ask the service desk${troubleshooting('MODEL_RATE_LIMIT')}`,
+        ),
+        { lc_error_code: 'MODEL_RATE_LIMIT' },
+      );
+      expect(resolveLangChainError(error, { includeProviderMessage: true })).toBe(
+        JSON.stringify({
+          type: ErrorTypes.MODEL_RATE_LIMIT,
+          info: 'Budget exhausted, ask the service desk',
+        }),
+      );
+      expect(resolveLangChainError(error)).toBe(
+        JSON.stringify({ type: ErrorTypes.MODEL_RATE_LIMIT }),
+      );
+    });
+
+    it('applies the caller formatter and omits info that ends up empty', () => {
+      const error = Object.assign(new Error('429 secret'), { lc_error_code: 'MODEL_RATE_LIMIT' });
+      expect(
+        resolveLangChainError(error, {
+          includeProviderMessage: true,
+          formatProviderMessage: (text) => text.toUpperCase(),
+        }),
+      ).toBe(JSON.stringify({ type: ErrorTypes.MODEL_RATE_LIMIT, info: 'SECRET' }));
+      expect(
+        resolveLangChainError(error, {
+          includeProviderMessage: true,
+          formatProviderMessage: () => ' ',
+        }),
+      ).toBe(JSON.stringify({ type: ErrorTypes.MODEL_RATE_LIMIT }));
+      const bare = Object.assign(new Error('429 '), { lc_error_code: 'MODEL_RATE_LIMIT' });
+      expect(resolveLangChainError(bare, { includeProviderMessage: true })).toBe(
+        JSON.stringify({ type: ErrorTypes.MODEL_RATE_LIMIT }),
+      );
+    });
+
     it('leaves codes without localized copy to the provider message', () => {
       const error = Object.assign(new Error('failed'), { lc_error_code: 'OUTPUT_PARSING_FAILURE' });
       expect(resolveLangChainError(error)).toBeUndefined();
@@ -142,6 +181,23 @@ describe('LangChain provider error text', () => {
   });
 
   describe('getUserFacingProviderError', () => {
+    it('keeps a model-policy rejection safe and actionable under content protection', () => {
+      const error = new AgentModelPolicyError();
+      expect(getUserFacingProviderError(error, true)).toBe(error.message);
+      expect(getAgentErrorMetadata(error, true)).toMatchObject({
+        status: 403,
+        code: 'model_not_allowed',
+      });
+    });
+    it.each(['model_not_allowed', 'ERR_REMOTE'])(
+      'withholds provider code %s under protection',
+      (code) => {
+        const error = Object.assign(new Error('private provider text'), { status: 403, code });
+        expect(getAgentErrorMetadata(error, true)).toEqual({ status: 403 });
+        expect(getUserFacingProviderError(error, true)).toBe(GENERIC_PROVIDER_ERROR);
+      },
+    );
+
     it('strips the docs URL from the forwarded provider message', () => {
       const error = new Error(`429 budget exceeded${troubleshooting('MODEL_RATE_LIMIT')}`);
       expect(getUserFacingProviderError(error, false)).toBe('429 budget exceeded');

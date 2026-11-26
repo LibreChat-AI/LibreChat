@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
 import type { Page, Route } from '@playwright/test';
 import { accountButton } from './ui-scale.helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * The Connected Accounts row in Settings > Account. The mock config has no pull request OAuth

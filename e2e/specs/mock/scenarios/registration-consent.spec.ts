@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
 import type { TStartupConfig } from 'librechat-data-provider';
 import type { Browser, Page } from '@playwright/test';
+import { closeContext, expect, test } from '../fixtures';
 
 /**
  * A deployment's policies are agreed to on the way in, so both ways in state
@@ -90,7 +90,49 @@ test.describe('registration consent', () => {
       await terms.focus();
       await expect(terms).toBeFocused();
     } finally {
-      await context.close();
+      await closeContext(context);
+    }
+  });
+
+  test('the registration form arrives with its consent already in it @scenario:registration-form-arrives-with-its-consent', async ({
+    browser,
+    baseURL,
+  }) => {
+    test.setTimeout(60000);
+    const context = await browser.newContext({ storageState: undefined, baseURL });
+    const page = await context.newPage();
+    /** Every insertion is recorded as it is committed, before any later commit
+     *  can fill in what the first one left out. A consent inserted into a form
+     *  that was already on the page means the form was committed without it,
+     *  which is what a settled fetch paired with a config not yet copied did. */
+    await page.addInitScript(() => {
+      const target = window as Window & { lateConsent?: number };
+      target.lateConsent = 0;
+      new MutationObserver((records) => {
+        for (const record of records) {
+          const form = record.target instanceof Element ? record.target.closest('form') : null;
+          for (const node of record.addedNodes) {
+            if (form && node.textContent?.includes('By continuing')) {
+              target.lateConsent = (target.lateConsent ?? 0) + 1;
+            }
+          }
+        }
+      }).observe(document, { childList: true, subtree: true });
+    });
+    await withConfig(page, bothPolicies);
+
+    try {
+      await page.goto('/register', { timeout: 15000 });
+      const form = page.locator('form');
+      await expect(form.getByRole('button', { name: 'Submit registration' })).toBeVisible({
+        timeout: 15000,
+      });
+      await expect(form.getByText(/By continuing, you agree to the/i)).toBeVisible();
+      expect(
+        await page.evaluate(() => (window as Window & { lateConsent?: number }).lateConsent),
+      ).toBe(0);
+    } finally {
+      await closeContext(context);
     }
   });
 
@@ -108,7 +150,7 @@ test.describe('registration consent', () => {
       await expect(page.locator(`a[href="${PRIVACY_URL}"]`)).toHaveCount(1);
       await expect(page.getByText(/agree to the Terms of Service/i)).toHaveCount(0);
     } finally {
-      await context.close();
+      await closeContext(context);
     }
   });
 
@@ -123,7 +165,7 @@ test.describe('registration consent', () => {
       await expect(page.getByRole('button', { name: 'Submit registration' })).toBeVisible();
       await expect(page.getByText(/By continuing/i)).toHaveCount(0);
     } finally {
-      await context.close();
+      await closeContext(context);
     }
   });
 
@@ -144,7 +186,7 @@ test.describe('registration consent', () => {
       await expect(page.getByText(/By continuing/i)).toHaveCount(0);
       await expect(page.locator('a[href=""]')).toHaveCount(0);
     } finally {
-      await context.close();
+      await closeContext(context);
     }
   });
 
@@ -164,7 +206,7 @@ test.describe('registration consent', () => {
       await expect(page.locator(`a[href="${PRIVACY_URL}"]`)).toHaveCount(1);
       await expect(page.locator(`a[href="${TERMS_URL}"]`)).toHaveCount(1);
     } finally {
-      await context.close();
+      await closeContext(context);
     }
   });
 
@@ -188,7 +230,7 @@ test.describe('registration consent', () => {
       await expect(page.locator(`a[href="${PRIVACY_URL}"]`)).toHaveCount(1);
       await expect(page.locator(`a[href="${TERMS_URL}"]`)).toHaveCount(1);
     } finally {
-      await context.close();
+      await closeContext(context);
     }
   });
 
@@ -212,7 +254,7 @@ test.describe('registration consent', () => {
       await expect(page.locator(`a[href="${PRIVACY_URL}"]`)).toHaveCount(1);
       await expect(page.locator(`a[href="${TERMS_URL}"]`)).toHaveCount(1);
     } finally {
-      await context.close();
+      await closeContext(context);
     }
   });
 });

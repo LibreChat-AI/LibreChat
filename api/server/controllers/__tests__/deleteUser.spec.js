@@ -43,9 +43,11 @@ jest.mock('../../../../packages/api/src/mcp/oauth/cleanup', () => ({
   prepareMCPServerOAuthDeletion: jest.fn(),
 }));
 
+const mockPurgeSubscriptions = jest.fn(async () => 0);
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), info: jest.fn() },
   webSearchKeys: [],
+  createSubscriptions: () => ({ purge: mockPurgeSubscriptions }),
 }));
 
 jest.mock('librechat-data-provider', () => ({
@@ -70,6 +72,10 @@ jest.mock('@librechat/api', () => ({
   getNewS3URL: jest.fn(),
   deleteAllSharedLinksWithCleanup: (...args) => mockDeleteAllSharedLinksWithCleanup(...args),
   eraseUserData: jest.requireActual('../../../../packages/api/src/user/erasure.ts').eraseUserData,
+  createUserDeletionAttempt: jest.requireActual('../../../../packages/api/src/user/erasure.ts')
+    .createUserDeletionAttempt,
+  cancelUserDataDeletion: jest.requireActual('../../../../packages/api/src/user/erasure.ts')
+    .cancelUserDataDeletion,
   revokeUserCodeEnvironmentWorkers: (...args) => mockRevokeUserCodeEnvironmentWorkers(...args),
   GenerationJobManager: {
     getAccountCleanupJobIdsForUser: (...args) => mockGetCleanupBlockingJobIdsForUser(...args),
@@ -98,6 +104,7 @@ jest.mock('~/models', () => ({
   deleteUserById: (...args) => mockDeleteUserById(...args),
   deleteAllUserPluginAuths: (...args) => mockDeleteAllUserPluginAuths(...args),
   beginAgentTriggerUserDeletion: (...args) => mockBeginAgentTriggerUserDeletion(...args),
+  isAgentTriggerUserDeletionOwner: jest.fn().mockResolvedValue(true),
   cancelAgentTriggerUserDeletion: (...args) => mockCancelAgentTriggerUserDeletion(...args),
   deleteMessages: (...args) => mockDeleteMessages(...args),
   deletePresets: (...args) => mockDeletePresets(...args),
@@ -429,7 +436,10 @@ describe('deleteUserController - 2FA enforcement', () => {
     expect(res.status).toHaveBeenCalledWith(200);
     expect(mockBeginAgentTriggerUserDeletion).toHaveBeenCalledTimes(1);
     expect(mockDeleteMessages).toHaveBeenCalled();
-    expect(mockDeleteUserById).toHaveBeenCalledWith(USER_ID);
+    expect(mockDeleteUserById).toHaveBeenCalledWith(USER_ID, {
+      startedAt: mockBeginAgentTriggerUserDeletion.mock.calls[0][1],
+      attemptId: mockBeginAgentTriggerUserDeletion.mock.calls[0][2],
+    });
     expect(mockDeleteUserCodeEnvironments).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerUserPurge).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerUserDeletion).not.toHaveBeenCalled();
@@ -445,6 +455,7 @@ describe('deleteUserController - 2FA enforcement', () => {
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.send).toHaveBeenCalledWith({ message: 'User deleted' });
+    expect(mockPurgeSubscriptions).toHaveBeenCalledWith(req.user.id);
   });
 
   it('returns error when 2FA is enabled and verification fails with 400', async () => {

@@ -6,6 +6,10 @@ jest.mock('nanoid', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  collectGoogleThoughtSignatures: (...args) =>
+    jest.requireActual('@librechat/api').collectGoogleThoughtSignatures(...args),
+  captureResponseAccountingUsage: (...args) =>
+    jest.requireActual('@librechat/api').captureResponseAccountingUsage(...args),
   writeGuarded: (res, chunk) => {
     if (res.writableEnded === true || res.destroyed === true) {
       return false;
@@ -40,6 +44,7 @@ jest.mock('@librechat/api', () => ({
   isCodeArtifactToolOutput: jest.requireActual('@librechat/api').isCodeArtifactToolOutput,
   isCodeSessionToolName: jest.requireActual('@librechat/api').isCodeSessionToolName,
   collectToolCallIds: jest.requireActual('@librechat/api').collectToolCallIds,
+  getImageAttachmentContent: jest.requireActual('@librechat/api').getImageAttachmentContent,
   captureSubagentIdentity: jest.requireActual('@librechat/api').captureSubagentIdentity,
   feedSubagentAggregator: jest.requireActual('@librechat/api').feedSubagentAggregator,
   createToolTimingAdapter: jest.requireActual('@librechat/api').createToolTimingAdapter,
@@ -759,6 +764,109 @@ describe('createToolEndCallback', () => {
       { owner: 'agent-b', link: 'https://example.com/agent-b' },
     ]);
   });
+
+  it.each(
+    ['createToolEndCallback', 'createResponsesToolEndCallback'].flatMap((factoryName) => [
+      [factoryName, true],
+      [factoryName, false],
+    ]),
+  )(
+    '%s persists original images with model images enabled: %s',
+    async (factoryName, modelImagesEnabled) => {
+      const { saveBase64Image } = require('~/server/services/Files/process');
+      saveBase64Image.mockResolvedValue({ file_id: 'original-image' });
+      const callback = require('../callbacks')[factoryName]({ req, res, artifactPromises });
+      const content = modelImagesEnabled
+        ? [{ type: 'image_url', image_url: { url: 'data:image/png;base64,model' } }]
+        : [];
+      const artifact = {
+        content,
+        imageAttachments: [
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,original' } },
+        ],
+      };
+      await callback(
+        { output: { name: 'flux', tool_call_id: 'image-call', artifact } },
+        { run_id: 'run-image', thread_id: 'thread-image', provider: 'anthropic' },
+      );
+      await Promise.all(artifactPromises);
+      expect(saveBase64Image).toHaveBeenCalledWith(
+        'data:image/png;base64,original',
+        expect.objectContaining({ req, endpoint: 'anthropic' }),
+      );
+      expect(artifact.content).toBe(content);
+    },
+  );
+
+  it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
+    '%s hands each saved image to the code queue of the agent that generated it',
+    async (factoryName) => {
+      const { saveBase64Image } = require('~/server/services/Files/process');
+      saveBase64Image.mockResolvedValue({ file_id: 'generated-image', type: 'image/png' });
+      const queueGeneratedFile = jest.fn();
+      const callback = require('../callbacks')[factoryName]({
+        req,
+        res,
+        artifactPromises,
+        queueGeneratedFile,
+      });
+      const metadata = {
+        run_id: 'run-image',
+        thread_id: 'thread-image',
+        executingAgentId: 'agent-a',
+      };
+      await callback(
+        {
+          output: {
+            name: 'image_gen_oai',
+            tool_call_id: 'image-call',
+            artifact: {
+              content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,image' } }],
+            },
+          },
+        },
+        metadata,
+      );
+
+      expect(queueGeneratedFile).toHaveBeenCalledTimes(1);
+      const [saved, owner] = queueGeneratedFile.mock.calls[0];
+      expect(owner).toBe(metadata);
+      await expect(saved).resolves.toMatchObject({ file_id: 'generated-image' });
+    },
+  );
+
+  it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
+    '%s hands the code queue a failed save as a failure, not as a missing image',
+    async (factoryName) => {
+      const { saveBase64Image } = require('~/server/services/Files/process');
+      const outage = new Error('storage unavailable');
+      saveBase64Image.mockRejectedValue(outage);
+      const queueGeneratedFile = jest.fn();
+      const callback = require('../callbacks')[factoryName]({
+        req,
+        res,
+        artifactPromises,
+        queueGeneratedFile,
+      });
+      await callback(
+        {
+          output: {
+            name: 'image_gen_oai',
+            tool_call_id: 'image-call',
+            artifact: {
+              content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,image' } }],
+            },
+          },
+        },
+        { run_id: 'run-image', thread_id: 'thread-image', executingAgentId: 'agent-a' },
+      );
+
+      const [saved] = queueGeneratedFile.mock.calls[0];
+      await expect(saved).rejects.toBe(outage);
+      /* The chat still treats it as an attachment that did not arrive. */
+      await expect(artifactPromises[0]).resolves.toBeNull();
+    },
+  );
 
   it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
     '%s preserves memory payloads and their execution owner',

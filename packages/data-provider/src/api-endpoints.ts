@@ -1,4 +1,5 @@
 import type { StartupConfigContext } from './config';
+import type { DeadLetterParams } from './types/dead';
 import type { AssistantsEndpoint } from './schemas';
 import type * as t from './types';
 import { ResourceType } from './accessPermissions';
@@ -21,6 +22,18 @@ if (BASE_URL && BASE_URL.endsWith('/')) {
 }
 
 export const apiBaseUrl = () => BASE_URL;
+export const responseReview = (responseId: string): string =>
+  `${BASE_URL}/api/agents/responses/${encodeURIComponent(responseId)}/review`;
+export const responseCancel = (responseId: string): string =>
+  `${BASE_URL}/api/agents/responses/${encodeURIComponent(responseId)}/cancel`;
+
+export const slackWorkspaces = (workspaceId?: string): string =>
+  `${apiBaseUrl()}/api/channels/workspaces${workspaceId ? `/${encodeURIComponent(workspaceId)}` : ''}`;
+
+export const agentChannels = (agentId: string, channelId?: string): string =>
+  `${BASE_URL}/api/agents/${encodeURIComponent(agentId)}/channels${
+    channelId ? `/${encodeURIComponent(channelId)}` : ''
+  }`;
 
 // Testing this buildQuery function
 const buildQuery = (params: Record<string, unknown>): string => {
@@ -90,15 +103,11 @@ export const messageSubagentAttachmentCalls = ({
   `${messagesRoot}/${encodeURIComponent(conversationId)}/${encodeURIComponent(messageId)}/subagent-calls?files=${encodeURIComponent(JSON.stringify(files))}`;
 
 /** One tool-call part of a stored message, in full. */
-export const messageToolCallPart = ({
-  conversationId,
-  messageId,
-  partIndex,
-  toolCallId,
-  stepId,
-  agentId,
-}: q.ToolCallPartParams) => {
-  const path = `${messagesRoot}/${encodeURIComponent(conversationId)}/${encodeURIComponent(messageId)}/parts/${partIndex}`;
+/** The identity a stored tool-call part is read by, as a query string appended to `path`. */
+const withToolCallIdentity = (
+  path: string,
+  { toolCallId, stepId, agentId }: Pick<q.ToolCallPartParams, 'toolCallId' | 'stepId' | 'agentId'>,
+) => {
   const query = [
     ['toolCallId', toolCallId],
     ['stepId', stepId],
@@ -109,6 +118,12 @@ export const messageToolCallPart = ({
     .join('&');
   return query === '' ? path : `${path}?${query}`;
 };
+
+export const messageToolCallPart = (params: q.ToolCallPartParams) =>
+  withToolCallIdentity(
+    `${messagesRoot}/${encodeURIComponent(params.conversationId)}/${encodeURIComponent(params.messageId)}/parts/${params.partIndex}`,
+    params,
+  );
 
 export const messagesBranch = () => `${messagesRoot}/branch`;
 
@@ -150,6 +165,13 @@ export const apiKeys = () => apiKeysEndpoint;
 
 export const apiKeyById = (id: string) => `${apiKeysEndpoint}/${id}`;
 
+/** The agents an API key can be granted for. */
+export const apiKeyAgents = () => `${apiKeysEndpoint}/agents`;
+
+/** The MCP grant an API key holds for one agent. */
+export const apiKeyMCPConsent = (id: string, agentId: string) =>
+  `${apiKeysEndpoint}/${encodeURIComponent(id)}/agents/${encodeURIComponent(agentId)}/mcp-consent`;
+
 export const conversationsRoot = `${BASE_URL}/api/convos`;
 
 export const conversations = (params: q.ConversationListParams) => {
@@ -171,6 +193,33 @@ export const subagentThread = (
   if (taskId != null) return `${endpoint}?taskId=${encodeURIComponent(taskId)}`;
   return cursor == null ? endpoint : `${endpoint}?cursor=${encodeURIComponent(cursor)}`;
 };
+
+/** A child thread's messages, read through the parent conversation that owns it. */
+export const subagentThreadMessages = (parentConversationId: string, threadId: string) =>
+  `${parentSubagents(parentConversationId)}/${encodeURIComponent(threadId)}/messages`;
+
+/** One page of a child thread's messages: the newest, or the one before `cursor`. */
+export const subagentThreadMessagesPage = (
+  parentConversationId: string,
+  threadId: string,
+  page: { limit: number; cursor?: string },
+) => {
+  const query = new URLSearchParams({ limit: String(page.limit) });
+  if (page.cursor != null) {
+    query.set('cursor', page.cursor);
+  }
+  return `${subagentThreadMessages(parentConversationId, threadId)}?${query.toString()}`;
+};
+
+/** One full tool-call part of a child thread's message; `conversationId` is the thread. */
+export const subagentThreadToolCallPart = (
+  parentConversationId: string,
+  params: q.ToolCallPartParams,
+) =>
+  withToolCallIdentity(
+    `${subagentThreadMessages(parentConversationId, params.conversationId)}/${encodeURIComponent(params.messageId)}/parts/${params.partIndex}`,
+    params,
+  );
 
 export const subagentTaskContent = (
   parentConversationId: string,
@@ -200,6 +249,9 @@ export const backgroundTasks = (conversationId: string) =>
 
 export const backgroundTasksCancel = (conversationId: string) =>
   `${backgroundTasks(conversationId)}/cancel`;
+
+export const fileExclusion = (conversationId: string) =>
+  `${conversationsRoot}/${encodeURIComponent(conversationId)}/files/exclusion`;
 
 export const conversationPullRequest = (conversationId: string) =>
   `${conversationsRoot}/${encodeURIComponent(conversationId)}/pull-request`;
@@ -266,12 +318,14 @@ export const deletePreset = () => `${BASE_URL}/api/presets/delete`;
 
 export const aiEndpoints = () => `${BASE_URL}/api/endpoints`;
 
-export const tokenConfig = () => `${BASE_URL}/api/endpoints/token-config`;
+export const tokenConfig = (endpoint?: string) =>
+  `${BASE_URL}/api/endpoints/token-config${endpoint == null ? '' : `?endpoint=${encodeURIComponent(endpoint)}`}`;
 
 export const reasoningCapabilities = (endpoint: string) =>
   `${BASE_URL}/api/endpoints/reasoning-capabilities?endpoint=${encodeURIComponent(endpoint)}`;
 
-export const models = () => `${BASE_URL}/api/models`;
+export const models = (endpoint?: string) =>
+  `${BASE_URL}/api/models${endpoint == null ? '' : `?endpoint=${encodeURIComponent(endpoint)}`}`;
 
 export const login = () => `${BASE_URL}/api/auth/login`;
 
@@ -524,7 +578,18 @@ export const getAllPromptGroups = () => `${prompts()}/all`;
 export const schedules = () => `${BASE_URL}/api/schedules`;
 export const schedule = (id: string) => `${schedules()}/${encodeURIComponent(id)}`;
 export const scheduleMCPConsent = (id: string) => `${schedule(id)}/mcp-consent`;
+/** What a schedule of an agent could be allowed, asked before the schedule exists. */
+export const scheduleMCPOffer = () => `${schedules()}/mcp-consent/offer`;
 export const runSchedule = (id: string) => `${schedule(id)}/run`;
+
+/* Agent event subscriptions */
+export const agentEvents = () => `${BASE_URL}/api/agents/events`;
+export const agentEventConnections = () => `${agentEvents()}/connections`;
+export const agentEventSubscriptions = (agentId?: string) =>
+  `${agentEvents()}/subscriptions${buildQuery({ agentId })}`;
+export const agentEventSubscription = (id: string) =>
+  `${agentEvents()}/subscriptions/${encodeURIComponent(id)}`;
+export const agentEventSubscriptionGrant = (id: string) => `${agentEventSubscription(id)}/grant`;
 
 /* Skills */
 export const skills = () => `${BASE_URL}/api/skills`;
@@ -610,6 +675,19 @@ export const adminLangfuseSyncPrompts = () => `${BASE_URL}/api/admin/langfuse/pr
 export const adminLangfusePrompt = (name: string, version?: number) =>
   `${BASE_URL}/api/admin/langfuse/prompts/${encodeURIComponent(name)}${buildQuery({ version })}`;
 
+/* Dead letters of the agent trigger queue (admin) */
+export const adminDeadLetters = (params: DeadLetterParams = {}) =>
+  `${BASE_URL}/api/admin/events/dead${buildQuery({ ...params })}`;
+export const adminDeadLetter = (id: string) =>
+  `${BASE_URL}/api/admin/events/dead/${encodeURIComponent(id)}`;
+export const adminDeadLetterRequeue = (id: string) => `${adminDeadLetter(id)}/requeue`;
+
+/* Connections of agent events: installs of the GitHub App bound to the tenant (admin) */
+export const adminEventConnections = () => `${BASE_URL}/api/admin/events/connections`;
+export const adminEventConnectionInstall = () => `${adminEventConnections()}/install`;
+export const adminEventConnection = (id: string) =>
+  `${adminEventConnections()}/${encodeURIComponent(id)}`;
+
 /* Combined Pinned-section display order: favorite and pinned-chat entry keys interleaved. */
 export const pinnedOrder = () => `${BASE_URL}/api/user/settings/pinned-order`;
 
@@ -656,6 +734,7 @@ export const enableTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup`;
 export const confirmTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/confirm`;
 export const acknowledgeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/acknowledge`;
 export const finalizeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/finalize`;
+export const cancelTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/cancel`;
 export const verifyTwoFactor = () => `${BASE_URL}/api/auth/2fa/verify`;
 export const confirmTwoFactor = () => `${BASE_URL}/api/auth/2fa/confirm`;
 export const disableTwoFactor = () => `${BASE_URL}/api/auth/2fa/disable`;

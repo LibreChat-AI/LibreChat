@@ -30,6 +30,7 @@ import {
 import useUpdateTagsInConvo from '~/hooks/Conversations/useUpdateTagsInConvo';
 import { chatFilterTagsAtom } from '~/components/Conversations/chatFilters';
 import { updateConversationTag } from '~/utils/conversationTags';
+import { invalidateAssistantDetails } from './Assistants/cache';
 import { isTemporaryConversation } from '~/utils/conversation';
 import { markTitleGenerationProcessed } from './SSE/queries';
 import { useConversationTagsQuery } from './queries';
@@ -1783,12 +1784,14 @@ export const useCreateAssistantMutation = (
   options?: t.CreateAssistantMutationOptions,
 ): UseMutationResult<t.Assistant, Error, t.AssistantCreateParams> => {
   const queryClient = useQueryClient();
-  return useMutation(
+  return useMutation<t.Assistant, Error, t.AssistantCreateParams>(
     (newAssistantData: t.AssistantCreateParams) => dataService.createAssistant(newAssistantData),
     {
       onMutate: (variables) => options?.onMutate?.(variables),
       onError: (error, variables, context) => options?.onError?.(error, variables, context),
+      onSettled: options?.onSettled,
       onSuccess: (newAssistant, variables, context) => {
+        invalidateAssistantDetails(queryClient, variables.endpoint, newAssistant.id);
         const listRes = queryClient.getQueryData<t.AssistantListResponse>([
           QueryKeys.assistants,
           variables.endpoint,
@@ -1825,7 +1828,7 @@ export const useUpdateAssistantMutation = (
   { assistant_id: string; data: t.AssistantUpdateParams }
 > => {
   const queryClient = useQueryClient();
-  return useMutation(
+  return useMutation<t.Assistant, Error, t.UpdateAssistantVariables>(
     ({ assistant_id, data }: { assistant_id: string; data: t.AssistantUpdateParams }) => {
       const { endpoint } = data;
       const endpointsConfig = queryClient.getQueryData<t.TEndpointsConfig>([QueryKeys.endpoints]);
@@ -1840,7 +1843,9 @@ export const useUpdateAssistantMutation = (
     {
       onMutate: (variables) => options?.onMutate?.(variables),
       onError: (error, variables, context) => options?.onError?.(error, variables, context),
+      onSettled: options?.onSettled,
       onSuccess: (updatedAssistant, variables, context) => {
+        invalidateAssistantDetails(queryClient, variables.data.endpoint, variables.assistant_id);
         const listRes = queryClient.getQueryData<t.AssistantListResponse>([
           QueryKeys.assistants,
           variables.data.endpoint,
@@ -1895,7 +1900,7 @@ export const useDeleteAssistantMutation = (
   options?: t.DeleteAssistantMutationOptions,
 ): UseMutationResult<void, Error, t.DeleteAssistantBody> => {
   const queryClient = useQueryClient();
-  return useMutation(
+  return useMutation<void, Error, t.DeleteAssistantBody>(
     ({ assistant_id, model, endpoint }: t.DeleteAssistantBody) => {
       const endpointsConfig = queryClient.getQueryData<t.TEndpointsConfig>([QueryKeys.endpoints]);
       const version = endpointsConfig?.[endpoint]?.version ?? defaultAssistantsVersion[endpoint];
@@ -1904,7 +1909,9 @@ export const useDeleteAssistantMutation = (
     {
       onMutate: (variables) => options?.onMutate?.(variables),
       onError: (error, variables, context) => options?.onError?.(error, variables, context),
+      onSettled: options?.onSettled,
       onSuccess: (_data, variables, context) => {
+        invalidateAssistantDetails(queryClient, variables.endpoint, variables.assistant_id);
         const listRes = queryClient.getQueryData<t.AssistantListResponse>([
           QueryKeys.assistants,
           variables.endpoint,
@@ -1925,7 +1932,7 @@ export const useDeleteAssistantMutation = (
           },
         );
 
-        return options?.onSuccess?.(_data, variables, data);
+        return options?.onSuccess?.(_data, variables, context);
       },
     },
   );
@@ -1942,11 +1949,19 @@ export const useUploadAssistantAvatarMutation = (
   t.AssistantAvatarVariables, // request
   unknown // context
 > => {
-  return useMutation([MutationKeys.assistantAvatarUpload], {
-    mutationFn: ({ postCreation: _postCreation, ...variables }: t.AssistantAvatarVariables) =>
-      dataService.uploadAssistantAvatar(variables),
-    ...(options || {}),
-  });
+  const queryClient = useQueryClient();
+  return useMutation<t.Assistant, unknown, t.AssistantAvatarVariables>(
+    [MutationKeys.assistantAvatarUpload],
+    {
+      mutationFn: ({ postCreation: _postCreation, ...variables }: t.AssistantAvatarVariables) =>
+        dataService.uploadAssistantAvatar(variables),
+      ...(options || {}),
+      onSuccess: (assistant, variables, context) => {
+        invalidateAssistantDetails(queryClient, variables.endpoint, variables.assistant_id);
+        return options?.onSuccess?.(assistant, variables, context);
+      },
+    },
+  );
 };
 
 /**
@@ -1961,53 +1976,58 @@ export const useUpdateAction = (
   unknown // context
 > => {
   const queryClient = useQueryClient();
-  return useMutation([MutationKeys.updateAction], {
-    mutationFn: (variables: t.UpdateActionVariables) => dataService.updateAction(variables),
+  return useMutation<t.UpdateActionResponse, unknown, t.UpdateActionVariables>(
+    [MutationKeys.updateAction],
+    {
+      mutationFn: (variables: t.UpdateActionVariables) => dataService.updateAction(variables),
 
-    onMutate: (variables) => options?.onMutate?.(variables),
-    onError: (error, variables, context) => options?.onError?.(error, variables, context),
-    onSuccess: (updateActionResponse, variables, context) => {
-      const listRes = queryClient.getQueryData<t.AssistantListResponse>([
-        QueryKeys.assistants,
-        variables.endpoint,
-        defaultOrderQuery,
-      ]);
+      onMutate: (variables) => options?.onMutate?.(variables),
+      onError: (error, variables, context) => options?.onError?.(error, variables, context),
+      onSettled: options?.onSettled,
+      onSuccess: (updateActionResponse, variables, context) => {
+        invalidateAssistantDetails(queryClient, variables.endpoint, variables.assistant_id);
+        const listRes = queryClient.getQueryData<t.AssistantListResponse>([
+          QueryKeys.assistants,
+          variables.endpoint,
+          defaultOrderQuery,
+        ]);
 
-      if (!listRes) {
+        if (!listRes) {
+          return options?.onSuccess?.(updateActionResponse, variables, context);
+        }
+
+        const updatedAssistant = updateActionResponse[1];
+
+        queryClient.setQueryData<t.AssistantListResponse>(
+          [QueryKeys.assistants, variables.endpoint, defaultOrderQuery],
+          {
+            ...listRes,
+            data: listRes.data.map((assistant) => {
+              if (assistant.id === variables.assistant_id) {
+                return updatedAssistant;
+              }
+              return assistant;
+            }),
+          },
+        );
+
+        queryClient.setQueryData<t.Action[]>([QueryKeys.actions], (prev) => {
+          return prev
+            ?.map((action) => {
+              if (action.action_id === variables.action_id) {
+                return updateActionResponse[2];
+              }
+              return action;
+            })
+            .concat(
+              variables.action_id != null && variables.action_id ? [] : [updateActionResponse[2]],
+            );
+        });
+
         return options?.onSuccess?.(updateActionResponse, variables, context);
-      }
-
-      const updatedAssistant = updateActionResponse[1];
-
-      queryClient.setQueryData<t.AssistantListResponse>(
-        [QueryKeys.assistants, variables.endpoint, defaultOrderQuery],
-        {
-          ...listRes,
-          data: listRes.data.map((assistant) => {
-            if (assistant.id === variables.assistant_id) {
-              return updatedAssistant;
-            }
-            return assistant;
-          }),
-        },
-      );
-
-      queryClient.setQueryData<t.Action[]>([QueryKeys.actions], (prev) => {
-        return prev
-          ?.map((action) => {
-            if (action.action_id === variables.action_id) {
-              return updateActionResponse[2];
-            }
-            return action;
-          })
-          .concat(
-            variables.action_id != null && variables.action_id ? [] : [updateActionResponse[2]],
-          );
-      });
-
-      return options?.onSuccess?.(updateActionResponse, variables, context);
+      },
     },
-  });
+  );
 };
 
 /**
@@ -2022,7 +2042,7 @@ export const useDeleteAction = (
   unknown // context
 > => {
   const queryClient = useQueryClient();
-  return useMutation([MutationKeys.deleteAction], {
+  return useMutation<void, Error, t.DeleteActionVariables>([MutationKeys.deleteAction], {
     mutationFn: (variables: t.DeleteActionVariables) => {
       const { endpoint } = variables;
       const endpointsConfig = queryClient.getQueryData<t.TEndpointsConfig>([QueryKeys.endpoints]);
@@ -2035,7 +2055,9 @@ export const useDeleteAction = (
 
     onMutate: (variables) => options?.onMutate?.(variables),
     onError: (error, variables, context) => options?.onError?.(error, variables, context),
+    onSettled: options?.onSettled,
     onSuccess: (_data, variables, context) => {
+      invalidateAssistantDetails(queryClient, variables.endpoint, variables.assistant_id);
       let domain: string | undefined = '';
       queryClient.setQueryData<t.Action[]>([QueryKeys.actions], (prev) => {
         return prev?.filter((action) => {

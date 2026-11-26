@@ -1,3 +1,4 @@
+import jwt from 'jsonwebtoken';
 import { logger } from '@librechat/data-schemas';
 import type { IUser, OIDCTokens } from '@librechat/data-schemas';
 import { OPENID_EXPIRY_BUFFER_SECONDS } from '~/oauth/expiry';
@@ -155,6 +156,90 @@ export function isAccessTokenJwt(
   }
 
   return claims.scp != null || claims.scope != null;
+}
+
+/** Every audience the OpenID bearer verifier accepts: the client id plus each `OPENID_AUDIENCE` entry. */
+export function getOpenIDBearerAudiences(clientId?: string, audience?: string): string[] {
+  const configured = (audience ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return [...new Set([clientId, ...configured].filter((value): value is string => Boolean(value)))];
+}
+
+function decodeJwtClaims(token: string): jwt.JwtPayload | undefined {
+  const decoded = jwt.decode(token);
+  return decoded && typeof decoded === 'object' ? decoded : undefined;
+}
+
+/**
+ * Whether claims name an audience the OpenID bearer verifier accepts. An access token minted for
+ * another resource (Entra issues Microsoft Graph tokens to sign-in clients by default) is still
+ * time-valid, yet the verifier rejects it, so handing it out as the app token makes every protected
+ * request answer 401 and the client refresh in a loop. With no configured audience the verifier
+ * checks none, and neither does this.
+ */
+export function hasOpenIDBearerAudience(
+  claims: JwtTypeClaims | undefined,
+  audiences: readonly string[],
+): boolean {
+  if (!audiences.length) {
+    return true;
+  }
+  return audienceList(claims?.aud).some((audience) => audiences.includes(audience));
+}
+
+/**
+ * The access token as the app auth fallback, unless it is a JWT whose `aud` provably names none of
+ * the verifier's audiences. Opaque tokens keep the legacy fallback, since nothing can be read from them.
+ */
+export function getOpenIDAppAccessToken(
+  accessToken: string | undefined,
+  audiences: readonly string[],
+): string | undefined {
+  if (!accessToken) {
+    return undefined;
+  }
+  const claims = decodeJwtClaims(accessToken);
+  if (!claims || hasOpenIDBearerAudience(claims, audiences)) {
+    return accessToken;
+  }
+  return undefined;
+}
+
+export type ReusableOpenIDBearer = { token: string; type: 'id_token' | 'access_token' };
+
+/**
+ * Picks a cached session token the app can hand out again without an IdP refresh: the ID token,
+ * then the access token, each only while it outlives `expiryBufferSeconds`. The access token also
+ * has to carry an audience the bearer verifier accepts; otherwise the caller refreshes instead.
+ * Decode only: the tokens come from the trusted server-side session.
+ */
+export function selectReusableOpenIDBearer(
+  tokens: { idToken?: string; accessToken?: string } | undefined,
+  options: { audiences: readonly string[]; expiryBufferSeconds: number; nowSeconds?: number },
+): ReusableOpenIDBearer | null {
+  const now = options.nowSeconds ?? Math.floor(Date.now() / 1000);
+  const candidates: ReusableOpenIDBearer[] = [];
+  if (tokens?.idToken) {
+    candidates.push({ token: tokens.idToken, type: 'id_token' });
+  }
+  if (tokens?.accessToken) {
+    candidates.push({ token: tokens.accessToken, type: 'access_token' });
+  }
+
+  for (const candidate of candidates) {
+    const claims = decodeJwtClaims(candidate.token);
+    if (typeof claims?.exp !== 'number' || claims.exp <= now + options.expiryBufferSeconds) {
+      continue;
+    }
+    if (candidate.type === 'access_token' && !hasOpenIDBearerAudience(claims, options.audiences)) {
+      continue;
+    }
+    return candidate;
+  }
+
+  return null;
 }
 
 /**

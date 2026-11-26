@@ -82,7 +82,7 @@ export default function EditFiles({
                 onDelete={remove}
                 removeLabel={removeLabel}
                 removeDisabled={disabled}
-                buttonClassName="h-[58px]"
+                buttonClassName={file.textPreview ? undefined : 'h-[58px]'}
               />
             )}
           </li>

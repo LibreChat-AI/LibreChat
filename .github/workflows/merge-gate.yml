@@ -1,0 +1,89 @@
+# Companion to the gate jobs that dev's merge queue requires as status checks.
+#
+# Every workflow listed in .github/scripts/merge-gate.mjs ends in a gate job named after its
+# context (backend, frontend, e2e, integration, cache-integration, static). The gate depends on
+# every other job of its workflow, so it reports whenever that workflow runs, and those six
+# names are the only required checks.
+#
+# Pull requests: the gated workflows are path-filtered, and a workflow that does not start never
+# reports, which would leave its required check pending forever. `plan` asks GitHub which of
+# them started for the head commit, and `placeholder` reports the context of each one that did
+# not. A suite that did start is never given a placeholder, so a context is reported by exactly
+# one job: the suite's own gate when the suite runs, this workflow when it does not.
+#
+# Merge groups: `merge_group` has no path filter, so every gated workflow starts and reports its
+# own gate, and no placeholder is needed. A rebuilt group gets a new branch name, so concurrency
+# groups cannot tie its runs to the ones it replaces; `supersede` cancels runs whose queue
+# branch is gone.
+name: Merge Gate
+
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: merge-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Plan path-filtered suites
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      contexts: ${{ steps.plan.outputs.contexts }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: List the gated suites that did not start
+        id: plan
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node .github/scripts/merge-gate.mjs plan
+
+  # The name has to be the bare context: it is what the ruleset matches.
+  placeholder:
+    name: ${{ matrix.context }}
+    needs: plan
+    if: needs.plan.outputs.contexts != '' && needs.plan.outputs.contexts != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    strategy:
+      matrix:
+        context: ${{ fromJSON(needs.plan.outputs.contexts) }}
+    steps:
+      - name: Report the gate of a suite that path filters skipped
+        env:
+          CONTEXT: ${{ matrix.context }}
+        run: echo "No workflow reports \"$CONTEXT\" for this commit; the merge group runs it in full."
+
+  supersede:
+    name: Cancel superseded merge group runs
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Cancel runs whose queue branch is gone
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/merge-gate.mjs supersede

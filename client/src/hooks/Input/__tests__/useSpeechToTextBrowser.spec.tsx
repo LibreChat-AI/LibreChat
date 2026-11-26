@@ -16,6 +16,8 @@ let mockFinalTranscript = '';
 /** Delivers a recognizer result the way the library does: a reducer update that
  *  reaches the consumer only on React's next commit. */
 let mockDeliverFinal: (transcript: string) => void = () => undefined;
+/** Whether the hook last asked the library to collect what the page's recognizer hears. */
+let mockTranscribing: boolean | undefined;
 
 jest.mock('react-speech-recognition', () => {
   const { useState } = jest.requireActual<typeof import('react')>('react');
@@ -26,9 +28,10 @@ jest.mock('react-speech-recognition', () => {
       stopListening: (...args: unknown[]) => mockStopListening(...args),
       abortListening: (...args: unknown[]) => mockAbortListening(...args),
     },
-    useSpeechRecognition: () => {
+    useSpeechRecognition: (options?: { transcribing?: boolean }) => {
       const [finalTranscript, setFinalTranscript] = useState(mockFinalTranscript);
       mockDeliverFinal = setFinalTranscript;
+      mockTranscribing = options?.transcribing;
       return {
         listening: true,
         finalTranscript,
@@ -112,6 +115,83 @@ describe('useSpeechToTextBrowser', () => {
     expect(onTranscriptionComplete).not.toHaveBeenCalled();
     expect(mockAbortListening).toHaveBeenCalled();
     expect(mockResetTranscript).toHaveBeenCalled();
+  });
+
+  /* The recognizer is one per page and reports to every composer on it. With a second
+     composer mounted (a conversation open beside the chat), a take started in one must not be
+     written into the other, sent from it, or shown there as recording. */
+  it('collects a take, and shows itself listening, only in the composer that started it', async () => {
+    const { result } = setup();
+
+    /** Another composer is recording: the page's recognizer is listening, this one is not. */
+    expect(mockTranscribing).toBe(false);
+    expect(result.current.isListening).toBe(false);
+
+    act(() => {
+      result.current.startRecording(7);
+    });
+    expect(mockTranscribing).toBe(true);
+    expect(result.current.isListening).toBe(true);
+
+    await act(async () => {
+      await result.current.stopRecording();
+    });
+    expect(mockTranscribing).toBe(false);
+    expect(result.current.isListening).toBe(false);
+
+    act(() => {
+      result.current.startRecording(8);
+    });
+    expect(mockTranscribing).toBe(true);
+    act(() => {
+      result.current.abortRecording();
+    });
+    expect(mockTranscribing).toBe(false);
+  });
+
+  /* Ownership is exclusive, not only per composer: with one composer recording, a second one
+     that starts must not become an owner too, or both would write the same speech down. */
+  it('refuses to start while another composer is recording, and can once that one is done', async () => {
+    const speech = jest.requireMock('react-speech-recognition').default as {
+      startListening: jest.Mock;
+    };
+    const first = setup();
+    const second = setup();
+    act(() => {
+      first.result.current.startRecording(1);
+    });
+    expect(speech.startListening).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      second.result.current.startRecording(2);
+    });
+    expect(speech.startListening).toHaveBeenCalledTimes(1);
+    expect(second.result.current.isListening).toBe(false);
+    expect(first.result.current.isListening).toBe(true);
+
+    await act(async () => {
+      await first.result.current.stopRecording();
+    });
+    act(() => {
+      second.result.current.startRecording(3);
+    });
+    expect(speech.startListening).toHaveBeenCalledTimes(2);
+    expect(second.result.current.isListening).toBe(true);
+  });
+
+  /* The recognizer outlives any one composer. One that goes away mid-take has to end the take,
+     or the microphone stays open with nothing on the page showing it or able to stop it. */
+  it('ends its own take when the composer goes away, and leaves one it does not own', () => {
+    const idle = setup();
+    idle.unmount();
+    expect(mockAbortListening).not.toHaveBeenCalled();
+
+    const recording = setup();
+    act(() => {
+      recording.result.current.startRecording(9);
+    });
+    recording.unmount();
+    expect(mockAbortListening).toHaveBeenCalledTimes(1);
   });
 
   /* `abortListening` is optional on the recogniser module, and stopping still

@@ -31,11 +31,6 @@ export default function SiblingSwitch({
     setSiblingIdx?.(siblingIdx + 1);
   };
 
-  const buttonStyle = cn(
-    'hover-button',
-    'group-hover:visible group-focus-visible:visible group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:visible group-[.final-completion]:visible',
-  );
-
   return siblingCount > 1 ? (
     <nav
       className={cn(
@@ -46,7 +41,6 @@ export default function SiblingSwitch({
     >
       <Button
         variant="message-action"
-        className={buttonStyle}
         onClick={previous}
         disabled={siblingIdx == 0}
         aria-label={localize('com_ui_previous_sibling')}
@@ -66,7 +60,6 @@ export default function SiblingSwitch({
       </span>
       <Button
         variant="message-action"
-        className={buttonStyle}
         onClick={next}
         disabled={siblingIdx == siblingCount - 1}
         aria-label={localize('com_ui_next_sibling')}

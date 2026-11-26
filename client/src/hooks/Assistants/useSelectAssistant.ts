@@ -34,6 +34,7 @@ export default function useSelectAssistant(endpoint: AssistantsEndpoint) {
         newConversation({
           template: currentConvo,
           preset: template as Partial<TPreset>,
+          retarget: true,
         });
         return;
       }
@@ -41,6 +42,7 @@ export default function useSelectAssistant(endpoint: AssistantsEndpoint) {
       newConversation({
         template: { ...(template as Partial<TConversation>) },
         preset: template as Partial<TPreset>,
+        retarget: true,
       });
     },
     [endpoint, assistantMap, conversation, getDefaultConversation, newConversation],

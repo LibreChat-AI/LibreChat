@@ -61,7 +61,7 @@ describe('durable browser setup store', () => {
   });
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongo.stop();
+    await mongo?.stop();
   });
 
   test('constructing a store does not launch database work outside an awaited boundary', async () => {

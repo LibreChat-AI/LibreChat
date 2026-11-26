@@ -1,4 +1,7 @@
 import { Constants, StepEvents } from 'librechat-data-provider';
+import type { TSubmission } from 'librechat-data-provider';
+import type { ResumableUsage } from './host';
+import type { StepEvent } from '../reducer';
 
 const getToolCallName = (toolCall: unknown): unknown =>
   toolCall != null && typeof toolCall === 'object' && 'name' in toolCall
@@ -74,3 +77,24 @@ export const getStepEventId = (event: unknown): string | undefined => {
     ? result.id
     : undefined;
 };
+
+/**
+ * Tells the usage writers the id a run step gives the turn's reply. The reply is drawn under a
+ * placeholder id until then, and usage is bound to the submission that still names the
+ * placeholder; without this the reply being written stops counting as the one in progress the
+ * moment its row is renamed, and what a reader sees of its usage stands still until it ends.
+ */
+export function nameStepResponse(
+  usage: Pick<ResumableUsage, 'nameResponse'> | undefined,
+  event: StepEvent,
+  submission: TSubmission,
+): void {
+  if (event.event !== StepEvents.ON_RUN_STEP) {
+    return;
+  }
+  const { runId } = event.data;
+  if (!runId || runId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID) {
+    return;
+  }
+  usage?.nameResponse?.(runId, submission);
+}

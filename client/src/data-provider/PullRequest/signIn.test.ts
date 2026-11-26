@@ -5,6 +5,8 @@ import {
   PULL_REQUEST_CONNECT_POLL_MS,
   PULL_REQUEST_SETTLED_GRACE_MS,
   announceOAuthSettled,
+  watchOAuthSettlements,
+  OAUTH_SETTLED_CHANNEL,
   stopPullRequestSignIns,
   pullRequestSignInSession,
   watchPullRequestSignIn,
@@ -504,5 +506,72 @@ describe('watchPullRequestSignIn', () => {
       announceOAuthSettled({ outcome: 'failed' });
       expect(await askedAfter(10 * MINUTE)).toBeGreaterThan(0);
     });
+  });
+});
+
+describe('OAuth settlement transports', () => {
+  const original = globalThis.BroadcastChannel;
+  afterEach(() => {
+    Object.defineProperty(globalThis, 'BroadcastChannel', { configurable: true, value: original });
+    jest.restoreAllMocks();
+  });
+  it('publishes transient storage metadata without requiring BroadcastChannel or an opener', () => {
+    Object.defineProperty(globalThis, 'BroadcastChannel', { configurable: true, value: undefined });
+    const write = jest.spyOn(Storage.prototype, 'setItem');
+    announceOAuthSettled({ outcome: 'succeeded', flowId: 'flow-a' });
+    expect(write).toHaveBeenCalledWith(OAUTH_SETTLED_CHANNEL, expect.any(String));
+    expect(JSON.parse(write.mock.calls[0][1])).toMatchObject({
+      outcome: 'succeeded',
+      flowId: 'flow-a',
+    });
+    expect(localStorage.getItem(OAUTH_SETTLED_CHANNEL)).toBeNull();
+  });
+  it('delivers a notice once across both transports and removes its listeners', () => {
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: FakeBroadcastChannel,
+    });
+    const received = jest.fn();
+    const stop = watchOAuthSettlements(received);
+    const write = jest.spyOn(Storage.prototype, 'setItem');
+    announceOAuthSettled({ outcome: 'succeeded', flowId: 'flow-a' });
+    const notification = write.mock.calls.find(([key]) => key === OAUTH_SETTLED_CHANNEL)![1];
+    window.dispatchEvent(
+      new StorageEvent('storage', { key: OAUTH_SETTLED_CHANNEL, newValue: notification }),
+    );
+    expect(received).toHaveBeenCalledTimes(1);
+    stop();
+    window.dispatchEvent(
+      new StorageEvent('storage', {
+        key: OAUTH_SETTLED_CHANNEL,
+        newValue: JSON.stringify({ outcome: 'failed', flowId: 'flow-b' }),
+      }),
+    );
+    expect(received).toHaveBeenCalledTimes(1);
+  });
+  it('ignores malformed notices and tolerates browser transport policy failures', () => {
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: class {
+        constructor() {
+          throw new Error('blocked');
+        }
+      },
+    });
+    const received = jest.fn();
+    const stop = watchOAuthSettlements(received);
+    for (const newValue of [
+      'not json',
+      JSON.stringify({ outcome: 'succeeded', flowId: 1 }),
+      JSON.stringify({ outcome: 'succeeded', flowId: null }),
+      JSON.stringify({ outcome: 'unknown' }),
+    ])
+      window.dispatchEvent(new StorageEvent('storage', { key: OAUTH_SETTLED_CHANNEL, newValue }));
+    expect(received).not.toHaveBeenCalled();
+    jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    expect(() => announceOAuthSettled({ outcome: 'failed', flowId: 'flow-a' })).not.toThrow();
+    stop();
   });
 });

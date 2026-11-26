@@ -23,7 +23,7 @@ export type NewConversationParams = {
 };
 
 /** Options accepted by {@link ChatConversationContract.newConversation}: the shared params plus
- *  the two flags only the root pane's generator honors. */
+ *  the flags only the root pane's generator honors. */
 export type NewConversationOptions = NewConversationParams & {
   /** Skips focusing the composer after the new conversation renders. */
   disableFocus?: boolean;
@@ -31,6 +31,12 @@ export type NewConversationOptions = NewConversationParams & {
    * metadata arriving late. The user never left that composer, so its draft identity and its
    * in-flight attachments outlive the refresh. */
   keepComposerState?: boolean;
+  /** Set when a model, endpoint, spec, preset or agent selection changes what the open chat is
+   * sent to, rather than starting another (New Chat). An unsent chat keeps its composer through
+   * it, attachments and draft identity included, unless a run is in flight or the switch crosses
+   * into or out of an assistants endpoint, whose uploads live in that provider's storage. Unlike
+   * `keepComposerState`, the call is the user's own, so it still supersedes a pending navigation. */
+  retarget?: boolean;
 };
 
 /** Conversation identity and the per-pane settings attached to it. */
@@ -43,6 +49,12 @@ export type ChatConversationContract = {
   setConversation: Dispatch<SetStateAction<TConversation | null>>;
   /** Starts a fresh conversation in this pane from a template and/or preset. */
   newConversation: (options?: NewConversationOptions) => void;
+  /**
+   * Whether the composer may offer a change of model, endpoint or agent though the pane is not
+   * main chat's: `newConversation` then changes the conversation the pane holds, in place, and
+   * takes nothing that would start another. Main chat's pane offers every choice without it.
+   */
+  retargets?: boolean;
   /** The preset applied to this pane, if any. */
   preset: TPreset | null;
   /** Replaces the preset applied to this pane. */
@@ -112,12 +124,31 @@ export type ChatSubmissionContract = {
   handleRegenerate: (e: MouseEvent<HTMLButtonElement>) => void;
   /** Button handler that continues the latest response from where it stopped. */
   handleContinue: (e: MouseEvent<HTMLButtonElement>) => void;
+  /**
+   * The reader takes no turn in this conversation, as in one they follow rather than drive: its
+   * rows offer no rerun, edit or continue, and a recovery prompt is explained rather than offered.
+   * Absent for a chat the reader drives.
+   */
+  readOnly?: boolean;
 };
 
 /** Stopping an in-flight turn. AI SDK: `stop`. */
 export type ChatAbortContract = {
   /** Aborts the in-flight generation for this pane's conversation. AI SDK: `stop`. */
   stopGenerating: () => Promise<void>;
+  /**
+   * Whether a stop is taken whenever a reply is on its way. A pane's stream session can only
+   * stop a generation once its start has named it, so its composer waits for that; a chat that
+   * stops through a core `Chat` finds the generation itself and needs no such wait. Absent for
+   * the former.
+   */
+  stopsUnnamed?: boolean;
+  /**
+   * Whether the chat runs what the composer does to a run in flight: it publishes the generation
+   * a steer addresses and each run's end, and sends what was queued behind it. Main chat's pane
+   * does by being the pane with the stream session; another chat says so here.
+   */
+  steers?: boolean;
   /** Button handler around `stopGenerating`. AI SDK: `stop`. */
   handleStopGenerating: (e: MouseEvent<HTMLButtonElement>) => void;
   /** Whether a stop just happened and the view should hold its scroll position. */
@@ -143,7 +174,7 @@ export type ChatViewContract = {
   /** Whether message feedback controls are enabled by the startup config. */
   feedbackEnabled: boolean;
   /**
-   * The app's tool outcome rules for viewing one message as a `UIMessage`, given the
+   * The tool outcome rules for viewing one message as a `UIMessage`, given the
    * attachments that arrived for it outside the message cache. Stable across renders.
    */
   getMappingOptions: (live: TAttachment[] | undefined) => UIMappingOptions;

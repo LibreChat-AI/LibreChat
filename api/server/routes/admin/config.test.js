@@ -30,7 +30,7 @@ const mockDb = {
   listAllConfigs: jest.fn(),
   findConfigByPrincipal: jest.fn(),
   writeConfigDocument: jest.fn(),
-  unsetConfigField: jest.fn(),
+  unsetConfigFieldTracked: jest.fn(),
   deleteConfig: jest.fn(),
   toggleConfigActiveTracked: jest.fn(),
   recordAuditEntry: jest.fn(),

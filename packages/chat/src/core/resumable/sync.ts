@@ -8,7 +8,6 @@ import {
 } from 'librechat-data-provider';
 import type {
   Agents,
-  TMessage,
   ChatSyncFrame,
   TPendingSteer,
   TTokenUsageEvent,
@@ -20,10 +19,9 @@ import type {
 } from 'librechat-data-provider';
 import type { StreamContext } from './terminal';
 import type { StepEvent } from '../reducer';
-import { getResumeMessageIndexes, mergeResumeMessages } from './placement';
 import { getStepEventId, isOAuthStepEvent } from './events';
 import { buildResumeEventSubmission } from './resume';
-import { preferDefinedString } from './messages';
+import { placeResumedResponse } from './placement';
 
 /**
  * A resume's snapshot of the run: adopts the server's identity for the turn, rebuilds the
@@ -40,16 +38,9 @@ export function handleSync(ctx: StreamContext, data: ChatSyncFrame): void {
   });
 
   host.pane.renewActiveRun();
-  /** Keep the current run's preliminary id long enough to replace that optimistic
-   *  row in place if this snapshot assigns its durable response id. */
-  const preliminaryResponseMessageId = sub.submission.initialResponse?.messageId;
-  const currentUserMessageId = sub.submission.userMessage?.messageId;
-  const preliminaryUserMessageId =
-    currentUserMessageId &&
-    (sub.submission.initialResponse?.parentMessageId === currentUserMessageId ||
-      preliminaryResponseMessageId === `${currentUserMessageId}_`)
-      ? currentUserMessageId
-      : undefined;
+  /** Kept so the snapshot can replace this run's optimistic rows in place if it assigns the
+   *  turn its durable ids. */
+  const previous = sub.submission;
   const resumeSubmission = buildResumeEventSubmission(
     sub.submission,
     sub.userMessage,
@@ -98,112 +89,43 @@ export function handleSync(ctx: StreamContext, data: ChatSyncFrame): void {
 
   if (data.resumeState?.aggregatedContent && sub.userMessage?.messageId) {
     const messages = host.messages.get() ?? [];
-    const userMsgId = sub.userMessage.messageId;
-    const resumedContent = resumeSubmission.initialResponse.content;
-    const hasResumedContent = (resumedContent?.length ?? 0) > 0;
-    const responseId = resumeSubmission.initialResponse.messageId;
-    const messageIndexes = getResumeMessageIndexes(
+    const placement = placeResumedResponse({
       messages,
-      userMsgId,
-      responseId,
-      preliminaryUserMessageId,
-      preliminaryResponseMessageId,
-    );
-    const responseIdx =
-      messageIndexes.responseIndex >= 0
-        ? messageIndexes.responseIndex
-        : messageIndexes.preliminaryResponseIndex;
+      submission: resumeSubmission,
+      userMessage: sub.userMessage,
+      resumeState: data.resumeState,
+      previous,
+    });
+    const { response, responseIndex, preservedLoadedContent } = placement;
 
     host.logger.log('ResumableSSE', 'SYNC update', {
-      userMsgId,
-      responseId,
-      responseIdx,
-      foundMessageId: responseIdx >= 0 ? messages[responseIdx]?.messageId : null,
+      userMsgId: sub.userMessage.messageId,
+      responseId: response.messageId,
+      responseIdx: responseIndex,
+      foundMessageId: responseIndex >= 0 ? messages[responseIndex]?.messageId : null,
       messagesCount: messages.length,
       aggregatedContentLength: data.resumeState.aggregatedContent?.length,
+      preservedExistingContent: preservedLoadedContent,
     });
 
-    if (responseIdx >= 0) {
-      const oldContent = messages[responseIdx]?.content;
-      /** An EMPTY resume snapshot is not authoritative over content we already loaded
-       *  for the SAME generation-owned response: assigning it would erase that content
-       *  and leave a bare cursor. Require an existing content array so it is never
-       *  swapped for `undefined`. */
-      const preserveLoadedContent =
-        !hasResumedContent && Array.isArray(oldContent) && oldContent.length > 0;
-      /**
-       * Replacing the response with `aggregatedContent` drops the
-       * prefix an edited resubmission had retained: the snapshot is
-       * completion-local, indexed from zero. Every later event must
-       * therefore stop offsetting, or it writes past the end of the
-       * shorter array: for an activity label that means the fill
-       * misses its own reservation and the placeholder never
-       * resolves. Preserving `oldContent` keeps the prefix, and with
-       * it the offset. Run steps and labels both read this.
-       */
-      if (!preserveLoadedContent) {
-        run.editPrefixCleared = true;
-      }
-      const responseMessage = {
-        ...resumeSubmission.initialResponse,
-        ...messages[responseIdx],
-        messageId: responseId,
-        parentMessageId: userMsgId,
-        content: preserveLoadedContent ? oldContent : resumedContent,
-        sender: messages[responseIdx]?.sender ?? resumeSubmission.initialResponse.sender,
-        iconURL: preferDefinedString(
-          messages[responseIdx]?.iconURL,
-          resumeSubmission.initialResponse.iconURL ?? data.resumeState.iconURL,
-        ),
-        model: preferDefinedString(
-          messages[responseIdx]?.model,
-          resumeSubmission.initialResponse.model ?? data.resumeState.model,
-        ),
-      } as TMessage;
-      const updated = mergeResumeMessages(
-        messages,
-        sub.userMessage,
-        responseMessage,
-        messageIndexes,
-        resumeSubmission.compact === true,
-      );
-      host.logger.log('ResumableSSE', 'SYNC updating message', {
-        messageId: responseMessage.messageId,
-        oldContentLength: Array.isArray(oldContent) ? oldContent.length : 0,
-        newContentLength: data.resumeState.aggregatedContent?.length,
-        preservedExistingContent: preserveLoadedContent,
-      });
-      host.messages.set(updated);
-      host.events.resetContentHandler();
-      host.events.syncStepMessage(responseMessage);
-      host.logger.log('ResumableSSE', 'SYNC complete, handlers synced');
-    } else {
-      /** Same reasoning as the matched branch above: this row is
-       *  built straight from the server's completion-local
-       *  `aggregatedContent`, so it holds no retained prefix and
-       *  later steps and labels must stop offsetting. Setting it
-       *  only in the matched branch left this path adding an offset
-       *  to indices that were already absolute. */
+    /**
+     * Replacing the response with `aggregatedContent` drops the
+     * prefix an edited resubmission had retained: the snapshot is
+     * completion-local, indexed from zero. Every later event must
+     * therefore stop offsetting, or it writes past the end of the
+     * shorter array: for an activity label that means the fill
+     * misses its own reservation and the placeholder never
+     * resolves. Preserving the loaded content keeps the prefix, and
+     * with it the offset. Run steps and labels both read this. A row
+     * built fresh from the snapshot holds no retained prefix either.
+     */
+    if (!preservedLoadedContent) {
       run.editPrefixCleared = true;
-      const newMessage = {
-        ...resumeSubmission.initialResponse,
-        messageId: responseId,
-        parentMessageId: userMsgId,
-        content: resumedContent,
-        isCreatedByUser: false,
-      } as TMessage;
-      host.messages.set(
-        mergeResumeMessages(
-          messages,
-          sub.userMessage,
-          newMessage,
-          messageIndexes,
-          resumeSubmission.compact === true,
-        ),
-      );
-      host.events.resetContentHandler();
-      host.events.syncStepMessage(newMessage);
     }
+    host.messages.set(placement.messages);
+    host.events.resetContentHandler();
+    host.events.syncStepMessage(response);
+    host.logger.log('ResumableSSE', 'SYNC complete, handlers synced');
   }
 
   for (const prompt of pendingOAuthPrompts) {

@@ -7,12 +7,17 @@ jest.mock('@librechat/data-schemas', () => ({
   },
 }));
 
+jest.mock('~/models', () => ({
+  getUserKey: jest.fn(),
+  getUserKeyValues: jest.fn(),
+}));
+
 jest.mock('~/server/services/Config', () => ({
   loadDefaultModels: (...args) => mockLoadDefaultModels(...args),
   loadConfigModels: (...args) => mockLoadConfigModels(...args),
 }));
 
-const { loadModels } = require('./ModelController');
+const { loadModels, getEndpointModelsConfig } = require('./ModelController');
 
 function deferred() {
   let resolve;
@@ -53,5 +58,24 @@ describe('loadModels', () => {
       anthropic: ['default-anthropic'],
       custom: ['custom-model'],
     });
+  });
+});
+
+describe('getEndpointModelsConfig', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('loads only the requested endpoint through the wired loaders', async () => {
+    const req = { user: { id: 'user-1' }, config: { endpoints: {} }, query: {} };
+    mockLoadConfigModels.mockResolvedValue({ Custom: ['custom-model'] });
+
+    await expect(getEndpointModelsConfig(req, 'Custom')).resolves.toEqual({
+      Custom: ['custom-model'],
+    });
+
+    expect(mockLoadConfigModels).toHaveBeenCalledTimes(1);
+    expect(mockLoadConfigModels).toHaveBeenCalledWith(req, 'Custom');
+    expect(mockLoadDefaultModels).not.toHaveBeenCalled();
   });
 });

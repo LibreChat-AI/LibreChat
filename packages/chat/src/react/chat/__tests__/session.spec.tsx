@@ -1,13 +1,14 @@
 /**
  * @jest-environment jsdom
  */
+import { useSyncExternalStore } from 'react';
 import { getDefaultStore } from 'jotai';
-import { render } from '@testing-library/react';
+import { act, render } from '@testing-library/react';
 import type { TConversation, TMessage, TSubmission } from 'librechat-data-provider';
 import type { ChatHost, ChatMessagesQuery } from '../host';
 import type { ChatContract } from '../contract';
 import { submissionByIndex, clearSubmissions, isSubmittingFamily } from '../../submission';
-import { ChatSessionProvider } from '../session';
+import { ChatSessionProvider, useChatSessionMessages } from '../session';
 import { useChatContext } from '../context';
 import { ChatHostProvider } from '../host';
 
@@ -86,8 +87,25 @@ describe('ChatSessionProvider', () => {
     const { host, useMessages } = createHost({ messages, isLoading: false, isFetching: false });
     const pane = renderSession(host);
 
-    expect(useMessages).toHaveBeenCalledWith('convo-1', { isStreaming: false });
+    expect(useMessages).toHaveBeenCalledWith('convo-1', { isStreaming: false, messages: true });
     expect(pane).toHaveBeenLastCalledWith({ messages, isLoading: false });
+  });
+
+  it('loads history but defers resume until the host has the saved record', () => {
+    const { host, useMessages } = createHost({
+      messages: null,
+      isLoading: false,
+      isFetching: false,
+    });
+    render(
+      <ChatHostProvider host={host}>
+        <ChatSessionProvider conversationId="convo-1" historyReady={false}>
+          {() => null}
+        </ChatSessionProvider>
+      </ChatHostProvider>,
+    );
+    expect(useMessages).toHaveBeenCalledWith('convo-1', { isStreaming: false, messages: true });
+    expect(mockUseResumeOnLoad).toHaveBeenLastCalledWith('convo-1', expect.any(Function), 0, false);
   });
 
   it('asks the host for a streaming-aware query while the pane submits', () => {
@@ -95,7 +113,7 @@ describe('ChatSessionProvider', () => {
     const { host, useMessages } = createHost({ messages, isLoading: false, isFetching: false });
     renderSession(host);
 
-    expect(useMessages).toHaveBeenLastCalledWith('convo-1', { isStreaming: true });
+    expect(useMessages).toHaveBeenLastCalledWith('convo-1', { isStreaming: true, messages: true });
     getDefaultStore().set(isSubmittingFamily(1), false);
   });
 
@@ -148,5 +166,111 @@ describe('ChatSessionProvider', () => {
     renderSession(host);
 
     expect(order.slice(0, 5)).toEqual(['messages', 'contract', 'stream', 'resume', 'drain']);
+  });
+
+  describe('with its pane given as an element', () => {
+    const idle = () => () => undefined;
+    /** A host whose messages change the way a streamed reply changes them. */
+    function createLiveHost() {
+      let query: ChatMessagesQuery = { messages, isLoading: false, isFetching: false };
+      const listeners = new Set<() => void>();
+      const subscribe = (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      };
+      const asked = jest.fn();
+      /** As an app's host does: a caller that wants no messages is not told when they change. */
+      const status: ChatMessagesQuery = { messages: null, isLoading: false, isFetching: false };
+      const useMessages = (
+        id: string | undefined,
+        options: { messages?: boolean },
+      ): ChatMessagesQuery => {
+        asked(id, options);
+        const reads = options.messages !== false;
+        return useSyncExternalStore(reads ? subscribe : idle, () => (reads ? query : status));
+      };
+      const write = (next: TMessage[]) =>
+        act(() => {
+          query = { ...query, messages: next };
+          listeners.forEach((listener) => listener());
+        });
+      return { host: { useMessages } as unknown as ChatHost, write, asked };
+    }
+
+    it('redraws what reads the messages on every change, and neither the pane nor the session', () => {
+      const { host, write, asked } = createLiveHost();
+      const drawn = { pane: 0, reader: [] as Array<TMessage[] | null> };
+      function Reader() {
+        drawn.reader.push(useChatSessionMessages('convo-1', 1).messages);
+        return null;
+      }
+      function Pane() {
+        drawn.pane += 1;
+        return <Reader />;
+      }
+      render(
+        <ChatHostProvider host={host}>
+          <ChatSessionProvider index={1} conversationId="convo-1">
+            <Pane />
+          </ChatSessionProvider>
+        </ChatHostProvider>,
+      );
+      expect(drawn.pane).toBe(1);
+      expect(drawn.reader[drawn.reader.length - 1]).toBe(messages);
+      /** The session loads the conversation and asks only whether it is loading; the reader
+       *  follows that load and starts none. */
+      expect(asked).toHaveBeenCalledWith('convo-1', { isStreaming: false, messages: false });
+      expect(asked).toHaveBeenCalledWith('convo-1', { isStreaming: false, enabled: false });
+      const sessions = mockUseChatHelpers.mock.calls.length;
+
+      const longer = [...messages, { messageId: 'm-2' } as TMessage];
+      write(longer);
+      write([...longer, { messageId: 'm-3' } as TMessage]);
+
+      /** No session hook ran again: nothing the session reads changed. */
+      expect(mockUseChatHelpers.mock.calls.length).toBe(sessions);
+      expect(drawn.reader[drawn.reader.length - 1]).toHaveLength(3);
+      expect(drawn.pane).toBe(1);
+    });
+
+    it('has the reader say the same of the pane’s stream as the session does', () => {
+      getDefaultStore().set(isSubmittingFamily(1), true);
+      const { host, asked } = createLiveHost();
+      function Reader() {
+        useChatSessionMessages('convo-1', 1);
+        return null;
+      }
+      render(
+        <ChatHostProvider host={host}>
+          <ChatSessionProvider index={1} conversationId="convo-1">
+            <Reader />
+          </ChatSessionProvider>
+        </ChatHostProvider>,
+      );
+
+      expect(asked).toHaveBeenCalledWith('convo-1', { isStreaming: true, messages: false });
+      expect(asked).toHaveBeenCalledWith('convo-1', { isStreaming: true, enabled: false });
+      expect(asked).not.toHaveBeenCalledWith(
+        'convo-1',
+        expect.objectContaining({ isStreaming: false }),
+      );
+      getDefaultStore().set(isSubmittingFamily(1), false);
+    });
+
+    it('still calls a pane given as a function with the messages on every change', () => {
+      const { host, write } = createLiveHost();
+      const pane = jest.fn(() => null);
+      render(
+        <ChatHostProvider host={host}>
+          <ChatSessionProvider index={1} conversationId="convo-1">
+            {pane}
+          </ChatSessionProvider>
+        </ChatHostProvider>,
+      );
+      const longer = [...messages, { messageId: 'm-2' } as TMessage];
+      write(longer);
+
+      expect(pane).toHaveBeenLastCalledWith({ messages: longer, isLoading: false });
+    });
   });
 });

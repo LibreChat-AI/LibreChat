@@ -1,4 +1,3 @@
-import { RefObject } from 'react';
 import { isEphemeralAgentId } from 'librechat-data-provider';
 import type {
   TOptions,
@@ -7,6 +6,7 @@ import type {
   PaneOptionSettings,
   MessageAudioProps,
   NewConversationParams,
+  NewConversationOptions,
 } from '@librechat/chat/react';
 import type { UseMutationResult } from '@tanstack/react-query';
 import type { MessageIconData } from '@librechat/chat/react';
@@ -27,15 +27,6 @@ export interface ConfigFieldDetail {
   /** Whether the field holds a secret and should be masked (defaults to masked when omitted). */
   sensitive?: boolean;
 }
-
-export type CodeBarProps = {
-  lang: string;
-  error?: boolean;
-  plugin?: boolean;
-  blockIndex?: number;
-  allowExecution?: boolean;
-  codeRef: RefObject<HTMLElement>;
-};
 
 export enum PromptsEditorMode {
   SIMPLE = 'simple',
@@ -70,7 +61,7 @@ export type LocalizeFunction = (
 
 export type ChatFormValues = { text: string };
 
-export { mainTextareaId } from '@librechat/chat';
+export { mainTextareaId, composerTextareaId } from '@librechat/chat';
 export const globalAudioId = 'global-audio';
 
 export type NavLink = {
@@ -270,45 +261,8 @@ export type TGenButtonProps = {
   onClick: TOnClick;
 };
 
-/**
- * Stable context object passed from non-memo'd wrapper components (Message, MessageContent)
- * to memo'd inner components (MessageRender, ContentRender) via props.
- *
- * This avoids subscribing to ChatContext inside memo'd components, which would bypass React.memo
- * and cause unnecessary re-renders when `isSubmitting` changes during streaming.
- *
- * The `isSubmitting` property should use a getter backed by a ref so it returns the current
- * value at call-time (for callback guards) without being a reactive dependency.
- */
-export type TMessageChatContext = {
-  ask: TAskFunction;
-  index: number;
-  regenerate: (message: t.TMessage, options?: { addedConvo?: t.TConversation | null }) => void;
-  conversation: t.TConversation | null;
-  /** Getter backed by a ref, for reads at call time. Rendering reads the row's
-   *  `latestMessageId` prop, which its comparator gates on the row's relation. */
-  readonly latestMessageId: string | undefined;
-  /** Getter backed by a ref, for reads at call time (see `latestMessageId`). */
-  readonly latestMessageDepth: number | undefined;
-  handleContinue: (e: React.MouseEvent<HTMLButtonElement>) => void;
-  /** Resolved once per chat from `interface.feedback`; false until the config loads */
-  feedbackEnabled: boolean;
-  /** Should be a getter backed by a ref — reads current value without triggering re-renders */
-  readonly isSubmitting: boolean;
-};
-
-export type TMessageProps = {
-  conversation?: t.TConversation | null;
-  messageId?: string | null;
-  message?: t.TMessage;
-  messagesTree?: t.TMessage[];
-  currentEditId: string | number | null;
-  isSearchView?: boolean;
-  siblingIdx?: number;
-  siblingCount?: number;
-  setCurrentEditId?: React.Dispatch<React.SetStateAction<string | number | null>> | null;
-  setSiblingIdx?: ((value: number) => void | React.Dispatch<React.SetStateAction<number>>) | null;
-};
+export type { TMessageChatContext } from '@librechat/chat/react';
+export type { TMessageProps } from '@librechat/chat/react';
 
 export type TMessageIcon = MessageIconData;
 
@@ -445,7 +399,7 @@ export type TLoginLayoutContext = {
   setHeaderText: React.Dispatch<React.SetStateAction<string>>;
 };
 
-export type ConvoGenerator = (params: NewConversationParams) => void | t.TConversation;
+export type ConvoGenerator = (params: NewConversationOptions) => void | t.TConversation;
 
 export type { TResData, TBaseResData, TFinalResData } from '@librechat/chat';
 
@@ -462,8 +416,8 @@ declare global {
        *  composer reserves the footer bar's band on its first frame. */
       hasConfiguredFooter?: boolean;
       /** The deployment's `interface.landingFooter`, so the welcome screen does
-       *  not paint a footer the config is about to remove. */
-      landingFooter?: boolean;
+       *  not paint a footer the config is about to remove or move. */
+      landingFooter?: boolean | 'composer';
     };
   }
 }

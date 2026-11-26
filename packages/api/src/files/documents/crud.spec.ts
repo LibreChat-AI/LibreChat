@@ -1,7 +1,24 @@
+import os from 'os';
 import path from 'path';
 import * as fs from 'fs';
 import JSZip from 'jszip';
+import { docx, grid, paragraph } from './docx.helper';
 import { parseDocument } from './crud';
+
+const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+/** Writes `body` out as a .docx, parses it as an upload and removes it again. */
+async function parseBody(body: string): Promise<string> {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'docx-'));
+  try {
+    const filePath = path.join(dir, 'upload.docx');
+    await fs.promises.writeFile(filePath, await docx(body));
+    const file = { originalname: 'upload.docx', path: filePath, mimetype: DOCX };
+    return (await parseDocument({ file: file as Express.Multer.File })).text;
+  } finally {
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  }
+}
 
 describe('Document Parser', () => {
   test('parseDocument() parses text from docx', async () => {
@@ -20,6 +37,22 @@ describe('Document Parser', () => {
       images: [],
       text: 'This is a sample DOCX file.\n\n',
     });
+  });
+
+  test('parseDocument() keeps each docx table row together as CSV', async () => {
+    const text = await parseBody(
+      paragraph('Intro paragraph.') +
+        grid(['Region', 'Product', 'Units'], ['EU', 'Cable', '12'], ['US', 'Hub', '7']) +
+        paragraph('Closing paragraph.'),
+    );
+
+    expect(text).toBe(
+      'Intro paragraph.\n\nRegion,Product,Units\nEU,Cable,12\nUS,Hub,7\n\nClosing paragraph.\n\n',
+    );
+  });
+
+  test('parseDocument() throws for a docx whose only content is an empty table', async () => {
+    await expect(parseBody(grid(['', ''], [' ', '']))).rejects.toThrow('No text found in document');
   });
 
   test('parseDocument() parses text from xlsx', async () => {

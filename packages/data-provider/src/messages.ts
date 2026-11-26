@@ -3,6 +3,16 @@ import type { TFile } from './types/files';
 import type { TMessage } from './types';
 import { ContentTypes } from './types/runs';
 
+/** File-library records enrich a message without overwriting its turn-specific display metadata. */
+export function mergeMessageFile(file: Partial<TFile>, stored?: TFile): Partial<TFile> {
+  if (!stored) return file;
+  const textPreview = file.textPreview ?? stored.textPreview;
+  const llmDeliveryPath = file.llmDeliveryPath ?? stored.llmDeliveryPath;
+  if (stored.textPreview === textPreview && stored.llmDeliveryPath === llmDeliveryPath)
+    return stored;
+  return { ...stored, textPreview, llmDeliveryPath };
+}
+
 /** A generated reasoning title describes the text as it existed at generation time.
  *  Any manual edit or merge into a different reasoning step invalidates the entire
  *  title revision domain while preserving unrelated content metadata. */
@@ -93,7 +103,9 @@ export function buildTree({
     };
 
     if (message.files && fileMap) {
-      extendedMessage.files = message.files.map((file) => fileMap[file.file_id ?? ''] ?? file);
+      extendedMessage.files = message.files.map((file) =>
+        mergeMessageFile(file, fileMap[file.file_id ?? '']),
+      );
     }
 
     messageMap[message.messageId] = extendedMessage;
@@ -281,6 +293,40 @@ export function isFileAttachment(
   attachment: NonNullable<TMessage['attachments']>[number] | null | undefined,
 ): boolean {
   return attachment != null && 'file_id' in attachment && isFileId(attachment.file_id);
+}
+
+/**
+ * The ids of the stored files a message references, in every shape a later turn collects them
+ * from: uploads, file-backed attachments, and file references inside its content.
+ */
+export function messageFileIds(
+  message: Pick<TMessage, 'files' | 'attachments' | 'content'>,
+): string[] {
+  const ids: string[] = [];
+  const add = (value: unknown): void => {
+    if (typeof value === 'string' && value !== '') {
+      ids.push(value);
+    }
+  };
+  for (const file of message.files ?? []) {
+    add(file?.file_id);
+  }
+  for (const attachment of message.attachments ?? []) {
+    add((attachment as { file_id?: unknown } | null)?.file_id);
+  }
+  for (const part of message.content ?? []) {
+    const locator = part as FileLocatorPart | null | undefined;
+    if (locator == null) {
+      continue;
+    }
+    add(locator.image_file?.file_id);
+    add(locator.file?.file_id);
+    add(locator.file_id);
+    for (const file of locator.files ?? []) {
+      add((file as { file_id?: unknown } | null)?.file_id);
+    }
+  }
+  return ids;
 }
 
 /**

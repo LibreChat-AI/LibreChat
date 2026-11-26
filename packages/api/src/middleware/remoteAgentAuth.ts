@@ -12,8 +12,8 @@ import {
   getLibreChatRolesForOpenIdSync,
   getOpenIdRolesForOpenIdSync,
   getOpenIdRoleSyncOptions,
+  writeIdpRoleChange,
   selectOpenIdRole,
-  recordIdpRoleChange,
 } from '../auth/openidRoleSync';
 import { clearOidcAccessTokenCache, extractBearerToken, verifyOidcAccessToken } from '../auth/oidc';
 import { findOpenIDUser, getOpenIdEmail, normalizeOpenIdIssuer } from '../auth/openid';
@@ -335,18 +335,19 @@ async function selectOpenIdRoleForOpenIdSync(
 
 async function updateResolvedUser(
   userResolution: Extract<UserResolution, { status: 'resolved' }>,
-  updateUser: RemoteAgentAuthDeps['updateUser'],
-): Promise<boolean> {
+  write: (userId: string, updateData: Partial<IUser>) => Promise<IUser | null>,
+): Promise<void> {
   if (Object.keys(userResolution.updateData).length === 0) {
-    return true;
+    return;
   }
 
-  const update = async () => updateUser(userResolution.user.id, userResolution.updateData);
+  const update = async () => write(userResolution.user.id, userResolution.updateData);
   if (userResolution.user.tenantId && getTenantId() !== userResolution.user.tenantId) {
-    return Boolean(await tenantStorage.run({ tenantId: userResolution.user.tenantId }, update));
+    await tenantStorage.run({ tenantId: userResolution.user.tenantId }, update);
+    return;
   }
 
-  return Boolean(await update());
+  await update();
 }
 
 /**
@@ -514,17 +515,20 @@ export function createRemoteAgentAuth({
         return;
       }
 
-      const persisted = await updateResolvedUser(userResolution, updateUser);
-      if (roleChanged && persisted) {
-        await recordIdpRoleChange({
-          recordAuditEntry,
-          userId: userResolution.user.id,
-          previousRole,
-          role: selectedRole,
-          source: 'remote_agent_oidc',
-          tenantId: userResolution.user.tenantId,
-        });
-      }
+      await updateResolvedUser(userResolution, (userId, update) =>
+        roleChanged
+          ? writeIdpRoleChange({
+              userId,
+              update,
+              observedRole: previousRole,
+              updateUser,
+              findUser,
+              recordAuditEntry,
+              source: 'remote_agent_oidc',
+              tenantId: userResolution.user.tenantId,
+            })
+          : updateUser(userId, update),
+      );
 
       req.user = userResolution.user;
       return continueWithAuthenticatedTenantContext(req, res, next);

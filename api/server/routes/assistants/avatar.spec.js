@@ -44,6 +44,7 @@ const png = Buffer.from(
 describe('assistant avatar multipart authorization', () => {
   let mongo;
   let directory;
+  let unlink;
   let Assistant;
   let app;
   let providers;
@@ -57,12 +58,15 @@ describe('assistant avatar multipart authorization', () => {
   const openai = { beta: { assistants: { retrieve, update } } };
 
   beforeAll(async () => {
+    unlink = jest.spyOn(fs, 'unlink');
     directory = await fs.mkdtemp(`${os.tmpdir()}/assistant-avatar-`);
     mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
     await mongoose.connect(mongo.getUri());
     mongoose.set('strictQuery', true);
     ({ Assistant, User, File } = createModels(mongoose));
     await User.init();
+    /** Lock acquisition gives a cold index build only 2s, so finish it before the first write. */
+    await mongoose.models.ResourceLock.createIndexes();
     const upload = multer({ dest: directory });
     app = express();
     // Authenticated user/config fixture; exercise real multipart parsing, route, guard and DB.
@@ -111,6 +115,7 @@ describe('assistant avatar multipart authorization', () => {
     await mongoose.disconnect();
     await mongo?.stop();
     await fs.rm(directory, { recursive: true, force: true });
+    unlink.mockRestore();
   });
 
   beforeEach(async () => {
@@ -164,6 +169,12 @@ describe('assistant avatar multipart authorization', () => {
     getStrategyFunctions.mockReturnValue({ deleteFile: deleteStoredFile });
   });
 
+  async function expectTemporaryFilesRemoved() {
+    // The HTTP response precedes the controller's asynchronous finally cleanup.
+    await Promise.all(unlink.mock.results.map(({ value }) => value));
+    expect(await fs.readdir(directory)).toEqual([]);
+  }
+
   async function upload(id, fields = {}, query = '', checkTemporaryFiles = true) {
     let req = request(app)
       .post(`/api/files/images/assistants/${id}/avatar${query}`)
@@ -176,7 +187,7 @@ describe('assistant avatar multipart authorization', () => {
       contentType: 'image/png',
     });
     if (checkTemporaryFiles) {
-      expect(await fs.readdir(directory)).toEqual([]);
+      await expectTemporaryFilesRemoved();
     }
     return response;
   }
@@ -567,7 +578,7 @@ describe('assistant avatar multipart authorization', () => {
     const second = upload('asst-attacker', {}, '', false);
     setTimeout(finishFirst, 5);
     const responses = await Promise.all([first, second]);
-    expect(await fs.readdir(directory)).toEqual([]);
+    await expectTemporaryFilesRemoved();
     expect(responses.map((response) => response.status)).toEqual([201, 201]);
     expect(providerAvatar).toBe(secondPath);
     const reference = await Assistant.findOne({ assistant_id: 'asst-attacker' }).lean();

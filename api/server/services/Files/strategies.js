@@ -7,6 +7,7 @@ const {
   uploadFileToS3,
   saveBufferToS3,
   getS3FileStream,
+  resolveStoredS3Key,
   getS3DownloadURL,
   deleteFileFromS3,
   getCloudFrontURL,
@@ -27,6 +28,7 @@ const {
   deleteFirebaseFile,
   saveBufferToFirebase,
   uploadFileToFirebase,
+  deleteFirebaseObject,
   uploadImageToFirebase,
   processFirebaseAvatar,
   getFirebaseFileStream,
@@ -89,6 +91,7 @@ const firebaseStrategy = () => ({
   processAvatar: processFirebaseAvatar,
   handleImageUpload: uploadImageToFirebase,
   getDownloadStream: getFirebaseFileStream,
+  deleteByPath: deleteFirebaseObject,
 });
 
 /**
@@ -121,6 +124,7 @@ const s3Strategy = () => ({
   processAvatar: processS3Avatar,
   handleImageUpload: uploadImageToS3,
   getDownloadStream: getS3FileStream,
+  getStorageKey: resolveStoredS3Key,
   getDownloadURL: getS3DownloadURL,
 });
 
@@ -138,6 +142,7 @@ const cloudfrontStrategy = () => ({
   processAvatar: processCloudFrontAvatar,
   handleImageUpload: uploadImageToCloudFront,
   getDownloadStream: getCloudFrontFileStream,
+  getStorageKey: resolveStoredS3Key,
   getDownloadURL: getCloudFrontDownloadURL,
 });
 

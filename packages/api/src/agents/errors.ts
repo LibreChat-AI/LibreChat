@@ -4,13 +4,22 @@ import {
   parseLangChainErrorCode,
   stripLangChainTroubleshootingUrl,
 } from 'librechat-data-provider';
-import { ScheduledMCPPolicyError } from '~/schedules/authorization/policy';
 import { MCPErrorCodes, isMCPInitializationError } from '~/mcp/errors';
+import { RunGrantPolicyError } from '~/agents/authority/policy';
 import { AGENT_TOOL_OPTIONS_LIMIT_EXCEEDED } from './options';
 import { OboTokenResolutionError } from '~/mcp/oauth/obo';
 
 export const AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE = 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE';
 export const AGENT_ATTACHMENT_LIMIT_EXCEEDED = 'AGENT_ATTACHMENT_LIMIT_EXCEEDED';
+
+export class AgentModelPolicyError extends Error {
+  readonly status = 403;
+  readonly code = 'model_not_allowed';
+
+  constructor() {
+    super('The configured agent model is unavailable for this request.');
+  }
+}
 
 const FATAL_AGENT_INITIALIZATION_CODES = new Set(
   [
@@ -62,7 +71,7 @@ export function isFatalAgentInitializationError(
 ): boolean {
   const code = getErrorCode(error);
   return (
-    error instanceof ScheduledMCPPolicyError ||
+    error instanceof RunGrantPolicyError ||
     isMCPInitializationError(error, options.signal) ||
     FATAL_AGENT_INITIALIZATION_CODES.has(code as string) ||
     (code === AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE && options.allowExpectedMCPFallback !== true)
@@ -96,14 +105,46 @@ export function getLangChainErrorCode(error: unknown): string | undefined {
   return parseLangChainErrorCode(message);
 }
 
+export interface LangChainErrorOptions {
+  /**
+   * Whether the provider's own message may ride along as `info`. A gateway in front of the provider
+   * often explains the failure there (a spending limit, where to ask for more), which the localized
+   * copy cannot. Off by default because the text may echo submitted content.
+   */
+  includeProviderMessage?: boolean;
+  maxProviderErrorChars?: number;
+  /** Applies the caller's disclosure policy (for example redaction) to the included message. */
+  formatProviderMessage?: (message: string) => string;
+}
+
+/** A status prefix like `429 ` repeats what the classification already says. */
+const STATUS_PREFIX = /^\d{3}(?:\s+|$)/;
+
 /**
  * Typed payload the client localizes for a classified LangChain failure, or `undefined` when the
  * code has no localized copy and the provider's own message should be shown instead.
  */
-export function resolveLangChainError(error: unknown): string | undefined {
+export function resolveLangChainError(
+  error: unknown,
+  options: LangChainErrorOptions = {},
+): string | undefined {
   const code = getLangChainErrorCode(error);
   const type = code == null ? undefined : LANGCHAIN_ERROR_TYPES[code];
-  return type == null ? undefined : JSON.stringify({ type });
+  if (type == null) {
+    return undefined;
+  }
+  if (options.includeProviderMessage !== true) {
+    return JSON.stringify({ type });
+  }
+  /** Formats a window past the limit before cutting, so redaction sees a whole address or token
+   *  instead of a fragment the cut left behind. */
+  const limit = getProviderErrorLimit(options.maxProviderErrorChars);
+  const message = getProviderErrorMessage(error, limit + PROVIDER_FORMAT_LOOKAHEAD)
+    ?.replace(STATUS_PREFIX, '')
+    .trim();
+  const formatted = message ? (options.formatProviderMessage?.(message) ?? message) : '';
+  const info = formatted.slice(0, limit).trim();
+  return JSON.stringify(info ? { type, info } : { type });
 }
 
 export type ModelStreamFailure = 'closed' | 'stalled';
@@ -172,6 +213,9 @@ export function resolveModelStreamError(error: unknown): string | undefined {
  * typed payloads the LibreChat client localizes.
  */
 export function getUserFacingProviderError(error: unknown, protectionEnabled: boolean): string {
+  if (error instanceof AgentModelPolicyError) {
+    return error.message;
+  }
   if (protectionEnabled) {
     return GENERIC_PROVIDER_ERROR;
   }
@@ -183,6 +227,16 @@ export function getUserFacingProviderError(error: unknown, protectionEnabled: bo
 
 /** Bounded lookahead covers LangChain's appended troubleshooting label and URL. */
 const TROUBLESHOOTING_LOOKAHEAD = 256;
+
+/** Characters past the limit a disclosure formatter sees, longer than any address or token. */
+const PROVIDER_FORMAT_LOOKAHEAD = 256;
+
+/** `maxProviderErrorChars` as configured, or the default when it is not a non-negative integer. */
+function getProviderErrorLimit(maxChars: number | undefined): number {
+  return maxChars != null && Number.isSafeInteger(maxChars) && maxChars >= 0
+    ? maxChars
+    : DEFAULT_MAX_PROVIDER_ERROR_CHARS;
+}
 
 /**
  * The provider's own words for a failure, or `undefined` when it has none to give. A gateway,
@@ -201,8 +255,7 @@ export function getProviderErrorMessage(
   if (typeof raw !== 'string') {
     return undefined;
   }
-  const limit =
-    Number.isSafeInteger(maxChars) && maxChars >= 0 ? maxChars : DEFAULT_MAX_PROVIDER_ERROR_CHARS;
+  const limit = getProviderErrorLimit(maxChars);
   const message = stripLangChainTroubleshootingUrl(raw.slice(0, limit + TROUBLESHOOTING_LOOKAHEAD))
     .slice(0, limit)
     .trim();
@@ -260,13 +313,19 @@ export function isStepLimitError(error: unknown): boolean {
 /** Outward metadata shared by UI generation failures and both remote agent APIs. */
 export function getAgentErrorMetadata(
   error: unknown,
+  protectionEnabled = false,
 ): { status?: number; code?: string; retryable?: boolean } | undefined {
+  if (error instanceof AgentModelPolicyError) {
+    return { status: 403, code: 'model_not_allowed' };
+  }
   if (error instanceof OboTokenResolutionError) {
     return {
       status: error.retryable ? 503 : 403,
-      code: error.retryable
-        ? MCPErrorCodes.AUTHENTICATION_REFRESH_FAILED
-        : MCPErrorCodes.AUTHENTICATION_REJECTED,
+      ...(!protectionEnabled && {
+        code: error.retryable
+          ? MCPErrorCodes.AUTHENTICATION_REFRESH_FAILED
+          : MCPErrorCodes.AUTHENTICATION_REJECTED,
+      }),
       retryable: error.retryable,
     };
   }
@@ -279,6 +338,6 @@ export function getAgentErrorMetadata(
     ...(typeof status === 'number' && Number.isInteger(status) && status >= 400 && status < 600
       ? { status }
       : {}),
-    ...(typeof candidate.code === 'string' ? { code: candidate.code } : {}),
+    ...(!protectionEnabled && typeof candidate.code === 'string' ? { code: candidate.code } : {}),
   };
 }

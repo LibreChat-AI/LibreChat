@@ -12,7 +12,9 @@ const passport = require('passport');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
 const mongoSanitize = require('express-mongo-sanitize');
-const { logger, runAsSystem } = require('@librechat/data-schemas');
+const { logger, runAsSystem, createRoleChangeSource } = require('@librechat/data-schemas');
+const { CacheKeys } = require('librechat-data-provider');
+const getLogStores = require('~/cache/getLogStores');
 const {
   isEnabled,
   issueCsp,
@@ -51,6 +53,9 @@ const {
   preAuthTenantMiddleware,
   requestContextMiddleware,
   registerShutdownTask,
+  startRoleCacheInvalidation,
+  reportRoleCacheError,
+  reportRoleCacheInvalidation,
   getRemainingShutdownMs,
   registerBackgroundTaskShutdown,
   configureServerTimeouts,
@@ -69,6 +74,8 @@ const {
   waitForKeyvRedisClient,
   warnOnUnreachableDeliveryPaths,
   createCodeApiUploadRegistry,
+  createSdkModelHost,
+  createSdkFileHost,
   createRequestSanitizer,
   reportEndpointOverrides,
 } = require('@librechat/api');
@@ -76,8 +83,11 @@ const { connectDb, indexSync } = require('~/db');
 const {
   updateAccessPermissions,
   sweepOrphanedPreviews,
+  getPartitionRole,
   getRoleByName,
   seedDatabase,
+  initializeFavorites,
+  closeFavorites,
   listAllConfigs,
   recordAuditEntry,
 } = require('~/models');
@@ -86,8 +96,23 @@ const { capabilityContextMiddleware } = require('./middleware/roles/capabilities
 const createValidateImageRequest = require('./middleware/validateImageRequest');
 const { initializeGitHubSkillSync } = require('./services/Skills/sync');
 const { startSkillDeletionSweep } = require('./services/Skills/deletion');
-const { initializeAgentTriggerService } = require('./services/Agents/triggers');
+const {
+  initializeAgentTriggerService,
+  enqueueAgentTrigger,
+  isAgentTriggerServiceReady,
+} = require('./services/Agents/triggers');
+const {
+  initializeBackgroundResponses,
+  configureBackgroundResponseQueue,
+} = require('./services/Responses');
+const {
+  initializeChannelFeedback,
+  stopChannelFeedback,
+  initializeChannelCleanup,
+  stopChannelCleanup,
+} = require('./services/Channels');
 const { resumeAgentEventDetachedAction } = require('./services/Agents/detachedActionResume');
+const subscriptionRuns = require('./services/Events/reconcile');
 const { initializeScheduleEngine, recordExpiredScheduleApproval } = require('./services/Schedules');
 const { jwtLogin, ldapLogin, passportLogin } = require('~/strategies');
 const { startExpiredFileSweep } = require('./services/Files/process');
@@ -97,7 +122,7 @@ const initializeMCPs = require('./services/initializeMCPs');
 const { configureSubagentTaskRouting } = require('./services/Endpoints/agents/subagentThreadStore');
 const configureSocialLogins = require('./socialLogins');
 const createSpaFallback = require('./utils/fallback');
-const { getAppConfig, rederiveEndpoints } = require('./services/Config');
+const { getAppConfig, rederiveEndpoints, loadCustomConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
 const noIndex = require('./middleware/noIndex');
 const agentEventMethods = require('~/models');
@@ -209,7 +234,6 @@ const startServer = async () => {
   await connectDb();
 
   logger.info('Connected to MongoDB');
-  startCodeEnvironmentLifecycleReconciler({ mongoose });
   indexSync().catch((err) => {
     logger.error('[indexSync] Background sync failed:', err);
   });
@@ -243,7 +267,25 @@ const startServer = async () => {
   runAsSystem(sweepOrphanedPreviews).catch((err) => {
     logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
   });
+  await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
+  registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
   const appConfig = await getAppConfig({ baseOnly: true });
+  /* One ceiling for every idle recovery loop below; each keeps its own default while it is unset. */
+  const idleCeilingMs = appConfig?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs;
+  startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });
+  registerShutdownTask(
+    'role cache invalidation',
+    await startRoleCacheInvalidation({
+      config: appConfig?.config?.roleCache,
+      cache: getLogStores(CacheKeys.ROLES),
+      open: createRoleChangeSource(mongoose),
+      onError: reportRoleCacheError,
+      onInvalidate: reportRoleCacheInvalidation,
+    }),
+    { priority: 50 },
+  );
+  app.locals.sdkFileHost = createSdkFileHost(appConfig?.endpoints?.agents?.sdkHostFiles);
+  app.locals.sdkModelHost = createSdkModelHost(appConfig?.endpoints?.agents?.sdkHostModels);
   await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);
   registerBackgroundTaskShutdown({
     interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
@@ -289,6 +331,7 @@ const startServer = async () => {
       getRoleByName,
       updateAccessPermissions,
       recordAuditEntry,
+      getPartitionRole,
     });
   });
 
@@ -446,6 +489,7 @@ const startServer = async () => {
   app.use('/api/admin/skills', routes.adminSkills);
   app.use('/api/admin/users', routes.adminUsers);
   app.use('/api/admin/audit-log', routes.adminAuditLog);
+  app.use('/api/admin/events', routes.adminEvents);
   app.use('/api/actions', routes.actions);
   app.use('/api/keys', routes.keys);
   app.use('/api/api-keys', routes.apiKeys);
@@ -476,7 +520,10 @@ const startServer = async () => {
   app.use('/api/share', preAuthTenantMiddleware, routes.share);
   app.use('/api/roles', routes.roles);
   app.use('/api/agents/chat', rejectChatStartsUntilReady);
+  /** Before `/api/agents`, whose `/:id` routes would otherwise read `events` as an agent id. */
+  app.use('/api/agents/events', routes.events);
   app.use('/api/agents', routes.agents);
+  app.use('/api/channels', routes.channels);
   app.use('/api/banner', routes.banner);
   app.use('/api/memories', routes.memories);
   app.use('/api/schedules', rejectScheduleWritesUntilReady, routes.schedules);
@@ -505,6 +552,10 @@ const startServer = async () => {
 
   configureGenerationStreams();
 
+  configureBackgroundResponseQueue({
+    enqueue: enqueueAgentTrigger,
+    isReady: isAgentTriggerServiceReady,
+  });
   const server = app.listen(port, host, async (err) => {
     if (err) {
       logger.error('Failed to start server:', err);
@@ -546,6 +597,7 @@ const startServer = async () => {
       if (inspectFlags || isEnabled(process.env.MEM_DIAG)) {
         memoryDiagnostics.start();
       }
+      initializeBackgroundResponses(server.address());
       await initializeAgentTriggerService({
         address: server.address(),
         completionResultBatchSize:
@@ -554,8 +606,15 @@ const startServer = async () => {
           appConfig?.endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
         deadLetterRetentionDays: appConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays,
         idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
+        idleCeilingMs,
       });
-      const scheduleEngineArmed = (await initializeScheduleEngine()) != null;
+      const scheduleEngineArmed = (await initializeScheduleEngine({ idleCeilingMs })) != null;
+      subscriptionRuns.initialize();
+      registerShutdownTask('subscription runs', subscriptionRuns.stop, { priority: 100 });
+      await initializeChannelFeedback();
+      registerShutdownTask('channel feedback export', stopChannelFeedback, { priority: 100 });
+      registerShutdownTask('channel authority cleanup', stopChannelCleanup, { priority: 100 });
+      await initializeChannelCleanup();
       scheduleEngineState = scheduleEngineArmed ? 'armed' : 'unavailable';
       if (!scheduleEngineArmed) {
         // Terminal, not transient: arming is attempted once, so schedule writes are refused
@@ -594,7 +653,8 @@ const startServer = async () => {
  * liveness probe eventually times out. Mirrors the pattern in
  * `experimental.js`.
  */
-startServer().catch((err) => {
+startServer().catch(async (err) => {
+  await closeFavorites().catch(() => undefined);
   logger.error('Failed to start server:', err);
   process.exit(1);
 });

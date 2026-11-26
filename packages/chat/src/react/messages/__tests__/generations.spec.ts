@@ -27,4 +27,32 @@ describe('useGenerationsByLatest', () => {
 
     expect(result.continueSupported).toBe(true);
   });
+
+  it('offers no rerun, edit or continue in a conversation the reader takes no turn in', () => {
+    const driven = useGenerationsByLatest({
+      ...base,
+      finish_reason: 'length',
+      parentIsUserMessage: true,
+    });
+    const followed = useGenerationsByLatest({
+      ...base,
+      finish_reason: 'length',
+      parentIsUserMessage: true,
+      readOnly: true,
+    });
+
+    expect(driven).toMatchObject({
+      regenerateOffered: true,
+      regenerateEnabled: true,
+      continueSupported: true,
+      hideEditButton: false,
+    });
+    expect(followed).toMatchObject({
+      regenerateOffered: false,
+      regenerateEnabled: false,
+      continueSupported: false,
+      hideEditButton: true,
+      forkingSupported: true,
+    });
+  });
 });

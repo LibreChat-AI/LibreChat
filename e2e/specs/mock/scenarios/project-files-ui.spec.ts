@@ -1,9 +1,9 @@
 import { randomUUID } from 'crypto';
 import { ObjectId } from 'mongodb';
 import type { APIRequestContext, Locator, Page, Response, Route } from '@playwright/test';
-import { expect, test } from '@playwright/test';
 import { FileContext } from 'librechat-data-provider';
 import { getE2EUser } from '../../../setup/user';
+import { expect, test, unroute } from '../fixtures';
 import { withMongo } from '../db';
 import { escapeRegExp, getAccessToken, uniqueName } from '../helpers';
 import { loginAdmin } from '../content-filters.helpers';
@@ -187,6 +187,38 @@ async function uploadFromDevice(page: Page, files: Array<{ name: string; content
   return uploadResponse;
 }
 
+/** Reloads before asserting so the row shows the stored name, not the browser's local File. */
+async function expectUploadStoredAs(
+  page: Page,
+  request: APIRequestContext,
+  sentName: string,
+  storedName: string,
+): Promise<void> {
+  let projectId: string | undefined;
+  const fileIds: string[] = [];
+  try {
+    await enableProjectFiles(page);
+    projectId = await createProject(page, uniqueName('Filename project'));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+
+    const uploadResponse = await uploadFromDevice(page, [
+      { name: sentName, content: 'project file with a non-trivial name' },
+    ]);
+    expect(uploadResponse.ok()).toBeTruthy();
+    const uploaded = (await uploadResponse.json()) as UploadedFile;
+    if (uploaded.file_id) {
+      fileIds.push(uploaded.file_id);
+    }
+
+    const row = page.getByRole('listitem').filter({ hasText: storedName });
+    await expect(row).toContainText('Ready', { timeout: 30000 });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(row).toContainText('Ready', { timeout: 30000 });
+  } finally {
+    await cleanupProjectAndFiles(page, request, projectId, fileIds, [storedName]);
+  }
+}
+
 test.describe('project file workspace UI', () => {
   test('selecting several files at once queues every file up to the project limit and reports the excess @scenario:multi-file-upload-queues-to-capacity-and-reports-excess', async ({
     page,
@@ -350,6 +382,57 @@ test.describe('project file workspace UI', () => {
     }
   });
 
+  test('an existing-file picker card shows the date the file was last updated @scenario:file-picker-card-shows-file-date', async ({
+    page,
+    request,
+  }) => {
+    let projectId: string | undefined;
+    const fileIds: string[] = [];
+    const filenames: string[] = [];
+    try {
+      await enableProjectFiles(page);
+      projectId = await createProject(page, uniqueName('File date project'));
+      const seeded = await seedProjectFiles(
+        projectId,
+        1,
+        uniqueName('picker-dated'),
+        undefined,
+        false,
+      );
+      fileIds.push(...seeded.fileIds);
+      filenames.push(...seeded.filenames);
+      /* Midday UTC, so the calendar day is the same in any test timezone. */
+      const updatedAt = new Date('2026-03-14T12:00:00.000Z');
+      await withMongo(async (db) => {
+        await db
+          .collection('files')
+          .updateOne(
+            { file_id: seeded.fileIds[0] },
+            { $set: { createdAt: new Date('2026-03-01T12:00:00.000Z'), updatedAt } },
+          );
+      });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+
+      const expected = await page.evaluate(
+        (iso) =>
+          new Date(iso).toLocaleDateString(undefined, {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+          }),
+        updatedAt.toISOString(),
+      );
+      const picker = await openExistingFilePicker(page);
+      const results = picker.getByRole('list', { name: 'Your files', exact: true });
+      const row = results.getByRole('listitem').filter({ hasText: seeded.filenames[0] });
+      await expect(row.getByRole('button').first()).toHaveAccessibleName(
+        new RegExp(`${escapeRegExp(expected)}$`),
+      );
+    } finally {
+      await cleanupProjectAndFiles(page, request, projectId, fileIds, filenames);
+    }
+  });
+
   test('a rejected file association shows a localized reason and a retry succeeds @scenario:rejected-file-association-shows-reason-and-retry-succeeds', async ({
     page,
     request,
@@ -397,7 +480,7 @@ test.describe('project file workspace UI', () => {
       );
       await expect(row.getByText(failureBody.error)).toHaveCount(0);
       await expect(row.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
-      await page.unroute(associationMatcher, failAssociation);
+      await unroute(page, associationMatcher, failAssociation);
 
       await row.getByRole('button', { name: 'Retry', exact: true }).click();
       await expect(row.getByRole('alert')).toHaveCount(0);
@@ -405,5 +488,23 @@ test.describe('project file workspace UI', () => {
     } finally {
       await cleanupProjectAndFiles(page, request, projectId, fileIds, filenames);
     }
+  });
+
+  test('a project file with a non-Latin name keeps that name after upload @scenario:project-upload-keeps-non-latin-filename', async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120000);
+    const name = `Описание-日本語-${randomUUID().slice(0, 8)}.txt`;
+    await expectUploadStoredAs(page, request, name, name);
+  });
+
+  test('a project file with a percent sign in its name uploads instead of being rejected @scenario:project-upload-accepts-percent-filename', async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(120000);
+    const stem = randomUUID().slice(0, 8);
+    await expectUploadStoredAs(page, request, `100% ${stem}.txt`, `100__${stem}.txt`);
   });
 });

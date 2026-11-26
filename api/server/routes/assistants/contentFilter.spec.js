@@ -11,6 +11,8 @@ const mockDeleteAssistant = jest.fn((_req, res) => res.status(204).end());
 
 jest.mock('~/server/controllers/assistants/chatV1', () => mockChatV1);
 jest.mock('~/server/controllers/assistants/chatV2', () => mockChatV2);
+/** Enrollment in the account barrier needs the job manager and an authenticated user. */
+jest.mock('~/server/middleware/assistants/run', () => (controller) => controller);
 jest.mock('~/server/controllers/assistants/v1', () => ({
   createAssistant: mockCreateAssistantV1,
   patchAssistant: mockPatchAssistantV1,
@@ -128,6 +130,30 @@ describe('assistant route content filters', () => {
     );
     expect(controller).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['./chatV1', mockChatV1],
+    ['./chatV2', mockChatV2],
+  ])(
+    'blocks generation only while assistant output protection is required on %s',
+    async (route, controller) => {
+      const policy = {
+        config: { outputProtection: { version: 1, assistantText: { timeoutMs: 5000 } } },
+      };
+      const protectedApp = createApp(require(route), policy);
+      const response = await request(protectedApp).post('/').send({ assistant_id: 'asst-valid' });
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({
+        code: 'assistant_output_unsupported',
+        error: 'content_filter_block',
+      });
+      expect(controller).not.toHaveBeenCalled();
+      const defaultApp = createApp(require(route), {});
+      const accepted = await request(defaultApp).post('/').send({ assistant_id: 'asst-valid' });
+      expect(accepted.status).toBe(204);
+      expect(controller).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('preserves the legacy assistant chat response', async () => {
     const app = createApp(require('./chatV1'), {

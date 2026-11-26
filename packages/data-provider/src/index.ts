@@ -29,6 +29,7 @@ export * from './parsers';
 export * from './generate';
 export * from './models';
 export * from './families';
+export * from './gemini';
 /* mcp */
 export * from './mcp';
 export * from './mcp/appMime';
@@ -39,6 +40,7 @@ export * from './roles';
 /* types (exports schemas from `./types` as they contain needed in other defs) */
 export * from './types';
 export * from './types/agents';
+export * from './types/responseAccounting';
 export * from './types/assistants';
 export * from './types/content';
 export * from './types/tools';
@@ -68,6 +70,7 @@ export type {
 export * from './types/subagents';
 export * from './types/background';
 export * from './types/pullRequest';
+export * from './types/eventTypes';
 export * from './types/queuedTurns';
 /* access permissions */
 export * from './accessPermissions';
@@ -94,7 +97,7 @@ export * from './utils';
 export * from './zod';
 export * from './actions';
 export * from './twoFactor';
-export { default as createPayload } from './createPayload';
+export { default as createPayload, generationServer } from './createPayload';
 // /* react query hooks */
 // export * from './react-query/react-query-service';
 /* feedback */
@@ -108,8 +111,21 @@ export * from './code/worker';
 export * from './code/approval';
 export * from './code/workspace';
 
-export * from './types/scheduleConsent';
+export * from './types/runGrant';
+export * from './types/dead';
 
 export * from './approval';
+export * from './types/channels';
+export * from './types/responseReview';
+export * from './types/channelIdentity';
+export * from './channelLink';
+export * from './types/channelFeedback';
+export * from './types/channelRuns';
+export * from './types/connections';
+export * from './types/subscriptions';
+
+export * from './subagentGraphs';
 
 export * from './codeSetup';
+
+export * from './agents/references';

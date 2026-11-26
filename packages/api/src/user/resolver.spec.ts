@@ -15,6 +15,7 @@ function createDeps(overrides: Partial<ErasureResolverDeps> = {}) {
     getMCPManager: jest.fn(() => ({ disconnectUserConnection })),
     openCheckpointDeletion: jest.fn(),
     deleteSharedLinks: jest.fn(),
+    deleteSubscriptions: jest.fn(),
     withTenant: <T>(tenant: string | undefined, operation: () => Promise<T>) =>
       tenant ? tenantStorage.run({ tenantId: tenant }, operation) : runAsSystem(operation),
     ...overrides,
@@ -102,6 +103,8 @@ describe('createErasureResolver', () => {
     const { deps } = createDeps({
       db: {
         deleteUserAgents: jest.fn(record('agents')),
+        deleteUserToolFavorites: jest.fn(record('favorites')),
+        cancelUserToolFavoriteDeletion: jest.fn(record('cancelFavorites')),
         findMCPServerOAuthTokenUserIds: jest.fn(record('tokens')),
         findMCPServerViewerEntries: jest.fn(record('viewers')),
         findMCPServerViewerUserIds: jest.fn(record('viewerUsers')),
@@ -118,6 +121,8 @@ describe('createErasureResolver', () => {
 
     await tenantStorage.run({ tenantId: 'admin-tenant' }, async () => {
       await erasure.deleteUserAgents('user-1');
+      await erasure.deleteUserToolFavorites('user-1', 'attempt');
+      await erasure.cancelUserToolFavoriteDeletion?.('user-1', 'attempt');
       await erasure.findMCPServerOAuthTokenUserIds?.('srv');
       await erasure.findMCPServerViewerEntries?.('srv-id');
       await erasure.findMCPServerViewerUserIds?.([]);
@@ -130,7 +135,7 @@ describe('createErasureResolver', () => {
       await erasure.mcpOAuth?.disconnectUser?.('other', 'srv');
     });
 
-    expect(Object.keys(seen)).toHaveLength(10);
+    expect(Object.keys(seen)).toHaveLength(12);
     expect(Object.values(seen).every((tenant) => tenant === 'tenant-1')).toBe(true);
   });
 

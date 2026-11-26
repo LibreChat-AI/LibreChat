@@ -2,34 +2,12 @@ import { memo, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getToolDisplayLabel } from '@librechat/chat';
 import { ArrowUpRight, ChevronDown, Square } from 'lucide-react';
-import { IconButton, Spinner, TooltipAnchor } from '@librechat/client';
-import type { TaskRow, TaskRowDelivery, TaskRowStatus } from './rows';
-import type { TranslationKeys } from '~/hooks/useLocalize';
+import { Shimmer, Spinner, IconButton, TooltipAnchor } from '@librechat/client';
+import type { TaskRow } from './rows';
+import { DELIVERY_CLASSES, DELIVERY_KEYS, STATUS_CLASSES, STATUS_KEYS } from './labels';
 import { getRunStepDurationLabels, cn } from '~/utils';
 import { Collapse } from '~/components/ui';
 import { useLocalize } from '~/hooks';
-
-const STATUS_KEYS: Record<TaskRowStatus, TranslationKeys> = {
-  running: 'com_ui_background_tasks_running',
-  stopping: 'com_ui_background_tasks_stopping',
-  completed: 'com_ui_background_tasks_completed',
-  error: 'com_ui_failed',
-  cancelled: 'com_ui_cancelled',
-};
-
-const STATUS_CLASSES: Partial<Record<TaskRowStatus, string>> = {
-  error: 'text-status-error',
-  cancelled: 'text-status-warning',
-};
-
-const DELIVERY_KEYS: Record<TaskRowDelivery, TranslationKeys> = {
-  pending: 'com_ui_background_tasks_result_pending',
-  failed: 'com_ui_background_tasks_result_undelivered',
-};
-
-const DELIVERY_CLASSES: Partial<Record<TaskRowDelivery, string>> = {
-  failed: 'text-status-warning',
-};
 
 function TaskCard({
   row,
@@ -89,7 +67,7 @@ function TaskCard({
               className="text-text-primary focus-visible:ring-focus-control flex max-w-full items-start gap-1 rounded text-start text-sm focus-visible:ring-2 focus-visible:outline-none"
             >
               <span className="line-clamp-2 break-words">
-                <span className={cn(active && 'shimmer')}>{title}</span>
+                <Shimmer active={active}>{title}</Shimmer>
               </span>
               <ChevronDown
                 aria-hidden="true"
@@ -101,7 +79,7 @@ function TaskCard({
             </button>
           ) : (
             <p className="text-text-primary line-clamp-2 text-sm break-words">
-              <span className={cn(active && 'shimmer')}>{title}</span>
+              <Shimmer active={active}>{title}</Shimmer>
             </p>
           )}
           <p className="text-text-secondary mt-0.5 flex items-center gap-2 text-xs">

@@ -1,6 +1,6 @@
 export { useChat } from './chat';
 export { ChatProvider } from './provider';
-export { ChatSessionProvider } from './session';
+export { ChatSessionProvider, useChatSessionMessages } from './session';
 export type { ChatSessionMessages } from './session';
 export { default as useChatHelpers } from './helpers';
 export { useAbortCleanup } from './abort';
@@ -45,3 +45,4 @@ export type {
   ChatSubmissionContract,
   ChatConversationContract,
 } from './contract';
+export { isHistoryRevalidating } from './guards';

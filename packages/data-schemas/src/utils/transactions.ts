@@ -1,105 +1,154 @@
+import type { ClientSession, Connection } from 'mongoose';
 import logger from '~/config/winston';
 
 export const CANCEL_RATE = 1.15;
-
 const TRANSACTION_PROBE_COLLECTION = '__transaction_test__';
 
+function unsupportedTransaction(error: unknown, mongoose: typeof import('mongoose')): boolean {
+  if (!(error instanceof mongoose.mongo.MongoServerError)) return false;
+  return (
+    (error.code === 20 &&
+      /Transaction numbers are only allowed on a replica set member or mongos/i.test(
+        error.message,
+      )) ||
+    (error.code === 59 && /^no such command: ['"]commitTransaction['"]$/i.test(error.message))
+  );
+}
+
 async function probeTransaction(mongoose: typeof import('mongoose')): Promise<boolean> {
+  const session = await mongoose.startSession();
   try {
-    const session = await mongoose.startSession();
-    try {
-      session.startTransaction();
-
-      await mongoose.connection.db
-        ?.collection(TRANSACTION_PROBE_COLLECTION)
-        .findOne({}, { session });
-
-      await session.commitTransaction();
-      logger.debug('MongoDB transactions are supported');
-      return true;
-    } catch (transactionError: unknown) {
-      try {
-        await session.abortTransaction();
-      } catch (transactionError) {
-        /** best-effort abort */
-        logger.error(`[supportsTransactions] Error aborting transaction:`, transactionError);
-      }
-      logger.debug(
-        'MongoDB transactions not supported (transaction error):',
-        (transactionError as Error)?.message || 'Unknown error',
-      );
-      return false;
-    } finally {
-      await session.endSession();
-    }
+    session.startTransaction({ readPreference: 'primary' });
+    const db = mongoose.connection.db;
+    if (!db) throw new Error('Transaction capability probe requires a connected database');
+    await db.collection(TRANSACTION_PROBE_COLLECTION).findOne({}, { session });
+    await session.commitTransaction();
+    return true;
   } catch (error) {
-    logger.debug(
-      'MongoDB transactions not supported (session error):',
-      (error as Error)?.message || 'Unknown error',
-    );
-    return false;
+    try {
+      await session.abortTransaction();
+    } catch {
+      logger.debug('[supportsTransactions] Probe transaction abort failed');
+    }
+    if (unsupportedTransaction(error, mongoose)) return false;
+    throw error;
+  } finally {
+    await session.endSession();
   }
 }
 
-/**
- * Checks if the connected MongoDB deployment supports transactions
- * This requires a MongoDB replica set configuration
- *
- * Amazon DocumentDB rejects a transaction that touches a collection which does
- * not exist ("Feature not supported: non-existent collection in transaction"),
- * so a failed first probe materializes the canary and probes once more —
- * otherwise engines that fully support transactions would report unsupported
- * and silently drop every caller to the non-transactional path. MongoDB allows
- * transactional reads of missing collections, so deployments that pass the
- * first probe never pay the create and never gain the canary collection. A
- * failed create is logged rather than swallowed: on a hardened role it is the
- * only visible explanation for a wrong "unsupported" verdict.
- *
- * @returns True if transactions are supported, false otherwise
- */
+/** Only confirmed transaction incompatibility is false; operational failures stay retryable. */
 export const supportsTransactions = async (
   mongoose: typeof import('mongoose'),
 ): Promise<boolean> => {
-  if (await probeTransaction(mongoose)) {
-    return true;
-  }
   try {
-    await mongoose.connection.db?.createCollection(TRANSACTION_PROBE_COLLECTION);
+    return await probeTransaction(mongoose);
   } catch (error) {
-    const message = (error as Error)?.message ?? '';
-    if (!/already exists|NamespaceExists/i.test(message)) {
-      logger.warn(
-        `[supportsTransactions] Could not create the "${TRANSACTION_PROBE_COLLECTION}" probe collection; ` +
-          'if this deployment is Amazon DocumentDB, the transaction-support verdict below may be a false negative:',
-        error,
-      );
+    // DocumentDB requires the probe collection to exist before a transaction can read it.
+    if (
+      !(error instanceof mongoose.mongo.MongoServerError) ||
+      !/non-existent collection in transaction/i.test(error.message)
+    )
+      throw error;
+    const db = mongoose.connection.db;
+    if (!db) throw error;
+    try {
+      await db.createCollection(TRANSACTION_PROBE_COLLECTION);
+    } catch (creationError) {
+      if (!(creationError instanceof mongoose.mongo.MongoServerError) || creationError.code !== 48)
+        throw creationError;
     }
+    return probeTransaction(mongoose);
   }
-  return probeTransaction(mongoose);
 };
 
-let inflightProbe: Promise<boolean> | null = null;
+type TransactionClient = ReturnType<Connection['getClient']>;
+const inflightProbes = new WeakMap<Connection, WeakMap<TransactionClient, Promise<boolean>>>();
 
-/**
- * Gets whether the current MongoDB deployment supports transactions
- * Caches the result for performance
- *
- * Concurrent first callers share one in-flight probe instead of each paying
- * the session/transaction round trips before the caller-side cache fills.
- *
- * @returns True if transactions are supported, false otherwise
- */
+function assertTransactionClient(
+  mongoose: typeof import('mongoose'),
+  connection: Connection,
+  client: TransactionClient,
+): void {
+  if (mongoose.connection !== connection || connection.getClient() !== client) {
+    throw new mongoose.mongo.MongoNetworkError('MongoDB client changed during transaction setup');
+  }
+}
+
+/** Share first probes only for the same connection and client. */
 export const getTransactionSupport = async (
   mongoose: typeof import('mongoose'),
   transactionSupportCache: boolean | null,
 ): Promise<boolean> => {
-  if (transactionSupportCache !== null) {
-    return transactionSupportCache;
+  if (transactionSupportCache !== null) return transactionSupportCache;
+  const connection = mongoose.connection;
+  const client = connection.getClient();
+  let probes = inflightProbes.get(connection);
+  if (!probes) {
+    probes = new WeakMap();
+    inflightProbes.set(connection, probes);
   }
-  if (inflightProbe == null) {
-    inflightProbe = supportsTransactions(mongoose).finally(() => {
-      inflightProbe = null;
-    });
+  let probe = probes.get(client);
+  if (!probe) {
+    const pending = probes;
+    probe = supportsTransactions(mongoose).finally(() => pending.delete(client));
+    probes.set(client, probe);
   }
-  return await inflightProbe;
+  const supported = await probe;
+  assertTransactionClient(mongoose, connection, client);
+  return supported;
 };
+
+export class TransactionUnavailableError extends Error {
+  readonly code = 'transactions_unavailable';
+  constructor() {
+    super('This operation requires transactional storage');
+    this.name = 'TransactionUnavailableError';
+  }
+}
+
+const requiredTransactionSupport = new WeakMap<
+  Connection,
+  {
+    client: TransactionClient;
+    supported: boolean | null;
+  }
+>();
+
+/** Probe before private writes: some unsupported engines fail only at commit. */
+export async function startRequiredTransactionSession(
+  mongoose: typeof import('mongoose'),
+): Promise<ClientSession> {
+  const connection = mongoose.connection;
+  const client = connection.getClient();
+  let state = requiredTransactionSupport.get(connection);
+  if (!state || state.client !== client) {
+    state = { client, supported: null };
+    requiredTransactionSupport.set(connection, state);
+  }
+  // Assignment happens only on a confirmed verdict; operational failures remain retryable.
+  state.supported = await getTransactionSupport(mongoose, state.supported);
+  assertTransactionClient(mongoose, connection, client);
+  if (!state.supported) throw new TransactionUnavailableError();
+  // The driver's synchronous call binds the session to the client we just checked.
+  return client.startSession({
+    defaultTransactionOptions: { readPreference: 'primary' },
+  });
+}
+
+/** Prepare indexes outside the transaction, after confirming storage capability. */
+export async function withRequiredTransaction<T>(
+  mongoose: typeof import('mongoose'),
+  write: (session: ClientSession) => Promise<T>,
+  prepare?: () => Promise<void>,
+): Promise<T> {
+  const session = await startRequiredTransactionSession(mongoose);
+  try {
+    await prepare?.();
+    const result = await session.withTransaction(() => write(session));
+    if (result === undefined) throw new Error('Required transaction did not commit');
+    return result;
+  } finally {
+    await session.endSession();
+  }
+}

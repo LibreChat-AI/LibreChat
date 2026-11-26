@@ -1,12 +1,16 @@
 import React from 'react';
 import '@testing-library/jest-dom';
+import { SkillsScope } from 'librechat-data-provider';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
+import { AgentsMapContext } from '~/Providers/AgentsMapContext';
 import { render, screen } from 'test/layout-test-utils';
 import ChatView from '../ChatView';
 
 const mockParams = jest.fn();
 const mockConversation = jest.fn();
 const mockChatFormProps = jest.fn();
+const mockChatAgents = jest.fn();
+const mockTargetAgent = jest.fn();
 const mockAskHostSaveDrafts = jest.fn();
 
 jest.mock('react-router-dom', () => ({
@@ -20,7 +24,19 @@ jest.mock('~/hooks/AuthContext', () => ({
   useAuthContext: () => ({ isAuthenticated: false, user: null, roles: {} }),
 }));
 
+jest.mock('~/hooks/Chat/target', () => ({
+  __esModule: true,
+  default: () => ({
+    ready: true,
+    pending: false,
+    failed: false,
+    retry: jest.fn(),
+    agent: mockTargetAgent(),
+  }),
+}));
+
 jest.mock('~/data-provider', () => ({
+  useCachedMessages: () => ({ data: null }),
   useProjectQuery: () => ({ data: undefined }),
 }));
 
@@ -33,15 +49,12 @@ jest.mock('@librechat/chat/react', () => {
   const actual = jest.requireActual('@librechat/chat/react');
   return {
     ...actual,
-    ChatSessionProvider: ({
-      children,
-    }: {
-      children: (session: { messages: null; isLoading: boolean }) => React.ReactNode;
-    }) => (
+    ChatSessionProvider: ({ children }: { children: React.ReactNode }) => (
       <actual.ChatContext.Provider value={{ conversation: mockConversation() }}>
-        {children({ messages: null, isLoading: false })}
+        {children}
       </actual.ChatContext.Provider>
     ),
+    useChatSessionMessages: () => ({ messages: null, isLoading: false }),
   };
 });
 
@@ -56,7 +69,7 @@ jest.mock('../Presentation', () => ({
 }));
 jest.mock('../Header', () => ({ __esModule: true, default: () => <div /> }));
 let mockConfiguredFooter = false;
-let mockLandingFooter = true;
+let mockLandingFooter: boolean | 'composer' = true;
 jest.mock('../Footer', () => ({
   __esModule: true,
   default: ({ configuredOnly }: { configuredOnly?: boolean }) => (
@@ -67,12 +80,12 @@ jest.mock('../Footer', () => ({
 }));
 jest.mock('../Landing', () => ({ __esModule: true, default: () => <div /> }));
 jest.mock('~/components/Lia', () => ({ __esModule: true, default: () => null }));
-jest.mock('../Messages/MessagesView', () => ({ __esModule: true, default: () => <div /> }));
 jest.mock('../Input/ChatForm', () => ({
   __esModule: true,
   default: (props: Record<string, unknown>) => {
     mockChatFormProps(props);
     mockAskHostSaveDrafts(jest.requireActual('@librechat/chat/react').useAskAnswerHost());
+    mockChatAgents(jest.requireActual('~/Providers/AgentsMapContext').useAgentsMapContext());
     return <div />;
   },
 }));
@@ -81,6 +94,57 @@ jest.mock('~/components/Projects/ProjectBadge', () => ({
   __esModule: true,
   default: ({ projectId }: { projectId: string }) => <div data-testid={`project-${projectId}`} />,
 }));
+
+test('keeps the selected agent catalog skill scope when its chat summary arrives', () => {
+  mockParams.mockReturnValue({});
+  mockConversation.mockReturnValue(null);
+  const basic = {
+    id: 'agent-1',
+    name: 'Current name',
+    description: null,
+    created_at: 0,
+    avatar: null,
+    provider: 'openai',
+    model: 'gpt-4o',
+    model_parameters: {},
+  };
+  const skills = {
+    skills_enabled: true,
+    skills_scope: SkillsScope.selected,
+    skills: ['skill-1'],
+  };
+  const map = {
+    'agent-1': {
+      ...basic,
+      ...skills,
+      name: 'Cached name',
+      model_parameters: {
+        temperature: 1,
+        maxContextTokens: 4096,
+        max_context_tokens: 4096,
+        max_output_tokens: 1024,
+        top_p: 1,
+        frequency_penalty: 0,
+        presence_penalty: 0,
+      },
+    },
+  };
+
+  mockTargetAgent.mockReturnValue(basic);
+  try {
+    render(
+      <AgentsMapContext.Provider value={map}>
+        <ChatView />
+      </AgentsMapContext.Provider>,
+    );
+
+    expect(mockChatAgents).toHaveBeenLastCalledWith({
+      'agent-1': { ...basic, ...skills },
+    });
+  } finally {
+    mockTargetAgent.mockReset();
+  }
+});
 
 describe('ChatView page heading', () => {
   beforeEach(() => {
@@ -248,6 +312,17 @@ describe('ChatView landing footer', () => {
     expect(screen.queryByTestId('configured-footer')).not.toBeInTheDocument();
     expect(mockChatFormProps).toHaveBeenLastCalledWith(
       expect.objectContaining({ footerBelow: true }),
+    );
+  });
+
+  test('gives the footer its own room when the deployment places it under the composer', () => {
+    mockLandingFooter = 'composer';
+
+    render(<ChatView />);
+
+    expect(screen.getByTestId('landing-footer')).toBeInTheDocument();
+    expect(mockChatFormProps).toHaveBeenLastCalledWith(
+      expect.objectContaining({ footerBelow: false }),
     );
   });
 

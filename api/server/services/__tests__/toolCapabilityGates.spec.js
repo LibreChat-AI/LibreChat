@@ -54,6 +54,9 @@ const CLASSIFIED = {
   'packages/api/src/agents/initialize.ts': 4,
 
   // -- Not gates ---------------------------------------------------------------
+  /** Historical-name prediction only: a marker entry and expansion controlled by
+   *  `codeExecutionAvailable`. This helper neither loads nor executes tools. */
+  'packages/api/src/agents/tools.ts': 2,
   /** The upload-resource map entry, and one mention in a doc comment. */
   'packages/api/src/tools/rolePermissions.ts': 2,
   /** Default capability list shipped in config. */

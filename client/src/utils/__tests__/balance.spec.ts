@@ -1,5 +1,5 @@
 import type { TBalanceResponse } from 'librechat-data-provider';
-import { summarizeBalance, formatBalanceAmount, formatTimeUntil } from '../balance';
+import { summarizeBalance, formatTimeUntil } from '../balance';
 
 const refilling = (over: Partial<TBalanceResponse> = {}): TBalanceResponse => ({
   tokenCredits: 12_400,
@@ -39,6 +39,38 @@ describe('summarizeBalance', () => {
     expect(summary.tone).toBe('normal');
   });
 
+  it('measures against the stored allotment after the configured amount changes', () => {
+    const summary = summarizeBalance(
+      refilling({
+        allotment: 40_000,
+        allottedAt: '2026-07-01T00:00:00.000Z',
+        refillAmount: 20_000,
+      }),
+    );
+    expect(summary.allotment).toBe(40_000);
+    expect(summary.usedPercent).toBe(69);
+    expect(summary.refillAmount).toBe(20_000);
+  });
+
+  it('falls back to the configured amount when no allotment is stored', () => {
+    expect(summarizeBalance(refilling({ allotment: 0 })).allotment).toBe(20_000);
+    expect(summarizeBalance(refilling({ allotment: 40_000 })).allotment).toBe(20_000);
+  });
+
+  it('ignores an allotment from before the last refill', () => {
+    const stale = refilling({ allotment: 40_000, allottedAt: '2026-06-24T00:00:00.000Z' });
+    expect(summarizeBalance(stale).allotment).toBe(20_000);
+  });
+
+  it('ignores an allotment it cannot place in a period', () => {
+    const unplaced = refilling({
+      allotment: 40_000,
+      allottedAt: '2026-07-01T00:00:00.000Z',
+      lastRefill: undefined,
+    });
+    expect(summarizeBalance(unplaced).allotment).toBe(20_000);
+  });
+
   it('reads 0% used when saved-up credits exceed the allotment', () => {
     const summary = summarizeBalance(refilling({ tokenCredits: 45_000 }));
     expect(summary.usedPercent).toBe(0);
@@ -66,20 +98,6 @@ describe('summarizeBalance', () => {
 
   it('drops an unreadable last-refill date instead of inventing one', () => {
     expect(summarizeBalance(refilling({ lastRefill: 'not a date' })).nextRefill).toBeNull();
-  });
-});
-
-describe('formatBalanceAmount', () => {
-  it('formats credits without hiding fractional differences', () => {
-    expect(formatBalanceAmount(3_100_000, 'credits')).toBe('3,100,000');
-    expect(formatBalanceAmount(100.4, 'credits')).toBe('100.4');
-    expect(formatBalanceAmount(100.3, 'credits')).toBe('100.3');
-    expect(formatBalanceAmount(12_480.656, 'credits')).toBe('12,480.66');
-  });
-
-  it('converts credits to money at one million credits per dollar', () => {
-    expect(formatBalanceAmount(3_100_000, 'currency')).toBe('$3.10');
-    expect(formatBalanceAmount(5_000_000, 'currency', { code: 'EUR', rate: 0.5 })).toBe('€2.50');
   });
 });
 

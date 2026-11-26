@@ -12,6 +12,7 @@ const adminRoles = require('./admin/roles');
 const adminSkills = require('./admin/skills');
 const adminUsers = require('./admin/users');
 const adminAuditLog = require('./admin/audit');
+const adminEvents = require('./admin/events');
 const endpoints = require('./endpoints');
 const staticRoute = require('./static');
 const messages = require('./messages');
@@ -20,6 +21,7 @@ const presets = require('./presets');
 const projects = require('./projects');
 const prompts = require('./prompts');
 const schedules = require('./schedules');
+const events = require('./events');
 const skills = require('./skills');
 const balance = require('./balance');
 const actions = require('./actions');
@@ -33,6 +35,7 @@ const pullRequests = require('./pullRequests');
 const traces = require('./traces');
 const config = require('./config');
 const agents = require('./agents');
+const channels = require('./channels');
 const roles = require('./roles');
 const oauth = require('./oauth');
 const files = require('./files');
@@ -62,6 +65,7 @@ module.exports = {
   adminSkills,
   adminUsers,
   adminAuditLog,
+  adminEvents,
   keys,
   apiKeys,
   user,
@@ -73,6 +77,7 @@ module.exports = {
   banner,
   openapi,
   agents,
+  channels,
   convos,
   traces,
   search,
@@ -81,6 +86,7 @@ module.exports = {
   prompts,
   projects,
   schedules,
+  events,
   skills,
   actions,
   presets,

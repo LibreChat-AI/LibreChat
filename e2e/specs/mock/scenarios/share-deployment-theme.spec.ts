@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { defaultTheme } from '../../../../packages/data-provider/src/themes/default';
@@ -11,6 +10,7 @@ import {
   NEW_CHAT_PATH,
 } from '../helpers';
 import { themeValue } from './style.helpers';
+import { expect, test } from '../fixtures';
 
 /**
  * A shared link resolves its policy from the tenant that owns it, so the viewer's

@@ -293,6 +293,48 @@ dnsConfig: {}
 updateStrategy:
   type: RollingUpdate
 
+# Optional Slack gateway. Enable channel/background policy separately in librechat.yaml.
+# Requires transaction-capable MongoDB; this does not change database topology.
+channelGateway:
+  enabled: false
+  # single binds a manually configured connection; shared serves installed workspaces.
+  # Shared mode enables webhook transport; organization admins register apps in the UI.
+  mode: single
+  # Shared workers use durable leases and may run across replicas; single mode requires 1.
+  replicaCount: 1
+  image:
+    repository: ghcr.io/librechat-ai/librechat-channel-gateway
+    # Defaults to image.tag, which must explicitly select a release containing Channels.
+    tag: ""
+    pullPolicy: IfNotPresent
+  # Defaults to librechat.configEnv.APP_TITLE or LibreChat. Set explicitly when
+  # the application title comes from a Secret or global.librechat.env, or exceeds
+  # the gateway limit (40 UTF-16 characters, no <, >, | or control characters).
+  appTitle: ""
+  channelId: ""
+  tenantId: "_"
+  # Empty derives the in-cluster LibreChat Service URL.
+  internalUrl: ""
+  # Must contain CHANNEL_SERVICE_TOKEN with the same value used by LibreChat.
+  # Empty uses global.librechat.existingSecretName. Other API secrets are not imported.
+  existingSecretName: ""
+  # Set to "" for webhook transport; Socket Mode needs this existing Secret key.
+  slackAppTokenKey: SLACK_APP_TOKEN
+  resources: {}
+  podAnnotations: {}
+  # Optional webhook routing. Socket Mode requires no public ingress.
+  # Set server transport/gatewayUrl separately; only Slack callbacks are exposed.
+  ingress:
+    enabled: false
+    # Empty uses ingress.className (or the cluster default).
+    className: ""
+    annotations: {}
+    host: ""
+    tls: []
+  # Pod identity, DNS, networking and scheduling use the chart's shared settings.
+  # Global security contexts are honored; gateway defaults also enable seccomp,
+  # a read-only root filesystem and disable privilege escalation/API token mounting.
+
 langfuseFanout:
   enabled: false
   replicaCount: 1

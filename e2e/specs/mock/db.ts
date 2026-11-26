@@ -1,32 +1,10 @@
-import fs from 'fs';
-import path from 'path';
+import { hash } from 'bcryptjs';
+import { randomBytes } from 'node:crypto';
 import { MongoClient, ObjectId } from 'mongodb';
 import type { Db } from 'mongodb';
+import { getMongoUri } from '../../setup/env';
 
-const DEFAULT_MONGO_URI = 'mongodb://127.0.0.1:27017/LibreChat-e2e';
-
-/**
- * e2e/setup/start-server.js writes the active Mongo URI (memory-Mongo port included)
- * here on boot. It honors `E2E_RUNTIME_ENV_PATH`, so resolve the same override the
- * server used before falling back to the default location.
- */
-function getRuntimeEnvPath(): string {
-  return (
-    process.env.E2E_RUNTIME_ENV_PATH ?? path.resolve(__dirname, '../.test-results/runtime-env.json')
-  );
-}
-
-export function getMongoUri(): string {
-  try {
-    const env = JSON.parse(fs.readFileSync(getRuntimeEnvPath(), 'utf8')) as { MONGO_URI?: string };
-    if (env.MONGO_URI) {
-      return env.MONGO_URI;
-    }
-  } catch {
-    /* fall through to env/default */
-  }
-  return process.env.MONGO_URI ?? DEFAULT_MONGO_URI;
-}
+export { getMongoUri };
 
 async function resolveUserId(db: Db, userEmail: string): Promise<string> {
   const user = await db.collection('users').findOne({ email: userEmail });
@@ -131,6 +109,8 @@ export interface SeedMessage {
   files?: Record<string, unknown>[];
   /** Tool attachments on the turn, such as the web search results behind its sources. */
   attachments?: Record<string, unknown>[];
+  /** What the server recorded about the turn, such as the tokens a reply used. */
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -172,6 +152,14 @@ export async function clearUserConversations(userEmail: string): Promise<void> {
   await withMongo(async (db) => {
     const userId = await resolveUserId(db, userEmail);
     await db.collection('conversations').deleteMany({ user: userId });
+  });
+}
+
+/** Clears every project for the user, which other specs create and leave in the sidebar. */
+export async function clearUserProjects(userEmail: string): Promise<void> {
+  await withMongo(async (db) => {
+    const userId = await resolveUserId(db, userEmail);
+    await db.collection('chatprojects').deleteMany({ user: userId });
   });
 }
 
@@ -236,4 +224,22 @@ export async function deleteUserByEmail(userEmail: string): Promise<void> {
     ]);
     await db.collection('users').deleteOne({ _id: user._id });
   });
+}
+
+/** Test-only recovery credential, independent of the public reset request response. */
+export async function seedPasswordReset(userEmail: string): Promise<string> {
+  const token = randomBytes(32).toString('hex');
+  const tokenHash = await hash(token, 4);
+  await withMongo(async (db) => {
+    const userId = new ObjectId(await resolveUserId(db, userEmail));
+    await db.collection('tokens').insertOne({
+      userId,
+      email: userEmail.toLowerCase(),
+      type: 'password_reset',
+      token: tokenHash,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 900_000),
+    });
+  });
+  return token;
 }

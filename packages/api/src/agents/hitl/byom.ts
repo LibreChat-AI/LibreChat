@@ -171,23 +171,46 @@ export function collectNativeEditFileAgentIds(
 export class AttachedCodeEnvironmentApprovalError extends Error {
   readonly code = 'BYOM_TOOL_APPROVAL_UNSUPPORTED';
 
-  constructor() {
-    super('Attached code environments require a tool-approval capable client');
+  constructor(message = 'Attached code environments require a tool-approval capable client') {
+    super(message);
     this.name = 'AttachedCodeEnvironmentApprovalError';
   }
 }
 
-/** Prevent an approval-gated BYOM tool from running on an ingress that cannot resume it. */
+/**
+ * Prevent an approval-gated BYOM tool from running on an ingress that cannot resume it.
+ *
+ * `refuses` is the one exception: a caller that knows it cannot wait for an approval and
+ * runs anyway, refusing each call that needs one. That is a scheduled run on a deployment
+ * that cannot hold its pause. The attached-machine policy hook then denies where it would
+ * ask, so the machine's own policy still decides every call and nothing runs unapproved.
+ *
+ * `guarded` is whether the run carries that hook. A run installs it from the machines it
+ * knows when it is built, so an agent that reaches one only as it resolves passes `false`
+ * for a run built without it and is refused: nothing there would decide its calls.
+ */
 export function assertAttachedCodeEnvironmentApprovalSupported({
   hasAttachedCodeEnvironment,
   hitlCapable,
   approvalExplicitlyDisabled,
+  refuses = false,
+  guarded = true,
 }: {
   hasAttachedCodeEnvironment: boolean;
   hitlCapable: boolean;
   approvalExplicitlyDisabled: boolean;
+  refuses?: boolean;
+  guarded?: boolean;
 }): void {
-  if (hasAttachedCodeEnvironment && !hitlCapable && !approvalExplicitlyDisabled) {
+  if (!hasAttachedCodeEnvironment || approvalExplicitlyDisabled) {
+    return;
+  }
+  if (!guarded) {
+    throw new AttachedCodeEnvironmentApprovalError(
+      'An agent reached an attached code environment in a run built without its approval policy',
+    );
+  }
+  if (!hitlCapable && !refuses) {
     throw new AttachedCodeEnvironmentApprovalError();
   }
 }
@@ -441,10 +464,33 @@ export function buildAttachedCodeEnvironmentAdmissionHooks(
  * Safe default for user-operated code environments. Read-only file and search
  * operations fall through to the run-wide policy; actions that can execute code
  * or modify the workspace require approval for the agent that owns the BYOM route.
+ *
+ * With `canAsk` off the run has nobody to ask, so a call that needs approval is denied
+ * here instead of left for the SDK to block: `allow` and `deny` are unchanged, and an
+ * `ask` can only become a `deny`.
  */
 export function createAttachedCodeEnvironmentPolicyHook(
   attachedAgentIds: ReadonlySet<string>,
   settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings> = new Map(),
+  mode?: CodeApprovalMode,
+  canAsk = true,
+): HookCallback<'PreToolUse'> {
+  const hook = attachedCodeEnvironmentPolicyHook(attachedAgentIds, settingsByAgentId, mode);
+  if (canAsk) return hook;
+  return async (input, signal) => {
+    const output = await hook(input, signal);
+    if (output.decision !== 'ask') return output;
+    return {
+      ...output,
+      decision: 'deny',
+      reason: `${input.toolName} needs approval, and this run cannot wait for one`,
+    };
+  };
+}
+
+function attachedCodeEnvironmentPolicyHook(
+  attachedAgentIds: ReadonlySet<string>,
+  settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings>,
   mode?: CodeApprovalMode,
 ): HookCallback<'PreToolUse'> {
   return async (input) => {

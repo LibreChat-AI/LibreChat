@@ -4,6 +4,8 @@ import type { TCredentialsConfig } from 'librechat-data-provider';
 import { encrypt, decrypt, encryptV3, decryptV3 } from '~/crypto';
 import logger from '~/config/winston';
 
+type KeyLookup = { userId: string; name: string; activeOnly?: boolean };
+
 const V3_PREFIX = 'v3:';
 
 /** Values written by earlier releases are bare hex (fixed IV); `v3:` values carry a random IV. */
@@ -13,7 +15,7 @@ function decryptStoredKey(value: string): Promise<string> | string {
 
 /** Factory function that takes mongoose instance and returns the key methods */
 export function createKeyMethods(mongoose: typeof import('mongoose')): {
-  getUserKey: (params: { userId: string; name: string }) => Promise<string>;
+  getUserKey: (params: KeyLookup) => Promise<string>;
   updateUserKey: (params: {
     userId: string;
     name: string;
@@ -22,7 +24,7 @@ export function createKeyMethods(mongoose: typeof import('mongoose')): {
     writeFormat?: TCredentialsConfig['writeFormat'];
   }) => Promise<unknown>;
   deleteUserKey: (params: { userId: string; name?: string; all?: boolean }) => Promise<unknown>;
-  getUserKeyValues: (params: { userId: string; name: string }) => Promise<Record<string, string>>;
+  getUserKeyValues: (params: KeyLookup) => Promise<Record<string, string>>;
   getUserKeyExpiry: (params: {
     userId: string;
     name: string;
@@ -39,10 +41,13 @@ export function createKeyMethods(mongoose: typeof import('mongoose')): {
    *              If found, it decrypts the value of the key and returns it. If no key is found, it throws
    *              an error indicating that there is no user key available.
    */
-  async function getUserKey(params: { userId: string; name: string }): Promise<string> {
-    const { userId, name } = params;
+  async function getUserKey({ userId, name, activeOnly }: KeyLookup): Promise<string> {
     const Key = mongoose.models.Key;
-    const keyValue = (await Key.findOne({ userId, name }).lean()) as {
+    const keyValue = (await Key.findOne({
+      userId,
+      name,
+      ...(activeOnly ? { $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }] } : {}),
+    }).lean()) as {
       value: string;
     } | null;
     if (!keyValue) {
@@ -66,12 +71,8 @@ export function createKeyMethods(mongoose: typeof import('mongoose')): {
    *              and then attempts to parse the decrypted string into a JSON object. If the parsing fails,
    *              it throws an error indicating that the user key is invalid.
    */
-  async function getUserKeyValues(params: {
-    userId: string;
-    name: string;
-  }): Promise<Record<string, string>> {
-    const { userId, name } = params;
-    const userValues = await getUserKey({ userId, name });
+  async function getUserKeyValues(params: KeyLookup): Promise<Record<string, string>> {
+    const userValues = await getUserKey(params);
     try {
       return JSON.parse(userValues) as Record<string, string>;
     } catch (e) {

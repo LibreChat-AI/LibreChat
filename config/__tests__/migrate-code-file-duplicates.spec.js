@@ -73,7 +73,7 @@ describe('Code File Duplicate Migration Script', () => {
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
   });
 
   afterEach(async () => {

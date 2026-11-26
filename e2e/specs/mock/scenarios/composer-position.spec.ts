@@ -1,5 +1,4 @@
 import { randomUUID } from 'crypto';
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { getE2EUser } from '../../../setup/user';
 import {
@@ -8,6 +7,7 @@ import {
   seedConversations,
   seedMessages,
 } from '../db';
+import { expect, test } from '../fixtures';
 
 /**
  * Opening a conversation from the welcome screen moves the composer down by the

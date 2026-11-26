@@ -26,6 +26,32 @@
         padding: 0;
         height: 100%;
       }
+
+      /* On a slow connection the bundle can take tens of seconds, and an empty canvas reads as
+       * a broken page. The indicator is the shared Spinner's markup (packages/client
+       * src/svgs/Spinner.tsx); its rotation and reduced-motion rule come from the `.spinner`
+       * class in the main stylesheet, which loads before this canvas paints. It waits a second,
+       * so a fast load never shows it, and SVG shapes are never a contentful-paint candidate. */
+      .boot-indicator {
+        display: flex;
+        opacity: 0;
+        animation: boot-indicator-in 0.3s ease-out 1s forwards;
+      }
+
+      .boot-indicator-label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+
+      @keyframes boot-indicator-in {
+        to {
+          opacity: 1;
+        }
+      }
     </style>
     <script>
       (function () {
@@ -60,7 +86,10 @@
             /* Stored unquoted, or Web Storage denied: the raw value or the browser language. */
           }
         }
-        lang = String(lang || navigator.language || '').toLowerCase();
+        /* `auto` is the stored choice to follow the browser, as `normalizeLocale` reads it. */
+        lang = String((lang !== 'auto' && lang) || navigator.language || '').toLowerCase();
+        /* The loading indicator's label reads it below, before i18n loads. */
+        window.__lcBootLang = lang.replace(/_/g, '-');
         if (['ar', 'he', 'fa', 'ug'].indexOf(lang.split(/[-_]/)[0]) !== -1) {
           document.documentElement.dir = 'rtl';
         }
@@ -242,6 +271,9 @@
             justify-content: center;
             height: 100vh;
             background-color: ${backgroundColor};
+            /* The theme's own text role (a deployment theme sets it on the root above); the
+             * fallback is the default palette's value, for a stylesheet that has not loaded. */
+            color: rgb(var(--text-primary, ${dark ? '236 236 236' : '33 33 33'}));
           }
         `;
         document.head.appendChild(loadingContainerStyle);
@@ -414,7 +446,53 @@
   </head>
   <body>
     <div id="root">
-      <div id="loading-container"></div>
+      <div id="loading-container">
+        <div class="boot-indicator" role="status">
+          <svg
+            class="spinner"
+            width="32"
+            height="32"
+            viewBox="0 0 40 40"
+            aria-hidden="true"
+            focusable="false"
+            role="presentation"
+          >
+            <circle
+              cx="20"
+              cy="20"
+              r="14.5"
+              pathLength="100"
+              stroke-width="5"
+              fill="none"
+              stroke="currentColor"
+              stroke-opacity="0.1"
+            />
+            <circle
+              cx="20"
+              cy="20"
+              r="14.5"
+              pathLength="100"
+              stroke-width="5"
+              fill="none"
+              stroke="currentColor"
+              stroke-dasharray="25 75"
+              stroke-linecap="round"
+            />
+          </svg>
+          <span class="boot-indicator-label" id="boot-indicator-label">Loading...</span>
+        </div>
+        <script>
+          (function () {
+            /* Each locale's `com_ui_loading`, inlined at build time (`bootLoadingLabels`). */
+            var labels = '__BOOT_LOADING_LABELS__';
+            var lang = String(window.__lcBootLang || '');
+            var label = labels[lang] || labels[lang.split('-')[0]] || labels.en;
+            if (typeof label === 'string') {
+              document.getElementById('boot-indicator-label').textContent = label;
+            }
+          })();
+        </script>
+      </div>
     </div>
   </body>
 </html>

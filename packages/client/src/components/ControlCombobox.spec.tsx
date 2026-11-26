@@ -406,6 +406,37 @@ describe('ControlCombobox portal placement', () => {
 });
 
 describe('ControlCombobox search actions', () => {
+  it('keeps string-label search and selection with custom two-line options', async () => {
+    const onSelect = jest.fn();
+    render(
+      <ControlCombobox
+        selectedValue=""
+        items={[
+          { value: 'a', label: 'Assistant Engineering A123' },
+          { value: 'b', label: 'Support Finance A456' },
+        ]}
+        renderOption={({ value }) => (
+          <span>
+            <span>{value === 'a' ? 'Assistant' : 'Support'}</span>
+            <small>{value === 'a' ? 'Engineering' : 'Finance'}</small>
+          </span>
+        )}
+        optionHeight={52}
+        setValue={onSelect}
+        ariaLabel="Test combobox"
+        searchPlaceholder="Search bots"
+        isCollapsed={false}
+      />,
+    );
+    openPopover();
+    fireEvent.change(screen.getByPlaceholderText('Search bots'), { target: { value: 'A456' } });
+    const option = await screen.findByRole('option', { name: /Support/ });
+    expect(screen.queryByRole('option', { name: /Assistant/ })).not.toBeInTheDocument();
+    expect(option).toHaveStyle({ height: '52px' });
+    fireEvent.click(option);
+    expect(onSelect).toHaveBeenCalledWith('b');
+  });
+
   it('renders an actionable filter beside search without selecting an option', () => {
     const onFilter = jest.fn();
     const onSelect = jest.fn();

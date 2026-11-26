@@ -1,9 +1,9 @@
-import { expect, test } from '@playwright/test';
 import type { APIRequestContext } from '@playwright/test';
 import type { User } from '../../types';
 import { getSecondaryE2EUser } from '../../setup/users.mock';
 import cleanupUser from '../../setup/cleanupUser';
 import { NEW_CHAT_PATH } from './helpers';
+import { expect, test } from './fixtures';
 
 type AuthRecoveryTestEvent = {
   type: string;

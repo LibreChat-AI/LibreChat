@@ -1,5 +1,10 @@
 const mongoose = require('mongoose');
-const { logger, runAsSystem, tenantStorage } = require('@librechat/data-schemas');
+const {
+  logger,
+  runAsSystem,
+  tenantStorage,
+  createSubscriptions,
+} = require('@librechat/data-schemas');
 const {
   getNewS3URL,
   needsRefresh,
@@ -17,11 +22,13 @@ const {
   stopUserGenerations,
   deleteAllSharedLinksWithCleanup,
   eraseUserData,
+  createUserDeletionAttempt,
   deleteUserMCPServers,
   revokeUserCodeEnvironmentWorkers,
   finalizeMCPAuthorizationMutation,
   clearSessionHintCookie,
   compareSecret,
+  sanitizeUserForResponse,
 } = require('@librechat/api');
 const { Tools, Constants, FileSources } = require('librechat-data-provider');
 const { updateUserPluginAuth, deleteUserPluginAuth } = require('~/server/services/PluginService');
@@ -71,37 +78,6 @@ const emailChangeService = createEmailChangeService(
     appName: process.env.APP_TITLE || 'LibreChat',
   }),
 );
-
-const PUBLIC_USER_RESPONSE_FIELDS = [
-  '_id',
-  'id',
-  'name',
-  'username',
-  'email',
-  'emailVerified',
-  'avatar',
-  'provider',
-  'role',
-  'plugins',
-  'twoFactorEnabled',
-  'termsAccepted',
-  'personalization',
-  'favorites',
-  'skillStates',
-  'createdAt',
-  'updatedAt',
-  'tenantId',
-];
-
-const sanitizeUserForResponse = (user) => {
-  const source = user.toObject != null ? user.toObject() : user;
-  return PUBLIC_USER_RESPONSE_FIELDS.reduce((userData, field) => {
-    if (source[field] !== undefined) {
-      userData[field] = source[field];
-    }
-    return userData;
-  }, {});
-};
 
 const getUserController = async (req, res) => {
   const appConfig = req.config ?? (await getAppConfig(getAppConfigOptionsFromUser(req.user)));
@@ -370,6 +346,7 @@ const deleteUserController = async (req, res) => {
   let triggerDeletionFence;
   let scheduleSuspensionToken;
   let userDeleted = false;
+  const deletionAttempt = createUserDeletionAttempt();
 
   try {
     const existingUser = await db.getUserById(
@@ -391,7 +368,11 @@ const deleteUserController = async (req, res) => {
     // Block new trigger admissions across replicas while preserving the user
     // principal so a transient cleanup failure remains retryable.
     triggerDeletionFence = new Date();
-    const fenceState = await db.beginAgentTriggerUserDeletion(user.id, triggerDeletionFence);
+    const fenceState = await db.beginAgentTriggerUserDeletion(
+      user.id,
+      triggerDeletionFence,
+      deletionAttempt.id,
+    );
     if (fenceState === 'in_progress') {
       triggerDeletionFence = undefined;
       throw new Error('Agent trigger account deletion is already in progress');
@@ -425,6 +406,7 @@ const deleteUserController = async (req, res) => {
     await eraseUserData(
       {
         userId: user.id,
+        deletionAttemptId: deletionAttempt.id,
         tenantId,
         checkpointer: appConfig?.endpoints?.agents?.checkpointer,
       },
@@ -432,6 +414,7 @@ const deleteUserController = async (req, res) => {
         ...db,
         openCheckpointDeletion,
         deleteSharedLinks: (id) => deleteAllSharedLinksWithCleanup(id, { awaitCleanup: true }),
+        deleteSubscriptions: (id) => createSubscriptions(mongoose).purge(id),
         /** The DELETE carries no body without 2FA, and account erasure targets no assistant. */
         deleteStoredFiles: (files) =>
           processDeleteRequest({ req: Object.assign(Object.create(req), { body: {} }), files }),
@@ -439,7 +422,12 @@ const deleteUserController = async (req, res) => {
         onSessionsDeleted: () => clearSessionHintCookie(res),
       },
     );
-    const deleteResult = await db.deleteUserById(user.id);
+    const deleteResult = await deletionAttempt.commit(() =>
+      db.deleteUserById(user.id, {
+        startedAt: triggerDeletionFence,
+        attemptId: deletionAttempt.id,
+      }),
+    );
     if (deleteResult.deletedCount !== 1) {
       throw new Error('User disappeared before account deletion could commit');
     }
@@ -506,7 +494,14 @@ const deleteUserController = async (req, res) => {
         );
       }
       try {
-        await db.cancelAgentTriggerUserDeletion(user.id, triggerDeletionFence);
+        await deletionAttempt.cancel(
+          {
+            userId: user.id,
+            startedAt: triggerDeletionFence,
+            deletionAttemptId: deletionAttempt.id,
+          },
+          db,
+        );
       } catch (fenceError) {
         logger.error('[deleteUserController] Failed to release trigger deletion fence', fenceError);
       }

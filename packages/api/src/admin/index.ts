@@ -9,6 +9,8 @@ export { createAdminSkillsSyncAccess, createAdminSkillsSyncHandlers } from './sk
 export { createAdminUsersHandlers } from './users';
 export { createAdminAuditLogHandlers } from './auditLog';
 export { createAdminCodeEnvironmentHandlers } from './code';
+export { createAdminDeadLetterHandlers } from './dead';
+export { createAdminConnectionHandlers } from './connections';
 export { buildAuditContext } from './context';
 export { cascadeStep, runCascade } from './cascade';
 export {
@@ -34,4 +36,6 @@ export type { AdminUsersDeps } from './users';
 export type { AdminAuditLogDeps } from './auditLog';
 export type { CascadeStep, CascadeOutcome } from './cascade';
 export type { AdminCodeEnvironmentDeps } from './code';
+export type { AdminDeadLetterDeps } from './dead';
+export type { AdminConnectionDeps } from './connections';
 export type { AdminAuditEmitter, AdminAuditEvent, RecordAuditEntry } from './audit';

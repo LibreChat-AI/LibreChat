@@ -3,6 +3,7 @@ import { ChevronDown } from 'lucide-react';
 import { useDrag, useDragLayer, useDrop } from 'react-dnd';
 import { Skeleton, useMediaQuery, useToastContext, buttonVariants } from '@librechat/client';
 import type { TConversation, TEndpointsConfig } from 'librechat-data-provider';
+import type { DropTargetMonitor } from 'react-dnd';
 import type {
   SelectEndpointHandler,
   SelectSpecHandler,
@@ -108,6 +109,33 @@ const DraggablePinnedRow = ({
 }: DraggablePinnedRowProps) => {
   const ref = useRef<HTMLDivElement>(null);
   const hasHoverPointer = useMediaQuery('(hover: hover)');
+  const moveAtPointer = (
+    item: PinnedRowDragItem,
+    monitor: DropTargetMonitor<PinnedRowDragItem, unknown>,
+  ) => {
+    /* Record even the dragged row itself: returning to it ends an earlier
+     * external hover, despite having no effect on the order. */
+    markPinnedHover();
+    if (!item.key || item.key === entry.key || !ref.current) {
+      return;
+    }
+    const clientOffset = monitor.getClientOffset();
+    if (!clientOffset) {
+      return;
+    }
+    const rect = ref.current.getBoundingClientRect();
+    if (
+      shouldSwapOnHover({
+        dragIndex: indexOfKey(item.key),
+        hoverIndex: indexOfKey(entry.key),
+        pointerY: clientOffset.y,
+        hoverTop: rect.top,
+        hoverBottom: rect.bottom,
+      })
+    ) {
+      moveEntry(item.key, entry.key);
+    }
+  };
   const [{ handlerId }, drop] = useDrop<PinnedRowDragItem, unknown, { handlerId: unknown }>({
     /* A row only takes a drag of its own kind, so a pinned chat never shifts a
      * pinned agent or model out of the way — not even as a preview. The two
@@ -120,36 +148,17 @@ const DraggablePinnedRow = ({
      * itself in the drop result instead. Without that name, `end` below saw
      * `monitor.didDrop()` and read the release as a filing action, discarding
      * the arrangement: every pointer reorder snapped back on release. */
-    drop: () => PINNED_ROW_DROP_RESULT,
+    drop: (item, monitor) => {
+      // Hover runs before React DnD publishes its latest pointer offset, and
+      // the HTML5 backend batches it on RAF. A quick release may arrive first.
+      // Drop observes the final offset; settle it before end commits the order.
+      moveAtPointer(item, monitor);
+      return PINNED_ROW_DROP_RESULT;
+    },
     collect(monitor) {
       return { handlerId: monitor.getHandlerId() };
     },
-    hover(item, monitor) {
-      /* Recorded before any of the guards below, including the one for hovering
-       * the dragged row itself. Returning early there would leave an earlier
-       * external hover standing, and a drag that wandered onto a project and
-       * came back to its own position would be discarded as a filing action. */
-      markPinnedHover();
-      if (!item.key || item.key === entry.key || !ref.current) {
-        return;
-      }
-      const clientOffset = monitor.getClientOffset();
-      if (!clientOffset) {
-        return;
-      }
-      const rect = ref.current.getBoundingClientRect();
-      const swap = shouldSwapOnHover({
-        dragIndex: indexOfKey(item.key),
-        hoverIndex: indexOfKey(entry.key),
-        pointerY: clientOffset.y,
-        hoverTop: rect.top,
-        hoverBottom: rect.bottom,
-      });
-      if (!swap) {
-        return;
-      }
-      moveEntry(item.key, entry.key);
-    },
+    hover: moveAtPointer,
   });
 
   const [{ isDragging }, drag] = useDrag<PinnedRowDragItem, unknown, { isDragging: boolean }>({

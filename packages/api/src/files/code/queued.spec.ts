@@ -81,6 +81,44 @@ describe('queued code-file destinations', () => {
     expect(child.provisionState?.codeEnvDestinations?.get('shared')).toBe('data.csv');
   });
 
+  it.each([false, true])(
+    'keeps one shared snapshot name across private contributors (reverse %s)',
+    (reverse) => {
+      const shared = file('shared', { context: FileContext.execute_code_snapshot });
+      const privateFile = file('private', {
+        metadata: {
+          codeEnvRef: {
+            kind: 'agent',
+            id: 'child',
+            storage_session_id: 'private-session',
+            file_id: 'private-object',
+            sandboxFilename: 'data.csv',
+          },
+        },
+      });
+      const parent = agent('parent', [shared]);
+      const child = agent('child', [shared, privateFile]);
+      child.provisionState!.agentScopedFileIds.add('private');
+      const contexts = reverse ? [child, parent] : [parent, child];
+      for (const context of contexts) prepareQueuedCodeFileContext(context, contexts, 'user-1');
+      for (const context of contexts) {
+        const uploads = planCodeFileUploads({
+          context,
+          contexts,
+          agentId: context.id,
+          userId: 'user-1',
+          useAdvertisedNames: true,
+        });
+        expect(uploads.find(({ file }) => file.file_id === 'shared')?.destination).toBe('data.csv');
+        expect(new Set(uploads.map(({ destination }) => destination)).size).toBe(uploads.length);
+      }
+      expect(child.provisionState?.codeEnvDestinations?.get('private')).toMatch(/^data-.+\.csv$/);
+      expect(child.dynamicToolContextMap?.queued_code_files).toContain(
+        child.provisionState?.codeEnvDestinations?.get('private'),
+      );
+    },
+  );
+
   it('retains advertised paths after one file succeeds and another remains queued', () => {
     const current = agent('parent', [file('first'), file('second')]);
     prepareQueuedCodeFileContext(current, [current], 'user-1');

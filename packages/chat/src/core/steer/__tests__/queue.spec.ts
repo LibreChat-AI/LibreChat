@@ -1,5 +1,10 @@
 import type { QueuedMessage, RunEnd } from '../types';
-import { isSameRunEpoch, insertQueuedMessage, mergeQueuedMessages } from '../queue';
+import {
+  isSameRunEpoch,
+  insertQueuedMessage,
+  mergeQueuedMessages,
+  resolveLostRunOutcome,
+} from '../queue';
 
 const item = (id: string, createdAt: number, priority?: boolean): QueuedMessage => ({
   id,
@@ -45,5 +50,24 @@ describe('isSameRunEpoch', () => {
     expect(isSameRunEpoch(end({}), end({ endedAt: 2 }))).toBe(false);
     expect(isSameRunEpoch(end({ conversationId: 'd' }), end({}))).toBe(false);
     expect(isSameRunEpoch(null, end({}))).toBe(false);
+  });
+});
+
+describe('resolveLostRunOutcome', () => {
+  it.each([
+    ['completed, with its rows read', { status: 'complete', createdAt: 2000 }, true, 'completed'],
+    ['completed, by a status that names no generation', { status: 'complete' }, true, 'completed'],
+    [
+      'completed, but its rows could not be read',
+      { status: 'complete', createdAt: 2000 },
+      false,
+      'error',
+    ],
+    ['stopped', { status: 'aborted', createdAt: 2000 }, true, 'aborted'],
+    ['failed', { status: 'error', createdAt: 2000 }, true, 'error'],
+    ['gone from the server’s records', {}, true, 'error'],
+    ['another generation’s status', { status: 'complete', createdAt: 9000 }, true, 'error'],
+  ] as const)('%s', (_case, status, read, outcome) => {
+    expect(resolveLostRunOutcome(status, 2000, read)).toBe(outcome);
   });
 });

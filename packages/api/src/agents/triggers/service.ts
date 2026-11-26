@@ -6,6 +6,7 @@ import {
   AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
   logger,
   runAsSystem,
 } from '@librechat/data-schemas';
@@ -27,21 +28,25 @@ import type {
   AgentTriggerExecutionResult,
 } from './host';
 import type { AgentTriggerEnqueueOptions, PreparedAgentTriggerDelivery } from './delivery';
+import type { AgentTriggerEnvelope } from './envelope';
 import type { BoundAddress } from '../../app/origin';
 import { AgentTriggerDeliveryDeferredError, createAgentTriggerDeliveryEngine } from './engine';
 import { BACKGROUND_TOOL_COMPLETION_SOURCE } from '../backgroundCompletionWakeup';
 import { isShutdownInProgress, registerShutdownTask } from '../../app/shutdown';
+import { createIdleRecoveryLoop, resolveIdleCeilingMs } from '../recovery';
 import { SUBAGENT_COMPLETION_SOURCE } from '../subagentCompletionWakeup';
 import { generateAgentTriggerToken } from '../../crypto/jwt';
+import { AGENT_QUEUED_TURN_SOURCE } from '../queuedTurns';
 import { prepareAgentTriggerDelivery } from './delivery';
 import { selfOriginFromAddress } from '../../app/origin';
 import { createAgentTriggerExecutionHost } from './host';
 import { parseAgentTriggerEnvelope } from './envelope';
-import { createIdleRecoveryLoop } from '../recovery';
 import { WAITING_RETRY_CAP_MS } from './backoff';
 
 /** Internal sources whose deliveries wait on a result or on their parent generation. */
 const COMPLETION_WAKEUP_SOURCES = [BACKGROUND_TOOL_COMPLETION_SOURCE, SUBAGENT_COMPLETION_SOURCE];
+/** A settled generation also releases the user's queued turns, which wake-ups yield to. */
+const SETTLED_CONVERSATION_SOURCES = [...COMPLETION_WAKEUP_SOURCES, AGENT_QUEUED_TURN_SOURCE];
 
 export const AGENT_TRIGGER_TOKEN_TTL = '60s';
 const DEFAULT_USER_DRAIN_TIMEOUT_MS = 35_000;
@@ -55,6 +60,10 @@ export interface AgentTriggerServiceOptions {
   completionReceiptBatching?: boolean;
   address?: BoundAddress | string | null;
   deadLetterRetentionDays?: number;
+  /** The deployment-wide `eventDriven.idlePolling.maxIntervalMs`, when configured. It replaces the
+   *  delivery claim and maintenance caps below, and `queuedTurnMaxIntervalMs` where the host
+   *  starts the queued-turn loop. */
+  idleCeilingMs?: number;
   idlePolling?: {
     queuedTurnMaxIntervalMs?: number;
     maintenanceMaxIntervalMs?: number;
@@ -68,7 +77,18 @@ export type AgentTriggerCompletionExpedite =
   | { user: string; conversationId: string; taskIds?: string[] }
   | { deliveryKeys: string[] };
 
+export interface AgentTriggerSourceDispatcher {
+  workerCapability: string;
+  dispatch: AgentTriggerExecutionHost['dispatch'];
+  /** Bounded source publication recovery. The canonical queue owns scheduling. */
+  recoverPending?: (limit: number, activity: { found: boolean }) => Promise<number>;
+}
+
 export interface AgentTriggerServiceDeps {
+  /** Protocol-owned execution handlers reuse this queue without going through chat ingress. */
+  sourceDispatchers?: ReadonlyMap<string, AgentTriggerSourceDispatcher>;
+  /** Source-owned live authority recheck immediately before queued dispatch. */
+  authorizeSource?: (envelope: AgentTriggerEnvelope) => Promise<void>;
   fetch?: AgentTriggerExecutionHostDeps['fetch'];
   getTimezone?: AgentTriggerExecutionHostDeps['getTimezone'];
   prepareContinue?: AgentTriggerExecutionHostDeps['prepareContinue'];
@@ -109,6 +129,27 @@ export class AgentTriggerServiceUnavailableError extends AgentTriggerDeliveryDef
     super(message);
     this.name = 'AgentTriggerServiceUnavailableError';
   }
+}
+
+/** Acyclic composition seam: install the canonical producer before listening.
+ * Readiness remains owned by that producer; binding never caches a ready flag. */
+export function createAgentTriggerProducerBinding() {
+  let producer: Pick<AgentTriggerService, 'enqueue' | 'isReady'> | undefined;
+  return {
+    bind(value: Pick<AgentTriggerService, 'enqueue' | 'isReady'>): void {
+      if (producer && (producer.enqueue !== value.enqueue || producer.isReady !== value.isReady))
+        throw new Error('Agent trigger producer is already bound');
+      producer = { enqueue: value.enqueue, isReady: value.isReady };
+    },
+    isReady: (): boolean => producer?.isReady() === true,
+    enqueue: async (
+      ...args: Parameters<AgentTriggerService['enqueue']>
+    ): ReturnType<AgentTriggerService['enqueue']> => {
+      if (!producer)
+        throw new AgentTriggerServiceUnavailableError('Agent trigger producer is not bound');
+      return producer.enqueue(...args);
+    },
+  };
 }
 
 export interface AgentTriggerStoredHistoryEntry {
@@ -165,6 +206,7 @@ export interface AgentTriggerDeliveryPersistence {
   requeueAgentTriggerDelivery: (
     id: string,
     availableAt: Date,
+    scope?: { tenantId: string | undefined; except?: readonly string[] },
   ) => Promise<AgentTriggerStoredRecord | null>;
   countActiveAgentTriggerDeliveriesByUser: (userId: string, now: Date) => Promise<number>;
   recoverAgentTriggerLanePublications: (
@@ -195,6 +237,8 @@ export interface AgentTriggerDeliveryPersistence {
 }
 
 export interface AgentTriggerService {
+  /** Canonical producer admission capability, including shutdown and durable queue readiness. */
+  isReady: () => boolean;
   initialize: (options?: AgentTriggerServiceOptions) => Promise<void>;
   stop: () => Promise<void>;
   dispatch: (
@@ -213,7 +257,12 @@ export interface AgentTriggerService {
     tenantId?: string,
   ) => Promise<AgentTriggerDeliveryStatusRecord | null>;
   getDeadLetters: (limit?: number) => Promise<AgentTriggerStoredRecord[]>;
-  requeue: (id: string, availableAt?: Date) => Promise<AgentTriggerStoredRecord | null>;
+  /** With a `scope`, only a dead delivery of that tenant partition is revived, and none from a source in `except`. */
+  requeue: (
+    id: string,
+    availableAt?: Date,
+    scope?: { tenantId: string | undefined; except?: readonly string[] },
+  ) => Promise<AgentTriggerStoredRecord | null>;
   retire: (
     deliveryKey: string,
     sourceId: string,
@@ -269,17 +318,20 @@ function createDeliveryStore(
   methods: AgentTriggerDeliveryPersistence,
   supportsDetachedActionCompletion: () => boolean,
   wakeMaintenance: () => void,
+  sourceCapabilities: string[] = [],
 ): AgentTriggerDeliveryStore {
   return {
     claimNext: (input) =>
       methods.claimNextAgentTriggerDelivery({
         ...input,
         workerCapabilities: [
+          ...sourceCapabilities,
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
+          AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V3,
           ...(supportsDetachedActionCompletion()
             ? [AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1]
             : []),
@@ -389,13 +441,17 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
     ...(deps.timeoutMs != null && { timeoutMs: deps.timeoutMs }),
   });
 
+  const readyMethods = (): AgentTriggerDeliveryPersistence | undefined =>
+    deliveryReady && !isShutdownInProgress() ? deps.methods : undefined;
+
   const requireMethods = (): AgentTriggerDeliveryPersistence => {
-    if (deps.methods == null || !deliveryReady || isShutdownInProgress()) {
+    const methods = readyMethods();
+    if (methods == null) {
       throw new AgentTriggerServiceUnavailableError(
         'Durable agent trigger delivery is not ready on this server',
       );
     }
-    return deps.methods;
+    return methods;
   };
 
   const requireCleanupMethods = (): AgentTriggerDeliveryPersistence => {
@@ -427,6 +483,9 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
   ): Promise<AgentTriggerExecutionResult> => {
     const parsed = parseAgentTriggerEnvelope(envelope);
     await requireActivePrincipal(parsed.principal.userId);
+    await deps.authorizeSource?.(parsed);
+    const source = deps.sourceDispatchers?.get(parsed.event.source.type);
+    if (source) return source.dispatch(parsed, options);
     return host.dispatch(parsed, options);
   };
 
@@ -490,6 +549,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         batchRecovery,
         expiredLegacyActorReceipts,
         retiredCheckpointDeletions,
+        recoveredSourceOutboxes,
       ] = await Promise.all([
         isolated('user purges', () =>
           methods.recoverAgentTriggerUserPurges(purgeRecoveryLimit, activity),
@@ -522,6 +582,14 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
           () =>
             deps.reclaimCheckpointDeletions?.(purgeRecoveryLimit, activity) ?? Promise.resolve(0),
         ),
+        Promise.all(
+          [...(deps.sourceDispatchers?.entries() ?? [])].map(([name, source]) =>
+            isolated(
+              `source outbox ${name}`,
+              () => source.recoverPending?.(purgeRecoveryLimit, activity) ?? Promise.resolve(0),
+            ),
+          ),
+        ).then((counts) => counts.reduce((sum, count) => sum + count, 0)),
       ]);
       const recoveredBatches = batchRecovery.count;
       const reclaimedLanes = batchRecovery.succeeded
@@ -538,7 +606,8 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         recoveredBatches > 0 ||
         reclaimedLanes > 0 ||
         expiredLegacyActorReceipts > 0 ||
-        retiredCheckpointDeletions > 0
+        retiredCheckpointDeletions > 0 ||
+        recoveredSourceOutboxes > 0
       ) {
         logger.info('[agent-triggers] recovered durable delivery maintenance', {
           purgedUsers,
@@ -547,6 +616,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
           reclaimedLanes,
           expiredLegacyActorReceipts,
           retiredCheckpointDeletions,
+          recoveredSourceOutboxes,
         });
       }
       return (
@@ -557,7 +627,8 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         recoveredBatches === 0 &&
         reclaimedLanes === 0 &&
         expiredLegacyActorReceipts === 0 &&
-        retiredCheckpointDeletions === 0
+        retiredCheckpointDeletions === 0 &&
+        recoveredSourceOutboxes === 0
       );
     })
       .catch((error) => {
@@ -582,7 +653,12 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
    * claim pass always runs: a matching delivery may already be due here without
    * having moved. Best effort: a missed expedite only means the delivery
    * re-checks at its backoff instead of immediately. */
-  const expediteCompletions = (input: AgentTriggerCompletionExpedite): void => {
+  const expediteCompletions = (
+    input: AgentTriggerCompletionExpedite,
+    sourceIds: readonly string[] = 'user' in input && input.taskIds != null
+      ? [SUBAGENT_COMPLETION_SOURCE]
+      : COMPLETION_WAKEUP_SOURCES,
+  ): void => {
     const expedite = deps.methods?.expediteAgentTriggerDeliveries;
     if (expedite == null || !deliveryReady || stopping) {
       return;
@@ -596,10 +672,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
               ...(input.taskIds != null && { taskIds: input.taskIds }),
             }
           : { deliveryKeys: input.deliveryKeys }),
-        sourceIds:
-          'user' in input && input.taskIds != null
-            ? [SUBAGENT_COMPLETION_SOURCE]
-            : COMPLETION_WAKEUP_SOURCES,
+        sourceIds,
         now: new Date(),
       }),
     )
@@ -630,6 +703,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
   }
 
   return {
+    isReady: () => readyMethods() != null,
     initialize: (options = {}) => {
       backgroundCompletionResultBatchSize = options.completionResultBatchSize ?? 8;
       backgroundCompletionReceiptBatching =
@@ -655,9 +729,13 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         requireDeliveryOrigin(boundOrigin);
         purgeRecoveryLoop = createIdleRecoveryLoop({
           intervalMs: purgeRecoveryIntervalMs,
-          maxIdleIntervalMs:
-            options.idlePolling?.maintenanceMaxIntervalMs ??
-            Math.max(purgeRecoveryIntervalMs, DEFAULT_PURGE_RECOVERY_MAX_IDLE_INTERVAL_MS),
+          maxIdleIntervalMs: resolveIdleCeilingMs({
+            intervalMs: purgeRecoveryIntervalMs,
+            defaultMs:
+              options.idlePolling?.maintenanceMaxIntervalMs ??
+              Math.max(purgeRecoveryIntervalMs, DEFAULT_PURGE_RECOVERY_MAX_IDLE_INTERVAL_MS),
+            ceilingMs: options.idleCeilingMs,
+          }),
           scan: recoverPurges,
           onError: (error) =>
             logger.error('[agent-triggers] durable delivery maintenance failed:', error),
@@ -668,10 +746,17 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
             'Durable agent trigger delivery cannot start during shutdown',
           );
         }
+        const deliveryCeilingMs =
+          options.idleCeilingMs ?? options.idlePolling?.deliveryMaxIntervalMs;
         deliveryEngine = createAgentTriggerDeliveryEngine(
           {
-            store: createDeliveryStore(methods, supportsDetachedActionCompletion, () =>
-              purgeRecoveryLoop?.wake(),
+            store: createDeliveryStore(
+              methods,
+              supportsDetachedActionCompletion,
+              () => purgeRecoveryLoop?.wake(),
+              [...(deps.sourceDispatchers?.values() ?? [])].flatMap((source) => [
+                source.workerCapability,
+              ]),
             ),
             dispatch: dispatchForActivePrincipal,
             ...(deps.settleSourceBeforeDeadLetter != null && {
@@ -683,17 +768,18 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
             ...(options.deadLetterRetentionDays != null && {
               deadLetterRetentionMs: options.deadLetterRetentionDays * 24 * 60 * 60_000,
             }),
-            ...(options.idlePolling?.deliveryMaxIntervalMs != null && {
-              maxIdleTickMs: options.idlePolling.deliveryMaxIntervalMs,
-            }),
+            ...(deliveryCeilingMs != null && { maxIdleTickMs: deliveryCeilingMs }),
           },
         );
         deliveryReady = true;
         deliveryEngine.start();
         /** Deliveries waiting on a parent resume that parent's conversation, so a
-         * settled generation wakes only those, not every waiting task of the user. */
+         * settled generation wakes only those, not every waiting task of the user.
+         * Queued turns move with them: wake-ups defer to a pending queued turn,
+         * which must not wait out its own readiness backoff behind them. */
         unsubscribeGenerationSettled ??= deps.subscribeGenerationSettled?.(
-          ({ userId, conversationId }) => expediteCompletions({ user: userId, conversationId }),
+          ({ userId, conversationId }) =>
+            expediteCompletions({ user: userId, conversationId }, SETTLED_CONVERSATION_SOURCES),
         );
         startPurgeRecovery();
         logger.info('[agent-triggers] durable delivery engine started');
@@ -761,11 +847,14 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
       ),
     getDeadLetters: (limit) =>
       runAsSystem(async () => requireMethods().getAgentTriggerDeadLetters(limit)),
-    requeue: (id, availableAt = new Date()) =>
+    requeue: (id, availableAt = new Date(), scope) =>
       runAsSystem(async () => {
         const methods = requireMethods();
         const revived = await withMaintenanceRecovery(
-          () => methods.requeueAgentTriggerDelivery(id, availableAt),
+          () =>
+            scope == null
+              ? methods.requeueAgentTriggerDelivery(id, availableAt)
+              : methods.requeueAgentTriggerDelivery(id, availableAt, scope),
           () => purgeRecoveryLoop?.wake(),
         );
         if (revived != null) {

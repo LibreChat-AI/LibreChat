@@ -20,6 +20,11 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string) => key,
+}));
+
 const populatedBuildInfo: NonNullable<TStartupConfig['buildInfo']> = {
   commit: 'abcdef1234567890abcdef1234567890abcdef12',
   commitShort: 'abcdef1',

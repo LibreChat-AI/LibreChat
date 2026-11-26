@@ -88,8 +88,8 @@ export function getUploadedCodeEnvFilename(
 
 export function appendCodeEnvFile(
   form: FormData,
-  stream: NodeJS.ReadableStream,
+  content: NodeJS.ReadableStream | Buffer,
   filename: string,
 ): void {
-  form.append('file', stream, getCodeEnvFileOptions(filename));
+  form.append('file', content, getCodeEnvFileOptions(filename));
 }

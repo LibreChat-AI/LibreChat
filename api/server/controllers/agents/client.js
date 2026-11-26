@@ -6,12 +6,14 @@ const { getBufferString, HumanMessage } = require('@librechat/agents/langchain/m
 const {
   createRun,
   isEnabled,
+  settleOutputTruncation,
   checkAccess,
   buildRunToolSet,
   logToolError,
   sanitizeTitle,
   payloadParser,
   createSafeUser,
+  createSafeAgent,
   initializeAgent,
   resolveConfigHeaders,
   resolveRequestTenantId,
@@ -26,9 +28,12 @@ const {
   isMemoryAgentEnabled,
   recordCollectedUsage,
   resolveRunUsageContext,
-  getScheduleMCPExecution,
+  grantExecution,
+  scheduleExecution,
+  asksEveryUse,
   createScheduledMCPPolicyRecorder,
   recordFallbackTokenUsage,
+  getAgentPromptTokenEstimate,
   createDetachedSubagentUsageRecorder,
   sendEvent,
   computeUsageCostUSD,
@@ -68,6 +73,7 @@ const {
   collectAttachedCodeApprovalPolicies,
   collectAttachedCodeRoutePolicies,
   buildAttachedCodeEnvironmentAdmissionHooks,
+  approvalHooks,
   resolveAttachedCodeApprovalMode,
   resolvePersistedCodeApprovalMode,
   getCodeApprovalPreservedFields,
@@ -78,6 +84,7 @@ const {
   collectAllowAlwaysAliases,
   agentRunUsesCheckpointer,
   canAgentGraphPause,
+  resolveRunPause,
   getPluginHookSource,
   captureAgentCheckpointGeneration,
   isContentFilterError,
@@ -142,6 +149,7 @@ const {
   countFormattedMessageTokens,
   prependFileContext,
   prependQuotes,
+  appendEvent,
   applyAttachmentOnlyText,
   hydrateMissingIndexTokenCounts,
   injectSkillPrimes,
@@ -154,6 +162,7 @@ const {
   logAgentMemorySnapshot,
   createAgentMemoryCallback,
   assertAgentAttachmentLimits,
+  collectTurnHistoricalIds,
   assertAgentAttachmentTopology,
   collectHistoricalAttachmentIds,
   admitSteerAttachmentHistory,
@@ -171,7 +180,8 @@ const {
   hasYouTubeVideoParts,
   appendYouTubeVideoParts,
   resolveGoogleVideoError,
-  resolveLangChainError,
+  getUserFacingRequestError,
+  hasGenerationContentProtection,
   resolveYouTubeInjectionConfig,
   decrementPendingRequest,
   maybePrewarmCodeSandbox,
@@ -187,10 +197,14 @@ const {
   rejectPrivateTextAdmission,
   createInitialModelBoundAdmissionCallback,
   hasModelBoundContentProtection,
+  allowsAssistantSideEffects,
+  runAssistantSideEffect,
+  isInteractiveAssistantRequest,
   assertResumeRuntimeContentAllowed,
   collectReachableAgents,
   isStatefulCodeEnvironmentToolName,
   stampMcpServerIdentities,
+  attachSubagentContent,
   getDynamicToolContexts,
   getSafeErrorMetadata,
   createInitializedAgentContextFingerprint,
@@ -214,6 +228,8 @@ const {
   getChatProjectContextKey,
   isTemporaryTurn,
   hasEntityEmbeddings,
+  restoreGoogleThoughtSignatures,
+  getGoogleHistoryFormatOptions,
 } = require('@librechat/api');
 const {
   Run,
@@ -231,7 +247,6 @@ const {
   UsageEvents,
   Permissions,
   VisionModes,
-  ErrorTypes,
   ContentTypes,
   FileSources,
   ApprovalEvents,
@@ -242,7 +257,6 @@ const {
   isAgentsEndpoint,
   isEphemeralAgentId,
   removeNullishValues,
-  stripLangChainTroubleshootingUrl,
   DEFAULT_MEMORY_MAX_INPUT_TOKENS,
 } = require('librechat-data-provider');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
@@ -361,35 +375,6 @@ function captureRunContextMeta(client) {
   });
 }
 
-/**
- * User-visible text for a failed run. LangChain classifies provider errors by mutating
- * `error.message` with a docs URL, so a classified failure becomes typed copy the client localizes
- * and everything else keeps the provider's own wording with that URL removed. The untouched error
- * still reaches the logs through `getSafeErrorMetadata`.
- */
-function getUserFacingRequestError(baseMessage, error, appConfig) {
-  /** Carries no model or user content, so it is safe under every filter. */
-  if (error?.name === 'ManualSummarizationSkippedError') {
-    return JSON.stringify({ type: ErrorTypes.COMPACTION_SKIPPED, reason: error.reason });
-  }
-  const protectionEnabled = hasModelBoundContentProtection(
-    appConfig?.filters,
-    appConfig?.messageFilter?.pii,
-  );
-  if (protectionEnabled || !error?.message) {
-    return baseMessage;
-  }
-  const typedError = resolveLangChainError(error);
-  if (typedError != null) {
-    return typedError;
-  }
-  const message = stripLangChainTroubleshootingUrl(error.message);
-  if (!message) {
-    return baseMessage;
-  }
-  return `${baseMessage}: ${message}`;
-}
-
 class AgentClient extends BaseClient {
   getModelBoundAttachmentsForEndpoint(attachments) {
     return filterFilesByEndpointRuntimeConfig(this.options.req.config, {
@@ -414,7 +399,7 @@ class AgentClient extends BaseClient {
     );
   }
 
-  async addDocuments(message, attachments) {
+  async addDocuments(message, attachments, onMissingFile) {
     const memoryContext = {
       req: this.options.req,
       conversationId: this.conversationId,
@@ -423,13 +408,13 @@ class AgentClient extends BaseClient {
     };
     logAgentMemorySnapshot('before_encode_documents', memoryContext);
     try {
-      return await super.addDocuments(message, attachments);
+      return await super.addDocuments(message, attachments, onMissingFile);
     } finally {
       logAgentMemorySnapshot('after_encode_documents', memoryContext);
     }
   }
 
-  async processAttachments(message, attachments, fileConsumers) {
+  async processAttachments(message, attachments, fileConsumers, onMissingFile) {
     const modelBoundAttachments = this.getModelBoundAttachmentsForEndpoint(attachments);
     const processableAttachments = this.getProcessableAttachmentsForEndpoint(
       attachments,
@@ -450,7 +435,12 @@ class AgentClient extends BaseClient {
     };
     logAgentMemorySnapshot('before_process_attachments', memoryContext);
     try {
-      return await super.processAttachments(message, processableAttachments, fileConsumers);
+      return await super.processAttachments(
+        message,
+        processableAttachments,
+        fileConsumers,
+        onMissingFile,
+      );
     } finally {
       logAgentMemorySnapshot('after_process_attachments', memoryContext);
     }
@@ -540,10 +530,11 @@ class AgentClient extends BaseClient {
     const compatibleCurrentAttachments =
       this.getModelBoundAttachmentsForEndpoint(currentAttachments);
     this.turnSteerAttachmentHistory = undefined;
-    this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
-      historicalAttachments,
-      currentAttachments,
-    );
+    this.turnHistoricalAttachmentIds = collectTurnHistoricalIds({
+      historical: historicalAttachments,
+      attachments: currentAttachments,
+      requested: this.options.currentRequestAttachments,
+    });
     const sharedAttachments = [...compatibleHistoricalAttachments, ...compatibleCurrentAttachments];
     const sharedAttachmentIds = collectFileIds(sharedAttachments);
     const agents = collectReachableAgents([
@@ -648,6 +639,7 @@ class AgentClient extends BaseClient {
       subagentAggregatorsByToolCallId,
       contextUsageSink,
       usageEmitSink,
+      truncationSink,
       toolInputValidationErrors,
       ...clientOptions
     } = options;
@@ -666,6 +658,9 @@ class AgentClient extends BaseClient {
      *  persisted on `metadata.usage`.
      *  @type {Array<import('librechat-data-provider').TTokenUsageEvent> | undefined} */
     this.usageEmitSink = usageEmitSink;
+    /** Whether the latest answer call hit its output limit, filled by the model-end handler.
+     *  @type {import('@librechat/api').OutputTruncationSink | undefined} */
+    this.truncationSink = truncationSink;
     /** Schema-validation exceptions keyed by tool-call ID. The completion
      *  handler consumes these to distinguish execution failures from tool
      *  output that merely contains similar text.
@@ -679,11 +674,7 @@ class AgentClient extends BaseClient {
     this.stepMap = stepMap;
     /** @type {Array<UsageMetadata>} */
     this.collectedUsage = collectedUsage;
-    /** Vertex Gemini 3 thought signatures captured during the run, keyed by
-     *  `tool_call_id`. Persisted on `responseMessage.metadata.thoughtSignatures`
-     *  and restored as `additional_kwargs.signatures` on subsequent turns to
-     *  keep tool round-trips valid across DB reconstruction.
-     *  @type {Record<string, string> | undefined} */
+    /** @type {import('@librechat/api').GoogleThoughtSignatures | undefined} */
     this.collectedThoughtSignatures = collectedThoughtSignatures;
     /** @type {ArtifactPromises} */
     this.artifactPromises = artifactPromises;
@@ -796,46 +787,17 @@ class AgentClient extends BaseClient {
   }
 
   /**
-   * Harvest the `contentParts` from each per-subagent `createContentAggregator`
-   * instance and attach them onto the matching parent `subagent` tool_call
-   * as `subagent_content`. Runs once per message save (from
-   * `sendCompletion`'s `finally`) so the child's full reasoning / tool
-   * calls / final text survive a page refresh — the client-side Recoil
-   * atom is session-only. Aggregators keyed by a tool_call_id that never
-   * appeared in `contentParts` are discarded (no home to attach to).
+   * Attaches each buffered child to the `subagent` call that started it, at any depth, so the
+   * child's activity survives a reload. Runs once per message save (from `sendCompletion`'s
+   * `finally`).
    */
   finalizeSubagentContent() {
-    const buffer = this.subagentAggregatorsByToolCallId;
-    if (!buffer || buffer.size === 0 || !Array.isArray(this.contentParts)) {
-      return;
-    }
-    for (const part of this.contentParts) {
-      if (part?.type !== ContentTypes.TOOL_CALL) continue;
-      const toolCall = part[ContentTypes.TOOL_CALL];
-      if (!toolCall || toolCall.name !== Constants.SUBAGENT || !toolCall.id) continue;
-      const aggregator = buffer.get(toolCall.id);
-      if (!aggregator) continue;
-      try {
-        if (aggregator.subagentIdentity != null) {
-          toolCall.subagentIdentity = aggregator.subagentIdentity;
-        }
-        /** `createContentAggregator` returns a sparse array (undefined
-         *  slots for indices that never received content). Strip those
-         *  so the persisted shape is a clean `TMessageContentParts[]`. */
-        const parts = Array.isArray(aggregator.contentParts)
-          ? aggregator.contentParts.filter((p) => p != null)
-          : [];
-        if (parts.length > 0) {
-          toolCall.subagent_content = parts;
-        }
-      } catch (err) {
-        logger.warn(
-          `[AgentClient] Failed to attach subagent content for tool_call ${toolCall.id}`,
-          getSafeErrorMetadata(err),
-        );
-      }
-    }
-    buffer.clear();
+    attachSubagentContent(this.contentParts, this.subagentAggregatorsByToolCallId, (id, err) =>
+      logger.warn(
+        `[AgentClient] Failed to attach subagent content for tool_call ${id}`,
+        getSafeErrorMetadata(err),
+      ),
+    );
   }
 
   /** Stamps host-resolved MCP identities onto persisted calls so future replay
@@ -2139,7 +2101,7 @@ class AgentClient extends BaseClient {
    * @param {Array<MongoFile>} attachments
    * @returns {Promise<Array<Partial<MongoFile>>>}
    */
-  async addImageURLs(message, attachments) {
+  async addImageURLs(message, attachments, onMissingFile) {
     const { files, image_urls } = await encodeAndFormat(
       this.options.req,
       attachments,
@@ -2147,6 +2109,7 @@ class AgentClient extends BaseClient {
         provider: this.options.agent.provider,
         endpoint: this.options.endpoint,
         imageDetail: this.options.imageDetail,
+        onMissingFile,
       },
       VisionModes.agents,
     );
@@ -2509,6 +2472,7 @@ class AgentClient extends BaseClient {
       requestAttachments,
       sharedRunAttachmentIds,
       attachmentsByAgentId: this.options.agentContextAttachmentsByAgentId,
+      excluded: this.options.excludedFiles,
     });
     const scopedAttachmentMap = buildAgentScopedAttachmentMap({
       agentIds: allAgents.map(({ agentId }) => agentId),
@@ -2520,10 +2484,11 @@ class AgentClient extends BaseClient {
       endpointsByAgentId,
     });
     this.turnSteerAttachmentHistory = undefined;
-    this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
-      this.authorizedHistoricalFiles?.values() ?? sharedAttachmentFiles,
-      requestAttachments,
-    );
+    this.turnHistoricalAttachmentIds = collectTurnHistoricalIds({
+      historical: this.authorizedHistoricalFiles?.values() ?? sharedAttachmentFiles,
+      attachments: requestAttachments,
+      requested: this.options.currentRequestAttachments,
+    });
     this.turnSharedAttachmentFiles = sharedAttachmentFiles;
     this.turnAggregateOnlyAttachmentFiles = retainedHistoricalFileContexts;
     this.turnScopedAttachmentsByAgentId = scopedAttachmentMap;
@@ -2628,6 +2593,8 @@ class AgentClient extends BaseClient {
     const tokenCountMap = {};
     const memoryPayload = [];
     let hasFileContext = false;
+    /** Some row's model copy holds text the memory agent must not read (`appendEvent`). */
+    let needsMemoryCopy = false;
     let promptTokenTotal = 0;
     const encoding = this.getEncoding();
     /**
@@ -2693,6 +2660,9 @@ class AgentClient extends BaseClient {
         prependQuotes(formattedMessage, message.quotes);
       }
 
+      const added = appendEvent(formattedMessage, message.trigger);
+      needsMemoryCopy ||= added.memoryCopy;
+
       /**
        * An attachment-only turn whose files reach the model out-of-band (file
        * search, code environment) leaves nothing in the content itself, and
@@ -2728,7 +2698,8 @@ class AgentClient extends BaseClient {
       const needsCanonicalTokenCount =
         !hasDbTokenCount ||
         (this.isVisionModel && (message.image_urls || message.files)) ||
-        (Array.isArray(message.quotes) && message.quotes.length > 0);
+        (Array.isArray(message.quotes) && message.quotes.length > 0) ||
+        added.recount;
 
       let canonicalTokenCount = hasDbTokenCount ? dbTokenCount : 0;
       if (needsCanonicalTokenCount) {
@@ -2908,7 +2879,7 @@ class AgentClient extends BaseClient {
     }
     /** After the steer stamp, which adds replayed steers' documents of its own. */
     dedupeDocumentNames(payload, agentsById.values());
-    if (hasFileContext) {
+    if (hasFileContext || needsMemoryCopy) {
       for (let i = 0; i < orderedMessages.length; i++) {
         memoryPayload.push(
           memoryFormattedMessages[i] ?? buildMemoryFormattedMessage(orderedMessages[i]),
@@ -2934,7 +2905,7 @@ class AgentClient extends BaseClient {
         });
       }
     }
-    this.memoryPayload = hasFileContext ? memoryPayload : null;
+    this.memoryPayload = hasFileContext || needsMemoryCopy ? memoryPayload : null;
     messages = orderedMessages;
     promptTokens = promptTokenTotal;
 
@@ -2952,7 +2923,10 @@ class AgentClient extends BaseClient {
     ]);
 
     this.retainedAnswers = await retainedAnswersPromise;
-    promptTokens += this.retainedAnswers.tokenCount;
+    promptTokens = getAgentPromptTokenEstimate(
+      promptTokens + this.retainedAnswers.tokenCount,
+      this.maxContextTokens,
+    );
 
     /** Augmented prompt from RAG/context handlers */
     this.augmentedPrompt = augmentedPrompt;
@@ -3308,7 +3282,7 @@ class AgentClient extends BaseClient {
    */
   async useMemory() {
     const user = this.options.req.user;
-    if (user.personalization?.memories === false) {
+    if (!allowsAssistantSideEffects(this.options.req.config, user.personalization?.memories)) {
       return;
     }
     const hasAccess = await checkAccess({
@@ -3434,6 +3408,7 @@ class AgentClient extends BaseClient {
         hasEntityEmbeddings,
         getUserKey: db.getUserKey,
         getConvoFiles: db.getConvoFiles,
+        getConvoExcludedFiles: db.getConvoExcludedFiles,
         getAccessibleMcpServerNames,
         updateFilesUsage: db.updateFilesUsage,
         getUserKeyValues: db.getUserKeyValues,
@@ -3475,6 +3450,9 @@ class AgentClient extends BaseClient {
       userId,
       agentId: memoryAgentId,
       config,
+      appConfig: this.options.req.config,
+      isTemporary: isTemporaryTurn(this.options.req),
+      traceContext: buildTraceContext(this.options),
       filters: this.options.req.config?.filters,
       messageId,
       streamId,
@@ -3489,6 +3467,7 @@ class AgentClient extends BaseClient {
       req: this.options.req,
       res: this.options.res,
       user: createSafeUser(this.options.req.user),
+      primaryAgent: createSafeAgent(this.options.agent),
       tenantId: resolveRequestTenantId(this.options.req),
     });
 
@@ -3711,14 +3690,14 @@ class AgentClient extends BaseClient {
    * which rebuild the gauge breakdown and branch/total cost across reloads.
    * Returns undefined when nothing was captured.
    * @returns {{
-   *   thoughtSignatures?: Record<string, string>,
+   *   thoughtSignatures?: import('@librechat/api').GoogleThoughtSignatures,
    *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
    *   usage?: import('librechat-data-provider').TResponseUsage,
    * } | undefined}
    */
   buildResponseMetadata() {
     /** @type {{
-     *   thoughtSignatures?: Record<string, string>,
+     *   thoughtSignatures?: import('@librechat/api').GoogleThoughtSignatures,
      *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
      *   usage?: import('librechat-data-provider').TResponseUsage,
      * }} */
@@ -4449,6 +4428,7 @@ class AgentClient extends BaseClient {
                 appConfig,
               },
               pluginHookSource: getPluginHookSource(),
+              asksEveryUse: asksEveryUse(this.options.req),
             },
           )
         : interrupt.payload;
@@ -4566,10 +4546,7 @@ class AgentClient extends BaseClient {
       responseMessageId: this.responseMessageId,
       source: '[api/server/controllers/agents/client.js #sendCompletion]',
       genericMessage: '[api/server/controllers/agents/client.js #sendCompletion] Unhandled error',
-      protectionEnabled: hasModelBoundContentProtection(
-        appConfig?.filters,
-        appConfig?.messageFilter?.pii,
-      ),
+      protectionEnabled: hasGenerationContentProtection(appConfig),
     });
     const balanceConfig = getBalanceConfig(appConfig);
     const transactionsConfig = getTransactionsConfig(appConfig);
@@ -4582,8 +4559,8 @@ class AgentClient extends BaseClient {
        * replay context, and resolution fence must be shared across workers; their
        * LangGraph continuation must also use a durable shared checkpointer. Redis
        * provides the first half, while handleRunInterrupt verifies the exact durable
-       * checkpoint before exposing the pause. Refuse unsupported topologies before
-       * spending on provider work. */
+       * checkpoint before exposing the pause. On a topology that cannot hold a pause the
+       * run starts without the wiring (`resolveRunPause`), so it never reaches one. */
       /** @type {AppConfig['endpoints']['agents']} */
       const agentsEConfig = appConfig.endpoints?.[EModelEndpoint.agents];
       const topLevelAgents = [this.options.agent, ...(this.agentConfigs?.values() ?? [])];
@@ -4596,9 +4573,11 @@ class AgentClient extends BaseClient {
         collectAttachedCodeApprovalPolicies(topLevelAgents),
         agentsEConfig?.toolApproval?.enabled !== false,
       );
+      const runGrant = grantExecution(getMCPRequestContext(this.options.req));
       const effectiveToolApprovalPolicy = resolveToolApprovalPolicy({
         endpoint: agentsEConfig?.toolApproval,
         attachedCodeEnvironment: attachedCodeEnvironmentAgentIds.size > 0,
+        ownerApproval: runGrant?.mayAsk === true,
       });
       const resolvedToolApprovalHooks = isHITLEnabled(effectiveToolApprovalPolicy)
         ? buildToolApprovalHooks({
@@ -4616,6 +4595,7 @@ class AgentClient extends BaseClient {
           codeApprovalMode,
           collectAttachedCodeRoutePolicies(topLevelAgents),
         ),
+        ...approvalHooks(runGrant),
       ];
       const askUserQuestionAdminDisabled = isAskUserQuestionAdminDisabled(appConfig);
       const runCanPause = canAgentGraphPause({
@@ -4637,24 +4617,13 @@ class AgentClient extends BaseClient {
         agents: topLevelAgents,
         askUserQuestionAdminDisabled,
       });
-      if (this.options.req?._isScheduledFire === true && runCanPause) {
-        if (!GenerationJobManager.isRedis) {
-          const error = new Error(
-            'Scheduled agent runs that can pause require a shared generation store. ' +
-              'Enable Redis streams with USE_REDIS_STREAMS=true.',
-          );
-          error.code = 'SCHEDULED_HITL_REQUIRES_SHARED_STORE';
-          throw error;
-        }
-        if (!(await getAgentCheckpointer(agentsEConfig?.checkpointer))) {
-          const error = new Error(
-            'Scheduled agent runs that can pause require a durable shared checkpointer. ' +
-              'Use the default MongoDB checkpointer.',
-          );
-          error.code = 'SCHEDULED_HITL_REQUIRES_DURABLE_CHECKPOINT';
-          throw error;
-        }
-      }
+      const pause = await resolveRunPause({
+        req: this.options.req,
+        canPause: runCanPause,
+        sharedStore: GenerationJobManager.isRedis,
+        getCheckpointer: () => getAgentCheckpointer(agentsEConfig?.checkpointer),
+        conversationId: this.conversationId,
+      });
 
       /** Fire-and-forget: boot each selected stateful environment in
        *  parallel with generation so the first execute_code/bash call lands
@@ -4794,6 +4763,7 @@ class AgentClient extends BaseClient {
         ...(this.agentConfigs?.values() ?? []),
       ]);
       const messageFormatOptions = {
+        ...getGoogleHistoryFormatOptions(reachableAgents),
         ...(needsReasoningContentFormat ? { preserveReasoningContent: true } : {}),
         ...(freshSkillPrimeNames.size > 0 ? { skipSkillBodyNames: freshSkillPrimeNames } : {}),
         ...(useLegacyContent ? { legacyContent: true } : {}),
@@ -4838,6 +4808,11 @@ class AgentClient extends BaseClient {
         toolSet,
         skillPrimeResult?.skills,
         formatOptions,
+      );
+      restoreGoogleThoughtSignatures(
+        initialMessages,
+        this.modelBoundStoredMessages ?? [],
+        reachableAgents,
       );
       if (this.eventActorContinuation !== 'warm') {
         this.eventActorSummary = initialSummary;
@@ -4964,7 +4939,7 @@ class AgentClient extends BaseClient {
         config = withPrivateTextAdmissionConfig(config, initialModelBoundAdmission);
 
         if (this.processMemory && !isCompactionTurn) {
-          memoryPromise = this.runMemory(memoryMessages);
+          memoryPromise = runAssistantSideEffect(appConfig, () => this.runMemory(memoryMessages));
         }
 
         const { calibrationRatio, fadingTier, fadingTiers } = resolveRunSeeds(this);
@@ -4984,7 +4959,7 @@ class AgentClient extends BaseClient {
         // Start the prune alongside graph construction. The all-settled barrier
         // below still guarantees it completes before the graph is exposed or run.
         const shouldPruneCheckpoint =
-          streamId && this.eventActorInvocationId == null && runUsesCheckpointer;
+          streamId && this.eventActorInvocationId == null && runUsesCheckpointer && pause.prunes;
         let checkpointPrunePromise = Promise.resolve();
         if (shouldPruneCheckpoint && this.checkpointNamespace !== '') {
           checkpointPrunePromise = deleteAgentCheckpoint(
@@ -5025,9 +5000,12 @@ class AgentClient extends BaseClient {
           });
         }
 
-        const activityLabel = this.buildActivityLabelWiring(streamId, abortController.signal);
-        const activityPhase = this.buildActivityPhaseWiring(streamId, abortController.signal);
-        const reasoningLabel = this.buildReasoningLabelWiring(streamId, abortController.signal);
+        const { activityLabel, activityPhase, reasoningLabel } =
+          runAssistantSideEffect(appConfig, () => ({
+            activityLabel: this.buildActivityLabelWiring(streamId, abortController.signal),
+            activityPhase: this.buildActivityPhaseWiring(streamId, abortController.signal),
+            reasoningLabel: this.buildReasoningLabelWiring(streamId, abortController.signal),
+          })) ?? {};
         const offsetHandlers = createSteerIndexOffsetHandlers(
           this.options.eventHandlers,
           this.steerOffsetState,
@@ -5036,9 +5014,11 @@ class AgentClient extends BaseClient {
           activityPhase?.handlers(offsetHandlers) ??
           (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
         const createRunPromise = createRun({
-          scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
-          recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
-            getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
+          sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
+          sdkFiles: this.options.sdkFiles,
+          grantExecution: grantExecution(getMCPRequestContext(this.options.req)),
+          recordGrantDenial: createScheduledMCPPolicyRecorder(
+            scheduleExecution(getMCPRequestContext(this.options.req)),
             {
               streamId,
               jobCreatedAt: this.jobCreatedAt,
@@ -5064,7 +5044,9 @@ class AgentClient extends BaseClient {
           // persists the pending action; the /resume route rebuilds + continues the run), so it
           // opts into the tool-approval wiring. Non-resumable callers (OpenAI-compat, Responses)
           // leave this off so an approval-gated tool can't pause where there's no resume path.
-          hitlCapable: true,
+          // So does a scheduled run on a deployment that could not hold its pause.
+          hitlCapable: pause.capable,
+          pauseGap: pause.missing,
           toolApprovalStorage: db,
           resolvedToolApprovalHooks,
           toolApprovalAllows: resolveRunToolApprovalAllows(
@@ -5109,6 +5091,7 @@ class AgentClient extends BaseClient {
           tenantId: resolveRequestTenantId(this.options.req ?? {}),
           summarizationConfig: appConfig?.summarization,
           summarizeOnly: this.isCompactionTurn(),
+          interactiveAssistant: isInteractiveAssistantRequest(this.options.req),
           appConfig,
           tokenCounter,
           /** Bills subagent child-run model calls — foreground usage joins
@@ -5254,10 +5237,13 @@ class AgentClient extends BaseClient {
         getLatestEventActorSummary(this.contentParts) ?? this.eventActorSummary;
       this.applyHideSequentialOutputsFilter();
       this.rebaseActivityPhaseBounds(contentBeforeReshape);
+      /** BaseClient spreads `metadata` onto the response row. */
+      this.metadata = settleOutputTruncation(this.truncationSink, this.contentParts, {
+        continued: this.options.req?.body?.isContinued === true,
+      });
     } catch (err) {
       if (
         err?.code === 'SCHEDULED_HITL_REQUIRES_SHARED_STORE' ||
-        err?.code === 'SCHEDULED_HITL_REQUIRES_DURABLE_CHECKPOINT' ||
         err?.code === 'HITL_CHECKPOINT_UNAVAILABLE' ||
         err?.code === PENDING_ACTION_EXPIRED_CODE
       ) {
@@ -5338,7 +5324,7 @@ class AgentClient extends BaseClient {
       rejectPrivateTextAdmission(this.options.req);
       /** An aborted/erroring run can still have completed compaction before
        * the failure; retain that model-visible state for actor reconciliation. */
-      await this.options.runFiles?.close();
+      await Promise.all([this.options.runFiles?.close(), this.options.sdkFiles?.close()]);
       this.eventActorSummary =
         getLatestEventActorSummary(this.contentParts) ?? this.eventActorSummary;
       /** A run that never came to exist has no state of its own: keep the
@@ -5460,10 +5446,7 @@ class AgentClient extends BaseClient {
       responseMessageId: this.responseMessageId,
       source: '[api/server/controllers/agents/client.js #resumeCompletion]',
       genericMessage: '[api/server/controllers/agents/client.js #resumeCompletion] Unhandled error',
-      protectionEnabled: hasModelBoundContentProtection(
-        appConfig?.filters,
-        appConfig?.messageFilter?.pii,
-      ),
+      protectionEnabled: hasGenerationContentProtection(appConfig),
     });
     const balanceConfig = getBalanceConfig(appConfig);
     const transactionsConfig = getTransactionsConfig(appConfig);
@@ -5606,10 +5589,11 @@ class AgentClient extends BaseClient {
           .filter((file) => !file?.file_id || !checkpointFileIds.has(file.file_id)),
       ];
       this.turnSteerAttachmentHistory = undefined;
-      this.turnHistoricalAttachmentIds = collectHistoricalAttachmentIds(
-        resumeContentProjection.checkpointFiles,
-        requestFiles,
-      );
+      this.turnHistoricalAttachmentIds = collectTurnHistoricalIds({
+        historical: resumeContentProjection.checkpointFiles,
+        attachments: requestFiles,
+        requested: this.options.currentRequestAttachments,
+      });
       const resumeSharedFileIds = collectFileIds(resumeSharedFiles);
       const resumeEndpointsByAgentId = new Map(
         agents
@@ -5853,9 +5837,12 @@ class AgentClient extends BaseClient {
         activityPhase?.handlers(offsetHandlers) ??
         (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
       run = await createRun({
-        scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
-        recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
-          getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
+        sdkModelHost: this.options.req?.app?.locals?.sdkModelHost,
+        sdkFiles: this.options.sdkFiles,
+        sdkResumeState: { content: seedContent, steps: runSteps },
+        grantExecution: grantExecution(getMCPRequestContext(this.options.req)),
+        recordGrantDenial: createScheduledMCPPolicyRecorder(
+          scheduleExecution(getMCPRequestContext(this.options.req)),
           {
             streamId,
             jobCreatedAt: this.jobCreatedAt,
@@ -5999,6 +5986,10 @@ class AgentClient extends BaseClient {
       const contentBeforeReshape = [...this.contentParts];
       this.applyHideSequentialOutputsFilter();
       this.rebaseActivityPhaseBounds(contentBeforeReshape);
+      /** BaseClient spreads `metadata` onto the response row. */
+      this.metadata = settleOutputTruncation(this.truncationSink, this.contentParts, {
+        continued: this.options.req?.body?.isContinued === true,
+      });
     } catch (err) {
       if (isAgentAttachmentLimitError(err) || isAttachmentObjectNotFoundError(err)) {
         logger.warn(
@@ -6052,7 +6043,7 @@ class AgentClient extends BaseClient {
         });
       }
     } finally {
-      await this.options.runFiles?.close();
+      await Promise.all([this.options.runFiles?.close(), this.options.sdkFiles?.close()]);
       this.eventActorSummary =
         getLatestEventActorSummary(this.contentParts) ?? this.eventActorSummary;
       /** A run that never came to exist has no state of its own: keep the
@@ -6281,6 +6272,7 @@ class AgentClient extends BaseClient {
         conversationId: this.conversationId,
         parentMessageId: this.parentMessageId,
       },
+      agent: createSafeAgent(this.options.agent),
     });
 
     try {
@@ -6382,6 +6374,8 @@ class AgentClient extends BaseClient {
         usage,
         context,
         collectedUsage: this.collectedUsage,
+        contentParts: this.contentParts,
+        maxContextTokens: this.maxContextTokens,
         aborted: this.abortController?.signal?.aborted === true,
         promptTokens,
         completionTokens,

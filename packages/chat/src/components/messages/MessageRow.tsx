@@ -3,9 +3,16 @@ import { cn } from '@librechat/client';
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactNode, ReactElement } from 'react';
+import {
+  useOffscreenRow,
+  RowReachProvider,
+  OFFSCREEN_ROW_CLASSES,
+} from '../../react/messages/offscreen';
+import { useWidenedRow } from '../../react/messages/useProgressiveRowMount';
 import { useMessagesHost } from '../../react/messages/host';
 import MessageTimestamp from './MessageTimestamp';
 import { getMessageRowWidthClass } from './width';
+import { NAV_CLEARANCE } from '../parts/rows';
 import HeaderLabel from './HeaderLabel';
 
 type MessageRowProps = {
@@ -13,6 +20,9 @@ type MessageRowProps = {
   message?: TMessage;
   label: string;
   hoverLabel?: string | null;
+  /** Replaces the avatar and name row with its assistive technology text, for a turn whose author
+   *  the page already shows. */
+  authorHidden?: boolean;
   icon: ReactNode;
   children: ReactNode;
   footer: ReactNode;
@@ -85,6 +95,7 @@ export default function MessageRow({
   icon,
   label,
   hoverLabel,
+  authorHidden = false,
   footer,
   children,
   timestamp,
@@ -100,6 +111,7 @@ export default function MessageRow({
   outlined = false,
 }: MessageRowProps): ReactElement {
   const { renderFiles } = useMessagesHost();
+  const { rowRef, reach } = useOffscreenRow(useWidenedRow());
   // Same column as ChatForm: max-width plus `sm:px-2`, so the body lines
   // up with the composer surface rather than the form's outer box.
   const widthClass = getMessageRowWidthClass({ fullWidth, hasParallelContent });
@@ -126,12 +138,14 @@ export default function MessageRow({
 
   return (
     <div
+      ref={rowRef}
       id={id}
       role="group"
       aria-label={ariaLabel}
       className={cn(
-        'message-render group font-theme-ui duration-theme-normal mx-auto flex min-w-0 flex-1 transition-[max-width] motion-reduce:transition-none',
+        'message-render group font-theme-ui duration-theme-normal transition-max-width mx-auto flex min-w-0 flex-1 motion-reduce:transition-none',
         'focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:outline-hidden',
+        OFFSCREEN_ROW_CLASSES,
         isUserSide ? 'justify-end' : 'items-start',
         widthClass,
         className,
@@ -146,7 +160,11 @@ export default function MessageRow({
           (hasParallelContent || isEditing) && 'w-full',
           !hasParallelContent &&
             isUserSide &&
-            cn('ms-auto items-end', !isEditing && 'w-fit max-w-[90%] sm:max-w-[85%]'),
+            cn(
+              'ms-auto items-end',
+              NAV_CLEARANCE.pad,
+              !isEditing && 'w-fit max-w-[90%] sm:max-w-[85%]',
+            ),
           !hasParallelContent && !isUserSide && !isEditing && 'flex-1',
         )}
       >
@@ -166,9 +184,17 @@ export default function MessageRow({
             <MessageTimestamp value={timestamp} />
           </h2>
         )}
+        {!hasParallelContent && !isSystem && !isCreatedByUser && authorHidden && (
+          <h2 className="sr-only">
+            {headerPrefix}
+            <HeaderLabel label={label} hoverLabel={hoverLabel} />
+            <MessageTimestamp value={timestamp} />
+          </h2>
+        )}
         {!hasParallelContent &&
           !isSystem &&
           (!isCreatedByUser || showAuthor) &&
+          !authorHidden &&
           renderAuthorHeader({
             icon,
             label,
@@ -205,7 +231,9 @@ export default function MessageRow({
               {children}
             </div>
           )}
-          <div className={cn('w-full', isUserSide && 'flex justify-end')}>{footer}</div>
+          <div className={cn('w-full', isUserSide && 'flex justify-end')}>
+            <RowReachProvider reach={reach}>{footer}</RowReachProvider>
+          </div>
         </div>
       </div>
     </div>

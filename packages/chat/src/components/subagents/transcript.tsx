@@ -15,12 +15,14 @@ import {
   subagentStatusIcon,
   subagentStatusLabelKey,
 } from '../../react/subagents/status';
+import { renderMarkdown as defaultRenderMarkdown } from '../renderers';
 import { ToolContentQueryContext } from '../../react/parts/disclosure';
 import { TaskContentScopeContext } from '../../react/subagents/scope';
 import { useChatSurface } from '../../react/subagents/surface';
 import { useSubagentsHost } from '../../react/subagents/host';
 import MessageTimestamp from '../messages/MessageTimestamp';
 import ScrollToBottom from '../messages/ScrollToBottom';
+import { renderContentParts } from '../contentRenderer';
 import { useMessagePartsHost } from '../../react/host';
 import EmptyText from '../EmptyText';
 
@@ -106,7 +108,13 @@ function ControlMessage(props: ControlMessageProps) {
   });
 }
 
-function SubagentControlHistory({
+/**
+ * The guidance sent to a task, oldest first, leaving out what `content` already shows where it
+ * was injected: an applied steer is a part of the reply, and drawing its receipt as well would
+ * show it twice. What is left is guidance still waiting to be taken, with the control that
+ * withdraws it, and guidance that failed or was refused.
+ */
+export function SubagentControlHistory({
   controls,
   onCancelControl,
   content,
@@ -114,7 +122,7 @@ function SubagentControlHistory({
   content: TMessageContentParts[];
   controls: NonNullable<ChildActivity['controls']>;
   onCancelControl?: (controlId: string) => void;
-}) {
+}): ReactNode {
   const localize = useLocalize();
   if (controls.length === 0) return null;
   /** Storage keeps actionable accepted receipts ahead of bounded terminal history.
@@ -202,8 +210,8 @@ function SubagentControlHistory({
                   <Button
                     type="button"
                     variant="ghost"
-                    size="sm"
-                    className="h-7 shrink-0 px-2 text-xs"
+                    size="xs"
+                    className="shrink-0"
                     onClick={() => onCancelControl(control.controlId as string)}
                   >
                     {localize('com_ui_subagent_control_withdraw')}
@@ -239,6 +247,7 @@ export function SubagentActivityScrollSurface({
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const followBottom = useRef(true);
   const { showScrollButton: scrollButtonPreference, maximizeChatSpace } = useChatSurface();
   const { renderJumpToLatest } = useSubagentsHost();
 
@@ -247,20 +256,21 @@ export function SubagentActivityScrollSurface({
     const content = contentRef.current;
     if (scroll == null || content == null || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => {
-      if (isAtBottom) scroll.scrollTop = scroll.scrollHeight;
+      if (followBottom.current) scroll.scrollTop = scroll.scrollHeight;
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [isAtBottom]);
+  }, []);
 
   const handleScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
     const element = event.currentTarget;
-    setIsAtBottom(
-      element.scrollHeight - element.scrollTop - element.clientHeight <= AT_BOTTOM_THRESHOLD_PX,
-    );
+    followBottom.current =
+      element.scrollHeight - element.scrollTop - element.clientHeight <= AT_BOTTOM_THRESHOLD_PX;
+    setIsAtBottom(followBottom.current);
   }, []);
 
   const scrollToBottom = useCallback(() => {
+    followBottom.current = true;
     scrollRef.current?.scrollTo({
       top: scrollRef.current.scrollHeight,
       behavior: 'smooth',
@@ -375,7 +385,7 @@ export const getActivityContent = (activity: ChildActivity): TMessageContentPart
 
 function SubagentPrompt({ prompt }: { prompt: string }) {
   const localize = useLocalize();
-  const { renderMarkdown } = useMessagePartsHost();
+  const { renderMarkdown = defaultRenderMarkdown } = useMessagePartsHost();
   const [expanded, setExpanded] = useState(false);
   const headingId = useId();
   const contentId = useId();
@@ -390,14 +400,13 @@ function SubagentPrompt({ prompt }: { prompt: string }) {
           {localize('com_ui_prompt')}
         </h3>
         <Button
-          variant="ghost"
-          size="sm"
+          variant="quiet"
+          size="compact"
           onClick={() => setExpanded((value) => !value)}
           aria-controls={contentId}
           aria-expanded={expanded}
           aria-label={toggleLabel}
           title={toggleLabel}
-          className="text-text-secondary hover:bg-surface-tertiary focus:ring-text-primary h-8 gap-1.5 rounded-md px-2 text-xs font-medium transition focus:ring-2"
         >
           {expanded ? <Minimize2 size={14} aria-hidden /> : <Maximize2 size={14} aria-hidden />}
           <span className="hidden sm:inline">{toggleLabel}</span>
@@ -478,7 +487,7 @@ export function SubagentActivityContent({
   } else {
     body = (
       <ToolContentQueryContext.Provider value={toolContentQuery ?? null}>
-        {host.renderContentParts({
+        {(host.renderContentParts ?? renderContentParts)({
           content: parts,
           messageId: activity.messageId ?? activityId ?? 'subagent-activity-panel',
           conversationId,

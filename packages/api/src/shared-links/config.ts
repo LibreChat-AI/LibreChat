@@ -83,6 +83,11 @@ export function isFileSnapshotKillSwitchActive(): boolean {
   return envValue !== undefined && !isEnabled(envValue);
 }
 
+/** Whether the deployment serves shared links: `ALLOW_SHARED_LINKS` unset means enabled. */
+export function isSharedLinksEnabled(env: SharedLinkStartupEnv = process.env): boolean {
+  return env.ALLOW_SHARED_LINKS === undefined || isEnabled(env.ALLOW_SHARED_LINKS);
+}
+
 export function buildSharedLinkStartupPayload(
   appConfig?: AppConfig | null,
   env: SharedLinkStartupEnv = process.env,
@@ -94,10 +99,10 @@ export function buildSharedLinkStartupPayload(
   if (typeof env.ANALYTICS_GTM_ID === 'string') {
     payload.analyticsGtmId = env.ANALYTICS_GTM_ID;
   }
-  if (typeof env.SANDPACK_BUNDLER_URL === 'string') {
+  if (env.SANDPACK_BUNDLER_URL) {
     payload.bundlerURL = env.SANDPACK_BUNDLER_URL;
   }
-  if (typeof env.SANDPACK_STATIC_BUNDLER_URL === 'string') {
+  if (env.SANDPACK_STATIC_BUNDLER_URL) {
     payload.staticBundlerURL = env.SANDPACK_STATIC_BUNDLER_URL;
   }
   if (typeof env.CUSTOM_FOOTER === 'string') {

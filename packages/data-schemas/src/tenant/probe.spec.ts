@@ -68,9 +68,9 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  probe.close();
+  probe?.close();
   await mongoose.disconnect();
-  await server.stop();
+  await server?.stop();
 });
 
 beforeEach(async () => {

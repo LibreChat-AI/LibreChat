@@ -5,11 +5,13 @@
  * oauthFailed rejection, timeout behavior, and token expiry mid-session.
  */
 
+import { logger } from '@librechat/data-schemas';
 import type { OAuthTestServer } from './helpers/oauthTestServer';
 import type { StreamableHTTPOptions } from '~/mcp/types';
 import type { MCPOAuthTokens } from '~/mcp/oauth';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
 import { createOAuthMCPServer } from './helpers/oauthTestServer';
+import { MCPOAuthDeferredError } from '~/mcp/errors';
 import { MCPConnection } from '~/mcp/connection';
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -251,6 +253,31 @@ describe('MCPConnection OAuth Events — Real Server', () => {
       });
 
       await expect(connection.connect()).rejects.toThrow();
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('OAuth handling failed'));
+    });
+
+    it('logs a deferred authorization as a warning, not an error', async () => {
+      connection = new MCPConnection({
+        serverName: 'test-server',
+        serverConfig: {
+          type: 'streamable-http',
+          url: server.url,
+          initTimeout: 15000,
+        },
+        userId: 'user-1',
+      });
+
+      connection.on('oauthRequired', () => {
+        connection!.emit(
+          'oauthFailed',
+          new MCPOAuthDeferredError('OAuth flow initiated - return early'),
+        );
+      });
+
+      await expect(connection.connect()).rejects.toThrow();
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('OAuth handling failed'));
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Connection failed'));
+      expect(logger.error).not.toHaveBeenCalled();
     });
   });
 

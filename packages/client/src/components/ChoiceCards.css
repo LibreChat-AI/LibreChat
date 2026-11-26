@@ -1,0 +1,22 @@
+/* The mark on a chosen card mounts when the card is chosen, so this plays once per pick: a short
+   fade and settle, nothing more. */
+.choice-badge {
+  animation: choice-in 180ms ease-out both;
+}
+
+@keyframes choice-in {
+  from {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .choice-badge {
+    animation: none;
+  }
+}

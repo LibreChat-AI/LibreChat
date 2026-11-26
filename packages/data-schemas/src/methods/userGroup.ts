@@ -1,11 +1,18 @@
 import { Types } from 'mongoose';
-import { AsyncLocalStorage } from 'async_hooks';
 import { CacheKeys, PrincipalType, SystemRoles } from 'librechat-data-provider';
 import type { TPrincipalSearchResult } from 'librechat-data-provider';
 import type { Model, ClientSession, FilterQuery } from 'mongoose';
 import type { CacheStore, IGroup, IRole, IUser } from '~/types';
-import { buildUserSearchFilter, scoreSearchMatch, buildGroupSearchFilter } from '~/utils/search';
+import {
+  scoreSearchMatch,
+  mergeSearchResults,
+  buildUserExactFilter,
+  buildGroupExactFilter,
+  buildUserSearchFilter,
+  buildGroupSearchFilter,
+} from '~/utils/search';
 import { isValidObjectIdString } from '~/utils/objectId';
+import { runAfterTransaction } from '~/utils/postCommit';
 import { scopedCacheKey } from '~/config/tenantContext';
 import { escapeRegExp } from '~/utils/string';
 
@@ -31,81 +38,6 @@ const DEFAULT_STALE_EVICTION_DELAY_MS = 3000;
 
 const isCachedGroupId = (value: unknown): value is string =>
   typeof value === 'string' && isValidObjectIdString(value);
-
-type DeferredInvalidation = {
-  /** ALS snapshot (tenant scoping) captured where the mutation ran. */
-  run: (invalidate: () => Promise<void>) => Promise<void>;
-  invalidate: () => Promise<void>;
-};
-
-/** One queue and one set of lifecycle hooks per session, so many mutations in one
- * transaction cannot trip the emitter's max-listeners warning. */
-const sessionInvalidations = new WeakMap<ClientSession, DeferredInvalidation[]>();
-const hookedSessions = new WeakSet<ClientSession>();
-
-async function drainSessionInvalidations(session: ClientSession): Promise<void> {
-  const queue = sessionInvalidations.get(session);
-  if (!queue) {
-    return;
-  }
-  sessionInvalidations.delete(session);
-  await Promise.all(queue.map((entry) => entry.run(entry.invalidate).catch(() => undefined)));
-}
-
-function hookSessionLifecycle(session: ClientSession): void {
-  if (hookedSessions.has(session)) {
-    return;
-  }
-  hookedSessions.add(session);
-
-  const commitTransaction = session.commitTransaction.bind(session);
-  session.commitTransaction = async (
-    ...args: Parameters<ClientSession['commitTransaction']>
-  ): Promise<void> => {
-    await commitTransaction(...args);
-    await drainSessionInvalidations(session);
-  };
-
-  const abortTransaction = session.abortTransaction.bind(session);
-  session.abortTransaction = async (
-    ...args: Parameters<ClientSession['abortTransaction']>
-  ): Promise<void> => {
-    try {
-      await abortTransaction(...args);
-    } finally {
-      sessionInvalidations.delete(session);
-    }
-  };
-
-  session.once('ended', () => {
-    sessionInvalidations.delete(session);
-  });
-}
-
-/**
- * Runs cache invalidation immediately, or defers it to commit for transactional
- * writes. Mid-transaction invalidation would let concurrent readers re-cache pre-commit
- * state with no later correction; deferring keeps the existing entry serving the
- * still-committed old memberships until the transaction commits. Aborts discard the queue.
- */
-export function runAfterTransaction(
-  session: ClientSession | undefined,
-  invalidate: () => Promise<void>,
-): Promise<void> {
-  if (!session?.inTransaction()) {
-    return invalidate();
-  }
-  const deferred: DeferredInvalidation = { run: AsyncLocalStorage.snapshot(), invalidate };
-  const queue = sessionInvalidations.get(session);
-  if (queue) {
-    queue.push(deferred);
-    return Promise.resolve();
-  }
-  const newQueue: DeferredInvalidation[] = [deferred];
-  sessionInvalidations.set(session, newQueue);
-  hookSessionLifecycle(session);
-  return Promise.resolve();
-}
 
 /** Extracts member ids referenced by a group update; indeterminate when they cannot be enumerated. */
 function collectMemberIdsFromGroupUpdate(update: Record<string, unknown>): {
@@ -192,6 +124,7 @@ export function createUserGroupMethods(
     limit?: number,
     session?: ClientSession,
   ) => Promise<IGroup[]>;
+  invalidatePrincipalMemberships: (memberIds: string[]) => Promise<void>;
   createGroup: (groupData: Partial<IGroup>, session?: ClientSession) => Promise<IGroup>;
   upsertGroupByExternalId: (
     idOnTheSource: string,
@@ -626,17 +559,21 @@ export function createUserGroupMethods(
     if (!filter) {
       return [];
     }
-    const query: Record<string, unknown> = { ...filter };
+    const find = (query: Record<string, unknown>) => {
+      const cursor = Group.find(source ? { ...query, source } : query).limit(limit);
+      if (session) {
+        cursor.session(session);
+      }
+      return cursor.lean<IGroup[]>();
+    };
 
-    if (source) {
-      query.source = source;
-    }
-
-    const dbQuery = Group.find(query).limit(limit);
-    if (session) {
-      dbQuery.session(session);
-    }
-    return await dbQuery.lean<IGroup[]>();
+    /** The prefix window is fetched in index order, so exact matches are fetched beside it and kept first */
+    const exactFilter = buildGroupExactFilter(namePattern);
+    const [exact, matches] = await Promise.all([
+      exactFilter ? find(exactFilter) : [],
+      find(filter),
+    ]);
+    return mergeSearchResults(exact, matches).slice(0, limit);
   }
 
   /**
@@ -972,26 +909,33 @@ export function createUserGroupMethods(
     if (userFilter && (!typeFilter || typeFilter.includes(PrincipalType.USER))) {
       const userFields = 'name email username avatar provider idOnTheSource role';
       const User = mongoose.models.User as Model<IUser>;
-      const userQuery = User.find(userFilter).select(userFields).limit(limitPerType);
+      const find = (query: Record<string, unknown>) => {
+        const cursor = User.find(query).select(userFields).limit(limitPerType);
+        if (session) {
+          cursor.session(session);
+        }
+        return cursor.lean<IUser[]>();
+      };
 
-      if (session) {
-        userQuery.session(session);
-      }
-
+      /** The prefix window is fetched in index order, so exact matches are fetched beside it and kept first */
+      const exactFilter = buildUserExactFilter(trimmedPattern);
       promises.push(
-        userQuery.lean<IUser[]>().then((users) =>
-          users.map((user) =>
-            transformUserToTPrincipalSearchResult({
-              id: user._id?.toString() || '',
-              name: user.name,
-              email: user.email,
-              username: user.username,
-              avatar: user.avatar,
-              provider: user.provider,
-              idOnTheSource: user.idOnTheSource,
-              role: user.role,
-            }),
-          ),
+        Promise.all([exactFilter ? find(exactFilter) : [], find(userFilter)]).then(
+          ([exact, matches]) =>
+            mergeSearchResults(exact, matches)
+              .slice(0, limitPerType)
+              .map((user) =>
+                transformUserToTPrincipalSearchResult({
+                  id: user._id?.toString() || '',
+                  name: user.name,
+                  email: user.email,
+                  username: user.username,
+                  avatar: user.avatar,
+                  provider: user.provider,
+                  idOnTheSource: user.idOnTheSource,
+                  role: user.role,
+                }),
+              ),
         ),
       );
     } else {
@@ -1265,6 +1209,7 @@ export function createUserGroupMethods(
   }
 
   return {
+    invalidatePrincipalMemberships: invalidateMemberGroupsCache,
     findGroupById,
     findGroupByExternalId,
     findGroupsByExternalIds,

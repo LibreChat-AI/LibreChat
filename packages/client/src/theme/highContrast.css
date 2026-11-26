@@ -95,3 +95,9 @@ html.high-contrast ::placeholder {
   color: rgb(var(--text-secondary));
   opacity: 1;
 }
+
+/** Keep both animated text stops of `.shimmer` at the AAA ratios declared by the palette. */
+html.high-contrast {
+  --shimmer-base-alpha: 1;
+  --shimmer-dip-alpha: 1;
+}

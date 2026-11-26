@@ -1,4 +1,5 @@
 import { errors } from 'undici';
+import { ProviderTextProtectionError } from '@librechat/agents';
 import { ErrorTypes, ViolationTypes } from 'librechat-data-provider';
 import {
   getUpstreamModelErrorMetadata,
@@ -335,6 +336,22 @@ describe('terminal agent-run error logging', () => {
     observer.modelCallback.handleLLMError(providerError);
 
     expect(observer.getUserFacingError(terminalError, () => 'fallback')).toBe(
+      JSON.stringify({ type: 'model_rate_limit', info: 'rate limited' }),
+    );
+  });
+
+  it('withholds the provider message of a classified failure under protection', () => {
+    const observer = createTerminalRunErrorObserver({
+      logger: { error: jest.fn() },
+      source: '[Agent API]',
+      protectionEnabled: true,
+    });
+    const providerError = Object.assign(new Error('429 PRIVATE-DETAIL'), {
+      lc_error_code: 'MODEL_RATE_LIMIT',
+    });
+    observer.modelCallback.handleLLMError(providerError);
+
+    expect(observer.getUserFacingError(providerError, () => 'fallback')).toBe(
       JSON.stringify({ type: 'model_rate_limit' }),
     );
   });
@@ -483,6 +500,47 @@ describe('getUserFacingGenerationError', () => {
     );
   });
 
+  it('keeps the redacted provider message of a classified failure without protection', () => {
+    const error = Object.assign(
+      new Error('429 Budget exhausted for user@example.com, ask the service desk'),
+      { lc_error_code: 'MODEL_RATE_LIMIT' },
+    );
+    const payload = JSON.parse(getUserFacingGenerationError(error, {}, 'Generation failed'));
+    expect(payload.type).toBe(ErrorTypes.MODEL_RATE_LIMIT);
+    expect(payload.info).toContain('Budget exhausted for');
+    expect(payload.info).not.toContain('user@example.com');
+
+    const limited = JSON.parse(
+      getUserFacingGenerationError(
+        error,
+        { endpoints: { agents: { maxProviderErrorChars: 12 } } },
+        'Generation failed',
+      ),
+    );
+    expect(limited.info).toBe('Budget exhau');
+
+    const address = Object.assign(new Error('429 Budget exhausted for alice.secret@example.com'), {
+      lc_error_code: 'MODEL_RATE_LIMIT',
+    });
+    const cut = JSON.parse(
+      getUserFacingGenerationError(
+        address,
+        { endpoints: { agents: { maxProviderErrorChars: 33 } } },
+        'Generation failed',
+      ),
+    );
+    expect(cut.info).not.toContain('alice');
+    expect(cut.info).toMatch(/^Budget exhausted for/);
+
+    expect(
+      getUserFacingGenerationError(
+        error,
+        { endpoints: { agents: { maxProviderErrorChars: 0 } } },
+        'Generation failed',
+      ),
+    ).toBe(JSON.stringify({ type: ErrorTypes.MODEL_RATE_LIMIT }));
+  });
+
   it('keeps the host-authored message of a content policy block under protection', () => {
     const error = new ContentFilterError({
       detectorId: 'pii-pattern',
@@ -498,4 +556,24 @@ describe('getUserFacingGenerationError', () => {
       getUserFacingGenerationError(new Error('wrapped', { cause: error }), protectedConfig, 'x'),
     ).toBe('Submitted content contains a Bearer token. Remove it and try again.');
   });
+});
+
+it('preserves the assistant policy decision when the model boundary observed it', () => {
+  const logger = { error: jest.fn() };
+  const observer = createTerminalRunErrorObserver({
+    logger,
+    source: 'test',
+    protectionEnabled: true,
+  });
+  const failure = new ProviderTextProtectionError('blocked');
+  observer.modelCallback.handleLLMError(failure);
+  const error = new Error('test wrapper', { cause: failure });
+  expect(observer.getUserFacingError(error, () => 'fallback')).toBe(
+    '{"type":"assistant_output_withheld"}',
+  );
+  observer.log(error);
+  expect(logger.error).not.toHaveBeenCalledWith(
+    expect.stringContaining('Upstream model error'),
+    expect.anything(),
+  );
 });

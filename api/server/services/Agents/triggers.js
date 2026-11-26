@@ -1,5 +1,6 @@
 const {
   createAgentTriggerService,
+  createDeadLetters,
   createCheckpointDeletionReclaimer,
   createAgentContinuationResolver,
   createAgentEventContinueResolver,
@@ -9,6 +10,7 @@ const {
   createBackgroundToolDeadClaimRecovery,
   BACKGROUND_TOOL_COMPLETION_SOURCE,
   createAgentQueuedTurnLifecycle,
+  completePromotedSteerHandoff,
   AGENT_QUEUED_TURN_SOURCE,
   GenerationJobManager,
 } = require('@librechat/api');
@@ -59,6 +61,8 @@ let service;
 const queuedTurnLifecycle = createAgentQueuedTurnLifecycle({
   methods,
   getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
+  completeSteerHandoff: (handoff) =>
+    completePromotedSteerHandoff(GenerationJobManager.steering, handoff),
   getGenerationAdmissionEvidence,
   enqueue: (...args) => service.enqueue(...args),
   retireDelivery: (...args) => service.retire(...args),
@@ -66,6 +70,7 @@ const queuedTurnLifecycle = createAgentQueuedTurnLifecycle({
 });
 
 service = createAgentTriggerService({
+  sourceDispatchers: require('../Responses').backgroundResponseSourceDispatchers,
   methods,
   reclaimCheckpointDeletions: createCheckpointDeletionReclaimer((userId, tenantId) =>
     GenerationJobManager.getAccountCleanupJobIdsForUser(userId, tenantId),
@@ -88,6 +93,7 @@ const initializeAgentTriggerService = async (options) => {
   await service.initialize(options);
   await queuedTurnLifecycle.initialize({
     maxIdleIntervalMs: options?.idlePolling?.queuedTurnMaxIntervalMs,
+    idleCeilingMs: options?.idleCeilingMs,
   });
 };
 
@@ -101,6 +107,7 @@ const purgeAgentTriggerDeliveriesForUser = async (userId) => {
 };
 
 module.exports = {
+  isAgentTriggerServiceReady: service.isReady,
   initializeAgentTriggerService,
   stopAgentTriggerService,
   dispatchAgentTrigger: service.dispatch,
@@ -108,6 +115,7 @@ module.exports = {
   getAgentTriggerDelivery: service.getDelivery,
   getAgentTriggerDeliveryStatus: service.getDeliveryStatus,
   getAgentTriggerDeadLetters: service.getDeadLetters,
+  agentTriggerDeadLetters: createDeadLetters({ methods, requeue: service.requeue }),
   requeueAgentTrigger: service.requeue,
   retireAgentTrigger: service.retire,
   renewAgentTriggerProducerLease: service.renewProducerLease,

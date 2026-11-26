@@ -1,7 +1,13 @@
 import { randomUUID } from 'crypto';
 import { unlink } from 'fs/promises';
 import { isMainThread } from 'worker_threads';
-import { tenantStorage, getTenantId, logger, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
+import {
+  tenantStorage,
+  getTenantId,
+  logger,
+  SYSTEM_TENANT_ID,
+  isReservedTenantId,
+} from '@librechat/data-schemas';
 import type { Response, NextFunction, RequestHandler } from 'express';
 import type { TenantContext } from '@librechat/data-schemas';
 import type { ServerRequest } from '~/types/http';
@@ -171,11 +177,15 @@ export function tenantContextMiddleware(
   const context = buildTenantContext(req);
   const { tenantId } = context;
 
-  if (tenantId === SYSTEM_TENANT_ID) {
+  if (tenantId === SYSTEM_TENANT_ID || isReservedTenantId(tenantId)) {
     logger.warn('[tenantContextMiddleware] Rejected system tenant for request route', {
       path: req.path,
     });
-    res.status(403).json({ error: SYSTEM_TENANT_REJECTION_MESSAGE });
+    res.status(403).json({
+      error: isReservedTenantId(tenantId)
+        ? 'Reserved tenant identifier'
+        : SYSTEM_TENANT_REJECTION_MESSAGE,
+    });
     return;
   }
 
@@ -305,11 +315,17 @@ export function restoreTenantContextFromReq(
     return;
   }
 
-  if (resolvedTenantId === SYSTEM_TENANT_ID) {
+  if (resolvedTenantId === SYSTEM_TENANT_ID || isReservedTenantId(resolvedTenantId)) {
     logger.warn('[restoreTenantContextFromReq] Rejected system tenant for request route', {
       path: req.path,
     });
-    return rejectRequestWithUploadCleanup(req, res, SYSTEM_TENANT_REJECTION_MESSAGE);
+    return rejectRequestWithUploadCleanup(
+      req,
+      res,
+      isReservedTenantId(resolvedTenantId)
+        ? 'Reserved tenant identifier'
+        : SYSTEM_TENANT_REJECTION_MESSAGE,
+    );
   }
 
   const currentContext = tenantStorage.getStore();

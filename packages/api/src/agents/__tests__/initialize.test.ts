@@ -1,3 +1,4 @@
+import { modelSpecAgentId, loadModelSpecHandoff } from '../specs';
 /**
  * Stub `buildBashExecutionToolDescription` since the installed SDK version
  * may pre-date the export. Kept as a partial mock so `Providers` and the
@@ -42,20 +43,24 @@ import {
   ErrorTypes,
   Permissions,
   EModelEndpoint,
+  EImageOutputType,
   EToolResources,
   FileContext,
   FileSources,
   PermissionTypes,
   AgentCapabilities,
   configSchema,
+  setFileConfigRegexCompiler,
 } from 'librechat-data-provider';
-import type { IMongoFile } from '@librechat/data-schemas';
+import type { AppConfig, IMongoFile } from '@librechat/data-schemas';
 import type { Agent, TFile, FiltersConfig, AgentInstructionsPrompt } from 'librechat-data-provider';
 import type { ServerRequest, InitializeResultBase, EndpointTokenConfig } from '~/types';
 import type { ResolveLinkedInstructions } from '../instructions/linked';
 import type { InitializeAgentDbMethods } from '../initialize';
 import type { CodeExecutionContext } from '../execution';
 import type { GraphSubagentHostConfig } from '../discovery';
+import { executionFixture, readTool } from '~/agents/authority/execution.helper';
+import { getMCPRequestContext } from '~/mcp/request';
 import type { ProjectFileRecord } from '../../projects/resources';
 import { toCanonicalProjectResource } from '../../projects/resources';
 import { DEFAULT_MAX_CONTEXT_TOKENS } from '../initialize';
@@ -98,6 +103,8 @@ const mockOptionalChainWithEmptyCheck = jest.fn();
 const mockGetThreadData = jest.fn();
 
 jest.mock('~/utils', () => ({
+  createCodeApiRateLimitBudget: (...args: unknown[]) =>
+    jest.requireActual('~/utils').createCodeApiRateLimitBudget(...args),
   extractLibreChatParams: (...args: unknown[]) => mockExtractLibreChatParams(...args),
   getModelMaxTokens: (...args: unknown[]) => mockGetModelMaxTokens(...args),
   optionalChainWithEmptyCheck: (...args: unknown[]) => mockOptionalChainWithEmptyCheck(...args),
@@ -139,9 +146,13 @@ jest.mock('../../middleware/modelBoundContent', () => {
 });
 
 import { initializeAgent } from '../initialize';
+import { createProvisionFilesCallback } from '~/files/provision/callback';
+import { createFileProvisionRecovery } from '~/files/operations';
+import { selectCodeFiles } from '~/files/code/priming';
 import { primeResources } from '../resources';
 import { isFatalAgentInitializationError } from '../errors';
 import { canAgentGraphPause } from '../hitl/admission';
+import { configureFileConfigRegexEngine } from '../../files/regexEngine';
 
 const realUtils = jest.requireActual<typeof import('~/utils')>('~/utils');
 
@@ -660,7 +671,7 @@ describe('initializeAgent: ChatProject context', () => {
         res,
         primaryConfig,
         allowedProviders: new Set([Providers.OPENAI]),
-        modelsConfig: { openai: ['test-model'] },
+        getEndpointModels: async () => ({ openai: ['test-model'] }),
         loadTools,
         useChatProjectContext: true,
       },
@@ -683,19 +694,25 @@ describe('initializeAgent: ChatProject context', () => {
     agent._id = 'mongo-graph-agent';
     agent.instructions = 'Graph Agent instructions.';
     agent.tools = [Tools.file_search];
-    req.config = projectRuntime().appConfig;
+    const runtime = projectRuntime();
+    runtime.appConfig.endpoints = {
+      ...runtime.appConfig.endpoints,
+      agents: { capabilities: [AgentCapabilities.file_search, AgentCapabilities.subagent_graphs] },
+    };
+    req.config = runtime.appConfig;
     req.chatProjectContext = projectContext;
     const getProjectFiles = jest.fn().mockResolvedValue([canonicalFile]);
     const projectDb = { ...db, getProjectFiles };
     const primaryConfig: GraphSubagentHostConfig = await initializeAgent(
       {
-        runtime: projectRuntime(),
+        runtime,
         agent: {
           ...agent,
           id: 'primary-agent',
           tools: [],
           subagents: {
-            enabled: true,
+            enabled: false,
+            graphsEnabled: true,
             graphs: [
               {
                 type: 'team',
@@ -723,7 +740,7 @@ describe('initializeAgent: ChatProject context', () => {
         primaryConfig,
         rootConfigs: [primaryConfig],
         allowedProviders: new Set([Providers.OPENAI]),
-        modelsConfig: { openai: ['test-model'] },
+        getEndpointModels: async () => ({ openai: ['test-model'] }),
         loadTools,
         useChatProjectContext: true,
       },
@@ -2216,9 +2233,26 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
     );
   });
 
-  it('resolves temporal special vars in the request timezone', async () => {
-    const { agent, req, res, loadTools, db } = createMocks();
-    agent.instructions = 'It is currently {{current_datetime}}.';
+  it('resolves a handoff preset template in the turn timezone and keeps it in the dynamic tail', async () => {
+    const { agent: primary, req, res, loadTools, db } = createMocks();
+    if (!req.config) throw new Error('Missing fixture configuration');
+    req.config.modelSpecs = {
+      list: [
+        {
+          name: 'clock',
+          label: 'Clock',
+          handoff: true,
+          preset: {
+            endpoint: EModelEndpoint.openAI,
+            model: primary.model,
+            promptPrefix: 'It is currently {{current_datetime}}.',
+          },
+        },
+      ],
+    };
+    const agent = await loadModelSpecHandoff(modelSpecAgentId('clock'), req);
+    if (!agent) throw new Error('Missing clock preset');
+    expect(agent.instructions).toBe('It is currently {{current_datetime}}.');
     req.turnStartedAt = new Date('2024-01-15T18:30:00.000Z').getTime();
     req.body = { timezone: 'America/New_York' };
 
@@ -2741,6 +2775,32 @@ describe('initializeAgent — maxContextTokens', () => {
     },
   );
 
+  it('budgets Bedrock Nemotron with its context window instead of the default', async () => {
+    const model = 'nvidia.nemotron-super-3-120b';
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: Providers.BEDROCK,
+      model,
+      maxOutputTokens: 4096,
+      useRealTokenLookup: true,
+    });
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.BEDROCK]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(mockGetModelMaxTokens).toHaveBeenCalledWith(model, EModelEndpoint.bedrock, undefined);
+    expect(result.maxContextTokens).toBe(Math.round((256000 - 4096) * 0.95));
+  });
+
   it('uses user-configured maxContextTokens when provided via model_parameters', async () => {
     const userValue = 50000;
     const { agent, req, res, loadTools, db } = createMocks({
@@ -2879,13 +2939,18 @@ describe('initializeAgent — maxContextTokens', () => {
     expect(result.maxContextTokens).toBe(userValue);
   });
 
-  it('sets baseContextTokens to agentMaxContextNum minus maxOutputTokensNum', async () => {
-    const modelDefault = 200000;
-    const maxOutputTokens = 4096;
+  it.each`
+    scenario                          | maxContextTokens | expected
+    ${'no explicit limit'}            | ${undefined}     | ${163_488}
+    ${'zero is not a limit'}          | ${0}             | ${163_488}
+    ${'limit equals model window'}    | ${200_000}       | ${163_488}
+    ${'limit exceeds model window'}   | ${250_000}       | ${163_488}
+    ${'limit below the input budget'} | ${50_000}        | ${50_000}
+  `('sets the raw input budget with $scenario', async ({ maxContextTokens, expected }) => {
     const { agent, req, res, loadTools, db } = createMocks({
-      maxContextTokens: undefined,
-      modelDefault,
-      maxOutputTokens,
+      maxContextTokens,
+      modelDefault: 200_000,
+      maxOutputTokens: 36_512,
     });
 
     const result = await initializeAgent(
@@ -2901,7 +2966,55 @@ describe('initializeAgent — maxContextTokens', () => {
       db,
     );
 
-    expect(result.baseContextTokens).toBe(modelDefault - maxOutputTokens);
+    expect(result.baseContextTokens).toBe(expected);
+  });
+
+  it('uses the explicit window when model context is unknown', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      maxContextTokens: 200_000,
+      maxOutputTokens: 36_512,
+    });
+    mockGetModelMaxTokens.mockReturnValueOnce(undefined);
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.baseContextTokens).toBe(163_488);
+  });
+
+  it('caps the raw input budget at the provider input limit', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: Providers.GOOGLE,
+      model: 'gemini-4-hydrogen',
+      modelDefault: 1_048_576,
+      maxContextTokens: 1_000_000,
+      maxOutputTokens: 0,
+    });
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.GOOGLE]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.baseContextTokens).toBe(983_040);
   });
 
   it('clamps maxContextTokens to at least 1024 for tiny models', async () => {
@@ -5460,6 +5573,153 @@ describe('initializeAgent — authorized run file snapshots', () => {
     return result;
   }
 
+  it('hydrates TXT, Office and subsequent TXT through cached production MIME policy before inspection', async () => {
+    const { assertModelBoundContent } = jest.requireActual<
+      typeof import('../../middleware/modelBoundContent')
+    >('../../middleware/modelBoundContent');
+    const officeMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    const config: AppConfig = {
+      config: {},
+      fileStrategy: FileSources.local,
+      imageOutputType: EImageOutputType.PNG,
+      fileConfig: {
+        endpoints: {
+          openAI: {
+            supportedMimeTypes: ['text/plain', officeMime],
+            defaultLLMDeliveryPath: { fallback: 'text' as const },
+          },
+        },
+      },
+      filters: {
+        messages: {
+          pii: {
+            starterPatterns: [],
+            customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-[A-Z]+' }],
+          },
+        },
+      },
+    };
+    configureFileConfigRegexEngine();
+    try {
+      let cachedPolicy;
+      for (const type of ['text/plain', officeMime, 'text/plain']) {
+        const { agent, req, loadTools, db } = setup();
+        agent.tools = [];
+        req.config = config;
+        const file = Object.freeze(
+          inputFile({
+            type,
+            filename: type === officeMime ? 'context.docx' : 'context.txt',
+            text: 'safe extracted text',
+            llmDeliveryPath: 'text',
+          }),
+        );
+        const result = await initializeAgent(
+          {
+            req,
+            agent,
+            loadTools,
+            authorizedRunFiles: [file],
+            allowedProviders: new Set([Providers.OPENAI]),
+          },
+          db,
+        );
+        expect(result.requestAttachments).toHaveLength(1);
+        expect(result.requestAttachments[0].text).toBe('safe extracted text');
+        expect(() =>
+          assertModelBoundContent({ filters: config.filters, agents: [result as never] }),
+        ).not.toThrow();
+        cachedPolicy ??= result.deliveryRouting.fileConfig;
+        expect(result.deliveryRouting.fileConfig).toBe(cachedPolicy);
+        expect(file.filepath).toBe('/uploads/current.pdf');
+        expect(db.getFiles).not.toHaveBeenCalled();
+        expect(db.getConvoFiles).not.toHaveBeenCalled();
+        expect(db.getToolFilesByIds).not.toHaveBeenCalled();
+      }
+    } finally {
+      setFileConfigRegexCompiler((pattern) => new RegExp(pattern));
+    }
+  });
+
+  it('inspects a hydrated initialized agent with a large tool catalog without extra file reads', async () => {
+    const { assertModelBoundContent } = jest.requireActual<
+      typeof import('../../middleware/modelBoundContent')
+    >('../../middleware/modelBoundContent');
+    const loadedToolDefinitions = Array.from({ length: 67 }, (_, index) => ({
+      name: `report_${index}`,
+      description: 'Query a report',
+      parameters: {
+        type: 'object',
+        properties: Object.fromEntries(
+          Array.from({ length: 64 }, (_, field) => [
+            `field_${field}`,
+            { type: 'string', description: 'A report dimension', enum: ['one', 'two'] },
+          ]),
+        ),
+      },
+    }));
+    const { agent, req, loadTools, db } = createMocks({ loadedToolDefinitions });
+    req.config = {
+      config: {},
+      fileStrategy: FileSources.local,
+      imageOutputType: EImageOutputType.PNG,
+      fileConfig: {
+        endpoints: {
+          openAI: {
+            supportedMimeTypes: ['text/plain'],
+            defaultLLMDeliveryPath: { fallback: 'text' },
+          },
+        },
+      },
+      filters: {
+        files: {
+          pii: {
+            starterPatterns: [],
+            fields: ['content', 'extracted_text'],
+            uninspectable: 'block',
+          },
+        },
+      },
+    };
+    const file = Object.freeze(
+      inputFile({
+        type: 'text/plain',
+        filename: 'context.txt',
+        text: 'safe extracted text',
+        llmDeliveryPath: 'text',
+      }),
+    );
+    const result = await initializeAgent(
+      {
+        req,
+        agent,
+        loadTools,
+        authorizedRunFiles: [file],
+        allowedProviders: new Set([Providers.OPENAI]),
+      },
+      db,
+    );
+    expect(result.toolDefinitions).toHaveLength(67);
+    expect(result.requestAttachments).toHaveLength(1);
+    expect(() =>
+      assertModelBoundContent({ filters: req.config?.filters, agents: [result as never] }),
+    ).not.toThrow();
+    expect(db.getFiles).not.toHaveBeenCalled();
+    expect(db.getConvoFiles).not.toHaveBeenCalled();
+    expect(db.getToolFilesByIds).not.toHaveBeenCalled();
+    expect(file.filepath).toBe('/uploads/current.pdf');
+
+    // Responses callers can merge definitions after initialization; the final check must see them.
+    result.toolDefinitions?.push({
+      name: 'caller',
+      description: 'data:application/pdf;base64,c2VjcmV0',
+      parameters: { type: 'object' },
+    });
+    expect(() =>
+      assertModelBoundContent({ filters: req.config?.filters, agents: [result as never] }),
+    ).toThrow('Submitted file content could not be inspected before processing.');
+  });
+
   it.each([undefined, 'Extracted document contents'])(
     'advertises a queued file before tool execution with extracted text %p',
     async (text) => {
@@ -7049,5 +7309,857 @@ describe('initializeAgent — inference trust boundary', () => {
       configuration: { baseURL: 'https://trusted.invalid' },
       modelKwargs: { seed: 7 },
     });
+  });
+});
+
+describe('initializeAgent — deferred system tools', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  /** A loader result shaped like the definitions-only tool loader's. */
+  function mockDeferrableLoad(
+    loadTools: ReturnType<typeof createMocks>['loadTools'],
+    deferredToolsEnabled: boolean,
+  ) {
+    loadTools.mockImplementation(async ({ tools }: { tools: string[] }) => {
+      const loaded = tools
+        .filter((name) => name === Tools.web_search || name === Tools.file_search)
+        .map((name) => ({ name, description: `${name} tool`, parameters: { type: 'object' } }));
+      return {
+        tools: [],
+        toolContextMap: {},
+        userMCPAuthMap: undefined,
+        toolRegistry: new Map(
+          loaded.map((def) => [def.name, { name: def.name, allowed_callers: ['direct'] }]),
+        ),
+        toolDefinitions: loaded,
+        hasDeferredTools: false,
+        deferredToolsEnabled,
+      };
+    });
+  }
+
+  async function initialize(
+    toolOptions: Agent['tool_options'],
+    deferredToolsEnabled = true,
+  ): Promise<Awaited<ReturnType<typeof initializeAgent>>> {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.tools = [Tools.web_search, Tools.file_search, Tools.execute_code];
+    agent.tool_options = toolOptions;
+    mockDeferrableLoad(loadTools, deferredToolsEnabled);
+    return initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        codeEnvAvailable: true,
+      },
+      db,
+    );
+  }
+
+  const deferred = (result: Awaited<ReturnType<typeof initializeAgent>>): string[] =>
+    (result.toolDefinitions ?? []).filter((d) => d.defer_loading === true).map((d) => d.name);
+
+  it('defers search and code-execution tools registered during initialization', async () => {
+    const result = await initialize({ '*': { defer_loading: true } });
+
+    expect(deferred(result)).toEqual(
+      expect.arrayContaining(['web_search', 'file_search', 'bash_tool', 'read_file']),
+    );
+    expect(result.hasDeferredTools).toBe(true);
+    const names = (result.toolDefinitions ?? []).map((d) => d.name);
+    expect(names.filter((name) => name === 'tool_search')).toHaveLength(1);
+    for (const def of result.toolDefinitions ?? []) {
+      if (def.defer_loading === true) {
+        expect(result.toolRegistry?.get(def.name)).toBe(def);
+      }
+    }
+  });
+
+  it('defers only the tools a capability marker registered', async () => {
+    const result = await initialize({
+      '*': { defer_loading: false },
+      execute_code: { defer_loading: true },
+    });
+    const names = deferred(result);
+    expect(names).toEqual(expect.arrayContaining(['bash_tool', 'read_file']));
+    expect(names).not.toContain('web_search');
+    expect(names).not.toContain('file_search');
+  });
+
+  it('defers nothing when the deferred_tools capability is off', async () => {
+    const result = await initialize({ '*': { defer_loading: true } }, false);
+    expect(deferred(result)).toEqual([]);
+    expect(result.hasDeferredTools).toBe(false);
+    expect((result.toolDefinitions ?? []).map((d) => d.name)).not.toContain('tool_search');
+  });
+});
+
+describe('initializeAgent — deferral without a loader registry', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('defers late registrations when the loader returned early with no capability or registry', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.tools = [Tools.execute_code];
+    agent.tool_options = { '*': { defer_loading: true } };
+    (req as unknown as { config: unknown }).config = {
+      endpoints: { [EModelEndpoint.agents]: { capabilities: [AgentCapabilities.deferred_tools] } },
+    };
+    loadTools.mockResolvedValue({ toolDefinitions: [] });
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        codeEnvAvailable: true,
+      },
+      db,
+    );
+
+    const bash = result.toolDefinitions?.find((d) => d.name === 'bash_tool');
+    expect(bash?.defer_loading).toBe(true);
+    expect(result.toolRegistry?.get('bash_tool')).toBe(bash);
+    expect(result.toolRegistry?.has('tool_search')).toBe(true);
+    expect(result.hasDeferredTools).toBe(true);
+  });
+});
+
+describe('snapshot destination admission invariants', () => {
+  const MB = 1024 * 1024;
+  const filterMock = jest.requireMock('~/files') as {
+    filterFilesByEndpointRuntimeConfig: jest.Mock;
+  };
+  const realFilters = jest.requireActual<typeof import('~/files/filter')>('~/files/filter');
+  const realResources = jest.requireActual<typeof import('../resources')>('../resources');
+  beforeEach(() => {
+    jest.clearAllMocks();
+    filterMock.filterFilesByEndpointRuntimeConfig
+      .mockReset()
+      .mockImplementation(realFilters.filterFilesByEndpointRuntimeConfig);
+    jest.mocked(primeResources).mockReset().mockImplementation(realResources.primeResources);
+  });
+  afterEach(() => {
+    filterMock.filterFilesByEndpointRuntimeConfig.mockReset().mockReturnValue([]);
+    jest.mocked(primeResources).mockReset().mockResolvedValue({
+      attachments: [],
+      requestAttachments: [],
+      agentContextAttachments: undefined,
+      tool_resources: undefined,
+      warnings: [],
+    });
+  });
+  function snapshot(id: string, time: number, overrides: Partial<TFile> = {}): TFile {
+    return {
+      file_id: id,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      filename: 'report.txt',
+      filepath: `/uploads/${id}`,
+      source: FileSources.local,
+      type: 'text/plain',
+      bytes: 12 * MB,
+      object: 'file',
+      embedded: false,
+      usage: 0,
+      context: FileContext.execute_code_snapshot,
+      createdAt: new Date(time),
+      metadata: {
+        codeDestination: true,
+        sourceDispatchedAt: time,
+        codeEnvSource: {
+          kind: 'user',
+          id: 'user-1',
+          file_id: 'live-report',
+          storage_session_id: 'sandbox',
+        },
+      },
+      ...overrides,
+    };
+  }
+  async function run(
+    files: TFile[],
+    deferred: TFile[] = [],
+    config: { fileSizeLimit?: number; supportedMimeTypes?: string[]; disabled?: boolean } = {},
+    filters?: FiltersConfig,
+    tools: string[] = [Tools.execute_code],
+  ) {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.tools = tools;
+    agent.endpoint = EModelEndpoint.openAI;
+    req.user!.tenantId = 'tenant-1';
+    req.config!.filters = filters;
+    req.config!.fileConfig = {
+      endpoints: { openAI: { totalSizeLimit: 20, fileSizeLimit: 20, ...config } },
+    };
+    mockExtractLibreChatParams.mockReturnValue({
+      resendFiles: true,
+      modelOptions: { model: agent.model },
+    });
+    const getFiles = jest.fn().mockResolvedValue([...files, ...deferred]);
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        conversationId: 'snapshot-conversation',
+        codeEnvAvailable: true,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+      },
+      {
+        ...db,
+        getFiles,
+        getConvoFiles: jest
+          .fn()
+          .mockResolvedValue([...files, ...deferred].map((file) => file.file_id)),
+        getCodeGeneratedFiles: jest
+          .fn()
+          .mockResolvedValue(
+            files.filter((file) => file.context === FileContext.execute_code_snapshot),
+          ),
+        getToolFilesByIds: jest
+          .fn()
+          .mockResolvedValue(
+            files.filter((file) => file.context !== FileContext.execute_code_snapshot),
+          ),
+        getDeferredProvisionFiles: jest.fn().mockResolvedValue(deferred),
+      },
+    );
+    const eager = await selectCodeFiles({
+      files: result.tool_resources?.execute_code?.files ?? [],
+      routeKey: 'default',
+      getFileInfo: async () => ({ lastModified: new Date().toISOString() }),
+    });
+    const staged = new Map<string, string>();
+    const callback = createProvisionFilesCallback({
+      req,
+      agentToolContexts: new Map([['agent-1', result]]),
+      fileStorage: {
+        recovery: createFileProvisionRecovery(),
+        acquireFileProvision: jest.fn().mockResolvedValue(true),
+        releaseFileProvision: jest.fn().mockResolvedValue(true),
+        commitFileProvision: jest.fn().mockResolvedValue(true),
+      },
+      provisionToCodeEnv: async ({ file, sandboxFilename }) => {
+        const name = sandboxFilename ?? file.filename;
+        staged.set(name, file.file_id);
+        return {
+          referenceSet: {},
+          sandboxFilename: name,
+          refUpdate: {
+            file_id: file.file_id,
+            routeKey: 'default',
+            ref: {
+              kind: 'user',
+              id: 'user-1',
+              file_id: file.file_id,
+              storage_session_id: 'sandbox',
+              sandboxFilename: name,
+            },
+          },
+        };
+      },
+      provisionToVectorDB: async ({ file }) => ({
+        embedded: true,
+        fileUpdate: { file_id: file.file_id, embedded: true },
+      }),
+      updateFile: async () => undefined,
+      updateCodeEnvRef: async () => undefined,
+      addEmbeddedEntity: async () => undefined,
+    });
+    await callback(tools, 'agent-1');
+    expect(getFiles).toHaveBeenCalledTimes(1);
+    expect(getFiles).toHaveBeenCalledWith(
+      expect.objectContaining({ user: 'user-1', tenantId: 'tenant-1' }),
+      {},
+      {},
+    );
+    return { result, staged, eager };
+  }
+  it.each([false, true])(
+    'selects two 12 MiB versions before the 20 MiB budget (deferred newest %s)',
+    async (deferred) => {
+      const old = snapshot('v1', 100);
+      const newest = snapshot('v2', 200);
+      const { staged } = await run(deferred ? [old] : [old, newest], deferred ? [newest] : []);
+      expect(staged.get('report.txt')).toBe('v2');
+      expect([...staged.values()]).not.toContain('v1');
+    },
+  );
+  it.each(['oversized', 'mime', 'disabled'] as const)(
+    'never revives an older version when the newest is %s',
+    async (policy) => {
+      const overrides: Partial<TFile> = {};
+      const config: Parameters<typeof run>[2] = {};
+      if (policy === 'oversized') overrides.bytes = 25 * MB;
+      if (policy === 'mime') {
+        overrides.type = 'application/pdf';
+        config.supportedMimeTypes = ['text/plain'];
+      }
+      if (policy === 'disabled') config.disabled = true;
+      const { staged } = await run(
+        [snapshot('v1', 100), snapshot('v2', 200, overrides)],
+        [],
+        config,
+      );
+      expect(staged.size).toBe(0);
+    },
+  );
+  it('inspects the selected generation instead of reviving safe older bytes', async () => {
+    await expect(
+      run(
+        [
+          snapshot('v1', 100, { text: 'Safe old content' }),
+          snapshot('v2', 200, { text: 'BLOCKED' }),
+        ],
+        [],
+        {},
+        {
+          files: {
+            pii: {
+              fields: ['extracted_text'],
+              starterPatterns: [],
+              customPatterns: [
+                { id: 'snapshot-policy', label: 'Snapshot policy', regex: 'BLOCKED' },
+              ],
+            },
+          },
+        },
+      ),
+    ).rejects.toThrow();
+  });
+  it.each([
+    { tools: [Tools.execute_code, Tools.file_search] },
+    { tools: [Tools.execute_code] },
+    { tools: [Tools.file_search] },
+  ])('keeps independent consumer records when tools are $tools', async ({ tools }) => {
+    const upload = snapshot('upload', 100, {
+      context: FileContext.message_attachment,
+      bytes: MB,
+      embedded: true,
+      metadata: { destinationChosen: true, codeDestination: true, searchDestination: true },
+    });
+    const output = snapshot('output', 200, { bytes: MB });
+    const { result, staged } = await run([upload, output], [], {}, undefined, tools);
+    expect(staged.get('report.txt')).toBe(
+      tools.includes(Tools.execute_code) ? 'output' : undefined,
+    );
+    const search = result.tool_resources?.file_search?.files?.map((file) => file.file_id) ?? [];
+    expect(search).toEqual(tools.includes(Tools.file_search) ? ['upload'] : []);
+  });
+  it.each([
+    { deferred: false, tools: [Tools.execute_code, Tools.file_search] },
+    { deferred: true, tools: [Tools.execute_code, Tools.file_search] },
+    { deferred: false, tools: [Tools.execute_code] },
+    { deferred: false, tools: [Tools.file_search] },
+  ])(
+    'keeps newer search-only intent independent (deferred $deferred, tools $tools)',
+    async ({ deferred, tools }) => {
+      const output = snapshot('output', 100, { bytes: MB });
+      const upload = snapshot('search', 200, {
+        context: FileContext.message_attachment,
+        bytes: MB,
+        embedded: !deferred,
+        metadata: { destinationChosen: true, searchDestination: true },
+      });
+      const { result, staged } = await run(
+        deferred ? [output] : [output, upload],
+        deferred ? [upload] : [],
+        {},
+        undefined,
+        tools,
+      );
+      expect(staged.get('report.txt')).toBe(
+        tools.includes(Tools.execute_code) ? 'output' : undefined,
+      );
+      expect(result.tool_resources?.file_search?.files?.map((file) => file.file_id) ?? []).toEqual(
+        tools.includes(Tools.file_search) ? ['search'] : [],
+      );
+    },
+  );
+  it('retains model-bound input independently of its superseded code copy', async () => {
+    const input = snapshot('model-input', 100, {
+      context: FileContext.message_attachment,
+      bytes: MB,
+      llmDeliveryPath: 'text',
+      text: 'Prompt input',
+      metadata: { destinationChosen: true, codeDestination: true },
+    });
+    const { result, staged } = await run([input, snapshot('output', 200, { bytes: MB })]);
+    expect(staged.get('report.txt')).toBe('output');
+    expect(result.attachments?.map((file) => file?.file_id)).toContain('model-input');
+  });
+  it.each(['oversized', 'mime'] as const)(
+    'keeps search input but never restores its old code bytes when newest is %s',
+    async (policy) => {
+      const upload = snapshot('upload', 100, {
+        context: FileContext.message_attachment,
+        bytes: MB,
+        embedded: true,
+        metadata: { destinationChosen: true, codeDestination: true, searchDestination: true },
+      });
+      const output = snapshot(
+        'output',
+        200,
+        policy === 'oversized' ? { bytes: 25 * MB } : { bytes: MB, type: 'application/pdf' },
+      );
+      const { result, staged } = await run(
+        [upload, output],
+        [],
+        policy === 'mime' ? { supportedMimeTypes: ['text/plain'] } : {},
+        undefined,
+        [Tools.execute_code, Tools.file_search],
+      );
+      expect(staged.size).toBe(0);
+      expect(result.tool_resources?.file_search?.files?.map((file) => file.file_id)).toEqual([
+        'upload',
+      ]);
+    },
+  );
+  it('charges search-needed superseded inputs without reviving them for code when the union exceeds budget', async () => {
+    const upload = snapshot('upload', 100, {
+      context: FileContext.message_attachment,
+      embedded: true,
+      metadata: { destinationChosen: true, codeDestination: true, searchDestination: true },
+    });
+    const { result, staged } = await run([upload, snapshot('output', 200)], [], {}, undefined, [
+      Tools.execute_code,
+      Tools.file_search,
+    ]);
+    expect(staged.size).toBe(0);
+    expect(result.tool_resources?.file_search?.files?.map((file) => file.file_id)).toEqual([
+      'upload',
+    ]);
+  });
+  it.each([
+    [FileContext.execute_code_snapshot, true, false],
+    [FileContext.execute_code, true, false],
+    [FileContext.execute_code, false, false],
+    [FileContext.execute_code, true, true],
+    [FileContext.execute_code, false, true],
+  ] as const)(
+    'charges independent capture and assigned-path writes separately across repeated initialization (%s, named %s, deferred newest %s)',
+    async (context, named, deferred) => {
+      const original = snapshot('png', 100, {
+        context,
+        filename: 'nested/chart.png',
+        type: 'image/webp',
+        metadata: {
+          codeDestination: true,
+          sourceDispatchedAt: 100,
+          codeEnvRef: {
+            kind: 'user',
+            id: 'user-1',
+            storage_session_id: 'sandbox',
+            file_id: 'png-copy',
+            sandboxFilename: named ? 'nested/chart.webp' : undefined,
+          },
+        },
+      });
+      const literal = snapshot('literal', 200, {
+        filename: 'nested/chart.webp',
+        type: 'image/webp',
+      });
+      const first = await run(
+        deferred ? [original] : [original, literal],
+        deferred ? [literal] : [],
+      );
+      expect([...first.staged.values()]).toEqual(['png']);
+      expect(first.staged.has('nested/chart.webp')).toBe(false);
+      expect(first.eager.selected.map((entry) => entry.sandboxName)).not.toContain(
+        'nested/chart.webp',
+      );
+      const again = await run(
+        deferred ? [original] : [original, literal],
+        deferred ? [literal] : [],
+      );
+      expect(again.staged).toEqual(first.staged);
+    },
+  );
+  it.each([false, true])(
+    'normalizes an unreferenced converted upload before code admission (deferred newest %s)',
+    async (deferred) => {
+      const upload = snapshot('converted-upload', 100, {
+        filename: 'chart.png',
+        type: 'image/webp',
+        context: FileContext.message_attachment,
+        metadata: { destinationChosen: false, codeDestination: true },
+      });
+      const output = snapshot('literal', 200, { filename: 'chart.webp', type: 'image/webp' });
+      const { staged } = await run(
+        deferred ? [upload] : [upload, output],
+        deferred ? [output] : [],
+      );
+      expect([...staged.entries()]).toEqual([['chart.webp', 'literal']]);
+    },
+  );
+
+  it('keeps unrelated files subject to their original shared budget and order', async () => {
+    const { staged } = await run([
+      snapshot('first', 100, { filename: 'first.txt' }),
+      snapshot('other', 200, { filename: 'other.txt', bytes: 9 * MB }),
+    ]);
+    expect([...staged.entries()]).toEqual([['first.txt', 'first']]);
+  });
+});
+
+describe("initializeAgent: under a schedule's grant", () => {
+  const selected = [
+    'query_mcp_warehouse',
+    'export_mcp_warehouse',
+    'purge_mcp_archive',
+    Tools.web_search,
+    Tools.execute_code,
+  ];
+  async function initialize(attach: boolean) {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.id = 'root';
+    agent.tools = [...selected];
+    loadTools.mockResolvedValue({ toolDefinitions: [] });
+    if (attach) {
+      // The agents select `query` and `export` on the warehouse; the owner allowed `query`.
+      // Of the agent's other tools the owner allowed web search and left code execution out.
+      const fixture = await executionFixture('invoke', readTool, undefined, {
+        offered: ['export'],
+        tools: [Tools.execute_code, Tools.web_search],
+        allowTools: [Tools.web_search],
+      });
+      await fixture.factory.attach(getMCPRequestContext(req, res)!, fixture.identity, 'invoke');
+    }
+    await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([agent.provider]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+    return loadTools.mock.calls.map(([call]) => call.tools as string[]);
+  }
+
+  it('loads only the tools the owner allowed, MCP or not, and nothing from a server left out', async () => {
+    const [tools, ...retries] = await initialize(true);
+    expect(retries).toEqual([]);
+    expect(tools).toContain('query_mcp_warehouse');
+    expect(tools).toContain(Tools.web_search);
+    expect(tools).not.toContain(Tools.execute_code);
+    expect(tools).not.toContain('export_mcp_warehouse');
+    // The loader is never asked about the archive server, so it is never connected to.
+    expect(tools).not.toContain('purge_mcp_archive');
+  });
+
+  it('sets up code execution and memory for the model only where the owner allowed them', async () => {
+    const defined = async (allowTools: string[]) => {
+      const { agent, req, res, loadTools, db } = createMocks();
+      agent.id = 'root';
+      agent.tools = ['query_mcp_warehouse', Tools.execute_code, Tools.memory];
+      loadTools.mockResolvedValue({ toolDefinitions: [] });
+      const fixture = await executionFixture('invoke', readTool, undefined, {
+        tools: [Tools.execute_code, Tools.memory],
+        allowTools,
+      });
+      await fixture.factory.attach(getMCPRequestContext(req, res)!, fixture.identity, 'invoke');
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([agent.provider]),
+          isInitialAgent: true,
+          codeEnvAvailable: true,
+          memoryAvailable: true,
+        },
+        db,
+      );
+      return (result.toolDefinitions ?? []).map((tool) => tool.name);
+    };
+    // The markers on the agent's tool list set these up, not the loader: left out, they must
+    // not be read there either, or the model is shown a tool that is then refused.
+    const all = await defined([Tools.execute_code, Tools.memory]);
+    expect(all).toEqual(expect.arrayContaining(['bash_tool', 'set_memory', 'delete_memory']));
+    const none = await defined([]);
+    expect(none).not.toContain('bash_tool');
+    expect(none).not.toContain('set_memory');
+    expect(none).not.toContain('delete_memory');
+  });
+
+  it('gives the agent its skills only where the owner allowed them', async () => {
+    const { Types } = await import('mongoose');
+    const run = async (allowTools?: string[]) => {
+      const { agent, req, res, loadTools, db } = createMocks();
+      agent.id = 'root';
+      agent.tools = ['query_mcp_warehouse'];
+      loadTools.mockResolvedValue({ toolDefinitions: [] });
+      if (allowTools) {
+        const fixture = await executionFixture('invoke', readTool, undefined, {
+          tools: [AgentCapabilities.skills],
+          allowTools,
+        });
+        await fixture.factory.attach(getMCPRequestContext(req, res)!, fixture.identity, 'invoke');
+      }
+      const listSkillsByAccess = jest.fn(async () => ({
+        skills: [],
+        has_more: false,
+        after: null,
+      }));
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([agent.provider]),
+          isInitialAgent: true,
+          accessibleSkillIds: [new Types.ObjectId()],
+        },
+        { ...db, listSkillsByAccess },
+      );
+      return {
+        catalog: listSkillsByAccess.mock.calls.length > 0,
+        names: (result.toolDefinitions ?? []).map((tool) => tool.name),
+      };
+    };
+    // One item stands for every skill: allowed, the agent's catalog is read as in chat.
+    expect((await run([AgentCapabilities.skills])).catalog).toBe(true);
+    // Left out, nothing of it reaches the model: no catalog, no tool to be refused.
+    const left = await run([]);
+    expect(left.catalog).toBe(false);
+    expect(left.names).not.toContain('read_file');
+    expect(left.names).not.toContain('skill');
+    // A request with no grant is untouched.
+    expect((await run()).catalog).toBe(true);
+  });
+
+  it('loads everything the agent selects for a request with no grant', async () => {
+    const [tools] = await initialize(false);
+    expect(tools).toEqual(expect.arrayContaining(selected));
+  });
+});
+
+describe('initializeAgent — files the conversation leaves out', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockExtractLibreChatParams.mockReset();
+    mockGetThreadData.mockReset();
+  });
+
+  /** `resendFiles` opens the block that reads the conversation's and the thread's files. */
+  const setup = (...args: Parameters<typeof createMocks>) => {
+    const mocks = createMocks(...args);
+    mockExtractLibreChatParams.mockReturnValue({
+      resendFiles: true,
+      maxContextTokens: undefined,
+      modelOptions: { model: 'test-model' },
+    });
+    return mocks;
+  };
+
+  const kept = { file_id: 'kept-file', filename: 'kept.txt' } as IMongoFile;
+  const left = { file_id: 'left-out-file', filename: 'left.txt' } as IMongoFile;
+  const byId = new Map([
+    [kept.file_id, kept],
+    [left.file_id, left],
+  ]);
+  const lookup = () =>
+    jest
+      .fn()
+      .mockImplementation(async (filter: { file_id: { $in: string[] } }) =>
+        filter.file_id.$in.map((id) => byId.get(id)).filter((entry) => entry != null),
+      );
+  const passThroughRuntimeFilter = () => {
+    const { filterFilesByEndpointRuntimeConfig } = jest.requireMock('~/files') as {
+      filterFilesByEndpointRuntimeConfig: jest.Mock;
+    };
+    filterFilesByEndpointRuntimeConfig.mockImplementation(
+      (_req: ServerRequest, { files }: { files: IMongoFile[] }) => files,
+    );
+  };
+
+  it('asks for no tool file the conversation leaves out, and names the list to the caller', async () => {
+    const { agent, req, res, loadTools, db } = setup();
+    agent.tools = [EToolResources.file_search];
+    passThroughRuntimeFilter();
+    (db.getConvoFiles as jest.Mock).mockResolvedValueOnce([kept.file_id, left.file_id]);
+    const getToolFilesByIds = jest
+      .fn()
+      .mockImplementation(async (ids: string[]) =>
+        ids.map((id) => byId.get(id)).filter((entry) => entry != null),
+      );
+    const getConvoExcludedFiles = jest.fn().mockResolvedValue([left.file_id]);
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        conversationId: 'conversation-1',
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      { ...db, getToolFilesByIds, getFiles: lookup(), getConvoExcludedFiles },
+    );
+
+    expect(getConvoExcludedFiles).toHaveBeenCalledWith('conversation-1');
+    expect(getToolFilesByIds).toHaveBeenCalledWith(
+      [kept.file_id],
+      new Set([EToolResources.file_search]),
+      { userId: 'user-1', tenantId: undefined },
+    );
+    expect(result.excludedFiles).toEqual([left.file_id]);
+  });
+
+  it('does not send a left-out file the request names again', async () => {
+    const { primeResources } = jest.requireMock('../resources') as { primeResources: jest.Mock };
+    const { agent, req, res, loadTools, db } = setup();
+    passThroughRuntimeFilter();
+    const getFiles = lookup();
+
+    await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        requestFiles: [kept, left],
+        conversationId: 'conversation-1',
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      { ...db, getFiles, getConvoExcludedFiles: jest.fn().mockResolvedValue([left.file_id]) },
+    );
+
+    expect(getFiles).toHaveBeenCalledWith(
+      { file_id: { $in: [kept.file_id] }, user: 'user-1' },
+      {},
+      {},
+    );
+    await expect(primeResources.mock.calls[0][0].attachments).resolves.toEqual([kept]);
+  });
+
+  it('leaves the file out of the thread walk that primes code files', async () => {
+    const { agent, req, res, loadTools, db } = setup({ provider: Providers.OPENAI });
+    agent.tools = ['execute_code'];
+    mockGetThreadData.mockReturnValue({
+      messageIds: ['message-2', 'message-1'],
+      fileIds: [kept.file_id, left.file_id],
+    });
+    const getCodeGeneratedFiles = jest.fn().mockResolvedValue([]);
+    const getUserCodeFiles = jest.fn().mockResolvedValue([]);
+
+    await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        conversationId: 'conversation-1',
+        parentMessageId: 'message-2',
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        codeEnvAvailable: true,
+      },
+      {
+        ...db,
+        getMessages: jest
+          .fn()
+          .mockResolvedValue([{ messageId: 'message-2', parentMessageId: 'message-1', files: [] }]),
+        getCodeGeneratedFiles,
+        getUserCodeFiles,
+        getConvoExcludedFiles: jest.fn().mockResolvedValue([left.file_id]),
+      },
+    );
+
+    expect(getCodeGeneratedFiles).toHaveBeenCalledWith('conversation-1', [kept.file_id], {
+      userId: 'user-1',
+      tenantId: undefined,
+    });
+    expect(getUserCodeFiles).toHaveBeenCalledWith([kept.file_id], {
+      userId: 'user-1',
+      tenantId: undefined,
+    });
+  });
+
+  it('takes the list from the conversation the request already loaded, without a query', async () => {
+    const { agent, req, res, loadTools, db } = setup();
+    agent.tools = [EToolResources.file_search];
+    passThroughRuntimeFilter();
+    Object.assign(req, {
+      resolvedConversation: {
+        conversationId: 'conversation-1',
+        files: [kept.file_id, left.file_id],
+        excludedFiles: [left.file_id],
+      },
+    });
+    const getToolFilesByIds = jest.fn().mockResolvedValue([kept]);
+    const getConvoExcludedFiles = jest.fn().mockResolvedValue([]);
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        conversationId: 'conversation-1',
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      { ...db, getToolFilesByIds, getFiles: lookup(), getConvoExcludedFiles },
+    );
+
+    expect(getConvoExcludedFiles).not.toHaveBeenCalled();
+    expect(db.getConvoFiles).not.toHaveBeenCalled();
+    expect(getToolFilesByIds.mock.calls[0][0]).toEqual([kept.file_id]);
+    expect(result.excludedFiles).toEqual([left.file_id]);
+  });
+
+  it('changes nothing for a conversation that leaves no file out', async () => {
+    const { agent, req, res, loadTools, db } = setup();
+    agent.tools = [EToolResources.file_search];
+    passThroughRuntimeFilter();
+    (db.getConvoFiles as jest.Mock).mockResolvedValueOnce([kept.file_id, left.file_id]);
+    const getToolFilesByIds = jest.fn().mockResolvedValue([kept, left]);
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        conversationId: 'conversation-1',
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      { ...db, getToolFilesByIds, getFiles: lookup() },
+    );
+
+    expect(getToolFilesByIds.mock.calls[0][0]).toEqual([kept.file_id, left.file_id]);
+    expect(result).not.toHaveProperty('excludedFiles');
   });
 });

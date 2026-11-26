@@ -1,8 +1,8 @@
-import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { openAgentBuilder, uniqueAgentName, cleanupAgent } from '../agents.helpers';
 import { MOCK_ENDPOINTS, NEW_CHAT_PATH, getAccessToken, requestJson } from '../helpers';
+import { expect, test } from '../fixtures';
 import { openSidebar } from './sidebar';
 
 /**

@@ -185,6 +185,79 @@ test.describe('marketplace sorting', () => {
     expect(renderedNames.filter((name) => expectedNames.includes(name))).toEqual(expectedNames);
   });
 
+  test('@scenario:popular-sort-reranks-after-another-tab-pins a pin made in another tab re-ranks the cached popular list when it is next shown', async ({
+    page,
+  }) => {
+    const token = await getAccessToken(page);
+    const prefix = uniqueAgentName('E2E marketplace reconcile');
+    const agents = [
+      await createAgent(page, `${prefix}-0`, token),
+      await createAgent(page, `${prefix}-1`, token),
+    ];
+    const names = agents.map((agent) => agent.name!);
+    originalFavorites = await fetchJson<Favorite[]>(page, '/api/user/settings/favorites', token);
+
+    const renderedOrder = () =>
+      page
+        .getByRole('listitem')
+        .evaluateAll(
+          (items, expected) =>
+            items
+              .map((item) => item.querySelector('h2')?.textContent?.trim())
+              .filter((name): name is string => !!name && expected.includes(name)),
+          names,
+        );
+    const chooseSort = async (label: string) => {
+      await page.getByTestId('agent-sort-dropdown').click();
+      await page.getByRole('option', { name: label, exact: true }).click();
+    };
+
+    await page.goto(`/agents/all?sort=popular&q=${encodeURIComponent(prefix)}`, {
+      timeout: 10000,
+    });
+    await expect.poll(renderedOrder, { timeout: 30000 }).toHaveLength(2);
+    const initial = await renderedOrder();
+    const trailing = initial[1];
+
+    /* The other tab's pin reaches the server directly; this tab only learns of it when
+       its favourites query reconciles on the next window focus. */
+    const pinned = agents.find((agent) => agent.name === trailing)!;
+    await requestJson<Favorite[]>(page, {
+      path: '/api/user/settings/favorites',
+      token,
+      method: 'POST',
+      body: {
+        favorites: [
+          ...originalFavorites.filter((favorite) => favorite.agentId !== pinned.id).slice(0, 49),
+          { agentId: pinned.id },
+        ],
+      },
+    });
+    const reconciled = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'GET' &&
+        new URL(response.url()).pathname === '/api/user/settings/favorites' &&
+        response.ok(),
+    );
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('blur'));
+      window.dispatchEvent(new Event('focus'));
+    });
+    const body = (await (await reconciled).json()) as Favorite[];
+    expect(body.some((favorite) => favorite.agentId === pinned.id)).toBe(true);
+
+    /* Not re-sorted under the reader: the open list keeps its order until it is shown again. */
+    expect(await renderedOrder()).toEqual(initial);
+
+    /* Newest is the default, so choosing it drops `sort` from the URL. */
+    await chooseSort('Newest first');
+    await expect(page).not.toHaveURL(/sort=popular/);
+    await expect.poll(renderedOrder, { timeout: 30000 }).toHaveLength(2);
+    await chooseSort('Popular');
+    await expect(page).toHaveURL(/sort=popular/);
+    await expect.poll(async () => (await renderedOrder())[0], { timeout: 30000 }).toBe(trailing);
+  });
+
   test('@scenario:author-sort-shows-the-cards-author author sort shows the same author on the card as newest sort', async ({
     page,
   }) => {

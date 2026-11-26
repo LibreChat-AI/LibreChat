@@ -1,4 +1,3 @@
-import { expect, test } from '@playwright/test';
 import { cleanupAgent, openAgentBuilder, uniqueAgentName } from './agents.helpers';
 import {
   getAccessToken,
@@ -9,6 +8,7 @@ import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
 } from './helpers';
+import { expect, test } from './fixtures';
 
 for (const [theme, width] of [
   ['light', 1280],

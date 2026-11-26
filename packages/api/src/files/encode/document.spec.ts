@@ -14,17 +14,25 @@ import { encodeAndFormatDocuments, dedupeDocumentNames } from './document';
 jest.mock('~/files/validation', () => ({
   validatePdf: jest.fn(),
   validateBedrockDocument: jest.fn(),
+  getBedrockDocumentLimit: jest.requireActual('~/files/validation').getBedrockDocumentLimit,
 }));
 
 /** Mock the utils module */
 jest.mock('./utils', () => ({
   getFileStream: jest.fn(),
   getConfiguredFileSizeLimit: jest.fn(),
-  isAttachmentObjectNotFoundError: jest.fn(() => false),
+  skipMissingAttachment: jest.requireActual('./utils').skipMissingAttachment,
+  AttachmentObjectNotFoundError: jest.requireActual('./utils').AttachmentObjectNotFoundError,
+  AttachmentSizeError: jest.requireActual('./utils').AttachmentSizeError,
 }));
 
 import { validatePdf, validateBedrockDocument } from '~/files/validation';
-import { getFileStream, getConfiguredFileSizeLimit } from './utils';
+import {
+  getFileStream,
+  AttachmentSizeError,
+  getConfiguredFileSizeLimit,
+  AttachmentObjectNotFoundError,
+} from './utils';
 import { Types } from 'mongoose';
 
 const mockedValidatePdf = validatePdf as jest.MockedFunction<typeof validatePdf>;
@@ -562,15 +570,132 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
       expect(result.documents).toHaveLength(1);
       expect(result.documents[0]).toMatchObject({
-        type: 'document',
-        document: {
-          name: 'test_pdf',
-          format: 'pdf',
-          source: {
-            bytes: expect.any(Buffer),
-          },
-        },
+        type: 'file',
+        source_type: 'base64',
+        mime_type: 'application/pdf',
+        data: mockContent,
+        metadata: { name: 'test_pdf' },
       });
+    });
+
+    it('refuses a Bedrock document over the limit from its recorded size, without reading it', async () => {
+      const req = createMockRequest() as ServerRequest;
+      const file = createMockFile(8);
+      file.type = 'text/csv';
+
+      await expect(
+        encodeAndFormatDocuments(
+          req,
+          [file],
+          { provider: Providers.BEDROCK },
+          mockStrategyFunctions,
+        ),
+      ).rejects.toBeInstanceOf(AttachmentSizeError);
+      expect(mockedGetFileStream).not.toHaveBeenCalled();
+      expect(mockedGetConfiguredFileSizeLimit).toHaveBeenCalledWith(
+        req,
+        expect.objectContaining({ explicit: true }),
+      );
+    });
+
+    it('bounds the Bedrock read at the limit and reports an object larger than its record', async () => {
+      const req = createMockRequest() as ServerRequest;
+      const file = createMockFile(1);
+      file.type = 'text/csv';
+      const limit = mbToBytes(4.5);
+      mockedGetFileStream.mockRejectedValue(
+        new AttachmentSizeError(file.file_id, 'data.csv', limit),
+      );
+
+      await expect(
+        encodeAndFormatDocuments(
+          req,
+          [file],
+          { provider: Providers.BEDROCK },
+          mockStrategyFunctions,
+        ),
+      ).rejects.toBeInstanceOf(AttachmentSizeError);
+      expect(mockedGetFileStream.mock.calls[0][5]).toBe(limit);
+    });
+
+    it('reads a Bedrock document up to a limit the operator set above the provider default', async () => {
+      const req = createMockRequest(10, Providers.BEDROCK) as ServerRequest;
+      const file = createMockFile(8);
+      file.type = 'text/csv';
+      mockedGetFileStream.mockResolvedValue({
+        file,
+        content: Buffer.from('a,b').toString('base64'),
+        metadata: file,
+      });
+      mockedValidateBedrockDocument.mockResolvedValue({ isValid: true });
+
+      const result = await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.BEDROCK },
+        mockStrategyFunctions,
+      );
+      expect(result.documents).toHaveLength(1);
+      expect(mockedGetFileStream.mock.calls[0][5]).toBe(mbToBytes(10));
+    });
+
+    it('leaves out a replayed Bedrock document that is gone, whatever size was recorded', async () => {
+      const req = createMockRequest() as ServerRequest;
+      const file = createMockFile(8);
+      file.type = 'text/csv';
+      const onMissingFile = jest.fn();
+      mockedGetFileStream.mockRejectedValue(new AttachmentObjectNotFoundError(file.file_id));
+
+      const result = await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.BEDROCK, onMissingFile },
+        mockStrategyFunctions,
+      );
+      expect(result.documents).toHaveLength(0);
+      expect(onMissingFile).toHaveBeenCalledWith(file);
+      expect(mockedGetFileStream.mock.calls[0][5]).toBe(mbToBytes(4.5));
+    });
+
+    it('reads a document under timeouts.fileFetchMs', async () => {
+      const req = { config: { timeouts: { fileFetchMs: 1_234 } } } as unknown as ServerRequest;
+      const file = createMockFile(3);
+      mockedGetFileStream.mockResolvedValue({
+        file,
+        content: Buffer.from('%PDF-1.4 test').toString('base64'),
+        metadata: file,
+      });
+      mockedValidatePdf.mockResolvedValue({ isValid: true });
+
+      await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.ANTHROPIC },
+        mockStrategyFunctions,
+      );
+      expect(mockedGetFileStream.mock.calls[0][4]).toMatchObject({
+        timeout: 1_234,
+        timeoutErrorMessage: expect.stringContaining('timeouts.fileFetchMs (1234 ms)'),
+      });
+    });
+
+    it('leaves reads for other providers unbounded', async () => {
+      const req = createMockRequest() as ServerRequest;
+      const file = createMockFile(3);
+      mockedGetFileStream.mockResolvedValue({
+        file,
+        content: Buffer.from('%PDF-1.4 test').toString('base64'),
+        metadata: file,
+      });
+      mockedValidatePdf.mockResolvedValue({ isValid: true });
+
+      await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.ANTHROPIC },
+        mockStrategyFunctions,
+      );
+      expect(mockedGetFileStream.mock.calls[0][5]).toBeUndefined();
     });
 
     it('should format Bedrock CSV document', async () => {
@@ -595,14 +720,11 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
       expect(result.documents).toHaveLength(1);
       expect(result.documents[0]).toMatchObject({
-        type: 'document',
-        document: {
-          name: 'data_csv',
-          format: 'csv',
-          source: {
-            bytes: expect.any(Buffer),
-          },
-        },
+        type: 'file',
+        source_type: 'base64',
+        mime_type: 'text/csv',
+        data: mockContent,
+        metadata: { name: 'data_csv' },
       });
     });
 
@@ -629,14 +751,11 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
       expect(result.documents).toHaveLength(1);
       expect(result.documents[0]).toMatchObject({
-        type: 'document',
-        document: {
-          name: 'report_docx',
-          format: 'docx',
-          source: {
-            bytes: expect.any(Buffer),
-          },
-        },
+        type: 'file',
+        source_type: 'base64',
+        mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        data: mockContent,
+        metadata: { name: 'report_docx' },
       });
     });
 
@@ -662,14 +781,11 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
       expect(result.documents).toHaveLength(1);
       expect(result.documents[0]).toMatchObject({
-        type: 'document',
-        document: {
-          name: 'notes_txt',
-          format: 'txt',
-          source: {
-            bytes: expect.any(Buffer),
-          },
-        },
+        type: 'file',
+        source_type: 'base64',
+        mime_type: 'text/plain',
+        data: mockContent,
+        metadata: { name: 'notes_txt' },
       });
     });
 
@@ -705,7 +821,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
     it('should reject Bedrock document when validation fails', async () => {
       const req = createMockRequest() as ServerRequest;
-      const file = createMockDocFile(5, 'text/csv', 'big.csv');
+      const file = createMockDocFile(3, 'text/csv', 'big.csv');
 
       const mockContent = Buffer.from('large-csv-content').toString('base64');
       mockedGetFileStream.mockResolvedValue({
@@ -1212,15 +1328,34 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
 describe('dedupeDocumentNames', () => {
   const bedrock = (name: string): BedrockDocumentBlock => ({
-    type: 'document',
-    document: { name, format: 'pdf', source: { bytes: Buffer.from(name) } },
+    type: 'file',
+    source_type: 'base64',
+    mime_type: 'application/pdf',
+    data: Buffer.from(name).toString('base64'),
+    metadata: { name },
   });
   type Message = { content?: string | PayloadContentPart[] | null };
   const names = (parts: PayloadContentPart[] = []): string[] =>
-    parts.flatMap((part) =>
-      part.document?.name != null ? [part.document.name] : names(part.media ?? []),
-    );
+    parts.flatMap((part) => {
+      const name = part.metadata?.name ?? part.document?.name;
+      return name != null ? [name] : names(part.media ?? []);
+    });
   const contentOf = (message: Message) => (Array.isArray(message.content) ? message.content : []);
+
+  it('renames native Converse documents from imported history alongside base64 ones', () => {
+    const native = (name: string): PayloadContentPart => ({ type: 'document', document: { name } });
+    const imported = native('notes');
+    const messages: Message[] = [
+      { content: [imported, native('Notes')] },
+      { content: [bedrock('notes')] },
+    ];
+
+    dedupeDocumentNames(messages);
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes', 'Notes (2)']);
+    expect(names(contentOf(messages[1]))).toEqual(['notes (3)']);
+    expect(imported.document?.name).toBe('notes');
+  });
 
   it.each(Object.values(Providers).filter((provider) => provider !== Providers.BEDROCK))(
     'does not inspect replay content for %s',
@@ -1373,7 +1508,7 @@ describe('dedupeDocumentNames', () => {
 
     dedupeDocumentNames(messages);
 
-    expect(repeated.document.name).toBe('report');
+    expect(repeated.metadata.name).toBe('report');
     expect(secondContent[0]).toBe(repeated);
     expect(names(contentOf(messages[1]))).toEqual(['report (2)']);
   });
@@ -1410,7 +1545,7 @@ describe('dedupeDocumentNames', () => {
     expect(lookups).toBeLessThan(count * 6);
     expect(new Set(result.map((name) => name.toLowerCase())).size).toBe(count);
     expect(result.every((name) => name.length <= 200)).toBe(true);
-    expect(names(content)).toEqual(content.map((part) => part.document.name));
+    expect(names(content)).toEqual(content.map((part) => part.metadata.name));
   });
 
   it('shares progress after suffix digit widths change and skips occupied suffixes', () => {
@@ -1461,7 +1596,7 @@ describe('dedupeDocumentNames', () => {
       ]),
     ).toThrow(ContentTraversalLimitError);
     expect(messages[0].content).toBe(content);
-    expect(content[1].document.name).toBe('notes');
+    expect(content[1].metadata.name).toBe('notes');
   });
 
   it('allows long histories while keeping document names unique across messages', () => {
@@ -1539,5 +1674,86 @@ describe('dedupeDocumentNames', () => {
     dedupeDocumentNames(messages);
 
     expect(messages[0].content).toBe(content);
+  });
+});
+
+describe('encodeAndFormatDocuments - files missing from storage', () => {
+  const pdf = (file_id: string, filename: string): IMongoFile =>
+    ({
+      _id: new Types.ObjectId(),
+      user: new Types.ObjectId(),
+      file_id,
+      filename,
+      type: 'application/pdf',
+      bytes: 1024,
+      object: 'file',
+      usage: 0,
+      source: 's3',
+      filepath: `/uploads/${filename}`,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }) as unknown as IMongoFile;
+  const missing = pdf('missing-1', 'expired.pdf');
+  const present = pdf('present-1', 'kept.pdf');
+  const req = { config: {} } as unknown as ServerRequest;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedValidatePdf.mockResolvedValue({ isValid: true });
+    mockedGetFileStream.mockImplementation(async (_req, file) => {
+      if (file.file_id === missing.file_id) {
+        throw new AttachmentObjectNotFoundError(file.file_id);
+      }
+      return {
+        file,
+        content: Buffer.from('%PDF-1.4').toString('base64'),
+        metadata: {
+          file_id: file.file_id,
+          filepath: file.filepath,
+          filename: file.filename,
+          type: file.type,
+        },
+      };
+    });
+  });
+
+  it('fails the request when the caller did not opt into skipping', async () => {
+    await expect(
+      encodeAndFormatDocuments(
+        req,
+        [missing, present],
+        { provider: Providers.ANTHROPIC },
+        jest.fn(),
+      ),
+    ).rejects.toMatchObject({ code: 'ATTACHMENT_OBJECT_NOT_FOUND', fileId: missing.file_id });
+  });
+
+  it('reports the missing file and still encodes the rest', async () => {
+    const onMissingFile = jest.fn();
+    const result = await encodeAndFormatDocuments(
+      req,
+      [missing, present],
+      { provider: Providers.ANTHROPIC, onMissingFile },
+      jest.fn(),
+    );
+
+    expect(onMissingFile).toHaveBeenCalledTimes(1);
+    expect(onMissingFile).toHaveBeenCalledWith(missing);
+    expect(result.documents).toHaveLength(1);
+    expect(result.files.map((file) => file.file_id)).toEqual([present.file_id]);
+  });
+
+  it('still drops other storage failures without reporting them as missing', async () => {
+    mockedGetFileStream.mockRejectedValue(new Error('access denied'));
+    const onMissingFile = jest.fn();
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const result = await encodeAndFormatDocuments(
+      req,
+      [present],
+      { provider: Providers.ANTHROPIC, onMissingFile },
+      jest.fn(),
+    );
+    expect(onMissingFile).not.toHaveBeenCalled();
+    expect(result.documents).toEqual([]);
   });
 });

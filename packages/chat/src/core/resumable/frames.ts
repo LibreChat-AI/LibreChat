@@ -3,7 +3,6 @@ import type {
   TMessage,
   ChatEvent,
   TAttachment,
-  TPendingSteer,
   ChatFinalFrame,
   EventSubmission,
   ChatCreatedFrame,
@@ -17,9 +16,10 @@ import {
 } from './terminal';
 import { GENERATION_PROTOCOL_VERSION, supportsGenerationProtocolV2 } from '../protocol';
 import { isInitialNewConversation, buildCreatedInitialResponse } from './messages';
+import { isOAuthStepEvent, nameStepResponse } from './events';
 import { reconcileGenerationLifecycle } from './reconcile';
 import { ABORT_SWEEP_STATUSES } from '../steer/chips';
-import { isOAuthStepEvent } from './events';
+import { settleFinalSteers } from './steers';
 import { handleSync } from './sync';
 
 export function handleOpen({ sub, host }: StreamContext): void {
@@ -64,42 +64,7 @@ async function handleFinal(ctx: StreamContext, data: ChatFinalFrame): Promise<vo
       run.optimisticStreamIds.has(currentStreamId) ||
       isInitialNewConversation(sub.submission),
   });
-  // A steer-applied event may still be waiting for its next-frame
-  // message target when FINAL arrives. Reconcile directly from the
-  // authoritative final message before converting leftovers so a
-  // late 202 ACK cannot resurrect (or queue) an already-applied steer.
-  const finalAppliedSteerIds = new Set(
-    host.steers.appliedIds(data.responseMessage ? [data.responseMessage] : []),
-  );
-  host.steers.settleApplied(
-    finalConvoId,
-    data.responseMessage ? [data.responseMessage] : undefined,
-  );
-  // Steers the run never injected ride the final event; convert them
-  // to queued follow-ups before the run-end signal fires the drain
-  // (also resets the applied-id set for the finished run).
-  // `claimParked` reconciles the replayable parked copy of the same
-  // steers; explicit dismissal or a persisted recovery removes it.
-  host.steers.convertToQueued(
-    finalConvoId,
-    (generationProtocolVersion === 1 || supportsGenerationProtocolV2(data)) &&
-      Array.isArray(data.pendingSteers)
-      ? (data.pendingSteers as TPendingSteer[]).filter(
-          (steer) =>
-            !finalAppliedSteerIds.has(steer.steerId) &&
-            (steer.clientSteerId == null || !finalAppliedSteerIds.has(steer.clientSteerId)),
-        )
-      : [],
-    {
-      claimParked: true,
-      generationProtocolVersion,
-    },
-  );
-  // A `failed` chip never reached the server, so it never rides
-  // `data.pendingSteers` above; without this it survives a NORMAL
-  // completion and renders (with a live Retry) under the NEXT run's
-  // reply. Idempotent alongside the call above: both dedupe by id.
-  host.steers.convertLocalToQueued(finalConvoId);
+  settleFinalSteers(host.steers, finalConvoId, data, generationProtocolVersion);
   let finalHandled = false;
   try {
     host.events.finalHandler(data, sub.submission as EventSubmission);
@@ -289,6 +254,7 @@ export async function handleFrame(ctx: StreamContext, event: ChatEvent): Promise
         sub.preCreatedStepEvents.push(data);
         return;
       }
+      nameStepResponse(host.usage, data, sub.liveSubmission());
       host.events.stepHandler(data, sub.liveSubmission() as EventSubmission);
       return;
     }

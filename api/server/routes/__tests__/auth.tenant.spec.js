@@ -124,6 +124,7 @@ describe.each([false, true])('pre-auth tenant routes (strict=%s)', (strictMode) 
       '/api/auth/2fa/setup/confirm',
       '/api/auth/2fa/setup/acknowledge',
       '/api/auth/2fa/setup/finalize',
+      '/api/auth/2fa/setup/cancel',
       '/api/user/verify',
       '/api/user/verify/resend',
       '/api/admin/login/local',

@@ -17,7 +17,6 @@ const DragDropOverlay: NamedExoticComponent<DragDropOverlayProps> = memo(({ isAc
             ? 'pointer-events-auto visible opacity-100'
             : 'pointer-events-none invisible opacity-0'
         } `}
-        style={{ willChange: 'opacity' }}
       />
       {/** Main content overlay */}
       <div
@@ -28,8 +27,6 @@ const DragDropOverlay: NamedExoticComponent<DragDropOverlayProps> = memo(({ isAc
         } `}
         style={{
           transform: isActive ? 'scale(1)' : 'scale(0.95)',
-          /** Use will-change to hint browser about upcoming changes */
-          willChange: 'opacity, transform',
         }}
       >
         {/** Content area with subtle background */}
@@ -40,9 +37,9 @@ const DragDropOverlay: NamedExoticComponent<DragDropOverlayProps> = memo(({ isAc
             fill="none"
             width="132"
             height="108"
+            className="transition-transform duration-200 ease-in-out"
             style={{
               transform: isActive ? 'translateY(0)' : 'translateY(-10px)',
-              transition: 'transform 0.2s ease-in-out',
             }}
           >
             <g clipPath="url(#clip0_3605_64419)">

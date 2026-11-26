@@ -139,6 +139,15 @@ export function buildCatalog(inputs: BuildCatalogInputs): AgentItem[] {
       description: 'com_ui_agent_subagents_subtitle',
     });
   }
+  if (enabled.has(AgentCapabilities.subagent_graphs)) {
+    items.push({
+      kind: 'builtin',
+      id: AgentCapabilities.subagent_graphs,
+      iconKey: 'subagent_graphs',
+      name: 'com_ui_agent_graphs',
+      description: 'com_ui_agent_graphs_hint',
+    });
+  }
   for (const def of BUILTIN_DEFINITIONS) {
     if (!enabled.has(def.id)) {
       continue;
@@ -200,7 +209,7 @@ export function buildCatalog(inputs: BuildCatalogInputs): AgentItem[] {
       items.push({
         kind: 'mcp',
         id: name,
-        name,
+        name: server.metadata?.name ?? name,
         description: server.metadata?.description ?? '',
         iconKey: 'mcp',
         server,

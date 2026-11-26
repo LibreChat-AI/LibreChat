@@ -4,4 +4,4 @@ export * from './subagents';
 export * from './background';
 export * from './queuedTurns';
 
-export * from './scheduleConsent';
+export * from './runGrant';

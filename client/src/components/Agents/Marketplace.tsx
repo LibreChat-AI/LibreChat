@@ -125,9 +125,7 @@ const AgentMarketplace: React.FC<AgentMarketplaceProps> = ({ className = '' }) =
   }
 
   return (
-    <div
-      className={`bg-surface-primary-alt relative flex w-full grow overflow-hidden ${className}`}
-    >
+    <div className={`bg-surface-canvas relative flex w-full grow overflow-hidden ${className}`}>
       <SidePanelGroup>
         <main
           className="flex h-full min-w-0 flex-col overflow-hidden"

@@ -71,7 +71,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 }, DB_SETUP_TIMEOUT_MS);
 
 describe('createIndexesWithRetry on a single-index-build engine', () => {

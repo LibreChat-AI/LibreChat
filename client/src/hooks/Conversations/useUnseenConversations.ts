@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useReducer } from 'react';
 import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Query, QueryClient, InfiniteData } from '@tanstack/react-query';
@@ -290,12 +290,25 @@ export default function useUnseenConversations(): ReplyReadState | null {
   const queryClient = useQueryClient();
   const arrivalSnapshots = useRef<ArrivalSnapshots>(new Map());
   const arrivalEvidence = useRef<ArrivalEvidence>(new Map());
-  const [state, setState] = useState<ReplyReadState | null>(() => readReplyState(queryClient, []));
-
-  const refresh = useCallback(() => {
+  const [version, refresh] = useReducer((current: number) => current + 1, 0);
+  const previous = useRef<{
+    queryClient: QueryClient;
+    version: number;
+    identity: string;
+    state: ReplyReadState | null;
+  }>();
+  /* Cache writers touch every list variant synchronously. Derive once per React batch,
+   * not once per cache event, so a send does not multiply a full-cache scan by its variants. */
+  if (previous.current?.queryClient !== queryClient || previous.current.version !== version) {
     const next = readReplyState(queryClient, readArrivalStamps(arrivalEvidence.current));
-    setState((current) => (identityOf(current) === identityOf(next) ? current : next));
-  }, [queryClient]);
+    const identity = identityOf(next);
+    previous.current = {
+      queryClient,
+      version,
+      identity,
+      state: previous.current?.identity === identity ? previous.current.state : next,
+    };
+  }
 
   useEffect(() => {
     const cache = queryClient.getQueryCache();
@@ -325,11 +338,25 @@ export default function useUnseenConversations(): ReplyReadState | null {
       ) {
         return;
       }
+      if (
+        (event.type === 'added' && query.state.data === undefined) ||
+        event.type === 'observerResultsUpdated' ||
+        event.type === 'observerOptionsUpdated' ||
+        (event.type === 'updated' &&
+          event.action.type !== 'success' &&
+          event.action.type !== 'setState' &&
+          event.action.type !== 'error')
+      ) {
+        return;
+      }
       convoQueryAuthority(queryClient, query);
       if (event.type === 'removed') {
         arrivalSnapshots.current.delete(query.queryHash);
         pruneArrivalEvidence(arrivalSnapshots.current, arrivalEvidence.current);
-      } else if (root === QueryKeys.allConversations || root === QueryKeys.pinnedConversations) {
+      } else if (
+        (event.type === 'added' || event.type === 'updated') &&
+        (root === QueryKeys.allConversations || root === QueryKeys.pinnedConversations)
+      ) {
         let mode: ArrivalMode = 'none';
         if (event.type === 'updated' && event.action.type === 'success') {
           mode = event.action.manual === true ? 'local' : 'server';
@@ -352,5 +379,5 @@ export default function useUnseenConversations(): ReplyReadState | null {
     };
   }, [queryClient, refresh]);
 
-  return state;
+  return previous.current.state;
 }

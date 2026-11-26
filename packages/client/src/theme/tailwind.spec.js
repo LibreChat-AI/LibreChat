@@ -87,6 +87,20 @@ function tailwindDefault(variable) {
 }
 
 describe('LibreChat Tailwind preset', () => {
+  it('ships the phase ticker animation properties without changing transition easing', async () => {
+    const css = await generate([
+      'animation-ease-fold',
+      'animation-fill-forwards',
+      'fill-mode-forwards',
+    ]);
+
+    expect(rule(css, 'animation-ease-fold')).toBe(
+      'animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);',
+    );
+    expect(rule(css, 'animation-fill-forwards')).toBe('animation-fill-mode: forwards;');
+    expect(rule(css, 'animation-fill-forwards')).toBe(rule(css, 'fill-mode-forwards'));
+  });
+
   it('owns the loading-dot delay with a zero-delay fallback for plain preset consumers', async () => {
     const css = await generate(['animate-loading-dot']);
 
@@ -113,6 +127,28 @@ describe('LibreChat Tailwind preset', () => {
     /** Only a browser without `:dir()` falls back to the attribute. */
     expect(fallback).toContain('@container style(--dir-fallback: rtl)');
     expect(fallback).toContain('--theme-switch-width');
+  });
+
+  it('publishes the chat motion roles the package components write', async () => {
+    const css = await generate([
+      'transition-reveal',
+      'transition-crossfade',
+      'transition-max-width',
+      'transition-stroke-dashoffset',
+      'blur-crossfade',
+    ]);
+
+    expect(rule(css, 'transition-reveal')).toContain(
+      'transition-property: opacity, color, background-color',
+    );
+    expect(rule(css, 'transition-crossfade')).toContain(
+      'transition-property: opacity, transform, filter',
+    );
+    expect(rule(css, 'transition-max-width')).toContain('transition-property: max-width');
+    expect(rule(css, 'transition-stroke-dashoffset')).toContain(
+      'transition-property: stroke-dashoffset',
+    );
+    expect(rule(css, 'blur-crossfade')).toContain('blur(2px)');
   });
 
   it('generates every component animation and its keyframes together', async () => {
@@ -273,6 +309,19 @@ describe('LibreChat Tailwind preset', () => {
     );
     expect(buttons).toContain(
       `width: max(var(--theme-button-height, ${defaultAppearance.buttonHeight}), 24px)`,
+    );
+
+    /** The field heights hold the floor the field stylesheet sets on touch devices, and draw the
+     *  theme's own height wherever that floor is unset. */
+    const fields = await generate(['h-theme-field', 'h-theme-field-lg', 'h-theme-auth-field']);
+    [
+      ['--theme-field-height', defaultAppearance.fieldHeight],
+      ['--theme-field-height-lg', defaultAppearance.fieldHeightLg],
+      ['--theme-auth-field-height', defaultAppearance.authFieldHeight],
+    ].forEach(([property, fallback]) =>
+      expect(fields).toContain(
+        `height: max(var(${property}, ${fallback}), var(--lc-field-floor, 0px))`,
+      ),
     );
 
     /** A stylesheet that predates the control spacing roles pads controls with the shared

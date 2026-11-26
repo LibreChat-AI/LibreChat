@@ -1,11 +1,16 @@
 import { logger } from '@librechat/data-schemas';
-import { TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE } from 'librechat-data-provider';
+import {
+  CREDENTIAL_RETIREMENT_INCOMPLETE_CODE,
+  TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE,
+} from 'librechat-data-provider';
 import type { TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { TwoFactorEnrollmentDependencies, StoredTwoFactorAccount } from './twoFactor';
 import type { UserDocumentId } from '~/auth/verification';
 import {
   TOKEN_RETIREMENT_FIELDS,
+  hasPasswordResetSince,
+  restampRetirementCutoff,
   acknowledgeTwoFactorSetup,
   confirmTwoFactorSetup,
   finalizeTwoFactorSetup,
@@ -13,11 +18,14 @@ import {
   generateTwoFactorSetupFinalizationToken,
   isCredentialLoginBlockedByTwoFactorPolicy,
   isEnrollmentSupersededByRecovery,
+  isTwoFactorSetupEligible,
   isTokenRetired,
   recheckMintedCredential,
+  clearSessionCookies,
   withdrawMintedSession,
   verifyTwoFactorLoginChallengeToken,
 } from './twoFactor';
+import { getAuthorizingCredential } from './gates';
 import { sanitizeUserForResponse } from './user';
 import { clearCloudFrontCookies } from '~/cdn';
 
@@ -28,6 +36,14 @@ type SetupRequest = Request<Record<string, string>, object, SetupBody> & {
   user?: { id: string };
   twoFactorEnrollmentNonce?: string;
 };
+type CancelRequest = Request & {
+  user?: { id: string };
+  cookies?: { refreshToken?: string };
+  twoFactorSetupExpired?: boolean;
+};
+
+/** Only the staged secret is read, to condition the discard on it; the rest scopes the cookies. */
+const CANCEL_ENROLLMENT_PROJECTION = '+pendingTotpSecret _id tenantId orgId storageRegion';
 
 export function clearEnrollmentNonces(
   update: TwoFactorEnrollmentUpdate,
@@ -39,8 +55,24 @@ export function clearEnrollmentNonces(
   };
 }
 
+/** The stored state an opt-in promotion or a cutoff re-stamp is conditioned on. */
+export interface EnrollmentWriteGuard {
+  pendingTotpSecret?: string;
+  totpSecret?: string;
+  twoFactorEnrolledAt?: Date;
+}
+
+export type EnrollmentUserWrite = (
+  userId: string,
+  update: TwoFactorEnrollmentUpdate,
+  expectedState: EnrollmentWriteGuard,
+) => Promise<StoredTwoFactorAccount | null>;
+
 export interface EnrollmentControllerDependencies
   extends Omit<TwoFactorEnrollmentDependencies, 'getUserById' | 'getTOTPSecret' | 'verifyTOTP'> {
+  updateUser: EnrollmentUserWrite;
+  /** Resolves once no cached auth document from before the enrollment can be served. */
+  awaitAuthUserDocEviction: (userId: string) => Promise<void>;
   getUserById: (userId: string, projection: string) => Promise<StoredTwoFactorAccount | null>;
   getTOTPSecret: (storedSecret: string | null | undefined) => Promise<string | null>;
   verifyTOTP: (secret: string | null, token: string) => Promise<boolean>;
@@ -48,6 +80,11 @@ export interface EnrollmentControllerDependencies
     user: StoredTwoFactorAccount;
     backupCode: string;
   }) => Promise<boolean>;
+  findSession: (
+    query: { userId: string; refreshToken: string },
+    options: { lean: false },
+  ) => Promise<RotatableSession | null>;
+  deleteSession: (query: { sessionId: string }) => Promise<unknown>;
   deleteAllUserSessions: (input: { userId: string }) => Promise<object>;
   clearCloudFrontCookies: typeof clearCloudFrontCookies;
   setAuthTokens: (
@@ -58,21 +95,62 @@ export interface EnrollmentControllerDependencies
   ) => Promise<string>;
 }
 
+const sanitizeUser = (user: StoredTwoFactorAccount) => ({
+  ...sanitizeUserForResponse(user),
+  id: user._id.toString(),
+});
+
 interface EnrollmentControllers {
   verify2FAWithTempToken: (req: ChallengeRequest, res: Response) => Promise<Response>;
   confirm2FASetupWithTempToken: (req: SetupRequest, res: Response) => Promise<Response>;
   acknowledge2FASetup: (req: SetupRequest, res: Response) => Promise<Response>;
   finalize2FASetup: (req: SetupRequest, res: Response) => Promise<Response>;
+  cancel2FASetup: (req: CancelRequest, res: Response) => Promise<Response>;
 }
+
+/**
+ * Retires every credential an enrollment supersedes: the stored sessions, the in-flight window of
+ * the cutoff, and any cached auth document still missing it. Every step runs even when an earlier
+ * one fails, and the caller mints nothing unless all of them succeeded.
+ */
+async function retireForEnrollment(
+  userId: string,
+  enrolledAt: Date | undefined,
+  deleteSessions: () => Promise<unknown>,
+  deps: Pick<EnrollmentControllerDependencies, 'updateUser' | 'awaitAuthUserDocEviction'>,
+): Promise<boolean> {
+  const restamp = async () => {
+    if (!enrolledAt) {
+      return;
+    }
+    await restampRetirementCutoff('twoFactorEnrolledAt', userId, enrolledAt, (cutoff, expected) =>
+      deps.updateUser(userId, cutoff, expected),
+    );
+  };
+  let complete = true;
+  for (const [label, step] of [
+    ['revoke sessions', deleteSessions],
+    ['re-date the enrollment cutoff', restamp],
+    ['settle the auth cache', () => deps.awaitAuthUserDocEviction(userId)],
+  ] as const) {
+    try {
+      await step();
+    } catch (error) {
+      complete = false;
+      logger.error(`[enrollment] Failed to ${label} for user ${userId}`, error);
+    }
+  }
+  return complete;
+}
+
+const RETIREMENT_INCOMPLETE_BODY = {
+  code: CREDENTIAL_RETIREMENT_INCOMPLETE_CODE,
+  message: 'Two-factor authentication is on, but other sessions may stay signed in. Sign in again.',
+};
 
 export function createEnrollmentControllers(
   deps: EnrollmentControllerDependencies,
 ): EnrollmentControllers {
-  const sanitizeUser = (user: StoredTwoFactorAccount) => ({
-    ...sanitizeUserForResponse(user),
-    id: user._id.toString(),
-  });
-
   const revokeMintedSession = (
     res: Response,
     user: StoredTwoFactorAccount,
@@ -217,7 +295,15 @@ export function createEnrollmentControllers(
       }
 
       const userData = sanitizeUser(result.user);
-      await deps.deleteAllUserSessions({ userId: result.user._id.toString() });
+      const retired = await retireForEnrollment(
+        userId,
+        result.user.twoFactorEnrolledAt ? new Date(result.user.twoFactorEnrolledAt) : undefined,
+        () => deps.deleteAllUserSessions({ userId: result.user._id.toString() }),
+        deps,
+      );
+      if (!retired) {
+        return res.status(500).json(RETIREMENT_INCOMPLETE_BODY);
+      }
       const authToken = await deps.setAuthTokens(result.user._id, res, null, req);
       const retirement = await recheckMintedCredential(
         () => deps.getUserById(userId, TOKEN_RETIREMENT_FIELDS),
@@ -242,10 +328,234 @@ export function createEnrollmentControllers(
     }
   };
 
+  /** Ends the session this browser presented, which the lookup found only if it belongs to the setup user. */
+  const endBrowserSession = async (session: RotatableSession | null): Promise<void> => {
+    if (session) {
+      await deps.deleteSession({ sessionId: session._id.toString() });
+    }
+  };
+
+  /** Conditioned on the secret it saw, so an enrollment promoted meanwhile is never undone. */
+  const discardStagedEnrollment = async (
+    userId: string,
+    pendingTotpSecret?: string,
+  ): Promise<void> => {
+    if (!pendingTotpSecret) {
+      return;
+    }
+    await deps.updateTwoFactorEnrollment(
+      userId,
+      { pendingTotpSecret },
+      clearEnrollmentNonces({ pendingTotpSecret: null, pendingBackupCodes: [] }),
+    );
+  };
+
+  /**
+   * Lets a user holding only a setup token leave required enrollment. The access-token logout needs
+   * a bearer they do not have, and a refresh session left alive would hand them straight back to
+   * setup on the next visit to the login page. Every outstanding enrollment credential dies with
+   * the staged state, since each is redeemed against it.
+   */
+  const cancel2FASetup = async (req: CancelRequest, res: Response): Promise<Response> => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) {
+        return res.status(401).json({ message: 'Invalid or expired two-factor setup token' });
+      }
+
+      const refreshToken = req.cookies?.refreshToken;
+      /** Neither lookup needs the other's result, so they start together. */
+      const [user, session] = await Promise.all([
+        deps.getUserById(userId, CANCEL_ENROLLMENT_PROJECTION),
+        refreshToken ? deps.findSession({ userId, refreshToken }, { lean: false }) : null,
+      ]);
+      /** Cleared before any fallible write, so a failure cannot leave the credential in the browser. */
+      clearSessionCookies(res, user ?? {}, userId, deps);
+
+      const work = [endBrowserSession(session)];
+      /** An expired token proves who is leaving, not that the staged enrollment is theirs to discard. */
+      if (!req.twoFactorSetupExpired) {
+        work.push(discardStagedEnrollment(userId, user?.pendingTotpSecret));
+      }
+      const outcomes = await Promise.allSettled(work);
+      const failures = outcomes.filter(
+        (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
+      );
+      if (failures.length > 0) {
+        failures.forEach(({ reason }) => logger.error('[cancel2FASetup]', reason));
+        return res.status(500).json({ message: 'Something went wrong' });
+      }
+
+      return res.status(200).json({ message: 'Two-factor setup cancelled' });
+    } catch (err) {
+      logger.error('[cancel2FASetup]', err);
+      return res.status(500).json({ message: 'Something went wrong' });
+    }
+  };
+
   return {
     verify2FAWithTempToken,
     confirm2FASetupWithTempToken,
     acknowledge2FASetup,
     finalize2FASetup,
+    cancel2FASetup,
+  };
+}
+
+/** The refresh session the confirming tab holds, rotated rather than replaced. */
+export interface RotatableSession {
+  _id: { toString(): string };
+  expiration: Date;
+}
+
+export interface OptInConfirmationDependencies
+  extends Pick<
+    EnrollmentControllerDependencies,
+    | 'getUserById'
+    | 'getTOTPSecret'
+    | 'verifyTOTP'
+    | 'updateUser'
+    | 'findSession'
+    | 'clearCloudFrontCookies'
+    | 'awaitAuthUserDocEviction'
+  > {
+  deleteAllUserSessions: (
+    query: { userId: string },
+    options?: { excludeCurrentSession: boolean; currentSessionId: string },
+  ) => Promise<object>;
+  setAuthTokens: (
+    userId: UserDocumentId,
+    res: Response,
+    session: RotatableSession,
+    req: Request,
+  ) => Promise<string>;
+}
+
+type OptInRequest = Request<Record<string, string>, object, SetupBody> & {
+  user?: { id: string };
+  cookies?: { refreshToken?: string };
+};
+
+const OPT_IN_CONFIRMATION_PROJECTION = `+totpSecret +pendingTotpSecret +pendingBackupCodes _id provider tenantId orgId storageRegion ${TOKEN_RETIREMENT_FIELDS}`;
+
+/**
+ * Confirms an opt-in enrollment from account settings and rotates the session around it.
+ *
+ * A session minted before enrollment was only ever accepted because the account had no second
+ * factor, so promotion retires it as the required finalize step does: the write stamps
+ * `twoFactorEnrolledAt`, every other stored session is revoked, and the refresh session the request
+ * came from is rotated so its credentials postdate both. The promotion is conditioned on the secret
+ * it verified, so a password reset that cleared the staged secret first leaves nothing to promote,
+ * and a reset that lands after the bearer was accepted withdraws the session rotated here.
+ */
+export function createOptInTwoFactorConfirmation(deps: OptInConfirmationDependencies) {
+  const isCallerRetiredByReset = (
+    req: Request,
+    seenAt: StoredTwoFactorAccount['credentialsChangedAt'],
+    currentAt: StoredTwoFactorAccount['credentialsChangedAt'],
+  ): boolean => {
+    const bearer = getAuthorizingCredential(req);
+    if (bearer.issuedAt == null && bearer.issuedAtMs == null) {
+      return hasPasswordResetSince(seenAt, currentAt);
+    }
+    return isTokenRetired(bearer, { credentialsChangedAt: currentAt });
+  };
+
+  return async (req: OptInRequest, res: Response): Promise<Response> => {
+    /** Set once 2FA is on: a later failure has to say so, and withdraw what it may have minted. */
+    let withdrawAfterCommit: (() => Promise<void>) | undefined;
+    try {
+      const userId = req.user?.id;
+      if (!userId) {
+        return res.status(401).json({ message: 'Unauthorized' });
+      }
+
+      /**
+       * Only the refresh session the request belongs to survives, rotated in place. An access token
+       * on its own proves no such session, so it cannot trade enrollment for a long-lived one. Both
+       * reads depend on request data alone, so they start together; every check still runs before a write.
+       */
+      const refreshToken = req.cookies?.refreshToken;
+      const [user, session] = await Promise.all([
+        deps.getUserById(userId, OPT_IN_CONFIRMATION_PROJECTION),
+        refreshToken ? deps.findSession({ userId, refreshToken }, { lean: false }) : null,
+      ]);
+      const secretSource = user?.pendingTotpSecret ?? user?.totpSecret;
+      if (!user || !secretSource) {
+        return res.status(400).json({ message: '2FA not initiated' });
+      }
+      /** The rotated session is a LibreChat one, which a federated sign-in must not be swapped for. */
+      if (!isTwoFactorSetupEligible(user)) {
+        return res.status(400).json({ message: '2FA setup is not available for this user' });
+      }
+
+      if (!session || !(session.expiration > new Date())) {
+        return res.status(401).json({ message: 'Sign in again to enable 2FA' });
+      }
+
+      const secret = await deps.getTOTPSecret(secretSource);
+      if (!(await deps.verifyTOTP(secret, req.body?.token ?? ''))) {
+        return res.status(400).json({ message: 'Invalid token.' });
+      }
+
+      const enrolledAt = new Date();
+      const promoted = await deps.updateUser(
+        userId,
+        clearEnrollmentNonces({
+          totpSecret: secretSource,
+          twoFactorEnabled: true,
+          twoFactorEnrolledAt: enrolledAt,
+          pendingTotpSecret: null,
+          pendingBackupCodes: [],
+          ...(user.pendingBackupCodes?.length ? { backupCodes: user.pendingBackupCodes } : {}),
+        }),
+        user.pendingTotpSecret
+          ? { pendingTotpSecret: user.pendingTotpSecret }
+          : { totpSecret: secretSource },
+      );
+      if (!promoted) {
+        return res.status(400).json({ message: '2FA not initiated' });
+      }
+      const withdraw = () => withdrawMintedSession(res, user, userId, deps);
+      withdrawAfterCommit = withdraw;
+
+      const retired = await retireForEnrollment(
+        userId,
+        enrolledAt,
+        () =>
+          deps.deleteAllUserSessions(
+            { userId },
+            { excludeCurrentSession: true, currentSessionId: session._id.toString() },
+          ),
+        deps,
+      );
+      if (!retired) {
+        /** The caller's session predates the cutoff too, so it is not rotated into a survivor. */
+        return res.status(500).json(RETIREMENT_INCOMPLETE_BODY);
+      }
+      const authToken = await deps.setAuthTokens(user._id, res, session, req);
+      const current = await recheckMintedCredential(
+        () => deps.getUserById(userId, TOKEN_RETIREMENT_FIELDS),
+        withdraw,
+      );
+      if (isCallerRetiredByReset(req, user.credentialsChangedAt, current?.credentialsChangedAt)) {
+        logger.warn(
+          `[confirm2FA] Password was reset while 2FA was being confirmed: userId=${userId}`,
+        );
+        await withdraw();
+        return res.status(401).json({ message: 'Unauthorized' });
+      }
+
+      return res.status(200).json({ token: authToken, user: sanitizeUser(promoted) });
+    } catch (err) {
+      logger.error('[confirm2FA]', err);
+      if (!withdrawAfterCommit) {
+        return res.status(500).json({ message: 'Something went wrong' });
+      }
+      await withdrawAfterCommit().catch((cause: unknown) =>
+        logger.error('[confirm2FA] Failed to withdraw the session after enrollment', cause),
+      );
+      return res.status(500).json(RETIREMENT_INCOMPLETE_BODY);
+    }
   };
 }

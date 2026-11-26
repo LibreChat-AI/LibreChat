@@ -140,7 +140,7 @@ function QuestionPanel({
   return (
     <div className="absolute bottom-full z-10 mb-2 w-full">
       <div
-        className="popover border-border-light bg-surface-secondary rounded-theme-popover flex max-h-[60vh] flex-col border p-2 shadow-lg [view-transition-name:ask-question]"
+        className="popover border-border-light bg-surface-secondary rounded-theme-popover flex max-h-[60vh] flex-col border p-2 shadow-sm [view-transition-name:ask-question]"
         onKeyDown={(e) => {
           if (isCancelKey(e.nativeEvent) && !e.nativeEvent.isComposing) {
             e.preventDefault();
@@ -244,6 +244,19 @@ export default function AskPopover({
     textAreaRef?.current?.focus();
   }, [popoverVisible, textAreaRef]);
 
+  /** The other direction: opening is a handoff from the chat card, whose button goes away as the
+   *  popover opens. A single question is answered in the draft, so the draft takes focus; a batch
+   *  focuses its own controls through the host's card. */
+  const wasVisible = useRef(popoverVisible);
+  const batch = (liveAsk?.questions?.length ?? 0) > 0;
+  useEffect(() => {
+    const opened = popoverVisible && !wasVisible.current;
+    wasVisible.current = popoverVisible;
+    if (opened && !batch) {
+      textAreaRef?.current?.focus();
+    }
+  }, [popoverVisible, batch, textAreaRef]);
+
   if (!popoverVisible || !liveAsk) {
     return null;
   }
@@ -253,7 +266,7 @@ export default function AskPopover({
       <div className="absolute bottom-full z-10 mb-2 w-full">
         {/* The prompt and answers scroll within their own caps; this outer cap keeps the card on
             screen when both are at their limit on a short viewport. */}
-        <div className="popover border-border-light bg-surface-secondary rounded-theme-popover flex max-h-[70vh] flex-col overflow-y-auto border shadow-lg [view-transition-name:ask-question]">
+        <div className="popover border-border-light bg-surface-secondary rounded-theme-popover flex max-h-[70vh] flex-col overflow-y-auto border shadow-sm [view-transition-name:ask-question]">
           {renderQuestions({
             liveAsk,
             questions: liveAsk.questions,

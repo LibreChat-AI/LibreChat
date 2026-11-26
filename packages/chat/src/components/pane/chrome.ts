@@ -5,11 +5,13 @@ import type { ChatPaneView } from './view';
 export type ChatPaneChrome = {
   /** The conversation's title for the page heading, or `null` for the new-chat label. */
   title: string | null;
-  /** The full footer below the column: the welcome screen, with the landing footer on. */
+  /** The full footer: the welcome screen, with the landing footer on. */
   fullFooter: boolean;
+  /** Whether the full footer sits directly under the composer rather than below the column. */
+  composerFooter: boolean;
   /** The configured footer inside the composer band, wherever the full one is not shown. */
   bandFooter: boolean;
-  /** Whether a footer sits below the composer, which the composer's clearance accounts for. */
+  /** Whether a footer sits in the composer's clearance. Under the composer, it takes its own room. */
   footerBelow: boolean;
   /** The project a new chat starts in, on a project's welcome screen. */
   landingProject?: TChatProject;
@@ -40,20 +42,23 @@ export function getChatPaneChrome({
   conversationId?: string;
   /** The project the route opens a new chat in. */
   project?: TChatProject;
-  /** The deployment shows the full footer on the welcome screen. */
-  landingFooter: boolean;
+  /** The deployment shows the full footer on the welcome screen, and where. */
+  landingFooter: boolean | 'composer';
   /** The deployment configured footer content. */
   configuredFooter: boolean;
 }): ChatPaneChrome {
   const active = conversation?.conversationId === conversationId ? conversation : undefined;
   const subagentThread = active?.subagentThread;
-  const fullFooter = view.isLanding && landingFooter;
+  const fullFooter = view.isLanding && landingFooter !== false;
+  const composerFooter = fullFooter && landingFooter === 'composer';
+  const bandFooter = !fullFooter && configuredFooter;
   const title = active?.title?.trim();
   return {
     title: view.isLanding || !title ? null : title,
     fullFooter,
-    bandFooter: !fullFooter && configuredFooter,
-    footerBelow: fullFooter || configuredFooter,
+    composerFooter,
+    bandFooter,
+    footerBelow: bandFooter || (fullFooter && !composerFooter),
     landingProject: view.isLanding && project != null ? project : undefined,
     projectId: active?.chatProjectId || undefined,
     readOnly: subagentThread != null,

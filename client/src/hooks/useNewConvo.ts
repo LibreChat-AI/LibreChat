@@ -1,11 +1,12 @@
-import { useCallback } from 'react';
-import { useAtom, useSetAtom } from 'jotai';
+import { useCallback, useMemo } from 'react';
+import { useAtom, useStore, useSetAtom } from 'jotai';
+import { useQueryClient } from '@tanstack/react-query';
 import { useRecoilValue, useRecoilCallback } from 'recoil';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { filesFamily, submissionByIndex } from '@librechat/chat/react';
-import { useGetModelsQuery } from 'librechat-data-provider/react-query';
+import { filesFamily, isSubmittingFamily, submissionByIndex } from '@librechat/chat/react';
 import {
   Constants,
+  QueryKeys,
   FileSources,
   Permissions,
   EModelEndpoint,
@@ -24,12 +25,13 @@ import type {
   TModelsConfig,
   TConversation,
   TEndpointsConfig,
+  TAgentsMap,
+  Agent,
 } from 'librechat-data-provider';
 import type { NewConversationOptions } from './Chat/contract';
-import type { AssistantListItem } from '~/common';
 import {
-  updateLastSelectedModel,
   getLocalStorageItems,
+  isNotFoundError,
   getDefaultModelSpec,
   getDefaultEndpoint,
   getModelSpecPreset,
@@ -55,11 +57,9 @@ import {
 import { useDeleteFilesMutation, useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
 import { supersedeNavigation } from './Conversations/useNavigateToConvo';
 import useGetConversation from './Conversations/useGetConversation';
-import useAssistantListMap from './Assistants/useAssistantListMap';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { clearUploadRecovery } from './Files/useFileHandling';
 import { useApplyModelSpecEffects } from './Agents';
-import { useAgentsMapContext } from '~/Providers';
 import { usePauseGlobalAudio } from './Audio';
 import { useHasAccess } from '~/hooks';
 import store from '~/store';
@@ -78,7 +78,59 @@ export function clearInheritedAgentWorkspace(
     : conversation;
 }
 
-const useNewConvo = (index = 0) => {
+function restoreRememberedTarget(
+  conversation: TConversation,
+  endpoint: EModelEndpoint,
+  index: number,
+): TConversation {
+  if (
+    conversation.spec ||
+    conversation.model ||
+    conversation.agent_id ||
+    conversation.assistant_id
+  ) {
+    return conversation;
+  }
+  if (isAgentsEndpoint(endpoint)) {
+    const agentId = localStorage.getItem(`${LocalStorageKeys.AGENT_ID_PREFIX}${index}`);
+    return agentId && !isEphemeralAgentId(agentId)
+      ? { ...conversation, endpoint, agent_id: agentId }
+      : conversation;
+  }
+  if (!isAssistantsEndpoint(endpoint)) return conversation;
+  const assistantId = localStorage.getItem(`${LocalStorageKeys.ASST_ID_PREFIX}${index}${endpoint}`);
+  if (!assistantId) return conversation;
+  const stored = localStorage.getItem(`${LocalStorageKeys.LAST_CONVO_SETUP}_${index}`);
+  let model: string | null | undefined;
+  try {
+    const setup = stored ? (JSON.parse(stored) as Partial<TConversation>) : undefined;
+    if (setup?.endpoint === endpoint) {
+      if (setup.assistant_id === assistantId) model = setup.model;
+    } else {
+      const models = localStorage.getItem(LocalStorageKeys.LAST_MODEL);
+      model = models
+        ? (JSON.parse(models) as Record<string, string | undefined>)[endpoint]
+        : undefined;
+    }
+  } catch {
+    // The remembered ID can still be resolved without a saved setup.
+  }
+  return { ...conversation, endpoint, assistant_id: assistantId, model };
+}
+
+/** Uploads made for an assistants endpoint live in that provider's storage, while every other
+ * endpoint shares the app's own, so attachments can follow a switch that stays on one side. */
+function sharesUploads(from?: string | null, to?: string | null): boolean {
+  return from === to || (!isAssistantsEndpoint(from) && !isAssistantsEndpoint(to));
+}
+
+/**
+ * `routed` is false for a pane the page's route does not address, such as a conversation open
+ * beside the chat. Such a pane holds one conversation: it takes a change to that conversation
+ * (its model, endpoint or agent) and nothing that would put another in its place, and nothing
+ * it does moves the route or the page's focus.
+ */
+const useNewConvo = (index = 0, { routed = true }: { routed?: boolean } = {}) => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { data: startupConfig } = useGetStartupConfig();
@@ -87,18 +139,24 @@ const useNewConvo = (index = 0) => {
   const clearAllConversations = store.useClearConvoState();
   const defaultPreset = useRecoilValue(store.defaultPreset);
   const { setConversation } = store.useSetConversationAtom(index);
+  const jotaiStore = useStore();
   const [files, setFiles] = useAtom(filesFamily(index));
   const setSubmission = useSetAtom(submissionByIndex(index));
   const { data: endpointsConfig = {} as TEndpointsConfig } = useGetEndpointsQuery();
-  const agentsMap = useAgentsMapContext();
+  const queryClient = useQueryClient();
+  const storedAgentId = getLocalStorageItems().lastConversationSetup?.agent_id;
+  const storedAgent = queryClient.getQueryState<Agent>([QueryKeys.agent, storedAgentId]);
+  const agentsMap = useMemo<TAgentsMap | undefined>(() => {
+    if (storedAgent?.data) return { [storedAgent.data.id]: storedAgent.data };
+    if (storedAgent?.status === 'error' && isNotFoundError(storedAgent.error)) return {};
+    return undefined;
+  }, [storedAgent?.data, storedAgent?.status, storedAgent?.error]);
 
   const hasAgentAccess = useHasAccess({
     permissionType: PermissionTypes.AGENTS,
     permission: Permissions.USE,
   });
 
-  const modelsQuery = useGetModelsQuery();
-  const assistantsListMap = useAssistantListMap();
   const { pauseGlobalAudio } = usePauseGlobalAudio(index);
   const { saveDrafts } = useChatSettings();
 
@@ -121,8 +179,8 @@ const useNewConvo = (index = 0) => {
         keepAddedConvos?: boolean,
         disableFocus?: boolean,
         _disableParams?: boolean,
+        replaceNavigation = false,
       ) => {
-        const modelsConfig = modelsData ?? modelsQuery.data;
         const { endpoint = null } = conversation;
         const buildDefaultConversation = (endpoint === null || buildDefault) ?? false;
         const hasExplicitChatProjectId = Object.prototype.hasOwnProperty.call(
@@ -196,46 +254,24 @@ const useNewConvo = (index = 0) => {
             conversation.endpointType = undefined;
           }
 
-          const isAssistantEndpoint = isAssistantsEndpoint(defaultEndpoint);
-          const assistants: AssistantListItem[] = assistantsListMap[defaultEndpoint] ?? [];
-          const currentAssistantId = conversation.assistant_id ?? '';
-          const currentAssistant = assistantsListMap[defaultEndpoint]?.[currentAssistantId] as
-            | AssistantListItem
-            | undefined;
-
-          if (currentAssistantId && !currentAssistant) {
+          if (!isAssistantsEndpoint(defaultEndpoint)) {
             conversation.assistant_id = undefined;
           }
 
-          if (!currentAssistantId && isAssistantEndpoint) {
-            conversation.assistant_id =
-              localStorage.getItem(
-                `${LocalStorageKeys.ASST_ID_PREFIX}${index}${defaultEndpoint}`,
-              ) ?? assistants[0]?.id;
+          if (!activePreset && conversation.conversationId === Constants.NEW_CONVO) {
+            conversation = restoreRememberedTarget(conversation, defaultEndpoint, index);
           }
 
-          if (
-            currentAssistantId &&
-            isAssistantEndpoint &&
-            conversation.conversationId === Constants.NEW_CONVO
-          ) {
-            const assistant = assistants.find((asst) => asst.id === currentAssistantId);
-            conversation.model = assistant?.model;
-            updateLastSelectedModel({
-              endpoint: defaultEndpoint,
-              model: conversation.model,
-            });
-          }
-
-          if (currentAssistantId && !isAssistantEndpoint) {
-            conversation.assistant_id = undefined;
-          }
-
-          const models = modelsConfig?.[defaultEndpoint] ?? [];
+          const models =
+            modelsData?.[defaultEndpoint] ??
+            queryClient.getQueryData<TModelsConfig>([QueryKeys.models, defaultEndpoint])?.[
+              defaultEndpoint
+            ];
           const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, defaultEndpoint);
           conversation = buildDefaultConvo({
             conversation,
-            lastConversationSetup: activePreset as TConversation,
+            lastConversationSetup:
+              activePreset ?? (conversation.endpoint === defaultEndpoint ? conversation : null),
             endpoint: defaultEndpoint,
             models,
             defaultParamsEndpoint,
@@ -271,7 +307,7 @@ const useNewConvo = (index = 0) => {
           setConversation(conversation);
         }
         setSubmission({} as TSubmission);
-        if (isCancelled) {
+        if (isCancelled || !routed) {
           return;
         }
 
@@ -289,7 +325,11 @@ const useNewConvo = (index = 0) => {
           return searchParamsString ? `?${searchParamsString}` : '';
         };
 
-        if (conversation.conversationId === Constants.NEW_CONVO && !modelsData) {
+        if (
+          conversation.conversationId === Constants.NEW_CONVO &&
+          !modelsData &&
+          !replaceNavigation
+        ) {
           const appTitle = localStorage.getItem(LocalStorageKeys.APP_TITLE) ?? '';
           if (appTitle) {
             setDocumentTitle(appTitle, true);
@@ -311,14 +351,7 @@ const useNewConvo = (index = 0) => {
         }
         navigate(path, { replace: true });
       },
-    [
-      endpointsConfig,
-      defaultPreset,
-      assistantsListMap,
-      modelsQuery.data,
-      hasAgentAccess,
-      searchParams,
-    ],
+    [index, routed, endpointsConfig, defaultPreset, queryClient, hasAgentAccess, searchParams],
   );
 
   const newConversation = useCallback(
@@ -330,12 +363,30 @@ const useNewConvo = (index = 0) => {
       buildDefault = true,
       keepAddedConvos = false,
       keepComposerState = false,
+      retarget = false,
       disableParams,
     }: NewConversationOptions = {}) {
       const nextConversationId = _template.conversationId ?? '';
+      if (!routed) {
+        const held = getConversation()?.conversationId ?? '';
+        if (held === '' || held === Constants.NEW_CONVO || nextConversationId !== held) {
+          return;
+        }
+      }
+      const prevConversation = getConversation();
+      /** A selection made in the unsent chat changes what that chat is sent to, and the user stays
+       * in its composer, so the attachments stay with it, as an open conversation's do through the
+       * same switch. Once a run is in flight the chat is no longer unsent, so it starts over. */
+      const keepsComposer =
+        keepComposerState ||
+        (retarget &&
+          (!prevConversation?.conversationId ||
+            prevConversation.conversationId === Constants.NEW_CONVO) &&
+          !jotaiStore.get(isSubmittingFamily(index)) &&
+          sharesUploads(prevConversation?.endpoint, _preset?.endpoint ?? _template.endpoint));
       const keepsExistingDraft =
         modelsData != null ||
-        keepComposerState ||
+        keepsComposer ||
         (nextConversationId !== '' &&
           nextConversationId !== Constants.NEW_CONVO &&
           !nextConversationId.startsWith('_'));
@@ -370,13 +421,13 @@ const useNewConvo = (index = 0) => {
           ? !hasModelSelection(_template)
           : startupConfig?.modelSpecs?.prioritize === true ||
             (startupConfig?.interface?.modelSelect ?? true) !== true ||
+            (result?.default != null && !hasModelSelection(_template)) ||
             (result?.last != null &&
               Object.keys(_template).filter((key) => key !== 'chatProjectId').length === 0);
       if (!preset && startupConfig && shouldApplyModelSpec && defaultModelSpec) {
         preset = getModelSpecPreset(defaultModelSpec);
       }
 
-      const prevConversation = getConversation();
       conversation = clearInheritedAgentWorkspace(conversation, prevConversation);
       applyModelSpecEffects({
         startupConfig,
@@ -386,11 +437,7 @@ const useNewConvo = (index = 0) => {
         prevSpecName: prevConversation?.spec,
       });
 
-      if (
-        conversation.conversationId === Constants.NEW_CONVO &&
-        !modelsData &&
-        !keepComposerState
-      ) {
+      if (conversation.conversationId === Constants.NEW_CONVO && !modelsData && !keepsComposer) {
         const sourceDraftId =
           !prevConversation?.conversationId ||
           prevConversation.conversationId === Constants.NEW_CONVO
@@ -521,7 +568,7 @@ const useNewConvo = (index = 0) => {
        * call already opened, such as agent metadata arriving late. The user did
        * not ask for anything there, so it must not cancel a conversation they
        * clicked while it was in flight. */
-      if (!keepComposerState) {
+      if (!keepComposerState && routed) {
         supersedeNavigation();
       }
 
@@ -533,12 +580,15 @@ const useNewConvo = (index = 0) => {
         keepAddedConvos,
         disableFocus,
         disableParams,
+        keepComposerState,
       );
     },
     [
       index,
       files,
+      routed,
       setFiles,
+      jotaiStore,
       agentsMap,
       saveDrafts,
       mutateAsync,

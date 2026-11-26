@@ -1,43 +1,16 @@
 import { memo, useId, useMemo, useState } from 'react';
 import { Button, IconButton } from '@librechat/client';
 import { ChevronDown, Download, Files } from 'lucide-react';
-import type {
-  TAttachment,
-  TFile,
-  WorkspaceChange as WorkspaceChangeMetadata,
-} from 'librechat-data-provider';
-import { useExpandCollapse, useLocalize } from '~/hooks';
+import { useExpandCollapse } from '@librechat/chat/components';
+import type { WorkspaceChangeAttachment } from '@librechat/chat';
+import type { TFile } from 'librechat-data-provider';
 import { useAttachmentLink } from './LogLink';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
-type StatefulWorkspaceAttachment = TAttachment & {
-  workspaceChange: WorkspaceChangeMetadata;
-};
+export { partitionWorkspaceChanges } from '@librechat/chat';
 
-export function partitionWorkspaceChanges(attachments?: TAttachment[]): {
-  inlineAttachments: TAttachment[];
-  workspaceChanges: StatefulWorkspaceAttachment[];
-} {
-  const inlineAttachments: TAttachment[] = [];
-  const changesByFile = new Map<string, StatefulWorkspaceAttachment>();
-
-  for (const attachment of attachments ?? []) {
-    const change = attachment.workspaceChange;
-    if (change?.profile !== 'stateful' || !attachment.filepath) {
-      inlineAttachments.push(attachment);
-      continue;
-    }
-
-    const file = attachment as Partial<TFile> & { agentId?: string };
-    const key = file.file_id ?? `${file.agentId ?? ''}:${change.path}`;
-    changesByFile.delete(key);
-    changesByFile.set(key, attachment as StatefulWorkspaceAttachment);
-  }
-
-  return { inlineAttachments, workspaceChanges: Array.from(changesByFile.values()) };
-}
-
-const WorkspaceChange = memo(({ attachment }: { attachment: StatefulWorkspaceAttachment }) => {
+const WorkspaceChange = memo(({ attachment }: { attachment: WorkspaceChangeAttachment }) => {
   const localize = useLocalize();
   const file = attachment as TFile;
   const path = attachment.workspaceChange.path;
@@ -79,10 +52,10 @@ const WorkspaceChange = memo(({ attachment }: { attachment: StatefulWorkspaceAtt
 
 WorkspaceChange.displayName = 'WorkspaceChange';
 
-export default function WorkspaceChanges({
+export default memo(function WorkspaceChanges({
   attachments,
 }: {
-  attachments: StatefulWorkspaceAttachment[];
+  attachments: WorkspaceChangeAttachment[];
 }) {
   const localize = useLocalize();
   const panelId = useId();
@@ -127,7 +100,7 @@ export default function WorkspaceChanges({
       </Button>
       <div id={panelId} style={style} inert={!isExpanded ? '' : undefined}>
         <div className="overflow-hidden" ref={ref} aria-hidden={!isExpanded}>
-          <div className="flex flex-col gap-2 pt-2">
+          <div className="flex flex-col gap-2 pt-1">
             {attachments.map((attachment) => (
               <WorkspaceChange
                 key={`${attachment.filepath}:${attachment.workspaceChange.path}`}
@@ -139,4 +112,4 @@ export default function WorkspaceChanges({
       </div>
     </div>
   );
-}
+});

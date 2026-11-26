@@ -1,105 +1,85 @@
-import {
-  normalizeServerName,
-  stripServerNamePrefix,
-  scheduledMCPReadOnlyPolicySchema,
-} from 'librechat-data-provider';
-import type { ScheduledMCPIdentity, ScheduledMCPReadOnlyPolicy } from 'librechat-data-provider';
-import type { RequestScopedMCPConnectionStore } from '~/mcp/types';
+import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
+import type { RunGrantExecutionFactory } from '~/agents/authority/execution';
 import type { ScheduleMCPCompletionLookup } from './continuation';
-import type { ScheduleMCPEnrollmentDeps } from './enrollment';
-import type { ScheduledTokenContext } from '../context';
+import type { RunGrantOfferDeps } from '~/agents/authority/offer';
+import type { ScheduleInput, ScheduleHost } from './subject';
 import {
-  isScheduledMCPCompletionRequest,
-  resolveScheduleMCPCompletion,
-  parseScheduleMCPCompletion,
-} from './continuation';
-import {
-  createScheduleMCPExecution,
+  SCHEDULE_WORDING,
   scheduledMCPIdentity,
-  getScheduleMCPExecution,
-} from './execution';
-import { readScheduleFireContext, isScheduleFireRequest } from '../trigger';
-import { createScheduleMCPEnrollmentResolver } from './enrollment';
+  completionOrigin,
+  scheduleSubject,
+} from './subject';
+import { restoreSkippedMCPServers, readSkippedMCPServers, isScheduleFireRequest } from '../trigger';
+import { resolveScheduleMCPCompletion, parseScheduleMCPCompletion } from './continuation';
+import { getScheduleSource, toScheduledTokenContext } from '~/agents/authority/context';
+import { isCompletionTurn, completionMarker, placeRun } from '~/agents/authority/host';
+import { createScheduleMCPConsentHost, createMCPUseCheck } from './host';
+import { createRunGrantExecution } from '~/agents/authority/execution';
+import { RunGrantPolicyError } from '~/agents/authority/policy';
+import { createRunGrantOffer } from '~/agents/authority/offer';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { createScheduleLimitsResolver } from '../service';
-import { createScheduleMCPConsentHost } from './host';
-import { isOwnedAbortError } from '~/utils/errors';
-import { ScheduledMCPPolicyError } from './policy';
-
-type RuntimeRequest = Parameters<typeof readScheduleFireContext>[0] & {
-  user: { id: string; tenantId?: string };
-};
 
 export function createScheduleMCPRuntimeHost(
   deps: Omit<
     Parameters<typeof createScheduleMCPConsentHost>[0],
-    'resolveEnrollment' | 'checkToolPolicy' | 'getLimits'
+    'resolveEnrollment' | 'resolveTools' | 'resolveServers' | 'getLimits'
   > & {
-    enrollment: ScheduleMCPEnrollmentDeps;
+    enrollment: RunGrantOfferDeps;
     getScheduleMCPCompletionState?: ScheduleMCPCompletionLookup;
+    methods: {
+      /** The MCP outcomes an occurrence's run row holds. */
+      getScheduleRunMCP: (
+        scheduleId: string,
+        scheduledFor: string | Date,
+      ) => Promise<ScheduleMCPOutcome[]>;
+      /** The same, for the occurrence that started a conversation. */
+      getScheduleConversationMCP: (
+        scope: Pick<ScheduledMCPIdentity, 'scheduleId' | 'ownerId' | 'tenantId'>,
+        conversationId: string,
+      ) => Promise<ScheduleMCPOutcome[]>;
+    };
   },
 ): {
   consent: ReturnType<typeof createScheduleMCPConsentHost>;
-  execution: ReturnType<typeof createScheduleMCPExecution>;
-  prepare: (input: {
-    req: RuntimeRequest;
-    signal?: AbortSignal;
-    context?: RequestScopedMCPConnectionStore;
-    restoredContext?: ScheduledTokenContext;
-    restoredJob?: {
-      scheduleId?: string;
-      scheduleManual?: boolean;
-      scheduleMCPCompletion?: ScheduledMCPIdentity;
-    };
-  }) => Promise<void>;
-} {
-  function createEvaluation(enrollment: ScheduleMCPEnrollmentDeps) {
-    const resolveEnrollment = createScheduleMCPEnrollmentResolver(enrollment);
-    const getReadOnlyPolicy = async (
-      identity: ScheduledMCPIdentity,
-    ): Promise<Record<string, ScheduledMCPReadOnlyPolicy> | undefined> => {
-      const user = await enrollment.findUser(identity.ownerId);
-      if (!user || (user.tenantId ?? null) !== identity.tenantId) return;
-      user.id = identity.ownerId;
-      const config = await enrollment.getAppConfig({
-        ...getAppConfigOptionsFromUser(user),
-        failClosed: true,
-      });
-      const schedules = config?.interfaceConfig?.schedules;
-      const configured =
-        typeof schedules === 'object' ? schedules.mcpConsent?.readOnlyPolicy : undefined;
-      if (!configured) return;
-      const policy: Record<string, ScheduledMCPReadOnlyPolicy> = {};
-      for (const [name, value] of Object.entries(configured)) {
-        const parsed = scheduledMCPReadOnlyPolicySchema.safeParse(value);
-        if (parsed.success) policy[name] = parsed.data;
-      }
-      return policy;
-    };
+  execution: RunGrantExecutionFactory;
+  /** Puts a request's run under its schedule, where the request is a schedule's. */
+  prepare: (input: ScheduleInput) => Promise<void>;
+} & ScheduleHost {
+  function createEvaluation(enrollment: RunGrantOfferDeps) {
+    const offer = createRunGrantOffer({
+      ...enrollment,
+      canUseMCP: createMCPUseCheck(deps.getRoleByName),
+    });
     const consent = createScheduleMCPConsentHost({
       ...deps,
       findUser: enrollment.findUser,
       getLimits: createScheduleLimitsResolver((options = {}) => enrollment.getAppConfig(options)),
-      resolveEnrollment,
-      checkToolPolicy: async (request) => {
-        const policy = (await getReadOnlyPolicy(request.identity))?.[request.resource.serverName];
-        if (!policy) return false;
-        return request.selection.tools.every(
-          (selection) =>
-            Object.keys(policy.tools).filter(
-              (name) =>
-                name === selection ||
-                stripServerNamePrefix(name, normalizeServerName(request.resource.serverName)) ===
-                  selection,
-            ).length === 1,
-        );
-      },
+      resolveEnrollment: offer.targets,
+      resolveTools: offer.tools,
+      resolveServers: offer.servers,
     });
-    return { consent, getReadOnlyPolicy };
+    return { consent };
   }
   const { consent } = createEvaluation(deps.enrollment);
-  const execution = createScheduleMCPExecution({
-    storage: deps.methods,
+  /**
+   * For the question a run asks: does this schedule need a grant it does not have. A config
+   * service that cannot read a tenant, role or user override falls back to the deployment's
+   * base, which may not require consent at all. Asked fail-closed, that outage refuses the
+   * call instead of lifting the requirement.
+   */
+  const required = createEvaluation({
+    ...deps.enrollment,
+    getAppConfig: (options) => deps.enrollment.getAppConfig({ ...options, failClosed: true }),
+  }).consent.service.requiresGrant;
+  const execution = createRunGrantExecution({
+    storage: deps.storage,
+    requiresGrant: required,
+    // A schedule's grant covers the whole run: the agents' other tools load only if listed.
+    coversTools: true,
+    // A background task's completion turn finds the schedule again by its captured identity.
+    detaches: true,
+    wording: SCHEDULE_WORDING,
     async loadAuthorization(identity) {
       // Private to this attempt. No resolved principal, config or allow decision survives it.
       const principal = deps.findUser(identity.ownerId).then((user) => {
@@ -117,133 +97,127 @@ export function createScheduleMCPRuntimeHost(
       const evaluation = createEvaluation({
         ...deps.enrollment,
         findUser: async () => user,
+        /** The base config carries the deployment-wide schedule stop that limits honour. */
         getAppConfig: async (options) => (options?.baseOnly ? base : config),
       });
-      const policy = await evaluation.getReadOnlyPolicy(identity);
-      return { authority: evaluation.consent.service.authority, policy };
+      return { authority: evaluation.consent.service.authority };
     },
   });
-  return {
+  const host: ReturnType<typeof createScheduleMCPRuntimeHost> = {
     consent,
     execution,
-    prepare: (input) =>
-      prepareSafely(async () => {
-        const { req, context, restoredContext, restoredJob } = input;
-        const completion = restoredJob?.scheduleMCPCompletion;
-        if (completion !== undefined || isScheduledMCPCompletionRequest(req)) {
-          if (!context) throw new ScheduledMCPPolicyError('binding_mismatch', '');
-          const marker = req.body?.agentCompletion;
-          if (
-            marker != null &&
-            (typeof marker !== 'object' ||
-              !('version' in marker) ||
-              marker.version !== 1 ||
-              !('sourceId' in marker) ||
-              !['subagent-completion', 'background-tool-completion'].includes(
-                String(marker.sourceId),
-              ))
-          )
-            throw new ScheduledMCPPolicyError('binding_mismatch', '');
-          const origin =
-            marker && typeof marker === 'object' && 'scheduleMCPIdentity' in marker
-              ? marker.scheduleMCPIdentity
-              : undefined;
-          const identity =
-            completion !== undefined
-              ? parseScheduleMCPCompletion(completion)
-              : await resolveScheduleMCPCompletion(
-                  {
-                    ownerId: req.user.id,
-                    tenantId: req.user.tenantId ?? null,
-                    scheduleMCPIdentity: origin,
-                  },
-                  deps.getScheduleMCPCompletionState,
-                );
-          if (!identity) return;
-          if (identity.ownerId !== req.user.id || identity.tenantId !== (req.user.tenantId ?? null))
-            throw new ScheduledMCPPolicyError('binding_mismatch', '');
-          await execution.attach(
-            context,
-            identity,
-            completion !== undefined ? 'resume' : 'invoke',
-            false,
-            { legacy: true },
-          );
-          if (!getScheduleMCPExecution(context))
-            throw new ScheduledMCPPolicyError('binding_mismatch', '');
-          return;
-        }
-        if (!isScheduleFireRequest(req)) return;
-        const fire = readScheduleFireContext(req);
-        const scheduleId =
-          restoredContext?.scheduleId ?? fire?.scheduleId ?? restoredJob?.scheduleId;
-        if (!scheduleId || !context) throw new ScheduledMCPPolicyError('binding_mismatch', '');
-        const row = await deps.methods.getScheduleById(scheduleId, req.user.id);
-        if (!row || (row.tenantId ?? null) !== (req.user.tenantId ?? null))
-          throw new ScheduledMCPPolicyError('binding_mismatch', '');
-        const enrolled = row.mcpConsent !== undefined;
-        const rootId =
-          restoredContext?.agentId ??
-          (fire ? req.body?.agent_id : undefined) ??
-          (!enrolled ? row.agent_id : undefined);
-        if (typeof rootId !== 'string' || rootId !== row.agent_id)
-          throw new ScheduledMCPPolicyError('binding_mismatch', '');
-        const identity = scheduledMCPIdentity({
-          scheduleId,
-          ownerId: req.user.id,
-          tenantId: req.user.tenantId,
-          agentId: rootId,
-          invocationMode: 'delegated',
-        });
-        if (
-          restoredContext &&
-          (restoredContext.ownerId !== req.user.id ||
-            (restoredContext.tenantId ?? null) !== (req.user.tenantId ?? null))
-        )
-          throw new ScheduledMCPPolicyError('binding_mismatch', '');
-        await execution.attach(context, identity, restoredContext ? 'resume' : 'invoke', enrolled, {
+    async resolve(input) {
+      const { req, context, executionContext, restoredJob } = input;
+      const completion = restoredJob?.scheduleMCPCompletion;
+      if (completion !== undefined || isCompletionTurn(req)) {
+        if (!context) throw new RunGrantPolicyError('binding_mismatch', '');
+        completionMarker(req);
+        const identity =
+          completion !== undefined
+            ? parseScheduleMCPCompletion(completion)
+            : await resolveScheduleMCPCompletion(
+                {
+                  ownerId: req.user.id,
+                  tenantId: req.user.tenantId ?? null,
+                  scheduleMCPIdentity: completionOrigin(req),
+                },
+                deps.getScheduleMCPCompletionState,
+              );
+        if (!identity) return;
+        if (identity.ownerId !== req.user.id || identity.tenantId !== (req.user.tenantId ?? null))
+          throw new RunGrantPolicyError('binding_mismatch', '');
+        // Resolved afresh: the turn runs under the grant the schedule holds now, if any, and
+        // not at all where the schedule can no longer be put over it. A resumed turn carries
+        // the approvals its owner gave while it was paused.
+        return {
+          identity,
+          context,
+          stage: completion !== undefined ? 'resume' : 'invoke',
+          require: 'run',
+          options: {
+            completion: true,
+            ...(completion !== undefined && { approvedToolCalls: input.approvedToolCalls }),
+          },
+        };
+      }
+      if (!isScheduleFireRequest(req)) return;
+      const schedule = getScheduleSource(executionContext);
+      /** A resumed run whose saved job restored a complete identity. */
+      const restoredContext = schedule?.resumed
+        ? toScheduledTokenContext(executionContext)
+        : undefined;
+      const fresh = schedule?.resumed === false ? schedule : undefined;
+      const scheduleId = restoredContext?.scheduleId ?? fresh?.id ?? restoredJob?.scheduleId;
+      if (!scheduleId || !context) throw new RunGrantPolicyError('binding_mismatch', '');
+      const row = await deps.methods.getScheduleById(scheduleId, req.user.id);
+      if (!row || (row.tenantId ?? null) !== (req.user.tenantId ?? null))
+        throw new RunGrantPolicyError('binding_mismatch', '');
+      const enrolled = row.mcpConsent !== undefined;
+      const rootId =
+        restoredContext?.agentId ??
+        (fresh ? executionContext?.agentId : undefined) ??
+        (!enrolled ? row.agent_id : undefined);
+      if (typeof rootId !== 'string' || rootId !== row.agent_id)
+        throw new RunGrantPolicyError('binding_mismatch', '');
+      const identity = scheduledMCPIdentity({
+        scheduleId,
+        ownerId: req.user.id,
+        tenantId: req.user.tenantId,
+        agentId: rootId,
+        invocationMode: 'delegated',
+      });
+      if (
+        restoredContext &&
+        (restoredContext.ownerId !== req.user.id ||
+          (restoredContext.tenantId ?? null) !== (req.user.tenantId ?? null))
+      )
+        throw new RunGrantPolicyError('binding_mismatch', '');
+      return {
+        identity,
+        context,
+        stage: restoredContext ? 'resume' : 'invoke',
+        // A schedule that holds a grant runs under it or not at all.
+        ...(enrolled && { require: 'grant' as const }),
+        options: {
           legacy: !enrolled,
           manual: restoredContext
             ? restoredJob?.scheduleId === scheduleId && restoredJob.scheduleManual === true
-            : fire?.manual === true,
-        });
-      }, input.signal),
+            : fresh?.manual === true,
+          // Only a resumed run can carry approvals: a fresh occurrence has asked nobody yet.
+          ...(restoredContext && { approvedToolCalls: input.approvedToolCalls }),
+        },
+      };
+    },
+    /**
+     * A fresh occurrence carries what it goes without on its trigger. A request that is not
+     * the occurrence's own reads it back and puts it on the request, where the trigger would
+     * have: a resumed run from the occurrence's run row, and a completion turn from the run
+     * row of the occurrence that started its conversation, so neither stops to ask for a
+     * sign-in nobody is there to give. The conversation is the signed host's, or the saved
+     * job's when the turn is resumed.
+     */
+    async restore({ req, executionContext, restoredJob }, found) {
+      if (found.options?.completion === true) {
+        const conversationId =
+          restoredJob?.scheduleMCPCompletion !== undefined
+            ? restoredJob.conversationId
+            : req.body?.conversationId;
+        if (typeof conversationId === 'string' && conversationId !== '')
+          restoreSkippedMCPServers(
+            req,
+            await deps.methods.getScheduleConversationMCP(found.identity, conversationId),
+          );
+      } else if (
+        getScheduleSource(executionContext)?.resumed === true &&
+        restoredJob?.scheduledFor != null
+      )
+        restoreSkippedMCPServers(
+          req,
+          await deps.methods.getScheduleRunMCP(found.identity.scheduleId, restoredJob.scheduledFor),
+        );
+      return readSkippedMCPServers(req);
+    },
+    prepare: (input) => placeRun([scheduleSubject(() => host)], input),
   };
-}
-
-/** Ordinary startup keeps its original synchronous admission of independent reads. */
-export function initializeWithScheduleMCPExecution<T>(
-  input: Parameters<ReturnType<typeof createScheduleMCPRuntimeHost>['prepare']>[0],
-  getHost: () => Pick<ReturnType<typeof createScheduleMCPRuntimeHost>, 'prepare'>,
-  initialize: () => Promise<T>,
-  retainCompletion?: (identity: ScheduledMCPIdentity) => Promise<void>,
-): Promise<T> {
-  if (
-    input.restoredJob?.scheduleMCPCompletion === undefined &&
-    !isScheduleFireRequest(input.req) &&
-    !isScheduledMCPCompletionRequest(input.req)
-  )
-    return initialize();
-  return prepareSafely(async () => {
-    await getHost().prepare(input);
-    const execution = getScheduleMCPExecution(input.context);
-    if (
-      isScheduledMCPCompletionRequest(input.req) &&
-      execution &&
-      input.restoredJob?.scheduleMCPCompletion === undefined
-    )
-      await retainCompletion?.(execution.identity);
-  }, input.signal).then(initialize);
-}
-
-/** Only authorization preparation is projected; provider failures remain caller-owned. */
-async function prepareSafely(operation: () => Promise<void>, signal?: AbortSignal): Promise<void> {
-  try {
-    signal?.throwIfAborted();
-    await operation();
-    signal?.throwIfAborted();
-  } catch (error) {
-    if (error instanceof ScheduledMCPPolicyError || isOwnedAbortError(error, signal)) throw error;
-    throw new ScheduledMCPPolicyError('dependency_unavailable', '');
-  }
+  return host;
 }

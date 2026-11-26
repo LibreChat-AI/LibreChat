@@ -3,8 +3,8 @@ import { Eye, Code2 } from 'lucide';
 import copy from 'copy-to-clipboard';
 import { Expand } from 'lucide-react';
 import { MorphIcon, TooltipAnchor } from '@librechat/client';
+import { CopyButton, NAV_CLEARANCE } from '@librechat/chat/components';
 import type { MermaidDimensions } from '~/utils/diagram/export';
-import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useLocalize } from '~/hooks';
 import MermaidExport from './Export';
 import cn from '~/utils/cn';
@@ -68,7 +68,13 @@ const MermaidHeader: React.FC<MermaidHeaderProps> = memo(
     }, [onToggleCode]);
 
     return (
-      <div className={cn('flex items-center justify-between gap-1 px-2 py-1', className)}>
+      <div
+        className={cn(
+          'flex items-center justify-between gap-1 px-2 py-1',
+          NAV_CLEARANCE.pad,
+          className,
+        )}
+      >
         <span className="text-text-secondary rounded text-xs font-medium">
           {localize('com_ui_mermaid')}
         </span>

@@ -8,6 +8,7 @@ const PACKAGE_COMPONENTS = path.resolve(
   '../../../../../../packages/client/src/components',
 );
 const PACKAGE_PANELS = [
+  'Popover.tsx',
   'SendActions.tsx',
   'TimePicker.tsx',
   'ControlCombobox.tsx',
@@ -27,7 +28,7 @@ const CLIENT_PANELS = [
 const SOURCE = /\.tsx$/;
 const SKIPPED = /(__tests__|\.spec\.|\.test\.)/;
 const PANEL_TAG =
-  /<(?:(?:Ariakit\.)?(?:Popover|SelectPopover|ComboboxPopover|Hovercard)|(?:Ariakit|Menu)\.Menu|(?:Popover\.)?Content)(?![.\w])(?:[^\n]*>$|[\s\S]*?\n\s*\/?>)/gm;
+  /<(?:(?:Ariakit\.)?(?:Popover|SelectPopover|ComboboxPopover|Hovercard)|(?:Ariakit|Menu)\.Menu|(?:Popover\.|PopoverPrimitive\.)?Content)(?![.\w])(?:[^\n]*>$|[\s\S]*?\n\s*\/?>)/gm;
 const PANEL_CLASS = /className="popover\b[^"]*"/g;
 const PANEL_CONSTANT = /const (?:menuClasses|panelClasses|popoverClasses)\b[^;]*;/g;
 const PANEL_ROLE = /\b(?:rounded-theme-(?:menu-panel|compact-panel|popover|surface)|popover-ui)\b/;

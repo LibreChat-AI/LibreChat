@@ -327,6 +327,9 @@ export const themeAppearanceProperties: Readonly<
   chromeBorderAlpha: '--theme-border-chrome-alpha',
   insetBorderAlpha: '--theme-border-inset-alpha',
   destructiveStyle: '--theme-destructive-style',
+  /** Appended, not slotted in: the cache pin's fixtures give each role the accepted value at
+   *  its position in this map, so inserting a role mid-map re-pairs every role after it. */
+  welcomeBackdrop: '--theme-welcome-backdrop',
 });
 
 export const defaultAppearance: IThemeAppearance = Object.freeze({
@@ -441,6 +444,7 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   chromeBorderAlpha: '1',
   insetBorderAlpha: '1',
   destructiveStyle: 'fill',
+  welcomeBackdrop: 'none',
 });
 
 /**

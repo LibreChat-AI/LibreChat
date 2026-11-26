@@ -9,6 +9,8 @@ const {
   createSkillStorageResolver,
   generateCheckAccess,
   restoreTenantContextFromReq,
+  skillImportMultipartLimits,
+  skillFileMultipartLimits,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const {
@@ -53,6 +55,8 @@ const ALLOWED_EXTENSIONS = new Set(['.md', '.zip', '.skill']);
 const MAX_IMPORT_SIZE = 50 * 1024 * 1024; // 50 MB
 
 const memoryStorage = multer.memoryStorage();
+// Browsers send multipart filenames as raw UTF-8, and multer assumes latin1 unless told otherwise.
+const defParamCharset = 'utf8';
 
 function getSkillImportSizeLimit(req) {
   const fileConfig = mergeFileConfig(req.config?.fileConfig);
@@ -72,15 +76,16 @@ const skillImportFilter = (_req, file, cb) => {
 const skillUpload = (req, res, next) =>
   multer({
     storage: memoryStorage,
+    defParamCharset,
     fileFilter: skillImportFilter,
-    limits: { fileSize: getSkillImportSizeLimit(req) },
+    limits: skillImportMultipartLimits(getSkillImportSizeLimit(req)),
   }).single('file')(req, res, next);
 
 // Per-file upload (for adding individual files to an existing skill)
-const MAX_SINGLE_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const singleFileUpload = multer({
   storage: memoryStorage,
-  limits: { fileSize: MAX_SINGLE_FILE_SIZE },
+  defParamCharset,
+  limits: skillFileMultipartLimits(),
 });
 
 // ---------------------------------------------------------------------------

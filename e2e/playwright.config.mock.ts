@@ -4,6 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { getLocalE2EEnv, getE2EBaseURL } from './setup/env';
 import { managementAuth } from './setup/agent-management';
+import { storageStatePath } from './setup/user';
+import { serialProjects } from './setup/serial';
 
 const rootPath = path.resolve(__dirname, '..');
 const replicaCount = Number(process.env.E2E_REPLICAS || '1');
@@ -109,6 +111,8 @@ if (modelFixtureRecording) {
 }
 const assistantsServerPath = path.resolve(rootPath, 'e2e/setup/fake-assistants-server.js');
 const ASSISTANTS_PORT = process.env.E2E_ASSISTANTS_PORT || '8890';
+const fluxServerPath = path.resolve(rootPath, 'e2e/setup/fake-flux-server.js');
+const FLUX_PORT = process.env.E2E_FLUX_PORT || '8794';
 const configTemplatePath = path.resolve(rootPath, 'e2e/config/librechat.e2e.yaml');
 const configPath = path.resolve(rootPath, 'e2e/.generated/librechat.e2e.yaml');
 const reportPath = path.resolve(rootPath, 'e2e/playwright-report');
@@ -211,13 +215,19 @@ const baseEnv = {
     ? {
         E2E_MCP_APPS: 'true',
         MCP_SANDBOX_FRAME_ANCESTORS:
-          process.env.MCP_SANDBOX_FRAME_ANCESTORS ?? 'http://127.0.0.1:3080',
+          process.env.MCP_SANDBOX_FRAME_ANCESTORS ?? 'http://127.0.0.1:3180',
       }
     : {}),
   /** The Assistants runtime uses the OpenAI SDK directly, outside the agents run hook. */
   ASSISTANTS_API_KEY: 'e2e-mock-assistants-key',
   ASSISTANTS_BASE_URL: `http://127.0.0.1:${ASSISTANTS_PORT}/v1`,
   ASSISTANTS_MODELS: 'gpt-4o-mini',
+  /** The Flux tool talks to the fake BFL endpoint started below. */
+  FLUX_API_KEY: 'e2e-flux-key',
+  FLUX_API_BASE_URL: `http://127.0.0.1:${FLUX_PORT}`,
+  /** Enables the native Google provider for agents. The run hook replaces the model, so the
+   *  key never reaches Google; it only lets attachments take the Google encoding path. */
+  GOOGLE_KEY: 'e2e-mock-google-key',
   ...(process.env.E2E_CODE_BRIDGE_ADMIN_TOKEN
     ? { E2E_CODE_BRIDGE_ADMIN_TOKEN: process.env.E2E_CODE_BRIDGE_ADMIN_TOKEN }
     : {}),
@@ -228,6 +238,8 @@ const baseEnv = {
   RAG_API_URL: `http://127.0.0.1:${RAG_API_PORT}`,
   /** Pull request lookups go to the fake git host, which trusts any bearer token. */
   E2E_GIT_HOST_TOKEN: 'e2e-git-host-token',
+  /** Resolved into the `e2e-memory` MCP server's env reference. */
+  E2E_MCP_DEPLOYMENT: 'e2e-deployment',
   NODE_EXTRA_CA_CERTS: gitHostCertPath,
   ...vanillaOverrides,
 };
@@ -250,10 +262,42 @@ const preservedCredentialEnvKeys = new Set([
  */
 function writeRuntimeMockConfig() {
   const template = fs.readFileSync(configTemplatePath, 'utf8');
+  // Keep this URL out of the other substitutions when the override uses another fixture's default port.
+  const httpMcpPlaceholder = '__E2E_HTTP_MCP_URL__';
   let config =
     process.env.E2E_MODEL_SPECS_ENFORCE === 'true'
       ? template.replace('\n  enforce: false\n', '\n  enforce: true\n')
       : template;
+  if (process.env.E2E_GRAPH_SUBAGENTS === 'true') {
+    config = config.replace(
+      '    toolApproval:\n      enabled: true',
+      '    toolApproval:\n      enabled: false',
+    );
+  }
+  config = config.replace('http://127.0.0.1:8765/mcp', httpMcpPlaceholder);
+  if (process.env.E2E_MCP_CONNECTION_STATUS === 'true') {
+    config = config.replace(
+      '  allowedDomains:\n',
+      '  allowedDomains:\n    - http://127.0.0.1:28769\n',
+    );
+    config = config.replace(
+      'mcpServers:\n',
+      `mcpServers:
+  e2e-status:
+    type: streamable-http
+    url: http://127.0.0.1:28769/mcp
+    requiresOAuth: false
+    startup: false
+    initTimeout: 1000
+    timeout: 1000
+    headers:
+      Authorization: 'Bearer e2e-status-token'
+      X-E2E-User: '{{LIBRECHAT_USER_ID}}'
+    title: E2E Connection State
+    description: Controlled MCP connection-attempt fixture.
+`,
+    );
+  }
   config = config.replace(
     '  agents:\n',
     `  agents:\n    managementApi: ${JSON.stringify({ auth: managementAuth })}\n`,
@@ -262,8 +306,7 @@ function writeRuntimeMockConfig() {
     ? {
         allowedDomain: '- http://127.0.0.1:8766',
         stdioEnv: [
-          'env:',
-          '      E2E_MCP_LIST_CHANGED: "true"',
+          'E2E_MCP_LIST_CHANGED: "true"',
           `      E2E_MCP_STATE_PATH: ${JSON.stringify(MCP_STATE_PATH)}`,
         ].join('\n'),
         networkServers: [
@@ -399,6 +442,7 @@ function writeRuntimeMockConfig() {
   if (MCP_OAUTH_PORT !== '8767') {
     config = config.split('127.0.0.1:8767').join(`127.0.0.1:${MCP_OAUTH_PORT}`);
   }
+  config = config.replace(httpMcpPlaceholder, `http://127.0.0.1:${MCP_HTTP_PORT}/mcp`);
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, config);
   if (enableDynamicMcp) {
@@ -502,7 +546,7 @@ Object.assign(process.env, baseEnv);
 neutralizeDotenvSecrets(path.resolve(rootPath, '.env'), preservedCredentialEnvKeys);
 
 export default defineConfig({
-  globalSetup: require.resolve('./setup/global-setup'),
+  globalSetup: require.resolve('./setup/global-setup.mock'),
   globalTeardown: require.resolve('./setup/global-teardown.mock'),
   testDir: 'specs/mock/',
   /** Record mode swaps the fake model for a real provider, so it must never
@@ -512,18 +556,29 @@ export default defineConfig({
    * unfiltered entry point (`npm run e2e:mock`) does exactly that. */
   ...(modelFixtureRecording ? { testMatch: /model-replay[a-z-]*\.spec\.ts$/ } : {}),
   outputDir: 'specs/.test-results',
-  fullyParallel: true,
+  /** A spec file is the unit of parallelism: its tests run in order on one worker, sharing what
+   *  its hooks and module scope set up. With one worker this runs exactly as `true` would. */
+  fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
+  /** In CI a test that fails and then passes on a retry fails the run. The retries stay for
+   *  what they show: a trace of each failed attempt, video of the first retry, and whether the
+   *  failure is deterministic. Derived profiles inherit this with the rest of the config. */
+  failOnFlakyTests: !!process.env.CI,
+  /** Raise with `--workers`: global setup signs in one user per worker. Specs that change state
+   *  every worker sees belong to the `-serial` project; see `e2e/setup/serial.ts` for how a
+   *  run with more workers takes it. */
   workers: 1,
   /** In CI the JSON results land beside the HTML report (reporters end in order, after the HTML
    *  reporter has replaced its folder), so the report artifact also carries the per-file
-   *  timings `.github/scripts/playwright-shards.mjs record` rebuilds the shard plan from. */
+   *  timings `.github/scripts/playwright-shards.mjs record` rebuilds the shard plan from.
+   *  The last reporter names each retried pass in the job log and the job summary. */
   reporter: process.env.CI
     ? [
         ['html', { outputFolder: reportPath, open: 'never' }],
         ['line'],
         ['json', { outputFile: path.join(reportPath, 'results.json') }],
+        ['./reporters/retried.mjs'],
       ]
     : [['html', { outputFolder: reportPath }], ['list']],
   use: {
@@ -532,13 +587,22 @@ export default defineConfig({
     trace: 'retain-on-failure',
     ignoreHTTPSErrors: true,
     headless: true,
-    storageState: path.resolve(process.cwd(), 'e2e/storageState.json'),
+    /** Playwright evaluates this config again in each worker, with `TEST_PARALLEL_INDEX` set,
+     *  so every worker loads the signed-in state of its own user. */
+    storageState: storageStatePath(),
     screenshot: 'only-on-failure',
+    /** Each test opens a fresh context, so the PWA service worker installs and claims the page
+     *  during that test's first load. A `page.route` installed within a few milliseconds of the
+     *  claim is never consulted, and the request it was meant to hold reaches the server. This
+     *  blocks every worker in the context, including the one Sandpack's static preview serves
+     *  an artifact's files from, so a spec that needs one opts back in with
+     *  `test.use({ serviceWorkers: 'allow' })`. Derived profiles inherit this through `use`. */
+    serviceWorkers: 'block',
   },
   expect: {
     timeout: 10000,
   },
-  projects: [
+  projects: serialProjects(
     {
       name: chromiumChannel ?? 'chromium',
       use: {
@@ -546,7 +610,8 @@ export default defineConfig({
         ...(chromiumChannel ? { channel: chromiumChannel } : {}),
       },
     },
-  ],
+    path.resolve(__dirname, 'specs/mock'),
+  ),
   webServer: [
     {
       // URL-based MCP fixture for the allowlist-override spec (its health route is GET /).
@@ -620,6 +685,16 @@ export default defineConfig({
       reuseExistingServer: false,
     },
     {
+      // Fake BFL endpoint for the Flux tool (FLUX_API_BASE_URL).
+      command: `node ${fluxServerPath}`,
+      cwd: rootPath,
+      env: { ...process.env, E2E_FLUX_PORT: FLUX_PORT },
+      url: `http://127.0.0.1:${FLUX_PORT}/`,
+      stdout: 'pipe',
+      timeout: 60_000,
+      reuseExistingServer: false,
+    },
+    {
       // Fake code-execution API for file-provisioning specs (LIBRECHAT_CODE_BASEURL).
       command: `node ${codeServerPath}`,
       cwd: rootPath,
@@ -662,11 +737,13 @@ export default defineConfig({
       cwd: rootPath,
       // Only the one-replica harness may assert the scheduler's single-process topology.
       // The two-replica MCP suite must leave scheduled writes disabled.
+      // The replica proxy reads the address itself, so it gets the resolved one.
       env: {
         ...process.env,
+        E2E_BASE_URL: baseURL,
         ...(replicaCount === 1 ? { SCHEDULES_SINGLE_PROCESS: 'true' } : {}),
       },
-      url: baseURL,
+      url: new URL('/readyz', baseURL).href,
       stdout: 'pipe',
       ignoreHTTPSErrors: true,
       timeout: 120_000,

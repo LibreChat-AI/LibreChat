@@ -173,7 +173,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
   jest.clearAllMocks();
 });
 
@@ -507,6 +507,16 @@ describe('Skill routes', () => {
   });
 
   describe('POST /api/skills/import', () => {
+    it('rejects text fields on a file-only import', async () => {
+      const res = await request(app)
+        .post('/api/skills/import')
+        .field('extra', 'metadata')
+        .attach('file', Buffer.from('Example'), 'skill.md');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('Too many fields');
+    });
+
     it('enforces fileConfig.skills.fileSizeLimit before import handling', async () => {
       mockFileConfig = {
         skills: {
@@ -633,6 +643,36 @@ describe('Skill routes', () => {
         expect.anything(),
         expect.objectContaining({ filepath: await saveBuffer.mock.results[0].value }),
       );
+    });
+
+    it('applies a file name filter to a non-Latin import filename', async () => {
+      mockFilters = {
+        skills: {
+          pii: {
+            fields: ['file_name'],
+            starterPatterns: [],
+            customPatterns: [{ id: 'codename', label: 'codename', regex: 'Секрет' }],
+          },
+        },
+      };
+
+      const markdown = [
+        '---',
+        'name: named-import',
+        'description: Imported skill with enough description.',
+        '---',
+        'Body.',
+      ].join('\n');
+      const res = await request(app)
+        .post('/api/skills/import')
+        .attach('file', Buffer.from(markdown), {
+          filename: 'Секрет.md',
+          contentType: 'text/markdown',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual(expect.objectContaining({ error: 'content_filter_block' }));
+      expect(await Skill.countDocuments({ name: 'named-import' })).toBe(0);
     });
 
     it('blocks filtered Markdown before creating the imported skill', async () => {
@@ -825,6 +865,19 @@ describe('Skill routes', () => {
   });
 
   describe('POST /api/skills/:id/files (live)', () => {
+    it('rejects fields beyond the file path and revision', async () => {
+      const created = await createSkillAsOwner();
+      const res = await request(app)
+        .post(`/api/skills/${created.body._id}/files`)
+        .field('relativePath', 'references/sample.md')
+        .field('expectedFileId', 'revision')
+        .field('extra', 'metadata')
+        .attach('file', Buffer.from('Example'), 'sample.md');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('Too many fields');
+    });
+
     it('replaces a nested text file and clears the old cached content', async () => {
       const { Readable } = require('stream');
       const { getStrategyFunctions } = require('~/server/services/Files/strategies');
@@ -969,6 +1022,35 @@ describe('Skill routes', () => {
       expect(edited.status).toBe(200);
       expect(await SkillFile.findOne({ skillId }).lean()).toMatchObject({
         file_id: edited.body.file_id,
+      });
+    });
+
+    it('keeps a non-Latin filename across repeated saves of a skill file', async () => {
+      const created = await createSkillAsOwner();
+      const skillId = created.body._id;
+      const relativePath = 'references/description.md';
+      const filename = 'Описание-日本語.md';
+      const url = `/api/skills/${skillId}/files`;
+      const first = await request(app)
+        .post(url)
+        .field('relativePath', relativePath)
+        .attach('file', Buffer.from('first'), { filename, contentType: 'text/markdown' });
+      expect(first.status).toBe(200);
+      expect(first.body.filename).toBe(filename);
+
+      const edited = await request(app)
+        .post(`${url}/${encodeURIComponent(relativePath)}`)
+        .field('relativePath', relativePath)
+        .field('expectedFileId', first.body.file_id)
+        .attach('file', Buffer.from('edited'), {
+          filename: first.body.filename,
+          contentType: 'text/markdown',
+        });
+      expect(edited.status).toBe(200);
+      expect(edited.body.filename).toBe(filename);
+      expect(await SkillFile.findOne({ skillId, relativePath }).lean()).toMatchObject({
+        file_id: edited.body.file_id,
+        filename,
       });
     });
 

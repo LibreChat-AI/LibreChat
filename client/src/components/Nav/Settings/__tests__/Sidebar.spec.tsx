@@ -24,6 +24,8 @@ const ctx: SettingsContextValue = {
   allowAccountDeletion: true,
   aboutEnabled: false,
   mascotAllowed: true,
+  sessionRailAutoOpenAllowed: true,
+  engineSTT: 'browser',
   engineTTS: 'browser',
   langfuseConnectionAccess: false,
   adminPanelURL: '',

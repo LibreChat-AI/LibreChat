@@ -151,8 +151,9 @@ const createPasteEvent = (files: File[] = []) => ({
   preventDefault: jest.fn(),
 });
 
-const renderTextareaHook = (initialAnswerModeActive = false) => {
+const renderTextareaHook = (initialAnswerModeActive = false, initialText = '') => {
   const textArea = document.createElement('textarea');
+  textArea.value = initialText;
   const submitButton = document.createElement('button');
   const setIsScrollable = jest.fn();
   let answerModeActive = initialAnswerModeActive;
@@ -292,14 +293,52 @@ describe('useTextarea long-paste fallback', () => {
     );
 
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
-    await waitFor(() =>
-      expect(mockShowToast).toHaveBeenCalledWith({
-        message: 'com_ui_file_attached_as_text',
-        status: 'info',
-      }),
-    );
+    await waitFor(() => expect(mockRouteFiles).toHaveBeenCalled());
+    expect(mockRouteFiles.mock.calls[0][2]).toEqual(expect.objectContaining({ pastedText }));
+    expect(mockShowToast).not.toHaveBeenCalled();
     expect(mockInsertTextAtCursor).not.toHaveBeenCalled();
     expect(textArea.value).toBe('');
+  });
+
+  it('does not restore a canceled paste when its queued upload later resolves false', async () => {
+    let rejectUpload!: (accepted: boolean) => void;
+    mockRouteFiles.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolve) => {
+          rejectUpload = resolve;
+        }),
+    );
+    const { result } = renderTextareaHook();
+    act(() =>
+      result.current.handlePaste(
+        createPasteEvent() as unknown as React.ClipboardEvent<HTMLTextAreaElement>,
+      ),
+    );
+    const lifecycle = mockRouteFiles.mock.calls[0][2] as UploadLifecycleCallbacks;
+    act(() => lifecycle.onAbort?.(lifecycle.fileId!));
+    await act(async () => rejectUpload(false));
+    expect(mockInsertTextAtCursor).not.toHaveBeenCalled();
+  });
+
+  it('does not restore a superseded source after its editor takes recovery', async () => {
+    let finish!: (accepted: boolean) => void;
+    mockRouteFiles.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const { result } = renderTextareaHook();
+    act(() =>
+      result.current.handlePaste(
+        createPasteEvent() as unknown as React.ClipboardEvent<HTMLTextAreaElement>,
+      ),
+    );
+    const lifecycle = mockRouteFiles.mock.calls[0][2] as UploadLifecycleCallbacks;
+    act(() => lifecycle.onRecoveryTransferred?.());
+    act(() => lifecycle.onError?.(lifecycle.fileId!));
+    await act(async () => finish(false));
+    expect(mockInsertTextAtCursor).not.toHaveBeenCalled();
   });
 
   it('replaces selected draft text when the attachment is accepted', async () => {
@@ -1051,6 +1090,17 @@ describe('useTextarea composer handoff', () => {
     expect(mockForceResize).toHaveBeenCalledWith(textArea);
     expect(mockSetPendingComposerText).toHaveBeenCalledWith(undefined);
     expect(getDraft('convo-1')).toBe('');
+  });
+
+  /** A conversation moved here from beside the chat brings its unsent words by hand, and the
+   *  draft saved for it can have put the same words in the composer already. */
+  it('adds nothing when the composer already holds the words handed to it', () => {
+    mockPendingComposerText = 'Take this further.';
+    renderTextareaHook(false, 'Take this further.');
+
+    expect(mockSetValue).not.toHaveBeenCalled();
+    expect(mockInsertTextAtCursor).not.toHaveBeenCalled();
+    expect(mockSetPendingComposerText).toHaveBeenCalledWith(undefined);
   });
 
   it('leaves the composer alone when nothing was handed to this conversation', () => {

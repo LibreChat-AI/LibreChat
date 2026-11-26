@@ -11,6 +11,11 @@ export interface TenantContext {
 /** Sentinel value for deliberate cross-tenant system operations */
 export const SYSTEM_TENANT_ID = '__SYSTEM__';
 
+/** Reserved for persisted tenantless channel partitions; never an authenticated tenant. */
+export function isReservedTenantId(tenantId: string | undefined): boolean {
+  return tenantId === '_';
+}
+
 /**
  * AsyncLocalStorage instance for propagating tenant context.
  * Callbacks passed to `tenantStorage.run()` must be `async` for the context to propagate
@@ -21,7 +26,9 @@ export const tenantStorage: AsyncLocalStorage<TenantContext> =
 
 /** Returns the current tenant ID from async context, or undefined if none is set */
 export function getTenantId(): string | undefined {
-  return tenantStorage.getStore()?.tenantId;
+  const tenantId = tenantStorage.getStore()?.tenantId;
+  if (isReservedTenantId(tenantId)) throw new TypeError('Reserved tenant identifier');
+  return tenantId;
 }
 
 /** Returns the current user ID from async context, or undefined if none is set */

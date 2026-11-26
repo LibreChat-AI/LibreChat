@@ -1,12 +1,12 @@
 import { useCallback, useMemo } from 'react';
-import { ChevronLeft } from 'lucide-react';
-import { Button, useToastContext } from '@librechat/client';
+import { useToastContext } from '@librechat/client';
 import type { AgentWithVersions, VersionContext, VersionRecord } from './types';
 import {
   useGetAgentVersionsQuery,
   useRevertAgentVersionMutation,
   useGetExpandedAgentByIdQuery,
 } from '~/data-provider';
+import BackButton from '~/components/SidePanel/BackButton';
 import { isActiveVersion } from './isActiveVersion';
 import { useAgentPanelContext } from '~/Providers';
 import VersionContent from './VersionContent';
@@ -143,16 +143,7 @@ export default function VersionPanel() {
   return (
     <div className="h-full min-h-[40vh] scrollbar-gutter-stable overflow-auto pb-12 text-sm">
       <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2 px-2 pt-1 pb-2">
-        <Button
-          variant="subtle"
-          size="icon"
-          shape="theme"
-          onClick={() => setActivePanel(Panel.builder)}
-          aria-label={localize('com_ui_back_to_builder')}
-          className="text-text-secondary hover:text-text-primary shrink-0"
-        >
-          <ChevronLeft className="h-5 w-5 rtl:-scale-x-100" strokeWidth={1.75} aria-hidden="true" />
-        </Button>
+        <BackButton onClick={() => setActivePanel(Panel.builder)} />
         <div className="flex flex-col items-center">
           <h2 className="text-text-primary text-base font-semibold">
             {localize('com_ui_agent_version_history')}

@@ -540,7 +540,7 @@ describe('submitted content adapters', () => {
       }),
     );
     expect(getContentTraversalScopes(parameterError)).toEqual([
-      { source: 'tool_argument', fields: ['arguments'] },
+      { source: 'tool_argument', fields: ['arguments'], legacyPii: false },
     ]);
     expect(getContentTraversalFragments(parameterError)).toEqual(
       expect.arrayContaining([

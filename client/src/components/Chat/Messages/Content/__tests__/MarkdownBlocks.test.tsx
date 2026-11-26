@@ -2,12 +2,15 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import ReactMarkdown from 'react-markdown';
 import { MemoryRouter } from 'react-router-dom';
-import { splitMarkdownIntoBlocks } from '@librechat/chat';
 import { render, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from '../markdownConfig';
 import { MessageContext, ArtifactProvider, CodeBlockProvider } from '~/Providers';
+import { getLoadedRehypeModules, loadRehypeModules } from '../rehype';
 import Markdown from '../Markdown';
+
+/** KaTeX and highlight.js load on first need in the app; load them up front here. */
+beforeAll(() => loadRehypeModules());
 
 /**
  * Mermaid blocks in the fixtures reach `useLocation`, so the markdown tree needs a
@@ -70,19 +73,6 @@ jest.mock('~/components/Messages/Content/CodeBlock', () => ({
   },
 }));
 
-/** The real splitter, observed: whether a render paid for the block-boundary parse. */
-jest.mock('@librechat/chat', () => {
-  const actual = jest.requireActual<typeof import('@librechat/chat')>('@librechat/chat');
-  const splitSpy = jest.fn(actual.splitMarkdownIntoBlocks);
-  return {
-    ...actual,
-    splitMarkdownIntoBlocks: splitSpy,
-    createMarkdownSplitter: jest.fn(() => jest.fn((content: string) => splitSpy(content))),
-  };
-});
-
-const splitSpy = jest.mocked(splitMarkdownIntoBlocks);
-
 /** The previous whole-message renderer: a single ReactMarkdown under one set of providers. */
 const OldMarkdown = ({ content }: { content: string }) => (
   <ArtifactProvider>
@@ -91,7 +81,7 @@ const OldMarkdown = ({ content }: { content: string }) => (
         /** @ts-ignore */
         remarkPlugins={getRemarkPlugins()}
         /** @ts-ignore */
-        rehypePlugins={getRehypePlugins()}
+        rehypePlugins={getRehypePlugins(getLoadedRehypeModules())}
         components={getMarkdownComponents()}
       >
         {content}
@@ -215,7 +205,6 @@ const EXPECTED = [
 ];
 
 beforeEach(() => {
-  splitSpy.mockClear();
   mockCodeBlockMounts.count = 0;
 });
 
@@ -318,7 +307,9 @@ describe('MarkdownBlocks provisional boundaries', () => {
 describe('MarkdownBlocks finished and streamed messages', () => {
   const PROSE = '# H\n\nPara with `code`.\n\n| x | y |\n| - | - |\n| 1 | 2 |\n\n- a\n- b';
 
-  it('renders a finished message through one pipeline, without the block-boundary parse', () => {
+  /* When a render pays for the block-boundary parse is the chat package's to check, in its
+     `Blocks.spec.tsx`; these cases hold this app's renderer to what a reader can see of it. */
+  it('renders a finished message as the whole-message renderer does', () => {
     const { container: oldC } = render(
       <TestProviders>
         <OldMarkdown content={PROSE} />
@@ -330,20 +321,9 @@ describe('MarkdownBlocks finished and streamed messages', () => {
       </TestProviders>,
     );
 
-    expect(splitSpy).not.toHaveBeenCalled();
     // One pipeline reproduces the whole-message renderer exactly, down to the
     // whitespace between blocks that separately parsed blocks cannot carry.
     expect(settledC.innerHTML).toBe(oldC.innerHTML);
-  });
-
-  it('splits the message that is generating, so only its last block re-parses', () => {
-    render(
-      <TestProviders>
-        <StreamingMarkdown content={PROSE} />
-      </TestProviders>,
-    );
-
-    expect(splitSpy).toHaveBeenCalledWith(PROSE);
   });
 
   it('keeps a streamed message split once it finishes, so no block remounts', () => {
@@ -358,12 +338,10 @@ describe('MarkdownBlocks finished and streamed messages', () => {
       rerender(view(lines.slice(0, i).join('\n'), true));
     }
     const mountsWhileStreaming = mockCodeBlockMounts.count;
-    splitSpy.mockClear();
 
     rerender(view(MIXED, false));
 
     expect(mockCodeBlockMounts.count).toBe(mountsWhileStreaming);
-    expect(splitSpy).not.toHaveBeenCalled();
     expect(indicesIn(container)).toEqual(EXPECTED);
   });
 
@@ -380,11 +358,9 @@ describe('MarkdownBlocks finished and streamed messages', () => {
     );
     const opening = MIXED.split('\n').slice(0, 12).join('\n');
     const { container, rerender } = render(view(opening, false));
-    expect(splitSpy).not.toHaveBeenCalled();
     const mountsAtOpen = mockCodeBlockMounts.count;
 
     rerender(view(opening, true));
-    expect(splitSpy).toHaveBeenCalledWith(opening);
     expect(mockCodeBlockMounts.count).toBe(mountsAtOpen * 2);
 
     // A generation that stops before producing anything must not move it back.
@@ -410,7 +386,6 @@ describe('MarkdownBlocks finished and streamed messages', () => {
       </TestProviders>
     );
     const { container, rerender } = render(view(MIXED));
-    expect(splitSpy).not.toHaveBeenCalled();
     const mountsAtOpen = mockCodeBlockMounts.count;
 
     rerender(view(MIXED.replace('Intro paragraph.', 'Intro paragraph, edited.')));

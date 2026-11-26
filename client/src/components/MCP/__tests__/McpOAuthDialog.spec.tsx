@@ -3,16 +3,16 @@ import '@testing-library/jest-dom/extend-expect';
 import { render, screen, fireEvent } from '@testing-library/react';
 import McpOAuthDialog from '../McpOAuthDialog';
 
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  CopyButton: ({ onClick }: { onClick: () => void }) => (
+    <button type="button" data-testid="copy-url" onClick={onClick} />
+  ),
+}));
+
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
   useCopyToClipboard: () => jest.fn(),
-}));
-
-jest.mock('~/components/Messages/Content/CopyButton', () => ({
-  __esModule: true,
-  default: ({ onClick }: { onClick: () => void }) => (
-    <button type="button" data-testid="copy-url" onClick={onClick} />
-  ),
 }));
 
 jest.mock('@librechat/client', () => {

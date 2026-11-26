@@ -1,4 +1,3 @@
-import type { BedrockDocumentFormat } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { Readable } from 'stream';
 import type { FileStorageDeletionObserver } from '~/files/dispatch';
@@ -105,16 +104,16 @@ export interface OpenAIInputFileBlock {
   file_data: string;
 }
 
-/** Bedrock Converse API document block (passthrough via @langchain/aws) */
+/**
+ * Bedrock document as LangChain's standard base64 file block. The agents SDK decodes it into a
+ * Converse `document` at request time; until then it serializes as a string, not a byte array.
+ */
 export interface BedrockDocumentBlock {
-  type: 'document';
-  document: {
-    name: string;
-    format: BedrockDocumentFormat;
-    source: {
-      bytes: Buffer;
-    };
-  };
+  type: 'file';
+  source_type: 'base64';
+  mime_type: string;
+  data: string;
+  metadata: { name: string };
 }
 
 export type DocumentBlock =
@@ -182,7 +181,13 @@ export interface ProcessedFile<T = IMongoFile> {
 
 /** Subset of storage strategy functions needed by download and delete access flows. */
 export interface StrategyFunctions {
-  getDownloadStream: (req: ServerRequest, filepath: string) => Promise<Readable>;
+  /** Canonical object identity independent of renewable delivery URLs. */
+  getStorageKey?: (file: { filepath: string; storageKey?: string | null }) => string;
+  getDownloadStream: (
+    req: ServerRequest,
+    filepath: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<Readable>;
   getDownloadURL?: (params: DownloadURLParams) => Promise<string>;
   deleteFile?: (
     req: ServerRequest,

@@ -261,9 +261,16 @@ function nextPrincipalId(): string {
   return `admin-${principalCounter}`;
 }
 
+const LIFECYCLE_TIMEOUT_MS = 180_000;
+
 beforeAll(async () => {
-  jest.resetModules();
-  const dataSchemas = await import('@librechat/data-schemas');
+  const [dataSchemas, handlersModule, secretsModule, server] = await Promise.all([
+    import('@librechat/data-schemas'),
+    import('./config'),
+    import('./secrets'),
+    MongoMemoryServer.create(),
+  ]);
+  mongoServer = server;
   ({
     decryptV3,
     loadOCRConfig,
@@ -275,19 +282,17 @@ beforeAll(async () => {
   jest.spyOn(dataSchemas.logger, 'info').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'debug').mockReturnValue(dataSchemas.logger);
 
-  ({ createAdminConfigHandlers } = await import('./config'));
-  ({ getSecretPreview, encryptConfigSecretFields, UNPREVIEWED_SECRET_MASK } = await import(
-    './secrets'
-  ));
+  ({ createAdminConfigHandlers } = handlersModule);
+  ({ getSecretPreview, encryptConfigSecretFields, UNPREVIEWED_SECRET_MASK } = secretsModule);
 
-  mongoServer = await MongoMemoryServer.create();
   await mongoose.connect(mongoServer.getUri());
   dataSchemas.createModels(mongoose);
+  await mongoose.models.Config.init();
   configMethods = dataSchemas.createMethods(mongoose);
   ({ patchConfigFields } = configMethods);
 
   handlers = createRealHandlers();
-});
+}, LIFECYCLE_TIMEOUT_MS);
 
 /** Handlers over the real Config collection; `getAppConfig` supplies a librechat.yaml base. */
 function createRealHandlers(
@@ -297,7 +302,7 @@ function createRealHandlers(
     listAllConfigs: configMethods.listAllConfigs,
     findConfigByPrincipal: configMethods.findConfigByPrincipal,
     writeConfigDocument: configMethods.writeConfigDocument,
-    unsetConfigField: configMethods.unsetConfigField,
+    unsetConfigFieldTracked: configMethods.unsetConfigFieldTracked,
     deleteConfig: configMethods.deleteConfig,
     toggleConfigActiveTracked: configMethods.toggleConfigActiveTracked,
     hasConfigCapability: async () => true,
@@ -310,8 +315,8 @@ function createRealHandlers(
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
-});
+  await mongoServer?.stop();
+}, LIFECYCLE_TIMEOUT_MS);
 
 describe('config secret registry — real handlers against a real Config collection', () => {
   describe.each(SECRET_FIELD_CASES)(
@@ -1378,6 +1383,17 @@ describe('config secret registry — real handlers against a real Config collect
         key: VICTIM_KEY,
       };
 
+      /**
+       * Deleting a URL the document did not hold when it was read changes nothing at that
+       * revision, so nothing is written over the other admin's URL and key, pinned or not.
+       */
+      const VICTIM_KEPT_UNCHANGED = {
+        statusCode: 200,
+        body: expect.objectContaining({ config: expect.anything() }),
+        url: VICTIM_URL,
+        key: VICTIM_KEY,
+      };
+
       /** A write pinned to the revision it read answers 409 instead of re-checking. */
       const VICTIM_KEPT_PINNED = {
         statusCode: 409,
@@ -1434,9 +1450,9 @@ describe('config secret registry — real handlers against a real Config collect
       });
 
       it.each([
-        { name: 'deleting', handler: 'deleteConfigField' as const },
-        { name: 'tombstoning', handler: 'tombstoneConfigField' as const },
-      ])('rejects $name the URL', async ({ handler }) => {
+        { name: 'deleting', handler: 'deleteConfigField' as const, kept: VICTIM_KEPT_UNCHANGED },
+        { name: 'tombstoning', handler: 'tombstoneConfigField' as const, kept: VICTIM_KEPT },
+      ])("keeps the other admin's URL and key when $name the URL", async ({ handler, kept }) => {
         const principalId = nextPrincipalId();
         await patch(principalId, [{ fieldPath: 'webSearch.safeSearch', value: 1 }]);
         const res = mockRes();
@@ -1447,7 +1463,7 @@ describe('config secret registry — real handlers against a real Config collect
           res,
         );
 
-        expect(await outcome(principalId, res)).toEqual(VICTIM_KEPT);
+        expect(await outcome(principalId, res)).toEqual(kept);
       });
 
       it.each([
@@ -1479,26 +1495,29 @@ describe('config secret registry — real handlers against a real Config collect
       );
 
       it.each([
-        { name: 'deleting', handler: 'deleteConfigField' as const },
-        { name: 'tombstoning', handler: 'tombstoneConfigField' as const },
-      ])('answers 409 to $name the URL pinned to the revision it read', async ({ handler }) => {
-        const principalId = nextPrincipalId();
-        await patch(principalId, [{ fieldPath: 'webSearch.safeSearch', value: 1 }]);
-        const expectedRevision = await currentRevision(principalId);
-        const res = mockRes();
-        const fieldPath = 'webSearch.searxngInstanceUrl';
+        { name: 'deleting', handler: 'deleteConfigField' as const, kept: VICTIM_KEPT_UNCHANGED },
+        { name: 'tombstoning', handler: 'tombstoneConfigField' as const, kept: VICTIM_KEPT_PINNED },
+      ])(
+        "keeps the other admin's URL and key when $name the URL pinned to the revision it read",
+        async ({ handler, kept }) => {
+          const principalId = nextPrincipalId();
+          await patch(principalId, [{ fieldPath: 'webSearch.safeSearch', value: 1 }]);
+          const expectedRevision = await currentRevision(principalId);
+          const res = mockRes();
+          const fieldPath = 'webSearch.searxngInstanceUrl';
 
-        await racedHandlers(principalId)[handler](
-          mockReq({
-            params: params(principalId),
-            query: { fieldPath, expectedRevision },
-            body: { fieldPath, expectedRevision },
-          }),
-          res,
-        );
+          await racedHandlers(principalId)[handler](
+            mockReq({
+              params: params(principalId),
+              query: { fieldPath, expectedRevision },
+              body: { fieldPath, expectedRevision },
+            }),
+            res,
+          );
 
-        expect(await outcome(principalId, res)).toEqual(VICTIM_KEPT_PINNED);
-      });
+          expect(await outcome(principalId, res)).toEqual(kept);
+        },
+      );
 
       it('lets a write to another section proceed', async () => {
         const principalId = nextPrincipalId();
@@ -1546,7 +1565,7 @@ describe('config secret registry — real handlers against a real Config collect
         writeConfigDocument: async () => {
           throw new Error('not written in this test');
         },
-        unsetConfigField: async () => null,
+        unsetConfigFieldTracked: async () => null,
         deleteConfig: async () => null,
         toggleConfigActiveTracked: async () => null,
         hasConfigCapability: async () => true,
@@ -1623,7 +1642,7 @@ describe('config secret registry — real handlers against a real Config collect
         writeConfigDocument: async () => {
           throw new Error('not written in this test');
         },
-        unsetConfigField: async () => null,
+        unsetConfigFieldTracked: async () => null,
         deleteConfig: async () => null,
         toggleConfigActiveTracked: async () => null,
         hasConfigCapability: async () => true,
@@ -1724,7 +1743,7 @@ describe('config secret registry — real handlers against a real Config collect
           writeConfigDocument: async () => {
             throw new Error('not written in this test');
           },
-          unsetConfigField: async () => null,
+          unsetConfigFieldTracked: async () => null,
           deleteConfig: async () => null,
           toggleConfigActiveTracked: async () => null,
           hasConfigCapability: async () => true,

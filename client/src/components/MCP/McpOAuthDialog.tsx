@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { QrCode, ExternalLink } from 'lucide-react';
+import { CopyButton } from '@librechat/chat/components';
 import {
   Input,
   Button,
@@ -9,7 +10,6 @@ import {
   OGDialogContent,
   OGDialogDescription,
 } from '@librechat/client';
-import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useLocalize, useCopyToClipboard } from '~/hooks';
 import { cn, openInNewTab } from '~/utils';
 

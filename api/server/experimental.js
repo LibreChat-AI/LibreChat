@@ -19,7 +19,9 @@ const mongoose = require('mongoose');
 const passport = require('passport');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
-const { logger, runAsSystem } = require('@librechat/data-schemas');
+const { logger, runAsSystem, createRoleChangeSource } = require('@librechat/data-schemas');
+const { CacheKeys } = require('librechat-data-provider');
+const getLogStores = require('~/cache/getLogStores');
 const mongoSanitize = require('express-mongo-sanitize');
 const {
   isEnabled,
@@ -46,6 +48,9 @@ const {
   configureServerTimeouts,
   setupGracefulShutdown,
   registerShutdownTask,
+  startRoleCacheInvalidation,
+  reportRoleCacheError,
+  reportRoleCacheInvalidation,
   getClusterShutdownBudgetMs,
   registerBackgroundTaskShutdown,
   configureMessageFilterRegexValidator,
@@ -56,9 +61,14 @@ const {
   startCodeEnvironmentLifecycleReconciler,
   waitForKeyvRedisClient,
   createCodeApiUploadRegistry,
+  createSdkFileHost,
+  createSdkModelHost,
   cacheConfig,
   createClusteredFileSweep,
   createRequestSanitizer,
+  createStartupReadiness,
+  keyvRedisClient,
+  ioredisClient,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
@@ -67,7 +77,21 @@ const createValidateImageRequest = require('./middleware/validateImageRequest');
 const { startExpiredFileSweep } = require('./services/Files/process');
 const { initializeGitHubSkillSync } = require('./services/Skills/sync');
 const { startSkillDeletionSweep } = require('./services/Skills/deletion');
-const { initializeAgentTriggerService } = require('./services/Agents/triggers');
+const {
+  initializeAgentTriggerService,
+  enqueueAgentTrigger,
+  isAgentTriggerServiceReady,
+} = require('./services/Agents/triggers');
+const {
+  initializeBackgroundResponses,
+  configureBackgroundResponseQueue,
+} = require('./services/Responses');
+const {
+  initializeChannelFeedback,
+  stopChannelFeedback,
+  initializeChannelCleanup,
+  stopChannelCleanup,
+} = require('./services/Channels');
 const { resumeAgentEventDetachedAction } = require('./services/Agents/detachedActionResume');
 const {
   recordExpiredScheduleApproval,
@@ -78,8 +102,11 @@ const { jwtLogin, ldapLogin, passportLogin } = require('~/strategies');
 const { updateInterfacePermissions: updateInterfacePerms } = require('@librechat/api');
 const {
   getRoleByName,
+  getPartitionRole,
   updateAccessPermissions,
   seedDatabase,
+  initializeFavorites,
+  closeFavorites,
   recordAuditEntry,
   sweepOrphanedPreviews,
 } = require('~/models');
@@ -87,7 +114,7 @@ const { checkMigrations } = require('./services/start/migration');
 const initializeMCPs = require('./services/initializeMCPs');
 const configureSocialLogins = require('./socialLogins');
 const createSpaFallback = require('./utils/fallback');
-const { getAppConfig } = require('./services/Config');
+const { getAppConfig, loadCustomConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
 const optionalJwtAuth = require('./middleware/optionalJwtAuth');
 const noIndex = require('./middleware/noIndex');
@@ -365,6 +392,11 @@ if (cluster.isMaster) {
    * Each worker runs a full Express server instance
    */
   const app = express();
+  const readiness = createStartupReadiness({
+    useRedis: cacheConfig.USE_REDIS,
+    ioredis: ioredisClient,
+    keyv: keyvRedisClient,
+  });
   app.locals.codeApiUploadRegistry = createCodeApiUploadRegistry();
   // The clustered entrypoint deliberately does not arm the v1 schedule engine,
   // but an already-fired scheduled generation can still reach HITL here. Settle
@@ -454,19 +486,11 @@ if (cluster.isMaster) {
     /** Connect to MongoDB */
     await connectDb();
     logger.info(`Worker ${process.pid}: Connected to MongoDB`);
-    startCodeEnvironmentLifecycleReconciler({ mongoose });
 
     /** Background index sync (non-blocking) */
     indexSync().catch((err) => {
       logger.error(`[Worker ${process.pid}][indexSync] Background sync failed:`, err);
     });
-
-    // This entrypoint deliberately does not arm the schedule engine, but DELETE stays
-    // open — so soft-deleted rows still accrue with no reconciler to erase them. Start
-    // the erasure-ONLY sweep (Mongo is up, GenerationJobManager was initialized above):
-    // it never claims, fires, advances, or infers owner death from a process-local
-    // missing job, and its idempotent guard makes this safe once per worker.
-    initializeScheduleErasureSweep();
 
     app.disable('x-powered-by');
     app.set('trust proxy', trusted_proxy);
@@ -502,7 +526,31 @@ if (cluster.isMaster) {
      * deletion, the expired-file sweep, tool-approval hooks and the other worker-wide settings
      * below are fixed for the process lifetime, so DB `__base__` overrides must not decide them.
      */
+    await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
+    registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
     const appConfig = await getAppConfig({ baseOnly: true });
+    /** One ceiling for every idle recovery loop below; each keeps its own default while it is unset. */
+    const idleCeilingMs = appConfig?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs;
+    startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });
+    // This entrypoint deliberately does not arm the schedule engine, but DELETE stays
+    // open, so soft-deleted rows still accrue with no reconciler to erase them. Start
+    // the erasure-ONLY sweep (Mongo is up, GenerationJobManager was initialized above):
+    // it never claims, fires, advances, or infers owner death from a process-local
+    // missing job, and its idempotent guard makes this safe once per worker.
+    initializeScheduleErasureSweep({ idleCeilingMs });
+    registerShutdownTask(
+      'role cache invalidation',
+      await startRoleCacheInvalidation({
+        config: appConfig?.config?.roleCache,
+        cache: getLogStores(CacheKeys.ROLES),
+        open: createRoleChangeSource(mongoose),
+        onError: reportRoleCacheError,
+        onInvalidate: reportRoleCacheInvalidation,
+      }),
+      { priority: 50 },
+    );
+    app.locals.sdkFileHost = createSdkFileHost(appConfig?.endpoints?.agents?.sdkHostFiles);
+    app.locals.sdkModelHost = createSdkModelHost(appConfig?.endpoints?.agents?.sdkHostModels);
     initializeFileStorage(appConfig);
     initializeGitHubSkillSync(appConfig);
     startSkillDeletionSweep(appConfig.skillDeletion);
@@ -526,6 +574,7 @@ if (cluster.isMaster) {
         getRoleByName,
         updateAccessPermissions,
         recordAuditEntry,
+        getPartitionRole,
       });
     });
 
@@ -593,6 +642,8 @@ if (cluster.isMaster) {
 
     /** Health check endpoint */
     app.get('/health', (_req, res) => res.status(200).send('OK'));
+    app.get('/readyz', readiness.handler);
+    app.use('/api', readiness.gate);
 
     /** Middleware */
     app.use(requestContextMiddleware);
@@ -687,6 +738,7 @@ if (cluster.isMaster) {
     app.use('/api/share', preAuthTenantMiddleware, routes.share);
     app.use('/api/roles', routes.roles);
     app.use('/api/agents', routes.agents);
+    app.use('/api/channels', routes.channels);
     app.use('/api/banner', routes.banner);
     app.use('/api/memories', routes.memories);
     app.use('/api/schedules', rejectScheduleWritesUntilReady, routes.schedules);
@@ -706,6 +758,10 @@ if (cluster.isMaster) {
     app.use(ErrorController);
 
     /** Start listening on shared port (cluster will distribute connections) */
+    configureBackgroundResponseQueue({
+      enqueue: enqueueAgentTrigger,
+      isReady: isAgentTriggerServiceReady,
+    });
     const server = app.listen(port, host, async (err) => {
       if (err) {
         logger.error(`Worker ${process.pid} failed to start server:`, err);
@@ -730,6 +786,7 @@ if (cluster.isMaster) {
         await initializeMCPs();
         await initializeOAuthReconnectManager();
         await checkMigrations();
+        initializeBackgroundResponses(server.address());
         await initializeAgentTriggerService({
           address: server.address(),
           completionResultBatchSize:
@@ -739,7 +796,13 @@ if (cluster.isMaster) {
           deadLetterRetentionDays:
             appConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays,
           idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
+          idleCeilingMs,
         });
+        await initializeChannelFeedback();
+        registerShutdownTask('channel feedback export', stopChannelFeedback, { priority: 100 });
+        registerShutdownTask('channel authority cleanup', stopChannelCleanup, { priority: 100 });
+        await initializeChannelCleanup();
+        readiness.markReady();
       } catch (initErr) {
         logger.error(`Worker ${process.pid} post-listen initialization failed:`, initErr);
         process.exit(1);
@@ -756,7 +819,8 @@ if (cluster.isMaster) {
     setupGracefulShutdown(server);
   };
 
-  startServer().catch((err) => {
+  startServer().catch(async (err) => {
+    await closeFavorites().catch(() => undefined);
     logger.error(`Failed to start worker ${process.pid}:`, err);
     process.exit(1);
   });

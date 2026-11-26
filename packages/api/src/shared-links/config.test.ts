@@ -3,6 +3,7 @@ import { getTenantId, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
 import type { TThemeDefinitionConfig } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import {
+  isSharedLinksEnabled,
   resolveSharedLinkConfig,
   isFileSnapshotEnabled,
   buildSharedLinkStartupPayload,
@@ -133,6 +134,19 @@ describe('isFileSnapshotEnabled', () => {
   });
 });
 
+describe('isSharedLinksEnabled', () => {
+  it('enables shared links when ALLOW_SHARED_LINKS is unset', () => {
+    expect(isSharedLinksEnabled({})).toBe(true);
+  });
+
+  it('follows an explicit ALLOW_SHARED_LINKS value', () => {
+    expect(isSharedLinksEnabled({ ALLOW_SHARED_LINKS: 'true' })).toBe(true);
+    expect(isSharedLinksEnabled({ ALLOW_SHARED_LINKS: ' TRUE ' })).toBe(true);
+    expect(isSharedLinksEnabled({ ALLOW_SHARED_LINKS: 'false' })).toBe(false);
+    expect(isSharedLinksEnabled({ ALLOW_SHARED_LINKS: '' })).toBe(false);
+  });
+});
+
 describe('buildSharedLinkStartupPayload', () => {
   it.each([0, 100, 60000])(
     'includes the configured highlight cadence %i without other settings',
@@ -180,6 +194,16 @@ describe('buildSharedLinkStartupPayload', () => {
         termsOfService: { externalUrl: 'https://example.com/tos' },
       },
     });
+  });
+
+  it('omits bundler URLs that are set to an empty string', () => {
+    const payload = buildSharedLinkStartupPayload(appConfig({}), {
+      SANDPACK_BUNDLER_URL: '',
+      SANDPACK_STATIC_BUNDLER_URL: '',
+    });
+
+    expect(payload).not.toHaveProperty('bundlerURL');
+    expect(payload).not.toHaveProperty('staticBundlerURL');
   });
 
   it('never hands an anonymous share viewer a policy link that would run script', () => {

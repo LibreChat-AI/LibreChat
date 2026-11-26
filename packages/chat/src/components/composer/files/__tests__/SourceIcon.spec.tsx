@@ -10,6 +10,8 @@ import SourceIcon from '../SourceIcon';
 
 const host: FilesHost = {
   renderEndpointIcon: (endpoint) => <span data-testid="endpoint-icon">{endpoint}</span>,
+  useDeleteFile: () => jest.fn(),
+  getPreviewUrl: () => undefined,
 };
 
 describe('SourceIcon', () => {
