@@ -1,11 +1,5 @@
-/*
- * Safety limits, not tuning knobs: both stop a hostile file from turning a few bytes of XML into
- * a long output. Word tops out at 63 columns, so a wider merge only adds empty fields to a row.
- * Each level of nested table quotes the level below it again, which doubles every quote mark, so
- * deeper tables are read as plain paragraphs of the cell around them.
- */
-const MAX_COLSPAN = 64;
-const MAX_DEPTH = 3;
+import type { Table } from './table';
+import { MAX_COLSPAN, MAX_DEPTH, createTable, addRow, count, toCsv, width } from './table';
 
 const COLSPAN = /colspan="(\d+)"/;
 const ROWSPAN = /rowspan="(\d+)"/;
@@ -24,22 +18,7 @@ interface Scope {
   rows: number;
 }
 
-interface Table {
-  /** Finished rows: a cell is its paragraphs, and a column no cell starts in is `undefined`. */
-  rows: Array<Array<string[] | undefined>>;
-  /** Cells of the row being read. */
-  cells: Scope[];
-  /** How many more rows a cell merged down from above covers, for each column it still covers. */
-  covered: Map<number, number>;
-}
-
 const scope = (cols = 1, rows = 1): Scope => ({ paragraphs: [], line: '', cols, rows });
-
-const count = (attributes: string, pattern: RegExp): number =>
-  Math.max(1, Number(pattern.exec(attributes)?.[1] ?? 1));
-
-const quote = (text: string): string =>
-  /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 
 /**
  * Renders the HTML mammoth writes for a .docx as plain text. Each paragraph ends in a blank line,
@@ -52,7 +31,7 @@ const quote = (text: string): string =>
 export function htmlToText(html: string): string {
   const body = scope();
   const scopes: Scope[] = [body];
-  const tables: Table[] = [];
+  const tables: Array<Table<Scope>> = [];
   /** Tables open inside `MAX_DEPTH` others, whose rows and cells are not told apart. */
   let flat = 0;
 
@@ -73,34 +52,11 @@ export function htmlToText(html: string): string {
     }
   };
 
-  /** Places each cell in its column, leaving a gap under a cell merged down from an earlier row. */
   const endRow = (): void => {
     const table = tables[tables.length - 1];
-    if (!table) {
-      return;
+    if (table) {
+      addRow(table);
     }
-    const fields: Array<string[] | undefined> = [];
-    let col = 0;
-    for (const cell of table.cells) {
-      while (table.covered.has(col)) {
-        col++;
-      }
-      fields[col] = cell.paragraphs;
-      for (let i = 0; cell.rows > 1 && i < cell.cols; i++) {
-        table.covered.set(col + i, cell.rows);
-      }
-      col += cell.cols;
-    }
-    // A row costs only the columns still covered, however wide an earlier row was.
-    for (const [column, rows] of table.covered) {
-      if (rows > 1) {
-        table.covered.set(column, rows - 1);
-      } else {
-        table.covered.delete(column);
-      }
-    }
-    table.rows.push(fields);
-    table.cells = [];
   };
 
   const endTable = (): void => {
@@ -109,25 +65,18 @@ export function htmlToText(html: string): string {
       return;
     }
     const parent = scopes[scopes.length - 1];
-    const width = table.rows.reduce((most, fields) => Math.max(most, fields.length), 0);
-    if (width < 2) {
+    if (width(table) < 2) {
       // One column is a box or a layout, not data: keep its paragraphs as they were.
       for (const fields of table.rows) {
-        for (const paragraph of fields[0] ?? []) {
+        for (const paragraph of fields[0]?.paragraphs ?? []) {
           parent.paragraphs.push(paragraph);
         }
       }
       return;
     }
-    const csv: string[] = [];
-    for (const fields of table.rows) {
-      const texts = Array.from(fields, (paragraphs) => (paragraphs ?? []).join('\n').trim());
-      if (texts.some((text) => text !== '')) {
-        csv.push(texts.map(quote).join(','));
-      }
-    }
-    if (csv.length > 0) {
-      parent.paragraphs.push(csv.join('\n'));
+    const csv = toCsv(table, (cell) => cell.paragraphs.join('\n').trim());
+    if (csv !== '') {
+      parent.paragraphs.push(csv);
     }
   };
 
@@ -139,7 +88,7 @@ export function htmlToText(html: string): string {
       if (flat > 0 || tables.length >= MAX_DEPTH) {
         flat++;
       } else {
-        tables.push({ rows: [], cells: [], covered: new Map() });
+        tables.push(createTable());
       }
     } else if (name === 'td' || name === 'th') {
       if (flat === 0 && tables.length > 0) {
