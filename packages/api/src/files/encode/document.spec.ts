@@ -1901,6 +1901,51 @@ describe('encodeAndFormatDocuments - agents sharing a history', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"deck.pptx"'));
   });
 
+  it("fails the turn with a reader's reason when a PDF exceeds that reader's limits", async () => {
+    mockedValidatePdf.mockImplementation(async (_buffer, _size, provider) =>
+      provider === Providers.ANTHROPIC
+        ? { isValid: false, error: "PDF exceeds Anthropic's 100-page limit" }
+        : { isValid: true },
+    );
+
+    await expect(
+      encodeAndFormatDocuments(
+        req,
+        [pdf],
+        { provider: Providers.OPENAI, recipients: [responses, claude] },
+        jest.fn(),
+      ),
+    ).rejects.toThrow("PDF validation failed: PDF exceeds Anthropic's 100-page limit");
+    expect(mockedValidatePdf.mock.calls.map((call) => call.slice(2))).toEqual([
+      [Providers.OPENAI, undefined, undefined],
+      [Providers.ANTHROPIC, undefined, 'claude-opus-4-1'],
+    ]);
+  });
+
+  it("checks a Bedrock reader's document limit for the binary types it reads", async () => {
+    const docx = file(
+      'brief.docx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
+    mockedValidateBedrockDocument.mockResolvedValue({ isValid: false, error: 'over 4.5MB' });
+
+    await expect(
+      encodeAndFormatDocuments(
+        req,
+        [docx],
+        { provider: Providers.OPENAI, recipients: [bedrock] },
+        jest.fn(),
+      ),
+    ).rejects.toThrow('Document validation failed: over 4.5MB');
+    expect(mockedValidateBedrockDocument).toHaveBeenCalledWith(
+      Buffer.from(csv).length,
+      docx.type,
+      undefined,
+      undefined,
+      'amazon.nova-pro',
+    );
+  });
+
   it('does not count subagents, which never read the history, or agents without a provider', async () => {
     const result = await encodeAndFormatDocuments(
       req,

@@ -105,6 +105,18 @@ test.describe('attachments in a conversation shared by agents on different provi
     );
   });
 
+  test("a document another agent's provider would refuse fails the turn with that provider's reason @scenario:handoff-reader-limits-refused", () => {
+    expectPassed(
+      SHARED,
+      "refuses a PDF that another agent's provider would reject, with that provider's reason",
+    );
+    expectPassed(
+      ENCODER,
+      "fails the turn with a reader's reason when a PDF exceeds that reader's limits",
+    );
+    expectPassed(ENCODER, "checks a Bedrock reader's document limit for the binary types it reads");
+  });
+
   test('agents on one provider and API keep the document blocks they received before @scenario:single-format-documents-unchanged', () => {
     for (const agents of [
       'Claude agents',

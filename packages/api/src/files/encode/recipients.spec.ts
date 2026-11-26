@@ -246,6 +246,17 @@ describe('documents in a history that agents on different providers read', () =>
     expect(await send(claude, message)).toContainEqual({ type: 'text', text: part });
   });
 
+  it("refuses a PDF that another agent's provider would reject, with that provider's reason", async () => {
+    const pages = '1 0 obj << /Type /Page >> endobj\n'.repeat(101);
+    const content = Buffer.from(`%PDF-1.4\n${pages}%%EOF\n`);
+    const file = createFile('application/pdf', 'scans.pdf', content.length);
+
+    await expect(encode(gpt, [], file, content)).resolves.toBeDefined();
+    await expect(encode(gpt, [claude], file, content)).rejects.toThrow(
+      "PDF validation failed: PDF has approximately 101 pages, exceeding Anthropic's 100-page limit",
+    );
+  });
+
   it('leaves a document out for an agent whose provider cannot read its type', async () => {
     const type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     const content = Buffer.from('PK\u0003\u0004 word document');

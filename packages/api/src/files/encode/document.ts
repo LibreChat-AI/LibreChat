@@ -19,6 +19,7 @@ import type {
   DocumentResult,
   ServerRequest,
 } from '~/types';
+import type { ValidationResult } from '~/files/validation';
 import type { ReachableAgent } from '~/agents/traversal';
 import type { MissingAttachmentHandler } from './utils';
 import {
@@ -142,6 +143,7 @@ function renameDocumentParts(
 /** An agent that reads a formatted history, with the parameters its initialization resolved. */
 export interface DocumentRecipient extends ReachableAgent<DocumentRecipient> {
   readonly provider?: string;
+  readonly endpoint?: string | null;
   readonly model?: string | null;
   readonly model_parameters?: {
     readonly model?: string | null;
@@ -341,6 +343,72 @@ function filterSharedDocumentFiles(files: IMongoFile[], formats: Set<string>): I
   return readable;
 }
 
+/** The limits one provider checks before it takes a document. */
+interface DocumentCheck {
+  provider: Providers;
+  model?: string;
+  fileSizeLimit?: number;
+}
+
+const getCheckKey = ({ provider, model, fileSizeLimit }: DocumentCheck): string =>
+  `${provider}:${model ?? ''}:${fileSizeLimit ?? ''}`;
+
+/**
+ * The checks of the agents reading a shared history besides the primary agent, one per provider,
+ * model and configured limit. A document one of them refuses fails the turn with that provider's
+ * reason, as the primary agent's own checks do, instead of failing that agent's request on this
+ * turn and on every later one that resends the file.
+ */
+function getReaderChecks(
+  req: ServerRequest,
+  primary: DocumentCheck,
+  recipients: readonly DocumentRecipient[],
+): DocumentCheck[] {
+  const checks = new Map<string, DocumentCheck>();
+  for (const recipient of recipients) {
+    if (recipient?.provider == null) {
+      continue;
+    }
+    const provider = recipient.provider as Providers;
+    const check: DocumentCheck = {
+      provider,
+      model: recipient.model_parameters?.model ?? recipient.model ?? undefined,
+      fileSizeLimit: getConfiguredFileSizeLimit(req, {
+        provider,
+        endpoint: recipient.endpoint ?? undefined,
+        explicit: provider === Providers.BEDROCK,
+      }),
+    };
+    checks.set(getCheckKey(check), check);
+  }
+  checks.delete(getCheckKey(primary));
+  return [...checks.values()];
+}
+
+/** Applies the readers' checks; a textual file reaches them as text, which has no such limits. */
+async function validateForReaders(
+  checks: readonly DocumentCheck[],
+  mimeType: string,
+  size: number,
+  buffer?: Buffer,
+): Promise<void> {
+  if (isAnthropicTextDocumentType(mimeType)) {
+    return;
+  }
+  const isPdf = mimeType === 'application/pdf';
+  for (const { provider, model, fileSizeLimit } of checks) {
+    let validation: ValidationResult | undefined;
+    if (isPdf && buffer) {
+      validation = await validatePdf(buffer, size, provider, fileSizeLimit, model);
+    } else if (provider === Providers.BEDROCK) {
+      validation = await validateBedrockDocument(size, mimeType, buffer, fileSizeLimit, model);
+    }
+    if (validation?.isValid === false) {
+      throw new Error(`${isPdf ? 'PDF' : 'Document'} validation failed: ${validation.error}`);
+    }
+  }
+}
+
 /**
  * Formats a base64-encoded document into the appropriate provider-specific block.
  * Returns `null` when the provider has no matching handler.
@@ -506,7 +574,8 @@ export async function encodeAndFormatDocuments(
     return result;
   }
 
-  const formats = getReaderFormats(getDocumentFormat(provider, useResponsesApi, model), recipients);
+  const readers = Array.from(recipients ?? []);
+  const formats = getReaderFormats(getDocumentFormat(provider, useResponsesApi, model), readers);
   /** Agents on another provider or API read the history too, so no one agent's block serves all. */
   const shared = formats.size > 1;
   const formatBlock = (mimeType: string, content: string, filename?: string) =>
@@ -528,6 +597,9 @@ export async function encodeAndFormatDocuments(
     endpoint,
     explicit: isBedrock,
   });
+  const readerChecks = shared
+    ? getReaderChecks(req, { provider, model, fileSizeLimit: configuredFileSizeLimit }, readers)
+    : [];
 
   /** Bedrock's limit per document, known before anything is read. Other providers read unbounded. */
   const readLimits = processableFiles.map((file) =>
@@ -599,6 +671,7 @@ export async function encodeAndFormatDocuments(
       if (!validation.isValid) {
         throw new Error(`Document validation failed: ${validation.error}`);
       }
+      await validateForReaders(readerChecks, mimeType, fileBuffer.length, fileBuffer);
 
       /** Raw bytes would serialize as a number array in traces and checkpoints, and a restored
        *  checkpoint would hold a plain object instead of bytes; base64 stays a string. */
@@ -628,6 +701,7 @@ export async function encodeAndFormatDocuments(
       if (!validation.isValid) {
         throw new Error(`PDF validation failed: ${validation.error}`);
       }
+      await validateForReaders(readerChecks, mimeType, pdfBuffer.length, pdfBuffer);
 
       const block = formatBlock(mimeType, content, file.filename);
       if (block) {
@@ -641,6 +715,7 @@ export async function encodeAndFormatDocuments(
           `File size (~${(decodedByteCount / 1024 / 1024).toFixed(1)}MB) exceeds the configured limit for ${provider}`,
         );
       }
+      await validateForReaders(readerChecks, mimeType, decodedByteCount);
 
       const block = formatBlock(mimeType, content, file.filename);
       if (block) {
