@@ -1,6 +1,6 @@
 import { Constants } from '@librechat/agents';
 import { logger } from '@librechat/data-schemas';
-import { EToolResources, mergeCodeEnvRef } from 'librechat-data-provider';
+import { EToolResources, mergeCodeEnvRef, canToolResourceConsume } from 'librechat-data-provider';
 import type { CodeEnvFile, SubagentExecutionContext } from '@librechat/agents';
 import type { TFile } from 'librechat-data-provider';
 import type { CodeEnvRefUpdate, ProvisionService, ProvisionedCodeFile } from './service';
@@ -74,6 +74,138 @@ function resolveProvisionContext({
     }
   }
   return {};
+}
+
+export interface GeneratedFileQueueDeps
+  extends Pick<
+    ProvisionCallbackDeps,
+    'agentToolContexts' | 'resolvePrimaryAgentId' | 'resolveExecutionContext'
+  > {
+  /** The context of a shared-file execution, read after a routed child's own: such a child
+   *  provisions in a context of its own, so the files it generates belong there. */
+  resolveSharedContext?: ProvisionCallbackDeps['resolveExecutionContext'];
+}
+
+/** The tool-end metadata naming the agent and the execution a file came from. */
+interface GeneratedFileOwner {
+  executingAgentId?: unknown;
+  agentId?: unknown;
+  agent_id?: unknown;
+  executionContext?: SubagentExecutionContext;
+}
+
+/**
+ * Builds the hook a tool-end handler calls with the save of a file a tool produced during the
+ * run, such as a generated image. The file joins the queue of the context the producing agent's
+ * code calls provision from, so its next code call uploads it like any queued input. The save
+ * may still be running when it is handed over; the code call waits for it.
+ */
+export function createGeneratedFileQueue({
+  agentToolContexts,
+  resolvePrimaryAgentId,
+  resolveExecutionContext,
+  resolveSharedContext,
+}: GeneratedFileQueueDeps): (
+  file: Promise<TFile | null | undefined>,
+  metadata?: GeneratedFileOwner,
+) => void {
+  return (file, metadata) => {
+    const owner = metadata?.executingAgentId ?? metadata?.agentId ?? metadata?.agent_id;
+    const agentId = typeof owner === 'string' && owner.length > 0 ? owner : undefined;
+    const executionContext = metadata?.executionContext;
+    const ctx =
+      resolveExecutionContext?.(agentId, executionContext) ??
+      resolveSharedContext?.(agentId, executionContext) ??
+      resolveProvisionContext({
+        agentId,
+        agentToolContexts,
+        primaryAgentId: resolvePrimaryAgentId?.(),
+      }).ctx;
+    if (ctx == null) {
+      return;
+    }
+    ctx.generatedFiles = [...(ctx.generatedFiles ?? []), file];
+  };
+}
+
+/** Resolves with `pending`, or rejects as soon as the tool call is cancelled. */
+function untilAborted<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal == null) {
+    return pending;
+  }
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    pending.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort);
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
+ * Moves the files a tool generated earlier in this run onto the agent's code queue, once their
+ * saves settle. A generated image names no destination, so like an upload that made no choice
+ * it goes to whichever tool can read it. Returns why each save failed; such a file never
+ * reached storage, so unlike a failed upload there is nothing left to retry.
+ */
+async function queueGeneratedFiles(
+  ctx: ProvisionToolContext,
+  signal?: AbortSignal,
+): Promise<unknown[]> {
+  const pending = ctx.generatedFiles;
+  if (!pending?.length) {
+    return [];
+  }
+  /* The saves stay listed until they settle, so a concurrent code call for this agent waits
+   * for them too instead of running without the image. */
+  const saved = await untilAborted(Promise.allSettled(pending), signal);
+  const remaining = ctx.generatedFiles?.filter((file) => !pending.includes(file)) ?? [];
+  ctx.generatedFiles = remaining.length > 0 ? remaining : undefined;
+  const unsaved: unknown[] = [];
+  for (const result of saved) {
+    if (result.status === 'rejected') {
+      unsaved.push(result.reason);
+      continue;
+    }
+    const file = result.value;
+    if (!file?.file_id) {
+      unsaved.push(new Error('The generated file has no stored record'));
+      continue;
+    }
+    if (!canToolResourceConsume(EToolResources.execute_code, file.type ?? '')) {
+      continue;
+    }
+    ctx.provisionState ??= {
+      codeEnvFiles: [],
+      vectorDBFiles: [],
+      aliveFileIds: new Set(),
+      agentScopedFileIds: new Set(),
+    };
+    if (!ctx.provisionState.codeEnvFiles.some((queued) => queued.file_id === file.file_id)) {
+      ctx.provisionState.codeEnvFiles.push(file);
+    }
+  }
+  return unsaved;
+}
+
+/** Reported once, by the code call that would have used the files; the reasons stay as causes
+ *  rather than in the message, which the model and the user read. */
+function createUnsavedFilesError(reasons: unknown[]): Error {
+  return Object.assign(
+    new Error(
+      `Failed to save ${reasons.length} generated file(s), so they are not in the code environment; aborting tool execution rather than running without them`,
+      { cause: reasons[0] },
+    ),
+    { errors: reasons },
+  );
 }
 
 function getRetryAfterMs(reason: unknown): number {
@@ -185,14 +317,22 @@ export function createProvisionFilesCallback({
             agentToolContexts,
             primaryAgentId: resolvePrimaryAgentId?.(),
           });
+    /** The same set that decides whether an agent wants code-file provisioning at all,
+     *  so a tool cannot be eligible in one place and unrecognized in the other. */
+    const needsCode = toolNames.some(isCodeFileToolName);
+    if (ctx != null && needsCode) {
+      /* A generated image the code may need never reached storage; this call says so rather
+       * than run without it, and later calls run as usual. */
+      const unsaved = await queueGeneratedFiles(ctx, signal);
+      if (unsaved.length > 0) {
+        throw createUnsavedFilesError(unsaved);
+      }
+    }
     if (!ctx?.provisionState) {
       return [];
     }
 
     const { provisionState } = ctx;
-    /** The same set that decides whether an agent wants code-file provisioning at all,
-     *  so a tool cannot be eligible in one place and unrecognized in the other. */
-    const needsCode = toolNames.some(isCodeFileToolName);
     /** Programmatic tool calling orchestrates nested tools whose names never reach
      *  this predicate, so a file_search reachable only through PTC would otherwise
      *  run before its attachments were embedded. Provision when PTC is invoked. */

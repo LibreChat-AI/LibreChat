@@ -897,9 +897,17 @@ function writeAttachmentUpdate(res, streamId, attachment, expectedCreatedAt) {
  * @param {Promise<MongoFile | { filename: string; filepath: string; expires: number;} | null>[]} params.artifactPromises
  * @param {string | null} [params.streamId] - The stream ID for resumable mode, or null for standard mode.
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted attachments.
+ * @param {ReturnType<import('@librechat/api').createGeneratedFileQueue>} [params.queueGeneratedFile] - Hands each generated image to the code queue of the agent that produced it.
  * @returns {ToolEndCallback} The tool end callback.
  */
-function createToolEndCallback({ req, res, artifactPromises, streamId = null, jobCreatedAt }) {
+function createToolEndCallback({
+  req,
+  res,
+  artifactPromises,
+  streamId = null,
+  jobCreatedAt,
+  queueGeneratedFile,
+}) {
   /**
    * @type {ToolEndCallback}
    */
@@ -1024,13 +1032,15 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
           (async () => {
             const filename = `${output.name}_img_${nanoid()}`;
             const file_id = output.artifact.file_ids?.[i];
-            const file = await saveBase64Image(url, {
+            const saving = saveBase64Image(url, {
               req,
               file_id,
               filename,
               endpoint: metadata.provider,
               context: FileContext.image_generation,
             });
+            queueGeneratedFile?.(saving, metadata);
+            const file = await saving;
             const fileMetadata = Object.assign(file, {
               messageId: metadata.run_id,
               toolCallId: output.tool_call_id,
@@ -1270,9 +1280,16 @@ function writeResponsesAttachment(res, tracker, attachment, metadata) {
  * @param {ServerResponse} params.res
  * @param {Object} params.tracker - Response tracker with sequence number
  * @param {Promise<MongoFile | { filename: string; filepath: string; expires: number;} | null>[]} params.artifactPromises
+ * @param {ReturnType<import('@librechat/api').createGeneratedFileQueue>} [params.queueGeneratedFile] - Hands each generated image to the code queue of the agent that produced it.
  * @returns {ToolEndCallback} The tool end callback.
  */
-function createResponsesToolEndCallback({ req, res, tracker, artifactPromises }) {
+function createResponsesToolEndCallback({
+  req,
+  res,
+  tracker,
+  artifactPromises,
+  queueGeneratedFile,
+}) {
   /**
    * @type {ToolEndCallback}
    */
@@ -1390,13 +1407,15 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
           (async () => {
             const filename = `${output.name}_img_${nanoid()}`;
             const file_id = output.artifact.file_ids?.[i];
-            const file = await saveBase64Image(url, {
+            const saving = saveBase64Image(url, {
               req,
               file_id,
               filename,
               endpoint: metadata.provider,
               context: FileContext.image_generation,
             });
+            queueGeneratedFile?.(saving, metadata);
+            const file = await saving;
             const fileMetadata = Object.assign(file, {
               toolCallId: output.tool_call_id,
             });

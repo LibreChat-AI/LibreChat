@@ -187,6 +187,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').createApiModelCallbacks(...args),
   createFileProvisionRecovery: () =>
     jest.requireActual('@librechat/api').createFileProvisionRecovery(),
+  createGeneratedFileQueue: (...args) =>
+    jest.requireActual('@librechat/api').createGeneratedFileQueue(...args),
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   loadSkillAccess: (...args) => jest.requireActual('@librechat/api').loadSkillAccess(...args),
@@ -1004,6 +1006,16 @@ describe('OpenAIChatCompletionController', () => {
     expect(mockExecution.settle).toHaveBeenCalledWith(undefined);
     expect(res.once).toHaveBeenCalledWith('close', expect.any(Function));
     expect(res.off).toHaveBeenCalledWith('close', expect.any(Function));
+  });
+
+  it('hands generated images to the code queue of the agent that produced them', async () => {
+    const { createToolEndCallback } = require('~/server/controllers/agents/callbacks');
+
+    await OpenAIChatCompletionController(req, res);
+
+    expect(createToolEndCallback).toHaveBeenCalledWith(
+      expect.objectContaining({ queueGeneratedFile: expect.any(Function) }),
+    );
   });
 
   it('covers artifact writes when provider execution fails', async () => {

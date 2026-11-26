@@ -443,9 +443,12 @@ export function createRunFileHost<TContext extends RunFileToolContext>({
           }
           provisionState.codeEnvDestinations = destinations;
         }
+        /* A child sees only the files it was granted, so the producer's late uploads and
+         * generated files stay with the context that holds them. */
         const context: TContext = existingContext ?? {
           ...source,
           pendingProvisionedCodeFiles: undefined,
+          generatedFiles: undefined,
         };
         context.tool_resources = primed.tool_resources;
         context.provisionState = provisionState;

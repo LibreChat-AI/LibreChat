@@ -522,6 +522,27 @@ describe('run file execution host', () => {
     ).not.toBe(h.host.getContext('worker', executions[1])?.provisionState?.codeEnvDestinations);
   });
 
+  it('keeps an image the shared agent generated out of an isolated child queue', async () => {
+    /* The child receives only what the manifest grants. An image queued on the agent's
+     * shared context belongs to the execution that generated it. */
+    const h = harness();
+    const generated = file('generated-image', {
+      filename: 'generated-image.png',
+      type: 'image/png',
+      context: FileContext.image_generation,
+      llmDeliveryPath: undefined,
+      metadata: undefined,
+    });
+    h.contexts.get('worker')!.generatedFiles = [Promise.resolve(generated)];
+    await h.prepare();
+
+    expect(h.host.getContext('worker', identity())?.generatedFiles).toBeUndefined();
+    await h.host.provision([Constants.EXECUTE_CODE], 'worker', h.signal, identity());
+    expect(h.provisionToCodeEnv.mock.calls.map(([params]) => params.file.file_id)).not.toContain(
+      'generated-image',
+    );
+  });
+
   it('isolates concurrent executions of the same agent without broadening storage grants', async () => {
     const h = harness();
     const first = identity('first');
