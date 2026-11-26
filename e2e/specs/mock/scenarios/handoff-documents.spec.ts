@@ -115,6 +115,10 @@ test.describe('attachments in a conversation shared by agents on different provi
       "fails the turn with a reader's reason when a PDF exceeds that reader's limits",
     );
     expectPassed(ENCODER, "checks a Bedrock reader's document limit for the binary types it reads");
+    expectPassed(
+      ENCODER,
+      "checks a reader on the primary agent's own format whose model has a stricter limit",
+    );
   });
 
   test('agents on one provider and API keep the document blocks they received before @scenario:single-format-documents-unchanged', () => {
@@ -130,6 +134,10 @@ test.describe('attachments in a conversation shared by agents on different provi
     expectPassed(
       ENCODER,
       'does not count subagents, which never read the history, or agents without a provider',
+    );
+    expectPassed(
+      ENCODER,
+      "does not repeat the primary agent's checks for a reader that shares them",
     );
   });
 });

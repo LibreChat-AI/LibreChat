@@ -1946,6 +1946,37 @@ describe('encodeAndFormatDocuments - agents sharing a history', () => {
     );
   });
 
+  it("checks a reader on the primary agent's own format whose model has a stricter limit", async () => {
+    const llama = 'meta.llama3-70b-instruct-v1:0';
+    mockedValidatePdf.mockImplementation(async (_buffer, _size, _provider, _limit, model) =>
+      model === llama ? { isValid: false, error: 'over 4.5MB' } : { isValid: true },
+    );
+
+    await expect(
+      encodeAndFormatDocuments(
+        req,
+        [pdf],
+        {
+          provider: Providers.BEDROCK,
+          model: 'anthropic.claude-sonnet-4-20250514-v1:0',
+          recipients: [{ provider: Providers.BEDROCK, model_parameters: { model: llama } }],
+        },
+        jest.fn(),
+      ),
+    ).rejects.toThrow('PDF validation failed: over 4.5MB');
+  });
+
+  it("does not repeat the primary agent's checks for a reader that shares them", async () => {
+    await encodeAndFormatDocuments(
+      req,
+      [pdf],
+      { provider: Providers.ANTHROPIC, model: 'claude-sonnet-4-5', recipients: [claude] },
+      jest.fn(),
+    );
+
+    expect(mockedValidatePdf).toHaveBeenCalledTimes(1);
+  });
+
   it('does not count subagents, which never read the history, or agents without a provider', async () => {
     const result = await encodeAndFormatDocuments(
       req,

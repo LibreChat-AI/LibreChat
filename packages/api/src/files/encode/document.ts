@@ -350,14 +350,15 @@ interface DocumentCheck {
   fileSizeLimit?: number;
 }
 
+/** Only Bedrock's limits depend on the model, so other providers' checks ignore it. */
 const getCheckKey = ({ provider, model, fileSizeLimit }: DocumentCheck): string =>
-  `${provider}:${model ?? ''}:${fileSizeLimit ?? ''}`;
+  `${provider}:${provider === Providers.BEDROCK ? (model ?? '') : ''}:${fileSizeLimit ?? ''}`;
 
 /**
- * The checks of the agents reading a shared history besides the primary agent, one per provider,
- * model and configured limit. A document one of them refuses fails the turn with that provider's
- * reason, as the primary agent's own checks do, instead of failing that agent's request on this
- * turn and on every later one that resends the file.
+ * The checks of the other agents reading the history that differ from the primary agent's own. A
+ * document one of them refuses fails the turn with that provider's reason, as the primary agent's
+ * checks do, instead of failing that agent's request on this turn and every later one that resends
+ * the file.
  */
 function getReaderChecks(
   req: ServerRequest,
@@ -385,16 +386,13 @@ function getReaderChecks(
   return [...checks.values()];
 }
 
-/** Applies the readers' checks; a textual file reaches them as text, which has no such limits. */
+/** Applies the readers' checks to one document. */
 async function validateForReaders(
   checks: readonly DocumentCheck[],
   mimeType: string,
   size: number,
   buffer?: Buffer,
 ): Promise<void> {
-  if (isAnthropicTextDocumentType(mimeType)) {
-    return;
-  }
   const isPdf = mimeType === 'application/pdf';
   for (const { provider, model, fileSizeLimit } of checks) {
     let validation: ValidationResult | undefined;
@@ -597,9 +595,16 @@ export async function encodeAndFormatDocuments(
     endpoint,
     explicit: isBedrock,
   });
-  const readerChecks = shared
-    ? getReaderChecks(req, { provider, model, fileSizeLimit: configuredFileSizeLimit }, readers)
-    : [];
+  const readerChecks = getReaderChecks(
+    req,
+    { provider, model, fileSizeLimit: configuredFileSizeLimit },
+    readers,
+  );
+  /** A textual file in a shared history reaches every reader as text, which no document limit covers. */
+  const checkReaders = (mimeType: string, size: number, buffer?: Buffer) =>
+    shared && isAnthropicTextDocumentType(mimeType)
+      ? undefined
+      : validateForReaders(readerChecks, mimeType, size, buffer);
 
   /** Bedrock's limit per document, known before anything is read. Other providers read unbounded. */
   const readLimits = processableFiles.map((file) =>
@@ -671,7 +676,7 @@ export async function encodeAndFormatDocuments(
       if (!validation.isValid) {
         throw new Error(`Document validation failed: ${validation.error}`);
       }
-      await validateForReaders(readerChecks, mimeType, fileBuffer.length, fileBuffer);
+      await checkReaders(mimeType, fileBuffer.length, fileBuffer);
 
       /** Raw bytes would serialize as a number array in traces and checkpoints, and a restored
        *  checkpoint would hold a plain object instead of bytes; base64 stays a string. */
@@ -701,7 +706,7 @@ export async function encodeAndFormatDocuments(
       if (!validation.isValid) {
         throw new Error(`PDF validation failed: ${validation.error}`);
       }
-      await validateForReaders(readerChecks, mimeType, pdfBuffer.length, pdfBuffer);
+      await checkReaders(mimeType, pdfBuffer.length, pdfBuffer);
 
       const block = formatBlock(mimeType, content, file.filename);
       if (block) {
@@ -715,7 +720,7 @@ export async function encodeAndFormatDocuments(
           `File size (~${(decodedByteCount / 1024 / 1024).toFixed(1)}MB) exceeds the configured limit for ${provider}`,
         );
       }
-      await validateForReaders(readerChecks, mimeType, decodedByteCount);
+      await checkReaders(mimeType, decodedByteCount);
 
       const block = formatBlock(mimeType, content, file.filename);
       if (block) {
