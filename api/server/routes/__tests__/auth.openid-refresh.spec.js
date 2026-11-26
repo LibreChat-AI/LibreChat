@@ -10,21 +10,24 @@ const savedEnv = { ...process.env };
 
 /**
  * An identity provider that behaves like Dex: every refresh grant issues a new ID token and a new
- * refresh token, and the token it was given stops working.
+ * refresh token, and the token it was given stops working. With `rotate` off it keeps the refresh
+ * token instead, as Keycloak or Okta do with rotation disabled; `lifetime` is in seconds.
  */
 function createIdentityProvider() {
   const issued = [];
+  const options = { rotate: true, lifetime: 120 };
   let current;
-  const issue = () => {
+  const issue = (refreshToken) => {
     const sequence = issued.length;
     const iat = Math.floor(Date.now() / 1000);
-    const claims = { iss: ISSUER, sub: SUBJECT, aud: CLIENT_ID, email: EMAIL, iat, exp: iat + 120 };
+    const exp = iat + options.lifetime;
+    const claims = { iss: ISSUER, sub: SUBJECT, aud: CLIENT_ID, email: EMAIL, iat, exp };
     const tokenset = {
       access_token: jwt.sign({ ...claims, jti: `access-${sequence}` }, 'idp-signing-key'),
       id_token: jwt.sign({ ...claims, jti: `id-${sequence}` }, 'idp-signing-key'),
-      refresh_token: `refresh-${sequence}`,
+      refresh_token: refreshToken ?? `refresh-${sequence}`,
       token_type: 'bearer',
-      expires_in: 120,
+      expires_in: options.lifetime,
       claims: () => claims,
     };
     current = tokenset.refresh_token;
@@ -35,9 +38,9 @@ function createIdentityProvider() {
     if (refreshToken !== current) {
       throw Object.assign(new Error('invalid_grant'), { error: 'invalid_grant' });
     }
-    return issue();
+    return issue(options.rotate ? undefined : refreshToken);
   });
-  return { issued, issue, refreshTokenGrant };
+  return { issued, issue, options, refreshTokenGrant };
 }
 
 const getCookie = (response, name) => {
@@ -171,5 +174,64 @@ describe('OpenID token reuse from sign-in through refresh', () => {
     expect(idp.refreshTokenGrant.mock.calls[1][1]).toBe(idp.issued[issued + 1].refresh_token);
     expect(refresh.body.token).toBe(idp.issued[issued + 2].id_token);
     expect(getCookie(refresh, 'refreshToken')).toBe(idp.issued[issued + 2].refresh_token);
+  });
+
+  /**
+   * Every grant of a kept refresh token publishes under one key. The answer to a refresh holds its
+   * publication open for a delivery lease of 30 s, longer than the tokens below stay outside the
+   * 30 s expiry buffer, so the next grant meets a publication whose tokens nobody may reuse.
+   */
+  describe('with a provider that keeps the refresh token', () => {
+    const SHORT_LIFETIME = 31;
+    /** Past the second in which tokens of {@link SHORT_LIFETIME} stop being reusable. */
+    const outliveShortTokens = () => new Promise((resolve) => setTimeout(resolve, 2000));
+
+    beforeEach(() => {
+      idp.options.rotate = false;
+    });
+
+    afterEach(() => {
+      Object.assign(idp.options, { rotate: true, lifetime: 120 });
+    });
+
+    it('answers a refresh after the last grant ran out with the ID token of its own grant', async () => {
+      const { agent, issued } = await signIn();
+      idp.options.lifetime = SHORT_LIFETIME;
+      const first = await agent.post('/api/auth/refresh');
+      expect(first.status).toBe(200);
+      expect(first.body.token).toBe(idp.issued[issued + 1].id_token);
+      await outliveShortTokens();
+
+      idp.options.lifetime = 120;
+      const refresh = await agent.post('/api/auth/refresh');
+      expect(refresh.status).toBe(200);
+      expect(idp.refreshTokenGrant).toHaveBeenCalledTimes(2);
+      expect(idp.refreshTokenGrant.mock.calls[1][1]).toBe(idp.issued[issued].refresh_token);
+      expect(refresh.body.token).toBe(idp.issued[issued + 2].id_token);
+
+      const next = await agent.post('/api/auth/refresh');
+      expect(next.status).toBe(200);
+      expect(next.body.token).toBe(idp.issued[issued + 2].id_token);
+      expect(idp.refreshTokenGrant).toHaveBeenCalledTimes(2);
+    });
+
+    it('shares one grant between tabs that refresh together after the last grant ran out', async () => {
+      const { agent, issued } = await signIn();
+      idp.options.lifetime = SHORT_LIFETIME;
+      expect((await agent.post('/api/auth/refresh')).status).toBe(200);
+      await outliveShortTokens();
+
+      idp.options.lifetime = 120;
+      const tabs = await Promise.all([
+        agent.post('/api/auth/refresh'),
+        agent.post('/api/auth/refresh'),
+      ]);
+      expect(tabs.map((tab) => tab.status)).toEqual([200, 200]);
+      expect(idp.refreshTokenGrant).toHaveBeenCalledTimes(2);
+      expect(tabs.map((tab) => tab.body.token)).toEqual([
+        idp.issued[issued + 2].id_token,
+        idp.issued[issued + 2].id_token,
+      ]);
+    });
   });
 });
