@@ -7,6 +7,7 @@ import {
   getAccessToken,
   isAssistantsStop,
 } from '../helpers';
+import { openChatHistory, openSidebar } from './sidebar';
 
 type CreatedAssistant = { id: string };
 
@@ -42,6 +43,11 @@ async function sendToAssistant(page: Page, assistantId: string, text: string) {
     `/c/new?endpoint=assistants&model=${MODEL}&assistant_id=${encodeURIComponent(assistantId)}`,
     { timeout: 15000 },
   );
+  await send(page, text);
+}
+
+/** Sends `text` from the open chat's composer through the Assistants stream. */
+async function send(page: Page, text: string) {
   const input = page.getByRole('textbox', { name: 'Message input' });
   await input.click();
   await input.fill(text);
@@ -55,6 +61,35 @@ async function sendToAssistant(page: Page, assistantId: string, text: string) {
     input.press('Enter'),
   ]);
 }
+
+/** Leaves the open chat for a new one from the sidebar: the rail on desktop, the drawer on mobile. */
+async function startNewChat(page: Page) {
+  await openSidebar(page);
+  await page
+    .getByRole('link', { name: 'New chat', exact: true })
+    .filter({ visible: true })
+    .first()
+    .click();
+}
+
+/** Leaves the open chat for a saved one, picked from the conversation list. */
+async function openSavedChat(page: Page, conversationId: string) {
+  await openChatHistory(page);
+  await page
+    .getByTestId('convo-item')
+    .and(page.locator(`[data-conversation-id="${conversationId}"]`))
+    .filter({ visible: true })
+    .first()
+    .click();
+}
+
+/** How the stop route refuses a run whose account is being deleted (`withAssistantRun`). */
+const ACCOUNT_DELETION_REFUSAL = {
+  status: 409,
+  json: { message: 'Account deletion is in progress', code: 'ACCOUNT_DELETION_IN_PROGRESS' },
+};
+const STOP_FAILURE = /Unexpected response from server; Status: 409/;
+const CRASH = /Cannot read properties/;
 
 /** Assistants turns carry their own response and stream through the legacy (non-resumable)
  *  path; these follow a send, a stop and a failed run on the running app. */
@@ -161,6 +196,115 @@ test.describe('assistants stream', () => {
       await expect(
         messagesView(page).getByText(/The Assistant run failed to initialize/),
       ).toBeVisible();
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('a stop the server refuses keeps the streamed reply and shows the failure on it @scenario:assistants-refused-stop-keeps-streamed-reply', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-stop-refused');
+    const earlier = `E2E assistant reply ${label}`;
+    const assistant = await createAssistant(page, `E2E stop refused ${label}`);
+    try {
+      await sendToAssistant(page, assistant.id, replyPrompt(label));
+      await expect(messagesView(page).getByText(earlier)).toBeVisible({ timeout: 30_000 });
+      await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+/, { timeout: 15_000 });
+      await send(page, `E2E_ASSISTANT_SLOW:${label}`);
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+
+      await page.route('**/api/assistants/v2/chat/abort', (route) =>
+        route.fulfill(ACCOUNT_DELETION_REFUSAL),
+      );
+      const [stopped] = await Promise.all([
+        page.waitForResponse(isAssistantsStop, { timeout: 30_000 }),
+        page.getByRole('button', { name: 'Stop generating' }).click(),
+      ]);
+      expect(stopped.status()).toBe(409);
+
+      /** The reply that was streaming keeps its text and takes the failure; the earlier reply
+       *  is left as it was, and the refusal's body never reaches the transcript. */
+      const rows = messagesView(page).locator('.message-render');
+      await expect(rows.filter({ hasText: /achunk-005/ })).toContainText(STOP_FAILURE);
+      await expect(rows.filter({ hasText: earlier })).toHaveCount(1);
+      await expect(rows.filter({ hasText: earlier })).not.toContainText(STOP_FAILURE);
+      await expect(messagesView(page).getByText(CRASH)).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
+      const input = page.getByRole('textbox', { name: 'Message input' });
+      await input.fill(replyPrompt(`${label}-next`));
+      await expect(page.getByTestId('send-button')).toBeEnabled();
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('leaving an assistant run the server has not named for a new chat opens that new chat @scenario:leaving-an-unnamed-assistant-run-for-a-new-chat', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-unnamed-new');
+    const prompt = `E2E_ASSISTANT_LATE_RUN:${label}`;
+    const next = `${label}-next`;
+    const assistant = await createAssistant(page, `E2E unnamed ${label}`);
+    try {
+      /** The fake Assistants API holds the run's creation, so the app has not named it yet. */
+      await sendToAssistant(page, assistant.id, prompt);
+      await expect(messagesView(page).getByText(prompt)).toBeVisible();
+
+      const [stopped] = await Promise.all([
+        page.waitForResponse(isAssistantsStop, { timeout: 15_000 }),
+        startNewChat(page),
+      ]);
+      /** Leaving stops the run, and the stop route refuses a run that has no name yet. */
+      expect(stopped.status()).toBe(400);
+      await expect(page).toHaveURL(/\/c\/new(\?|$)/);
+      const pane = page.getByRole('main');
+      await expect(pane.getByText(prompt)).toHaveCount(0);
+      await expect(pane.getByText(/Unexpected response from server/)).toHaveCount(0);
+      await expect(pane.getByText(CRASH)).toHaveCount(0);
+
+      /** The new chat is a working one: its first message gets a reply. */
+      await send(page, replyPrompt(next));
+      await expect(messagesView(page).getByText(`E2E assistant reply ${next}`)).toBeVisible({
+        timeout: 30_000,
+      });
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('leaving an assistant run the server has not named for a saved chat opens that chat @scenario:leaving-an-unnamed-assistant-run-for-a-saved-chat', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-unnamed-saved');
+    const saved = `E2E assistant reply ${label}`;
+    const prompt = `E2E_ASSISTANT_LATE_RUN:${label}`;
+    const assistant = await createAssistant(page, `E2E unnamed ${label}`);
+    try {
+      await sendToAssistant(page, assistant.id, replyPrompt(label));
+      await expect(messagesView(page).getByText(saved)).toBeVisible({ timeout: 30_000 });
+      await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+/, { timeout: 15_000 });
+      const savedId = new URL(page.url()).pathname.split('/').pop() ?? '';
+
+      /** The fake Assistants API holds the run's creation, so the app has not named it yet. */
+      await sendToAssistant(page, assistant.id, prompt);
+      await expect(messagesView(page).getByText(prompt)).toBeVisible();
+
+      const [stopped] = await Promise.all([
+        page.waitForResponse(isAssistantsStop, { timeout: 15_000 }),
+        openSavedChat(page, savedId),
+      ]);
+      expect(stopped.status()).toBe(400);
+      await expect(page).toHaveURL(new RegExp(`/c/${savedId}(\\?|$)`));
+      await expect(messagesView(page).getByText(saved)).toBeVisible();
+      const pane = page.getByRole('main');
+      await expect(pane.getByText(prompt)).toHaveCount(0);
+      await expect(pane.getByText(CRASH)).toHaveCount(0);
+      await expect(page.getByRole('textbox', { name: 'Message input' })).toBeEnabled();
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
     } finally {
       await deleteAssistant(page, assistant.id);
     }

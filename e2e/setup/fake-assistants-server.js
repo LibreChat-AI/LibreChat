@@ -14,6 +14,8 @@ const { keepIdleConnections } = require('./keepalive');
 const PORT = Number(process.env.E2E_ASSISTANTS_PORT) || 8890;
 const DEFAULT_REPLY = process.env.E2E_ASSISTANTS_REPLY || 'E2E mock assistant reply: pong';
 const MAX_BODY_BYTES = 1024 * 1024;
+/** How long `E2E_ASSISTANT_LATE_RUN` holds the creation of a run before refusing it. */
+const LATE_RUN_MS = 10000;
 
 const assistants = new Map();
 const threads = new Map();
@@ -589,6 +591,14 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const prompt = latestUserText(thread);
+      /** The app names a run to the browser (its `sync` frame) only once the run exists, so a
+       *  stop sent while this holds reaches the app before the browser knows the conversation.
+       *  The run is then refused rather than started, so it writes nothing after the test. */
+      if (prompt.includes('E2E_ASSISTANT_LATE_RUN')) {
+        await new Promise((resolve) => setTimeout(resolve, LATE_RUN_MS));
+        sendError(res, 400, 'E2E late run abandoned');
+        return;
+      }
       if (prompt.includes('E2E_ASSISTANT_ERROR')) {
         sendError(res, 400, 'E2E assistant run failed');
         return;
