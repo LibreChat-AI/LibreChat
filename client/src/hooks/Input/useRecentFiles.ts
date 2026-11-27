@@ -19,7 +19,8 @@ export default function useRecentFiles(
   search = '',
 ): {
   files: TFile[];
-  attach: (file: TFile) => void;
+  // attach: (file: TFile) => void;
+  attach: (file: TFile | TFile[]) => void;
 } {
   const { data: startupConfig } = useGetStartupConfig();
   const recentFileCount =

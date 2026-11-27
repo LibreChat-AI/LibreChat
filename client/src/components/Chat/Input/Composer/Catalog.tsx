@@ -216,6 +216,7 @@ interface CatalogProps {
   onClose: () => void;
   entries: PaletteEntry[];
   onAttach: (file: TFile) => void;
+  onAttachSelected: (files: TFile[]) => void;
   /** Where focus returns on close: the palette that opened this is gone. */
   returnFocusRef: React.RefObject<HTMLElement | null>;
 }
@@ -231,6 +232,7 @@ export default function Catalog({
   onClose,
   entries,
   onAttach,
+  onAttachSelected,
   returnFocusRef,
 }: CatalogProps) {
   const localize = useLocalize();
@@ -303,7 +305,13 @@ export default function Catalog({
           }
         >
           {current === 'files' ? (
-            <FileGrid query={query} view={fileView} onAttach={onAttach} />
+            <FileGrid
+              query={query}
+              view={fileView}
+              onAttach={onAttach}
+              onAttachSelected={onAttachSelected}
+              selectable
+            />
           ) : (
             <EntryGrid section={current} entries={entries} query={query} view={view} />
           )}

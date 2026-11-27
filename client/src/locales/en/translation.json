@@ -1594,6 +1594,7 @@
   "com_ui_assistants_output": "Assistants Output",
   "com_ui_at_least_one_owner_required": "At least one owner is required",
   "com_ui_attach_error": "Cannot attach file. Create or select a conversation, or try refreshing the page.",
+  "com_ui_attach_selected": "Attach {{count}} selected files",
   "com_ui_attach_error_disabled": "File uploads are disabled for this endpoint",
   "com_ui_attach_error_file_limit_other": "File limit reached: {{count}} files ({{0}})",
   "com_ui_attach_error_file_limit_one": "File limit reached: {{count}} file ({{0}})",

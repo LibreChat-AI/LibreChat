@@ -85,6 +85,9 @@ function Thumbnail({ file }: { file: TFile }) {
 interface FileCardProps {
   file: TFile;
   onAttach: (file: TFile) => void;
+  onSelect: (file: TFile) => void;
+  selected: boolean;
+  selectable: boolean;
   onPreview: (file: TFile, trigger: HTMLButtonElement) => void;
   disabled?: boolean;
 }
@@ -92,7 +95,15 @@ interface FileCardProps {
 /** Laid out like the skill and MCP cards: the card is the attach action, and
  *  the corner holds the one secondary action, previewing, where they keep the
  *  favourite star. */
-const FileCard = memo(function FileCard({ file, onAttach, onPreview, disabled }: FileCardProps) {
+const FileCard = memo(function FileCard({
+  file,
+  onAttach,
+  onSelect,
+  selected,
+  selectable,
+  onPreview,
+  disabled,
+}: FileCardProps) {
   const localize = useLocalize();
   const name = file.filename ?? '';
   const details = [
@@ -102,10 +113,16 @@ const FileCard = memo(function FileCard({ file, onAttach, onPreview, disabled }:
   const canPreview = previewOf(file) != null;
 
   return (
-    <div className="group border-border-light hover:border-border-medium hover:bg-surface-tertiary relative flex h-28 w-full flex-col overflow-hidden rounded-2xl border bg-transparent hover:shadow-xs">
+    <div
+      className={`group border-border-light hover:border-border-medium hover:bg-surface-tertiary relative flex h-28 w-full flex-col overflow-hidden rounded-2xl border bg-transparent hover:shadow-xs ${
+        selectable && selected
+          ? 'border-border-medium bg-surface-tertiary ring-border-medium ring-1'
+          : ''
+      }`}
+    >
       <button
         type="button"
-        onClick={() => onAttach(file)}
+        onClick={() => (selectable ? onSelect(file) : onAttach(file))}
         disabled={disabled}
         className="focus-visible:ring-ring-primary flex h-full w-full cursor-pointer flex-col gap-2 rounded-2xl p-4 text-start focus:outline-hidden focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50"
       >
@@ -194,9 +211,11 @@ interface FileGridProps {
   query: string;
   view: FileView;
   onAttach: (file: TFile) => void;
+  onAttachSelected?: (files: TFile[]) => void;
   source?: FileGridSource;
   disabled?: boolean;
   emptyText?: string;
+  selectable?: boolean;
 }
 
 /** The user's files as cards, filtered by name and kind, with a preview for
@@ -205,9 +224,11 @@ export default function FileGrid({
   query,
   view,
   onAttach,
+  onAttachSelected,
   source,
   disabled,
   emptyText,
+  selectable = false,
 }: FileGridProps) {
   const localize = useLocalize();
   const library = useGetFiles<TFile[]>({ enabled: source == null });
@@ -216,6 +237,18 @@ export default function FileGrid({
   const isError = source?.isError ?? library.isError;
   const refetch = source?.refetch ?? library.refetch;
   const [previewing, setPreviewing] = useState<TFile | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<TFile[]>([]);
+
+  const toggleFileSelection = (file: TFile) => {
+    setSelectedFiles((current) => {
+      if (current.some((selected) => selected.file_id === file.file_id)) {
+        return current.filter((selected) => selected.file_id !== file.file_id);
+      }
+
+      return [...current, file];
+    });
+  };
+
   /** The Preview button that opened the viewer, where focus returns on close. */
   const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
   const openPreview = (file: TFile, trigger: HTMLButtonElement) => {
@@ -305,6 +338,18 @@ export default function FileGrid({
 
   return (
     <>
+      {selectable && (
+        <div className="mb-3 flex justify-end">
+          <Button
+            type="button"
+            size="sm"
+            disabled={selectedFiles.length === 0 || disabled}
+            onClick={() => onAttachSelected?.(selectedFiles)}
+          >
+            {localize('com_ui_attach_selected', { count: selectedFiles.length })}
+          </Button>
+        </div>
+      )}
       {visible.length === 0 ? (
         <EmptyState
           loading={isLoading}
@@ -328,7 +373,10 @@ export default function FileGrid({
                 <FileCard
                   file={file}
                   onAttach={onAttach}
+                  onSelect={toggleFileSelection}
+                  selected={selectedFiles.some((selected) => selected.file_id === file.file_id)}
                   onPreview={openPreview}
+                  selectable={selectable}
                   disabled={disabled}
                 />
               </li>
