@@ -20,6 +20,9 @@ const MCP_SECTION = 'MCP Servers';
 const MCP_PIN = 'Pin MCP Servers';
 const MCP_CHIP_TEST_ID = 'composer-mcp-servers';
 const FAVORITES_PATH = '/api/user/settings/favorites/tools';
+const SERVERS_PATH = '/api/mcp/servers';
+/** Where Run Code's pin is stored (`LocalStorageKeys.LAST_CODE_TOGGLE_` plus `pinned`). */
+const CODE_PIN_KEY = 'LAST_CODE_TOGGLE_pinned';
 
 interface Favorite {
   itemType: string;
@@ -69,12 +72,39 @@ async function closePalette(page: Page) {
   await expect(palette(page)).toBeHidden();
 }
 
-/** Opens the palette until its MCP section is listed: the server list arrives after the dialog. */
-async function openPaletteWithServers(page: Page) {
-  await openPalette(page);
-  await expect(
-    palette(page).getByRole('columnheader', { name: MCP_SECTION, exact: true }),
-  ).toBeVisible({ timeout: 20000 });
+/** Waits until the row count holds still. While the rows are still changing, the palette keeps
+ *  handing focus back to its search field, which would take it from a row action a Tab had
+ *  just reached. */
+async function settleRows(page: Page) {
+  const rows = palette(page).locator('[data-row-key]');
+  let previous = -1;
+  let stableReads = 0;
+  await expect
+    .poll(
+      async () => {
+        const current = await rows.count();
+        stableReads = current === previous ? stableReads + 1 : 0;
+        previous = current;
+        return stableReads;
+      },
+      { timeout: 20000, intervals: [300] },
+    )
+    .toBeGreaterThanOrEqual(3);
+}
+
+/** Waits for the MCP section, the catalog's last wave. The list is windowed and the section
+ *  sits at its end, so the list is scrolled there the way a reader would. */
+async function settleCatalog(page: Page) {
+  const header = palette(page).getByRole('columnheader', { name: MCP_SECTION, exact: true });
+  await expect(async () => {
+    await palette(page)
+      .getByRole('grid')
+      .evaluate((grid) => {
+        grid.scrollTop = grid.scrollHeight;
+      });
+    await expect(header).toBeVisible({ timeout: 1000 });
+  }).toPass({ timeout: 20000 });
+  await settleRows(page);
 }
 
 async function removeServerFavorites(page: Page, token: string) {
@@ -90,8 +120,12 @@ test.describe('composer pins', () => {
   test('a tool chip unpinned by its X comes back from the palette pin @scenario:palette-pin-restores-tool-chip', async ({
     page,
   }) => {
-    test.setTimeout(60000);
+    test.setTimeout(90000);
     await withDefaultPinnedTools(page, ['execute_code']);
+    await openMockChat(page);
+    /* The harness's saved sign-in carries the pin value the app writes on its first load, and
+       any stored value is a choice the seed leaves alone. Without it this is a first visit. */
+    await page.evaluate((key) => localStorage.removeItem(key), CODE_PIN_KEY);
     await openMockChat(page);
 
     const chip = toolChip(page, 'Run Code');
@@ -123,7 +157,7 @@ test.describe('composer pins', () => {
   test('the palette pin adds and removes a tool chip from the keyboard alone @scenario:palette-pin-toggles-from-keyboard', async ({
     page,
   }) => {
-    test.setTimeout(60000);
+    test.setTimeout(90000);
     await withDefaultPinnedTools(page, undefined);
     await openMockChat(page);
 
@@ -136,7 +170,13 @@ test.describe('composer pins', () => {
     await expect(page.getByRole('button', { name: PALETTE_NAME, exact: true })).toBeFocused();
     await page.keyboard.press('Enter');
     await expect(paletteSearch(page)).toBeFocused();
+    await settleCatalog(page);
+    await expect(paletteSearch(page)).toBeFocused();
     await page.keyboard.type('File Search');
+    await expect(
+      palette(page).getByRole('button', { name: 'File Search', exact: true }),
+    ).toBeVisible();
+    await settleRows(page);
 
     /* The row's own actions follow the search field in the tab order, the pin first. */
     const pin = palette(page).getByRole('button', { name: 'Pin File Search', exact: true });
@@ -168,7 +208,8 @@ test.describe('composer pins', () => {
     await chip.getByRole('button', { name: 'Unpin', exact: true }).click();
     await expect(chip).toHaveCount(0);
 
-    await openPaletteWithServers(page);
+    await openPalette(page);
+    await settleCatalog(page);
     const pin = palette(page).getByRole('button', { name: MCP_PIN, exact: true });
     await expect(pin).toBeVisible();
     await expect(pin).toHaveAttribute('aria-pressed', 'false');
@@ -193,33 +234,32 @@ test.describe('composer pins', () => {
     await removeServerFavorites(page, token);
 
     try {
-      await openPaletteWithServers(page);
-      /* The section lists its first few servers; each star moves one up into Favorites and
-         lets the next one in, until none is left in the section itself. */
-      const unstarred = palette(page)
-        .locator('[data-row-key^="mcp:"]')
-        .filter({ has: page.getByRole('button', { name: 'Add to favorites', exact: true }) });
-      let starred = 0;
-      while ((await unstarred.count()) > 0) {
-        const next = unstarred.first();
-        const key = await next.getAttribute('data-row-key');
-        expect(key).not.toBeNull();
-        await next.hover();
-        await next.getByRole('button', { name: 'Add to favorites', exact: true }).click();
-        await expect(
-          palette(page)
-            .locator(`[data-row-key="${key}"]`)
-            .getByRole('button', { name: 'Remove from favorites', exact: true }),
-        ).toBeAttached();
-        starred += 1;
-        expect(starred).toBeLessThan(50);
+      /* Starred through the same API the star writes: the star is not what is under test, and
+         the list would scroll a starred row out of reach as it moved up. */
+      const servers = await requestJson<Record<string, unknown>>(page, {
+        path: SERVERS_PATH,
+        token,
+      });
+      const names = Object.keys(servers);
+      expect(names.length).toBeGreaterThan(0);
+      for (const name of names) {
+        await requestJson(page, { path: favoritePath(name), token, method: 'PUT' });
       }
-      expect(starred).toBeGreaterThan(0);
+      await openMockChat(page);
 
+      await openPalette(page);
       await expect(
-        palette(page).getByRole('columnheader', { name: MCP_SECTION, exact: true }),
-      ).toBeVisible();
+        palette(page).getByRole('columnheader', { name: 'Favorites', exact: true }),
+      ).toBeVisible({ timeout: 20000 });
+      await settleCatalog(page);
+      /* No server is left in the section itself; the header stays for its pin. */
+      await expect(
+        palette(page)
+          .locator('[data-row-key^="mcp:"]')
+          .filter({ has: page.getByRole('button', { name: 'Add to favorites', exact: true }) }),
+      ).toHaveCount(0);
       const pin = palette(page).getByRole('button', { name: MCP_PIN, exact: true });
+      await expect(pin).toHaveAttribute('aria-pressed', 'false');
       await pin.click();
       await expect(pin).toHaveAttribute('aria-pressed', 'true');
       await closePalette(page);
