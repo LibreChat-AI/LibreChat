@@ -414,7 +414,7 @@ describe('BaseClient', () => {
         });
       const wholeConversationQuery = [
         { conversationId, user: 'user-1' },
-        '+privateTextTokens +trigger',
+        '+privateTextTokens +trigger +providerItems',
       ];
       const messageIds = (messages) => messages.map((message) => message.messageId);
 
@@ -429,7 +429,7 @@ describe('BaseClient', () => {
         const [filter, select] = getMessages.mock.calls[0];
         expect(filter).toMatchObject({ conversationId, user: 'user-1' });
         expect([...filter.messageId.$in].sort()).toEqual(['a1', 'a2b', 'u1', 'u2b']);
-        expect(select).toBe('+privateTextTokens +trigger');
+        expect(select).toBe('+privateTextTokens +trigger +providerItems');
         expect(messageIds(result)).toEqual(['u1', 'a1', 'u2b', 'a2b']);
         expect(messageIds(client.onHistoryLoaded.mock.calls[0][0])).toEqual([
           'u1',
@@ -1771,7 +1771,7 @@ describe('BaseClient', () => {
 
       expect(getMessages).toHaveBeenCalledWith(
         { conversationId, user },
-        '+privateTextTokens +trigger',
+        '+privateTextTokens +trigger +providerItems',
       );
       expect(chatMessages).toHaveLength(1);
       expect(chatMessages[0].text).toBe('Hello');

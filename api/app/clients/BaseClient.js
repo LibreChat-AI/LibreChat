@@ -1244,7 +1244,7 @@ class BaseClient {
     }
 
     const messages = await loadHistoryRows({
-      getMessages: db.getMessages,
+      getMessages: (filter, select) => db.getMessages(filter, `${select} +providerItems`),
       user: this.user,
       conversationId,
       parentMessageId,
