@@ -138,7 +138,7 @@
     "mammoth": "^1.11.0",
     "mathjs": "^15.2.0",
     "memorystore": "^1.6.7",
-    "mongoose": "^8.23.1",
+    "mongoose": "^8.24.8",
     "node-fetch": "2.7.0",
     "pdfjs-dist": "^5.4.624",
     "prom-client": "^15.1.3",
