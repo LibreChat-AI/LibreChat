@@ -26,6 +26,7 @@ import type {
   StatefulCodeEnvironment,
   TurnDeliveryRouting,
   ImageDetail,
+  TModelSpec,
   TFile,
   Agent,
   TUser,
@@ -155,6 +156,7 @@ import { allowsFileResource } from '~/files/consumers';
 import { applyDeferredToolLoading } from './deferral';
 import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
+import { resolveVision } from '~/endpoints/vision';
 import { getAgentInferencePolicy } from './input';
 import { getProviderConfig } from '~/endpoints';
 import { primeResources } from './resources';
@@ -816,6 +818,9 @@ export type InitializedAgent = Agent & {
   /** Detail level LibreChat encodes image content blocks with, from the agent's
    * model parameters. Absent when the agent does not configure one. */
   imageDetail?: ImageDetail;
+  /** Whether the agent's model reads images, as the agent, its spec or librechat.yaml declares
+   *  it; `false` gives it a text note in place of each image. Absent when nothing is declared. */
+  vision?: boolean;
   /** How this agent receives its attachments this turn, settled once every routing input is final. */
   deliveryRouting: TurnDeliveryRouting;
   tool_resources?: AgentToolResources;
@@ -1040,6 +1045,9 @@ export interface InitializeAgentParams {
   } | null>;
   /** Endpoint option (contains model_parameters and endpoint info) */
   endpointOption?: Partial<TEndpointOption>;
+  /** The model spec this agent runs under: the conversation's for the primary agent, the added
+   *  pane's for its agent, a handoff target's own. Its `vision` outranks the endpoint config. */
+  modelSpec?: TModelSpec | null;
   /** Set of allowed providers */
   allowedProviders: Set<string>;
   /** Whether this is the initial agent */
@@ -1617,6 +1625,14 @@ export async function initializeAgent(
   if (overrideProvider !== agent.provider) {
     agent.provider = overrideProvider;
   }
+  const vision = resolveVision({
+    appConfig,
+    endpoint: provider,
+    model: agent.model,
+    customEndpointConfig,
+    modelSpec: params.modelSpec,
+    textOnly: agent.text_only,
+  });
 
   const inference = resolveAgentInferenceParameters({
     parameters: {
@@ -2989,6 +3005,7 @@ export async function initializeAgent(
     resendFiles,
     ...(excludedFileIds.length > 0 ? { excludedFiles: excludedFileIds } : {}),
     imageDetail,
+    ...(vision != null ? { vision } : {}),
     deliveryRouting,
     toolRegistry,
     mcpAvailableTools,

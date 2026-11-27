@@ -137,6 +137,21 @@ describe('AgentSelect resetAgentForm', () => {
     expect(methods?.getValues('instructionsPrompt')).toEqual(stub);
   });
 
+  it.each([true, undefined])("loads the agent's text-only switch as %s", async (textOnly) => {
+    let methods: UseFormReturn<AgentForm> | undefined;
+
+    render(
+      <Harness
+        agent={createAgent({ text_only: textOnly })}
+        defaultValues={{ text_only: true }}
+        onMethods={(m) => (methods = m)}
+      />,
+    );
+
+    await waitFor(() => expect(methods?.getValues('id')).toBe('agent_1'));
+    expect(methods?.getValues('text_only')).toBe(textOnly);
+  });
+
   it('maps an agent with no link to Inline mode with a null prompt', async () => {
     let methods: UseFormReturn<AgentForm> | undefined;
 

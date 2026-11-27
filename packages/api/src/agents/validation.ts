@@ -289,6 +289,7 @@ type AgentBaseShape = {
   skills_enabled: z.ZodOptional<z.ZodBoolean>;
   skill_authoring_enabled: z.ZodOptional<z.ZodBoolean>;
   skills_scope: z.ZodOptional<z.ZodEnum<typeof SkillsScope>>;
+  text_only: z.ZodOptional<z.ZodBoolean>;
   memory_scope: z.ZodOptional<z.ZodEnum<typeof MemoryScope>>;
   /** @deprecated Use edges instead */
   agent_ids: z.ZodOptional<z.ZodArray<z.ZodString>>;
@@ -326,6 +327,7 @@ export const agentBaseSchema: z.ZodObject<AgentBaseShape> = z.object({
   skills_enabled: z.boolean().optional(),
   skill_authoring_enabled: z.boolean().optional(),
   skills_scope: z.nativeEnum(SkillsScope).optional(),
+  text_only: z.boolean().optional(),
   memory_scope: z.nativeEnum(MemoryScope).optional(),
   /** @deprecated Use edges instead */
   agent_ids: z.array(z.string()).optional(),

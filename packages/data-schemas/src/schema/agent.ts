@@ -94,6 +94,9 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
     end_after_tools: {
       type: Boolean,
     },
+    text_only: {
+      type: Boolean,
+    },
     stateful_code_sessions: {
       type: Boolean,
     },

@@ -2893,6 +2893,7 @@ export function createAgentMethods(
       'instructionsPrompt',
       'skills_scope',
       'skill_authoring_enabled',
+      'text_only',
     ]) {
       if (!Object.prototype.hasOwnProperty.call(revertToVersion, field)) {
         unsetOnRestore[field] = 1;
