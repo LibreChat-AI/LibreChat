@@ -1,17 +1,13 @@
 const http = require('node:http');
 const express = require('express');
 const { once } = require('node:events');
-
-jest.mock('./streamAudio', () => ({
-  getRandomVoiceId: (voices) => voices[0],
-  createChunkProcessor: jest.fn(),
-  splitTextIntoChunks: jest.fn(),
-}));
-jest.mock('~/server/services/Config', () => ({ getAppConfig: jest.fn() }));
-
-const { logger } = require('@librechat/data-schemas');
-const { createChunkProcessor, splitTextIntoChunks } = require('./streamAudio');
+const { CacheKeys } = require('librechat-data-provider');
+const { logger, scopedCacheKey } = require('@librechat/data-schemas');
 const { TTSService } = require('./TTSService');
+const { getLogStores } = require('~/cache');
+
+/** The cache automatic playback reads a message from, ahead of the database. */
+const messages = getLogStores(CacheKeys.MESSAGES);
 
 /**
  * A text-to-speech provider that records every text it is asked to speak. A held provider never
@@ -97,21 +93,31 @@ function post(port, path, body) {
   return request;
 }
 
-/** Scripted reads of a message being written: one result per read, then nothing new. */
-function scriptPolls(results) {
-  const polls = { count: 0, waiters: [] };
-  createChunkProcessor.mockReturnValue(async () => {
-    polls.count++;
-    polls.waiters[polls.count - 1]?.();
-    return results[polls.count - 1] ?? [];
+/**
+ * Counts the reads automatic playback makes of `messageId`, through the real cache. A string is
+ * text still being written; `{ text, complete }` is the finished message.
+ */
+function watchReads(messageId) {
+  const key = scopedCacheKey(messageId);
+  const get = messages.get;
+  const waiters = new Map();
+  const reads = { count: 0 };
+  reads.spy = jest.spyOn(messages, 'get').mockImplementation(function (...args) {
+    if (args[0] === key) {
+      reads.count++;
+      waiters.get(reads.count)?.();
+    }
+    return get.apply(this, args);
   });
-  polls.reach = (count) => new Promise((resolve) => (polls.waiters[count - 1] = resolve));
-  return polls;
+  reads.reach = (count) => new Promise((resolve) => waiters.set(count, resolve));
+  reads.write = (value) => messages.set(key, value);
+  return reads;
 }
 
 describe('TTSService speech for a listener', () => {
   const servers = [];
   const service = new TTSService();
+  let reads;
 
   async function serve(handle, options) {
     const provider = await startProvider(options);
@@ -121,6 +127,8 @@ describe('TTSService speech for a listener', () => {
   }
 
   afterEach(() => {
+    reads?.spy.mockRestore();
+    reads = undefined;
     for (const server of servers.splice(0)) {
       server.closeAllConnections();
       server.close();
@@ -128,17 +136,23 @@ describe('TTSService speech for a listener', () => {
   });
 
   it('speaks every segment of a message in order to a listener who stays', async () => {
-    scriptPolls([
-      [{ text: 'The first sentence is spoken.', isFinished: false }],
-      [],
-      [{ text: 'The second sentence is spoken too.', isFinished: true }],
-    ]);
+    reads = watchReads('message-stays');
+    await reads.write('The first sentence is spoken.');
     const { provider, app } = await serve((req, res) => service.streamAudio(req, res));
 
-    const request = post(app.port, '/', { messageId: 'message-1', voice: 'alloy' });
+    const request = post(app.port, '/', { messageId: 'message-stays', voice: 'alloy' });
     const [response] = await once(request, 'response');
     let audio = '';
-    response.on('data', (chunk) => (audio += chunk));
+    response.on('data', (chunk) => {
+      if (!audio) {
+        /** The reply finishes after its first sentence was spoken. */
+        reads.write({
+          text: 'The first sentence is spoken. The second sentence is spoken too.',
+          complete: true,
+        });
+      }
+      audio += chunk;
+    });
     await once(response, 'end');
     await Promise.all(app.handled);
 
@@ -152,16 +166,13 @@ describe('TTSService speech for a listener', () => {
   });
 
   it('stops reading the message and asks for no more speech once the listener leaves between segments', async () => {
-    const polls = scriptPolls([
-      [{ text: 'The first sentence is spoken.', isFinished: false }],
-      [],
-      [{ text: 'The second sentence is never paid for.', isFinished: true }],
-    ]);
+    reads = watchReads('message-leaves');
+    await reads.write('The first sentence is spoken.');
     const { provider, app } = await serve((req, res) => service.streamAudio(req, res));
     /** The second read finds nothing new, so playback waits before reading again. */
-    const waiting = polls.reach(2);
+    const waiting = reads.reach(2);
 
-    const request = post(app.port, '/', { messageId: 'message-1', voice: 'alloy' });
+    const request = post(app.port, '/', { messageId: 'message-leaves', voice: 'alloy' });
     const [response] = await once(request, 'response');
     response.on('error', () => undefined);
     await waiting;
@@ -169,22 +180,23 @@ describe('TTSService speech for a listener', () => {
     await Promise.all(app.handled);
 
     expect(provider.spoken).toEqual(['The first sentence is spoken.']);
-    expect(polls.count).toBe(2);
+    expect(reads.count).toBe(2);
     expect(logger.error).not.toHaveBeenCalled();
   });
 
   it('asks for no speech for a listener who left before automatic playback started', async () => {
-    const polls = scriptPolls([[{ text: 'Nobody is listening.', isFinished: true }]]);
+    reads = watchReads('message-gone');
+    await reads.write({ text: 'Nobody is listening.', complete: true });
     const { reached, wrapped } = afterClientLeft((req, res) => service.streamAudio(req, res));
     const { provider, app } = await serve(wrapped);
 
-    const request = post(app.port, '/', { messageId: 'message-1', voice: 'alloy' });
+    const request = post(app.port, '/', { messageId: 'message-gone', voice: 'alloy' });
     await reached;
     request.destroy();
     await Promise.all(app.handled);
 
     expect(provider.spoken).toEqual([]);
-    expect(polls.count).toBe(0);
+    expect(reads.count).toBe(0);
     expect(logger.error).not.toHaveBeenCalled();
   });
 
@@ -194,10 +206,6 @@ describe('TTSService speech for a listener', () => {
   ])(
     'asks for no speech for a listener who left before read-aloud of %s started',
     async (_, input) => {
-      splitTextIntoChunks.mockReturnValue([
-        { text: 'The first chunk.', isFinished: false },
-        { text: 'The second chunk.', isFinished: true },
-      ]);
       const { reached, wrapped } = afterClientLeft((req, res) =>
         service.processTextToSpeech(req, res),
       );
@@ -214,12 +222,13 @@ describe('TTSService speech for a listener', () => {
   );
 
   it('logs a listener who leaves during a provider request as a disconnect, not an error', async () => {
-    scriptPolls([[{ text: 'The listener leaves while this is spoken.', isFinished: true }]]);
+    reads = watchReads('message-cut');
+    await reads.write({ text: 'The listener leaves while this is spoken.', complete: true });
     const { provider, app } = await serve((req, res) => service.streamAudio(req, res), {
       hold: true,
     });
 
-    const request = post(app.port, '/', { messageId: 'message-1', voice: 'alloy' });
+    const request = post(app.port, '/', { messageId: 'message-cut', voice: 'alloy' });
     await once(provider.server, 'spoken');
     const canceled = once(provider.server, 'canceled');
     request.destroy();

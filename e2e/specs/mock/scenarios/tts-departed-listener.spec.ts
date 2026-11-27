@@ -10,9 +10,10 @@ import { inOneProject, repoRoot } from './lint.helpers';
  *
  * The mock harness configures no speech provider, and one would change the speech settings every
  * other spec sees, so the verdicts come from one run of the service specs. They serve the real
- * `TTSService` behind Express with real axios and a local provider that records what it is asked
- * to speak, and the listener leaves at each point it can: before the route reaches the service,
- * while playback waits for more of the message, and during a provider request.
+ * `TTSService` behind Express with real axios, a local provider that records what it is asked to
+ * speak, and the message read through the real chunk reader and message cache. The listener
+ * leaves at each point it can: before the route reaches the service, while playback waits for
+ * more of the message, and during a provider request.
  */
 
 type JestAssertion = { fullName: string; status: string };
