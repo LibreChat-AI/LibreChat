@@ -2112,4 +2112,73 @@ describe('isRenderableUiResource media types', () => {
       text: '<p>read document</p>',
     });
   });
+
+  describe('caller-declared OpenAI-compatible custom endpoints', () => {
+    it('formats structured content for a declared-compatible custom endpoint', () => {
+      const result: t.MCPToolCallResponse = {
+        content: [
+          { type: 'text', text: 'First text' },
+          { type: 'text', text: 'Second text' },
+        ],
+      };
+
+      // scaleway is a custom OpenAI-compatible endpoint: not in RECOGNIZED_PROVIDERS,
+      // so the caller has to declare the compatibility.
+      const [content, artifacts] = formatToolContent(result, 'scaleway' as t.Provider, {
+        openAICompatible: true,
+      });
+      expect(content).toBe('First text\n\nSecond text');
+      expect(artifacts).toBeUndefined();
+    });
+
+    it('extracts images to artifacts for a declared-compatible custom endpoint', () => {
+      const result: t.MCPToolCallResponse = {
+        content: [
+          { type: 'text', text: 'Before image' },
+          { type: 'image', data: 'base64data', mimeType: 'image/png' },
+          { type: 'text', text: 'After image' },
+        ],
+      };
+
+      // Another custom endpoint (e.g. together, perplexity) is treated like OpenAI.
+      const [content, artifacts] = formatToolContent(result, 'together' as t.Provider, {
+        openAICompatible: true,
+      });
+      expect(content).toBe('Before image\n\nAfter image');
+      expect(artifacts).toEqual({
+        content: [
+          {
+            type: 'image_url',
+            image_url: { url: 'data:image/png;base64,base64data' },
+          },
+        ],
+      });
+    });
+
+    it('ignores the claim for providers known not to be OpenAI-compatible', () => {
+      const result: t.MCPToolCallResponse = {
+        content: [{ type: 'text', text: 'Test content' }],
+      };
+
+      // bedrock is in NON_OPENAI_PROVIDERS but also in RECOGNIZED_PROVIDERS, so it is
+      // recognized via the allowlist and keeps unified string output - and a caller
+      // claiming OpenAI compatibility for it must not change that.
+      const [content, artifacts] = formatToolContent(result, 'bedrock' as t.Provider, {
+        openAICompatible: true,
+      });
+      expect(typeof content).toBe('string');
+      expect(content).toBe('Test content');
+      expect(artifacts).toBeUndefined();
+    });
+
+    it('keeps the conservative string fallback when the caller says nothing', () => {
+      const result: t.MCPToolCallResponse = {
+        content: [{ type: 'image', data: 'base64data', mimeType: 'image/png' }],
+      };
+
+      const [content, artifacts] = formatToolContent(result, 'scaleway' as t.Provider);
+      expect(artifacts).toBeUndefined();
+      expect(content).toContain('base64data');
+    });
+  });
 });
