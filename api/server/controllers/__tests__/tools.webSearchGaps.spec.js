@@ -102,4 +102,40 @@ describe('web search badge check diagnostics', () => {
       '[loadWebSearchAuth] Web search is not authenticated for scrapers (firecrawl): saved settings could not be read',
     ]);
   });
+
+  describe('Firecrawl at its own URL while FIRECRAWL_API_KEY is unset', () => {
+    beforeEach(() => {
+      delete process.env.FIRECRAWL_API_KEY;
+      process.env.FIRECRAWL_API_URL = 'http://firecrawl:3002';
+    });
+
+    it('authenticates without a key', async () => {
+      const { res, lines } = await checkBadge();
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          authenticated: true,
+          scraperProvider: ScraperProviders.FIRECRAWL,
+        }),
+      );
+      expect(lines).toEqual([]);
+    });
+
+    it('reports a saved key the credential store cannot read as unreadable, not as no key', async () => {
+      await mongoose.models.PluginAuth.create({
+        userId,
+        authField: 'FIRECRAWL_API_KEY',
+        pluginKey: Tools.web_search,
+        value: 'v3:00:00',
+      });
+
+      const { res, lines } = await checkBadge();
+
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ authenticated: false }));
+      expect(lines).toEqual([
+        '[loadWebSearchAuth] Web search is not authenticated for scrapers (firecrawl): saved settings could not be read',
+      ]);
+    });
+  });
 });

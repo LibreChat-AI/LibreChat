@@ -219,7 +219,7 @@ function ApiKeyDialogContent({
           type: 'text' as const,
         },
         firecrawlApiKey: {
-          placeholder: localize('com_ui_enter_api_key'),
+          placeholder: localize('com_ui_web_search_firecrawl_key'),
           type: 'password' as const,
           link: {
             url: 'https://docs.firecrawl.dev/introduction#api-key',

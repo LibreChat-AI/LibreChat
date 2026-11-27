@@ -323,8 +323,9 @@ describe('web.ts', () => {
       mockLoadAuthValues.mockImplementation(({ authFields, optional }) => {
         const result: Record<string, string> = {};
         authFields.forEach((field: string) => {
-          // Don't provide values for optional fields
-          if (!optional?.has(field)) {
+          // Don't provide values for optional fields. FIRECRAWL_API_KEY is looked up
+          // as optional while the environment leaves it unset; a saved key still answers.
+          if (!optional?.has(field) || field === 'FIRECRAWL_API_KEY') {
             result[field] = 'test-api-key';
           }
         });
@@ -3574,6 +3575,17 @@ describe('web.ts', () => {
         },
         authType: AuthType.USER_PROVIDED,
       },
+      {
+        origin: "a user's key saved under an unset variable",
+        env: {},
+        userValues: {
+          FIRECRAWL_API_KEY: 'firecrawl-outside-key',
+          TAVILY_API_KEY: 'tavily-outside-key',
+          SEARXNG_API_KEY: 'searxng-outside-key',
+          KEENABLE_API_KEY: 'keenable-outside-key',
+        },
+        authType: AuthType.USER_PROVIDED,
+      },
     ])('never sends $origin to a URL stored in config', async ({ env, userValues, authType }) => {
       Object.assign(process.env, env);
       const configUrl = 'https://config-host.example.com';
@@ -3892,6 +3904,13 @@ describe('web.ts', () => {
       rerankerType: RerankerTypes.NONE,
       scraperTimeout: 7500,
     };
+    /** librechat.yaml scraping with Firecrawl, its key and URL left to their `${VAR}` defaults. */
+    const FIRECRAWL_SCRAPER: TWebSearchConfigInput = {
+      searchProvider: SearchProviders.SEARXNG,
+      searxngInstanceUrl: 'http://searxng:8080/search',
+      scraperProvider: ScraperProviders.FIRECRAWL,
+      rerankerType: RerankerTypes.NONE,
+    };
     let originalEnv: NodeJS.ProcessEnv;
     let debug: jest.SpyInstance;
 
@@ -3928,7 +3947,11 @@ describe('web.ts', () => {
         }) => {
           const values: Record<string, string> = {};
           for (const field of authFields) {
-            const value = process.env[field] || userValues[field];
+            const envValue = process.env[field];
+            const value =
+              envValue?.trim() && envValue !== AuthType.USER_PROVIDED
+                ? envValue
+                : userValues[field];
             if (value) {
               values[field] = value;
             } else if (throwError && !optional?.has(field)) {
@@ -3957,10 +3980,11 @@ describe('web.ts', () => {
       return mergeConfigOverrides(base as AppConfig, [override]).webSearch;
     }
 
-    it('names the Firecrawl key an admin config override left blank', async () => {
+    it('names the Firecrawl key an admin config override left blank without a Firecrawl URL', async () => {
+      const { firecrawlApiUrl: _firecrawlApiUrl, ...cloudDefault } = REPORTED;
       const result = await loadWebSearchAuth({
         userId,
-        webSearchConfig: withOverride(REPORTED),
+        webSearchConfig: withOverride(cloudDefault),
         loadAuthValues: authValuesFor(),
       });
 
@@ -3999,6 +4023,204 @@ describe('web.ts', () => {
       });
     });
 
+    it('authenticates the reported override at its own Firecrawl URL without a key', async () => {
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: withOverride(REPORTED),
+        loadAuthValues: authValuesFor(),
+      });
+
+      expect(result.authenticated).toBe(true);
+      expect(result.gaps).toEqual([]);
+      expect(debug).not.toHaveBeenCalled();
+      expect(result.authTypes).toContainEqual([SearchCategories.SCRAPERS, AuthType.SYSTEM_DEFINED]);
+      expect(result.authResult).toMatchObject({
+        scraperProvider: ScraperProviders.FIRECRAWL,
+        firecrawlApiUrl: 'http://firecrawl:3002',
+        firecrawlApiKey: '',
+        firecrawlVersion: 'v1',
+      });
+    });
+
+    it.each([
+      { state: 'unset', value: undefined },
+      { state: 'blank', value: '' },
+    ])(
+      'picks Firecrawl without a key at an environment URL while FIRECRAWL_API_KEY is $state',
+      async ({ value }) => {
+        process.env.FIRECRAWL_API_URL = 'http://firecrawl:3002';
+        if (value != null) {
+          process.env.FIRECRAWL_API_KEY = value;
+        }
+        const { scraperProvider: _scraperProvider, ...openScraper } = FIRECRAWL_SCRAPER;
+
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: loadWebSearchConfig(openScraper),
+          loadAuthValues: authValuesFor(),
+        });
+
+        expect(result.authenticated).toBe(true);
+        expect(result.gaps).toEqual([]);
+        expect(result.authTypes).toContainEqual([
+          SearchCategories.SCRAPERS,
+          AuthType.SYSTEM_DEFINED,
+        ]);
+        expect(result.authResult).toMatchObject({
+          scraperProvider: ScraperProviders.FIRECRAWL,
+          firecrawlApiUrl: 'http://firecrawl:3002',
+          firecrawlApiKey: '',
+        });
+      },
+    );
+
+    it.each([
+      { state: 'unset', value: undefined },
+      { state: 'user_provided', value: AuthType.USER_PROVIDED },
+    ])(
+      'runs Firecrawl without a key at a URL the user saved while FIRECRAWL_API_KEY is $state',
+      async ({ value }) => {
+        if (value != null) {
+          process.env.FIRECRAWL_API_KEY = value;
+        }
+        const userUrl = 'https://firecrawl.user.example.com';
+
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: loadWebSearchConfig(FIRECRAWL_SCRAPER),
+          loadAuthValues: authValuesFor({ FIRECRAWL_API_URL: userUrl }),
+        });
+
+        expect(result.authenticated).toBe(true);
+        expect(result.authTypes).toContainEqual([
+          SearchCategories.SCRAPERS,
+          AuthType.USER_PROVIDED,
+        ]);
+        expect(result.authResult).toMatchObject({ firecrawlApiUrl: userUrl, firecrawlApiKey: '' });
+      },
+    );
+
+    it.each([
+      {
+        name: 'the deployment Firecrawl URL when users supply the key',
+        env: {
+          FIRECRAWL_API_KEY: AuthType.USER_PROVIDED,
+          FIRECRAWL_API_URL: 'http://firecrawl:3002',
+        },
+        config: FIRECRAWL_SCRAPER,
+        variable: 'FIRECRAWL_API_KEY',
+      },
+      {
+        name: "Firecrawl's hosted API",
+        env: {},
+        config: { ...REPORTED, firecrawlApiUrl: 'https://api.firecrawl.dev' },
+        variable: undefined,
+      },
+    ])('still asks for a Firecrawl key at $name', async ({ env, config, variable }) => {
+      Object.assign(process.env, env);
+
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: withOverride(config),
+        loadAuthValues: authValuesFor(),
+      });
+
+      expect(result.authenticated).toBe(false);
+      expect(result.authTypes).toContainEqual([SearchCategories.SCRAPERS, AuthType.USER_PROVIDED]);
+      expect(result.gaps).toEqual([
+        {
+          category: SearchCategories.SCRAPERS,
+          service: ScraperProviders.FIRECRAWL,
+          field: 'firecrawlApiKey',
+          ...(variable != null && { variable }),
+          reason: 'missing',
+        },
+      ]);
+    });
+
+    it('leaves no keyless Firecrawl at its hosted API once a later profile drops the URL', async () => {
+      const profile = (principalId: string, priority: number, webSearch: TWebSearchConfigInput) =>
+        ({
+          principalType: 'role',
+          principalId,
+          principalModel: 'Role',
+          priority,
+          overrides: { webSearch },
+          isActive: true,
+          configVersion: 1,
+        }) as unknown as IConfig;
+      const base = { config: {}, webSearch: loadWebSearchConfig(undefined) };
+      const webSearchConfig = mergeConfigOverrides(base as AppConfig, [
+        profile(BASE_CONFIG_PRINCIPAL_ID, 0, REPORTED),
+        profile('ADMIN', 10, { firecrawlApiUrl: '' }),
+      ]).webSearch;
+
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig,
+        loadAuthValues: authValuesFor(),
+      });
+
+      expect(result.authenticated).toBe(false);
+      expect(result.gaps).toEqual([
+        {
+          category: SearchCategories.SCRAPERS,
+          service: ScraperProviders.FIRECRAWL,
+          field: 'firecrawlApiKey',
+          reason: 'missing',
+        },
+      ]);
+    });
+
+    it('reports a Firecrawl URL the SSRF check blocks as rejected when no key sits beside it', async () => {
+      mockIsSSRFTarget.mockReturnValue(true);
+
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig: loadWebSearchConfig(FIRECRAWL_SCRAPER),
+        loadAuthValues: authValuesFor({ FIRECRAWL_API_URL: 'http://169.254.169.254/firecrawl' }),
+      });
+
+      expect(result.authenticated).toBe(false);
+      expect(result.gaps).toEqual([
+        {
+          category: SearchCategories.SCRAPERS,
+          service: ScraperProviders.FIRECRAWL,
+          field: 'firecrawlApiUrl',
+          variable: 'FIRECRAWL_API_URL',
+          reason: 'rejected',
+        },
+      ]);
+      expect(JSON.stringify(debug.mock.calls)).not.toContain('169.254.169.254');
+    });
+
+    it.each([
+      { name: 'stored in config', env: {}, config: REPORTED },
+      {
+        name: 'from the environment',
+        env: { FIRECRAWL_API_URL: 'http://firecrawl:3002' },
+        config: FIRECRAWL_SCRAPER,
+      },
+    ])(
+      'never lets the search library send FIRECRAWL_API_KEY to a Firecrawl URL $name when the key references another variable',
+      async ({ env, config }) => {
+        Object.assign(process.env, env, { FIRECRAWL_API_KEY: 'platform-env-key-0001' });
+
+        const result = await loadWebSearchAuth({
+          userId,
+          webSearchConfig: withOverride({
+            ...config,
+            firecrawlApiKey: '${LC_UNSET_FIRECRAWL_KEY}',
+          }),
+          loadAuthValues: authValuesFor(),
+        });
+
+        expect(result.authenticated).toBe(true);
+        expect(result.authResult.firecrawlApiUrl).toBe('http://firecrawl:3002');
+        expect(result.authResult.firecrawlApiKey).toBe('');
+      },
+    );
+
     it.each([true, false])(
       'names the variable a required key references when it is unset (throwError: %s)',
       async (throwError) => {
@@ -4031,9 +4253,18 @@ describe('web.ts', () => {
     );
 
     it('reports a failed credential lookup as unreadable, not as a missing key', async () => {
+      /** Like `loadAuthValues`, a store failure surfaces for optional fields only with `failOnOptionalError`. */
       const loadAuthValues = jest.fn(
-        async ({ authFields, optional }: { authFields: string[]; optional?: Set<string> }) => {
-          if (authFields.some((field) => !optional?.has(field))) {
+        async ({
+          authFields,
+          optional,
+          failOnOptionalError,
+        }: {
+          authFields: string[];
+          optional?: Set<string>;
+          failOnOptionalError?: boolean;
+        }) => {
+          if (failOnOptionalError || authFields.some((field) => !optional?.has(field))) {
             throw new Error('Credential store unavailable');
           }
           return {};
