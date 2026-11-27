@@ -43,11 +43,13 @@ const GRANTS = [
   'ensureLinkPermissions creates OWNER AclEntry for legacy link with no entries',
   'grantCreationPermissions creates OWNER and PUBLIC VIEWER AclEntries',
 ];
-const RETRY =
-  'deleteAllSharedLinksWithCleanup awaits ACL cleanup and keeps the links when it fails';
+const RETRIES = [
+  'deleteAllSharedLinksWithCleanup awaits ACL cleanup and keeps the links when it fails',
+  `${RACE} a retried erasure removes what its window left when the sweep after the delete failed`,
+];
 
 const escape = (title: string) => title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const PATTERN = [RACE, ERASURE, ...GRANTS, RETRY].map(escape).join('|');
+const PATTERN = [RACE, ERASURE, ...GRANTS, ...RETRIES].map(escape).join('|');
 
 let report: JestAssertion[] | undefined;
 
@@ -126,7 +128,9 @@ test.describe('grants written while a shared link is deleted', () => {
     }
   });
 
-  test('an account erasure whose ACL cleanup fails keeps the links for its retry @scenario:failed-erasure-cleanup-keeps-links-for-retry', () => {
-    expectPassed(RETRY);
+  test('an account erasure whose ACL cleanup fails before or after the link delete is finished by its retry @scenario:failed-erasure-cleanup-is-finished-by-retry', () => {
+    for (const title of RETRIES) {
+      expectPassed(title);
+    }
   });
 });

@@ -267,34 +267,6 @@ describe('eraseUserData', () => {
     expect(getFiles).toHaveBeenNthCalledWith(2, { user }, undefined, { _id: 1 }, 1);
   });
 
-  it('leaves no grant on a legacy shared link first viewed while the account is erased', async () => {
-    const userId = new mongoose.Types.ObjectId();
-    const user = userId.toString();
-    await seedUser(userId);
-    await methods.seedDefaultRoles();
-    const link = {
-      _id: new mongoose.Types.ObjectId(),
-      user,
-      conversationId: `legacy-${user}`,
-      shareId: `legacy-${user}`,
-      isPublic: true,
-    };
-    await model('SharedLink').insertOne(link);
-    const { deps } = createDeps();
-    deps.deleteSharedLinks = (id) => deleteAllSharedLinksWithCleanup(id, { awaitCleanup: true });
-    /** The view read the link before the erasure reached it, and grants after its ACL cleanup. */
-    const deleteLinks = model('SharedLink').deleteMany.bind(model('SharedLink'));
-    jest.spyOn(model('SharedLink'), 'deleteMany').mockImplementationOnce(async (...args) => {
-      await autoMigrateLegacyLink(link);
-      return deleteLinks(...args);
-    });
-
-    await eraseUserData({ userId: user }, deps);
-
-    expect(await count('SharedLink', { user })).toBe(0);
-    expect(await count('AclEntry', { resourceId: link._id })).toBe(0);
-  });
-
   it('keeps the transaction ledger when the operator retains it', async () => {
     const userId = new mongoose.Types.ObjectId();
     await seedUser(userId);
@@ -620,6 +592,34 @@ describe('eraseUserData', () => {
       expect(await count('MCPServer', { author: userId })).toBe(2);
     });
   }
+
+  it('leaves no grant on a legacy shared link first viewed while the account is erased', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    const user = userId.toString();
+    await seedUser(userId);
+    await methods.seedDefaultRoles();
+    const link = {
+      _id: new mongoose.Types.ObjectId(),
+      user,
+      conversationId: `legacy-${user}`,
+      shareId: `legacy-${user}`,
+      isPublic: true,
+    };
+    await model('SharedLink').insertOne(link);
+    const { deps } = createDeps();
+    deps.deleteSharedLinks = (id) => deleteAllSharedLinksWithCleanup(id, { awaitCleanup: true });
+    /** The view read the link before the erasure reached it, and grants after its ACL cleanup. */
+    const deleteLinks = model('SharedLink').deleteMany.bind(model('SharedLink'));
+    jest.spyOn(model('SharedLink'), 'deleteMany').mockImplementationOnce(async (...args) => {
+      await autoMigrateLegacyLink(link);
+      return deleteLinks(...args);
+    });
+
+    await eraseUserData({ userId: user }, deps);
+
+    expect(await count('SharedLink', { user })).toBe(0);
+    expect(await count('AclEntry', { resourceId: link._id })).toBe(0);
+  });
 });
 
 describe('removing a shared MCP server with its owner', () => {

@@ -335,12 +335,23 @@ export async function deleteAllSharedLinksWithCleanup(
         }
       : undefined,
   );
-  if (options.awaitCleanup && deletedIds.length > 0) {
+  if (options.awaitCleanup) {
     /**
      * The cleanup before the delete keeps the links as the retry anchor when it fails, but a
-     * request that read a link before the delete can still grant on it after that cleanup.
+     * request that read a link before the delete can still grant on it after that cleanup, so
+     * the entries are swept again. Such grants include the owner's, which outlive a failed sweep
+     * here, and a retry finds the deleted links through them since their rows are gone.
      */
-    await cleanupBulkSharedLinkPermissions(deletedIds);
+    if (deletedIds.length > 0) {
+      await cleanupBulkSharedLinkPermissions(deletedIds);
+    }
+    const owned = await getMethods().getSoleOwnedResourceIds(
+      new mongoose.Types.ObjectId(user),
+      ResourceType.SHARED_LINK,
+    );
+    for (const id of owned) {
+      await withdrawIfDeleted(id.toString());
+    }
   }
   if (!options.awaitCleanup && deletedIds.length > 0) {
     cleanupBulkSharedLinkPermissions(deletedIds).catch((err) => {
