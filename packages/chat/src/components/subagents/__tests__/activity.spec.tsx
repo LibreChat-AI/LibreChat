@@ -15,6 +15,7 @@ import { activeSubagentPanel } from '../../../react/subagents/state';
 import { MessagePartsHostProvider } from '../../../react/host';
 import { emptyToolCallChrome } from '../../../react/host';
 import { EventSubagentActivityGroup } from '../activity';
+import { initEnglish } from '../../../__fixtures__/i18n';
 
 const mockRefresh = jest.fn().mockResolvedValue(undefined);
 const mockChild: ParentSubagentSummary = {
@@ -58,8 +59,10 @@ jest.mock('@librechat/client', () => ({
   ),
   cn: (...values: Array<string | false | undefined>) => values.filter(Boolean).join(' '),
   Shimmer: jest.requireActual('@librechat/client').Shimmer,
-  useLocalize: () => (key: string) => key,
+  useLocalize: jest.requireActual('@librechat/client').useLocalize,
 }));
+
+beforeAll(initEnglish);
 jest.mock('lucide-react', () => ({
   AlertCircle: () => null,
   Bot: () => null,
@@ -161,11 +164,14 @@ describe('EventSubagentActivityGroup', () => {
       </ChatSurfaceHarness>,
     );
 
-    expect(
-      screen.getByRole('region', { name: 'com_ui_subagent_activity' }).parentElement,
-    ).toHaveClass('px-4', 'sm:px-0', 'md:max-w-3xl', 'xl:max-w-4xl');
+    expect(screen.getByRole('region', { name: 'Agent activity' }).parentElement).toHaveClass(
+      'px-4',
+      'sm:px-0',
+      'md:max-w-3xl',
+      'xl:max-w-4xl',
+    );
     expect(screen.queryByRole('button', { name: /Visible Agent/ })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_subagent_activity/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Agent activity/ }));
     fireEvent.click(screen.getByRole('button', { name: /Visible Agent/ }));
 
     expect(mockRefresh).toHaveBeenCalledTimes(1);
@@ -198,9 +204,7 @@ describe('EventSubagentActivityGroup', () => {
       </ChatSurfaceHarness>,
     );
 
-    expect(screen.getByRole('region', { name: 'com_ui_subagent_activity' })).toHaveClass(
-      'text-text-primary',
-    );
+    expect(screen.getByRole('region', { name: 'Agent activity' })).toHaveClass('text-text-primary');
   });
 
   it('matches the width of a parallel assistant response', () => {
@@ -214,9 +218,10 @@ describe('EventSubagentActivityGroup', () => {
       </ChatSurfaceHarness>,
     );
 
-    expect(
-      screen.getByRole('region', { name: 'com_ui_subagent_activity' }).parentElement,
-    ).toHaveClass('md:max-w-[58rem]', 'xl:max-w-[70rem]');
+    expect(screen.getByRole('region', { name: 'Agent activity' }).parentElement).toHaveClass(
+      'md:max-w-[58rem]',
+      'xl:max-w-[70rem]',
+    );
   });
 
   it('retains a merged anchor that has no children yet', () => {
@@ -236,7 +241,7 @@ describe('EventSubagentActivityGroup', () => {
       </ChatSurfaceHarness>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_subagent_activity/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Agent activity/ }));
     fireEvent.click(screen.getByRole('button', { name: /Visible Agent/ }));
 
     expect((selection as ActiveSubagentPanel | null)?.event?.siblingParentMessageIds).toEqual([
@@ -278,9 +283,9 @@ describe('EventSubagentActivityGroup', () => {
       </ChatSurfaceHarness>,
     );
 
-    const summary = screen.getByRole('button', { name: /com_ui_subagent_activity/ });
-    expect(summary).toHaveAccessibleName(/com_ui_subagent_count_running_one/);
-    expect(summary).toHaveAccessibleName(/com_ui_subagent_count_completed_other/);
+    const summary = screen.getByRole('button', { name: /Agent activity/ });
+    expect(summary).toHaveAccessibleName(/1 running/);
+    expect(summary).toHaveAccessibleName(/2 completed/);
     fireEvent.click(summary);
     fireEvent.click(screen.getByRole('button', { name: /Completed Agent/ }));
 
@@ -302,7 +307,7 @@ describe('EventSubagentActivityGroup', () => {
       </ChatSurfaceHarness>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_subagent_activity/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Agent activity/ }));
 
     const rows = [
       screen.getByRole('button', { name: /Visible Agent/ }),
@@ -312,14 +317,12 @@ describe('EventSubagentActivityGroup', () => {
 
     /** Label first, dot last, in every row: a longer status can only grow
      *  inboard, so the color never moves between rows. */
-    expect(running.firstElementChild).toHaveTextContent('com_ui_subagent_thread_status_running');
+    expect(running.firstElementChild).toHaveTextContent('Running');
     expect(running.lastElementChild).toHaveAttribute('aria-hidden', 'true');
     expect(running.lastElementChild).toHaveClass('bg-status-info');
     expect(running.firstElementChild).toHaveClass('shimmer');
 
-    expect(completed.firstElementChild).toHaveTextContent(
-      'com_ui_subagent_thread_status_completed',
-    );
+    expect(completed.firstElementChild).toHaveTextContent('Completed');
     expect(completed.lastElementChild).toHaveClass('bg-status-success');
     expect(completed.firstElementChild).not.toHaveClass('shimmer');
   });
@@ -358,7 +361,7 @@ describe('EventSubagentActivityGroup', () => {
         />
       </ChatSurfaceHarness>,
     );
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_subagent_activity/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Agent activity/ }));
     fireEvent.click(screen.getByRole('button', { name: /Visible Agent/ }));
     fireEvent.click(screen.getByTestId('pin-task'));
     await act(async () => {
@@ -401,7 +404,7 @@ describe('EventSubagentActivityGroup', () => {
       </ChatSurfaceHarness>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_subagent_activity/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Agent activity/ }));
     fireEvent.click(screen.getByRole('button', { name: /Visible Agent/ }));
     expect(selection).toEqual(
       expect.objectContaining({ durable: expect.objectContaining({ taskId: 'task-1' }) }),

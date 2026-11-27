@@ -14,11 +14,9 @@ import { MessagePartsHostProvider } from '../../../react/host';
 import { buildAttachmentsByName } from '../../../core/media';
 import { MediaContext } from '../../../react/parts/media';
 import { triggerDownload } from '../../../core/download';
+import { initEnglish } from '../../../__fixtures__/i18n';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 jest.mock('../../../core/download', () => ({
   ...jest.requireActual('../../../core/download'),
@@ -64,7 +62,7 @@ describe('markdown code', () => {
     expect(blocks).toHaveLength(2);
     expect(blocks[0]).toHaveClass('language-python');
     expect(blocks[0]).toHaveTextContent('print(1)');
-    expect(screen.getAllByRole('button', { name: 'com_ui_copy_code' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Copy code' })).toHaveLength(2);
     expect(screen.getByText('inline').tagName).toBe('CODE');
     expect(screen.getByText('inline')).not.toHaveClass('hljs');
   });
@@ -183,7 +181,10 @@ describe('markdown links', () => {
     });
     fireEvent.click(screen.getByRole('link', { name: 'report' }));
     await waitFor(() =>
-      expect(toast).toHaveBeenCalledWith({ status: 'error', message: 'com_ui_download_error' }),
+      expect(toast).toHaveBeenCalledWith({
+        status: 'error',
+        message: 'Error downloading file. The file may have been deleted.',
+      }),
     );
     expect(triggerDownload).not.toHaveBeenCalled();
     quiet.mockRestore();

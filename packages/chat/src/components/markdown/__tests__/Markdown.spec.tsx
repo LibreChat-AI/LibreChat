@@ -8,12 +8,10 @@ import type { LazyImport } from '../../../react/lazy';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
 import { LazyImportProvider } from '../../../react/lazy';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import Markdown from '../Markdown';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 beforeAll(() => {
   window.IntersectionObserver = class {

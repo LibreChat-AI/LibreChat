@@ -4,12 +4,10 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { ComposerFieldProps } from '../Field';
+import { initEnglish } from '../../../../__fixtures__/i18n';
 import ComposerField from '../Field';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 /** jsdom lays nothing out: give the draft five 20px rows so it counts as scrollable. */
 let scrollHeight: jest.SpyInstance;
@@ -76,9 +74,9 @@ describe('ComposerField', () => {
     const { onFocus } = renderField();
     const textarea = screen.getByRole('textbox', { name: 'Message input' });
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_collapse_chat' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse Chat' }));
     expect(textarea).toHaveClass('max-h-13');
-    expect(screen.getByRole('button', { name: 'com_ui_expand_chat' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Expand Chat' })).toBeInTheDocument();
 
     fireEvent.focus(textarea);
     expect(onFocus).toHaveBeenCalled();
@@ -89,7 +87,7 @@ describe('ComposerField', () => {
   it('offers no collapse while the draft is short or locked behind a question', () => {
     scrollHeight.mockReturnValue(40);
     const { rerender } = renderField({ value: 'short' });
-    expect(screen.queryByRole('button', { name: 'com_ui_collapse_chat' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Collapse Chat' })).toBeNull();
 
     scrollHeight.mockReturnValue(100);
     rerender(
@@ -103,7 +101,7 @@ describe('ComposerField', () => {
         locked
       />,
     );
-    expect(screen.queryByRole('button', { name: 'com_ui_collapse_chat' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Collapse Chat' })).toBeNull();
     expect(screen.getByRole('textbox')).toHaveAttribute('data-locked', 'true');
   });
 

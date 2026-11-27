@@ -28,6 +28,7 @@ import { createSubagentsHost } from '../../../__fixtures__/subagentsHost';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import { SubagentsHostProvider } from '../../../react/subagents/host';
 import { ChatContext } from '../../../react/chat/context';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import SubagentConversation from '../conversation';
 
 type Ask = (input: { text: string }) => void;
@@ -51,8 +52,9 @@ jest.mock('../../messages/MinimalHoverButtons', () => ({
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
   useLanguage: () => 'en',
-  useLocalize: () => (key: string) => key,
 }));
+
+beforeAll(initEnglish);
 
 jest.mock('lucide-react', () => ({
   AlertCircle: () => null,
@@ -243,21 +245,21 @@ describe('SubagentConversation', () => {
 
     /** The parent's briefing is a user turn in the parent's name, filled like
      *  one; only the external event, which no agent wrote, is a system turn. */
-    const briefing = screen.getByRole('group', { name: 'com_ui_subagent_trigger_parent_dispatch' });
+    const briefing = screen.getByRole('group', { name: 'Assigned a task' });
     expect(briefing).toHaveClass('justify-end');
     expect(within(briefing).getByRole('heading', { name: /Lia$/ })).toBeInTheDocument();
     expect(within(briefing).getByTestId('parent-face')).toBeInTheDocument();
     expect(within(briefing).getByTestId('message-body')).toHaveClass('bg-surface-user-message');
-    expect(screen.queryByText('com_ui_subagent_trigger_parent_dispatch')).not.toBeInTheDocument();
-    expect(screen.getByText('com_ui_subagent_trigger_external_event')).toBeInTheDocument();
-    expect(screen.getAllByRole('heading', { name: /^com_ui_system_event/ })).toHaveLength(1);
+    expect(screen.queryByText('Assigned a task')).not.toBeInTheDocument();
+    expect(screen.getByText('External event')).toBeInTheDocument();
+    expect(screen.getAllByRole('heading', { name: /^System/ })).toHaveLength(1);
     expect(screen.getAllByRole('heading', { name: 'Research child' })).toHaveLength(2);
     expect(screen.getByText('Investigate the release.')).toBeInTheDocument();
     expect(screen.getByText('Checked the constraints.')).toBeInTheDocument();
     expect(screen.getByText('search')).toBeInTheDocument();
     expect(screen.getByText('The release is ready.')).toBeInTheDocument();
-    expect(screen.queryByText('com_ui_subagent_thread_status_completed')).not.toBeInTheDocument();
-    expect(screen.queryByText('com_ui_subagent_thread_status_running')).not.toBeInTheDocument();
+    expect(screen.queryByText('Completed')).not.toBeInTheDocument();
+    expect(screen.queryByText('Running')).not.toBeInTheDocument();
     /** Both halves of the main chat author column: the shared glyph, and the
      *  streaming dot inset onto that glyph's axis the way main chat insets it. */
     expect(screen.getAllByTestId('child-face')).toHaveLength(2);
@@ -267,16 +269,14 @@ describe('SubagentConversation', () => {
     expect(container.querySelectorAll('.user-turn')).toHaveLength(1);
     expect(container.querySelectorAll('.agent-turn')).toHaveLength(2);
     expect(container.querySelector('[data-subagent-conversation]')).toBeInTheDocument();
-    expect(screen.queryByText('com_ui_prompt')).not.toBeInTheDocument();
-    expect(
-      screen.queryByText('com_ui_subagent_activity_details_truncated'),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText('com_ui_subagent_activity_details_unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('Prompt')).not.toBeInTheDocument();
+    expect(screen.queryByText('Some activity details were shortened.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Additional activity details are unavailable.')).toBeInTheDocument();
     expect(screen.getByTestId('stream-elapsed')).toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole('button', {
-        name: /com_ui_subagent_trigger_external_event.*chess\.turn\.ready.*speed-chess/,
+        name: /External event.*chess\.turn\.ready.*speed-chess/,
       }),
     );
     expect(screen.getByText('chess.turn.ready')).toBeInTheDocument();
@@ -299,14 +299,14 @@ describe('SubagentConversation', () => {
       </ChatSurfaceHarness>,
     );
 
-    const brief = screen.getByRole('group', { name: 'com_ui_subagent_trigger_parent_dispatch' });
+    const brief = screen.getByRole('group', { name: 'Assigned a task' });
     expect(within(brief).getByText('Ask the reviewer to restate')).toBeInTheDocument();
-    expect(within(brief).getByText('com_ui_subagent_briefing')).toHaveClass('shimmer');
+    expect(within(brief).getByText('Writing the brief…')).toHaveClass('shimmer');
     /** Nothing to copy until the brief is whole. */
     expect(within(brief).queryByRole('button', { name: 'copy' })).toBeNull();
 
     expect(screen.getByRole('heading', { name: 'Research child' })).toBeInTheDocument();
-    expect(screen.getByText('com_ui_subagent_starts_after_brief')).toBeInTheDocument();
+    expect(screen.getByText('Starts when the brief is finished.')).toBeInTheDocument();
     expect(screen.queryByTestId('stream-elapsed')).toBeNull();
     expect(document.querySelector('.result-thinking')).toBeNull();
   });
@@ -325,9 +325,9 @@ describe('SubagentConversation', () => {
         <SubagentConversation turns={[writing]} author={author} parentAuthor={parentAuthor} />
       </ChatSurfaceHarness>,
     );
-    const brief = screen.getByRole('group', { name: 'com_ui_subagent_trigger_parent_dispatch' });
-    expect(within(brief).getByText('com_ui_subagent_briefing')).toHaveClass('shimmer');
-    expect(within(brief).queryByText('com_ui_subagent_trigger_parent_dispatch')).toBeNull();
+    const brief = screen.getByRole('group', { name: 'Assigned a task' });
+    expect(within(brief).getByText('Writing the brief…')).toHaveClass('shimmer');
+    expect(within(brief).queryByText('Assigned a task')).toBeNull();
   });
 
   it('names an empty parent follow-up instead of rendering a blank bubble', () => {
@@ -342,11 +342,9 @@ describe('SubagentConversation', () => {
       </ChatSurfaceHarness>,
     );
 
-    const row = screen.getByRole('group', { name: 'com_ui_subagent_trigger_parent_continuation' });
+    const row = screen.getByRole('group', { name: 'Followed up on the task' });
     expect(within(row).getByRole('heading', { name: /Lia$/ })).toBeInTheDocument();
-    expect(
-      within(row).getByText('com_ui_subagent_trigger_parent_continuation'),
-    ).toBeInTheDocument();
+    expect(within(row).getByText('Followed up on the task')).toBeInTheDocument();
     expect(within(row).queryByTestId('shared-content-parts')).not.toBeInTheDocument();
   });
 
@@ -366,7 +364,7 @@ describe('SubagentConversation', () => {
       </ChatSurfaceHarness>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
     expect(loadDetails).toHaveBeenCalledWith('task-1');
   });
 
@@ -397,12 +395,12 @@ describe('SubagentConversation', () => {
 
     expect(
       screen.getByRole('button', {
-        name: /com_ui_subagent_trigger_external_event.*chess\.turn\.ready.*speed-chess.*2026-08-25T12:01:00.000Z/,
+        name: /External event.*chess\.turn\.ready.*speed-chess.*2026-08-25T12:01:00.000Z/,
       }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole('button', {
-        name: /com_ui_subagent_trigger_external_event.*chess\.turn\.ready.*speed-chess.*2026-08-25T12:02:00.000Z/,
+        name: /External event.*chess\.turn\.ready.*speed-chess.*2026-08-25T12:02:00.000Z/,
       }),
     ).toBeInTheDocument();
   });
@@ -1180,18 +1178,18 @@ describe('recovered turn details', () => {
 
     expect(screen.getByText('Captured work.')).toBeInTheDocument();
     expect(
-      screen.queryByText('com_ui_subagent_activity_details_unavailable'),
+      screen.queryByText('Additional activity details are unavailable.'),
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
     expect(refetch).toHaveBeenCalledTimes(1);
     expect(loadDetails).not.toHaveBeenCalled();
-    expect(screen.getByText('com_ui_loading')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'com_ui_load_more' })).not.toBeInTheDocument();
+    expect(screen.getByText('Loading...')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
 
     await act(async () => finish());
-    expect(screen.getByText('com_ui_subagent_activity_details_unavailable')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'com_ui_load_more' })).not.toBeInTheDocument();
-    expect(screen.queryByText('com_ui_loading')).not.toBeInTheDocument();
+    expect(screen.getByText('Additional activity details are unavailable.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
   });
 
   it('shows what the reread recovered and drops the notice once the capture is complete', async () => {
@@ -1215,13 +1213,13 @@ describe('recovered turn details', () => {
     }));
     renderTurn(turns[0], { onLoadTurnDetails: jest.fn() });
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
     expect(await screen.findByText('Late work.')).toBeInTheDocument();
     expect(
-      screen.queryByText('com_ui_subagent_activity_details_unavailable'),
+      screen.queryByText('Additional activity details are unavailable.'),
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'com_ui_load_more' })).not.toBeInTheDocument();
-    expect(screen.queryByText('com_ui_loading')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
   });
 
   it('offers to read again when the reread fails', async () => {
@@ -1239,17 +1237,13 @@ describe('recovered turn details', () => {
     }));
     renderTurn(turns[0]);
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
     /** The load error above the turn offers its own retry; the details notice keeps one too. */
-    await waitFor(() =>
-      expect(screen.getAllByRole('button', { name: 'com_ui_retry' })).toHaveLength(2),
-    );
-    fireEvent.click(screen.getAllByRole('button', { name: 'com_ui_retry' })[1]);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(2));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Retry' })[1]);
     expect(refetch).toHaveBeenCalledTimes(2);
-    expect(screen.getByText('com_ui_loading')).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getAllByRole('button', { name: 'com_ui_retry' })).toHaveLength(2),
-    );
+    expect(screen.getByText('Loading...')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(2));
   });
 
   it('calls a capture the task no longer serves unavailable after the reread', async () => {
@@ -1265,11 +1259,11 @@ describe('recovered turn details', () => {
     }));
     renderTurn(turns[0]);
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
     expect(
-      await screen.findByText('com_ui_subagent_activity_details_unavailable'),
+      await screen.findByText('Additional activity details are unavailable.'),
     ).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'com_ui_retry' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
   });
 
   it('rereads a partial capture even where the thread view shortened the turn and has no more', async () => {
@@ -1286,11 +1280,11 @@ describe('recovered turn details', () => {
       detailStateByTask: new Map([['task-1', 'unavailable' as const]]),
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
     expect(refetch).toHaveBeenCalledTimes(1);
     expect(loadDetails).not.toHaveBeenCalled();
     expect(
-      await screen.findByText('com_ui_subagent_activity_details_unavailable'),
+      await screen.findByText('Additional activity details are unavailable.'),
     ).toBeInTheDocument();
   });
 
@@ -1305,7 +1299,7 @@ describe('recovered turn details', () => {
     const loadDetails = jest.fn();
     renderTurn(shortened, { onLoadTurnDetails: loadDetails });
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
     expect(loadDetails).toHaveBeenCalledWith('task-1');
     expect(refetch).not.toHaveBeenCalled();
   });
@@ -1320,9 +1314,9 @@ describe('recovered turn details', () => {
     renderTurn(shortened, { onLoadTurnDetails: jest.fn() });
 
     expect(screen.getByText('Captured work.')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'com_ui_load_more' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
     expect(
-      screen.queryByText('com_ui_subagent_activity_details_unavailable'),
+      screen.queryByText('Additional activity details are unavailable.'),
     ).not.toBeInTheDocument();
   });
 });

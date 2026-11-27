@@ -11,28 +11,6 @@ import AskUserQuestionCall from '../Call';
 
 beforeAll(initEnglish);
 
-const translations: Record<string, string> = {
-  com_ui_asked: 'Asked',
-  com_ui_asking: 'Asking',
-  com_ui_question_failed: "Question wasn't shown",
-  com_ui_question_failed_description:
-    "The agent couldn't show this question and may retry automatically.",
-  com_ui_question_unanswered: 'No answer was given',
-  com_ui_you_answered: 'You answered:',
-  com_ui_asked_n_questions: 'Asked {{0}} questions',
-  com_ui_asking_n_questions: 'Asking {{0}} questions',
-};
-
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string, values?: Record<string, string>) => {
-    const template = translations[key] ?? key;
-    return values == null
-      ? template
-      : template.replace(/\{\{(\w+)\}\}/g, (_match, name: string) => values[name] ?? '');
-  },
-}));
-
 const createHost = (autoExpand: boolean): MessagePartsHost => ({
   useMessage: () => ({ messageId: 'msg-1', isSubmitting: false, isLatestMessage: true }),
   renderMarkdown: () => null,
@@ -149,7 +127,7 @@ describe('AskUserQuestionCall', () => {
 
     const header = screen.getByRole('button');
     expect(header.querySelector('.fold-glyph svg')).toHaveClass('text-text-warning');
-    expect(header).toHaveTextContent('com_ui_tool_failed');
+    expect(header).toHaveTextContent('· failed');
     expect(header.querySelector('.shimmer')).toBeNull();
     expect(screen.queryByTestId('stream-elapsed')).toBeNull();
   });

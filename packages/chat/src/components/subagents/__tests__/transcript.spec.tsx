@@ -17,8 +17,9 @@ import { TaskContentScopeContext } from '../../../react/subagents/scope';
 import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import { SubagentsHostProvider } from '../../../react/subagents/host';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 
-const mockShowMore = 'com_ui_show_more';
+const mockShowMore = 'Show more';
 const mockReadControl = jest.fn();
 const mockContentParts = jest.fn();
 let mockAutoExpandTools = false;
@@ -34,12 +35,14 @@ jest.mock('../../EmptyText', () => ({
 jest.mock('@librechat/client', () => ({
   cn: jest.requireActual('@librechat/client').cn,
   useLanguage: () => 'en',
-  useLocalize: () => (key: string) => key,
+  useLocalize: jest.requireActual('@librechat/client').useLocalize,
   Alert: ({ children }: { children: React.ReactNode }) => <div role="alert">{children}</div>,
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
     <button {...props}>{children}</button>
   ),
 }));
+
+beforeAll(initEnglish);
 
 jest.mock('lucide-react', () => ({
   AlertCircle: () => null,
@@ -335,29 +338,29 @@ describe('SubagentActivity', () => {
       expect(lastContentParts().foldLiveActivity).toBeUndefined();
     },
   );
-  it.each(['failed', 'cancelled'] as const)(
-    'renders the %s lifecycle through the shared view',
-    (status) => {
-      render(<SubagentActivity activity={{ ...base, status }} />);
-      expect(screen.getByText(`com_ui_subagent_thread_status_${status}`)).toBeInTheDocument();
-    },
-  );
+  it.each([
+    ['failed', 'Failed'],
+    ['cancelled', 'Cancelled'],
+  ] as const)('renders the %s lifecycle through the shared view', (status, label) => {
+    render(<SubagentActivity activity={{ ...base, status }} />);
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
 
   it('shows no status chip while running, matching the main chat view', () => {
     render(<SubagentActivity activity={{ ...base, status: 'running' }} />);
-    expect(screen.queryByText('com_ui_subagent_thread_status_running')).not.toBeInTheDocument();
+    expect(screen.queryByText('Running')).not.toBeInTheDocument();
   });
 
   it('does not repeat the completed lifecycle in the conversation body', () => {
     render(<SubagentActivity activity={base} />);
 
-    expect(screen.queryByText('com_ui_subagent_thread_status_completed')).not.toBeInTheDocument();
+    expect(screen.queryByText('Completed')).not.toBeInTheDocument();
   });
 
   it('reports when the durable control history is bounded', () => {
     render(<SubagentActivity activity={{ ...base, controlsTruncated: true }} />);
 
-    expect(screen.getByText('com_ui_subagent_control_history_truncated')).toBeInTheDocument();
+    expect(screen.getByText('Earlier control activity is not shown.')).toBeInTheDocument();
   });
 
   it('preserves question input-validation failure for the regular renderer', () => {
@@ -428,14 +431,14 @@ describe('SubagentActivity', () => {
     );
 
     expect(screen.queryByText('bounded input')).not.toBeInTheDocument();
-    expect(screen.queryByText('com_ui_subagent_activity_details_unavailable')).toBeInTheDocument();
-    expect(screen.queryByText('com_ui_subagent_thread_history_truncated')).not.toBeInTheDocument();
+    expect(screen.queryByText('Additional activity details are unavailable.')).toBeInTheDocument();
+    expect(screen.queryByText('Some earlier activity is unavailable.')).not.toBeInTheDocument();
   });
 
   it('renders writing, reasoning, grouped tools, and collapsed details', () => {
     render(<SubagentActivity activity={base} />);
 
-    expect(screen.queryByText('com_ui_subagent_ticker_writing')).not.toBeInTheDocument();
+    expect(screen.queryByText('Writing')).not.toBeInTheDocument();
     expect(screen.getByText('Final answer.')).toBeInTheDocument();
     expect(screen.getByText('Visible reasoning.')).toBeInTheDocument();
     expect(screen.getByText('Used 2 tools')).toBeInTheDocument();
@@ -519,23 +522,23 @@ describe('SubagentActivity', () => {
       />,
     );
 
-    expect(screen.queryByText('com_ui_subagent_thread_status_running')).not.toBeInTheDocument();
-    expect(screen.getByText('com_ui_subagent_control_status_submitted')).toBeInTheDocument();
-    expect(screen.getByText('com_ui_subagent_control_status_accepted')).toBeInTheDocument();
-    expect(screen.getByText('com_ui_subagent_control_status_applied')).toBeInTheDocument();
-    expect(screen.getByText('com_ui_subagent_control_status_rejected')).toBeInTheDocument();
-    expect(screen.queryByText('com_ui_subagent_control_message_truncated')).not.toBeInTheDocument();
+    expect(screen.queryByText('Running')).not.toBeInTheDocument();
+    expect(screen.getByText('Sending')).toBeInTheDocument();
+    expect(screen.getByText('Waiting')).toBeInTheDocument();
+    expect(screen.getByText('Applied')).toBeInTheDocument();
+    expect(screen.getByText('Not applied')).toBeInTheDocument();
+    expect(screen.queryByText('Message shortened for display.')).not.toBeInTheDocument();
     expect(
       screen
         .getAllByTestId('shared-steer-part')
         .some((part) => part.textContent === 'Add a citation.'),
     ).toBe(true);
-    expect(screen.getByText('com_ui_subagent_control_reason_task_completed')).toBeInTheDocument();
+    expect(screen.getByText('The task completed before this command applied.')).toBeInTheDocument();
 
-    const accepted = screen.getByText('com_ui_subagent_control_status_accepted');
-    const withdraw = screen.getByRole('button', { name: 'com_ui_subagent_control_withdraw' });
+    const accepted = screen.getByText('Waiting');
+    const withdraw = screen.getByRole('button', { name: 'Withdraw' });
     expect(accepted.parentElement).toContainElement(withdraw);
-    expect(screen.queryByText('com_ui_queued_turn_starting')).toBeNull();
+    expect(screen.queryByText('Starting as the next turn')).toBeNull();
     fireEvent.click(withdraw);
     expect(onCancelControl).toHaveBeenCalledWith('control-1');
   });
@@ -567,8 +570,8 @@ describe('SubagentActivity', () => {
       />,
     );
 
-    const applied = screen.getByText('com_ui_subagent_control_status_applied');
-    const accepted = screen.getByText('com_ui_subagent_control_status_accepted');
+    const applied = screen.getByText('Applied');
+    const accepted = screen.getByText('Waiting');
     expect(
       applied.compareDocumentPosition(accepted) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
@@ -684,7 +687,7 @@ describe('SubagentActivity', () => {
     render(<SubagentActivity activity={{ ...base, status: 'running', items: [] }} />);
 
     expect(screen.getByTestId('thinking-cursor')).toBeInTheDocument();
-    expect(screen.queryByText('com_ui_subagent_no_result_yet')).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Still running/)).not.toBeInTheDocument();
   });
 
   it.each(['running', 'completed', 'failed', 'cancelled'] as const)(
@@ -713,24 +716,26 @@ describe('SubagentActivity', () => {
       <SubagentActivity activity={{ ...base, status: 'running', items: [] }} state="loading" />,
     );
     expect(screen.getByTestId('thinking-cursor')).toBeInTheDocument();
-    expect(screen.queryByText('com_ui_subagent_waiting')).not.toBeInTheDocument();
+    expect(screen.queryByText('Working…')).not.toBeInTheDocument();
   });
 
   it('renders the load error state', () => {
     render(<SubagentActivity activity={{ ...base, items: [] }} state="error" />);
-    expect(screen.getByText('com_ui_conversation_load_error')).toBeInTheDocument();
+    expect(screen.getByText('Could not load this chat. Please try again.')).toBeInTheDocument();
   });
 
   it('does not describe a completed tool-only child as missing a result', () => {
     render(<SubagentActivity activity={{ ...base, status: 'completed', items: [] }} />);
-    expect(screen.queryByText('com_ui_subagent_empty_result')).not.toBeInTheDocument();
+    expect(screen.queryByText('No text returned.')).not.toBeInTheDocument();
   });
 });
 
 it('retains standard content when a refresh fails and reports the failure', () => {
   render(<SubagentActivity activity={base} state="error" />);
   expect(screen.getByText('Final answer.')).toBeInTheDocument();
-  expect(screen.getByRole('alert')).toHaveTextContent('com_ui_conversation_load_error');
+  expect(screen.getByRole('alert')).toHaveTextContent(
+    'Could not load this chat. Please try again.',
+  );
 });
 
 it('does not repeat an applied control already rendered at its standard content position', () => {
@@ -753,7 +758,7 @@ it('does not repeat an applied control already rendered at its standard content 
       }}
     />,
   );
-  expect(screen.queryByText('com_ui_subagent_control_status_applied')).not.toBeInTheDocument();
+  expect(screen.queryByText('Applied')).not.toBeInTheDocument();
   expect(lastContentParts().content[0]).toMatchObject({
     type: ContentTypes.STEER,
     steerId: 'control-1',
@@ -933,7 +938,7 @@ it('loads a budgeted retained body only after expansion while keeping Withdraw a
   );
   expect(mockReadControl).toHaveBeenCalledTimes(1);
   expect(mockReadControl).toHaveBeenCalledWith('parent', 'child', 'task', 'budgeted');
-  fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_control_withdraw' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Withdraw' }));
   expect(withdraw).toHaveBeenCalledWith('pending-control');
   expect(screen.queryByText('Message shortened for display.')).not.toBeInTheDocument();
   unmount();
@@ -993,12 +998,15 @@ it('does not hide a failed withdrawal just because its target was already applie
       }}
     />,
   );
-  expect(screen.getByText('com_ui_subagent_control_reason_control_not_found')).toBeInTheDocument();
+  expect(screen.getByText('That queued message is no longer available.')).toBeInTheDocument();
 });
 
-it.each(['failed', 'rejected'] as const)(
+it.each([
+  ['failed', 'Failed'],
+  ['rejected', 'Not applied'],
+] as const)(
   'keeps the %s guidance body readable without asserting enqueue or application',
-  (status) => {
+  (status, label) => {
     render(
       <SubagentActivity
         activity={{
@@ -1021,7 +1029,7 @@ it.each(['failed', 'rejected'] as const)(
       'Retained terminal guidance.',
     );
     expect(screen.getByTestId('shared-steer-part')).not.toHaveAttribute('data-receipt');
-    expect(screen.getByText(`com_ui_subagent_control_status_${status}`)).toBeVisible();
+    expect(screen.getByText(label)).toBeVisible();
   },
 );
 

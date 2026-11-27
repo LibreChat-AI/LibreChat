@@ -6,13 +6,11 @@ import { render, screen } from '@testing-library/react';
 import type { MessagePartsHost } from '../../../react/host';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import MarkdownErrorBoundary from '../Boundary';
 import MarkdownLite from '../Lite';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 beforeAll(() => {
   window.IntersectionObserver = class {
