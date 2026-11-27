@@ -3,7 +3,7 @@ import type { TMessageContentParts } from 'librechat-data-provider';
 import type { TranslationKeys } from '@librechat/client';
 import type { TOptions } from 'i18next';
 import { firstErrorLine } from '../../../../core/parts/output';
-import { getFailedLines } from '../activity';
+import { getFailedLines, getLiveActivity } from '../activity';
 
 const localize = (key: TranslationKeys, values?: TOptions): string =>
   key === 'com_ui_failed_subject' ? `Failed: ${String(values?.[0])}` : key;
@@ -102,5 +102,77 @@ describe('getFailedLines', () => {
     expect(
       getFailedLines([toPart({ name: 'lookup', output: 'rows' }, 'ok')], localize, []),
     ).toEqual([]);
+  });
+});
+
+describe('getLiveActivity reasoning preview', () => {
+  /** The collapsed header's line for a span that is one streaming thought. */
+  const preview = (think: string): string =>
+    getLiveActivity(
+      [{ type: ContentTypes.THINK, think } as unknown as TMessageContentParts],
+      localize,
+      [],
+    ).text;
+
+  it('names the thought by its generated label once one lands, open or collapsed', () => {
+    const thought = {
+      type: ContentTypes.THINK,
+      think: 'Here is my plan:\n1. Check the refs.\n5.',
+      reasoning_label: ' Planning the fix ',
+    } as unknown as TMessageContentParts;
+    expect(getLiveActivity([thought], localize, []).text).toBe('Planning the fix');
+    expect(getLiveActivity([thought], localize, [], undefined, true).text).toBe('Planning the fix');
+  });
+
+  it('never shows a list ordinal as the sentence', () => {
+    const plan = 'Here is my plan:\n1. Check the refs.\n2. Compare the ordering.\n5.';
+    expect(preview(plan)).toBe('Compare the ordering.');
+    expect(preview(`${plan} Write`)).toBe('Compare the ordering.');
+  });
+
+  it('does not end a sentence at the ordinal of an unpunctuated item', () => {
+    expect(preview('Weighing it all. Steps:\n1. Check the refs\n2. Compare\n3. Read')).toBe(
+      'Weighing it all.',
+    );
+    expect(preview('1. Check the refs\n2. Compare')).toBe('com_ui_thinking');
+  });
+
+  it('drops block markers and keeps the block above out of the sentence', () => {
+    expect(preview('Options to weigh:\n- Use the cache.\n- Skip the read')).toBe('Use the cache.');
+    expect(preview('Options:\n  * Use the cache.\n  + Reuse the index.')).toBe('Reuse the index.');
+    expect(preview('Order:\n1) Fetch the refs.\n2) Sort')).toBe('Fetch the refs.');
+    expect(preview('**Checking the refs**\n\nThe tags share a commit.')).toBe(
+      'The tags share a commit.',
+    );
+    expect(preview('## Checking the refs\nThe tags share a commit.')).toBe(
+      'The tags share a commit.',
+    );
+    expect(preview('Next up:\n## The tags share a commit.')).toBe('The tags share a commit.');
+  });
+
+  it('keeps a sentence whole across a soft line break', () => {
+    expect(preview('I should compare the cached results\nwith the current response.')).toBe(
+      'I should compare the cached results with the current response.',
+    );
+  });
+
+  it('removes citation anchors in both forms, ending the sentence they follow', () => {
+    expect(
+      preview('The docs confirm it. \ue202turn0search2 - The notes say it shipped in 2.1. Now'),
+    ).toBe('The notes say it shipped in 2.1.');
+    expect(preview('The docs confirm it.\\ue202turn0search2 Then')).toBe('The docs confirm it.');
+    expect(
+      preview('It shipped.\ue202turn0search0\ue202turn1news3 \ue200\ue202turn0ref1\ue201 More'),
+    ).toBe('It shipped.');
+    expect(preview('\ue203Release 2.1 added it.\ue204\ue202turn0search1 Then')).toBe(
+      'Release 2.1 added it.',
+    );
+  });
+
+  it('keeps decimals, versions and CJK sentences whole', () => {
+    expect(preview('The gain was 3.5 points on v2.1 today. Next up')).toBe(
+      'The gain was 3.5 points on v2.1 today.',
+    );
+    expect(preview('先检查引用。然后比较')).toBe('先检查引用。');
   });
 });

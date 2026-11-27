@@ -10,8 +10,20 @@ export class ClientDisconnectedError extends Error {
   }
 }
 
-export function isClientDisconnect(error: unknown): error is ClientDisconnectedError {
-  return error instanceof ClientDisconnectedError;
+/**
+ * Whether `error` is the client going away: the disconnect itself, or a request canceled because
+ * its signal aborted for one. Axios keeps that signal on the cancellation's config, whether it
+ * refused to send the request or cut it off.
+ */
+export function isClientDisconnect(error: unknown): boolean {
+  if (error instanceof ClientDisconnectedError) {
+    return true;
+  }
+  const { code, config } = (error ?? {}) as {
+    code?: unknown;
+    config?: { signal?: { reason?: unknown } };
+  };
+  return code === 'ERR_CANCELED' && config?.signal?.reason instanceof ClientDisconnectedError;
 }
 
 /**
@@ -116,10 +128,15 @@ export function pipeSegment(
 
 /**
  * A signal that aborts when the response closes, so an upstream request made for it stops once
- * the client is gone. A response that already finished is unaffected: nothing is left to cancel.
+ * the client is gone. A response that already closed, as when the client left while middleware
+ * ran, gives a signal that is already aborted: its close event will not come again.
  */
-export function abortOnClose(res: Pick<Writable, 'once'>): AbortSignal {
+export function abortOnClose(res: Pick<Writable, 'once' | 'destroyed'>): AbortSignal {
   const controller = new AbortController();
+  if (res.destroyed) {
+    controller.abort(new ClientDisconnectedError());
+    return controller.signal;
+  }
   res.once('close', () => controller.abort(new ClientDisconnectedError()));
   return controller.signal;
 }

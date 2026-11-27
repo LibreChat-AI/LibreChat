@@ -51,6 +51,7 @@ export type AgentForm = {
   skills?: string[];
   skills_enabled?: boolean;
   skill_authoring_enabled?: boolean;
+  text_only?: boolean;
   skills_scope?: SkillsScope;
   /** Memory partition: 'agent' isolates memories per (user, agent); default shared pool */
   memory_scope?: MemoryScope;

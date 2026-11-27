@@ -74,8 +74,9 @@ export interface PaletteEntry {
   /** Temporary catalog placeholders do not have a durable favorite identity. */
   favoritable?: boolean;
   onSelect: () => void;
-  /** Removes a persistent pin without changing the tool's active state. */
-  onUnpin?: () => void;
+  /** Stores the persistent pin without changing the tool's active state: the
+   *  palette row's toggle and the chip's remove button share this one writer. */
+  onPinChange?: (pinned: boolean) => void;
   /** Refinements of this tool, rendered as inline pills on the row while it is
    *  on. Not separately favouritable: they only exist within the parent. */
   modes?: PaletteMode[];
@@ -286,7 +287,7 @@ export default function usePaletteEntries({
       active: boolean,
       pinned: boolean,
       onSelect: () => void,
-      onUnpin: () => void,
+      onPinChange: (pinned: boolean) => void,
       modes?: PaletteMode[],
     ) => {
       entries.push({
@@ -299,7 +300,7 @@ export default function usePaletteEntries({
         active,
         pinned,
         onSelect,
-        onUnpin,
+        onPinChange,
         modes,
       });
     };
@@ -320,7 +321,7 @@ export default function usePaletteEntries({
         webSearch.toggleState === true,
         webSearch.isPinned === true,
         () => webSearch.debouncedChange({ value: !webSearch.toggleState }),
-        () => webSearch.setIsPinned(false),
+        webSearch.setIsPinned,
         searchConfigurable && searchApiKeyForm != null
           ? [
               {
@@ -343,7 +344,7 @@ export default function usePaletteEntries({
         codeInterpreter.toggleState === true,
         codeInterpreter.isPinned === true,
         () => codeInterpreter.debouncedChange({ value: !codeInterpreter.toggleState }),
-        () => codeInterpreter.setIsPinned(false),
+        codeInterpreter.setIsPinned,
       );
     }
 
@@ -355,7 +356,7 @@ export default function usePaletteEntries({
         fileSearch.toggleState === true,
         fileSearch.isPinned === true,
         () => fileSearch.debouncedChange({ value: !fileSearch.toggleState }),
-        () => fileSearch.setIsPinned(false),
+        fileSearch.setIsPinned,
       );
     }
 
@@ -367,7 +368,7 @@ export default function usePaletteEntries({
         skills.toggleState === true,
         skills.isPinned === true,
         () => skills.debouncedChange({ value: !skills.toggleState }),
-        () => skills.setIsPinned(false),
+        skills.setIsPinned,
       );
     }
 
@@ -379,7 +380,7 @@ export default function usePaletteEntries({
         memory.toggleState === true,
         memory.isPinned === true,
         () => memory.debouncedChange({ value: !memory.toggleState }),
-        () => memory.setIsPinned(false),
+        memory.setIsPinned,
       );
     }
 
@@ -409,7 +410,7 @@ export default function usePaletteEntries({
         artifactsOn,
         artifacts.isPinned === true,
         () => artifacts.debouncedChange({ value: artifactsOn ? '' : ArtifactModes.DEFAULT }),
-        () => artifacts.setIsPinned(false),
+        artifacts.setIsPinned,
         artifactsOn
           ? [
               {
