@@ -9,7 +9,11 @@ import {
   OboTokenResolutionError,
   ReauthenticationRequiredError,
 } from '~/mcp/oauth';
-import { MCPAuthenticationRejectedError, ScheduledMCPBearerError } from '~/mcp/errors';
+import {
+  MCPAuthenticationRejectedError,
+  ScheduledMCPBearerError,
+  MCPOAuthDeferredError,
+} from '~/mcp/errors';
 import { PENDING_STALE_MS, FlowStateNotFoundError } from '~/flow/manager';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
 import { getMCPServerGeneration } from '~/mcp/oauth/cleanup';
@@ -1658,6 +1662,10 @@ describe('MCPConnectionFactory', () => {
           message: 'OAuth flow initiated - return early',
         }),
       );
+      expect(mockConnectionInstance.emit).toHaveBeenCalledWith(
+        'oauthFailed',
+        expect.any(MCPOAuthDeferredError),
+      );
     });
 
     it('should clear stale client registration when returnOnOAuth flow fails with client rejection', async () => {
@@ -1785,6 +1793,10 @@ describe('MCPConnectionFactory', () => {
       expect(mockConnectionInstance.emit).toHaveBeenCalledWith(
         'oauthFailed',
         expect.objectContaining({ message: 'Pending OAuth flow reused - return early' }),
+      );
+      expect(mockConnectionInstance.emit).toHaveBeenCalledWith(
+        'oauthFailed',
+        expect.any(MCPOAuthDeferredError),
       );
     });
 

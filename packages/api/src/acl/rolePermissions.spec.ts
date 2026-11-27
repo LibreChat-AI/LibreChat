@@ -36,6 +36,8 @@ beforeAll(async () => {
   mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
   await mongoose.connect(mongo.getUri());
   createModels(mongoose);
+  /** Lock acquisition gives a cold index build only 2s, so finish it before the first write. */
+  await mongoose.models.ResourceLock.createIndexes();
   entries = mongoose.models.AclEntry as Model<IAclEntry>;
   methods = createMethods(mongoose);
   await methods.seedDefaultRoles();

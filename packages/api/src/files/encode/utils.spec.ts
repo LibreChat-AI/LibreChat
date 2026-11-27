@@ -5,12 +5,14 @@ import { audioMimeTypes } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import {
   AttachmentObjectNotFoundError,
+  AttachmentSizeError,
   appendMissingAttachmentsNote,
   createMissingAttachmentCollector,
   replayMessageAttachments,
   skipMissingAttachment,
   getAudioFormat,
   getFileStream,
+  getConfiguredFileSizeLimit,
   isConfiguredProviderMediaType,
 } from './utils';
 import { outboundRequestBudget } from '~/utils/timeouts';
@@ -67,6 +69,41 @@ describe('getFileStream', () => {
     await expect(
       getFileStream({} as ServerRequest, file, {}, () => ({ getDownloadStream })),
     ).resolves.toMatchObject({ content: Buffer.from('data').toString('base64') });
+  });
+
+  it('reads an object that fits its byte limit', async () => {
+    const getDownloadStream = jest.fn().mockResolvedValue(Readable.from(Buffer.from('data')));
+
+    await expect(
+      getFileStream({} as ServerRequest, file, {}, () => ({ getDownloadStream }), undefined, 4),
+    ).resolves.toMatchObject({ content: Buffer.from('data').toString('base64') });
+  });
+
+  it('stops reading at the byte limit and never downloads the rest', async () => {
+    let produced = 0;
+    const stream = Readable.from(
+      (function* chunks() {
+        for (let i = 0; i < 1000; i++) {
+          produced++;
+          yield Buffer.alloc(1024);
+        }
+      })(),
+    );
+    const getDownloadStream = jest.fn().mockResolvedValue(stream);
+
+    const read = getFileStream(
+      {} as ServerRequest,
+      { ...file, filename: 'big.csv' },
+      {},
+      () => ({ getDownloadStream }),
+      undefined,
+      4096,
+    );
+
+    await expect(read).rejects.toBeInstanceOf(AttachmentSizeError);
+    await expect(read).rejects.toMatchObject({ status: 413, limit: 4096 });
+    expect(stream.destroyed).toBe(true);
+    expect(produced).toBeLessThan(40);
   });
 
   it.each([
@@ -192,6 +229,33 @@ describe('getFileStream with a read budget', () => {
 /** Uses the real data-provider merge logic so the "inherited default" identity check is exercised. */
 const reqWith = (fileConfig: unknown): ServerRequest =>
   ({ config: fileConfig === undefined ? undefined : { fileConfig } }) as unknown as ServerRequest;
+
+describe('getConfiguredFileSizeLimit', () => {
+  const params = { provider: Providers.BEDROCK };
+
+  it('is undefined without any fileConfig', () => {
+    expect(getConfiguredFileSizeLimit(reqWith(undefined), params)).toBeUndefined();
+  });
+
+  it('reports the inherited default as a limit unless only an explicit one is asked for', () => {
+    const req = reqWith({ endpoints: { default: { fileLimit: 3 } } });
+    expect(getConfiguredFileSizeLimit(req, params)).toBe(512 * 1024 * 1024);
+    expect(getConfiguredFileSizeLimit(req, { ...params, explicit: true })).toBeUndefined();
+  });
+
+  it.each([
+    ['its own endpoint', { endpoints: { [Providers.BEDROCK]: { fileSizeLimit: 10 } } }],
+    ['the default endpoint', { endpoints: { default: { fileSizeLimit: 10 } } }],
+  ])('returns a limit the operator set on %s', (_name, fileConfig) => {
+    const req = reqWith(fileConfig);
+    expect(getConfiguredFileSizeLimit(req, { ...params, explicit: true })).toBe(10 * 1024 * 1024);
+  });
+
+  it('keeps a disabled endpoint at zero', () => {
+    const req = reqWith({ endpoints: { [Providers.BEDROCK]: { disabled: true } } });
+    expect(getConfiguredFileSizeLimit(req, { ...params, explicit: true })).toBe(0);
+  });
+});
 
 describe('isConfiguredProviderMediaType', () => {
   const params = { provider: Providers.OPENAI, endpoint: 'MyGateway' };

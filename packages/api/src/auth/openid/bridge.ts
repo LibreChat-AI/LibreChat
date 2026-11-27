@@ -30,11 +30,16 @@ type IdentityInput = Partial<RefreshTokenBridgeIdentity>;
 
 export interface RefreshTokenBridgeService {
   OPENID_REFRESH_BRIDGE_GRACE_MS: number;
+  /**
+   * Keys the publication of the refresh that consumed `oldRefreshToken`. With `signIn`, keys the
+   * publication of a sign-in that issued it instead, which no refresh of that token can join.
+   */
   createRefreshTokenBridgeFlightKey: (args: {
     oldRefreshToken?: string;
     userId?: string;
     tenantId?: string;
     openidIssuer?: string;
+    signIn?: boolean;
   }) => string | null;
   deleteAllRefreshTokenBridges: (args: {
     userId?: string;
@@ -88,17 +93,19 @@ export function createRefreshTokenBridgeService(
     userId,
     tenantId,
     openidIssuer,
+    signIn = false,
   }: {
     oldRefreshToken?: string;
     userId?: string;
     tenantId?: string;
     openidIssuer?: string;
+    signIn?: boolean;
   }) {
     const identity = resolveBridgeIdentity({ userId, tenantId, openidIssuer });
     if (!oldRefreshToken || !identity) return null;
     return hashRefreshToken(
       [
-        'bridge-recovery',
+        signIn ? 'openid-sign-in' : 'bridge-recovery',
         identity.userId,
         identity.tenantId ?? '',
         identity.openidIssuer ?? '',

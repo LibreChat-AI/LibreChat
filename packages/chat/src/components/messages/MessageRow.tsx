@@ -3,10 +3,16 @@ import { cn } from '@librechat/client';
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactNode, ReactElement } from 'react';
-import { OFFSCREEN_ROW_CLASSES, useOffscreenRow } from '../../react/messages/offscreen';
+import {
+  useOffscreenRow,
+  RowReachProvider,
+  OFFSCREEN_ROW_CLASSES,
+} from '../../react/messages/offscreen';
+import { useWidenedRow } from '../../react/messages/useProgressiveRowMount';
 import { useMessagesHost } from '../../react/messages/host';
 import MessageTimestamp from './MessageTimestamp';
 import { getMessageRowWidthClass } from './width';
+import { NAV_CLEARANCE } from '../parts/rows';
 import HeaderLabel from './HeaderLabel';
 
 type MessageRowProps = {
@@ -105,7 +111,7 @@ export default function MessageRow({
   outlined = false,
 }: MessageRowProps): ReactElement {
   const { renderFiles } = useMessagesHost();
-  const rowRef = useOffscreenRow();
+  const { rowRef, reach } = useOffscreenRow(useWidenedRow());
   // Same column as ChatForm: max-width plus `sm:px-2`, so the body lines
   // up with the composer surface rather than the form's outer box.
   const widthClass = getMessageRowWidthClass({ fullWidth, hasParallelContent });
@@ -154,7 +160,11 @@ export default function MessageRow({
           (hasParallelContent || isEditing) && 'w-full',
           !hasParallelContent &&
             isUserSide &&
-            cn('ms-auto items-end', !isEditing && 'w-fit max-w-[90%] sm:max-w-[85%]'),
+            cn(
+              'ms-auto items-end',
+              NAV_CLEARANCE.pad,
+              !isEditing && 'w-fit max-w-[90%] sm:max-w-[85%]',
+            ),
           !hasParallelContent && !isUserSide && !isEditing && 'flex-1',
         )}
       >
@@ -221,7 +231,9 @@ export default function MessageRow({
               {children}
             </div>
           )}
-          <div className={cn('w-full', isUserSide && 'flex justify-end')}>{footer}</div>
+          <div className={cn('w-full', isUserSide && 'flex justify-end')}>
+            <RowReachProvider reach={reach}>{footer}</RowReachProvider>
+          </div>
         </div>
       </div>
     </div>

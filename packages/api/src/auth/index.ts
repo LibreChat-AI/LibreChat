@@ -28,6 +28,7 @@ export * from './openid/index';
 export * from './twoFactor';
 export * from './user';
 export * from './localRefresh';
+export * from './logout';
 export * from './openid/reuseCredential';
 export * from './passwordResetUpdate';
 export * from './login';

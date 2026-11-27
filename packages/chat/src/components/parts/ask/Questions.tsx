@@ -8,6 +8,7 @@ import { isCancelKey, isReboundSubmitChord, splitOtherOption } from '../../../co
 import useArrivalFocus, { isFocusIdle } from '../../../react/parts/arrival';
 import { useOptionalChatSurface } from '../../../react/subagents/surface';
 import useAskQuestionsForm from '../../../react/parts/questionsForm';
+import { NAV_CLEARANCE } from '../rows';
 import AutoHeight from '../AutoHeight';
 import AskOptions from '../AskOptions';
 
@@ -165,7 +166,7 @@ export default function AskUserQuestions({
     stepRef,
     () => {
       const current = latestFormRef.current;
-      if (current.locked || current.arrivalFocused || !isFocusIdle()) {
+      if (current.locked || current.arrivalFocused || !isFocusIdle(stepRef.current)) {
         return;
       }
       focusStep({ firstOption: true, preventScroll: true });
@@ -269,7 +270,12 @@ export default function AskUserQuestions({
             {localize('com_ui_question_step', { 0: activeIndex + 1, 1: total })}
           </p>
         )}
-        <div className="text-text-secondary flex shrink-0 items-start justify-between gap-2 px-3 pt-3">
+        <div
+          className={cn(
+            'text-text-secondary flex shrink-0 items-start justify-between gap-2 px-3 pt-3',
+            NAV_CLEARANCE.pad,
+          )}
+        >
           {/* Bounded so a long prompt scrolls rather than pushing the composer
               popover past the top of the viewport. */}
           <div className="max-h-[25vh] min-w-0 flex-1 overflow-y-auto">
@@ -420,6 +426,7 @@ export default function AskUserQuestions({
       <div
         className={cn(
           'flex shrink-0 items-center gap-2 p-3',
+          NAV_CLEARANCE.pad,
           stepped ? 'justify-between' : 'justify-end',
         )}
       >

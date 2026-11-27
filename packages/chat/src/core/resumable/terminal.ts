@@ -5,6 +5,8 @@ import type { GenerationProtocolVersion } from '../protocol';
 import type { ResumableSubscription } from './subscription';
 import type { ResponsePatcher } from './patches';
 import { GENERATION_PROTOCOL_VERSION, supportsGenerationProtocolV2 } from '../protocol';
+import { keepLocalCodeApprovalMode } from './messages';
+import { toStartGenerationError } from './start';
 
 /** One subscription's terminal handling: the attachment, the app around it, and how a pending
  *  action lands on the response it streams. */
@@ -39,6 +41,59 @@ export function clearPendingApprovalForTerminal(
   for (const id of conversationIds) {
     host.pane.setPendingAction(id, null);
   }
+}
+
+/**
+ * A run that ended with no frame to say so, in a conversation the pane created optimistically
+ * and whose `created` frame never arrived (a turn too fast to be seen, or a stream that never
+ * opened). That proves neither that the conversation was saved nor that it was not, so the
+ * server is asked: a saved one is taken into the caches and the pane, and only one the server
+ * says it does not have is removed. An inconclusive read leaves it, and the lists are read
+ * again either way. Nothing for a conversation the pane did not create, or one `created`
+ * already confirmed. Resolves `false` when the subscription was superseded meanwhile.
+ */
+export async function settleOptimisticConversation(
+  { sub, host }: TerminalContext,
+  conversationId: string,
+): Promise<boolean> {
+  const { run, streamId } = sub;
+  if (run.createdStreamIds.has(streamId) || !run.optimisticStreamIds.has(streamId)) {
+    return true;
+  }
+  try {
+    const persisted = await host.cache.fetchConversation(conversationId);
+    if (!sub.isCurrent()) {
+      return false;
+    }
+    if (persisted?.conversationId === conversationId) {
+      host.cache.setConversation(conversationId, persisted);
+      host.cache.upsertConversation(persisted);
+      host.pane.updateConversation?.((current) => {
+        if (
+          current?.conversationId != null &&
+          current.conversationId !== Constants.NEW_CONVO &&
+          current.conversationId !== conversationId
+        ) {
+          return current;
+        }
+        return keepLocalCodeApprovalMode(
+          { ...current, ...persisted },
+          current,
+          current?.conversationId,
+        );
+      });
+    }
+  } catch (error) {
+    if (!sub.isCurrent()) {
+      return false;
+    }
+    if (toStartGenerationError(error)?.response?.status === 404) {
+      host.cache.removeConversation(streamId);
+    }
+  }
+  void host.cache.refreshConversationLists();
+  void host.cache.refreshPinnedConversations();
+  return true;
 }
 
 /** Releases the epoch this subscription installed, unless a newer one already replaced it. */

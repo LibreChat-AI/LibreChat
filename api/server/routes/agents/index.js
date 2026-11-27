@@ -25,7 +25,7 @@ const {
   isAgentTriggerRequest,
   exemptAgentTriggerFromIpLimiter,
   captureScheduleFireContext,
-  exemptFromUserLimiter: exemptScheduleFromUserLimiter,
+  exemptTriggerFromUserLimiter,
   detectGenerationRetry,
   isConfirmedGenerationRetry,
   generationRetryProbeLimiter,
@@ -41,7 +41,7 @@ const {
   requireJwtAuth,
   requireTermsAcceptance,
   messageIpLimiter,
-  configMiddleware,
+  strictConfigMiddleware,
   messageUserLimiter,
   loadStreamKeepaliveMs,
 } = require('~/server/middleware');
@@ -79,6 +79,7 @@ const {
   cancelOwnerBackgroundResponse,
 } = require('~/server/services/Responses');
 const management = require('./management');
+const conversations = require('./conversations');
 const skills = require('./skills');
 const openai = require('./openai');
 const { v1 } = require('./v1');
@@ -153,6 +154,7 @@ router.use('/v1/responses', responses);
  */
 router.use('/v1/agents', management);
 router.use('/v1/skills', skills);
+router.use('/v1/conversations', conversations);
 
 /**
  * OpenAI-compatible API routes (API key authentication handled in route file)
@@ -175,10 +177,10 @@ const privateTextIngress = createPrivateTextIngress({
   getLegacyPii: (req) => req.config?.messageFilter?.pii,
   getKey: () => process.env.CREDS_KEY ?? '',
 });
-const chatConfigMiddleware = unless((req) => req.config != null, configMiddleware);
+const chatConfigMiddleware = strictConfigMiddleware;
 router.use(
   '/chat',
-  unless((req) => !isPreDenialTextSubmission(req), configMiddleware),
+  unless((req) => !isPreDenialTextSubmission(req), strictConfigMiddleware),
   unless((req) => !isPrivateTextChatSubmission(req), privateTextIngress),
 );
 router.use(checkBan);
@@ -1261,14 +1263,14 @@ chatRouter.use(chatConfigMiddleware);
 if (useMessageIpLimiter || useMessageUserLimiter) {
   chatRouter.use(
     unless(
-      (req) => exemptAgentTriggerFromIpLimiter(req) || exemptScheduleFromUserLimiter(req),
+      (req) => exemptAgentTriggerFromIpLimiter(req) || exemptTriggerFromUserLimiter(req),
       generationRetryProbeLimiter,
     ),
   );
   chatRouter.use(detectGenerationRetry);
   chatRouter.use(
     unless(
-      (req) => exemptAgentTriggerFromIpLimiter(req) || exemptScheduleFromUserLimiter(req),
+      (req) => exemptAgentTriggerFromIpLimiter(req) || exemptTriggerFromUserLimiter(req),
       generationRetryLimiter,
     ),
   );
@@ -1281,7 +1283,7 @@ if (useMessageIpLimiter) {
 if (useMessageUserLimiter) {
   chatRouter.use(
     unless(
-      (req) => exemptScheduleFromUserLimiter(req) || isConfirmedGenerationRetry(req),
+      (req) => exemptTriggerFromUserLimiter(req) || isConfirmedGenerationRetry(req),
       messageUserLimiter,
     ),
   );

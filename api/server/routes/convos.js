@@ -14,6 +14,9 @@ const {
   createArchiveHandler,
   createSubagentActivityStreamHandler,
   createSubagentTaskContentHandler,
+  createChildThreadMessagesHandler,
+  createChildThreadToolCallPartHandler,
+  prepareToolCallPreviews,
   createSubagentControlHandler,
   createSubagentControlReceiptHandler,
   isValidSubagentControlRequest,
@@ -37,7 +40,10 @@ const {
   createRenameConversationHandler,
   createMarkConvoSeenHandler,
   createMarkConvoUnreadHandler,
+  createFileExclusionHandler,
+  createFileExclusionReadHandler,
   createGetConversationHandler,
+  createSavedSpecTargetResolver,
   resolveImportMaxFileSize,
   restoreTenantContextFromReq,
   deleteAllSharedLinksWithCleanup,
@@ -66,7 +72,8 @@ const { forkConversation, duplicateConversation } = require('~/server/utils/impo
 const { storage, importFileFilter } = require('~/server/routes/files/multer');
 const requireJwtAuth = require('~/server/middleware/requireJwtAuth');
 const { importConversations } = require('~/server/utils/import');
-const { getAppConfig } = require('~/server/services/Config');
+const { getAppConfig, getEndpointsConfig } = require('~/server/services/Config');
+const { getEndpointModelsConfig } = require('~/server/controllers/ModelController');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
 const {
   pendingBackgroundToolCompletions,
@@ -89,6 +96,17 @@ const subagentThreadViewHandler = createSubagentThreadViewHandler({
   getConvoOwnership: db.getConvoOwnership,
   getSubagentThreadForParent: db.getSubagentThreadForParent,
   getMessagesForSubagentThreadView: db.getMessagesForSubagentThreadView,
+});
+const childThreadMessagesHandler = createChildThreadMessagesHandler({
+  getConvoOwnership: db.getConvoOwnership,
+  getSubagentThreadForParent: db.getSubagentThreadForParent,
+  getMessagesByCursor: db.getMessagesByCursor,
+  previewToolCalls: (req) => prepareToolCallPreviews(req, { getAppConfig }),
+});
+const childThreadToolCallPartHandler = createChildThreadToolCallPartHandler({
+  getConvoOwnership: db.getConvoOwnership,
+  getSubagentThreadForParent: db.getSubagentThreadForParent,
+  getMessages: db.getMessages,
 });
 const parentSubagentIndexHandler = createParentSubagentIndexHandler({
   getConvoOwnership: db.getConvoOwnership,
@@ -191,6 +209,12 @@ const subagentControlHandler = createSubagentControlHandler({
 const markConvoSeenHandler = createMarkConvoSeenHandler({ markConvoSeen: db.markConvoSeen });
 const markConvoUnreadHandler = createMarkConvoUnreadHandler({
   markConvoUnread: db.markConvoUnread,
+});
+const fileExclusionHandler = createFileExclusionHandler({
+  setConvoFileExclusion: db.setConvoFileExclusion,
+});
+const fileExclusionReadHandler = createFileExclusionReadHandler({
+  getConvoExcludedFiles: db.getConvoExcludedFiles,
 });
 const backgroundTaskPolicy = createBackgroundTaskPolicyMiddleware({ getAppConfig });
 const backgroundTaskIndexHandler = createBackgroundTaskIndexHandler({
@@ -306,17 +330,33 @@ router.post(
 router.get('/:parentConversationId/subagents', parentSubagentIndexHandler);
 router.post('/pull-requests', conversationPullRequestsHandler);
 router.get('/:conversationId/pull-request', conversationPullRequestHandler);
+router.get('/:conversationId/files/exclusion', fileExclusionReadHandler);
+router.post('/:conversationId/files/exclusion', fileExclusionHandler);
 router.get('/:conversationId/background-tasks', backgroundTaskPolicy, backgroundTaskIndexHandler);
 router.post(
   '/:conversationId/background-tasks/cancel',
   backgroundTaskPolicy,
   backgroundTaskCancelHandler,
 );
+router.get('/:parentConversationId/subagents/:threadId/messages', childThreadMessagesHandler);
+router.get(
+  '/:parentConversationId/subagents/:threadId/messages/:messageId/parts/:partIndex',
+  childThreadToolCallPartHandler,
+);
 router.get('/:parentConversationId/subagents/:threadId', subagentThreadViewHandler);
 
 router.get(
   '/:conversationId',
-  createGetConversationHandler({ getConvo: db.getConvo, jobs: GenerationJobManager, logger }),
+  createGetConversationHandler({
+    getConvo: db.getConvo,
+    jobs: GenerationJobManager,
+    logger,
+    resolveTarget: createSavedSpecTargetResolver({
+      getAppConfig,
+      getEndpointsConfig,
+      getEndpointModelsConfig,
+    }),
+  }),
 );
 
 router.get(
@@ -681,10 +721,12 @@ router.post('/archive', configMiddleware, validateConvoAccess, archiveHandler);
 
 /**
  * Archives every conversation currently visible to the user.
+ * The config loads first because the sweep applies the request's retention mode to each
+ * chat it archives, as `/archive` does for one.
  * @route POST /archive/all
  * @returns {object} 200 - The number of conversations archived.
  */
-router.post('/archive/all', archiveAllHandler);
+router.post('/archive/all', configMiddleware, archiveAllHandler);
 
 router.post('/pin', validateConvoAccess, async (req, res) => {
   const { conversationId, pinned } = req.body?.arg ?? {};

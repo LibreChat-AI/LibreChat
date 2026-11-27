@@ -14,9 +14,12 @@ const {
   resolveAvatarRefresh,
   applyCachedAvatarUrl,
   collectEdgeAgentIds,
+  validateHandoffReferences,
   replaceEdgeSourceId,
   mergeDeploymentSkillIds,
   getAgentListAccess,
+  getAgentUploadTools,
+  getAgentChatParameters,
   getAgentListAvatarRefreshKey,
   mergeAgentOcrConversion,
   applyAgentInferenceInput,
@@ -57,6 +60,8 @@ const {
   getSdkAgentWriteErrorStatus,
 } = require('@librechat/api');
 const {
+  resolveSubagents,
+  hasSubagentCapability,
   Time,
   Tools,
   SkillsScope,
@@ -111,10 +116,6 @@ const systemTools = {
 
 const MAX_SEARCH_LEN = 100;
 const escapeRegex = (str = '') => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const getSafeModelParameters = (modelParameters) => {
-  const { useResponsesApi } = modelParameters ?? {};
-  return typeof useResponsesApi === 'boolean' ? { useResponsesApi } : {};
-};
 const hasEditBit = (permission) => (permission & PermissionBits.EDIT) === PermissionBits.EDIT;
 
 const blockFilteredActionContent = (req, res, actions) => {
@@ -369,22 +370,19 @@ const classifyAgentReferences = async (agentIds, userId, userRole) => {
  * @param {Set<string>} [allowedMissingIds]
  * @returns {Promise<{ missing: string[], unauthorized: string[] }>}
  */
-const validateEdgeAgentReferences = async (
+const validateEdgeAgentReferences = (
   edges,
   userId,
   userRole,
   allowedMissingIds = new Set(),
-) => {
-  const { missing, unauthorized } = await classifyAgentReferences(
-    collectEdgeAgentIds(edges),
-    userId,
-    userRole,
-  );
-  return {
-    missing: missing.filter((id) => !allowedMissingIds.has(id)),
-    unauthorized,
-  };
-};
+  specs,
+) =>
+  validateHandoffReferences({
+    edges,
+    specs,
+    allowedMissingIds,
+    classifySavedReferences: (ids) => classifyAgentReferences(ids, userId, userRole),
+  });
 
 /**
  * Collects every saved agent referenced by a spawn target. Graph edge
@@ -479,7 +477,7 @@ const validateSubagentReferences = async (
 const isSubagentsCapabilityEnabled = (req) => {
   const capabilities = req.config?.endpoints?.[EModelEndpoint.agents]?.capabilities;
   if (!Array.isArray(capabilities)) return false;
-  return capabilities.includes(AgentCapabilities.subagents);
+  return hasSubagentCapability(capabilities);
 };
 
 const isCodeInterpreterCapabilityEnabled = (req) => {
@@ -494,6 +492,7 @@ const isCodeInterpreterCapabilityEnabled = (req) => {
  * @returns {Promise<{ status: number, body: { error: string, agent_ids: string[] } } | null>}
  */
 const getSubagentReferenceError = async (subagents, req, allowedMissingIds = new Set()) => {
+  subagents = resolveSubagents(subagents, req.config?.endpoints?.agents?.capabilities ?? []);
   if (
     !isSubagentsCapabilityEnabled(req) ||
     subagents?.enabled !== true ||
@@ -832,6 +831,7 @@ const createAgentHandler = async (req, res) => {
         userId,
         userRole,
         new Set([agentData.id]),
+        req.config?.modelSpecs?.list,
       );
       if (missing.length > 0) {
         return res.status(400).json({
@@ -967,7 +967,7 @@ const createAgentHandler = async (req, res) => {
  * @returns {Promise<Agent>} 200 - success response - application/json
  * @returns {Error} 404 - Agent not found
  */
-const getAgentHandler = async (req, res, expandProperties = false) => {
+const getAgentHandler = async (req, res, expandProperties) => {
   try {
     const id = req.params.id;
     const author = req.user.id;
@@ -1020,7 +1020,8 @@ const getAgentHandler = async (req, res, expandProperties = false) => {
         author: agent.author,
         provider: agent.provider,
         model: agent.model,
-        model_parameters: getSafeModelParameters(agent.model_parameters),
+        model_parameters: getAgentChatParameters(agent.model_parameters),
+        tools: getAgentUploadTools(agent.tools),
         isPublic: agent.isPublic,
         version: agent.version,
         // Safe metadata
@@ -1240,6 +1241,8 @@ const updateAgentHandler = async (req, res) => {
         updateData.edges,
         userId,
         userRole,
+        undefined,
+        req.config?.modelSpecs?.list,
       );
       if (missing.length > 0) {
         return res.status(400).json({
@@ -1574,6 +1577,7 @@ const duplicateAgentHandler = async (req, res) => {
         userId,
         userRole,
         new Set([newAgentId]),
+        req.config?.modelSpecs?.list,
       );
       if (missing.length > 0) {
         return res.status(400).json({
@@ -2153,6 +2157,8 @@ const revertAgentVersionHandler = async (req, res) => {
         revertEdges,
         req.user.id,
         req.user.role,
+        undefined,
+        req.config?.modelSpecs?.list,
       );
       if (missing.length > 0) {
         return res.status(400).json({
@@ -2334,7 +2340,8 @@ const getAgentCategories = async (_req, res) => {
 };
 module.exports = {
   createAgent: createAgentHandler,
-  getAgent: getAgentHandler,
+  getAgent: (req, res) => getAgentHandler(req, res, false),
+  getAgentExpanded: (req, res) => getAgentHandler(req, res, true),
   getAgentVersions: getAgentVersionsHandler,
   updateAgent: updateAgentHandler,
   duplicateAgent: duplicateAgentHandler,

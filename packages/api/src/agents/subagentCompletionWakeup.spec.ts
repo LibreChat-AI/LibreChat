@@ -1674,31 +1674,30 @@ describe('createSubagentCompletionWakeupResolver', () => {
   });
 });
 
-it('refuses a queued legacy scheduled wakeup after enrollment before claiming its result', async () => {
+it('refuses a queued scheduled wakeup once its schedule is gone, before claiming its result', async () => {
   const { methods } = resolverMethods();
-  const lookup = jest.fn(async () => ({
-    identity: {
-      scheduleId: 'schedule',
-      ownerId: 'user-1',
-      tenantId: 'tenant-1',
-      agentId: 'agent_parent_1',
-      invocationMode: 'delegated' as const,
-    },
-    enrolled: true,
-  }));
+  const identity = {
+    scheduleId: 'schedule',
+    ownerId: 'user-1',
+    tenantId: 'tenant-1',
+    agentId: 'agent_parent_1',
+    invocationMode: 'delegated' as const,
+  };
+  // Deleted, erased, or moved to another agent: there is nothing left for the turn to act for.
+  const lookup = jest.fn(async () => null);
   const prepare = createSubagentCompletionWakeupResolver({
     methods: methods as never,
     getGenerationJob: async () => null,
     getScheduleMCPCompletionState: lookup,
   });
   await expect(
-    prepare(wakeupEnvelope((await lookup()).identity), {
+    prepare(wakeupEnvelope(identity), {
       idempotencyKey: 'wakeup',
       attempt: 1,
       maxAttempts: 3,
     }),
   ).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
-  expect(lookup).toHaveBeenCalledWith((await lookup()).identity);
+  expect(lookup).toHaveBeenCalledWith(identity);
   expect(methods.claimSubagentTaskResult).not.toHaveBeenCalled();
 });
 
@@ -1716,4 +1715,42 @@ it('does not attach a historical schedule to an ordinary later subagent completi
   expect(prepared).toMatchObject({ status: 'ready' });
   expect(prepared).not.toHaveProperty('scheduleMCPIdentity');
   expect(lookup).not.toHaveBeenCalled();
+});
+
+describe('the trigger a task kept of the run that started it', () => {
+  const trigger = {
+    subject: { kind: 'key' as const, id: 'key-1' },
+    origin: {
+      agentId: 'agent_root',
+      delivery: {
+        key: 'trigger_abc',
+        event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+      },
+    },
+  };
+
+  it('is stored in the wake-up the task registers, and left out where the task kept none', async () => {
+    const enqueue = enqueueMock();
+    const notify = createSubagentCompletionWakeupHandler(enqueue);
+
+    await notify(registration({ trigger }));
+    await notify(registration({ taskId: 'task-2' }));
+
+    const payloads = enqueue.mock.calls.map(
+      ([envelope]) => parseAgentTriggerEnvelope(envelope).event.payload,
+    );
+    expect(payloads[0]).toEqual({
+      scheduleMCPIdentity: null,
+      trigger,
+      taskId: 'task-1',
+      threadId: 'thread-1',
+      subagentType: 'researcher',
+    });
+    expect(payloads[1]).toEqual({
+      scheduleMCPIdentity: null,
+      taskId: 'task-2',
+      threadId: 'thread-1',
+      subagentType: 'researcher',
+    });
+  });
 });

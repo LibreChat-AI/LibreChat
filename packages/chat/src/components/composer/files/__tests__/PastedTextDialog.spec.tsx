@@ -7,12 +7,10 @@ import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import type { ExtendedFile } from '../../../../core/files';
 import type { PastedTextEdit } from '../PastedTextDialog';
+import { initEnglish } from '../../../../__fixtures__/i18n';
 import PastedTextDialog from '../PastedTextDialog';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 const pastedFile = (file_id: string): ExtendedFile => ({
   file_id,
@@ -58,7 +56,7 @@ describe('PastedTextDialog', () => {
     const field = screen.getByRole('textbox');
     await userEvent.clear(field);
     await userEvent.type(field, 'corrected');
-    await userEvent.click(screen.getByRole('button', { name: 'com_ui_save' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     expect(onSave).toHaveBeenCalledWith('corrected');
   });
@@ -68,14 +66,14 @@ describe('PastedTextDialog', () => {
 
     await userEvent.clear(screen.getByRole('textbox'));
 
-    expect(screen.getByRole('button', { name: 'com_ui_save' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 
   it('leaves returning the paste to the composer to the chip', () => {
     renderDialog();
 
     expect(
-      screen.queryByRole('button', { name: 'com_ui_pasted_text_move_inline' }),
+      screen.queryByRole('button', { name: 'Move back into message' }),
     ).not.toBeInTheDocument();
   });
 

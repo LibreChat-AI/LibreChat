@@ -14,6 +14,7 @@ import type { SteerReceiptState } from '../../components/composer/steering/Recei
 import type { ToolContentQuery } from '../parts/disclosure';
 import type { MessagePartsHost } from '../host';
 import type { TaskContentScope } from './scope';
+import type { FollowedChat } from '../follow';
 
 /** One guidance message sent to a child, drawn as the main chat draws a steer. */
 export type SubagentSteerProps = {
@@ -47,7 +48,8 @@ export type SubagentTaskContent = {
   isError: boolean;
   /** The task predates content recovery, so there is nothing to retry. */
   isUnavailable: boolean;
-  refetch: () => void;
+  /** Reads the content again, settling once that read has. */
+  refetch: () => Promise<void>;
 };
 
 /** A child thread's durable view, read through the parent conversation. */
@@ -108,6 +110,11 @@ export type SubagentNavigation = {
   openConversation: (conversation: TConversation) => void;
   /** Opens a conversation by id. */
   openConversationId: (conversationId: string) => void;
+  /**
+   * Opens a conversation beside the one on screen, with words the reader wrote for it as its
+   * next turn. Absent where the app has no place beside the conversation, or keeps it closed.
+   */
+  openBeside?: (conversation: TConversation, text?: string) => void;
 };
 
 /**
@@ -150,6 +157,22 @@ export interface SubagentsHost {
     taskId: string,
     options: SubagentThreadReadOptions,
   ) => SubagentThreadRead;
+  /**
+   * Follows a child thread through its parent conversation: its stored messages, and the
+   * generation running under it for as long as one is. Called on every render, so
+   * `enabled: false` follows nothing. Without it the panel draws every thread from its durable
+   * view.
+   */
+  useThreadChat?: (
+    parentConversationId: string,
+    threadId: string,
+    options: { live: boolean; enabled: boolean },
+  ) => FollowedChat;
+  /**
+   * Reads the full output of a tool call in a followed child thread, through the parent named by
+   * the task scope around it. Without it a followed thread's tool calls stay previews.
+   */
+  useThreadToolContent?: ToolContentQuery;
   /** Fetches one page of a child thread outside the cached read: a task's exact view, or the
    *  history before `cursor`. */
   loadThread: (
@@ -191,7 +214,7 @@ const idleControl: SubagentRetainedControl = {
 const idleContent: SubagentTaskContent = {
   isError: false,
   isUnavailable: false,
-  refetch: () => undefined,
+  refetch: () => Promise.resolve(),
 };
 
 const idleThread: SubagentThreadRead = {

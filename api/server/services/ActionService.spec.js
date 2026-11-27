@@ -351,6 +351,98 @@ describe('createActionTool OAuth events', () => {
   );
 });
 
+describe('createActionTool sign-in on a run nobody can sign in for', () => {
+  const refusal = 'Action sign-in is required and cannot be completed from an API request.';
+  const config = {
+    metadata: { thread_id: 'thread-1', run_id: 'run-1' },
+    toolCall: { id: 'tool-call-1', stepId: 'step-1', name: 'action-tool', type: 'tool_call' },
+  };
+
+  async function unattendedTool() {
+    const preparedExecutor = {
+      setAuth: jest.fn().mockResolvedValue(undefined),
+      execute: jest.fn().mockResolvedValue({ data: { ok: true } }),
+    };
+    const res = { write: jest.fn() };
+    const actionTool = await createActionTool({
+      userId: 'action-user',
+      res,
+      unattended: true,
+      action: {
+        action_id: 'action-1',
+        metadata: {
+          domain: 'https://api.example.com',
+          oauth_client_id: 'client-id',
+          auth: {
+            type: 'oauth',
+            authorization_url: 'https://auth.example.com/authorize',
+            client_url: 'https://auth.example.com/token',
+            scope: 'read',
+          },
+        },
+      },
+      requestBuilder: { createExecutor: () => ({ setParams: () => preparedExecutor }) },
+      encrypted: {
+        oauth_client_id: 'encrypted-client-id',
+        oauth_client_secret: 'encrypted-client-secret',
+      },
+    });
+    return { actionTool, preparedExecutor, res };
+  }
+
+  it('refuses to prompt when no token is stored, and never calls the API', async () => {
+    mockFindToken.mockResolvedValue(null);
+    const { actionTool, preparedExecutor, res } = await unattendedTool();
+
+    await expect(actionTool._call({}, config)).resolves.toContain(refusal);
+
+    expect(mockActionFlowManager.createFlowWithHandler).not.toHaveBeenCalled();
+    expect(mockActionFlowManager.createFlow).not.toHaveBeenCalled();
+    expect(mockEmitChunk).not.toHaveBeenCalled();
+    expect(res.write).not.toHaveBeenCalled();
+    expect(preparedExecutor.execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses to prompt when the stored refresh token no longer works', async () => {
+    mockFindToken.mockImplementation(async ({ type }) =>
+      type === 'oauth_refresh' ? { token: await dataSchemas.encryptV2('stale-refresh') } : null,
+    );
+    mockActionFlowManager.createFlowWithHandler.mockRejectedValue(new Error('invalid_grant'));
+    const { actionTool, preparedExecutor, res } = await unattendedTool();
+
+    await expect(actionTool._call({}, config)).resolves.toContain(refusal);
+
+    expect(mockActionFlowManager.createFlowWithHandler).toHaveBeenCalledTimes(1);
+    expect(mockActionFlowManager.createFlowWithHandler.mock.calls[0][1]).toBe('oauth_refresh');
+    expect(mockActionFlowManager.createFlow).not.toHaveBeenCalled();
+    expect(res.write).not.toHaveBeenCalled();
+    expect(preparedExecutor.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a stored access token', false],
+    ['a refresh that succeeds', true],
+  ])('still calls the API with %s', async (_label, refresh) => {
+    mockFindToken.mockImplementation(async ({ type }) => {
+      if (type === 'oauth_refresh') return { token: await dataSchemas.encryptV2('refresh') };
+      return refresh
+        ? null
+        : { token: await dataSchemas.encryptV2('access'), expiresAt: new Date(Date.now() + 60000) };
+    });
+    mockActionFlowManager.createFlowWithHandler.mockResolvedValue({
+      access_token: 'refreshed-access',
+      expires_in: 3600,
+    });
+    const { actionTool, preparedExecutor, res } = await unattendedTool();
+
+    await expect(actionTool._call({}, config)).resolves.toBe(JSON.stringify({ ok: true }));
+
+    expect(preparedExecutor.execute).toHaveBeenCalledTimes(1);
+    expect(mockActionFlowManager.createFlow).not.toHaveBeenCalled();
+    expect(res.write).not.toHaveBeenCalled();
+  });
+});
+
 describe('createActionTool OAuth flow cancellation', () => {
   /**
    * `monitorFlow` deletes the flow key when a waiter's signal aborts. The

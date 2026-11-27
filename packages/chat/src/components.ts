@@ -1,10 +1,50 @@
 /** Themed message and part components. Populated as the components move in. */
 export { Part } from './components/Part';
+export {
+  default as ErrorMessage,
+  ErrorBox,
+  ERROR_CONNECTION_TEXT,
+} from './components/errors/ErrorMessage';
+export { default as ErrorText } from './components/errors/ErrorText';
+export {
+  ErrorBody,
+  ErrorAction,
+  ErrorActions,
+  ErrorDetails,
+  ErrorWithDetail,
+} from './components/errors/parts';
+export { ContentParts } from './components/ContentParts';
+export { contentPartsRenderer } from './components/contentRenderer';
+export type {
+  ContentEditProps,
+  ContentPartsProps,
+  ContentPartsSlots,
+  SubagentAttachmentCallsResult,
+} from './components/contentTypes';
+export { partRenderers, extendPartRenderers } from './components/partRenderers';
+export { ParallelColumns, ParallelContentRenderer } from './components/Parallel';
+export {
+  withFullToolCall,
+  PreviewedToolCallPart,
+  isPreviewedToolCallPart,
+} from './components/parts/hydration';
+export type {
+  ParallelColumnsProps,
+  ParallelColumnHeaderProps,
+  ParallelContentRendererProps,
+} from './components/Parallel';
 export { default as Text } from './components/Text';
 export { default as Summary } from './components/Summary';
 export { default as EmptyText } from './components/EmptyText';
 export { default as AgentUpdate } from './components/AgentUpdate';
 export { default as CollapsibleText } from './components/CollapsibleText';
+export {
+  MessageBody,
+  DisplayMessage,
+  UnfinishedMessage,
+  renderMessageBody,
+} from './components/messages/MessageBody';
+export type { DisplayMessageProps } from './components/messages/MessageBody';
 export type {
   PartProps,
   ContentPart,
@@ -14,7 +54,7 @@ export type {
   PartRenderers,
   PartRenderProps,
   ToolRenderProps,
-} from './components/Part';
+} from './components/partTypes';
 
 export {
   AnimatedText,
@@ -158,6 +198,7 @@ export {
   PROGRESS_TEXT_CONTENT,
   PROGRESS_TEXT_WRAPPER,
   ARTIFACT_ROW_NAV_SPACING,
+  NAV_CLEARANCE,
 } from './components/parts/rows';
 export { default as AskOptions } from './components/parts/AskOptions';
 export { default as AskPopover } from './components/composer/ask/Popover';
@@ -165,6 +206,8 @@ export type { LiveAsk, AskAnswerView, AskPopoverProps } from './components/compo
 export type { AskOption } from './components/parts/AskOptions';
 export { default as AutoHeight } from './components/parts/AutoHeight';
 export { default as AskUserQuestion } from './components/parts/ask/Question';
+export { default as PausedQuestion } from './components/parts/ask/Paused';
+export type { PausedQuestionProps } from './components/parts/ask/Paused';
 export { default as AskUserQuestions } from './components/parts/ask/Questions';
 export { default as AskUserQuestionCall } from './components/parts/ask/Call';
 export { default as AskUserQuestionProgress } from './components/parts/ask/Progress';
@@ -186,6 +229,35 @@ export type { DiffLine, ParsedDiff, TextEditPreview } from './components/parts/D
 export { default as Container } from './components/parts/Container';
 export { default as MemoryInfo } from './components/parts/MemoryInfo';
 export { default as DialogImage } from './components/parts/DialogImage';
+export { default as Image } from './components/parts/Image';
+export { default as CodeAnalyze } from './components/parts/CodeAnalyze';
+export { default as ImageGen } from './components/parts/ImageGen';
+export type { ImageGenProps } from './components/parts/ImageGen';
+export type { CodeAnalyzeProps } from './components/parts/CodeAnalyze';
+export { default as CodeBlock } from './components/parts/CodeBlock';
+export { default as CodeBar } from './components/parts/CodeBar';
+export { default as DownloadButton } from './components/parts/DownloadButton';
+export { default as useCopyCode } from './components/parts/useCopyCode';
+export { default as useDownloadCode } from './components/parts/useDownloadCode';
+export type { CodeBlockProps } from './components/parts/CodeBlock';
+export type { CodeBarProps, RunCodeProps } from './components/parts/CodeBar';
+export { markdownElements, markdownPreviewElements } from './components/markdown/elements';
+export { default as MarkdownBlocks } from './components/markdown/Blocks';
+export { default as MarkdownLite } from './components/markdown/Lite';
+export { default as MarkdownErrorBoundary } from './components/markdown/Boundary';
+export { default as Markdown } from './components/markdown/Markdown';
+export {
+  BASE_REMARK,
+  MATH_REMARK,
+  rehypeList,
+  replyRemark,
+  remarkSupersub,
+} from './components/markdown/plugins';
+export type { MarkdownProps } from './components/markdown/Markdown';
+export type { MarkdownBlocksProps } from './components/markdown/Blocks';
+export type { MarkdownLiteProps } from './components/markdown/Lite';
+export type { MarkdownErrorBoundaryProps } from './components/markdown/Boundary';
+export type { ImageProps } from './components/parts/Image';
 export { default as PendingSkillCall } from './components/parts/PendingSkillCall';
 export { default as ToolCallLimitNotice } from './components/parts/ToolCallLimitNotice';
 export { default as ToolCall } from './components/parts/ToolCall';
@@ -193,7 +265,7 @@ export type { ToolCallProps } from './components/parts/ToolCall';
 export { default as ProgressText } from './components/parts/ProgressText';
 export type { ProgressTextProps } from './components/parts/ProgressText';
 export { default as SubagentCall } from './components/parts/SubagentCall';
-export type { SubagentCallProps, SubagentCallContext } from './components/parts/SubagentCall';
+export type { SubagentCallProps } from './components/parts/SubagentCall';
 export { default as ResumeAuthorHeader } from './components/parts/ResumeAuthorHeader';
 export { ToolAuthWarning, ToolAuthWarningContext } from './components/parts/auth';
 export { ToolPreparation, useToolPreparation } from './components/parts/preparation';
@@ -263,7 +335,8 @@ export type { ChatPaneView, ChatPaneColumn } from './components/pane/view';
 export { default as ChatScreen } from './components/pane/Screen';
 export { default as ChatStarters } from './components/pane/starters';
 export { getChatPaneChrome } from './components/pane/chrome';
-export { loadScreenMessages } from './components/pane/load';
+export { loadScreenMessages, loadFollowedThread } from './components/pane/load';
+export type { FollowedThreadProps } from './components/pane/Followed';
 export type {
   ChatScreenProps,
   ChatScreenComposerProps,
@@ -306,6 +379,7 @@ export {
 export { default as SubagentConversation } from './components/subagents/conversation';
 export { default as SharedSubagentActivityDialog } from './components/subagents/shared';
 export { loadSubagentThreadPanel } from './components/subagents/load';
+export { loadSideChatPanel } from './components/side/load';
 
 /** Part helpers moved from the app: copy and action buttons, language icons, expand/collapse. */
 export {
@@ -316,9 +390,54 @@ export {
 export { default as CopyButton } from './components/parts/CopyButton';
 export { default as ActionButton } from './components/parts/ActionButton';
 export { default as LangIcon, hasLangIcon } from './components/parts/LangIcon';
+export {
+  default as ToolIcon,
+  getToolIconType,
+  getMCPServerName,
+} from './components/parts/ToolIcon';
+export type { ToolIconType, ToolIconProps } from './components/parts/ToolIcon';
+export { default as StackedToolIcons } from './components/parts/StackedToolIcons';
+export { default as ActivityPhaseGroup } from './components/parts/ActivityPhaseGroup';
+export type { ActivityPhaseGroupProps } from './components/parts/ActivityPhaseGroup';
+export { default as ToolCallGroup } from './components/parts/ToolCallGroup';
+export type {
+  ToolCallGroupProps,
+  ToolCallGroupExpansionState,
+} from './components/parts/ToolCallGroup';
+export type { StackedToolIconsProps } from './components/parts/StackedToolIcons';
+export { default as FaviconImage, StackedFavicons } from './components/parts/Favicon';
+export { default as OutputRenderer } from './components/parts/OutputRenderer';
+export type { OutputRendererProps, OutputSegment } from './components/parts/OutputRenderer';
+export { default as ToolCallInfo } from './components/parts/ToolCallInfo';
+export { default as CommandTime, useCommandClock } from './components/parts/CommandTime';
+export { default as CodeWindowHeader } from './components/parts/CodeWindowHeader';
+export type { CodeWindowHeaderProps } from './components/parts/CodeWindowHeader';
+export { default as MemoryCall } from './components/parts/MemoryCall';
+export { default as MemoryArtifacts, hasMemoryArtifacts } from './components/parts/MemoryArtifacts';
+export { default as SkillCall } from './components/parts/SkillCall';
+export { default as AgentHandoff } from './components/parts/AgentHandoff';
+export { default as ReadFileCall, langFromPath } from './components/parts/ReadFileCall';
+export { default as FileAuthoringCall } from './components/parts/FileAuthoringCall';
+export { default as PtcToolTrace } from './components/parts/PtcToolTrace';
+export { default as BashCall } from './components/parts/BashCall';
+export { default as BackgroundTaskCard } from './components/parts/BackgroundTaskCard';
+export { default as BackgroundTaskCall } from './components/parts/BackgroundTaskCall';
+export {
+  default as ExecuteCode,
+  useParseArgs,
+  ERROR_PATTERNS,
+} from './components/parts/ExecuteCode';
+export {
+  default as useLazyHighlight,
+  HIGHLIGHT_THROTTLE_MS,
+  CodeHighlightThrottleContext,
+  normalizeCodeHighlightThrottleMs,
+} from './components/parts/useLazyHighlight';
+export { default as useToolCallState } from './components/parts/useToolCallState';
+export type { ToolCallState, UseToolCallStateInput } from './components/parts/useToolCallState';
 export { default as Attachment, AttachmentGroup } from './components/parts/Attachment';
 export { default as RetrievalCall } from './components/parts/Retrieval';
-export type { RetrievalCallProps, RetrievalProgress } from './components/parts/Retrieval';
+export type { RetrievalCallProps } from './components/parts/Retrieval';
 export {
   bySalience,
   byEntrySalience,
@@ -342,6 +461,7 @@ export type {
   ResumeSubmitTransport,
   ToolApprovalDecisionDraft,
 } from './components/approval/context';
+export { default as ToolApproval } from './components/approval/ToolApproval';
 export { PendingToolApprovalButton, PendingToolApprovalPanel } from './components/approval/Review';
 export type {
   ApprovalRequestRenderProps,
@@ -364,10 +484,11 @@ export {
   ReasoningMarker,
   StreamingThoughtPeek,
 } from './components/parts/Reasoning';
-export { default as WebSearch } from './components/parts/WebSearch';
+export { default as WebSearch, WebSearchCall } from './components/parts/WebSearch';
 export type {
+  WebSearchProps,
+  WebSearchCallProps,
   WebSearchFailedCall,
-  WebSearchFaviconProps,
   WebSearchStackProps,
 } from './components/parts/WebSearch';
 export {
@@ -376,3 +497,22 @@ export {
   getSourceDomains,
   getUniqueDomainSources,
 } from './components/parts/sources';
+
+export { HiddenAttachmentsContext, useVisibleAttachments } from './components/parts/media';
+/** Phase header presentation; hosts retain live activity and fold state. */
+export { default as PhaseMarker, PhaseGlyph } from './components/parts/phase/Marker';
+export type { PhaseMarkerProps, PhaseGlyphProps } from './components/parts/phase/Marker';
+export { default as LivePhaseHeader } from './components/parts/phase/Live';
+export type { LivePhaseHeaderProps } from './components/parts/phase/Live';
+export {
+  getLiveActivity,
+  blocksLiveFold,
+  getSpanIconNames,
+  LIVE_ACTIVITY_THROTTLE_MS,
+  LIVE_REASONING_HOLD_MS,
+} from './components/parts/phase/activity';
+export type { LiveActivity } from './components/parts/phase/activity';
+/** Which calls each fold holds, so a reader can open the fold around one call. */
+export { recordFold, useFoldParts, foldHolds } from './components/parts/fold';
+export { HeaderActionSlotContext } from './components/parts/slot';
+export { default as SearchVerticals } from './components/parts/verticals';

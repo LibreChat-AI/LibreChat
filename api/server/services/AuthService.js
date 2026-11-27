@@ -40,6 +40,7 @@ const {
   PASSWORD_RESET_REQUEST_MESSAGE,
   getOpenIDAppAccessToken,
   getOpenIDBearerAudiences,
+  createLogoutUser,
 } = require('@librechat/api');
 const {
   findUser,
@@ -233,38 +234,7 @@ const clearOpenIDAuthTokens = (req, res, userId, tenantId) => {
   clearCloudFrontCookies(res, { userId, tenantId });
 };
 
-/**
- * Logout user
- *
- * @param {ServerRequest} req
- * @param {string} refreshToken
- * @returns
- */
-const logoutUser = async (req, refreshToken) => {
-  try {
-    const userId = req.user._id;
-    const session = await findSession({ userId: userId, refreshToken });
-
-    if (session) {
-      try {
-        await deleteSession({ sessionId: session._id });
-      } catch (deleteErr) {
-        logger.error('[logoutUser] Failed to delete session.', deleteErr);
-        return { status: 500, message: 'Failed to delete session.' };
-      }
-    }
-
-    try {
-      req.session.destroy();
-    } catch (destroyErr) {
-      logger.debug('[logoutUser] Failed to destroy session.', destroyErr);
-    }
-
-    return { status: 200, message: 'Logout successful' };
-  } catch (err) {
-    return { status: 500, message: err.message };
-  }
-};
+const logoutUser = createLogoutUser({ findSession, deleteSession });
 
 /**
  * Creates Token and corresponding Hash for verification

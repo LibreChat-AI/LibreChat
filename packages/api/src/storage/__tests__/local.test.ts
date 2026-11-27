@@ -17,7 +17,7 @@ describe('local storage writes', () => {
   });
 
   afterEach(async () => {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 3 });
   });
 
   it('leaves one whole payload when writers of different sizes race on one path', async () => {
@@ -65,9 +65,13 @@ describe('local storage writes', () => {
     expect(await fs.readFile(path.join(paths.uploads, 'user1', 'b.txt'), 'utf8')).toBe('doc');
   });
 
-  it('returns a URL that addresses the stored file when the name has reserved characters', async () => {
+  const names = [['q#1 100%25&x=1.png', 'q%231%20100%2525%26x%3D1.png']];
+  if (process.platform !== 'win32') {
+    names.push(['q#1 100%25?x=1.png', 'q%231%20100%2525%3Fx%3D1.png']);
+  }
+
+  it.each(names)('returns a URL that addresses the stored file %s', async (fileName, encoded) => {
     const paths = { publicPath: path.join(dir, 'public'), uploads: path.join(dir, 'uploads') };
-    const fileName = 'q#1 100%25?x=1.png';
 
     const url = await saveLocalBuffer({
       paths,
@@ -76,7 +80,7 @@ describe('local storage writes', () => {
       fileName,
     });
 
-    expect(url).toBe('/images/user1/q%231%20100%2525%3Fx%3D1.png');
+    expect(url).toBe(`/images/user1/${encoded}`);
     const parsed = new URL(url, 'http://localhost');
     expect(parsed.pathname).toBe(url);
     expect(parsed.search).toBe('');

@@ -13,9 +13,16 @@ import {
 } from 'librechat-data-provider';
 import type { MCPServerStatus } from 'librechat-data-provider';
 import type { MouseEvent } from 'react';
+import type { MCPConnectionView } from '~/hooks/MCP/connection';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type { McpItem } from '../../items/types';
 import type { AgentForm } from '~/common';
+import {
+  getMCPStatusColor,
+  getMCPDisplayStatus,
+  getMCPStatusLabelKey,
+  shouldShowActionButton,
+} from '~/components/MCP/mcpServerUtils';
 import {
   useAgentCapabilities,
   useGetAgentsConfig,
@@ -23,7 +30,6 @@ import {
   useMCPToolOptions,
 } from '~/hooks';
 import { matchesMcpServer, mcpAllToken, mcpServerToken } from '../../items/selectors';
-import { getStatusColor, getStatusTextKey } from '~/components/MCP/mcpServerUtils';
 import MCPServerStatusIcon from '~/components/MCP/MCPServerStatusIcon';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
 import McpOAuthDialog from '~/components/MCP/McpOAuthDialog';
@@ -42,20 +48,20 @@ interface StatusDisplay {
 }
 
 function getStatusDisplay(
-  serverName: string,
   serverStatus: MCPServerStatus | undefined,
   isInitializing: boolean,
   isConfigured: boolean,
-): StatusDisplay {
+  view?: MCPConnectionView,
+): StatusDisplay | undefined {
   if (!serverStatus && !isInitializing && !isConfigured) {
     return { labelKey: 'com_ui_tools_mcp_status_unconfigured', dotClass: 'bg-status-neutral' };
   }
-  const connectionStatus = serverStatus ? { [serverName]: serverStatus } : undefined;
-  const initializing = () => isInitializing;
+  const labelKey = getMCPStatusLabelKey(serverStatus, isInitializing, view);
+  if (!labelKey) return;
   return {
-    labelKey: getStatusTextKey(serverName, connectionStatus, initializing) as TranslationKeys,
+    labelKey,
     dotClass: cn(
-      getStatusColor(serverName, connectionStatus, initializing),
+      getMCPStatusColor(getMCPDisplayStatus(serverStatus, view), isInitializing),
       (isInitializing || serverStatus?.connectionState === 'connecting') && 'animate-pulse',
     ),
   };
@@ -337,21 +343,25 @@ export default function McpSection({ item }: Props) {
   const statusIconProps = getServerStatusIconProps(serverName);
   const configDialogProps = getConfigDialogProps();
   const connectionState = statusIconProps?.serverStatus?.connectionState;
+  const presentation = statusIconProps?.view?.state ?? connectionState;
   const isInitializing = statusIconProps?.isInitializing ?? false;
   const statusDisplay = getStatusDisplay(
-    serverName,
     statusIconProps?.serverStatus,
     isInitializing,
     liveServer.isConfigured,
+    statusIconProps?.view,
   );
   /** A connected server's tools arrive with the (cold-cache) MCP tools fetch, and
    * the server is also briefly toolless while initializing — show a skeleton in
    * both cases instead of a misleading "no tools" message. */
   const toolsLoading =
-    !hasTools && (mcpToolsLoading || isInitializing || connectionState === 'connecting');
+    !hasTools && (mcpToolsLoading || isInitializing || presentation === 'connecting');
   const isConnected = connectionState === 'connected' || liveServer.isConnected === true;
-  const isReadyForAgent = liveServer.isReadyForAgent ?? isConnected;
-  const isBusy = isInitializing || connectionState === 'connecting';
+  const isReadyForAgent =
+    statusIconProps?.view?.canUse ?? liveServer.isReadyForAgent ?? isConnected;
+  const isBusy = isInitializing || presentation === 'connecting';
+  const showStatusAction =
+    isReadyForAgent && statusIconProps != null && shouldShowActionButton(statusIconProps);
   const canCancel = statusIconProps?.canCancel === true;
 
   /** Close + clear the OAuth dialog once the server is ready, and don't let it
@@ -390,7 +400,7 @@ export default function McpSection({ item }: Props) {
       }
       return;
     }
-    if (!isConnected || !hasTools) {
+    if (!isReadyForAgent || !hasTools) {
       return;
     }
     setAutoSelectPending(false);
@@ -400,7 +410,6 @@ export default function McpSection({ item }: Props) {
     initConnectionDeferred,
     toolsLoading,
     isReadyForAgent,
-    isConnected,
     hasTools,
     tools,
     updateFormTools,
@@ -454,18 +463,29 @@ export default function McpSection({ item }: Props) {
       )}
 
       <div className="flex flex-col">
-        <div className="border-border-light bg-surface-secondary flex items-center justify-between rounded-xl border px-3 py-2.5">
-          <div className="flex items-center gap-2">
-            <span
-              className={cn('size-2.5 rounded-full', statusDisplay.dotClass)}
-              aria-hidden="true"
-            />
-            <span className="text-text-primary text-sm font-medium">
-              {localize(statusDisplay.labelKey, { 0: serverName })}
-            </span>
+        {(statusDisplay || showStatusAction) && (
+          <div
+            className={cn(
+              'flex items-center',
+              statusDisplay
+                ? 'border-border-light bg-surface-secondary justify-between rounded-xl border px-3 py-2.5'
+                : 'justify-end',
+            )}
+          >
+            {statusDisplay && (
+              <div className="flex items-center gap-2">
+                <span
+                  className={cn('size-2.5 rounded-full', statusDisplay.dotClass)}
+                  aria-hidden="true"
+                />
+                <span className="text-text-primary text-sm font-medium">
+                  {localize(statusDisplay.labelKey, { 0: serverName })}
+                </span>
+              </div>
+            )}
+            {showStatusAction && <MCPServerStatusIcon {...statusIconProps} />}
           </div>
-          {isReadyForAgent && statusIconProps && <MCPServerStatusIcon {...statusIconProps} />}
-        </div>
+        )}
 
         {/* Connect collapses smoothly once ready. Its top spacing lives inside
          * the reveal so the parent's flex gap never leaves a hole when it's gone,

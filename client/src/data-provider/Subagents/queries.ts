@@ -1,15 +1,20 @@
-import { useMemo } from 'react';
+import { useContext, useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Constants, MutationKeys, QueryKeys, dataService } from 'librechat-data-provider';
-import { ACTIVE_THREAD_REFRESH_MS, subagentThreadHasTaskEvidence } from '@librechat/chat/react';
+import {
+  TaskContentScopeContext,
+  ACTIVE_THREAD_REFRESH_MS,
+  subagentThreadHasTaskEvidence,
+} from '@librechat/chat/react';
 import type {
   ParentSubagentIndex,
+  ToolCallPartResponse,
   SubagentControlReceipt,
   SubagentControlResponse,
   SubagentThreadView,
 } from 'librechat-data-provider';
+import type { SubagentControlVariables, ToolContentQuery } from '@librechat/chat/react';
 import type { UseQueryOptions, QueryObserverResult } from '@tanstack/react-query';
-import type { SubagentControlVariables } from '@librechat/chat/react';
 
 export { ACTIVE_THREAD_REFRESH_MS, subagentThreadHasTaskEvidence };
 export type { SubagentControlVariables };
@@ -210,6 +215,43 @@ export const useSubagentControlMutation = (options: SubagentControlMutationOptio
         options.onSuccess?.({ receipt }, { parentConversationId, threadId, command, submittedAt });
       },
       onError: (error, variables) => options.onError?.(error, variables),
+    },
+  );
+};
+
+/**
+ * The full tool call behind a preview in a followed child thread, read through the parent
+ * conversation the task scope names: the ordinary message route answers 404 for a child thread.
+ * Cached by the call's identity, as `useToolCallPartQuery` is.
+ */
+export const useSubagentThreadToolCallPartQuery: ToolContentQuery = (
+  params,
+  config,
+  revision = '',
+) => {
+  const scope = useContext(TaskContentScopeContext);
+  const parentConversationId = scope?.parentConversationId ?? '';
+  const { conversationId, messageId, toolCallId, stepId, agentId } = params;
+  return useQuery<ToolCallPartResponse>(
+    [
+      QueryKeys.subagentThreadToolCallPart,
+      parentConversationId,
+      conversationId,
+      messageId,
+      toolCallId ?? '',
+      stepId ?? '',
+      agentId ?? '',
+      revision,
+    ],
+    () => dataService.getSubagentThreadToolCallPart(parentConversationId, params),
+    {
+      staleTime: Infinity,
+      retry: 1,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      refetchOnMount: false,
+      ...config,
+      enabled: scope != null && config?.enabled !== false,
     },
   );
 };

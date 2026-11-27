@@ -5,17 +5,36 @@ const {
   createNativeCopyPreflight,
   withoutTraceRefs,
   isTemporaryRecord,
+  resolveSharedForkSelection,
+  createSharedForkAgentAccess,
   forkFileScope,
   getAllMessagesUpToParent,
   transferNativeCopyProvenance,
 } = require('@librechat/api');
 const { logger, tenantStorage } = require('@librechat/data-schemas');
 const { EModelEndpoint, Constants, ForkOptions } = require('librechat-data-provider');
-const { getConvo, getMessages, getSharedMessages } = require('~/models');
+const {
+  getConvo,
+  getAgents,
+  getMessages,
+  getRoleByName,
+  getUserPrincipals,
+  getSharedForkSnapshot,
+  findAccessibleResources,
+  hasCapabilityForPrincipals,
+} = require('~/models');
 const { createImportBatchBuilder } = require('./importBatchBuilder');
 const { getAppConfig } = require('~/server/services/Config');
-const { resolveImportDefaultEndpoint } = require('./defaults');
+const { resolveImportDefaultEndpoint, resolveImportDefaultModel } = require('./defaults');
 const BaseClient = require('~/app/clients/BaseClient');
+
+const getAllowedForkAgents = createSharedForkAgentAccess({
+  getAgents,
+  getRoleByName,
+  getUserPrincipals,
+  findAccessibleResources,
+  hasCapabilityForPrincipals,
+});
 
 /**
  * Helper function to clone messages with proper parent-child relationships and timestamps
@@ -357,13 +376,14 @@ function isSameRevision(storedUpdatedAt, clientRevision) {
 
 /**
  * Forks a shared (sanitized) conversation into a fresh conversation owned by the requesting user.
- * Only the anonymized, allowlisted message fields returned by `getSharedMessages` are cloned,
+ * Only the anonymized, allowlisted messages from the public projection are cloned,
  * so no private data from the original owner can leak into the new conversation.
  * @param {object} params - The parameters for forking the shared conversation.
  * @param {string} params.shareId - The ID of the shared link to fork from.
  * @param {string} [params.shareResourceId] - The SharedLink resource ID set by `canAccessSharedLink`.
  * @param {string} params.requestUserId - The ID of the user making the request.
  * @param {string} [params.userRole] - The role of the requesting user, used to resolve the default model.
+ * @param {string | null} [params.idOnTheSource] - The viewer's external identity for config resolution.
  * @param {string} [params.userTenantId] - Tenant of the requesting user. `canAccessSharedLink` runs this handler under the share owner's tenant so the share resolves, so the copy must be persisted (and its config/retention resolved) under the requesting user's tenant or it would be invisible (404) when they open it normally.
  * @param {number} [params.targetMessageIndex] - Index, within the shared payload, of the message at the tip of the branch the viewer has active. When set, only the direct path to that message is cloned so the fork continues the branch that was actually shown rather than the newest sibling. An index is used (not id or `createdAt`) because shared ids are re-anonymized per request while `getSharedMessages` returns a deterministic, stable order, so the same index resolves to the same message on the server.
  * @param {string} [params.shareRevision] - `updatedAt` of the payload the viewer is forking from. A shareId now survives an update, so an owner republishing between the GET and the fork would silently shift `targetMessageIndex` onto a different branch; a mismatch is rejected instead of cloning content the viewer never saw.
@@ -378,6 +398,7 @@ async function forkSharedConversation({
   shareResourceId,
   requestUserId,
   userRole,
+  idOnTheSource,
   userTenantId,
   targetMessageIndex,
   shareRevision,
@@ -389,13 +410,14 @@ async function forkSharedConversation({
   // Mirror the GET share route: when the shared-file snapshot is globally
   // disabled, omit file/attachment metadata so a fork can't persist filenames
   // or share file URLs into the new conversation while file serving is off.
-  const share = await getSharedMessages(shareId, shareResourceId, {
+  const snapshot = await getSharedForkSnapshot(shareId, shareResourceId, {
     snapshotFiles,
     preflight: createNativeCopyPreflight(sharedContentPreflight),
   });
-  if (!share?.messages?.length) {
+  if (!snapshot?.share.messages?.length) {
     return null;
   }
+  const { share, spec } = snapshot;
 
   // The index below is positional against the payload the viewer holds, and the
   // shareId no longer rotates on update, so a republish between the GET and this
@@ -465,12 +487,21 @@ async function forkSharedConversation({
     const appConfig = await loadAppConfig({
       role: userRole,
       userId: requestUserId,
+      idOnTheSource,
       tenantId: userTenantId,
     });
-    // The shared payload strips the original endpoint, so resolve one the viewer
-    // can actually use; hard-coding OpenAI breaks the first follow-up message on
-    // deployments that don't expose it.
-    const { endpoint, model } = await resolveImportDefaultEndpoint({ requestUserId, userRole });
+    const { endpoint, model, preset } = await resolveSharedForkSelection({
+      modelSpecs: appConfig?.modelSpecs,
+      spec,
+      getDefaultEndpoint: () => resolveImportDefaultEndpoint({ requestUserId, userRole }),
+      getDefaultModel: (endpoint) =>
+        resolveImportDefaultModel({ endpoint, requestUserId, userRole }),
+      getAllowedAgents: (ids) =>
+        getAllowedForkAgents(
+          { userId: requestUserId, role: userRole, idOnTheSource, tenantId: userTenantId },
+          ids,
+        ),
+    });
     const importBatchBuilder =
       appConfig?.messageFilter?.pii == null
         ? builderFactory(requestUserId, appConfig?.interfaceConfig, appConfig?.filters)
@@ -484,7 +515,7 @@ async function forkSharedConversation({
 
     cloneMessagesWithTimestamps(messagesToClone, importBatchBuilder, { nativeCopy: true });
 
-    const result = importBatchBuilder.finishConversation(share.title, new Date(), {}, model);
+    const result = importBatchBuilder.finishConversation(share.title, new Date(), preset, model);
     await importBatchBuilder.saveBatch();
     logger.debug('Shared conversation forked', {
       userId: requestUserId,
@@ -542,11 +573,6 @@ async function duplicateConversation({
     '+privateTextTokens',
   );
 
-  const messagesToClone = getMessagesUpToTargetLevel(
-    originalMessages,
-    originalMessages[originalMessages.length - 1].messageId,
-  );
-
   const importBatchBuilder =
     legacyPii == null
       ? builderFactory(userId, interfaceConfig, filters)
@@ -554,7 +580,7 @@ async function duplicateConversation({
   importBatchBuilder.sourceIsTemporary = isTemporaryRecord(originalConvo);
   importBatchBuilder.startConversation(originalConvo.endpoint ?? EModelEndpoint.openAI);
 
-  cloneMessagesWithTimestamps(messagesToClone, importBatchBuilder, { nativeCopy: true });
+  cloneMessagesWithTimestamps(originalMessages, importBatchBuilder, { nativeCopy: true });
 
   const duplicateTitle = title || originalConvo.title;
   const result = importBatchBuilder.finishConversation(duplicateTitle, new Date(), originalConvo);

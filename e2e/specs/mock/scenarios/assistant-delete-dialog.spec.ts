@@ -165,4 +165,71 @@ test.describe('assistant delete confirmation', () => {
       await deleteAssistant(page, assistant.id);
     }
   });
+
+  test.describe('from the small-screen drawer', () => {
+    test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+
+    /**
+     * A toast that arrives over an open dialog takes its Escape from Radix, and the dialog
+     * takes it back through a listener on the document. The drawer listens there too and
+     * leaves an Escape a dialog has answered alone, so the dialog has to answer first: one key
+     * press closes the dialog, and the drawer it was opened from stays.
+     */
+    test('Escape under a toast closes the dialog and keeps the drawer @scenario:assistant-delete-dialog-toast-escape', async ({
+      page,
+    }) => {
+      test.setTimeout(60000);
+      const assistant = await createAssistant(page);
+      const deleteUrl = (url: URL) =>
+        url.pathname.startsWith('/api/assistants/') && url.pathname.endsWith(assistant.id);
+      let respond: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => {
+        respond = resolve;
+      });
+
+      try {
+        const trigger = await openDeleteTrigger(page);
+        await page.route(deleteUrl, async (route) => {
+          if (route.request().method() !== 'DELETE') {
+            return route.fallback();
+          }
+          await held;
+          return route.fulfill({ status: 500, json: { message: 'delete failed' } });
+        });
+
+        /** The delete is held, so the dialog is open again when its failure is reported. */
+        await trigger.click();
+        let dialog = await expectConfirmDialog(page);
+        await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
+        await expect(dialog).toBeHidden();
+        await trigger.focus();
+        await page.keyboard.press('Enter');
+        dialog = await expectConfirmDialog(page);
+        respond();
+        await expect(
+          page.getByText('There was an error deleting the assistant', { exact: true }),
+        ).toBeVisible();
+
+        /** Whether the Escape has been answered by the time it leaves the dialog. */
+        await page.evaluate(() => {
+          const note = (event: KeyboardEvent) => {
+            document.body.dataset.escapeAnswered = String(event.defaultPrevented);
+          };
+          document.body.addEventListener('keydown', note, { once: true });
+        });
+        await page.keyboard.press('Escape');
+        /** The toast had it, and not the dialog: Radix answers before the key reaches the body. */
+        await expect(page.locator('body')).toHaveAttribute('data-escape-answered', 'false');
+        await expect(dialog).toBeHidden();
+        await expect(trigger).toBeFocused();
+        await expect(
+          page.getByRole('button', { name: 'Close sidebar' }).filter({ visible: true }).first(),
+        ).toBeVisible();
+      } finally {
+        respond();
+        await unroute(page, deleteUrl);
+        await deleteAssistant(page, assistant.id);
+      }
+    });
+  });
 });

@@ -91,12 +91,24 @@ export type ChatSendResult =
       generationProtocolVersion?: number;
     };
 
+/** A generation as the server names it: what addresses it, known before its stream opens. */
+export type ChatGeneration = Pick<
+  ChatStream,
+  'streamId' | 'generationCreatedAt' | 'generationProtocolVersion'
+>;
+
 export type ChatSendRequest = ChatRequestOptions & {
   trigger: ChatTrigger;
   chatId: string;
   messageId?: string;
   payload: TPayload;
   abortSignal?: AbortSignal;
+  /**
+   * Told the generation the server started for the turn as soon as the server names it. That is
+   * before its stream opens, which can take a while and can fail: the run is there to be
+   * stopped or steered from the moment the server has taken the turn.
+   */
+  onGeneration?: (generation: ChatGeneration) => void;
 };
 
 export type ChatReconnectRequest = ChatRequestOptions & {
@@ -107,6 +119,11 @@ export type ChatReconnectRequest = ChatRequestOptions & {
   /** The {@link ChatStream.generationCreatedAt} to reattach to, so a newer run is not attached instead. */
   generationCreatedAt?: number;
   abortSignal?: AbortSignal;
+  /**
+   * Told the generation found running, before its stream opens: one the server says is running
+   * is there to be stopped, steered and looked for again even when its stream cannot be had.
+   */
+  onGeneration?: (generation: ChatGeneration) => void;
 };
 
 export type ChatAbortRequest = {

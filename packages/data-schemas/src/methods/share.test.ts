@@ -37,6 +37,7 @@ describe('Share Methods', () => {
       {
         conversationId: { type: String, required: true },
         title: { type: String, index: true },
+        spec: { type: String, select: false },
         user: { type: String, index: true },
         messages: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Message' }],
         shareId: { type: String, index: true },
@@ -80,6 +81,7 @@ describe('Share Methods', () => {
         privateTextTokens: { type: [String], select: false, default: undefined },
         isCreatedByUser: Boolean,
         isUserSubmitted: Boolean,
+        trigger: { type: mongoose.Schema.Types.Mixed, select: false, default: undefined },
         userSubmittedPaths: {
           type: [String],
           default: undefined,
@@ -112,6 +114,7 @@ describe('Share Methods', () => {
       {
         conversationId: { type: String, required: true },
         title: String,
+        spec: String,
         user: String,
         endpoint: String,
         endpointType: String,
@@ -525,6 +528,33 @@ describe('Share Methods', () => {
     });
   });
 
+  it('reads the published spec only for a fork and refreshes it on republish', async () => {
+    const key = { user: 'owner', conversationId: 'spec-chat' };
+    await Conversation.create({ ...key, title: 'Spec chat', spec: 'specialist' });
+    await Message.create({ ...key, messageId: 'root', text: 'Published message' });
+
+    const { shareId, _id } = await shareMethods.createSharedLink(key.user, key.conversationId);
+    const preflight = jest.fn();
+    const fork = await shareMethods.getSharedForkSnapshot(shareId, _id, { preflight });
+    expect(fork).toMatchObject({ spec: 'specialist', share: { shareId } });
+    expect(fork?.share).not.toHaveProperty('spec');
+    expect(preflight.mock.calls[0][0]).not.toHaveProperty('spec');
+    expect(await shareMethods.getSharedMessages(shareId)).not.toHaveProperty('spec');
+
+    await Conversation.updateOne(key, { $set: { spec: 'replacement' } });
+    expect(await shareMethods.getSharedForkSnapshot(shareId)).toHaveProperty('spec', 'specialist');
+    await shareMethods.updateSharedLink(key.user, shareId);
+    expect(await shareMethods.getSharedForkSnapshot(shareId)).toHaveProperty('spec', 'replacement');
+
+    await Conversation.updateOne(key, { $unset: { spec: 1 } });
+    await shareMethods.updateSharedLink(key.user, shareId);
+    expect(await SharedLink.findOne({ shareId }).select('+spec').lean()).not.toHaveProperty('spec');
+    expect(await shareMethods.getSharedForkSnapshot(shareId)).toMatchObject({
+      spec: undefined,
+      share: { shareId },
+    });
+  });
+
   describe('getSharedMessages', () => {
     /** Publishes through `createSharedLink` with one response whose stored `sender` is
      *  what the header will render, so what a viewer reads back is the published flag. */
@@ -670,6 +700,10 @@ describe('Share Methods', () => {
           text: 'Hello',
           isCreatedByUser: true,
           parentMessageId: Constants.NO_PARENT,
+          trigger: {
+            event: { type: 'schedule.occurrence', occurredAt: new Date(0) },
+            subject: { kind: 'schedule', id: 'schedule-1' },
+          },
         },
         {
           messageId: `msg_${nanoid()}`,
@@ -727,6 +761,11 @@ describe('Share Methods', () => {
       ]);
       expect(result?.messages.find((message) => message.text === 'Hello')).not.toHaveProperty(
         'isUserSubmitted',
+      );
+      /** What started a turn is its owner's to see: a link's viewer is not told. */
+      expect(JSON.stringify(result)).not.toContain('schedule-1');
+      expect(result?.messages.find((message) => message.text === 'Hello')).not.toHaveProperty(
+        'trigger',
       );
       expect(result?.messages.find((message) => message.text === 'Hello')).not.toHaveProperty(
         'userSubmittedPaths',
@@ -1169,6 +1208,60 @@ describe('Share Methods', () => {
       const share = await SharedLink.findOne({ shareId }).lean();
       expect(share?.fileSnapshots?.map((snapshot) => snapshot.file_id)).toContain('steer-file-2');
       expect(share?.fileSnapshots?.[0].llmDeliveryPath).toBe('text');
+    });
+
+    test("drops the author's skill ids from the shared payload and the copy a fork reads", async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      const shareId = `share_${nanoid()}`;
+      const skillId = new mongoose.Types.ObjectId().toString();
+      const loaded = 'Skill "release-notes" loaded. Follow the instructions below.';
+      const skillCall = (id: string) => ({
+        type: 'tool_call',
+        tool_call: {
+          id,
+          name: 'skill',
+          args: '{"skillName":"release-notes"}',
+          output: loaded,
+          progress: 1,
+          skillId,
+        },
+      });
+      const message = await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: '',
+        isCreatedByUser: false,
+        content: [
+          skillCall('call_skill'),
+          {
+            type: 'tool_call',
+            tool_call: {
+              id: 'call_subagent',
+              name: 'subagent',
+              args: '{}',
+              output: 'done',
+              progress: 1,
+              subagent_content: [skillCall('call_child_skill'), { type: 'text', text: 'ok' }],
+            },
+          },
+        ],
+      });
+      await SharedLink.create({ shareId, conversationId, user: userId, messages: [message._id] });
+
+      const shared = await shareMethods.getSharedMessages(shareId);
+      const fork = await shareMethods.getSharedForkSnapshot(shareId);
+
+      for (const content of [shared?.messages[0]?.content, fork?.share.messages[0]?.content]) {
+        const parts = content as Array<{ tool_call: Record<string, unknown> }>;
+        const child = (parts[1].tool_call.subagent_content as typeof parts)[0].tool_call;
+        expect(parts[0].tool_call).toMatchObject({ id: 'call_skill', output: loaded });
+        expect(child).toMatchObject({ id: 'call_child_skill', output: loaded });
+        expect(JSON.stringify(content)).not.toContain(skillId);
+      }
+      const stored = await Message.findById(message._id).lean();
+      expect(JSON.stringify(stored?.content)).toContain(skillId);
     });
 
     test('leaves safe non-steer content untouched (same array reference)', () => {

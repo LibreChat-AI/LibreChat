@@ -1,4 +1,5 @@
 import { Providers } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import {
   isOpenAILikeProvider,
   isBedrockDocumentType,
@@ -7,14 +8,18 @@ import {
   isDocumentSupportedProvider,
   isAnthropicTextDocumentType,
 } from 'librechat-data-provider';
+import type { BedrockDocumentFormat } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type {
   DocumentBlock,
+  SharedDocumentBlock,
   AnthropicDocumentBlock,
+  OpenAITextDocumentBlock,
   StrategyFunctions,
   DocumentResult,
   ServerRequest,
 } from '~/types';
+import type { ValidationResult } from '~/files/validation';
 import type { ReachableAgent } from '~/agents/traversal';
 import type { MissingAttachmentHandler } from './utils';
 import {
@@ -22,20 +27,61 @@ import {
   CONTENT_TRAVERSAL_MAX_NODES,
   ContentTraversalLimitError,
 } from '~/protection/adapters/nested';
-import { getFileStream, getConfiguredFileSizeLimit, skipMissingAttachment } from './utils';
-import { validatePdf, validateBedrockDocument } from '~/files/validation';
+import {
+  getFileStream,
+  AttachmentSizeError,
+  skipMissingAttachment,
+  getConfiguredFileSizeLimit,
+} from './utils';
+import { validatePdf, validateBedrockDocument, getBedrockDocumentLimit } from '~/files/validation';
+import { configuredRequestBudget } from '~/utils/timeouts';
 import { someReachableAgent } from '~/agents/traversal';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { runGuardedEncode } from './memoryGuard';
 
 /** The longest document name LibreChat sends to Bedrock. */
 const BEDROCK_DOCUMENT_NAME_LIMIT = 200;
 
+/**
+ * The MIME type the agents SDK's Converse converter reads each document format from. An upload
+ * can carry an alias (`application/csv`) that the converter does not list, so the block names
+ * the format through its canonical type.
+ */
+const BEDROCK_DOCUMENT_MIME_TYPES: Record<BedrockDocumentFormat, string> = {
+  pdf: 'application/pdf',
+  csv: 'text/csv',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  html: 'text/html',
+  txt: 'text/plain',
+  md: 'text/markdown',
+};
+
 /** A content part of a formatted message, as far as document naming needs to read it. */
 export interface PayloadContentPart {
   type?: string;
+  /** A native Converse document, as imported conversations can still carry. */
   document?: { name?: string };
+  /** A standard file block, as `encodeAndFormatDocuments` builds for Bedrock. */
+  metadata?: { name?: string };
   /** A replayed steer's own content, stamped for the formatter (`stampSteerPartMedia`). */
   media?: PayloadContentPart[];
+}
+
+/** The name Bedrock sees for a part that becomes a Converse document. */
+function getDocumentName(part: PayloadContentPart | undefined): string | undefined {
+  if (part?.type === 'document') {
+    return part.document?.name;
+  }
+  return part?.type === 'file' ? part.metadata?.name : undefined;
+}
+
+function withDocumentName(part: PayloadContentPart, name: string): PayloadContentPart {
+  return part.type === 'document'
+    ? { ...part, document: { ...part.document, name } }
+    : { ...part, metadata: { ...part.metadata, name } };
 }
 
 /** Hands out each name once, sharing suffix progress between colliding truncated prefixes. */
@@ -78,10 +124,10 @@ function renameDocumentParts(
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
     let next = part;
-    const original = part?.type === 'document' ? part.document?.name : undefined;
+    const original = getDocumentName(part);
     if (typeof original === 'string') {
       const name = nameOf(original);
-      next = name === original ? part : { ...part, document: { ...part.document, name } };
+      next = name === original ? part : withDocumentName(part, name);
     } else if (Array.isArray(part?.media)) {
       const media = renameDocumentParts(part.media, nameOf, budget, depth + 1);
       next = media === part.media ? part : { ...part, media };
@@ -94,8 +140,15 @@ function renameDocumentParts(
   return renamed ?? parts;
 }
 
-interface DocumentRecipient extends ReachableAgent<DocumentRecipient> {
+/** An agent that reads a formatted history, with the parameters its initialization resolved. */
+export interface DocumentRecipient extends ReachableAgent<DocumentRecipient> {
   readonly provider?: string;
+  readonly endpoint?: string | null;
+  readonly model?: string | null;
+  readonly model_parameters?: {
+    readonly model?: string | null;
+    readonly useResponsesApi?: boolean | null;
+  } | null;
 }
 
 function isBedrockRecipient({ provider }: DocumentRecipient): boolean {
@@ -168,11 +221,197 @@ function getAnthropicDocumentSource(
  * Whether the model behind this provider is Claude, which accepts only PDFs as base64
  * documents. OpenAI-compatible gateways report an OpenAI-like provider for Claude models.
  */
-function usesAnthropicDocumentCapabilities(provider: Providers, model?: string): boolean {
+function usesAnthropicDocumentCapabilities(provider: string, model?: string | null): boolean {
   return (
     provider === Providers.ANTHROPIC ||
     (isOpenAILikeProvider(provider) && (model?.toLowerCase().includes('claude') ?? false))
   );
+}
+
+/** A textual document as a text part, which every provider reads as it is. */
+function formatTextDocument(content: string, filename = 'document'): OpenAITextDocumentBlock {
+  return {
+    type: 'text',
+    text: `File: "${filename}"\n\n${Buffer.from(content, 'base64').toString('utf8')}`,
+  };
+}
+
+/** Bedrock accepts only letters, digits, whitespace, hyphens, parentheses and brackets. */
+function getBedrockDocumentName(filename?: string): string {
+  return (filename || 'document')
+    .replace(/[^a-zA-Z0-9\s\-()[\]]/g, '_')
+    .slice(0, BEDROCK_DOCUMENT_NAME_LIMIT);
+}
+
+/** Which block an agent's provider path builds for a document (see `formatDocumentBlock`). */
+function getDocumentFormat(
+  provider: string,
+  useResponsesApi?: boolean | null,
+  model?: string | null,
+): string {
+  if (provider === Providers.GOOGLE || provider === Providers.VERTEXAI) {
+    return Providers.GOOGLE;
+  }
+  if (
+    provider === Providers.ANTHROPIC ||
+    provider === Providers.BEDROCK ||
+    !isDocumentSupportedProvider(provider)
+  ) {
+    return provider;
+  }
+  if (useResponsesApi) {
+    return 'responses';
+  }
+  return usesAnthropicDocumentCapabilities(provider, model) ? 'claude' : 'completions';
+}
+
+/**
+ * The document formats of every agent that reads the history: the primary agent's and those of
+ * its chain, handoff and added-conversation agents. Subagents see only their task and receive
+ * their files through the run file encoder, so they never read these blocks.
+ */
+function getReaderFormats(
+  primary: string,
+  recipients: Iterable<DocumentRecipient> = [],
+): Set<string> {
+  const formats = new Set([primary]);
+  for (const recipient of recipients) {
+    if (recipient?.provider == null) {
+      continue;
+    }
+    const params = recipient.model_parameters;
+    formats.add(
+      getDocumentFormat(
+        recipient.provider,
+        params?.useResponsesApi,
+        params?.model ?? recipient.model,
+      ),
+    );
+  }
+  return formats;
+}
+
+/**
+ * A document block every agent of a shared history can read. The agents SDK converts a standard
+ * file block into each agent's own document format before its request, leaving it out where the
+ * provider cannot read the type, and a text part reads the same everywhere.
+ */
+function formatSharedDocumentBlock(
+  mimeType: string,
+  content: string,
+  filename: string | undefined,
+): SharedDocumentBlock | OpenAITextDocumentBlock {
+  if (isAnthropicTextDocumentType(mimeType)) {
+    return formatTextDocument(content, filename);
+  }
+  return {
+    type: 'file',
+    source_type: 'base64',
+    mime_type: mimeType,
+    data: content,
+    metadata: {
+      name: getBedrockDocumentName(filename),
+      filename: filename ?? 'document',
+      ...(filename ? { context: `File: "${filename}"` } : {}),
+      citations: { enabled: true },
+    },
+  };
+}
+
+/**
+ * The agents SDK hands Bedrock every block unconverted, so a shared history that a Bedrock agent
+ * reads leaves out binary types outside Bedrock's document formats instead of failing its turns.
+ */
+function filterSharedDocumentFiles(files: IMongoFile[], formats: Set<string>): IMongoFile[] {
+  if (formats.size < 2 || !formats.has(Providers.BEDROCK)) {
+    return files;
+  }
+  const readable: IMongoFile[] = [];
+  const skipped: string[] = [];
+  for (const file of files) {
+    if (isAnthropicTextDocumentType(file.type) || isBedrockDocumentType(file.type)) {
+      readable.push(file);
+    } else {
+      skipped.push(`"${file.filename}" (${file.type})`);
+    }
+  }
+  if (skipped.length) {
+    logger.warn(
+      `Skipping attachment(s) a Bedrock agent in this conversation cannot read: ${skipped.join(', ')}`,
+    );
+  }
+  return readable;
+}
+
+/** The limits one provider checks before it takes a document. */
+interface DocumentCheck {
+  provider: Providers;
+  model?: string;
+  fileSizeLimit?: number;
+}
+
+/** Only Bedrock's limits depend on the model, so other providers' checks ignore it. */
+const getCheckKey = ({ provider, model, fileSizeLimit }: DocumentCheck): string =>
+  `${provider}:${provider === Providers.BEDROCK ? (model ?? '') : ''}:${fileSizeLimit ?? ''}`;
+
+/**
+ * The checks of the other agents reading the history that differ from the primary agent's own. A
+ * document one of them refuses fails the turn with that provider's reason, as the primary agent's
+ * checks do, instead of failing that agent's request on this turn and every later one that resends
+ * the file.
+ */
+function getReaderChecks(
+  req: ServerRequest,
+  primary: DocumentCheck,
+  recipients: readonly DocumentRecipient[],
+): DocumentCheck[] {
+  const checks = new Map<string, DocumentCheck>();
+  for (const recipient of recipients) {
+    if (recipient?.provider == null) {
+      continue;
+    }
+    const provider = recipient.provider as Providers;
+    const check: DocumentCheck = {
+      provider,
+      model: recipient.model_parameters?.model ?? recipient.model ?? undefined,
+      fileSizeLimit: getConfiguredFileSizeLimit(req, {
+        provider,
+        endpoint: recipient.endpoint ?? undefined,
+        explicit: provider === Providers.BEDROCK,
+      }),
+    };
+    checks.set(getCheckKey(check), check);
+  }
+  checks.delete(getCheckKey(primary));
+  return [...checks.values()];
+}
+
+/**
+ * Applies the readers' checks to one document, as the primary agent's apply: their provider's PDF
+ * checks, Bedrock's document limits, and otherwise their configured size limit.
+ */
+async function validateForReaders(
+  checks: readonly DocumentCheck[],
+  mimeType: string,
+  size: number,
+  buffer?: Buffer,
+): Promise<void> {
+  const isPdf = mimeType === 'application/pdf';
+  for (const { provider, model, fileSizeLimit } of checks) {
+    let validation: ValidationResult | undefined;
+    if (isPdf && buffer) {
+      validation = await validatePdf(buffer, size, provider, fileSizeLimit, model);
+    } else if (provider === Providers.BEDROCK) {
+      validation = await validateBedrockDocument(size, mimeType, buffer, fileSizeLimit, model);
+    } else if (fileSizeLimit && size > fileSizeLimit) {
+      throw new Error(
+        `File size (~${(size / 1024 / 1024).toFixed(1)}MB) exceeds the configured limit for ${provider}`,
+      );
+    }
+    if (validation?.isValid === false) {
+      throw new Error(`${isPdf ? 'PDF' : 'Document'} validation failed: ${validation.error}`);
+    }
+  }
 }
 
 /**
@@ -223,10 +462,7 @@ function formatDocumentBlock(
     isAnthropicTextDocumentType(mimeType) &&
     usesAnthropicDocumentCapabilities(provider, model)
   ) {
-    return {
-      type: 'text',
-      text: `File: "${resolvedFilename}"\n\n${Buffer.from(content, 'base64').toString('utf8')}`,
-    };
+    return formatTextDocument(content, resolvedFilename);
   }
 
   if (useResponsesApi) {
@@ -311,6 +547,10 @@ function getBase64DecodedByteCount(content: string): number {
  *   all others are skipped.
  * - **PDF**: Validated via `validatePdf` before encoding.
  * - **Generic types**: Encoded with a provider-specific size check.
+ * - **Shared history**: When `recipients` need another block than the primary agent's own,
+ *   every document becomes a block each of them can read (`formatSharedDocumentBlock`).
+ * - **Recipients' limits**: Each document also passes the checks of every recipient whose
+ *   limits differ from the primary agent's (`getReaderChecks`).
  */
 export async function encodeAndFormatDocuments(
   req: ServerRequest,
@@ -320,11 +560,13 @@ export async function encodeAndFormatDocuments(
     endpoint?: string;
     useResponsesApi?: boolean;
     model?: string;
+    /** The other agents that read the same history: chain, handoff and added conversation. */
+    recipients?: Iterable<DocumentRecipient>;
     onMissingFile?: MissingAttachmentHandler;
   },
   getStrategyFunctions: (source: string) => StrategyFunctions,
 ): Promise<DocumentResult> {
-  const { provider, endpoint, useResponsesApi, model, onMissingFile } = params;
+  const { provider, endpoint, useResponsesApi, model, recipients, onMissingFile } = params;
   if (!files?.length) {
     return { documents: [], files: [] };
   }
@@ -339,28 +581,87 @@ export async function encodeAndFormatDocuments(
     return result;
   }
 
-  const processableFiles = filterProviderDocumentFiles(provider, files, model);
+  const readers = Array.from(recipients ?? []);
+  const formats = getReaderFormats(getDocumentFormat(provider, useResponsesApi, model), readers);
+  /** Agents on another provider or API read the history too, so no one agent's block serves all. */
+  const shared = formats.size > 1;
+  const formatBlock = (mimeType: string, content: string, filename?: string) =>
+    shared
+      ? formatSharedDocumentBlock(mimeType, content, filename)
+      : formatDocumentBlock(provider, mimeType, content, filename, useResponsesApi, model);
+  const processableFiles = filterSharedDocumentFiles(
+    filterProviderDocumentFiles(provider, files, model),
+    formats,
+  );
 
   if (!processableFiles.length) {
     return result;
   }
 
-  const configuredFileSizeLimit = getConfiguredFileSizeLimit(req, { provider, endpoint });
+  /** For Bedrock only a limit the operator set counts, so the inherited 512 MB cannot stand in for it. */
+  const configuredFileSizeLimit = getConfiguredFileSizeLimit(req, {
+    provider,
+    endpoint,
+    explicit: isBedrock,
+  });
+  const readerChecks = getReaderChecks(
+    req,
+    { provider, model, fileSizeLimit: configuredFileSizeLimit },
+    readers,
+  );
+  /**
+   * Bedrock's limit per document, the smallest among the Bedrock agents that read it, known before
+   * anything is read. Other providers read unbounded.
+   */
+  const bedrockChecks = [
+    ...(isBedrock ? [{ provider, model, fileSizeLimit: configuredFileSizeLimit }] : []),
+    ...readerChecks.filter((check) => check.provider === Providers.BEDROCK),
+  ];
+  const readLimits = processableFiles.map((file) =>
+    bedrockChecks.length > 0
+      ? Math.min(
+          ...bedrockChecks.map((check) =>
+            getBedrockDocumentLimit(file.type, check.fileSizeLimit, check.model),
+          ),
+        )
+      : undefined,
+  );
+  /**
+   * A file attached this turn is refused from its recorded size, before storage is opened. Replayed
+   * history skips this: an object that is gone has to be reported missing and left out, and the
+   * bounded read still refuses one that is present.
+   */
+  for (const [index, file] of onMissingFile ? [] : processableFiles.entries()) {
+    const limit = readLimits[index];
+    if (limit != null && (file.bytes ?? 0) > limit) {
+      throw new AttachmentSizeError(file.file_id, file.filename, limit);
+    }
+  }
 
   const results = await Promise.allSettled(
-    processableFiles.map((file) =>
+    processableFiles.map((file, index) =>
       runGuardedEncode(file.bytes ?? 0, () =>
-        getFileStream(req, file, encodingMethods, getStrategyFunctions),
+        getFileStream(
+          req,
+          file,
+          encodingMethods,
+          getStrategyFunctions,
+          configuredRequestBudget(req.config, 'fileFetchMs'),
+          readLimits[index],
+        ),
       ),
     ),
   );
 
   for (const [index, settledResult] of results.entries()) {
     if (settledResult.status === 'rejected') {
+      if (settledResult.reason instanceof AttachmentSizeError) {
+        throw settledResult.reason;
+      }
       if (skipMissingAttachment(settledResult.reason, processableFiles[index], onMissingFile)) {
         continue;
       }
-      console.error('Document processing failed:', settledResult.reason);
+      logger.error('Document processing failed:', getSafeErrorMetadata(settledResult.reason));
       continue;
     }
 
@@ -391,20 +692,21 @@ export async function encodeAndFormatDocuments(
       if (!validation.isValid) {
         throw new Error(`Document validation failed: ${validation.error}`);
       }
+      await validateForReaders(readerChecks, mimeType, fileBuffer.length, fileBuffer);
 
-      const sanitizedName = (file.filename || 'document')
-        .replace(/[^a-zA-Z0-9\s\-()[\]]/g, '_')
-        .slice(0, BEDROCK_DOCUMENT_NAME_LIMIT);
-      result.documents.push({
-        type: 'document',
-        document: {
-          name: sanitizedName,
-          format,
-          source: {
-            bytes: fileBuffer,
-          },
-        },
-      });
+      /** Raw bytes would serialize as a number array in traces and checkpoints, and a restored
+       *  checkpoint would hold a plain object instead of bytes; base64 stays a string. */
+      result.documents.push(
+        shared
+          ? formatSharedDocumentBlock(mimeType, content, file.filename)
+          : {
+              type: 'file',
+              source_type: 'base64',
+              mime_type: BEDROCK_DOCUMENT_MIME_TYPES[format],
+              data: content,
+              metadata: { name: getBedrockDocumentName(file.filename) },
+            },
+      );
       result.files.push(metadata);
     } else if (file.type === 'application/pdf' && isDocSupported) {
       const pdfBuffer = Buffer.from(content, 'base64');
@@ -420,15 +722,9 @@ export async function encodeAndFormatDocuments(
       if (!validation.isValid) {
         throw new Error(`PDF validation failed: ${validation.error}`);
       }
+      await validateForReaders(readerChecks, mimeType, pdfBuffer.length, pdfBuffer);
 
-      const block = formatDocumentBlock(
-        provider,
-        mimeType,
-        content,
-        file.filename,
-        useResponsesApi,
-        model,
-      );
+      const block = formatBlock(mimeType, content, file.filename);
       if (block) {
         result.documents.push(block);
         result.files.push(metadata);
@@ -440,15 +736,9 @@ export async function encodeAndFormatDocuments(
           `File size (~${(decodedByteCount / 1024 / 1024).toFixed(1)}MB) exceeds the configured limit for ${provider}`,
         );
       }
+      await validateForReaders(readerChecks, mimeType, decodedByteCount);
 
-      const block = formatDocumentBlock(
-        provider,
-        mimeType,
-        content,
-        file.filename,
-        useResponsesApi,
-        model,
-      );
+      const block = formatBlock(mimeType, content, file.filename);
       if (block) {
         result.documents.push(block);
         result.files.push(metadata);

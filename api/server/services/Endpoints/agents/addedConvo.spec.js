@@ -126,6 +126,39 @@ describe('processAddedConvo', () => {
     expect(mockValidateAgentModel.mock.calls[0][0]).not.toHaveProperty('modelsConfig');
   });
 
+  it("initializes the added agent under the added pane's own model spec", async () => {
+    const addedSpec = { name: 'added-spec', vision: false };
+
+    await processAddedConvo(
+      baseParams({
+        req: {
+          ...makeReq(),
+          config: { modelSpecs: { list: [{ name: 'primary-spec' }, addedSpec] } },
+        },
+        endpointOption: {
+          spec: 'primary-spec',
+          addedConvo: { model: 'gpt-4o', agent_id: 'added-agent', spec: 'added-spec' },
+        },
+      }),
+    );
+
+    expect(mockInitializeAgent.mock.calls[0][0].modelSpec).toBe(addedSpec);
+  });
+
+  it('initializes an added agent without a spec of its own under none', async () => {
+    await processAddedConvo(
+      baseParams({
+        req: { ...makeReq(), config: { modelSpecs: { list: [{ name: 'primary-spec' }] } } },
+        endpointOption: {
+          spec: 'primary-spec',
+          addedConvo: { model: 'gpt-4o', agent_id: 'added-agent' },
+        },
+      }),
+    );
+
+    expect(mockInitializeAgent.mock.calls[0][0].modelSpec).toBeNull();
+  });
+
   it('forwards codeEnvAvailable=true to the added-convo initializeAgent call', async () => {
     await processAddedConvo(baseParams({ codeEnvAvailable: true }));
 

@@ -438,10 +438,11 @@ describe('loadConfigModels', () => {
       expect(result.NoKeyEndpoint).toEqual(['default-model']);
     });
 
-    it('falls back to defaults and logs warn when getUserKeyValues throws infra error', async () => {
+    it('falls back to defaults and logs safe metadata when user key lookup fails', async () => {
       const { getUserKeyValues } = require('~/models');
       const { logger } = require('@librechat/data-schemas');
-      getUserKeyValues.mockRejectedValueOnce(new Error('DB connection timeout'));
+      const secret = 'sk-CANARY-user-key-lookup';
+      getUserKeyValues.mockRejectedValueOnce(new Error(`DB connection timeout: ${secret}`));
       getAppConfig.mockResolvedValue({
         endpoints: {
           custom: [
@@ -459,11 +460,12 @@ describe('loadConfigModels', () => {
 
       expect(fetchModels).not.toHaveBeenCalled();
       expect(result.ErrorEndpoint).toEqual(['fallback']);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
       expect(logger.warn).toHaveBeenCalledWith(
-        expect.stringContaining(
-          'Failed to retrieve user key for "ErrorEndpoint": DB connection timeout',
-        ),
+        '[loadConfigModels] Failed to retrieve user key for "ErrorEndpoint":',
+        { type: 'Error' },
       );
+      expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(secret);
       expect(logger.debug).not.toHaveBeenCalledWith(expect.stringContaining('No user key stored'));
     });
 

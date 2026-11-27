@@ -6,7 +6,11 @@ export function createSubagentsHost(overrides: Partial<SubagentsHost> = {}): Sub
   return {
     renderSteer: () => null,
     useRetainedControl: () => ({ isFetching: false, isError: false, refetch: () => undefined }),
-    useTaskContent: () => ({ isError: false, isUnavailable: false, refetch: () => undefined }),
+    useTaskContent: () => ({
+      isError: false,
+      isUnavailable: false,
+      refetch: () => Promise.resolve(),
+    }),
     useAgentsMap: () => undefined,
     useChildPartsHost: (host) => host,
     useThread: () => ({

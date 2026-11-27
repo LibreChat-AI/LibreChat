@@ -1,9 +1,10 @@
 import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 
 let mockIsUnseen = false;
+let mockInterface: { conversationIcons?: boolean } | undefined;
 
 jest.mock('@librechat/client', () => ({
   useMediaQuery: () => false,
@@ -24,7 +25,7 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => ({ data: { sharedLinksEnabled: false } }),
+  useGetStartupConfig: () => ({ data: { sharedLinksEnabled: false, interface: mockInterface } }),
   useUpdateConversationMutation: () => ({ mutateAsync: jest.fn() }),
   usePinConversationMutation: () => ({ mutate: jest.fn() }),
   useProjectName: () => 'Scheduling',
@@ -94,6 +95,38 @@ const unreadDot = (container: HTMLElement) =>
 describe('Conversation row status', () => {
   beforeEach(() => {
     mockIsUnseen = false;
+    mockInterface = undefined;
+  });
+
+  it('shows the endpoint icon by default and when conversationIcons is true', () => {
+    renderRow();
+    expect(screen.getByTestId('convo-icon')).toBeInTheDocument();
+    cleanup();
+    mockInterface = { conversationIcons: true };
+    renderRow();
+    expect(screen.getByTestId('convo-icon')).toBeInTheDocument();
+  });
+
+  it('renders no icon or leading box when conversationIcons is false', () => {
+    mockInterface = { conversationIcons: false };
+    const { container } = renderRow();
+
+    expect(screen.queryByTestId('convo-icon')).not.toBeInTheDocument();
+    expect(container.querySelector('.size-5')).toBeNull();
+    expect(screen.getByText('Tool Approval UI')).toBeInTheDocument();
+  });
+
+  it('keeps the running ring and the unread dot when the icon is hidden', () => {
+    mockInterface = { conversationIcons: false };
+    renderRow({ isGenerating: true });
+    expect(screen.queryByTestId('convo-icon')).not.toBeInTheDocument();
+    expect(screen.getByTestId('status-ring')).toBeInTheDocument();
+    cleanup();
+
+    mockIsUnseen = true;
+    const { container } = renderRow();
+    expect(unreadDot(container)).not.toBeNull();
+    expect(screen.queryByTestId('convo-icon')).not.toBeInTheDocument();
   });
 
   it('rings the avatar while running and keeps the row menu reachable', () => {

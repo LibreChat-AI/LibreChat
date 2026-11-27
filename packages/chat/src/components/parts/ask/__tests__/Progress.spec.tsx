@@ -5,19 +5,11 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import type { LiveAskPauses } from '../../../../react/parts/ask';
 import { AskAnswerHostProvider } from '../../../../react/parts/ask';
+import { initEnglish } from '../../../../__fixtures__/i18n';
 import { ToolPreparation } from '../../preparation';
 import AskUserQuestionProgress from '../Progress';
 
-const translations: Record<string, string> = {
-  com_ui_asking: 'Asking',
-  com_ui_tool_name_ask_user_question: 'Question',
-};
-
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string, values?: Record<string, string>) =>
-    key === 'com_ui_tool_preparing' ? `Preparing ${values?.[0]}` : (translations[key] ?? key),
-}));
+beforeAll(initEnglish);
 
 let mockLivePauses: LiveAskPauses = {
   ids: [],

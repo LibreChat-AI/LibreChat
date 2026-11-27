@@ -97,3 +97,37 @@ export function sniffImageMimeType(buffer: Buffer): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * Raster image types that storage may record and serve for an object. Anything else keeps the
+ * storage default (`application/octet-stream`): serving an uploader-reported `text/html` or
+ * `image/svg+xml` as such would let the browser render it as an active document from the
+ * storage origin, while a raster type is only ever displayed as an image.
+ */
+const INLINE_IMAGE_TYPES: ReadonlyMap<string, string> = new Map([
+  ['avif', 'image/avif'],
+  ['bmp', 'image/bmp'],
+  ['gif', 'image/gif'],
+  ['jpeg', 'image/jpeg'],
+  ['jpg', 'image/jpeg'],
+  ['png', 'image/png'],
+  ['webp', 'image/webp'],
+]);
+
+const inlineImageTypes = new Set(INLINE_IMAGE_TYPES.values());
+
+/**
+ * Resolves the content type to store a file with: the reported type when it is a raster image
+ * type, otherwise the raster type named by the file's extension, otherwise `undefined`.
+ */
+export function getInlineImageType(fileName: string, reported?: string | null): string | undefined {
+  const type = reported?.split(';')[0].trim().toLowerCase();
+  if (type && inlineImageTypes.has(type)) {
+    return type;
+  }
+  const dot = fileName.lastIndexOf('.');
+  if (dot === -1) {
+    return undefined;
+  }
+  return INLINE_IMAGE_TYPES.get(fileName.slice(dot + 1).toLowerCase());
+}

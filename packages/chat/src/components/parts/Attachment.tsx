@@ -3,7 +3,7 @@ import { Tools } from 'librechat-data-provider';
 import { Button, useLocalize, useRemScale } from '@librechat/client';
 import { Loader2, AlertCircle, Download, ChevronDown, Files as FilesIcon } from 'lucide-react';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
-import type { ReactNode } from 'react';
+import type { ReactNode, MemoExoticComponent } from 'react';
 import type { AttachmentArtifact } from '../../react/files';
 import {
   bySalience,
@@ -14,11 +14,14 @@ import {
   isTextAttachment,
   renderAttachmentKey,
 } from './attachmentTypes';
-import { ARTIFACT_ROW_NAV_SPACING, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
+import { ARTIFACT_ROW_NAV_SPACING, NAV_CLEARANCE, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
+import { renderImage as defaultRenderImage } from '../renderers';
 import FileContainer from '../composer/files/FileContainer';
 import { useMessagePartsHost } from '../../react/host';
 import useExpandCollapse from './useExpandCollapse';
 import { useFilesHost } from '../../react/files';
+import { useVisibleAttachments } from './media';
+import { classes } from './classes';
 
 const PLACEHOLDER_ROW_CLASS = `${TOOL_ROW_CLASSES} ${ARTIFACT_ROW_NAV_SPACING} text-text-secondary text-sm`;
 
@@ -223,7 +226,10 @@ const FileAttachmentGroup = memo(({ attachments }: { attachments: TAttachment[] 
         aria-controls={panelId}
         aria-label={buttonLabel}
         onClick={() => setIsExpanded((prev) => !prev)}
-        className="text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle inline-flex w-full max-w-full items-center gap-2 rounded-lg py-1 pe-2 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+        className={classes(
+          'text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle inline-flex w-full max-w-full items-center gap-2 rounded-lg py-1 pe-2 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-hidden',
+          NAV_CLEARANCE.pad,
+        )}
       >
         <FilesIcon className="size-4 shrink-0" aria-hidden="true" />
         <span className="shrink-0 font-medium">{fileCount}</span>
@@ -334,7 +340,12 @@ const TextAttachment = memo(
         )}
         <div className="bg-surface-secondary overflow-hidden rounded-lg">
           {!showFileChip && (
-            <div className="border-border-inset flex items-center justify-between gap-2 border-b px-3 py-2">
+            <div
+              className={classes(
+                'border-border-inset flex items-center justify-between gap-2 border-b px-3 py-2',
+                NAV_CLEARANCE.pad,
+              )}
+            >
               <span className="min-w-0 truncate text-sm font-medium" title={visibleFilename}>
                 {visibleFilename}
               </span>
@@ -383,24 +394,11 @@ const TextAttachment = memo(
 );
 
 const ImageAttachment = memo(({ attachment }: { attachment: TAttachment }) => {
-  const [isLoaded, setIsLoaded] = useState(false);
-  const renderImage = useMessagePartsHost().renderImage;
+  const { renderImage = defaultRenderImage } = useMessagePartsHost();
   const { width, height, filepath = null } = attachment as TFile & TAttachmentMetadata;
 
-  useEffect(() => {
-    setIsLoaded(false);
-    const timer = setTimeout(() => setIsLoaded(true), 100);
-    return () => clearTimeout(timer);
-  }, [attachment]);
-
   return (
-    <div
-      className={
-        isLoaded
-          ? 'attachment-settle scale-100 subpixel-antialiased opacity-100 transition-all duration-500 ease-out'
-          : 'attachment-settle scale-[0.98] subpixel-antialiased opacity-0 transition-all duration-500 ease-out'
-      }
-    >
+    <div>
       {renderImage({
         altText: attachment.filename ?? '',
         imagePath: filepath ?? '',
@@ -424,7 +422,8 @@ function HostArtifact({
 
 export default function Attachment({ attachment }: { attachment?: TAttachment }): ReactNode {
   const { classifyAttachment } = useFilesHost();
-  if (!attachment) {
+  const visible = useVisibleAttachments(attachment ? [attachment] : undefined);
+  if (!attachment || visible?.length === 0) {
     return null;
   }
   if (attachment.type === Tools.web_search) {
@@ -453,8 +452,9 @@ export default function Attachment({ attachment }: { attachment?: TAttachment })
   return <FileAttachment attachment={attachment} />;
 }
 
-export function AttachmentGroup({ attachments }: { attachments?: TAttachment[] }): ReactNode {
+function AttachmentGroupBody({ attachments: source }: { attachments?: TAttachment[] }): ReactNode {
   const { classifyAttachment } = useFilesHost();
+  const attachments = useVisibleAttachments(source);
   if (!attachments || attachments.length === 0) {
     return null;
   }
@@ -590,3 +590,18 @@ export function AttachmentGroup({ attachments }: { attachments?: TAttachment[] }
     </>
   );
 }
+
+export const AttachmentGroup: MemoExoticComponent<typeof AttachmentGroupBody> = memo(
+  AttachmentGroupBody,
+  (previous, next) => {
+    const left = previous.attachments;
+    const right = next.attachments;
+    return (
+      left === right ||
+      (left != null &&
+        right != null &&
+        left.length === right.length &&
+        left.every((file, index) => file === right[index]))
+    );
+  },
+);

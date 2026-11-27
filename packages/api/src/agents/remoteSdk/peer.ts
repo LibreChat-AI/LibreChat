@@ -30,6 +30,12 @@ export type SdkFrame =
   | { type: 'done'; data: unknown }
   | { type: 'error' };
 
+export interface SdkPeer {
+  call: SdkRpc;
+  send(frame: SdkFrame): void;
+  close(): void;
+}
+
 const frameSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('cancel'), id: z.string().uuid() }),
   z.object({
@@ -67,7 +73,7 @@ export function createSdkPeer(
     onClose: (error: Error) => void;
     onError?: (error: unknown) => void;
   },
-) {
+): SdkPeer {
   const pending = new Map<
     string,
     { resolve: (data: unknown) => void; reject: (error: Error) => void }

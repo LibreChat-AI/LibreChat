@@ -9,7 +9,7 @@ import React, {
 } from 'react';
 import { useSetAtom } from 'jotai';
 import * as Ariakit from '@ariakit/react';
-import { Star, Plus, Search, ChevronDown } from 'lucide-react';
+import { Pin, Star, Plus, Search, ChevronDown } from 'lucide-react';
 import {
   Button,
   cn,
@@ -25,6 +25,7 @@ import type {
   PaletteCatalogSection,
   PaletteEntryView,
   PaletteListHandle,
+  PalettePinView,
   PaletteSection,
 } from '../../react/palette';
 import type { ExtendedFile } from '../../core/files';
@@ -111,7 +112,13 @@ const SECTION_LABEL: Record<PaletteSection, string> = {
 };
 
 type PaletteRow =
-  | { type: 'header'; key: string; label: string; showAll?: PaletteCatalogSection }
+  | {
+      type: 'header';
+      key: string;
+      label: string;
+      showAll?: PaletteCatalogSection;
+      pin?: PalettePinView;
+    }
   | { type: 'attach'; key: string; entry: PaletteAttachView }
   | { type: 'more'; key: string; label: string }
   | { type: 'file'; key: string; file: TFile }
@@ -149,7 +156,7 @@ function formatFileDate(file: TFile): string {
 
 function rowHeight(row: PaletteRow): number {
   if (row.type === 'header') {
-    return row.showAll != null ? HEADER_ACTION_HEIGHT : HEADER_HEIGHT;
+    return row.showAll != null || row.pin != null ? HEADER_ACTION_HEIGHT : HEADER_HEIGHT;
   }
   if (row.type === 'entry' && row.entry.description != null && row.entry.description !== '') {
     return ROW_HEIGHT_DESC;
@@ -158,6 +165,40 @@ function rowHeight(row: PaletteRow): number {
     return ROW_HEIGHT_DESC;
   }
   return ROW_HEIGHT;
+}
+
+interface PinToggleProps {
+  label: string;
+  pinned: boolean;
+  onPinChange: (pinned: boolean) => void;
+}
+
+/** Keeps a control on the composer bar while it is off. The name stays the same in both states;
+ *  `aria-pressed` and the filled glyph say which one it is in. */
+function PinToggle({ label, pinned, onPinChange }: PinToggleProps) {
+  return (
+    <IconButton
+      size="xs"
+      shape="square"
+      variant="row-action"
+      label={label}
+      aria-pressed={pinned}
+      onClick={(event) => {
+        event.stopPropagation();
+        onPinChange(!pinned);
+      }}
+      className="group"
+    >
+      <Pin
+        className={cn(
+          'h-4 w-4',
+          pinned ? 'text-text-primary' : 'text-text-secondary group-hover:text-text-primary',
+        )}
+        fill={pinned ? 'currentColor' : 'none'}
+        aria-hidden="true"
+      />
+    </IconButton>
+  );
 }
 
 export interface ComposerPaletteProps {
@@ -197,7 +238,9 @@ export interface ComposerPaletteProps {
  *
  * Replaces the old split between the attach `+` menu and the tools gear, and
  * the pin/drag/wiggle badge row: a starred row floats into Favourites, which
- * is server-persisted and shared with the tools marketplace.
+ * is server-persisted and shared with the tools marketplace. Pins stay with the
+ * host: a row or section header it gives a pin carries a toggle, the way back
+ * for a chip whose remove button unpinned it from the composer bar.
  *
  * The list is virtualized (catalogs run to hundreds of skills and MCP servers),
  * so keyboard navigation is driven manually against the flat row model rather
@@ -258,6 +301,7 @@ function Palette({
     favorites: favoritesEnabled,
     favoriteKeys,
     toggleFavorite,
+    pins,
     attachEntries,
     fileInputRef,
     onFileChange,
@@ -443,6 +487,8 @@ function Palette({
     }
     const favoriteMatches: PaletteEntryView[] = [];
     const buckets: Record<PaletteSection, PaletteEntryView[]> = { tool: [], skill: [], mcp: [] };
+    /** Sections with a row that moved up into favourites. */
+    const starred = new Set<PaletteSection>();
 
     for (const entry of entries) {
       if (query !== '' && scoreEntry(entry.label, entry.description, query) < 0) {
@@ -450,6 +496,7 @@ function Palette({
       }
       if (entry.favoritable !== false && favoriteKeys.has(entry.key)) {
         favoriteMatches.push(entry);
+        starred.add(entry.section);
         continue;
       }
       buckets[entry.section].push(entry);
@@ -508,7 +555,12 @@ function Palette({
 
     const pushSection = (section: PaletteSection) => {
       const list = buckets[section];
-      if (list.length === 0) {
+      const pin = pins[section];
+      /* A pinned section keeps its header while every row of it sits under
+         Favourites, since the header is the only place its pin is drawn. A
+         search that matches none of its own rows still drops it. */
+      const pinHeld = pin != null && query === '' && starred.has(section);
+      if (list.length === 0 && !pinHeld) {
         return;
       }
       /* Tools are a short fixed set; skills and servers run to hundreds, so
@@ -520,6 +572,7 @@ function Palette({
         key: `h:${section}`,
         label: localize(SECTION_LABEL[section]),
         showAll: capped ? section : undefined,
+        pin,
       });
       const shown = capped ? list.slice(0, SECTION_LIMIT) : list;
       for (const entry of shown) {
@@ -549,6 +602,7 @@ function Palette({
     mounted,
     entries,
     favoriteKeys,
+    pins,
     query,
     attachEntries,
     showAllAttach,
@@ -895,6 +949,17 @@ function Palette({
             >
               {row.label}
             </div>
+            {/* Always shown, unlike a row's: a header has no hover of its own to
+                reveal it, and once its chip is unpinned this is the way back. */}
+            {row.pin != null && (
+              <div role="gridcell" className="flex shrink-0 items-end self-end">
+                <PinToggle
+                  label={localize('com_ui_pin_var', { 0: row.label })}
+                  pinned={row.pin.pinned}
+                  onPinChange={row.pin.onPinChange}
+                />
+              </div>
+            )}
             {row.showAll != null && (
               <div
                 id={paletteRowId(row.key)}
@@ -1046,6 +1111,8 @@ function Palette({
       const checked = isEntry ? row.entry.active : false;
       const favorited = isEntry && row.isFavorite;
       const canFavorite = favoritesEnabled && isEntry && row.entry.favoritable !== false;
+      const onPinChange = isEntry ? row.entry.onPinChange : undefined;
+      const pinned = isEntry && row.entry.pinned === true;
       const modes = isEntry ? row.entry.modes : undefined;
 
       return (
@@ -1108,8 +1175,8 @@ function Palette({
               </span>
               <span className="flex min-w-0 flex-1 flex-col justify-center">
                 <span className={cn('truncate', checked && 'font-medium')}>{label}</span>
-                {/* The dot is color only, so the status is still said aloud. */}
-                {status != null && <span className="sr-only">{status.label}</span>}
+                {/* Announce the status when a label is available. */}
+                {status?.label && <span className="sr-only">{status.label}</span>}
                 {description != null && description !== '' && (
                   <span className="text-text-secondary truncate text-xs">{description}</span>
                 )}
@@ -1154,6 +1221,20 @@ function Palette({
                   </Button>
                 ),
               )}
+            </div>
+          )}
+          {onPinChange != null && (
+            <div
+              role="gridcell"
+              className={cn('flex shrink-0 items-center', !canFavorite && 'pe-1')}
+            >
+              <span className={ROW_ACTION_REVEAL}>
+                <PinToggle
+                  label={localize('com_ui_pin_var', { 0: label })}
+                  pinned={pinned}
+                  onPinChange={onPinChange}
+                />
+              </span>
             </div>
           )}
           {canFavorite && (

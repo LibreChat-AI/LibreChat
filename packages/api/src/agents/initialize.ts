@@ -2,6 +2,7 @@ import { Providers } from '@librechat/agents';
 import { logger } from '@librechat/data-schemas';
 import {
   Tools,
+  resolveSubagents,
   Constants,
   ErrorTypes,
   EModelEndpoint,
@@ -25,6 +26,7 @@ import type {
   StatefulCodeEnvironment,
   TurnDeliveryRouting,
   ImageDetail,
+  TModelSpec,
   TFile,
   Agent,
   TUser,
@@ -136,6 +138,7 @@ import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
+import { narrowGrantedTools } from '~/agents/authority/execution';
 import { getGoogleInputTokenLimit } from '~/endpoints/google/llm';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { resolveToolRoleGrants } from '~/tools/rolePermissions';
@@ -153,16 +156,13 @@ import { allowsFileResource } from '~/files/consumers';
 import { applyDeferredToolLoading } from './deferral';
 import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
+import { resolveVision } from '~/endpoints/vision';
 import { getAgentInferencePolicy } from './input';
 import { getProviderConfig } from '~/endpoints';
 import { primeResources } from './resources';
 import { pinAgentModel } from './pin';
 
-/**
- * Fraction of context budget reserved as headroom when no explicit maxContextTokens is set.
- * Reduced from 0.10 to 0.05 alongside the introduction of summarization, which actively
- * manages overflow. `createRun` can further override this via `SummarizationConfig.reserveRatio`.
- */
+/** Legacy headroom when no explicit context limit or reserve ratio is used. */
 const DEFAULT_RESERVE_RATIO = 0.05;
 
 /**
@@ -450,6 +450,31 @@ export function readResolvedConversationFiles(
     return undefined;
   }
   return resolved.files ?? [];
+}
+
+/**
+ * The files the conversation leaves out, from the same earlier read. `undefined` when that read
+ * cannot speak for the database, as for `readResolvedConversationFiles`.
+ */
+export function readResolvedExcludedFiles(
+  runtime: Pick<AgentExecutionContext, 'resolvedConversation'>,
+  conversationId: string,
+): string[] | undefined {
+  if (!Object.prototype.hasOwnProperty.call(runtime, 'resolvedConversation')) {
+    return undefined;
+  }
+  const resolved = runtime.resolvedConversation;
+  if (resolved === null) {
+    return [];
+  }
+  if (
+    resolved == null ||
+    resolved.conversationId !== conversationId ||
+    (resolved as Record<symbol, unknown>)[PARTIAL_RESOLVED_CONVERSATION] === true
+  ) {
+    return undefined;
+  }
+  return resolved.excludedFiles ?? [];
 }
 
 export interface ResolveResendToolResourcesParams {
@@ -783,13 +808,19 @@ export type InitializedAgent = Agent & {
   toolContextMap: Record<string, unknown>;
   dynamicToolContextMap?: Record<string, unknown>;
   maxContextTokens: number;
-  /** Pre-ratio context budget (agentMaxContextNum - maxOutputTokensNum). Used by createRun to apply a configurable reserve ratio. */
+  /** Input budget after output reservation and input limits, before any headroom. */
   baseContextTokens?: number;
   useLegacyContent: boolean;
   resendFiles: boolean;
+  /** Files the conversation leaves out of this turn, for the history replay to honor as this
+   *  initialization did. Absent when it leaves none out. */
+  excludedFiles?: string[];
   /** Detail level LibreChat encodes image content blocks with, from the agent's
    * model parameters. Absent when the agent does not configure one. */
   imageDetail?: ImageDetail;
+  /** Whether the agent's model reads images, as the agent, its spec or librechat.yaml declares
+   *  it; `false` gives it a text note in place of each image. Absent when nothing is declared. */
+  vision?: boolean;
   /** How this agent receives its attachments this turn, settled once every routing input is final. */
   deliveryRouting: TurnDeliveryRouting;
   tool_resources?: AgentToolResources;
@@ -1014,6 +1045,9 @@ export interface InitializeAgentParams {
   } | null>;
   /** Endpoint option (contains model_parameters and endpoint info) */
   endpointOption?: Partial<TEndpointOption>;
+  /** The model spec this agent runs under: the conversation's for the primary agent, the added
+   *  pane's for its agent, a handoff target's own. Its `vision` outranks the endpoint config. */
+  modelSpec?: TModelSpec | null;
   /** Set of allowed providers */
   allowedProviders: Set<string>;
   /** Whether this is the initial agent */
@@ -1124,6 +1158,9 @@ export interface InitializeAgentDbMethods extends EndpointDbMethods {
   ) => Promise<unknown[]>;
   /** Get conversation file IDs */
   getConvoFiles: (conversationId: string) => Promise<string[] | null>;
+  /** The file ids the conversation leaves out of later turns. Read only when the request did
+   *  not already load the conversation. */
+  getConvoExcludedFiles?: (conversationId: string) => Promise<string[] | null>;
   /** Get code-generated files by conversation ID and the file_ids
    *  referenced from messages in the current thread (collected via
    *  `messages.files[].file_id` during thread walk). */
@@ -1239,7 +1276,27 @@ export async function initializeAgent(
     useChatProjectContext ?? params.req?.chatProjectContextEnabled === true;
   assertToolOptionsWithinLimits(suppliedAgent.tool_options);
   const inputAgent = restoreAgentInferenceInput(suppliedAgent);
-  const agent = shouldUseChatProjectContext ? { ...inputAgent } : inputAgent;
+  /**
+   * Under a schedule's grant an agent has only the tools its owner allowed. Narrowed here, at
+   * the one list everything below reads: the loader, and the markers that set up code
+   * execution and memory, so a tool the owner left out is not defined for the model at all.
+   */
+  const grantedTools =
+    inputAgent.tools == null
+      ? inputAgent.tools
+      : narrowGrantedTools(params.req, inputAgent.id, inputAgent.tools);
+  const agent =
+    shouldUseChatProjectContext || grantedTools !== inputAgent.tools
+      ? { ...inputAgent, tools: grantedTools }
+      : inputAgent;
+  /**
+   * Skills are one item of a schedule's grant. Left out, the agent runs without them: none
+   * is resolved, no catalog is injected and the skill tool is not registered, so the model
+   * is not offered what it would only be refused.
+   */
+  const skillsGranted =
+    narrowGrantedTools(params.req, inputAgent.id, [AgentCapabilities.skills]).length > 0;
+  const accessibleSkillIds = skillsGranted ? params.accessibleSkillIds : [];
   const { user, appConfig } = runtime;
   const requestFileOwnerId = user?.id;
   const requestFileOwnerScope: FileOwnerScope | undefined = requestFileOwnerId
@@ -1429,8 +1486,8 @@ export async function initializeAgent(
    * those exact model-bound skill bodies before file usage/resource priming or
    * tool loading, then reuse the results below when expanding allowed tools.
    */
-  const hasSkillAccess = (params.accessibleSkillIds?.length ?? 0) > 0;
-  const skillAuthoringAvailable = params.skillAuthoringAvailable === true;
+  const hasSkillAccess = (accessibleSkillIds?.length ?? 0) > 0;
+  const skillAuthoringAvailable = skillsGranted && params.skillAuthoringAvailable === true;
   let manualSkillPrimes: ResolvedManualSkill[] | undefined;
   let alwaysApplySkillPrimes: ResolvedAlwaysApplySkill[] | undefined;
   let extraAllowedToolNames: string[] = [];
@@ -1442,7 +1499,7 @@ export async function initializeAgent(
         ? resolveManualSkills({
             names: params.manualSkills,
             getSkillByName: db.getSkillByName,
-            accessibleSkillIds: params.accessibleSkillIds!,
+            accessibleSkillIds: accessibleSkillIds!,
             userId: user?.id,
             skillStates: params.skillStates,
             defaultActiveOnShare: params.defaultActiveOnShare,
@@ -1451,7 +1508,7 @@ export async function initializeAgent(
       db.listAlwaysApplySkills
         ? resolveAlwaysApplySkills({
             listAlwaysApplySkills: db.listAlwaysApplySkills,
-            accessibleSkillIds: params.accessibleSkillIds!,
+            accessibleSkillIds: accessibleSkillIds!,
             userId: user?.id,
             skillStates: params.skillStates,
             defaultActiveOnShare: params.defaultActiveOnShare,
@@ -1459,7 +1516,7 @@ export async function initializeAgent(
         : Promise.resolve<ResolvedAlwaysApplySkill[] | undefined>(undefined),
       hasActivePiiFields(appConfig?.filters?.skills?.pii, ['name', 'description'])
         ? resolveSkillCatalog({
-            accessibleSkillIds: params.accessibleSkillIds!,
+            accessibleSkillIds: accessibleSkillIds!,
             listSkillsByAccess: db.listSkillsByAccess,
             userId: user?.id,
             skillStates: params.skillStates,
@@ -1568,6 +1625,14 @@ export async function initializeAgent(
   if (overrideProvider !== agent.provider) {
     agent.provider = overrideProvider;
   }
+  const vision = resolveVision({
+    appConfig,
+    endpoint: provider,
+    model: agent.model,
+    customEndpointConfig,
+    modelSpec: params.modelSpec,
+    textOnly: agent.text_only,
+  });
 
   const inference = resolveAgentInferenceParameters({
     parameters: {
@@ -1616,13 +1681,14 @@ export async function initializeAgent(
     llmConfig?.maxTokens as number | undefined,
     0,
   );
+  const modelContextTokens = getModelMaxTokens(
+    tokensModel ?? '',
+    providerEndpointMap[overrideProvider as keyof typeof providerEndpointMap],
+    options.endpointTokenConfig,
+  );
   const agentMaxContextTokens = optionalChainWithEmptyCheck(
     maxContextTokens,
-    getModelMaxTokens(
-      tokensModel ?? '',
-      providerEndpointMap[overrideProvider as keyof typeof providerEndpointMap],
-      options.endpointTokenConfig,
-    ),
+    modelContextTokens,
     DEFAULT_MAX_CONTEXT_TOKENS,
   );
 
@@ -1684,9 +1750,23 @@ export async function initializeAgent(
   });
   const attachedWorkspaceTools =
     effectiveCodeEnvAvailable && codeExecutionContext.environmentType === 'attached';
+  /* A file the conversation leaves out stays out however it would arrive: named again by the
+   * request (a regenerated turn re-sends its message's files), collected from the thread, or
+   * listed on the conversation. An isolated execution reads no parent history, so it has no
+   * list to apply. The conversation the request already loaded answers without a query. */
+  let excludedFileIds: string[] = [];
+  if (authorizedRunFiles === undefined && conversationId != null) {
+    excludedFileIds =
+      readResolvedExcludedFiles(runtime, conversationId) ??
+      (await db.getConvoExcludedFiles?.(conversationId)) ??
+      [];
+  }
+  const leftOut = new Set(excludedFileIds);
+  const sentRequestFiles =
+    leftOut.size === 0 ? requestFiles : requestFiles.filter((file) => !leftOut.has(file.file_id));
   const requestFileIds = [
     ...new Set(
-      requestFiles
+      sentRequestFiles
         .map((file) => file.file_id)
         .filter((fileId): fileId is string => typeof fileId === 'string' && fileId.length > 0),
     ),
@@ -1768,7 +1848,9 @@ export async function initializeAgent(
         ? getThreadMessages({ conversationId }, 'messageId parentMessageId files attachments')
         : null,
     ]);
-    const fileIds = convoFileIds ?? [];
+    const included = (ids: string[]): string[] =>
+      leftOut.size === 0 ? ids : ids.filter((fileId) => !leftOut.has(fileId));
+    const fileIds = included(convoFileIds ?? []);
 
     /** Walk the parent chain and collect file_ids referenced by
      *  any message in the thread (`messages.files[].file_id` +
@@ -1778,7 +1860,7 @@ export async function initializeAgent(
      *  this layer. */
     const threadFileIds =
       threadMessages && threadMessages.length > 0
-        ? getThreadData(threadMessages, threadAnchor).fileIds
+        ? included(getThreadData(threadMessages, threadAnchor).fileIds)
         : undefined;
 
     /* Linear continuation APIs supply no anchor: the Responses API always continues via
@@ -1922,7 +2004,7 @@ export async function initializeAgent(
       }
     }
     currentFiles = authorizedRunFiles.map((file) => structuredClone(file));
-  } else if (requestFiles.length > 0 || toolFileIds.length > 0) {
+  } else if (sentRequestFiles.length > 0 || toolFileIds.length > 0) {
     currentFiles = requestUsageFiles.concat(toolUsageFiles);
   }
   if (currentFiles?.length) {
@@ -2125,7 +2207,7 @@ export async function initializeAgent(
       ? (Promise.resolve(currentFiles) as unknown as Promise<TFile[]>)
       : undefined,
     tool_resources: runtimeToolResources,
-    requestFileSet: new Set((authorizedRunFiles ?? requestFiles).map((file) => file.file_id)),
+    requestFileSet: new Set((authorizedRunFiles ?? sentRequestFiles).map((file) => file.file_id)),
     enabledToolResources: toolResourceSet,
     checkSessionsAlive: db.checkSessionsAlive,
     loadCodeApiKey: db.loadCodeApiKey,
@@ -2234,7 +2316,8 @@ export async function initializeAgent(
     loadTools?.({
       provider,
       agentId: agent.id,
-      tools,
+      // Under a schedule's grant, only the MCP tools its owner allowed are loaded at all.
+      tools: narrowGrantedTools(params.req, agent.id, tools),
       model: agent.model,
       tool_options: agent.tool_options,
       tool_resources: runtimeToolResources,
@@ -2435,6 +2518,7 @@ export async function initializeAgent(
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
       workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
+      workspaceDetachedCommands: trustedCodeExecutionContext.codeWorkspace?.detachedCommands,
     });
     toolDefinitions = codeExecResult.toolDefinitions;
     recordCapabilityToolNames(AgentCapabilities.execute_code, codeExecResult.toolNames);
@@ -2691,9 +2775,8 @@ export async function initializeAgent(
    * Ensures `getSkillByName` cannot resolve a deactivated skill even if the
    * LLM (or a direct-invocation path) names one.
    */
-  let executableSkillIds = params.accessibleSkillIds;
+  let executableSkillIds = accessibleSkillIds;
   let activeSkillNames: Set<string> | undefined;
-  const { accessibleSkillIds } = params;
   /**
    * Authoring runs go through catalog injection even with nothing accessible:
    * `injectSkillCatalog` owns the `skill` tool registration, and a model that
@@ -2720,6 +2803,7 @@ export async function initializeAgent(
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
       workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
+      workspaceDetachedCommands: trustedCodeExecutionContext.codeWorkspace?.detachedCommands,
       skillStates: params.skillStates,
       defaultActiveOnShare: params.defaultActiveOnShare,
       maxCatalogSkills: getMaxCatalogSkills(runtime),
@@ -2818,9 +2902,13 @@ export async function initializeAgent(
     agent.provider === Providers.GOOGLE || agent.provider === Providers.VERTEXAI
       ? (getGoogleInputTokenLimit(tokensModel ?? '', maxOutputTokensNum) ?? Infinity)
       : Infinity;
+  const contextLimit =
+    maxContextTokens != null && maxContextTokens > 0 ? maxContextTokens : undefined;
+  // An explicit limit supplies the window only when the provider window is unknown.
+  const contextWindow = modelContextTokens ?? contextLimit ?? DEFAULT_MAX_CONTEXT_TOKENS;
   const baseContextTokens = Math.max(
     0,
-    Math.min(agentMaxContextNum - maxOutputTokensNum, sharedInputLimit),
+    Math.min(contextWindow - maxOutputTokensNum, sharedInputLimit, contextLimit ?? Infinity),
   );
 
   const toMongoFiles = (files: Array<TFile | undefined> | undefined): IMongoFile[] =>
@@ -2912,9 +3000,12 @@ export async function initializeAgent(
 
   const initializedAgent: InitializedAgent = {
     ...agent,
+    subagents: resolveSubagents(agent.subagents, appConfig?.endpoints?.agents?.capabilities ?? []),
     azureOptions: options.azureOptions,
     resendFiles,
+    ...(excludedFileIds.length > 0 ? { excludedFiles: excludedFileIds } : {}),
     imageDetail,
+    ...(vision != null ? { vision } : {}),
     deliveryRouting,
     toolRegistry,
     mcpAvailableTools,
@@ -2960,9 +3051,15 @@ export async function initializeAgent(
     provisionWarnings:
       provisionWarnings != null && provisionWarnings.length > 0 ? provisionWarnings : undefined,
     maxContextTokens:
-      maxContextTokens != null && maxContextTokens > 0
-        ? Math.min(maxContextTokens, sharedInputLimit)
-        : Math.max(1024, Math.round(baseContextTokens * (1 - DEFAULT_RESERVE_RATIO))),
+      contextLimit != null
+        ? Math.min(contextLimit, sharedInputLimit)
+        : Math.max(
+            1024,
+            Math.round(
+              Math.min(agentMaxContextNum - maxOutputTokensNum, sharedInputLimit) *
+                (1 - DEFAULT_RESERVE_RATIO),
+            ),
+          ),
     primedCodeFiles,
     codeContextEntries,
     endpointTokenConfig: options.endpointTokenConfig,

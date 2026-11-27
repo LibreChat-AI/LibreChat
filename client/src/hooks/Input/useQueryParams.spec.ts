@@ -208,6 +208,7 @@ describe('useQueryParams', () => {
       queryClient?: Record<string, unknown>;
       routePending?: boolean;
       targetReady?: boolean;
+      routed?: boolean;
     } = {},
   ) => {
     const textAreaRef = { current: document.createElement('textarea') };
@@ -253,6 +254,7 @@ describe('useQueryParams', () => {
     const hook = renderHook(() =>
       useQueryParams({
         textAreaRef,
+        routed: options.routed,
         routePending: readiness.pending,
         targetReady: readiness.targetReady,
       }),
@@ -281,6 +283,20 @@ describe('useQueryParams', () => {
       },
     };
   };
+
+  it("leaves the route's query to the composer it addresses", () => {
+    /** A composer beside the routed one: the prompt in the URL is not for its conversation. */
+    const hook = mountQuery({ q: 'hi', submit: 'true' }, undefined, { routed: false });
+    act(() => jest.advanceTimersByTime(6000));
+    hook.rerender();
+
+    expect(hook.mockSetValue).not.toHaveBeenCalled();
+    expect(hook.mockSubmitMessage).not.toHaveBeenCalled();
+    expect(hook.mockNewConversation).not.toHaveBeenCalled();
+    expect(hook.result.current).toEqual(expect.objectContaining({ isPreparing: false }));
+    /** And it keeps no timer running to watch for one. */
+    expect(jest.getTimerCount()).toBe(0);
+  });
 
   it('shows the URL prompt and pending state before the requested agent is ready', () => {
     const hook = mountQuery({ agent_id: 'agent_test', q: 'hi', submit: 'true' });

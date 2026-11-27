@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { strict as assert } from 'node:assert';
+import { execFileSync } from 'node:child_process';
 import {
   existsSync,
   mkdtempSync,
@@ -237,5 +238,31 @@ test('the source resolver keeps api/ relative imports of packages/api/src in the
     assert.equal(run('../packages/api/src/a', api), join(src, 'a'));
   } finally {
     process.argv.pop();
+  }
+});
+
+test('the source-alias config resolves every setup file, relative or absolute, to one that exists', () => {
+  const root = process.cwd();
+  /** A child process, because loading the config links the mirror unless `--listTests` is set. */
+  const output = execFileSync(
+    process.execPath,
+    [
+      '-e',
+      "process.stdout.write(JSON.stringify(require('./scripts/quality/jest.source.cjs').setupFiles))",
+      '--',
+      '--listTests',
+    ],
+    { cwd: root, encoding: 'utf8' },
+  );
+  const files = JSON.parse(output) as string[];
+  const base = createRequire(import.meta.url)(join(root, 'api/jest.config.js')) as {
+    setupFiles?: string[];
+  };
+  assert.ok(files.length >= (base.setupFiles ?? []).length);
+  for (const file of base.setupFiles ?? []) {
+    assert.ok(files.includes(resolve(root, 'api', file)), `${file} is not in the config`);
+  }
+  for (const file of files) {
+    assert.ok(existsSync(file), `${file} does not exist`);
   }
 });

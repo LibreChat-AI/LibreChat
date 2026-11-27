@@ -33,6 +33,11 @@ export type CodeBridgePairing = {
   expiresAt: string;
 };
 
+/** Command features a worker may negotiate; LibreChat only sends a feature's fields once advertised. */
+export type WorkspaceCommandFeature = 'detached';
+
+export const WORKSPACE_COMMAND_FEATURES: readonly WorkspaceCommandFeature[] = ['detached'];
+
 export type CodeBridgeWorkerStatus = {
   status: 'offline' | 'starting' | 'ready';
   leaseExpiresInMs?: number;
@@ -44,6 +49,8 @@ export type CodeBridgeWorkerStatus = {
   programmaticLanguages?: ['bash'];
   /** Negotiated edit features; unknown names are dropped. */
   editFileFeatures?: WorkspaceEditFileFeature[];
+  /** Negotiated command features; unknown names are dropped. */
+  commandFeatures?: WorkspaceCommandFeature[];
   maxCommandTimeoutMs?: number;
 };
 
@@ -276,11 +283,11 @@ function validWorkspaceOperations(value: unknown): boolean {
   return (knownWorkspaceOperations(value)?.length ?? 0) > 0;
 }
 
-function knownEditFileFeatures(value: unknown): WorkspaceEditFileFeature[] {
+function knownFeatures<T extends string>(known: readonly T[], value: unknown): T[] {
   if (!Array.isArray(value)) {
     return [];
   }
-  return WORKSPACE_EDIT_FILE_FEATURES.filter((feature) => value.includes(feature));
+  return known.filter((feature) => value.includes(feature));
 }
 
 function validWorkspaceCapabilities(value: unknown): value is {
@@ -290,6 +297,7 @@ function validWorkspaceCapabilities(value: unknown): value is {
   workspaces: Array<Omit<CodeWorkspaceDescriptor, 'operations'> & { operations?: string[] }>;
   programmaticLanguages?: unknown;
   editFileFeatures?: unknown;
+  commandFeatures?: unknown;
 } {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
   const capabilities = value as Record<string, unknown>;
@@ -497,7 +505,7 @@ export async function getCodeBridgeWorkerStatus({
     }
     let workspaceStatus: Pick<
       CodeBridgeWorkerStatus,
-      'operations' | 'workspaces' | 'programmaticLanguages' | 'editFileFeatures'
+      'operations' | 'workspaces' | 'programmaticLanguages' | 'editFileFeatures' | 'commandFeatures'
     > = {};
     if (validWorkspaceCapabilities(capabilities?.workspaceTools)) {
       workspaceStatus = {
@@ -518,9 +526,19 @@ export async function getCodeBridgeWorkerStatus({
       ) {
         workspaceStatus.programmaticLanguages = ['bash'];
       }
-      const editFileFeatures = knownEditFileFeatures(capabilities.workspaceTools.editFileFeatures);
+      const editFileFeatures = knownFeatures(
+        WORKSPACE_EDIT_FILE_FEATURES,
+        capabilities.workspaceTools.editFileFeatures,
+      );
       if (editFileFeatures.length > 0) {
         workspaceStatus.editFileFeatures = editFileFeatures;
+      }
+      const commandFeatures = knownFeatures(
+        WORKSPACE_COMMAND_FEATURES,
+        capabilities.workspaceTools.commandFeatures,
+      );
+      if (commandFeatures.length > 0) {
+        workspaceStatus.commandFeatures = commandFeatures;
       }
     } else if (validLegacyWorkspaceCapabilities(capabilities?.workspaceTools)) {
       workspaceStatus = {

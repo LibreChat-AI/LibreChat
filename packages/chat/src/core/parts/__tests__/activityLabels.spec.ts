@@ -4,6 +4,7 @@ import {
   applyActivityLabelPart,
   getActivityLabelText,
   groupActivityPhases,
+  shareActivitySegments,
   lastCursorContentIdx,
   lastVisibleContentIdx,
   offsetActivityPhaseBoundary,
@@ -955,5 +956,76 @@ describe('groupActivityPhases — live tail and handoffs', () => {
     expect(segments?.map((segment) => segment.type)).toEqual(['content', 'phase']);
     expect(segments?.[0].contentIndices).toEqual([0, 1]);
     expect(segments?.[1]).toMatchObject({ live: true, contentIndices: [2] });
+  });
+});
+
+describe('shareActivitySegments', () => {
+  const call = (id: string): TMessageContentParts =>
+    ({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: { id, name: 'search', args: '{}', output: 'ok' },
+    }) as unknown as TMessageContentParts;
+  const summary = (text: string, start: number, end: number): TMessageContentParts =>
+    ({
+      type: ContentTypes.ACTIVITY_LABEL,
+      [ContentTypes.ACTIVITY_LABEL]: text,
+      activity_label_type: 'phase',
+      activity_start_index: start,
+      activity_end_index: end,
+      activity_count: 1,
+      pending: false,
+    }) as unknown as TMessageContentParts;
+  const answer = (text: string): TMessageContentParts =>
+    ({ type: ContentTypes.TEXT, text }) as TMessageContentParts;
+  const group = (content: TMessageContentParts[]) => groupActivityPhases(content, new Set(), false);
+
+  const first = [call('a'), summary('Searched the docs', 0, 1)];
+  const second = [call('b'), summary('Checked the source', 2, 3)];
+
+  it('gives the first grouping back as it is', () => {
+    const grouped = group([...first, answer('Done')]) ?? [];
+    expect(shareActivitySegments(undefined, grouped)).toBe(grouped);
+  });
+
+  it('keeps every settled segment and replaces only the one a streamed update touched', () => {
+    const before = group([...first, ...second, answer('Do')]) ?? [];
+    const after = shareActivitySegments(before, group([...first, ...second, answer('Done')]) ?? []);
+
+    expect(after).not.toBe(before);
+    expect(after).toHaveLength(before.length);
+    expect(after[0]).toBe(before[0]);
+    expect(after[1]).toBe(before[1]);
+    expect(after[after.length - 1]).not.toBe(before[before.length - 1]);
+  });
+
+  it('returns the earlier list itself when nothing changed', () => {
+    const content = [...first, ...second, answer('Done')];
+    const before = group(content) ?? [];
+    expect(shareActivitySegments(before, group([...content]) ?? [])).toBe(before);
+  });
+
+  it('replaces a segment whose part was replaced, even by an equal copy', () => {
+    const before = group([...first, ...second]) ?? [];
+    const after = shareActivitySegments(before, group([call('a'), first[1], ...second]) ?? []);
+
+    expect(after[0]).not.toBe(before[0]);
+    expect(after[1]).toBe(before[1]);
+  });
+
+  it('replaces a segment whose marker changed', () => {
+    const before = group([...first, ...second]) ?? [];
+    const relabelled = [first[0], summary('Read the docs', 0, 1), ...second];
+    const after = shareActivitySegments(before, group(relabelled) ?? []);
+
+    expect(after[0]).not.toBe(before[0]);
+    expect(after[1]).toBe(before[1]);
+  });
+
+  it('shares nothing with a grouping of another message', () => {
+    const before = group([...first, answer('Done')]) ?? [];
+    const other = group([call('z'), summary('Searched the docs', 0, 1), answer('Done')]) ?? [];
+    const after = shareActivitySegments(before, other);
+
+    expect(after.every((segment, index) => segment !== before[index])).toBe(true);
   });
 });

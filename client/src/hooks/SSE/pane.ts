@@ -2,45 +2,24 @@ import { useMemo, useCallback } from 'react';
 import { v4 } from 'uuid';
 import { useStore, useSetAtom } from 'jotai';
 import { Constants } from 'librechat-data-provider';
-import { isStoppedRun, resolveDetachedRunEnd } from '@librechat/chat';
+import { isStoppedRun, resolveDetachedRunEnd, clearMatchingDrainAfterAbort } from '@librechat/chat';
 import {
   abortScrollFamily,
   showStopButtonByIndex,
   submissionByIndex,
   runEndByIndex,
+  settleDetachedRun,
   isDetachedRunManual,
+  clearSupersededRunMarkers,
   detachedRunByConvoId,
   drainAfterAbortByIndex,
   stopRequestedByConvoId,
   pendingApprovalActionFamily,
 } from '@librechat/chat/react';
-import type {
-  ResumableRun,
-  ResumablePane,
-  ResumableQueue,
-  DrainAfterAbort,
-  RunEnd,
-} from '@librechat/chat';
+import type { ResumableRun, ResumablePane, ResumableQueue, RunEnd } from '@librechat/chat';
 import type { EventHandlerParams } from '@librechat/chat/react';
 import { clearComposerDrafts, resolveRunEndTarget } from '~/utils';
 import { activeRunFamily } from './atoms';
-
-/**
- * Reconciliation often crosses async query boundaries. By the time an old
- * generation settles, this pane may have armed "interrupt & send" for a new
- * conversation/generation. Recoil applies functional setters against the
- * latest value, so only consume the exact intent owned by this terminal path.
- */
-const clearMatchingDrainAfterAbort = (
-  armed: DrainAfterAbort | false,
-  conversationId: string,
-  generationCreatedAt: number,
-): DrainAfterAbort | false =>
-  armed !== false &&
-  armed.conversationId === conversationId &&
-  armed.generationCreatedAt === generationCreatedAt
-    ? false
-    : armed;
 
 const replaceNewConversationUrl = (conversationId: string) => {
   if (window.location.pathname !== `/c/${Constants.NEW_CONVO}`) {
@@ -89,16 +68,8 @@ export default function useResumablePane({
       /** The run's end reached the drain here, so a marker this pane left for the same run is
        *  settled and must not be resolved a second time on a later visit. A provisional end that
        *  cannot drain the queue keeps the marker, so a later read of history can still settle it. */
-      if (end.conversationId != null && options?.retainDetached !== true) {
-        const detachedFamily = detachedRunByConvoId(end.conversationId);
-        const detached = jotaiStore.get(detachedFamily);
-        if (
-          detached != null &&
-          (end.generationCreatedAt == null ||
-            detached.generationCreatedAt === end.generationCreatedAt)
-        ) {
-          jotaiStore.set(detachedFamily, null);
-        }
+      if (options?.retainDetached !== true) {
+        settleDetachedRun(jotaiStore, end);
       }
       publishRunEnd(end);
     },
@@ -110,6 +81,12 @@ export default function useResumablePane({
       if (generationCreatedAt == null) {
         return;
       }
+      /**
+       * Reconciliation often crosses async query boundaries. By the time an old generation
+       * settles, this pane may have armed "interrupt & send" for a new conversation or
+       * generation. A functional setter applies against the latest value, so only the exact
+       * intent owned by this terminal path is consumed.
+       */
       setDrainAfterAbort((armed) =>
         clearMatchingDrainAfterAbort(armed, conversationId, generationCreatedAt),
       );
@@ -173,18 +150,8 @@ export default function useResumablePane({
   );
   const queue = useMemo<ResumableQueue>(
     () => ({
-      clearSupersededMarkers: (conversationId, isSameGeneration) => {
-        const stopFamily = stopRequestedByConvoId(conversationId);
-        const stopped = jotaiStore.get(stopFamily);
-        if (stopped != null && !isSameGeneration(stopped.generationCreatedAt)) {
-          jotaiStore.set(stopFamily, null);
-        }
-        const detachedFamily = detachedRunByConvoId(conversationId);
-        const detached = jotaiStore.get(detachedFamily);
-        if (detached != null && !isSameGeneration(detached.generationCreatedAt)) {
-          jotaiStore.set(detachedFamily, null);
-        }
-      },
+      clearSupersededMarkers: (conversationId, isSameGeneration) =>
+        clearSupersededRunMarkers(jotaiStore, conversationId, isSameGeneration),
       isStopped: (conversationId, generationCreatedAt) =>
         isStoppedRun(jotaiStore.get(stopRequestedByConvoId(conversationId)), generationCreatedAt),
       rememberDetachedRun: (conversationId, detachedRun) =>

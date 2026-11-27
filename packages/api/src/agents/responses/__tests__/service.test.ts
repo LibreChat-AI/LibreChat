@@ -19,6 +19,33 @@ import { buildResponse, createResponseTracker } from '../handlers';
 import { createResponseAccountingCollector } from '../accounting';
 import { buildRunToolSet } from '~/agents/tools';
 
+describe('Responses storage intent validation', () => {
+  it.each(['false', 'true', null, 0, 1, {}, []].map((store) => [store]))(
+    'rejects malformed store=%p instead of coercing storage intent',
+    (store) => {
+      expect(validateResponseRequest({ model: 'agent', input: 'hello', store })).toEqual({
+        valid: false,
+        error: 'store must be a boolean',
+      });
+    },
+  );
+
+  it('preserves the background storage requirement', () => {
+    expect(
+      validateResponseRequest({ model: 'agent', input: 'hello', background: true, store: false }),
+    ).toEqual({ valid: false, error: 'background responses require store: true' });
+    expect(
+      validateResponseRequest({ model: 'agent', input: 'hello', background: true, store: true })
+        .valid,
+    ).toBe(true);
+  });
+
+  it.each([undefined, false, true])('preserves supported store=%p', (store) => {
+    const request = { model: 'agent', input: 'hello', ...(store === undefined ? {} : { store }) };
+    expect(validateResponseRequest(request)).toEqual({ valid: true, request });
+  });
+});
+
 describe('response usage aggregation', () => {
   const context: ResponseContext = {
     responseId: 'resp_test',
@@ -1364,5 +1391,52 @@ describe('reported tools and tool_choice', () => {
     expect(
       validateResponseRequest({ model: 'agent_test', input: 'hi', tools: ['submit_sql'] }),
     ).toEqual({ valid: false, error: expect.stringContaining('tools[0] must be an object') });
+  });
+});
+
+describe('nullable numeric request controls', () => {
+  const base = { model: 'agent_test', input: 'hello' };
+
+  it.each([
+    ['max_output_tokens', null],
+    ['max_output_tokens', 1],
+    ['max_output_tokens', 4096],
+    ['temperature', null],
+    ['temperature', 0],
+    ['temperature', 2],
+  ])('preserves valid %s=%p', (field, value) => {
+    const request = { ...base, [field]: value };
+    expect(validateResponseRequest(request)).toEqual({ valid: true, request });
+  });
+
+  it.each([
+    ['max_output_tokens', 1.5],
+    ['max_output_tokens', NaN],
+    ['max_output_tokens', Infinity],
+    ['max_output_tokens', -Infinity],
+    ['max_output_tokens', 0],
+    ['max_output_tokens', -1],
+    ['max_output_tokens', '10'],
+    ['max_output_tokens', true],
+    ['max_output_tokens', {}],
+    ['max_output_tokens', []],
+    ['temperature', NaN],
+    ['temperature', Infinity],
+    ['temperature', -Infinity],
+    ['temperature', -0.1],
+    ['temperature', 2.1],
+    ['temperature', '1'],
+    ['temperature', true],
+    ['temperature', {}],
+    ['temperature', []],
+  ])('rejects malformed %s=%p', (field, value) => {
+    expect(validateResponseRequest({ ...base, [field]: value })).toMatchObject({ valid: false });
+  });
+
+  it('preserves omitted controls and does not mutate the caller request', () => {
+    const request = Object.freeze({ ...base });
+    expect(validateResponseRequest(request)).toEqual({ valid: true, request });
+    expect(request).not.toHaveProperty('temperature');
+    expect(request).not.toHaveProperty('max_output_tokens');
   });
 });

@@ -45,12 +45,15 @@ test.describe('plain text artifact row', () => {
 
         await page.goto(`/c/${conversationId}`, { timeout: 10000 });
 
-        const row = messagesView(page).getByRole('button', { name: /notes\.txt/ });
-        await expect(row).toBeVisible();
-        await expect(row).toHaveAccessibleName(/notes\.txt.*Text.*Opens as a rendered preview/);
-        await expect(row).not.toHaveAccessibleName(/Opens as source/);
-
-        await row.click();
+        const card = messagesView(page).getByTestId('authored-artifact-card');
+        await expect(card.getByText('notes.txt', { exact: true })).toBeVisible();
+        await expect(card.getByText('Text', { exact: true })).toBeVisible();
+        await card
+          .getByRole('button', {
+            name: 'Open artifact: notes.txt. Opens as a rendered preview',
+            exact: true,
+          })
+          .click();
         const panel = page.locator('#artifact-viewer');
         await expect(panel).toBeVisible();
         await expect(panel).toHaveAttribute('aria-label', 'notes.txt');

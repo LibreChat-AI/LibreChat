@@ -6434,3 +6434,46 @@ it('admits only after every native batch passes and awaits the protected commit'
   await pending;
   expect(onContentAllowed).toHaveBeenCalledTimes(1);
 });
+
+describe('provider instruction policy', () => {
+  const pii = {
+    fields: ['instructions'] as const,
+    starterPatterns: [],
+    customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-INSTRUCTION' }],
+  };
+  it.each(['system', 'developer'])(
+    'inspects %s instructions independently of user attribution',
+    (role) => {
+      for (const content of [
+        'PRIVATE-INSTRUCTION',
+        [
+          { type: 'text', text: 'PRIVATE-' },
+          { type: 'text', text: 'INSTRUCTION' },
+        ],
+      ]) {
+        expect(() =>
+          assertModelBoundProviderContent({
+            filters: { agentInstructions: { pii: { ...pii, fields: ['instructions'] } } },
+            providerMessages: [
+              { role, content, additional_kwargs: { isMeta: true, source: 'system' } },
+            ],
+          }),
+        ).toThrow('Submitted content contains a private value');
+      }
+    },
+  );
+  it('keeps instruction and user-message policies distinct', () => {
+    expect(() =>
+      assertModelBoundProviderContent({
+        filters: { messages: { pii: { ...pii, fields: ['text', 'content_part'] } } },
+        providerMessages: [{ role: 'system', content: 'PRIVATE-INSTRUCTION' }],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertModelBoundProviderContent({
+        filters: { agentInstructions: { pii: { ...pii, fields: ['instructions'] } } },
+        providerMessages: [{ role: 'assistant', content: 'PRIVATE-INSTRUCTION' }],
+      }),
+    ).not.toThrow();
+  });
+});

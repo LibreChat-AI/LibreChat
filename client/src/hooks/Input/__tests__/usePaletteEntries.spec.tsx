@@ -4,6 +4,7 @@ import { renderHook, act } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { pendingManualSkillsByConvoId } from '@librechat/chat/react';
 import { ArtifactModes, PermissionTypes } from 'librechat-data-provider';
+import type { MCPConnectionView } from '~/hooks/MCP/connection';
 import usePaletteEntries from '../usePaletteEntries';
 
 /**
@@ -79,6 +80,7 @@ interface ContextFixture {
     mcpValues: string[];
     toggleServerSelection: jest.Mock;
     connectionStatus?: Record<string, { connectionState: string }>;
+    connectionViews?: Record<string, MCPConnectionView>;
     initializeServer?: jest.Mock;
     getServerStatusIconProps?: jest.Mock;
   };
@@ -212,8 +214,34 @@ describe('usePaletteEntries', () => {
 
     const row = entries().result.current.find((item) => item.key === 'builtin:execute_code');
     expect(row).toEqual(expect.objectContaining({ active: false, pinned: true }));
-    act(() => row?.onUnpin?.());
+    act(() => row?.onPinChange?.(false));
     expect(codeInterpreter.setIsPinned).toHaveBeenCalledWith(false);
+  });
+
+  it('pins an unpinned built-in tool again through the stored pin', () => {
+    const memory = toggle(false, false);
+    mockContext = { ...fullContext(), memory };
+
+    const row = entries().result.current.find((item) => item.key === 'builtin:memory');
+    expect(row).toEqual(expect.objectContaining({ active: false, pinned: false }));
+    act(() => row?.onPinChange?.(true));
+    expect(memory.setIsPinned).toHaveBeenCalledWith(true);
+    expect(memory.debouncedChange).not.toHaveBeenCalled();
+  });
+
+  it('gives skill and server rows no pin of their own', () => {
+    mockSkills = [{ _id: 's1', name: 'writer' }];
+    const { current } = entries().result;
+    expect(keysOf({ current })).toEqual(expect.arrayContaining(['skill:s1', 'mcp:github']));
+    const pinnable = current.filter((item) => item.onPinChange != null).map((item) => item.key);
+    expect(pinnable).toEqual([
+      'builtin:web_search',
+      'builtin:execute_code',
+      'builtin:file_search',
+      'builtin:skills',
+      'builtin:memory',
+      'builtin:artifacts',
+    ]);
   });
 
   it.each([false, true])(
@@ -543,6 +571,34 @@ describe('usePaletteEntries', () => {
       act(() => row?.onSelect());
       expect(context.mcpServerManager.toggleServerSelection).toHaveBeenCalledWith('github');
     });
+
+    it.each(['succeeded', 'on_demand'] as const)(
+      'selects a ready %s server without another Connect and keeps Configure',
+      (state) => {
+        const context = fullContext();
+        const onConfigClick = jest.fn();
+        context.mcpServerManager.initializeServer = jest.fn();
+        context.mcpServerManager.connectionStatus = { github: { connectionState: 'disconnected' } };
+        context.mcpServerManager.connectionViews = { github: { state, canUse: true } };
+        context.mcpServerManager.getServerStatusIconProps = jest.fn(() => ({
+          hasCustomUserVars: true,
+          onConfigClick,
+        }));
+        mockContext = context;
+        const row = entries().result.current.find((item) => item.key === 'mcp:github');
+        if (state === 'succeeded') {
+          expect(row?.status).toEqual({ label: undefined, tone: 'bg-status-neutral' });
+        }
+        act(() => row?.onSelect());
+        expect(context.mcpServerManager.toggleServerSelection).toHaveBeenCalledWith('github');
+        expect(context.mcpServerManager.initializeServer).not.toHaveBeenCalled();
+        act(() => row?.modes?.find((mode) => mode.id === 'configure')?.onSelect());
+        expect(onConfigClick).toHaveBeenCalledTimes(1);
+        expect(context.mcpServerManager.connectionStatus.github.connectionState).toBe(
+          'disconnected',
+        );
+      },
+    );
 
     it('initializes rather than toggles a server whose connection status is still unknown', () => {
       const context = fullContext();

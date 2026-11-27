@@ -18,6 +18,31 @@ jest.mock('@librechat/client', () => ({
   Alert: ({ children, role = 'alert' }: React.HTMLAttributes<HTMLDivElement>) => (
     <div role={role}>{children}</div>
   ),
+  Switch: ({
+    id,
+    checked,
+    onCheckedChange,
+    'aria-label': ariaLabel,
+  }: {
+    id?: string;
+    checked: boolean;
+    onCheckedChange: (value: boolean) => void;
+    'aria-label'?: string;
+  }) => (
+    <button
+      id={id}
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      onClick={() => onCheckedChange(!checked)}
+    />
+  ),
+  HoverCard: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  HoverCardPortal: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  HoverCardTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  HoverCardContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  CircleHelpIcon: () => null,
   Button: ({ children, onClick, type }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
     <button type={type} onClick={onClick}>
       {children}
@@ -201,6 +226,28 @@ describe('ModelPanel', () => {
       <TestForm defaultProvider="removed-provider" models={{}} modelsReady={true} />,
     );
     expect(queryByRole('status')).toBeNull();
+  });
+
+  it('declares the agent text-only from the switch below the model', () => {
+    const formRef: React.MutableRefObject<UseFormReturn<AgentForm> | null> = { current: null };
+    const { getByRole, getByText } = render(
+      <TestForm
+        defaultProvider="custom"
+        defaultModel="custom-model"
+        formRef={formRef}
+        models={{ custom: ['custom-model'] }}
+        modelsReady={true}
+      />,
+    );
+
+    const toggle = getByRole('switch', { name: 'com_ui_agent_text_only' });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(getByText('com_ui_agent_text_only_info')).toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(formRef.current?.getValues('text_only')).toBe(true);
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(toggle);
+    expect(formRef.current?.getValues('text_only')).toBe(false);
   });
 
   it('keeps provider choice available while disabling models until their catalogue is ready', () => {

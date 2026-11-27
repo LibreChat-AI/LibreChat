@@ -28,6 +28,8 @@ import { remoteSdkLimits, isRemoteSdkSecret } from './types';
 import { createHostToolService } from './hostTools';
 import { createSnapshotReceiver } from './snapshot';
 import { createHostPolicyChannel } from './policy';
+import { createHostModelChannel } from './model';
+import { createHostFileChannel } from './files';
 import { createSdkPeer } from './peer';
 
 /** Construct a real local Run whose execution is delegated to one operator-trusted runtime. */
@@ -44,6 +46,8 @@ export async function createRemoteSdkRun({
   remote: RemoteSdkOptions;
   resumeState?: RemoteSdkResumeState;
 }): ReturnType<typeof Run.create> {
+  if (hostServices?.modelProfile && !hostServices.model)
+    throw new Error('Builder model profile requires a host model');
   if (config.clientDelegatedToolNames?.length)
     throw new Error('Remote SDK client-owned tools require a supported ownership adapter');
   if (config.providerTextProtection && !hostServices?.providerText)
@@ -197,8 +201,9 @@ export async function createRemoteSdkRun({
 
       return socket;
     };
-    const socket = remote.recovery
-      ? await connectRecoveringSdkSocket({
+    const modelAdmission = hostServices?.modelLifecycle?.attach(options.callbacks) === true;
+    const connection = remote.recovery
+      ? connectRecoveringSdkSocket({
           url: remote.url,
           token: makeToken,
           generation:
@@ -210,7 +215,11 @@ export async function createRemoteSdkRun({
           signal: options.signal,
           onError: remote.onError,
         })
-      : await legacy();
+      : legacy();
+    const socket = await connection.catch((error) => {
+      hostServices?.modelLifecycle?.dispose();
+      throw error;
+    });
     const execution = new AbortController();
     const providerText = hostServices?.providerText
       ? createHostPolicyChannel(hostServices.providerText, limits)
@@ -219,18 +228,39 @@ export async function createRemoteSdkRun({
     snapshot = undefined;
     let settled = false;
     const hostInvocations = new Set<Promise<unknown>>();
+    let hostFileChannel: ReturnType<typeof createHostFileChannel> | undefined;
+    let hostModelChannel: ReturnType<typeof createHostModelChannel> | undefined;
     const result = new Promise<RemoteSdkSnapshot>((resolve, reject) => {
       const finish = (value?: RemoteSdkSnapshot) => {
         if (settled) return;
         settled = true;
-        if (value == null)
+        if (value == null || hostServices?.modelLifecycle?.failure())
           reject(
             options.signal?.aborted
               ? Object.assign(new Error('SDK runtime execution cancelled'), { name: 'AbortError' })
-              : new Error('SDK runtime execution failed'),
+              : (hostServices?.modelLifecycle?.failure() ??
+                  new Error('SDK runtime execution failed')),
           );
         else resolve(value);
       };
+      hostModelChannel = hostServices?.model
+        ? createHostModelChannel({
+            model: hostServices.model,
+            lifecycle: modelAdmission ? hostServices.modelLifecycle : undefined,
+            peer: { call: (...args) => peer.call(...args) },
+            limits,
+            signal: execution.signal,
+          })
+        : undefined;
+      hostFileChannel = hostServices?.files
+        ? createHostFileChannel({
+            files: hostServices.files,
+            identity,
+            peer: { call: (...args) => peer.call(...args) },
+            limits,
+            signal: execution.signal,
+          })
+        : undefined;
       let hostToolInvoke: ReturnType<typeof createHostToolService> | undefined;
       const peer = createSdkPeer(socket, {
         ...limits,
@@ -268,6 +298,32 @@ export async function createRemoteSdkRun({
         onCall: async (method, data, _timeoutMs, signal) => {
           if (execution.signal.aborted || options.signal?.aborted)
             throw new Error('SDK runtime execution stopped');
+          if (method.startsWith('files.')) {
+            if (!hostFileChannel) throw new Error('Host files are unavailable');
+            const invocation = hostFileChannel.call(method, data, signal);
+            hostInvocations.add(invocation);
+            try {
+              return await invocation;
+            } finally {
+              hostInvocations.delete(invocation);
+            }
+          }
+          if (method === 'model.node.end') {
+            if (!modelAdmission || !hostServices?.modelLifecycle)
+              throw new Error('Model admission unavailable');
+            const admitted = hostServices.modelLifecycle.end(data);
+            return { version: 1, ok: true, admitted };
+          }
+          if (method === 'model.invoke' || method === 'model.stream') {
+            if (!hostModelChannel) throw new Error('Host model is unavailable');
+            const invocation = hostModelChannel.call(method, data, signal);
+            hostInvocations.add(invocation);
+            try {
+              return await invocation;
+            } finally {
+              hostInvocations.delete(invocation);
+            }
+          }
           if (method === 'policy.providerText') {
             if (!providerText) throw new Error('Host provider policy is unavailable');
             return providerText.inspect(
@@ -401,6 +457,11 @@ export async function createRemoteSdkRun({
         'agents' in config.graphConfig ? config.graphConfig.agents[0] : config.graphConfig;
       const start: RemoteSdkStart = {
         transportVersion: 2,
+        files: hostFileChannel?.descriptor,
+        modelAdmission: modelAdmission
+          ? { version: 1, maxEntries: hostServices!.modelLifecycle!.maxEntries }
+          : undefined,
+        model: hostModelChannel?.descriptor,
         providerText: providerText?.descriptor,
         hostTools: descriptors.length ? descriptors : undefined,
         operation,
@@ -434,16 +495,40 @@ export async function createRemoteSdkRun({
         checkpoint: Boolean(saver),
         humanInTheLoop: config.humanInTheLoop,
         streamLimits: config.streamLimits,
-        agent: { id: identity.agentId, name: agent?.name, instructions: agent?.instructions },
+        agent: {
+          id: identity.agentId,
+          name: agent?.name,
+          instructions: agent?.instructions,
+          model: hostServices?.modelProfile,
+        },
       };
       void (async () => {
         const capabilities = (await peer.call('capabilities', null)) as {
           transportVersion?: number;
+          hostFiles?: number;
           hostTools?: number;
           providerText?: number;
+          hostModel?: number;
+          builderModel?: number;
+          modelAdmission?: number;
+          modelAdmissionWithProviderText?: number;
         };
         if (capabilities?.transportVersion !== 2)
           throw new Error('Worker transport capability unavailable');
+        if (hostFileChannel && capabilities?.hostFiles !== 1)
+          throw new Error('Worker host file capability unavailable');
+        if (modelAdmission && capabilities?.modelAdmission !== 1)
+          throw new Error('Worker model admission capability unavailable');
+        if (
+          modelAdmission &&
+          hostServices?.providerText &&
+          capabilities?.modelAdmissionWithProviderText !== 1
+        )
+          throw new Error('Worker protected model admission capability unavailable');
+        if (hostServices?.modelProfile && capabilities?.builderModel !== 1)
+          throw new Error('Worker builder model capability unavailable');
+        if (hostServices?.model && capabilities?.hostModel !== 1)
+          throw new Error('Worker host model capability unavailable');
         if (providerText && capabilities?.providerText !== 1)
           throw new Error('Worker provider policy capability unavailable');
         if (descriptors.length) {
@@ -459,7 +544,10 @@ export async function createRemoteSdkRun({
       return snapshot.content?.filter((part) => part != null);
     } finally {
       execution.abort();
+      hostServices?.modelLifecycle?.dispose();
       providerText?.dispose();
+      hostModelChannel?.dispose();
+      hostFileChannel?.dispose();
       // A failed/cancelled remote run may leave host cleanup running. Keep the host
       // execution enrolled until those handlers drain, even if the wire has closed.
       await Promise.allSettled([...hostInvocations]);

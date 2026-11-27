@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { Constants } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import type {
@@ -43,11 +44,13 @@ import {
 import { transferFileSearchPreference, withFileSearchPreference } from '~/hooks/Files/search';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import { getFailedCodeDecisionRequest } from '~/hooks/Agents/codeDecision';
+import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { updateAttachmentCaches } from './useAttachmentHandler';
 import { useApplyAgentTemplate } from '~/hooks/Agents';
 import { reopenTermsOnRefusal } from '~/utils/terms';
+import { useReleaseNewConversation } from './cache';
 import { useLiveAnnouncer } from '~/Providers';
 import useLocalize from '~/hooks/useLocalize';
 import { getConvoTitle } from './turns';
@@ -91,8 +94,12 @@ export const appDraftServices: DraftServices = {
 
 /** The app's services behind the stream event handlers. Each group keeps its identity until
  *  what it reads changes, so the handlers built on it do too. */
-export default function useEventServices({ setConversation }: EventServicesParams): EventServices {
+export default function useEventServices({
+  runIndex,
+  setConversation,
+}: EventServicesParams): EventServices {
   const queryClient = useQueryClient();
+  const getConversation = useGetConversation(runIndex);
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { conversationId } = useParams();
@@ -106,8 +113,13 @@ export default function useEventServices({ setConversation }: EventServicesParam
 
   const conversations = useMemo(() => createConversationCache(queryClient), [queryClient]);
   const navigation = useMemo<NavigationServices>(
-    () => ({ pathname, conversationId, navigate }),
-    [pathname, conversationId, navigate],
+    () => ({
+      pathname,
+      conversationId,
+      navigate,
+      shows: (id) => getConversation()?.conversationId === id,
+    }),
+    [pathname, conversationId, navigate, getConversation],
   );
   const focus = useMemo<FocusServices>(
     () => ({
@@ -120,20 +132,30 @@ export default function useEventServices({ setConversation }: EventServicesParam
   );
   const templates = useMemo<TemplateServices>(
     () => ({
-      apply: ({ targetId, sourceId, ephemeralAgent, specName }) =>
+      apply: ({ targetId, sourceId, ephemeralAgent, specName }) => {
+        const current = getConversation();
+        if (
+          current?.endpoint &&
+          (current.conversationId === targetId ||
+            current.conversationId === (sourceId ?? Constants.NEW_CONVO)) &&
+          (current.spec ?? '') !== (specName ?? '')
+        ) {
+          return;
+        }
         applyAgentTemplate({
           targetId,
           sourceId,
           ephemeralAgent: withFileSearchPreference(targetId, ephemeralAgent),
           specName,
           startupConfig: queryClient.getQueryData<TStartupConfig>(startupConfigKey(true)),
-        }),
+        });
+      },
       reconcileFailedCode: (submission, failedConversationId) => {
         const request = getFailedCodeDecisionRequest(submission, failedConversationId);
         if (request != null) reconcileCodeDecision(request);
       },
     }),
-    [applyAgentTemplate, reconcileCodeDecision, queryClient],
+    [applyAgentTemplate, getConversation, reconcileCodeDecision, queryClient],
   );
   const files = useMemo<FileServices>(
     () => ({
@@ -165,8 +187,9 @@ export default function useEventServices({ setConversation }: EventServicesParam
 
 /** The app's transport, balance and terms services behind the Assistants stream. The balance
  *  observer lives here, on the one path that refreshes it after a turn. */
-export function useLegacyServices(): LegacyStreamServices {
+export function useLegacyServices(runIndex = 0): LegacyStreamServices {
   const queryClient = useQueryClient();
+  const releaseNewConversation = useReleaseNewConversation(runIndex);
   const localize = useLocalize();
   const { auth, config } = useChatSettings();
   const { token, isAuthenticated = false } = auth;
@@ -185,7 +208,16 @@ export function useLegacyServices(): LegacyStreamServices {
       reopenTermsOnRefusal: (data) =>
         reopenTermsOnRefusal(queryClient, data) ? localize('com_error_terms_not_accepted') : null,
       clearComposerDrafts,
+      releaseNewConversation,
     }),
-    [chatTransport, token, balanceEnabled, refetchBalance, queryClient, localize],
+    [
+      chatTransport,
+      token,
+      balanceEnabled,
+      refetchBalance,
+      queryClient,
+      localize,
+      releaseNewConversation,
+    ],
   );
 }

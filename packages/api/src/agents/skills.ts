@@ -455,6 +455,8 @@ export interface InjectSkillCatalogParams {
   workspaceLinkedWorktrees?: boolean;
   /** The worker advertises its native SRT sandbox; describe the read-only filesystem to the model. */
   workspaceNativeSandbox?: boolean;
+  /** Background commands are sent detached; tell the model they overlap later commands. */
+  workspaceDetachedCommands?: boolean;
   /** Current user ID — used to determine skill ownership for active-state resolution. */
   userId?: string;
   /** Per-user skill overrides: `{ [skillId]: boolean }`. Missing entries use the default. */
@@ -695,6 +697,7 @@ export async function injectSkillCatalog(
     workspaceEnvironment,
     workspaceLinkedWorktrees,
     workspaceNativeSandbox,
+    workspaceDetachedCommands,
     userId,
     skillStates,
     defaultActiveOnShare = false,
@@ -885,6 +888,7 @@ export async function injectSkillCatalog(
     workspaceEnvironment,
     workspaceLinkedWorktrees,
     workspaceNativeSandbox,
+    workspaceDetachedCommands,
   });
   workingDefs = codeExecResult.toolDefinitions;
 
@@ -1653,6 +1657,8 @@ export interface SkillPrimeContentPart {
     output: string;
     progress: number;
     type: 'tool_call';
+    /** The primed skill's id, which names the skill the card loaded. */
+    skillId?: string;
   };
 }
 
@@ -1670,11 +1676,11 @@ export interface BuildSkillPrimeContentPartsParams {
 /**
  * Build completed tool_call content parts for each manually-invoked skill.
  *
- * Matches the shape the aggregator produces for a model-invoked skill call
- * on `ON_RUN_STEP_COMPLETED` — `{ type: 'tool_call', tool_call: { id, name,
- * args, output, progress: 1, type: 'tool_call' } }` — so the existing
- * `SkillCall` renderer on the frontend shows identical "Skill X loaded"
- * cards without any new client work.
+ * Matches the shape a model-invoked skill call is saved with once its
+ * `ON_RUN_STEP_COMPLETED` is stamped (`{ type: 'tool_call', tool_call: { id,
+ * name, args, output, progress: 1, type: 'tool_call', skillId } }`), so the
+ * existing `SkillCall` renderer on the frontend shows identical "Skill X loaded"
+ * cards, opened by the same skill id, without any new client work.
  *
  * Callers (e.g. `AgentClient.chatCompletion`) prepend these to
  * `this.contentParts` after `runAgents` returns so the cards persist on
@@ -1702,12 +1708,12 @@ export interface BuildSkillPrimeContentPartsParams {
  */
 export function buildSkillPrimeContentParts(
   /**
-   * Only `name` is read here; widening the param type to `Pick<...>` lets
-   * callers (and tests) pass either the full `ResolvedManualSkill` or a
-   * minimal `{ name, body }` literal without needing to invent a
-   * placeholder `_id`. The resolver always returns full primes.
+   * `name` names the card and `_id`, when present, is stamped as its `skillId`; the `Pick`
+   * lets callers (and tests) pass either the full `ResolvedManualSkill` or a minimal
+   * `{ name, body }` literal. The resolver always returns full primes.
    */
-  primes: Pick<ResolvedManualSkill, 'name' | 'body'>[],
+  primes: (Pick<ResolvedManualSkill, 'name' | 'body'> &
+    Partial<Pick<ResolvedManualSkill, '_id'>>)[],
   { runId, startOffset = 0 }: BuildSkillPrimeContentPartsParams,
 ): SkillPrimeContentPart[] {
   return primes.map((prime, i) => {
@@ -1721,6 +1727,7 @@ export function buildSkillPrimeContentParts(
         output: `Skill "${prime.name}" loaded. Follow the instructions below.`,
         progress: 1,
         type: 'tool_call',
+        ...(prime._id != null && { skillId: prime._id.toString() }),
       },
     };
   });

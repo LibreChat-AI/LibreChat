@@ -3,6 +3,8 @@ import { Button, TooltipAnchor, useLocalize } from '@librechat/client';
 import { FastForward, Gauge, MessageSquareText, X } from 'lucide-react';
 import type { TMessage } from 'librechat-data-provider';
 import { ChatContext } from '../../react/chat/context';
+import { NAV_CLEARANCE } from './rows';
+import { classes } from './classes';
 
 /**
  * Shown when a turn ended because the agent exhausted its per-turn step budget
@@ -56,7 +58,10 @@ export default function ToolCallLimitNotice({
    * Same gate `useGenerationsByLatest` applies to the Continue hover button.
    */
   const canAct =
-    chat?.ask != null && chat.isSubmitting !== true && chat.latestMessageId === message.messageId;
+    chat?.ask != null &&
+    chat.readOnly !== true &&
+    chat.isSubmitting !== true &&
+    chat.latestMessageId === message.messageId;
   /**
    * Empty overrides are authoritative: a recovery prompt is not the user's next
    * compose, so `ask` must not attach or drain files, skills, or quotes already
@@ -79,25 +84,29 @@ export default function ToolCallLimitNotice({
       aria-labelledby={titleId}
       className="border-border-light bg-surface-secondary relative my-2 flex w-full flex-col rounded-xl border p-3"
     >
-      <TooltipAnchor
-        description={localize('com_ui_tool_call_limit_dismiss')}
-        side="left"
-        render={
-          <Button
-            type="button"
-            variant="quiet"
-            size="icon-xs"
-            aria-label={localize('com_ui_tool_call_limit_dismiss')}
-            className="absolute inset-e-1.5 top-1.5"
-            onClick={() => setDismissed(true)}
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </Button>
-        }
-      />
+      <div className={classes('absolute inset-e-1.5 top-1.5 flex', NAV_CLEARANCE.edge)}>
+        <TooltipAnchor
+          description={localize('com_ui_tool_call_limit_dismiss')}
+          side="left"
+          render={
+            <Button
+              type="button"
+              variant="quiet"
+              size="icon-xs"
+              aria-label={localize('com_ui_tool_call_limit_dismiss')}
+              onClick={() => setDismissed(true)}
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </Button>
+          }
+        />
+      </div>
       <p
         id={titleId}
-        className="text-text-primary flex min-w-0 items-center gap-2 pe-8 text-sm font-medium"
+        className={classes(
+          'text-text-primary flex min-w-0 items-center gap-2 pe-8 text-sm font-medium',
+          NAV_CLEARANCE.edge,
+        )}
       >
         <Gauge className="text-text-secondary h-4 w-4 shrink-0" aria-hidden="true" />
         {localize('com_ui_tool_call_limit_title')}

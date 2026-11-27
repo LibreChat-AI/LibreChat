@@ -22,6 +22,7 @@ export default function useSelectAgent() {
         newConversation({
           template: { ...(template as Partial<TConversation>) },
           preset: template as Partial<TPreset>,
+          retarget: true,
         });
         return;
       }
@@ -44,6 +45,7 @@ export default function useSelectAgent() {
       newConversation({
         template: currentConvo,
         preset: template as Partial<TPreset>,
+        retarget: true,
       });
     },
     [getConversation, getDefaultConversation, newConversation],

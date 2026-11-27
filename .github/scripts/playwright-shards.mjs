@@ -192,7 +192,7 @@ function plan(options) {
       `(~${Math.round(loads[index - 1])}s estimated)`,
   );
   if (mine.length === 0) {
-    console.log('::warning::this shard drew no spec files; the suite has fewer files than shards');
+    console.log('::warning::this shard drew no spec files, so it runs no tests');
   }
   console.log(`playwright-shards: estimated seconds per shard: ${loads.map(Math.round).join(' ')}`);
   if (unrecorded.length) {

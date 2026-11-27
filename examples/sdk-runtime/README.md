@@ -70,9 +70,9 @@ Its test attachment also records send-to-approval and approval-to-visible-output
 
 This example validates the initial transport. It does **not** establish all main-chat features.
 Read the [parity matrix and rollout gates](../../docs/sdk/agents.md#main-chat-parity-and-rollout-gates)
-before enabling a product workflow. In particular, host model/PII protection blocks remote
-execution, and model/tool builder settings, files/artifacts, steering, nested usage/billing, and
-host tracing policies are not automatically inherited by the worker.
+before enabling a product workflow. Protected execution requires the opt-in host model and policy
+adapters. File transport is programmatic; native file/artifact activation, steering, nested
+usage/billing, and host tracing policies are not automatically inherited by the worker.
 
 ## Recovering a dropped host-worker connection
 
@@ -144,3 +144,51 @@ See [host provider-text services](../../docs/sdk/agents.md#host-provider-text-se
 for admission ownership, encrypted journal payloads, and the remaining model/input
 policy guards. The existing factories retain `input.config`, including the new
 provider-text protection adapter, for both the minimal and custom-graph examples.
+
+## Host-owned model benchmark
+
+With SDK 4.2.8 and this bridge on both sides, start the example worker as above, then run:
+
+```bash
+SDK_BENCHMARK_HOST_MODEL=true node examples/sdk-runtime/benchmark.cjs
+```
+
+The model now executes in the host benchmark process. The separate worker still owns the custom
+plan/inspect/review/refine graph and its example tool. Both the local and remote runs use the same
+SDK host-model facade and deterministic model. Add `SDK_BENCHMARK_PROTECTION=true` for the existing
+text-policy path, and `SDK_RUNTIME_RECOVERY=true` for Redis recovery. These are benchmark options,
+not saved-agent rollout toggles. The minimal and complex factories both retain `input.hostModel`
+when supplied; neither needs a provider credential for a host-owned model.
+
+See [host model transport](../../docs/sdk/agents.md#host-model-transport) for streaming credit,
+encryption, cancellation, callback ownership, and the remaining builder/policy rollout gates.
+
+### Use the saved agent's host model
+
+Enable `endpoints.agents.sdkHostModels: {}` and `remote.hostModel: true` on the operator's
+runtime registration to select the saved agent's primary model and parameters. Both examples
+consume `input.agent.model` and retain `input.hostModel`; model credentials stay in LibreChat.
+The custom graph keeps its plan/review/refine nodes and uses the host-authorized tool schemas.
+This mode requires updated workers with `builderModel: 1` and, for initial persistence admission,
+`modelAdmission: 1`. Chat, Responses and OpenAI-compatible callers use native host input callbacks.
+Direct programmatic callers must supply those callbacks; local graph tools and provider fallbacks
+remain gated. Combining initial admission with explicit provider-text output protection requires
+`modelAdmissionWithProviderText: 1`, advertised
+only with SDK 4.2.9 invocation-context support. Upgrade separately deployed workers to SDK 4.2.9
+and this bridge version; older workers stay gated. See [the parity matrix](../../docs/sdk/agents.md#main-chat-parity-and-rollout-gates)
+and [configuration](../../docs/sdk/agents.md#saved-agent-builder-models) before enabling it.
+
+## File transport example
+
+After building `@librechat/api`, run `node examples/sdk-runtime/files.cjs`. It launches its own
+separate worker process and runs a custom graph that reads an authorized host file, streams an
+uppercase transform into private staging, publishes it, and produces a normal SDK chat reply.
+The script verifies the digest and single publication, reports elapsed loopback time and SDK
+message events, then removes its temporary files. No model credentials are needed.
+
+The example explicitly supplies `createRemoteSdkRun({ hostServices: { files } })` with an SDK
+`createHostFileService` binding and authorized source descriptors. It does not activate files for
+stock Console/chat callers. Its temporary filesystem and in-memory receipts are test fixtures;
+production adapters still need native ACL/policy checks, durable retry reconciliation, attachment
+events, previews, retention, and authorized browser downloads. See the
+[host file transport contract](../../docs/sdk/agents.md#host-file-transport-sdk-4210).

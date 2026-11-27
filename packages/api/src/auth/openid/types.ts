@@ -141,6 +141,7 @@ export interface RefreshFlightRecord {
   encryptedResult?: string;
   errorMessage?: string;
   expiresAt?: Date | string;
+  usable?: { ownerId?: string; until?: Date | string };
 }
 
 export interface RefreshTokenBridgeInput {

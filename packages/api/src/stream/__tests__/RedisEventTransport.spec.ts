@@ -1,6 +1,11 @@
 import { logger } from '@librechat/data-schemas';
 import type { Redis } from 'ioredis';
-import { emitChunkWithReceipt, emitObservedChunk } from '~/stream/internal/chunkPublication';
+import {
+  emitObservedChunk,
+  readChunkEmission,
+  stampChunkEmission,
+  emitChunkWithReceipt,
+} from '~/stream/internal/chunkPublication';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { RedisEventTransport } from '~/stream/implementations/RedisEventTransport';
 import { GenerationPublicationFencedError } from '~/stream/interfaces/IJobStore';
@@ -2460,6 +2465,66 @@ describe('RedisEventTransport', () => {
     expect(secondRunChunks.map((chunk) => (chunk as { index: number }).index)).toEqual([0]);
 
     disposeAbort();
+    transport.destroy();
+  });
+
+  it('hands a subscriber the emission a chunk was published with, per event and batched', async () => {
+    const mockPublisher = createMockPublisher();
+    const mockSubscriber = createMockSubscriber();
+    const transport = new RedisEventTransport(
+      mockPublisher as unknown as Redis,
+      mockSubscriber as unknown as Redis,
+    );
+    const streamId = 'redis-chunk-emission';
+    const received: unknown[] = [];
+    const subscription = transport.subscribe(streamId, {
+      onChunk: (event) => received.push(event),
+    });
+    const messageHandler = getMessageHandler(mockSubscriber);
+    mockPublisher.publish.mockImplementation(async (channel: string, payload: string) => {
+      messageHandler(channel, payload);
+      return 1;
+    });
+    await subscription.ready;
+
+    const single = { delta: 'single' };
+    const batched = { delta: 'batched' };
+    const unstamped = { delta: 'unstamped' };
+    stampChunkEmission(single, ['manager-a', 7]);
+    stampChunkEmission(batched, ['manager-a', 8]);
+    await emitChunkWithReceipt(transport, streamId, single, 101);
+    await emitChunkWithReceipt(transport, streamId, batched, 101, { coalesce: true });
+    await emitChunkWithReceipt(transport, streamId, unstamped, 101);
+
+    expect(received).toEqual([single, batched, unstamped]);
+    expect(received.map(readChunkEmission)).toEqual([
+      ['manager-a', 7],
+      ['manager-a', 8],
+      undefined,
+    ]);
+
+    subscription.unsubscribe();
+    transport.destroy();
+  });
+
+  it('ignores an emission an older or foreign publisher shaped differently', () => {
+    const mockSubscriber = createMockSubscriber();
+    const transport = new RedisEventTransport(
+      createMockPublisher() as unknown as Redis,
+      mockSubscriber as unknown as Redis,
+    );
+    const streamId = 'redis-chunk-emission-malformed';
+    const received: unknown[] = [];
+    transport.subscribe(streamId, { onChunk: (event) => received.push(event) });
+    const messageHandler = getMessageHandler(mockSubscriber);
+    const channel = `stream:{${streamId}}:events`;
+
+    for (const [seq, emission] of [['manager-a'], 'manager-a:3', ['manager-a', '3']].entries()) {
+      messageHandler(channel, JSON.stringify({ type: 'chunk', seq, data: { seq }, emission }));
+    }
+
+    expect(received).toHaveLength(3);
+    expect(received.map(readChunkEmission)).toEqual([undefined, undefined, undefined]);
     transport.destroy();
   });
 });

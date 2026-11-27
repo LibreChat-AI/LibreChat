@@ -53,7 +53,7 @@ module.exports = {
     `^${escapeRegExp(SRC)}/`,
   ],
   setupFiles: [
-    ...(base.setupFiles ?? []).map((file) => path.join(API, file)),
+    ...(base.setupFiles ?? []).map((file) => path.resolve(API, file)),
     ...(fs.existsSync(SRC_SETUP) ? [SRC_SETUP] : []),
   ],
   resolver,

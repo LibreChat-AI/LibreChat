@@ -9,12 +9,10 @@ import type { ComposerHost } from '../../../react/input';
 import { emptyPaletteSources } from '../../../react/palette';
 import { ComposerHostProvider } from '../../../react/input';
 import { NO_HOST_BINDINGS } from '../../../core/shortcuts';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import DuringRunSendButton from '../DuringRunSendButton';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 /** Renders the hovercard eagerly; jsdom reports zero pointer geometry to Ariakit's show path. */
 jest.mock('@ariakit/react', () => ({
@@ -89,7 +87,7 @@ describe('DuringRunSendButton', () => {
   it('labels the submit slot with the effective action and disables it without text', () => {
     const { rerender } = renderButton();
     const button = screen.getByTestId('during-run-send-button');
-    expect(button).toHaveAttribute('aria-label', 'com_ui_steer_send');
+    expect(button).toHaveAttribute('aria-label', 'Steer the current response');
     expect(button).toBeEnabled();
 
     rerender(
@@ -108,8 +106,7 @@ describe('DuringRunSendButton', () => {
   it('enables paste-only submission and forwards empty text to every explicit action', () => {
     renderButton({ text: '', hasInlinePaste: true });
     expect(screen.getByTestId('during-run-send-button')).toBeEnabled();
-    for (const label of ['com_ui_queue', 'com_ui_steer', 'com_ui_interrupt_steer'])
-      fireEvent.click(row(label));
+    for (const label of ['Queue', 'Steer', 'Interrupt']) fireEvent.click(row(label));
     expect(queueFromComposer).toHaveBeenCalledWith('');
     expect(steerFromComposer).toHaveBeenCalledWith('');
     expect(interruptSteer).toHaveBeenCalledWith('');
@@ -119,9 +116,9 @@ describe('DuringRunSendButton', () => {
   it('runs the chosen row with the trimmed text and consumes the composer', () => {
     renderButton();
 
-    fireEvent.click(row('com_ui_queue'));
+    fireEvent.click(row('Queue'));
     expect(queueFromComposer).toHaveBeenCalledWith(TEXT);
-    fireEvent.click(row('com_ui_steer'));
+    fireEvent.click(row('Steer'));
     expect(steerFromComposer).toHaveBeenCalledWith(TEXT);
     expect(onConsumed).toHaveBeenCalledTimes(2);
   });
@@ -129,7 +126,7 @@ describe('DuringRunSendButton', () => {
   it('holds every row while the host disables sending', () => {
     renderButton({ disabled: true });
 
-    for (const label of ['com_ui_steer', 'com_ui_queue', 'com_ui_interrupt_steer']) {
+    for (const label of ['Steer', 'Queue', 'Interrupt']) {
       expect(row(label)).toHaveAttribute('aria-disabled', 'true');
       fireEvent.click(row(label));
     }
@@ -141,11 +138,11 @@ describe('DuringRunSendButton', () => {
 
   it('moves the default row hint to the modifier chord when Enter does not send', () => {
     const { unmount } = renderButton();
-    expect(row('com_ui_steer')).toHaveTextContent('⏎');
-    expect(row('com_ui_steer')).not.toHaveTextContent('Ctrl');
+    expect(row('Steer')).toHaveTextContent('⏎');
+    expect(row('Steer')).not.toHaveTextContent('Ctrl');
     unmount();
 
     renderButton({ enterToSend: false });
-    expect(row('com_ui_steer')).toHaveTextContent('Ctrl ⏎');
+    expect(row('Steer')).toHaveTextContent('Ctrl ⏎');
   });
 });

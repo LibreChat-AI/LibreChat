@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
 import debounce from 'lodash/debounce';
 import { useSetRecoilState } from 'recoil';
 import { Constants } from 'librechat-data-provider';
@@ -288,7 +288,10 @@ export const useAutoSave = ({
     currentConversationId === pendingDraftId ? pendingDraftId : conversationId;
   const composerHostRef = useRef({});
   const composerRoute = window.location.pathname + window.location.search;
-  useEffect(() => {
+  /** Re-registering releases the scope and claims it again. Doing both during layout means no
+   * passive effect of the same commit reads the released scope: the upload hooks' ownership check
+   * would take it for a departed composer and remove an attachment that is still uploading. */
+  useLayoutEffect(() => {
     if (!activeStorageId) return;
     return registerComposerDraft(
       index,
@@ -450,11 +453,21 @@ export const useAutoSave = ({
       return;
     }
 
+    const startsRun =
+      currentConversationId === conversationDraftId && conversationId === pendingDraftId;
+    const endsRun =
+      currentConversationId === pendingDraftId && conversationId === conversationDraftId;
+    /**
+     * A send empties the composer before its run starts, so words still in it when a run starts
+     * were not sent: a draft written before a rerun, or before a run started elsewhere reached
+     * this conversation. They stay in the field, as staged files do. Restoring the pending
+     * record over them took them out of it, and the end of the run then cleared the
+     * conversation's record, which by then was their only copy.
+     */
+    const keepsWords = startsRun && (textAreaRef?.current?.value ?? '') !== '';
     const sameComposerPhase =
-      filesRef.current.size > 0 &&
       currentDraft?.conversationId === (_conversationId ?? Constants.NEW_CONVO) &&
-      ((currentConversationId === conversationDraftId && conversationId === pendingDraftId) ||
-        (currentConversationId === pendingDraftId && conversationId === conversationDraftId));
+      (keepsWords || (filesRef.current.size > 0 && (startsRun || endsRun)));
     // A rerun changes the storage phase, not the owner of an unrelated live draft.
     if (!sameComposerPhase) {
       setFiles((current) => (current.size === 0 ? current : new Map()));
@@ -586,7 +599,21 @@ export const useAutoSave = ({
         saveText(textDraftId);
       } else if (isFilesDraftOwnedByThisTab(getFilesDraft(filesDraftId))) {
         const pendingPastes = restoreFiles(filesDraftId);
-        restoreText(textDraftId, pendingPastes);
+        /**
+         * A composer drawn with words already in it (handed to it by whatever drew it) and no
+         * record to restore keeps them: an empty record is no draft to put in their place. Only
+         * on its first pass, where there is no earlier conversation whose words these could be.
+         */
+        const startsWithWords =
+          currentConversationId == null &&
+          pendingPastes.length === 0 &&
+          (textAreaRef?.current?.value ?? '') !== '' &&
+          (getDraft(textDraftId) ?? '') === '';
+        if (startsWithWords) {
+          saveText(textDraftId);
+        } else {
+          restoreText(textDraftId, pendingPastes);
+        }
       }
     } catch (e) {
       console.error(e);

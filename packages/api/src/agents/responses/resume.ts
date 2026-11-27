@@ -1,4 +1,5 @@
 import {
+  AgentCapabilities,
   checkpointerSchema,
   messageFilterSchema,
   responseReviewDecisionSchema,
@@ -30,6 +31,7 @@ import {
 } from '../hitl/policy';
 import { hasDurableAgentInterruptCheckpoint, resolveCheckpointerConfig } from '../checkpointer';
 import { getChatProjectContextKey, resolveChatProjectContext } from '~/projects/context';
+import { isContentTraversalLimitError } from '~/protection/adapters/nested';
 import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
 import { getResumeAgentSnapshot } from '../hitl/inspection';
 import { preflightResumeContent } from '../hitl/preflight';
@@ -154,13 +156,23 @@ export function createResponseResumeValidation(deps: ResponseResumeValidationDep
       );
       for (const participant of chunk) if (participant) additionalRoots.push(participant);
     }
-    const snapshot = await getResumeAgentSnapshot({
-      primaryAgent: agent,
-      additionalRoots,
-      subagentsEnabled: true,
-      getAgent: (filter) => loadAgent(filter.id),
-      appConfig: config,
-    });
+    let snapshot: Awaited<ReturnType<typeof getResumeAgentSnapshot>>;
+    try {
+      snapshot = await getResumeAgentSnapshot({
+        primaryAgent: agent,
+        additionalRoots,
+        /** Every participant the paused run could have reached, whatever the deployment allows
+         * now: one that is gone ends the resume below. */
+        capabilities: [AgentCapabilities.subagents, AgentCapabilities.subagent_graphs],
+        getAgent: (filter) => loadAgent(filter.id),
+        appConfig: config,
+      });
+    } catch (error) {
+      /** The snapshot refuses a graph team whose member is gone or unreadable by throwing. That
+       * is the same answer as any other missing participant: the decision is declined. */
+      if (unavailableParticipant && isContentTraversalLimitError(error)) return;
+      throw error;
+    }
     const present = new Set(snapshot.map((participant) => participant.id));
     if (unavailableParticipant || participants.some((id) => !present.has(id))) return;
     const batch =

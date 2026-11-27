@@ -14,3 +14,13 @@ export const DEFAULT_SKILL_IMPORT_LIMITS: ImportLimits = {
   maxEntries: 500,
   maxSingleFileBytes: 10 * 1024 * 1024,
 };
+
+/** Multipart import accepts exactly one file and no text metadata. */
+export function skillImportMultipartLimits(fileSize: number): { fileSize: number; fields: number } {
+  return { fileSize, fields: 0 };
+}
+
+/** File editing accepts a path and an optional revision beside the file. */
+export function skillFileMultipartLimits(): { fileSize: number; fields: number } {
+  return { fileSize: DEFAULT_SKILL_IMPORT_LIMITS.maxSingleFileBytes, fields: 2 };
+}

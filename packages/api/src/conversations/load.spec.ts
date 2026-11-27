@@ -26,6 +26,7 @@ async function setup(
     expiresAt?: number;
     prompt?: boolean;
     now?: () => number;
+    resolveTarget?: Parameters<typeof createGetConversationHandler>[0]['resolveTarget'];
   } = {},
 ) {
   const jobs = new GenerationJobManagerClass();
@@ -91,7 +92,13 @@ async function setup(
     >()
     .mockResolvedValue(options.stored ?? null);
   const logger = { error: jest.fn() };
-  const handler = createGetConversationHandler({ getConvo, jobs, logger, now: options.now });
+  const handler = createGetConversationHandler({
+    getConvo,
+    jobs,
+    logger,
+    now: options.now,
+    resolveTarget: options.resolveTarget,
+  });
   const app = express();
   app.get('/:conversationId', async (req, res) => {
     await handler(
@@ -213,6 +220,19 @@ test('returns established history unchanged without a generation lookup', async 
   const result = await request(app).get(`/${conversationId}`).expect(200);
   expect(result.body).toEqual(stored);
   expect(lookup).not.toHaveBeenCalled();
+});
+
+test('serves established history when target resolution fails', async () => {
+  const stored = { conversationId, endpoint: 'retired-provider', messages: ['saved-message'] };
+  const resolveTarget = jest.fn().mockRejectedValue(new Error('private provider failure'));
+  const { app, logger } = await setup({ stored, resolveTarget });
+  const result = await request(app).get(`/${conversationId}`).expect(200);
+
+  expect(result.headers['cache-control']).toBe('no-store');
+  expect(result.body).toEqual({ ...stored, targetResolutionFailed: true });
+  expect(resolveTarget).toHaveBeenCalledWith(expect.objectContaining({ user: owner }), stored);
+  expect(logger.error).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(logger.error.mock.calls)).not.toContain('private provider failure');
 });
 
 test('does not recover hidden subagent history through the top-level route', async () => {

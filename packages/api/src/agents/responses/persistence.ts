@@ -1,34 +1,79 @@
 import { v4 as uuidv4 } from 'uuid';
-import { Constants, ContentTypes } from 'librechat-data-provider';
+import { Constants, ContentTypes, isFailedToolOutput } from 'librechat-data-provider';
 import type { Agents } from 'librechat-data-provider';
-import type { Response } from './types';
+import type { FunctionCallOutputItem, Response } from './types';
+import type { InternalMessage } from './service';
 
 const rootParent = String(Constants.NO_PARENT);
 
-/** Retain completed server tool pairs for browser rendering and later model turns. */
+export interface StoredResponseOutputLayout {
+  id: string;
+  type: 'message' | 'function_call' | 'function_call_output';
+  callId?: string;
+  textParts?: number;
+  pendingClientTool?: boolean;
+}
+
+export function pendingResponseCalls(response: Response): Set<string> {
+  if (response.status !== 'completed' || !response.tools?.length) return new Set();
+  const names = new Set(
+    response.tools.flatMap((tool) => (tool.type === 'function' ? [tool.name] : [])),
+  );
+  const results = new Set(
+    response.output.flatMap((item) => (item.type === 'function_call_output' ? [item.call_id] : [])),
+  );
+  return new Set(
+    response.output.flatMap((item) =>
+      item.type === 'function_call' && names.has(item.name) && !results.has(item.call_id)
+        ? [item.call_id]
+        : [],
+    ),
+  );
+}
+
+/** Keep canonical tool content, including caller-owned calls awaiting a result. */
 export function projectResponseMessage(
-  response: Pick<Response, 'output'> & Partial<Pick<Response, 'status'>>,
+  response: Pick<Response, 'output'> & Partial<Pick<Response, 'status' | 'tools'>>,
 ): {
   text: string;
   content: Agents.MessageContentComplex[];
   unfinished?: boolean;
 } {
-  const results = new Map<string, string>();
+  const results = new Map<string, FunctionCallOutputItem>();
   for (const item of response.output)
-    if (item.type === 'function_call_output') results.set(item.call_id, item.output);
+    if (item.type === 'function_call_output') results.set(item.call_id, item);
   const content: Agents.MessageContentComplex[] = [];
   let text = '';
+  const clientTools = new Set(
+    response.tools?.flatMap((tool) => (tool.type === 'function' ? [tool.name] : [])),
+  );
   for (const item of response.output) {
-    if (item.type === 'function_call' && results.has(item.call_id)) {
+    if (item.type === 'function_call') {
+      const result = results.get(item.call_id);
+      const isClientTool = clientTools.has(item.name);
+      if (result === undefined && !isClientTool) continue;
+      let runStepStatus: Agents.RunStepClosedStatus | undefined;
+      if (result !== undefined) {
+        if (item.status === 'completed' && result.status === 'completed') {
+          runStepStatus = isFailedToolOutput(result.output) ? 'failed' : 'completed';
+        }
+      } else if (response.status === 'cancelled' || response.status === 'failed') {
+        runStepStatus = response.status;
+      }
       content.push({
         type: ContentTypes.TOOL_CALL,
         tool_call: {
           id: item.call_id,
           name: item.name,
           args: item.arguments,
-          output: results.get(item.call_id)!,
+          ...(isClientTool && response.status === 'completed'
+            ? { clientToolCall: true as const }
+            : {}),
+          ...(runStepStatus ? { runStepStatus } : {}),
+          ...(result !== undefined ? { output: result.output } : {}),
         },
       });
+      continue;
     }
     if (item.type !== 'message' || item.role !== 'assistant') continue;
     for (const part of item.content) {
@@ -44,6 +89,32 @@ export function projectResponseMessage(
       ? {}
       : { unfinished: response.status === 'in_progress' || response.status === 'queued' }),
   };
+}
+
+/** UI lifecycle metadata belongs to canonical storage, not the provider input formatter. */
+export function projectResponseInputContent(
+  content: Exclude<InternalMessage['content'], string>,
+  origin?: InternalMessage['clientToolOrigin'],
+): Exclude<InternalMessage['content'], string> {
+  if (!origin) return content;
+  const ids = new Set(origin.callIds);
+  if (ids.size === 0 || ids.size !== origin.callIds.length) throw new ResponsePersistenceError();
+  const projected = content.map((part) => {
+    if (
+      part.type !== ContentTypes.TOOL_CALL ||
+      !('tool_call' in part) ||
+      !ids.has(part.tool_call.id)
+    )
+      return part;
+    if (part.tool_call.output == null) throw new ResponsePersistenceError();
+    ids.delete(part.tool_call.id);
+    return {
+      ...part,
+      tool_call: { ...part.tool_call, clientToolCall: true, runStepStatus: 'completed' as const },
+    };
+  });
+  if (ids.size !== 0) throw new ResponsePersistenceError();
+  return projected;
 }
 
 export type StoredResponseMessage = {

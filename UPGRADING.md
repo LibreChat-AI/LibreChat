@@ -180,3 +180,89 @@ possible latency spike. Do not use the broad migration on a live database.
 
 The original offline procedure remains available when all writers can be stopped:
 `npm run migrate:tenant-indexes`. It also covers collections beyond `mcpnames`.
+
+### Repairing duplicate roles, system grants, and agent categories
+
+A failed unique-index build can leave legacy duplicate authorization/configuration
+records. Updating the application does not remove those records or repair the
+missing constraint. The corrected grant revocation removes every matching grant
+in the exact requested tenant/platform scope, even before the index is repaired.
+It does not revoke grants for a different tenant or remove platform grants when
+revoking a tenant grant. Deploy the correction to every API replica first.
+
+Use the targeted repair below for `systemgrants`, `roles`, and `agentcategories`.
+It does **not** repair files, messages, MCP names, or all tenant indexes. It runs
+only when invoked explicitly, never at startup.
+
+1. Take a database snapshot and rehearse on a restored copy using the deployment's
+   actual DocumentDB engine/version. Local regression tests use real MongoDB;
+   they do not establish DocumentDB compatibility. Check archive, CRUD, aggregate,
+   and index-build privileges before the production window. Inspect which regional
+   deployments share a database; run once per independent writer database, not
+   once per API region connected to the same database.
+2. From one maintenance container with the corrected image, the writer `MONGO_URI`
+   and the deployment's TLS settings, run from `/app`:
+
+   ```sh
+   node config/repair-authorization-duplicates.js --dry-run
+   ```
+
+   Preview is also the default for `node config/repair-authorization-duplicates.js`. Output contains
+   aggregate counts and index status only. Conflicting settings produce exit code
+   2 in preview; operational failures produce exit code 1. A live preview is not
+   a consistent snapshot and is not permission or index-build validation.
+
+3. Gate and drain **all writes to these three collections**, including admin grant
+   changes, role creation/edit/rename/deletion and their grant cascades, category
+   changes, tenant onboarding/seeding, account/group erasure and maintenance
+   scripts. Audit fork-specific writers. Freeze rollouts, restarts and automatic
+   scale-up that could run `initializeRoles`, `seedSystemGrants` or
+   `ensureDefaultCategories`. Role reads can create a missing built-in role:
+   existing chat can continue only when its role records already exist. Gate new
+   tenant provisioning and requests that would create missing roles as well.
+   This is a deployment-controlled gate; there is no built-in maintenance toggle.
+   Blocking only `/api/admin/grants` is insufficient. If the deployment cannot
+   isolate these writers, stop writers for the repair instead of assuming a safe
+   online migration. Reads and unrelated message/chat writes need not be stopped.
+4. Run one migrator, keeping the gate closed until every index is verified:
+
+   ```sh
+   node config/repair-authorization-duplicates.js --apply --writers-paused
+   ```
+
+   `--writers-paused` acknowledges the operational gate; it does not enforce it.
+   The command inspects all three collections before cleanup and refuses conflicting
+   records. It retains the lowest `_id` in each equivalent group without modifying
+   it, archives every complete removed record in `authorization_duplicate_archive`,
+   then deletes the duplicate. Role/category settings and unknown fields must agree;
+   only `_id`, `__v`, `createdAt`, and `updatedAt` are ignored for comparison. Grants
+   also ignore `grantedAt` and `grantedBy` provenance, which the archive preserves;
+   different `expiresAt` values or tenant-field representations are conflicts.
+   No permissions are unioned and no tenant is reassigned. Conflict resolution
+   requires a separate reviewed decision; do not simply keep the most permissive
+   role or restore every archived grant.
+
+5. Require exit zero and all three `uniqueIndex` values to be true. Verify full,
+   non-sparse, non-partial unique indexes on `(principalType, principalId,
+capability, tenantId)`, `(name, tenantId)`, and `(value, tenantId)` respectively.
+   The repair requests background index builds serially and drops no existing/custom
+   indexes. Amazon DocumentDB defaults to foreground builds; background builds
+   allow reads to continue ([AWS index creation guidance](https://docs.aws.amazon.com/documentdb/latest/devguide/index-creation.html)).
+   Rehearse and watch database load/latency; background does not mean zero impact.
+   Re-run preview, verify zero duplicate groups, smoke-test grant/revoke plus role
+   and category operations in staging, then reopen the affected writes.
+
+Every removal is archived with majority acknowledgement and read back before
+source deletion. Keep that collection access-restricted with the source data;
+there is no TTL or automatic restore. A database snapshot is still required.
+A failed/interrupted run may have archived/deleted some records or built some
+indexes. Keep the gate closed and rerun preview before resuming apply. The archive
+is idempotent; an existing archive that differs from its source blocks deletion.
+
+Apply takes a single-migrator lock in `authorization_repair_locks`. A hard-killed
+process leaves the `authorization` lock in place intentionally. Before removing
+that lock manually, verify the previous process and its database operations have
+finished; do not expire or steal it while an index build may still be running.
+Duplicate scans use no disk spill, a 60-second server timeout, and a 1,000-record
+per-group bound. Oversized/slow scans fail rather than performing an unbounded
+repair. These bounds are maintenance-library options, not request-path settings.

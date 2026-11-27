@@ -1,4 +1,8 @@
 import type { LocatorTraversalReporter } from '../../protection/diagnostics';
+import type { AssistantConfig } from '../../protection/assistant';
+import type { SdkModelHost } from '../remoteSdk/builder';
+import type { ServerToolResultFields } from './types';
+import { validateChatIncludes } from './results';
 /**
  * OpenAI-compatible chat completions service for agents.
  *
@@ -20,7 +24,7 @@ import type { LocatorTraversalReporter } from '../../protection/diagnostics';
  * ```
  */
 import { nanoid } from 'nanoid';
-import { AgentCapabilities, EModelEndpoint } from 'librechat-data-provider';
+import { ErrorTypes, AgentCapabilities, EModelEndpoint } from 'librechat-data-provider';
 import type {
   FiltersConfig,
   MessageFilterConfig,
@@ -74,6 +78,7 @@ import {
 } from '~/middleware/modelBoundContent';
 import { contentFilterBlockResponse, isContentFilterError } from '~/middleware/contentFilter';
 import { contentFilterUninspectableResponse } from '~/protection/files';
+import { requiresAssistantProtection } from '../../protection/assistant';
 import { resolveToolRoleGrants } from '../../tools/rolePermissions';
 import { createMCPRuntimeRequestBody } from '~/mcp/request';
 import { getUserFacingProviderError } from '../errors';
@@ -81,11 +86,13 @@ import { collectReachableAgents } from '../traversal';
 import { resolveRecursionLimit } from '../config';
 import { getDynamicToolContexts } from '../hitl';
 import { createSafeUser } from '~/utils';
+import { createApiModelCallbacks } from '../policy';
 
 /**
  * Dependencies for the chat completion service
  */
 export interface ChatCompletionDependencies {
+  sdkModelHost?: SdkModelHost;
   readonly onTraversalFailure?: LocatorTraversalReporter;
   /** Get agent by ID */
   getAgent: (params: { id: string }) => Promise<Agent | null>;
@@ -297,6 +304,9 @@ type CreateRunAppConfig = Pick<
 >;
 
 type CreateRunFn = (params: {
+  sdkModelHost?: SdkModelHost;
+  eagerToolExecution?: boolean;
+  modelCallbacks?: ReturnType<typeof createApiModelCallbacks>;
   agents: unknown[];
   messages: unknown[];
   runId: string;
@@ -320,7 +330,7 @@ type CreateRunFn = (params: {
 /**
  * App config type
  */
-interface AppConfig {
+interface AppConfig extends AssistantConfig {
   endpoints?: Record<string, unknown>;
   filters?: FiltersConfig;
   langfuse?: Record<string, unknown>;
@@ -518,6 +528,8 @@ export function validateRequest(body: unknown): ChatCompletionValidationResult {
   }
 
   const request = body as Record<string, unknown>;
+  const includeError = validateChatIncludes(request.include);
+  if (includeError) return { valid: false, error: includeError };
 
   if (!request.model || typeof request.model !== 'string') {
     return { valid: false, error: 'model (agent_id) is required' };
@@ -598,6 +610,7 @@ export function buildNonStreamingResponse(
   usage: CompletionUsage,
   /** True when the map contains only accepted client-owned calls, not legacy run-step history. */
   acceptedToolCallsOnly = false,
+  results?: ServerToolResultFields,
 ): ChatCompletionResponse {
   const toolCallsArray = Array.from(toolCalls.values());
   const finishReason =
@@ -614,6 +627,7 @@ export function buildNonStreamingResponse(
         message: {
           role: 'assistant',
           content: text || null,
+          ...results,
           ...(reasoning && { reasoning }),
           ...(toolCallsArray.length > 0 && { tool_calls: toolCallsArray }),
         },
@@ -642,6 +656,17 @@ export async function createAgentChatCompletion(
   res: ServerResponse,
   deps: ChatCompletionDependencies,
 ): Promise<void> {
+  if (requiresAssistantProtection(deps.appConfig)) {
+    sendErrorResponse(
+      res,
+      400,
+      'Assistant reply protection is not supported on this endpoint.',
+      'invalid_request_error',
+      ErrorTypes.ASSISTANT_OUTPUT_UNSUPPORTED,
+    );
+    return;
+  }
+
   // Validate request
   const validation = validateRequest(req.body);
   if (isChatCompletionValidationFailure(validation)) {
@@ -867,9 +892,10 @@ export async function createAgentChatCompletion(
     // Create event handlers
     const eventHandlers = createOpenAIHandlers(
       handlerConfig
-        ? { ...handlerConfig, signal: abortController.signal }
+        ? { ...handlerConfig, signal: abortController.signal, include: request.include }
         : {
             aggregator: aggregator!,
+            include: request.include,
             signal: abortController.signal,
           },
       deps.toolExecuteOptions == null
@@ -880,6 +906,8 @@ export async function createAgentChatCompletion(
             foregroundRunId: requestId,
           },
     );
+
+    const target = tracker ?? aggregator!;
 
     // Convert messages to internal format
     const messages = convertMessages(request.messages);
@@ -898,6 +926,13 @@ export async function createAgentChatCompletion(
        */
       const safeUser: Record<string, unknown> = { ...createSafeUser(reqUser), id: userId };
       const run = await deps.createRun({
+        ...target.toolExecution,
+        sdkModelHost: deps.sdkModelHost,
+        modelCallbacks: createApiModelCallbacks({
+          appConfig: deps.appConfig,
+          onTraversalFailure: deps.onTraversalFailure,
+          resolvedFiles: modelBoundFiles,
+        }),
         agents: [initializedAgent],
         messages,
         runId: requestId,
@@ -911,7 +946,6 @@ export async function createAgentChatCompletion(
       });
 
       if (run) {
-        const target = tracker ?? aggregator!;
         await completeOpenAIToolCalls(
           {
             finish: () => target.finishToolCalls?.(),
@@ -971,6 +1005,7 @@ export async function createAgentChatCompletion(
         aggregator.toolCalls,
         usage,
         true,
+        aggregator.serverToolResults?.response(),
       );
       res.json(response);
     }

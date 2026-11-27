@@ -1,5 +1,6 @@
 import { Constants, LocalStorageKeys } from 'librechat-data-provider';
 import {
+  settlePendingDraft,
   applyPendingPastesToDraft,
   clearAllDrafts,
   clearDraft,
@@ -1467,6 +1468,68 @@ describe('logical composer lifetime', () => {
     window.history.replaceState({}, '', '/');
   });
 
+  it('keeps ownership while the model selection enters and leaves a new chat address', () => {
+    window.history.replaceState({}, '', '/c/new');
+    const host = {};
+    const releaseNew = registerComposerDraft(50, Constants.NEW_CONVO, 'new:50', host);
+    /** Picking a model mirrors it into the address. */
+    window.history.replaceState({}, '', '/c/new?spec=writer');
+    releaseNew();
+    const releaseSelected = registerComposerDraft(50, Constants.NEW_CONVO, 'new:50', host);
+    const captured = captureComposerDraft(50, Constants.NEW_CONVO);
+    /** The first send pushes the new-chat path without it. */
+    window.history.pushState({}, '', '/c/new');
+    releaseSelected();
+    const releasePending = registerComposerDraft(50, Constants.NEW_CONVO, 'pending:50', host);
+    expect(captured()).toBe(true);
+    const launch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(launch, 50);
+    expect(adoptComposerConversation(launch, 'first-reply', 50)).toBe(true);
+    window.history.replaceState({}, '', '/c/first-reply');
+    releasePending();
+    const releaseAssigned = registerComposerDraft(50, 'first-reply', 'pending:50', host);
+    /** The acknowledged conversation mirrors its selection again, and the run's end drops it. */
+    window.history.replaceState({}, '', '/c/first-reply?spec=writer&model=gpt-5');
+    releaseAssigned();
+    const releaseMirrored = registerComposerDraft(50, 'first-reply', 'pending:50', host);
+    expect(captured()).toBe(true);
+    window.history.replaceState({}, '', '/c/first-reply');
+    releaseMirrored();
+    const releaseEnded = registerComposerDraft(50, 'first-reply', 'first-reply', host);
+    expect(captured()).toBe(true);
+    expect(captured.conversationId()).toBe('first-reply');
+    releaseEnded();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it("keeps a project chat's ownership on its bare saved path but not under another project", () => {
+    window.history.replaceState({}, '', '/c/new?projectId=project&spec=writer');
+    const host = {};
+    const releaseNew = registerComposerDraft(51, Constants.NEW_CONVO, 'new:51', host);
+    const captured = captureComposerDraft(51, Constants.NEW_CONVO);
+    window.history.pushState({}, '', '/c/new?projectId=project');
+    releaseNew();
+    const releasePending = registerComposerDraft(51, Constants.NEW_CONVO, 'pending:51', host);
+    const launch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(launch, 51);
+    expect(adoptComposerConversation(launch, 'project-reply', 51)).toBe(true);
+    window.history.replaceState({}, '', '/c/project-reply?projectId=project');
+    releasePending();
+    const releaseAssigned = registerComposerDraft(51, 'project-reply', 'pending:51', host);
+    expect(captured()).toBe(true);
+    /** The run ends on the saved chat's own address, which carries no project. */
+    window.history.replaceState({}, '', '/c/project-reply');
+    releaseAssigned();
+    const releaseEnded = registerComposerDraft(51, 'project-reply', 'project-reply', host);
+    expect(captured()).toBe(true);
+    window.history.replaceState({}, '', '/c/project-reply?projectId=other');
+    releaseEnded();
+    const releaseOther = registerComposerDraft(51, 'project-reply', 'project-reply', host);
+    expect(captured()).toBe(false);
+    releaseOther();
+    window.history.replaceState({}, '', '/');
+  });
+
   it('permits origin recovery only when an owned saved draft still references the file', () => {
     const release = registerComposerDraft(26, 'saved-owner', 'saved-owner', {});
     const captured = captureComposerDraft(26, 'saved-owner');
@@ -1688,5 +1751,64 @@ describe('bounded paste draft previews', () => {
     expect(getFilesDraft('preview-draft').textPreviews).toEqual({ paste: 'p'.repeat(240) });
     setFilesDraft('preview-draft', { fileIds: [], pendingPastes: {} });
     expect(getFilesDraft('preview-draft').textPreviews).toBeUndefined();
+  });
+});
+
+describe('settling a pane’s pending draft onto its conversation', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  const pending = getPendingDraftId(3);
+
+  it('moves the words and attachments written during a run to the conversation', () => {
+    setDraft({ id: pending, value: 'written while it ran' });
+    setFilesDraft(pending, { fileIds: ['file-1'], pendingPastes: {} });
+
+    settlePendingDraft(3, 'convo-1');
+
+    expect(getDraft('convo-1')).toBe('written while it ran');
+    expect(getFilesDraft('convo-1').fileIds).toEqual(['file-1']);
+    expect(getDraft(pending)).toBe('');
+    expect(getFilesDraft(pending).fileIds).toEqual([]);
+  });
+
+  it('leaves the conversation’s own draft alone when the pane left nothing', () => {
+    setDraft({ id: 'convo-1', value: 'already here' });
+
+    settlePendingDraft(3, 'convo-1');
+
+    expect(getDraft('convo-1')).toBe('already here');
+  });
+
+  it('leaves a pending record that another open tab owns', () => {
+    /** Every tab's side pane shares the key: this one may be another tab's run in progress. */
+    markTabLive('other-tab');
+    localStorage.setItem(
+      `${LocalStorageKeys.FILES_DRAFT}${pending}`,
+      JSON.stringify({ fileIds: ['theirs'], pendingPastes: {}, tabId: 'other-tab' }),
+    );
+    localStorage.setItem(`${LocalStorageKeys.TEXT_DRAFT}${pending}`, encodeBase64('their words'));
+
+    settlePendingDraft(3, 'convo-1');
+
+    expect(getDraft(pending)).toBe('their words');
+    expect(getFilesDraft(pending).fileIds).toEqual(['theirs']);
+    expect(getDraft('convo-1')).toBe('');
+  });
+
+  it('leaves everything where it is when another open tab owns the conversation’s draft', () => {
+    setDraft({ id: pending, value: 'written while it ran' });
+    markTabLive('other-tab');
+    localStorage.setItem(
+      `${LocalStorageKeys.FILES_DRAFT}convo-1`,
+      JSON.stringify({ fileIds: ['theirs'], pendingPastes: {}, tabId: 'other-tab' }),
+    );
+
+    settlePendingDraft(3, 'convo-1');
+
+    expect(getDraft(pending)).toBe('written while it ran');
+    expect(getFilesDraft('convo-1').fileIds).toEqual(['theirs']);
   });
 });

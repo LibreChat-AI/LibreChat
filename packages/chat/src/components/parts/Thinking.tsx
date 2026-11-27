@@ -4,9 +4,9 @@ import { ChevronDown as ChevronDownNode, ChevronUp as ChevronUpNode } from 'luci
 import { Button, MorphIcon, Shimmer, TooltipAnchor, useLocalize } from '@librechat/client';
 import type { FC, FocusEvent, MouseEvent, NamedExoticComponent } from 'react';
 import { useMessagePartsHost } from '../../react/host';
+import { NAV_CLEARANCE, ROW_GLYPH_SLOT } from './rows';
 import useExpandCollapse from './useExpandCollapse';
 import { isRectVisible } from '../../core/viewport';
-import { ROW_GLYPH_SLOT } from './rows';
 import CopyButton from './CopyButton';
 import { classes } from './classes';
 
@@ -20,8 +20,14 @@ import { classes } from './classes';
  * can land after the pointer has already revealed the bar. So every
  * notification re-measures the header's real position instead of trusting
  * `isIntersecting`, and `recheck` does the same for callers about to reveal.
+ *
+ * The answer only matters while the floating bar could show, which is while the reader is on an
+ * open part. `watching` says so: an observer per reasoning part of a long thread is hundreds of
+ * them, each measuring its header (laying its row out again, if the browser was skipping it)
+ * every time the thread moves, to keep an answer nothing reads. A caller that reveals the bar
+ * calls `recheck` first, so the answer is fresh the moment watching starts.
  */
-export function useInViewport(): {
+export function useInViewport(watching = true): {
   ref: React.RefObject<HTMLDivElement>;
   inViewport: boolean;
   recheck: () => boolean;
@@ -31,7 +37,7 @@ export function useInViewport(): {
 
   useEffect(() => {
     const el = ref.current;
-    if (!el) {
+    if (!el || !watching) {
       return;
     }
     const observer = new IntersectionObserver(() => setInViewport(isRectVisible(el)), {
@@ -40,7 +46,7 @@ export function useInViewport(): {
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [watching]);
 
   const recheck = useCallback(() => {
     const el = ref.current;
@@ -117,7 +123,9 @@ export const ThinkingButton: NamedExoticComponent<ThinkingButtonProps> = memo(
     }, [content]);
 
     return (
-      <div className="group/thinking relative flex w-full items-center">
+      <div
+        className={classes('group/thinking relative flex w-full items-center', NAV_CLEARANCE.pad)}
+      >
         <button
           type="button"
           onClick={onClick}
@@ -183,6 +191,7 @@ export const ThinkingButton: NamedExoticComponent<ThinkingButtonProps> = memo(
             copiedLabel={localize('com_ui_copied_to_clipboard')}
             className={classes(
               'absolute inset-e-0 top-1/2 -translate-y-1/2 opacity-0 transition-opacity',
+              NAV_CLEARANCE.edge,
               'group-focus-within/thinking-container:opacity-100 group-hover/thinking-container:opacity-100',
               'focus-visible:opacity-100',
             )}
@@ -252,6 +261,7 @@ export const FloatingThinkingBar: NamedExoticComponent<FloatingThinkingBarProps>
           /* Laid over the text rather than reserved below it, so the box keeps
              even padding; the fill keeps the controls legible over a line. */
           'bg-surface-secondary absolute inset-e-3 bottom-3 flex items-center gap-2 rounded-lg transition-opacity duration-150',
+          NAV_CLEARANCE.edge,
           isVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
       >
@@ -312,7 +322,11 @@ const Thinking: React.ElementType = memo(({ children }: { children: React.ReactN
   const [isExpanded, setIsExpanded] = useState(showThinking);
   const [isBarVisible, setIsBarVisible] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { ref: headerRef, inViewport: headerInViewport, recheck: recheckHeader } = useInViewport();
+  const {
+    ref: headerRef,
+    inViewport: headerInViewport,
+    recheck: recheckHeader,
+  } = useInViewport(isBarVisible && isExpanded);
   const contentId = useId();
   const { ref: expandRef } = useExpandCollapse(isExpanded);
 

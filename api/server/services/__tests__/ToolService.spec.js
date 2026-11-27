@@ -3726,7 +3726,7 @@ describe('ToolService - Action Capability Gating', () => {
       );
     });
 
-    it('passes negotiated lane and native sandbox capabilities to the attached bash tool', async () => {
+    it('passes negotiated lane, sandbox and detached command capabilities to the attached bash tool', async () => {
       const capabilities = [
         AgentCapabilities.tools,
         AgentCapabilities.execute_code,
@@ -3748,6 +3748,7 @@ describe('ToolService - Action Capability Gating', () => {
           operations: attachedWorkspaceOperations,
           linkedWorktrees: true,
           nativeSandbox: true,
+          detachedCommands: true,
         },
       }));
 
@@ -3767,7 +3768,11 @@ describe('ToolService - Action Capability Gating', () => {
       });
 
       expect(mockCreateAttachedWorkspaceBashTool).toHaveBeenLastCalledWith(
-        expect.objectContaining({ linkedWorktrees: true, nativeSandbox: true }),
+        expect.objectContaining({
+          linkedWorktrees: true,
+          nativeSandbox: true,
+          detachedCommands: true,
+        }),
       );
     });
 
@@ -4764,6 +4769,49 @@ describe('ToolService - Action Capability Gating', () => {
       expectBothActionsResolved(mockCreateActionTool.mock.calls);
     });
 
+    it('loadAgentTools starts every action domain check before any resolves and keeps tool order', async () => {
+      mockLoadActionSets.mockResolvedValue([actionA, actionB]);
+      const releases = [];
+      mockDomainParser.mockImplementation(
+        () => new Promise((resolve) => releases.push(() => resolve(ENCODED_DOMAIN))),
+      );
+      const capabilities = [AgentCapabilities.tools, AgentCapabilities.actions];
+      const req = createMockReq(capabilities);
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      const pending = loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'agent_collision', tools: [toolNameA, toolNameB] },
+        definitionsOnly: false,
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(mockDomainParser).toHaveBeenCalledTimes(2);
+      releases.forEach((release) => release());
+      await pending;
+
+      expect(mockCreateActionTool).toHaveBeenCalledTimes(2);
+      expectBothActionsResolved(mockCreateActionTool.mock.calls);
+    });
+
+    it('loadAgentTools rejects when an action domain check throws', async () => {
+      mockLoadActionSets.mockResolvedValue([actionA, actionB]);
+      mockDomainParser.mockRejectedValue(new Error('dns failure'));
+      const capabilities = [AgentCapabilities.tools, AgentCapabilities.actions];
+      const req = createMockReq(capabilities);
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      await expect(
+        loadAgentTools({
+          req,
+          res: {},
+          agent: { id: 'agent_collision', tools: [toolNameA, toolNameB] },
+          definitionsOnly: false,
+        }),
+      ).rejects.toThrow('dns failure');
+      expect(mockCreateActionTool).not.toHaveBeenCalled();
+    });
+
     it('loadAgentTools is order-invariant for two actions sharing a hostname', async () => {
       // Reverse the actionSets order — what used to flip the "winner" of
       // the encoded-domain Map overwrite must now make zero observable
@@ -4800,6 +4848,31 @@ describe('ToolService - Action Capability Gating', () => {
       expect(mockCreateActionTool).toHaveBeenCalledTimes(2);
       expectBothActionsResolved(mockCreateActionTool.mock.calls);
     });
+
+    it.each([
+      ['a run nobody can sign in for', true],
+      ['a run somebody can sign in for', false],
+      ['a run that does not say', undefined],
+    ])(
+      'passes on to action tools what the run says about attendance: %s',
+      async (_label, unattended) => {
+        mockLoadActionSets.mockResolvedValue([actionA]);
+        const req = createMockReq([AgentCapabilities.actions]);
+        req.config = {};
+
+        await loadToolsForExecution({
+          req,
+          res: {},
+          agent: { id: 'agent_collision' },
+          toolNames: [toolNameA],
+          actionsEnabled: true,
+          unattended,
+        });
+
+        expect(mockCreateActionTool).toHaveBeenCalledTimes(1);
+        expect(mockCreateActionTool.mock.calls[0][0].unattended).toBe(unattended);
+      },
+    );
 
     it('processRequiredActions resolves both actions when they share a hostname', async () => {
       // The assistants/threads path received the same structural rewrite

@@ -8,6 +8,7 @@ import {
   buildOptimisticConversation,
 } from '@librechat/chat';
 import type { TMessage, TSubmission, TConversation } from 'librechat-data-provider';
+import type { QueryClient } from '@tanstack/react-query';
 import type { ResumableCache } from '@librechat/chat';
 import type { ActiveJobsResponse } from '~/data-provider';
 import {
@@ -15,6 +16,7 @@ import {
   bindComposerLaunch,
   upsertConvoInAllQueries,
   removeConvoFromAllQueries,
+  clearNewConversationAlias,
   invalidateConversationLists,
 } from '~/utils';
 import {
@@ -22,8 +24,41 @@ import {
   streamStatusQueryKey,
   fetchConversationMessages,
 } from '~/data-provider';
+import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import { transferFileSearchPreference } from '~/hooks/Files/search';
 import { fetchConvoSnapshot } from '~/utils/convos';
+
+/** Lists a generation as running before the active-job poll has seen it. */
+export function addActiveJob(queryClient: QueryClient, jobId: string): void {
+  queryClient.setQueryData<ActiveJobsResponse>([QueryKeys.activeJobs], (old) => ({
+    activeJobIds: [...new Set([...(old?.activeJobIds ?? []), jobId])],
+  }));
+}
+
+/** Takes a generation that ended off the list before the active-job poll has seen it end. */
+export function removeActiveJob(queryClient: QueryClient, jobId: string): void {
+  queryClient.setQueryData<ActiveJobsResponse>([QueryKeys.activeJobs], (old) => ({
+    activeJobIds: (old?.activeJobIds ?? []).filter((id) => id !== jobId),
+  }));
+}
+
+/**
+ * Takes a new chat's first turn out of the new chat's messages once the pane's stream on it is
+ * closed, unless the pane still shows the turn, as after a Stop. The pane is read from the latest
+ * state, because the reset that left the turn has not rendered yet when its stream closes.
+ */
+export function useReleaseNewConversation(runIndex = 0): (conversationId: string) => void {
+  const queryClient = useQueryClient();
+  const getConversation = useGetConversation(runIndex);
+  return useCallback(
+    (conversationId: string) => {
+      if (getConversation()?.conversationId !== conversationId) {
+        clearNewConversationAlias(queryClient, conversationId);
+      }
+    },
+    [getConversation, queryClient],
+  );
+}
 
 /** The app's query cache, as a resumable run reads and refreshes it. */
 export default function useResumableCache(
@@ -31,30 +66,14 @@ export default function useResumableCache(
   runIndex = 0,
 ): ResumableCache {
   const queryClient = useQueryClient();
+  const releaseNewConversation = useReleaseNewConversation(runIndex);
 
-  /**
-   * Optimistically add a job ID to the active jobs cache.
-   * Called when generation starts.
-   */
-  const addActiveJob = useCallback(
-    (jobId: string) => {
-      queryClient.setQueryData<ActiveJobsResponse>([QueryKeys.activeJobs], (old) => ({
-        activeJobIds: [...new Set([...(old?.activeJobIds ?? []), jobId])],
-      }));
-    },
-    [queryClient],
-  );
+  /** Called when generation starts. */
+  const addJob = useCallback((jobId: string) => addActiveJob(queryClient, jobId), [queryClient]);
 
-  /**
-   * Optimistically remove a job ID from the active jobs cache.
-   * Called when generation completes, aborts, or errors.
-   */
-  const removeActiveJob = useCallback(
-    (jobId: string) => {
-      queryClient.setQueryData<ActiveJobsResponse>([QueryKeys.activeJobs], (old) => ({
-        activeJobIds: (old?.activeJobIds ?? []).filter((id) => id !== jobId),
-      }));
-    },
+  /** Called when generation completes, aborts, or errors. */
+  const removeJob = useCallback(
+    (jobId: string) => removeActiveJob(queryClient, jobId),
     [queryClient],
   );
 
@@ -130,8 +149,8 @@ export default function useResumableCache(
         queryClient.removeQueries({ queryKey: streamStatusQueryKey(conversationId) }),
       invalidateStreamStatus: (conversationId) =>
         queryClient.invalidateQueries({ queryKey: streamStatusQueryKey(conversationId) }),
-      addActiveJob,
-      removeActiveJob,
+      addActiveJob: addJob,
+      removeActiveJob: removeJob,
       fetchConversation: (conversationId) =>
         fetchConvoSnapshot(queryClient, conversationId, () =>
           dataService.getConversationById(conversationId),
@@ -150,7 +169,8 @@ export default function useResumableCache(
       },
       queueTitleGeneration,
       addOptimisticConversation,
+      releaseNewConversation,
     }),
-    [addActiveJob, addOptimisticConversation, queryClient, removeActiveJob],
+    [addJob, addOptimisticConversation, queryClient, releaseNewConversation, removeJob],
   );
 }

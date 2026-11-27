@@ -1,4 +1,9 @@
-import { Constants, LocalStorageKeys, MAX_FILE_TEXT_PREVIEW_LENGTH } from 'librechat-data-provider';
+import {
+  Constants,
+  LocalStorageKeys,
+  tQueryParamsSchema,
+  MAX_FILE_TEXT_PREVIEW_LENGTH,
+} from 'librechat-data-provider';
 import { isPasteSubmitted } from './files';
 
 export type PendingTextAttachmentDraft = {
@@ -363,14 +368,34 @@ type ComposerDraftScope = {
 const composerDraftMigrations = new Set<(fromId: string, toId: string) => void>();
 const composerDraftScopes = new Map<number, ComposerDraftScope>();
 const composerLaunches = new WeakMap<object, { index: number; scope: ComposerDraftScope }>();
-const composerRoute = () => window.location.pathname + window.location.search;
+/** A new chat mirrors its model selection into its address (`createChatSearchParams`) and its
+ * first run navigates without it, so those keys say what the chat is sent to, not which composer
+ * it is. Every other parameter (the project, a deep-link prompt) still identifies the composer. */
+const selectionKeys = new Set(Object.keys(tQueryParamsSchema.shape));
+const composerSearch = (search: string): URLSearchParams => {
+  const params = new URLSearchParams(search);
+  for (const key of Array.from(params.keys())) {
+    if (selectionKeys.has(key)) params.delete(key);
+  }
+  return params;
+};
+const composerRoute = () => {
+  const search = composerSearch(window.location.search).toString();
+  return window.location.pathname + (search ? `?${search}` : '');
+};
+
+/** A run ends by navigating to its saved chat's bare path, which shows the same conversation as
+ * the address it was assigned while a project still sat in the query. */
+const isAssignedRoute = (scope: ComposerDraftScope, route: string): boolean =>
+  scope.assignedRoute != null &&
+  (route === scope.assignedRoute || route === scope.assignedRoute.split('?')[0]);
 
 const matchesComposerRoute = (scope: ComposerDraftScope): boolean => {
   const route = composerRoute();
-  if (!scope.sourcePropPending && scope.assignedRoute === route) {
+  if (!scope.sourcePropPending && isAssignedRoute(scope, route)) {
     scope.route = route;
   }
-  return route === scope.route || route === scope.assignedRoute;
+  return route === scope.route || isAssignedRoute(scope, route);
 };
 
 export const registerComposerDraft = (
@@ -391,7 +416,7 @@ export const registerComposerDraft = (
     (previous.conversationId === conversationId ||
       (previous.sourcePropPending && previous.sourceId === conversationId)) &&
     previous.answerId === answerId &&
-    (previous.route === route || previous.assignedRoute === route)
+    (previous.route === route || isAssignedRoute(previous, route))
       ? previous
       : {
           conversationId,
@@ -415,7 +440,7 @@ export const registerComposerDraft = (
   scope.draftId = draftId;
   if (scope.conversationId === conversationId) {
     scope.sourcePropPending = false;
-    if (scope.assignedRoute === route) scope.route = route;
+    if (isAssignedRoute(scope, route)) scope.route = route;
   }
   composerDraftScopes.set(index, scope);
   return () => {
@@ -439,7 +464,7 @@ export const getActiveComposerDraftId = (index: number, conversationId: string):
 };
 
 const normalizedComposerSearch = (search: string): string => {
-  const params = new URLSearchParams(search);
+  const params = composerSearch(search);
   params.sort();
   return params.toString();
 };
@@ -1510,6 +1535,31 @@ export const migrateFilesDraft = (fromId: string, toId: string): string => {
      * dropping attachments that recovery can still read from the key it came from. */
     setLocalStorageItem(key, record);
     return fromId;
+  }
+};
+
+/**
+ * Moves what a composer wrote under its pane's pending key to the conversation it was written
+ * for, when the composer goes away before its run ends. Its own migration only happens when the
+ * run ends in front of it, and a pane that then shows another conversation would find the
+ * leftover there. The same guards as that migration apply: the pending record has to be this
+ * tab's, and the conversation's key writable by it. Anything else is left exactly as it is.
+ */
+export const settlePendingDraft = (index: number, conversationId: string): void => {
+  const pendingId = getPendingDraftId(index);
+  const pending = getFilesDraft(pendingId);
+  if (!isFilesDraftOwnedByThisTab(pending)) {
+    return;
+  }
+  if (
+    !isFilesDraftOwnedByThisTab(getFilesDraft(conversationId)) ||
+    !mayWriteComposerText(conversationId)
+  ) {
+    return;
+  }
+  migrateTextDraft(pendingId, conversationId);
+  if (pending.fileIds.length > 0 || Object.keys(pending.pendingPastes).length > 0) {
+    migrateFilesDraft(pendingId, conversationId);
   }
 };
 

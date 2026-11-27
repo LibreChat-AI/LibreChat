@@ -1,5 +1,7 @@
 import mongoose from 'mongoose';
+import { performance } from 'node:perf_hooks';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { FileSources, PermissionBits, channelConfigSchema } from 'librechat-data-provider';
 import {
   createModels,
   createMethods,
@@ -22,10 +24,12 @@ import {
   createBackgroundResponseQueue,
   createBackgroundResponseEnvelope,
 } from '~/agents/responses/queue';
+import { createChannelResponseProjection, createChannelResponseRetirement } from './responses';
 import { buildPendingBackgroundResponse } from '~/agents/responses/background';
+import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import { createResponseRetirement } from '~/agents/responses/retirement';
+import { createBackgroundResponsesHost } from '~/agents/responses/host';
 import { createAgentTriggerService } from '~/agents/triggers/service';
-import { createChannelResponseRetirement } from './responses';
 
 let mongo: MongoMemoryReplSet;
 let storage: ChannelRunStorage;
@@ -60,7 +64,10 @@ const plan: ChannelDeliveryPlan = {
 };
 
 beforeAll(async () => {
-  mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+  mongo = await MongoMemoryReplSet.create({
+    replSet: { count: 1 },
+    instanceOpts: [{ args: ['--nounixsocket'] }],
+  });
   await mongoose.connect(mongo.getUri(), { autoIndex: false });
   createModels(mongoose);
   await Promise.all([mongoose.models.ChannelRun.init(), mongoose.models.ChannelLane.init()]);
@@ -546,6 +553,287 @@ describe('Responses execution binding', () => {
         ),
       ).rejects.toMatchObject({ code: 'stale_fence' });
     }));
+});
+
+describe('Slack Stop after API restart', () => {
+  const userId = '000000000000000000000001';
+  const owner = { tenantId, userId };
+  async function fixture(orphan = true, status: 'queued' | 'in_progress' = 'in_progress') {
+    const created = Math.max(Date.now(), Math.ceil(performance.timeOrigin));
+    await storage.admit(enrollment('orphan', userId), created);
+    const claimed = (await storage.claim(tenantId, 'channel', 'worker', created, 1000))!;
+    const prepared = await storage.prepareExecution(tenantId, fence(claimed), created + 1);
+    const issued = await storage.attachResponseCredential(
+      tenantId,
+      fence(prepared),
+      { apiKeyId: 'issued', encryptedApiKey: 'ciphertext' },
+      created + 2,
+    );
+    const run = await bindTestResponse(issued, 'resp_orphan', created + 3);
+    const next = (await storage.admit(enrollment('next', userId), created + 4)).run;
+    expect(next.laneId).toBe(run.laneId);
+    expect(await storage.claim(tenantId, 'channel', 'other-worker', created + 5, 1000)).toBeNull();
+    const responses = createResponseStorage(mongoose);
+    const response = (await responses.read(owner, 'resp_orphan'))!;
+    const generationCreatedAt = orphan ? Math.floor(performance.timeOrigin) - 1000 : created;
+    if (status === 'queued') {
+      await responses.requestCancellation(owner, response.responseId, created + 5);
+    }
+    const publication = await responses.publish(owner, response.responseId, response.revision, {
+      status,
+      generationCreatedAt,
+      responseJSON: JSON.stringify({ ...buildPendingBackgroundResponse(response), status }),
+    });
+    if (!publication.ok) throw new Error('Response enrollment failed');
+    const jobs = new GenerationJobManagerClass();
+    let singleProcess = true;
+    let authorized = true;
+    // The durable journal survived; the restarted API has a fresh job store.
+    const host = createBackgroundResponsesHost({
+      storage: responses,
+      jobs,
+      publicBaseURL: 'https://librechat.example',
+      getDeploymentConfig: async (options) => {
+        expect(options).toEqual({ baseOnly: true, failClosed: true });
+        return {
+          config: {},
+          fileStrategy: FileSources.local,
+          imageOutputType: 'png',
+          endpoints: { agents: { channels: channelConfigSchema.parse({ singleProcess }) } },
+        };
+      },
+      findUser: async () => new mongoose.models.User({ _id: userId, tenantId, role: 'USER' }),
+      getKey: async () => (authorized ? {} : null),
+      getRole: async () =>
+        new mongoose.models.Role({ name: 'USER', permissions: { REMOTE_AGENTS: { USE: true } } }),
+      getConfig: async () => ({
+        config: {},
+        fileStrategy: FileSources.local,
+        imageOutputType: 'png',
+        endpoints: {
+          agents: { remoteApi: { background: { enabled: true, acknowledgementTimeoutMs: 1000 } } },
+        },
+      }),
+      isPrincipalActive: async () => true,
+      getAgentPermissions: async () => PermissionBits.VIEW,
+      enqueue: async () => {
+        throw new Error('Stop must not enqueue');
+      },
+      isQueueReady: () => false,
+      getMessage: async () => {
+        throw new Error('Stop must not read history');
+      },
+      getConvoRetention: async () => {
+        throw new Error('Stop must not read history');
+      },
+      signingSecret: () => {
+        throw new Error('Stop must not dispatch');
+      },
+      onError: (error) => {
+        throw error;
+      },
+    });
+    const project = createChannelResponseProjection({
+      storage: responses,
+      readResponse: host.readResponse,
+      cancelResponse: host.cancelResponse,
+    });
+    const before = await project(run);
+    expect(before.snapshot.status).toBe('running');
+    expect(before.snapshot.recovery).toBe(
+      status === 'in_progress' ? 'execution_state_unavailable' : undefined,
+    );
+    const running = await storage.saveSnapshot(
+      tenantId,
+      fence(run),
+      before.snapshot,
+      created + 6,
+      generationCreatedAt,
+    );
+    const stop = async () => {
+      const observed = await storage.observeThreadStop(running, created + 7, created + 8);
+      expect(observed?.run.runId).toBe(run.runId);
+      expect(
+        await storage.requestCancel(running, run.runId, {
+          epoch: fence(run).epoch,
+          before: observed!.before,
+        }),
+      ).toBe(true);
+      return (await storage.read(tenantId, 'channel', run.runId))!;
+    };
+    return {
+      jobs,
+      host,
+      project,
+      responses,
+      response: publication.record,
+      run: running,
+      next,
+      created,
+      stop,
+      disableSingleProcess: () => {
+        singleProcess = false;
+      },
+      revoke: () => {
+        authorized = false;
+      },
+    };
+  }
+
+  it.each(['in_progress', 'queued'] as const)('releases a stopped %s orphan', (status) =>
+    scope(async () => {
+      const f = await fixture(true, status);
+      const { run, next, created, response, responses } = f;
+      const stopped = await f.stop();
+      const result = await f.project(stopped);
+      expect(result).toMatchObject({
+        generationCreatedAt: response.generationCreatedAt,
+        snapshot: { status: 'cancelled', responseId: response.responseId, text: '' },
+      });
+      expect(await responses.read(owner, response.responseId)).toMatchObject({
+        status: 'cancelled',
+        generationCreatedAt: response.generationCreatedAt,
+      });
+      expect((await f.project(stopped)).snapshot.status).toBe('cancelled');
+      await storage.saveSnapshot(
+        tenantId,
+        fence(run),
+        result.snapshot,
+        created + 9,
+        result.generationCreatedAt,
+      );
+      await storage.savePlan(
+        tenantId,
+        fence(run),
+        {
+          revision: 'cancel',
+          rendererVersion: 'v1',
+          parts: [{ operationId: 'notice', kind: 'message', required: true, text: 'Cancelled.' }],
+        },
+        created + 10,
+      );
+      await storage.beginDelivery(tenantId, fence(run), 'notice', created + 11);
+      await storage.settleDelivery(
+        tenantId,
+        fence(run),
+        {
+          operationId: 'notice',
+          outcome: 'confirmed',
+          attempts: 1,
+          externalMessageKey: 'C1:cancelled',
+        },
+        created + 12,
+      );
+      expect((await storage.commitDelivery(tenantId, fence(run), created + 13)).state).toBe(
+        'cancelled',
+      );
+      const claimed = await storage.claim(tenantId, 'channel', 'next-worker', created + 14, 1000);
+      expect(claimed).toMatchObject({
+        runId: next.runId,
+        laneId: run.laneId,
+        leaseOwner: 'next-worker',
+      });
+      expect(await storage.prepareExecution(tenantId, fence(claimed!), created + 15)).toMatchObject(
+        {
+          runId: next.runId,
+          state: 'executing',
+          execution: { requestId: next.runId },
+        },
+      );
+    }),
+  );
+
+  it.each(['prepared', 'pending'] as const)(
+    'preserves %s completion evidence even when restart settlement is enabled',
+    (phase) =>
+      scope(async () => {
+        const f = await fixture();
+        const record = await f.responses.read(owner, f.response.responseId);
+        const write =
+          phase === 'prepared' ? f.responses.prepareTerminal : f.responses.stageTerminal;
+        const responseJSON = JSON.stringify({
+          ...buildPendingBackgroundResponse(record!),
+          status: 'completed',
+        });
+        expect(
+          await write(
+            owner,
+            record!.responseId,
+            { execution: record! },
+            {
+              generationCreatedAt: record!.generationCreatedAt!,
+              providerExecutionId: 'retained-provider',
+              status: 'completed',
+              responseJSON,
+            },
+          ),
+        ).toMatchObject({ ok: true });
+        const result = await f.project(await f.stop());
+        expect(result.snapshot.status).toBe(phase === 'pending' ? 'completed' : 'running');
+        expect(await f.responses.read(owner, record!.responseId)).toMatchObject(
+          phase === 'pending'
+            ? { status: 'completed', responseJSON }
+            : { status: 'in_progress', preparedTerminal: { responseJSON } },
+        );
+      }),
+  );
+
+  it('holds a durable review checkpoint even when restart settlement is enabled', () =>
+    scope(async () => {
+      const f = await fixture();
+      const record = (await f.responses.read(owner, f.response.responseId))!;
+      const review = {
+        actionId: 'action',
+        providerExecutionId: 'retained-provider',
+        expiresAt: f.created + 60_000,
+        partialResponseJSON: record.responseJSON!,
+        checkpointConfigJSON: '{}',
+      };
+      expect(
+        await f.responses.publishReview(
+          owner,
+          record.responseId,
+          { execution: record },
+          record.generationCreatedAt!,
+          review,
+          record.responseJSON!,
+        ),
+      ).toMatchObject({ ok: true });
+      expect((await f.project(await f.stop())).snapshot.status).toBe('running');
+      expect(await f.responses.read(owner, record.responseId)).toMatchObject({
+        status: 'requires_action',
+        review,
+      });
+    }));
+
+  it.each(['unasserted', 'Redis', 'current process', 'authority lost'] as const)(
+    'holds a missing job without restart proof or authority: %s',
+    (scenario) =>
+      scope(async () => {
+        const f = await fixture(scenario !== 'current process');
+        if (scenario === 'unasserted') f.disableSingleProcess();
+        if (scenario === 'Redis') jest.spyOn(f.jobs, 'isRedis', 'get').mockReturnValue(true);
+        const run = await f.stop();
+        if (scenario === 'authority lost') {
+          f.revoke();
+          await expect(f.project(run)).rejects.toMatchObject({
+            code: 'execution_identity_changed',
+          });
+          expect(await f.responses.read(owner, f.response.responseId)).not.toHaveProperty(
+            'cancellationRequestedAt',
+          );
+          expect(await f.host.retireResponse(owner, f.response.responseId)).toBe('pending');
+        } else {
+          expect((await f.project(run)).snapshot.status).toBe('running');
+        }
+        expect(await f.responses.read(owner, f.response.responseId)).toMatchObject({
+          status: 'in_progress',
+        });
+        expect(
+          await storage.claim(tenantId, 'channel', 'other-worker', f.created + 9, 1000),
+        ).toBeNull();
+      }),
+  );
 });
 
 it('fences generation snapshots and releases only the cancelled lane without advancing its cursor', () =>

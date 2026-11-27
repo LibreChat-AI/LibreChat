@@ -15,12 +15,10 @@ import { revealedQueuedTurnFamily } from '../../../react/steer/rows';
 import { MessagesHostProvider } from '../../../react/messages/host';
 import { MessagePartsHostProvider } from '../../../react/host';
 import { ChatContext } from '../../../react/chat/context';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import PendingTurn from '../PendingTurn';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 const CONVO_ID = 'convo-pending';
 const RESPONSE_ID = 'response-1';
@@ -104,7 +102,7 @@ describe('PendingTurn', () => {
     expect(row.querySelector('.message-render')).not.toBeNull();
     expect(row.querySelector('.user-turn')).not.toBeNull();
     expect(row).toHaveTextContent('queued follow-up');
-    expect(screen.getByRole('status')).toHaveTextContent('com_ui_queued_turn_starting');
+    expect(screen.getByRole('status')).toHaveTextContent('Starting as the next turn');
     expect(container.querySelectorAll('button')).toHaveLength(0);
   });
 
@@ -128,7 +126,7 @@ describe('PendingTurn', () => {
   it('uses the generic user label when names are hidden', () => {
     renderPendingTurn({ revealed: reveal(), usernameDisplay: false });
 
-    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('com_user_message');
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('You');
   });
 
   it('renders plain text unless the viewer wants user markdown', () => {

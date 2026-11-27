@@ -263,3 +263,20 @@ it('refuses remote execution when host model protection cannot cross the boundar
     ),
   ).toMatchObject({ binding: remoteBinding, remote: remoteEndpoint.sdkRuntimes.private.remote });
 });
+
+test('refuses native file-enabled runtimes in callers without a file host', async () => {
+  await expect(
+    createSdkAgentRun({
+      config: config(),
+      identity,
+      registration: {
+        binding,
+        remote: {
+          url: 'ws://127.0.0.1:8804/sdk',
+          secret: 'file-test-secret-at-least-32-characters',
+          hostFiles: true,
+        },
+      },
+    }),
+  ).rejects.toMatchObject({ code: 'sdk_runtime_unavailable' });
+});

@@ -1,9 +1,11 @@
+import os from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { PassThrough, Readable } from 'node:stream';
 import type { RunArtifactDescriptor } from '~/files/code/publication';
 import type { RunFileSnapshotStore } from './snapshots';
+import { expectPrivateWindowsAcl, grantWindowsEveryone } from '~/utils/windowsAcl.helper';
 import { createRunFileSnapshotStore } from './snapshots';
 
 const source: RunArtifactDescriptor = {
@@ -22,6 +24,18 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 
 describe('createRunFileSnapshotStore', () => {
   const stores: RunFileSnapshotStore[] = [];
+  let tempDirectory: string;
+
+  beforeEach(async () => {
+    tempDirectory = await fs.mkdtemp(join(os.tmpdir(), 'librechat-snapshot-tests-'));
+    jest.spyOn(os, 'tmpdir').mockReturnValue(tempDirectory);
+  });
+
+  async function snapshotDirectory(): Promise<string> {
+    const directories = await fs.readdir(tempDirectory);
+    expect(directories).toHaveLength(1);
+    return join(tempDirectory, directories[0]);
+  }
 
   function create(options: Parameters<typeof createRunFileSnapshotStore>[0]): RunFileSnapshotStore {
     const store = createRunFileSnapshotStore(options);
@@ -32,10 +46,13 @@ describe('createRunFileSnapshotStore', () => {
   afterEach(async () => {
     await Promise.all(stores.splice(0).map((store) => store.close()));
     jest.restoreAllMocks();
+    await fs.rm(tempDirectory, { recursive: true, force: true });
   });
 
   it('retains immutable bytes and hashes without exposing source names as local paths', async () => {
-    const mkdir = jest.spyOn(fs, 'mkdtemp');
+    if (process.platform === 'win32') {
+      grantWindowsEveryone(tempDirectory, 'ReadAndExecute', 'ContainerInherit, ObjectInherit');
+    }
     let content = 'original';
     const store = create({
       open: async () => Readable.from([Buffer.from(content)]),
@@ -59,17 +76,35 @@ describe('createRunFileSnapshotStore', () => {
     expect((await store.read(first.snapshotId)).toString()).toBe('original');
     expect((await store.read(second.snapshotId)).toString()).toBe('changed');
 
-    const directory: string = await mkdir.mock.results[0].value;
+    const directory = await snapshotDirectory();
     expect((await fs.readdir(directory)).sort()).toEqual(
       [first.snapshotId, second.snapshotId].sort(),
     );
-    if (process.platform !== 'win32') {
+    if (process.platform === 'win32') {
+      expectPrivateWindowsAcl(directory, 'directory');
+      expectPrivateWindowsAcl(join(directory, first.snapshotId), 'child');
+    } else {
       expect((await fs.stat(directory)).mode & 0o777).toBe(0o700);
       expect((await fs.stat(join(directory, first.snapshotId))).mode & 0o777).toBe(0o600);
     }
     await store.close();
     await expect(fs.stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  if (process.platform === 'win32') {
+    it.each(['DeleteSubdirectoriesAndFiles', 'CreateFiles'])(
+      'never opens a snapshot source when its Windows parent grants unrelated %s rights',
+      async (right) => {
+        grantWindowsEveryone(tempDirectory, right);
+        const open = jest.fn(async () => Readable.from(['private']));
+        const store = create({ open, maxBytes: 32, maxFiles: 1 });
+
+        await expect(store.capture(source)).rejects.toThrow('Unable to guarantee private access');
+        expect(open).not.toHaveBeenCalled();
+        expect(await fs.readdir(tempDirectory)).toEqual([]);
+      },
+    );
+  }
 
   it('reserves file slots before opening parallel sources', async () => {
     const opening = deferred<Readable>();
@@ -83,7 +118,7 @@ describe('createRunFileSnapshotStore', () => {
     });
     const store = create({ open, maxBytes: 32, maxFiles: 1 });
     const first = store.capture(source);
-    await started.promise;
+    await Promise.race([started.promise, first]);
     await expect(store.capture(source)).rejects.toThrow('file limit');
     expect(open).toHaveBeenCalledTimes(1);
     opening.resolve(Readable.from(['bytes']));
@@ -111,7 +146,6 @@ describe('createRunFileSnapshotStore', () => {
   });
 
   it('removes a failed stream and releases its disk and accounting reservations', async () => {
-    const mkdir = jest.spyOn(fs, 'mkdtemp');
     let fail = true;
     const store = create({
       open: async () =>
@@ -125,7 +159,7 @@ describe('createRunFileSnapshotStore', () => {
       maxFiles: 1,
     });
     await expect(store.capture(source)).rejects.toThrow('upstream stopped');
-    const directory: string = await mkdir.mock.results[0].value;
+    const directory = await snapshotDirectory();
     expect(await fs.readdir(directory)).toEqual([]);
     fail = false;
     await expect(store.capture(source)).resolves.toMatchObject({ size: 6 });
@@ -161,7 +195,6 @@ describe('createRunFileSnapshotStore', () => {
   });
 
   it('closes without waiting for an uncooperative opener and destroys its late stream', async () => {
-    const mkdir = jest.spyOn(fs, 'mkdtemp');
     const opening = deferred<Readable>();
     const started = deferred<void>();
     const store = create({
@@ -180,8 +213,7 @@ describe('createRunFileSnapshotStore', () => {
         await store.close();
       })(),
     ]);
-    const directory: string = await mkdir.mock.results[0].value;
-    await expect(fs.stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await fs.readdir(tempDirectory)).toEqual([]);
     const late = new PassThrough();
     opening.resolve(late);
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -203,4 +235,29 @@ describe('createRunFileSnapshotStore', () => {
     await expect(store.read('../../report.csv')).rejects.toThrow('unavailable');
     await store.discard('../../report.csv');
   });
+});
+
+test('reads bounded snapshot ranges without reading the entire file into memory', async () => {
+  const store = createRunFileSnapshotStore({
+    open: async () => Readable.from([Buffer.from('abcdefgh')]),
+    maxBytes: 8,
+    maxFiles: 1,
+  });
+  try {
+    const snapshot = await store.capture(source);
+    const readFile = jest.spyOn(fs, 'readFile');
+    expect((await store.readRange(snapshot.snapshotId, 2, 3)).toString()).toBe('cde');
+    expect(await store.readRange(snapshot.snapshotId, 8, 0)).toHaveLength(0);
+    for (const [offset, length] of [
+      [-1, 1],
+      [7, 2],
+      [0, Number.MAX_SAFE_INTEGER],
+    ]) {
+      await expect(store.readRange(snapshot.snapshotId, offset, length)).rejects.toThrow('range');
+    }
+    expect(readFile).not.toHaveBeenCalled();
+    readFile.mockRestore();
+  } finally {
+    await store.close();
+  }
 });

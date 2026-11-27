@@ -87,6 +87,11 @@ export type SharedMessagesPreflight = (
   },
 ) => void | Promise<void>;
 
+interface SharedForkSnapshot {
+  share: t.SharedMessagesResult;
+  spec?: string;
+}
+
 export interface GetSharedMessagesOptions {
   readonly snapshotFiles?: boolean;
   /**
@@ -528,11 +533,39 @@ function applyShareFileRoute(
 }
 
 /**
+ * A skill call's `skillId` names a record in the author's library, which a shared view never
+ * opens, so a link (and a copy continued from it) carries only the output the call recorded.
+ * Subagent transcripts nest calls of their own. Returns the same array when no call has one.
+ */
+function withoutSkillIds(content: unknown[]): unknown[] {
+  let result: unknown[] | null = null;
+  for (let i = 0; i < content.length; i++) {
+    const part = content[i] as Record<string, unknown> | null | undefined;
+    const call = part != null && typeof part === 'object' ? part.tool_call : undefined;
+    if (part == null || call == null || typeof call !== 'object') {
+      continue;
+    }
+    const { skillId, subagent_content: transcript, ...rest } = call as Record<string, unknown>;
+    const nested = Array.isArray(transcript) ? withoutSkillIds(transcript) : transcript;
+    if (skillId === undefined && nested === transcript) {
+      continue;
+    }
+    result ??= [...content];
+    result[i] = {
+      ...part,
+      tool_call: transcript === undefined ? rest : { ...rest, subagent_content: nested },
+    };
+  }
+  return result ?? content;
+}
+
+/**
  * Steer parts persisted inline in `message.content` carry the same user file
  * refs as a message's top-level `files`, so they follow the identical share
  * policy: dropped entirely when files are excluded from the link, sanitized and
  * rewritten to the share-scoped route (with anonymized ids) when included.
- * Returns the original array untouched when no steer part carries files.
+ * Skill calls lose their `skillId` (see `withoutSkillIds`). Returns the original
+ * array untouched when nothing changed.
  */
 export function anonymizeSharedContent(
   content: unknown[] | undefined,
@@ -552,9 +585,11 @@ export function anonymizeSharedContent(
   }
 
   let result: unknown[] | null = null;
-  const sanitized = sanitizeUIResourceContent(content, params.sanitizeUIResourceMarkers === true);
+  const sanitized = withoutSkillIds(
+    sanitizeUIResourceContent(content, params.sanitizeUIResourceMarkers === true) as unknown[],
+  );
   if (sanitized !== content) {
-    result = sanitized as unknown[];
+    result = sanitized;
   }
 
   for (let i = 0; i < content.length; i++) {
@@ -916,6 +951,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
   ) => Promise<{ isTemporary?: boolean; expiredAt?: Date } | null>;
   findActiveSharedLink: (shareId: string) => Promise<SharedLinkAccessRecord | null>;
   findSharedLinkById: (resourceId: string) => Promise<SharedLinkAccessRecord | null>;
+  findExistingSharedLinkIds: (resourceIds: string[]) => Promise<string[]>;
   findOwnedSharedLink: (user: string, shareId: string) => Promise<SharedLinkAccessRecord | null>;
   clearSharedLinkLegacyVisibility: (resourceId: string) => Promise<void>;
   deleteSharedLinkById: (resourceId: string) => Promise<void>;
@@ -951,6 +987,11 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
     shareObjectId?: string,
     options?: GetSharedMessagesOptions,
   ) => Promise<t.SharedMessagesResult | null>;
+  getSharedForkSnapshot: (
+    shareId: string,
+    shareObjectId?: string,
+    options?: GetSharedMessagesOptions,
+  ) => Promise<SharedForkSnapshot | null>;
   getSharedLinkFile: (
     shareId: string,
     fileId: string,
@@ -1013,6 +1054,18 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
     );
   }
 
+  /** The ids among `resourceIds` whose shared link rows still exist. */
+  async function findExistingSharedLinkIds(resourceIds: string[]): Promise<string[]> {
+    if (resourceIds.length === 0) {
+      return [];
+    }
+    const SharedLink = mongoose.models.SharedLink as Model<t.ISharedLink>;
+    const links = await SharedLink.find({ _id: { $in: resourceIds } })
+      .select('_id')
+      .lean();
+    return links.map((link) => link._id.toString());
+  }
+
   async function findOwnedSharedLink(
     user: string,
     shareId: string,
@@ -1035,14 +1088,30 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
     await mongoose.models.SharedLink.deleteOne({ _id: resourceId });
   }
 
-  /**
-   * Get shared messages for a share link
-   */
   async function getSharedMessages(
     shareId: string,
     shareObjectId?: string,
     options?: GetSharedMessagesOptions,
   ): Promise<t.SharedMessagesResult | null> {
+    const snapshot = await readSharedSnapshot(shareId, shareObjectId, options, false);
+    return snapshot?.share ?? null;
+  }
+
+  /** Internal read for authorized forks. Keep the spec separate from the public projection. */
+  function getSharedForkSnapshot(
+    shareId: string,
+    shareObjectId?: string,
+    options?: GetSharedMessagesOptions,
+  ): Promise<SharedForkSnapshot | null> {
+    return readSharedSnapshot(shareId, shareObjectId, options, true);
+  }
+
+  async function readSharedSnapshot(
+    shareId: string,
+    shareObjectId: string | undefined,
+    options: GetSharedMessagesOptions | undefined,
+    includeSpec: boolean,
+  ): Promise<SharedForkSnapshot | null> {
     let preflightFailed = false;
     try {
       const SharedLink = mongoose.models.SharedLink as Model<t.ISharedLink>;
@@ -1055,7 +1124,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
           path: 'messages',
           select: `${CLIENT_MESSAGE_SELECT.replace(' -privateTextTokens', '')} +privateTextTokens`,
         })
-        .select('-__v')
+        .select(includeSpec ? '-__v +spec' : '-__v')
         .lean()) as (t.ISharedLink & { messages: t.IMessage[] }) | null;
 
       if (!share?.conversationId) {
@@ -1169,7 +1238,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         );
       }
 
-      return result;
+      return { share: result, spec: share.spec };
     } catch (error) {
       if (preflightFailed) {
         throw error;
@@ -1370,7 +1439,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
     try {
       const Message = mongoose.models.Message as SchemaWithMeiliMethods;
       const SharedLink = mongoose.models.SharedLink as Model<t.ISharedLink>;
-      const Conversation = mongoose.models.Conversation as SchemaWithMeiliMethods;
+      const Conversation = mongoose.models.Conversation as Model<t.IConversation>;
 
       const [existingShare, conversationMessages] = await Promise.all([
         SharedLink.findOne({
@@ -1396,9 +1465,9 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         throw new ShareServiceError('Share already exists', 'SHARE_EXISTS');
       }
 
-      const conversation = (await Conversation.findOne({ conversationId, user }).lean()) as {
-        title?: string;
-      } | null;
+      const conversation = await Conversation.findOne({ conversationId, user })
+        .select('title spec -_id')
+        .lean();
 
       // Check if user owns the conversation
       if (!conversation) {
@@ -1442,6 +1511,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         conversationId,
         messages: conversationMessages,
         title,
+        spec: conversation.spec || undefined,
         user,
         snapshotFiles,
         ...(targetMessageId && { targetMessageId }),
@@ -1558,10 +1628,13 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         throw new ShareServiceError('Share not found', 'SHARE_NOT_FOUND');
       }
 
-      const updatedMessages = await Message.find({ conversationId: share.conversationId, user })
-        .select('+privateTextTokens')
-        .sort({ createdAt: 1 })
-        .lean();
+      const Conversation = mongoose.models.Conversation as Model<t.IConversation>;
+      const key = { conversationId: share.conversationId, user };
+      const [updatedMessages, conversation] = await Promise.all([
+        Message.find(key).select('+privateTextTokens').sort({ createdAt: 1 }).lean(),
+        Conversation.findOne(key).select('spec -_id').lean(),
+      ]);
+      const spec = conversation?.spec;
 
       if (updatedMessages.length === 0) {
         throw new ShareServiceError('No messages to share', 'NO_MESSAGES');
@@ -1604,12 +1677,14 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       const unset = {
         ...(expiredAt === null ? { expiredAt: 1 } : {}),
         ...(snapshotFiles ? {} : { fileSnapshots: 1 }),
+        ...(spec ? {} : { spec: 1 }),
       };
       const update = {
         $set: {
           messages: updatedMessages,
           user,
           snapshotFiles,
+          ...(spec && { spec }),
           ...(resolvedTargetMessageId && { targetMessageId: resolvedTargetMessageId }),
           ...(hasNewExpiration && { expiredAt }),
           ...(snapshotFiles && { fileSnapshots }),
@@ -1769,6 +1844,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
     findShareConversationRetention,
     findActiveSharedLink,
     findSharedLinkById,
+    findExistingSharedLinkIds,
     findOwnedSharedLink,
     clearSharedLinkLegacyVisibility,
     deleteSharedLinkById,
@@ -1778,6 +1854,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
     updateSharedLink,
     deleteSharedLink,
     getSharedMessages,
+    getSharedForkSnapshot,
     getSharedLinkFile,
     backfillSharedLinkFiles,
     deleteAllSharedLinks,

@@ -7,12 +7,16 @@ import { getSafeErrorMetadata } from '~/utils/errors';
 
 type ArchiveAllHandlerDependencies = Pick<ConversationMethods, 'archiveAllConvos'>;
 
+/**
+ * Archives every chat the user can see, applying the request's retention mode to each the way
+ * archiving one chat does, so the route has to load the config first.
+ */
 export function createArchiveAllHandler(
   deps: ArchiveAllHandlerDependencies,
 ): (req: ServerRequest, res: Response) => Promise<Response> {
   return async function archiveAllHandler(req: ServerRequest, res: Response): Promise<Response> {
     try {
-      const result = await deps.archiveAllConvos(req.user!.id);
+      const result = await deps.archiveAllConvos(req.user!.id, req.config?.interfaceConfig);
       return res.status(200).json(result);
     } catch (error) {
       logger.error('Error archiving all conversations', error);

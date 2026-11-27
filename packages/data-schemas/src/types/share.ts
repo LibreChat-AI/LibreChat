@@ -38,6 +38,7 @@ export interface ISharedLink {
   _id?: Types.ObjectId;
   conversationId: string;
   title?: string;
+  spec?: string;
   user?: string;
   messages?: Types.ObjectId[];
   shareId?: string;

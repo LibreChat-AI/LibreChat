@@ -48,6 +48,8 @@ export type TModelSpec = {
    * Defaults to true (listed).
    */
   showInMenu?: boolean;
+  /** Offer this preset as a handoff target, independently of model-menu visibility. */
+  handoff?: boolean;
   iconURL?: string | EModelEndpoint; // Allow using project-included icons
   authType?: AuthType;
   /** Hide the chat input tool badge row while this model spec is active. */
@@ -56,6 +58,12 @@ export type TModelSpec = {
   fileSearch?: boolean;
   executeCode?: boolean;
   memory?: boolean;
+  /**
+   * Whether this spec's model reads images. `false` gives the spec's agent a short text note in
+   * place of each image; it outranks the `vision` of the model's entry and of its endpoint, and
+   * yields only to the agent's own "Text-only model" switch.
+   */
+  vision?: boolean;
   /** Equip the spec's ephemeral agent with the `ask_user_question` HITL tool. */
   askUserQuestion?: boolean;
   /**
@@ -213,6 +221,7 @@ export const tModelSpecSchema = z.object({
   showOnLanding: z.boolean().optional(),
   conversation_starters: z.array(z.string()).optional(),
   showInMenu: z.boolean().optional(),
+  handoff: z.boolean().optional(),
   iconURL: z.union([z.string(), eModelEndpointSchema]).optional(),
   authType: authTypeSchema.optional(),
   hideBadgeRow: z.boolean().optional(),
@@ -220,6 +229,7 @@ export const tModelSpecSchema = z.object({
   fileSearch: z.boolean().optional(),
   executeCode: z.boolean().optional(),
   memory: z.boolean().optional(),
+  vision: z.boolean().optional(),
   askUserQuestion: z.boolean().optional(),
   runInBackground: z.union([z.boolean(), z.array(z.string())]).optional(),
   describeIntent: z.union([z.boolean(), z.array(z.string())]).optional(),

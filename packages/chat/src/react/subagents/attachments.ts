@@ -6,9 +6,12 @@ import type {
   TAttachment,
   FullToolCall,
   TMessageContentParts,
+  SubagentAttachmentFile,
+  SubagentAttachmentCallsParams,
   SubagentAttachmentCallsResponse,
 } from 'librechat-data-provider';
 import type { Context } from 'react';
+import type { AttachmentsByToolCall, ToolCallStepOwners } from '../../core/parts/owners';
 import type { SubagentContentPart } from '../../core/subagents';
 import {
   nestedToolCallOf,
@@ -19,6 +22,7 @@ import {
   rememberedSubagentChildCalls,
   subagentProgressByToolCallId,
 } from './state';
+import { collectClaimedAttachments } from '../../core/parts/owners';
 import { getPartKeyIndex } from '../../core/content';
 
 export type NestedPart = TMessageContentParts | SubagentContentPart | undefined;
@@ -143,6 +147,31 @@ export function assignNestedAttachments(
     assigned.set(owner[0], files);
   }
   return assigned.size > 0 ? assigned : NO_NESTED;
+}
+
+/**
+ * The subagent call part each tool attachment no top-level part accepts goes to, given the child
+ * calls each subagent part holds outside its stored transcript. `inDoubt` lists the files no call
+ * owns under their full scope, top-level or nested: one taken only by a call missing some of its
+ * scope may belong to a child call of a transcript the preview left out. `byToolCall` and
+ * `owners` are the message's own, built once for every caller that routes its attachments.
+ */
+export function routeNestedAttachments(
+  content: ReadonlyArray<TMessageContentParts | undefined> | undefined,
+  attachments: TAttachment[],
+  calls: ReadonlyMap<number, NestedCall[]>,
+  byToolCall: AttachmentsByToolCall,
+  owners: ToolCallStepOwners,
+): { nested: ReadonlyMap<NestedPart, TAttachment[]>; inDoubt: TAttachment[] } {
+  const reserved = selectExactlyNestedAttachments(content, attachments, calls);
+  const { claimed, exact } = collectClaimedAttachments(content, byToolCall, owners, reserved);
+  const unclaimed = selectUnclaimedAttachments(attachments, claimed);
+  const nested = assignNestedAttachments(content, unclaimed, calls);
+  const inDoubt = attachments.filter(
+    (attachment) =>
+      attachment.toolCallId != null && !exact.has(attachment) && !reserved.has(attachment),
+  );
+  return { nested, inDoubt };
 }
 
 /**
@@ -301,4 +330,36 @@ export function routeStoredSubagentHints(
     }
   });
   return byIndex.size > 0 ? byIndex : NO_LIVE_CALLS;
+}
+
+/**
+ * Child calls of the stored transcripts of the previewed subagent calls in `content`, for the
+ * files whose owner is in doubt, keyed by the call's index in `content`. A file a background task
+ * delivers after the message loaded names a child call the cached preview never hinted; while
+ * `files` is not empty, `useCalls` (the host's query hook) asks the server which transcript holds
+ * each. The hook is called on every render and must stay the same one.
+ */
+export function useStoredSubagentHints(
+  content: ReadonlyArray<TMessageContentParts | undefined> | undefined,
+  files: SubagentAttachmentFile[],
+  conversationId: string | null | undefined,
+  messageId: string,
+  useCalls: (
+    params: SubagentAttachmentCallsParams,
+    enabled: boolean,
+  ) => ReadonlyArray<{ data?: SubagentAttachmentCallsResponse }>,
+): ReadonlyMap<number, NestedCall[]> {
+  const previewed = useMemo(() => hasOmittedSubagentContent(content), [content]);
+  const results = useCalls(
+    { conversationId: conversationId ?? '', messageId, files },
+    previewed && files.length > 0 && !!conversationId && !!messageId,
+  );
+  /** A string, so the routing changes only when an answer does. */
+  const answers = JSON.stringify(results.map((result) => result.data?.parts ?? null));
+  return useMemo(() => {
+    const parts = (
+      JSON.parse(answers) as Array<SubagentAttachmentCallsResponse['parts'] | null>
+    ).flatMap((batch) => batch ?? []);
+    return routeStoredSubagentHints(previewed ? content : undefined, parts);
+  }, [answers, previewed, content]);
 }

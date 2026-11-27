@@ -372,6 +372,29 @@ describe('file storage fence', () => {
     expect(await methods.commitFileProvision({ claim, code })).toBe(false);
   });
 
+  it('persists what an upload stored on both the route pointer and the legacy pointer', async () => {
+    await seed();
+    const ref = {
+      kind: 'user' as const,
+      id: claim.userId,
+      storage_session_id: 'session',
+      file_id: 'remote',
+      provisionedAt: 1,
+      sandboxFilename: 'notes.txt',
+      content: { sha256: 'a'.repeat(64), md5: 'b'.repeat(32), bytes: 100 },
+    };
+    expect(await methods.acquireFileProvision(claim)).toBe(true);
+    expect(
+      await methods.commitFileProvision({
+        claim,
+        code: { routeKey: 'default', ref, legacyRef: ref },
+      }),
+    ).toBe(true);
+    const stored = await read();
+    expect(stored?.metadata?.codeEnvRefs?.default).toEqual(ref);
+    expect(stored?.metadata?.codeEnvRef).toEqual(ref);
+  });
+
   it('records a vector namespace without releasing the provisioning claim early', async () => {
     await seed();
     expect(await methods.acquireFileProvision(claim)).toBe(true);

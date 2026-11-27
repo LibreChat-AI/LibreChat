@@ -85,6 +85,21 @@ describe('List', () => {
     expect(getByText('Beta')).toBeInTheDocument();
   });
 
+  it('offers MCP access on each key only when the server says grants are in use', () => {
+    const keys = [
+      { id: '1', name: 'Alpha', keyPrefix: 'lc-aaa', createdAt: '2026-01-01T00:00:00Z' },
+    ];
+    const state = { isLoading: false, isError: false, isFetching: false, refetch: jest.fn() };
+    mockQuery.mockReturnValue({ data: { keys }, ...state });
+    const without = renderList();
+    expect(without.queryByRole('button', { name: /MCP access/ })).not.toBeInTheDocument();
+    without.unmount();
+    mockQuery.mockReturnValue({ data: { keys, grants: true }, ...state });
+    expect(
+      renderList().getByRole('button', { name: 'MCP access for API key Alpha' }),
+    ).toBeInTheDocument();
+  });
+
   it('keeps showing cached keys when a background refetch fails', () => {
     mockQuery.mockReturnValue({
       data: {

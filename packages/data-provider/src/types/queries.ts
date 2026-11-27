@@ -311,9 +311,11 @@ export interface MCPServerStatus {
   requiresOAuth: boolean;
   /** The server connects only inside a chat request because its config reads BODY placeholders. */
   requestScoped?: boolean;
-  /** Whether all declared per-user variables are present for an on-demand connection. */
+  /** Whether all declared per-user variables are present. */
   configurationState?: 'configured' | 'needs_configuration';
   connectionState: 'disconnected' | 'connecting' | 'connected' | 'error';
+  /** An unavailable status read proves no transport, authorization, or configuration state. */
+  connectionStateSource?: 'unobserved' | 'transport' | 'authorization' | 'unavailable';
   authorizationState?:
     | 'not_required'
     | 'authorizing'

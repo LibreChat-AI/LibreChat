@@ -1,4 +1,5 @@
 import { Providers } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import { mbToBytes } from 'librechat-data-provider';
 import type { AppConfig, IMongoFile } from '@librechat/data-schemas';
 import type { BedrockDocumentBlock, ServerRequest } from '~/types';
@@ -14,6 +15,7 @@ import { encodeAndFormatDocuments, dedupeDocumentNames } from './document';
 jest.mock('~/files/validation', () => ({
   validatePdf: jest.fn(),
   validateBedrockDocument: jest.fn(),
+  getBedrockDocumentLimit: jest.requireActual('~/files/validation').getBedrockDocumentLimit,
 }));
 
 /** Mock the utils module */
@@ -22,10 +24,16 @@ jest.mock('./utils', () => ({
   getConfiguredFileSizeLimit: jest.fn(),
   skipMissingAttachment: jest.requireActual('./utils').skipMissingAttachment,
   AttachmentObjectNotFoundError: jest.requireActual('./utils').AttachmentObjectNotFoundError,
+  AttachmentSizeError: jest.requireActual('./utils').AttachmentSizeError,
 }));
 
 import { validatePdf, validateBedrockDocument } from '~/files/validation';
-import { getFileStream, getConfiguredFileSizeLimit, AttachmentObjectNotFoundError } from './utils';
+import {
+  getFileStream,
+  AttachmentSizeError,
+  getConfiguredFileSizeLimit,
+  AttachmentObjectNotFoundError,
+} from './utils';
 import { Types } from 'mongoose';
 
 const mockedValidatePdf = validatePdf as jest.MockedFunction<typeof validatePdf>;
@@ -563,15 +571,132 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
       expect(result.documents).toHaveLength(1);
       expect(result.documents[0]).toMatchObject({
-        type: 'document',
-        document: {
-          name: 'test_pdf',
-          format: 'pdf',
-          source: {
-            bytes: expect.any(Buffer),
-          },
-        },
+        type: 'file',
+        source_type: 'base64',
+        mime_type: 'application/pdf',
+        data: mockContent,
+        metadata: { name: 'test_pdf' },
       });
+    });
+
+    it('refuses a Bedrock document over the limit from its recorded size, without reading it', async () => {
+      const req = createMockRequest() as ServerRequest;
+      const file = createMockFile(8);
+      file.type = 'text/csv';
+
+      await expect(
+        encodeAndFormatDocuments(
+          req,
+          [file],
+          { provider: Providers.BEDROCK },
+          mockStrategyFunctions,
+        ),
+      ).rejects.toBeInstanceOf(AttachmentSizeError);
+      expect(mockedGetFileStream).not.toHaveBeenCalled();
+      expect(mockedGetConfiguredFileSizeLimit).toHaveBeenCalledWith(
+        req,
+        expect.objectContaining({ explicit: true }),
+      );
+    });
+
+    it('bounds the Bedrock read at the limit and reports an object larger than its record', async () => {
+      const req = createMockRequest() as ServerRequest;
+      const file = createMockFile(1);
+      file.type = 'text/csv';
+      const limit = mbToBytes(4.5);
+      mockedGetFileStream.mockRejectedValue(
+        new AttachmentSizeError(file.file_id, 'data.csv', limit),
+      );
+
+      await expect(
+        encodeAndFormatDocuments(
+          req,
+          [file],
+          { provider: Providers.BEDROCK },
+          mockStrategyFunctions,
+        ),
+      ).rejects.toBeInstanceOf(AttachmentSizeError);
+      expect(mockedGetFileStream.mock.calls[0][5]).toBe(limit);
+    });
+
+    it('reads a Bedrock document up to a limit the operator set above the provider default', async () => {
+      const req = createMockRequest(10, Providers.BEDROCK) as ServerRequest;
+      const file = createMockFile(8);
+      file.type = 'text/csv';
+      mockedGetFileStream.mockResolvedValue({
+        file,
+        content: Buffer.from('a,b').toString('base64'),
+        metadata: file,
+      });
+      mockedValidateBedrockDocument.mockResolvedValue({ isValid: true });
+
+      const result = await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.BEDROCK },
+        mockStrategyFunctions,
+      );
+      expect(result.documents).toHaveLength(1);
+      expect(mockedGetFileStream.mock.calls[0][5]).toBe(mbToBytes(10));
+    });
+
+    it('leaves out a replayed Bedrock document that is gone, whatever size was recorded', async () => {
+      const req = createMockRequest() as ServerRequest;
+      const file = createMockFile(8);
+      file.type = 'text/csv';
+      const onMissingFile = jest.fn();
+      mockedGetFileStream.mockRejectedValue(new AttachmentObjectNotFoundError(file.file_id));
+
+      const result = await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.BEDROCK, onMissingFile },
+        mockStrategyFunctions,
+      );
+      expect(result.documents).toHaveLength(0);
+      expect(onMissingFile).toHaveBeenCalledWith(file);
+      expect(mockedGetFileStream.mock.calls[0][5]).toBe(mbToBytes(4.5));
+    });
+
+    it('reads a document under timeouts.fileFetchMs', async () => {
+      const req = { config: { timeouts: { fileFetchMs: 1_234 } } } as unknown as ServerRequest;
+      const file = createMockFile(3);
+      mockedGetFileStream.mockResolvedValue({
+        file,
+        content: Buffer.from('%PDF-1.4 test').toString('base64'),
+        metadata: file,
+      });
+      mockedValidatePdf.mockResolvedValue({ isValid: true });
+
+      await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.ANTHROPIC },
+        mockStrategyFunctions,
+      );
+      expect(mockedGetFileStream.mock.calls[0][4]).toMatchObject({
+        timeout: 1_234,
+        timeoutErrorMessage: expect.stringContaining('timeouts.fileFetchMs (1234 ms)'),
+      });
+    });
+
+    it('leaves reads for other providers unbounded', async () => {
+      const req = createMockRequest() as ServerRequest;
+      const file = createMockFile(3);
+      mockedGetFileStream.mockResolvedValue({
+        file,
+        content: Buffer.from('%PDF-1.4 test').toString('base64'),
+        metadata: file,
+      });
+      mockedValidatePdf.mockResolvedValue({ isValid: true });
+
+      await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.ANTHROPIC },
+        mockStrategyFunctions,
+      );
+      expect(mockedGetFileStream.mock.calls[0][5]).toBeUndefined();
     });
 
     it('should format Bedrock CSV document', async () => {
@@ -596,14 +721,11 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
       expect(result.documents).toHaveLength(1);
       expect(result.documents[0]).toMatchObject({
-        type: 'document',
-        document: {
-          name: 'data_csv',
-          format: 'csv',
-          source: {
-            bytes: expect.any(Buffer),
-          },
-        },
+        type: 'file',
+        source_type: 'base64',
+        mime_type: 'text/csv',
+        data: mockContent,
+        metadata: { name: 'data_csv' },
       });
     });
 
@@ -630,14 +752,11 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
       expect(result.documents).toHaveLength(1);
       expect(result.documents[0]).toMatchObject({
-        type: 'document',
-        document: {
-          name: 'report_docx',
-          format: 'docx',
-          source: {
-            bytes: expect.any(Buffer),
-          },
-        },
+        type: 'file',
+        source_type: 'base64',
+        mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        data: mockContent,
+        metadata: { name: 'report_docx' },
       });
     });
 
@@ -663,14 +782,11 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
       expect(result.documents).toHaveLength(1);
       expect(result.documents[0]).toMatchObject({
-        type: 'document',
-        document: {
-          name: 'notes_txt',
-          format: 'txt',
-          source: {
-            bytes: expect.any(Buffer),
-          },
-        },
+        type: 'file',
+        source_type: 'base64',
+        mime_type: 'text/plain',
+        data: mockContent,
+        metadata: { name: 'notes_txt' },
       });
     });
 
@@ -706,7 +822,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
     it('should reject Bedrock document when validation fails', async () => {
       const req = createMockRequest() as ServerRequest;
-      const file = createMockDocFile(5, 'text/csv', 'big.csv');
+      const file = createMockDocFile(3, 'text/csv', 'big.csv');
 
       const mockContent = Buffer.from('large-csv-content').toString('base64');
       mockedGetFileStream.mockResolvedValue({
@@ -1213,15 +1329,34 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
 
 describe('dedupeDocumentNames', () => {
   const bedrock = (name: string): BedrockDocumentBlock => ({
-    type: 'document',
-    document: { name, format: 'pdf', source: { bytes: Buffer.from(name) } },
+    type: 'file',
+    source_type: 'base64',
+    mime_type: 'application/pdf',
+    data: Buffer.from(name).toString('base64'),
+    metadata: { name },
   });
   type Message = { content?: string | PayloadContentPart[] | null };
   const names = (parts: PayloadContentPart[] = []): string[] =>
-    parts.flatMap((part) =>
-      part.document?.name != null ? [part.document.name] : names(part.media ?? []),
-    );
+    parts.flatMap((part) => {
+      const name = part.metadata?.name ?? part.document?.name;
+      return name != null ? [name] : names(part.media ?? []);
+    });
   const contentOf = (message: Message) => (Array.isArray(message.content) ? message.content : []);
+
+  it('renames native Converse documents from imported history alongside base64 ones', () => {
+    const native = (name: string): PayloadContentPart => ({ type: 'document', document: { name } });
+    const imported = native('notes');
+    const messages: Message[] = [
+      { content: [imported, native('Notes')] },
+      { content: [bedrock('notes')] },
+    ];
+
+    dedupeDocumentNames(messages);
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes', 'Notes (2)']);
+    expect(names(contentOf(messages[1]))).toEqual(['notes (3)']);
+    expect(imported.document?.name).toBe('notes');
+  });
 
   it.each(Object.values(Providers).filter((provider) => provider !== Providers.BEDROCK))(
     'does not inspect replay content for %s',
@@ -1374,7 +1509,7 @@ describe('dedupeDocumentNames', () => {
 
     dedupeDocumentNames(messages);
 
-    expect(repeated.document.name).toBe('report');
+    expect(repeated.metadata.name).toBe('report');
     expect(secondContent[0]).toBe(repeated);
     expect(names(contentOf(messages[1]))).toEqual(['report (2)']);
   });
@@ -1411,7 +1546,7 @@ describe('dedupeDocumentNames', () => {
     expect(lookups).toBeLessThan(count * 6);
     expect(new Set(result.map((name) => name.toLowerCase())).size).toBe(count);
     expect(result.every((name) => name.length <= 200)).toBe(true);
-    expect(names(content)).toEqual(content.map((part) => part.document.name));
+    expect(names(content)).toEqual(content.map((part) => part.metadata.name));
   });
 
   it('shares progress after suffix digit widths change and skips occupied suffixes', () => {
@@ -1462,7 +1597,7 @@ describe('dedupeDocumentNames', () => {
       ]),
     ).toThrow(ContentTraversalLimitError);
     expect(messages[0].content).toBe(content);
-    expect(content[1].document.name).toBe('notes');
+    expect(content[1].metadata.name).toBe('notes');
   });
 
   it('allows long histories while keeping document names unique across messages', () => {
@@ -1621,5 +1756,278 @@ describe('encodeAndFormatDocuments - files missing from storage', () => {
     );
     expect(onMissingFile).not.toHaveBeenCalled();
     expect(result.documents).toEqual([]);
+  });
+});
+
+describe('encodeAndFormatDocuments - agents sharing a history', () => {
+  const file = (filename: string, type: string): IMongoFile =>
+    ({
+      _id: new Types.ObjectId(),
+      user: new Types.ObjectId(),
+      file_id: `file-${filename}`,
+      filename,
+      type,
+      bytes: 1024,
+      object: 'file',
+      usage: 0,
+      source: 'local',
+      filepath: `/uploads/${filename}`,
+    }) as unknown as IMongoFile;
+  const req = { config: {} } as unknown as ServerRequest;
+  const pdfData = Buffer.from('%PDF-1.4').toString('base64');
+  const csv = 'a,b\n1,2';
+  const pdf = file('Q3 report (final).pdf', 'application/pdf');
+  const claude = { provider: Providers.ANTHROPIC, model_parameters: { model: 'claude-opus-4-1' } };
+  const responses = { provider: Providers.OPENAI, model_parameters: { useResponsesApi: true } };
+  const bedrock = { provider: Providers.BEDROCK, model_parameters: { model: 'amazon.nova-pro' } };
+  const sharedPdf = {
+    type: 'file',
+    source_type: 'base64',
+    mime_type: 'application/pdf',
+    data: pdfData,
+    metadata: {
+      name: 'Q3 report (final)_pdf',
+      filename: 'Q3 report (final).pdf',
+      context: 'File: "Q3 report (final).pdf"',
+      citations: { enabled: true },
+    },
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedValidatePdf.mockResolvedValue({ isValid: true });
+    mockedValidateBedrockDocument.mockResolvedValue({ isValid: true });
+    mockedGetFileStream.mockImplementation(async (_req, attachment) => ({
+      file: attachment,
+      content:
+        attachment.type === 'application/pdf' ? pdfData : Buffer.from(csv).toString('base64'),
+      metadata: attachment,
+    }));
+  });
+
+  it.each([
+    [
+      'Claude agents',
+      { provider: Providers.ANTHROPIC, recipients: [claude] },
+      {
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: pdfData },
+      },
+    ],
+    [
+      'Chat Completions agents',
+      { provider: Providers.OPENAI, recipients: [{ provider: Providers.XAI }] },
+      { type: 'file', file: { filename: pdf.filename, file_data: expect.any(String) } },
+    ],
+    [
+      'Responses API agents',
+      { provider: Providers.OPENAI, useResponsesApi: true, recipients: [responses] },
+      { type: 'input_file', filename: pdf.filename },
+    ],
+    [
+      'Gemini agents',
+      { provider: Providers.GOOGLE, recipients: [{ provider: Providers.VERTEXAI }] },
+      { type: 'media', mimeType: 'application/pdf', data: pdfData },
+    ],
+    [
+      'Bedrock agents',
+      { provider: Providers.BEDROCK, recipients: [bedrock] },
+      { type: 'file', metadata: { name: 'Q3 report (final)_pdf' } },
+    ],
+  ])('keeps the native block when only %s read the history', async (_name, params, block) => {
+    const result = await encodeAndFormatDocuments(req, [pdf], params, jest.fn());
+
+    expect(result.documents).toEqual([expect.objectContaining(block)]);
+    expect(result.documents[0]).not.toHaveProperty('metadata.filename');
+  });
+
+  it('builds a block every agent can read when an agent uses another API', async () => {
+    const result = await encodeAndFormatDocuments(
+      req,
+      [pdf, file('data.csv', 'text/csv')],
+      { provider: Providers.OPENAI, recipients: [responses] },
+      jest.fn(),
+    );
+
+    expect(result.documents).toEqual([
+      sharedPdf,
+      { type: 'text', text: `File: "data.csv"\n\n${csv}` },
+    ]);
+    expect(result.files).toHaveLength(2);
+  });
+
+  it('treats Claude behind an OpenAI-compatible gateway as its own document format', async () => {
+    const result = await encodeAndFormatDocuments(
+      req,
+      [file('data.csv', 'text/csv')],
+      {
+        provider: Providers.OPENAI,
+        model: 'gpt-4.1',
+        recipients: [{ provider: Providers.OPENROUTER, model_parameters: { model: 'claude-4' } }],
+      },
+      jest.fn(),
+    );
+
+    expect(result.documents).toEqual([{ type: 'text', text: `File: "data.csv"\n\n${csv}` }]);
+  });
+
+  it('leaves out a binary type a Bedrock agent cannot read and keeps the ones it can', async () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const docx = file(
+      'brief.docx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
+    const pptx = file(
+      'deck.pptx',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    );
+
+    const result = await encodeAndFormatDocuments(
+      req,
+      [pptx, docx, pdf],
+      { provider: Providers.OPENAI, recipients: [bedrock] },
+      jest.fn(),
+    );
+
+    expect(result.documents).toEqual([
+      expect.objectContaining({
+        mime_type: docx.type,
+        metadata: expect.objectContaining({ name: 'brief_docx' }),
+      }),
+      sharedPdf,
+    ]);
+    expect(result.files.map(({ filename }) => filename)).toEqual([docx.filename, pdf.filename]);
+    expect(mockedGetFileStream).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"deck.pptx"'));
+  });
+
+  it("fails the turn with a reader's reason when a PDF exceeds that reader's limits", async () => {
+    mockedValidatePdf.mockImplementation(async (_buffer, _size, provider) =>
+      provider === Providers.ANTHROPIC
+        ? { isValid: false, error: "PDF exceeds Anthropic's 100-page limit" }
+        : { isValid: true },
+    );
+
+    await expect(
+      encodeAndFormatDocuments(
+        req,
+        [pdf],
+        { provider: Providers.OPENAI, recipients: [responses, claude] },
+        jest.fn(),
+      ),
+    ).rejects.toThrow("PDF validation failed: PDF exceeds Anthropic's 100-page limit");
+    expect(mockedValidatePdf.mock.calls.map((call) => call.slice(2))).toEqual([
+      [Providers.OPENAI, undefined, undefined],
+      [Providers.ANTHROPIC, undefined, 'claude-opus-4-1'],
+    ]);
+  });
+
+  it("checks a Bedrock reader's document limit for the binary types it reads", async () => {
+    const docx = file(
+      'brief.docx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
+    mockedValidateBedrockDocument.mockResolvedValue({ isValid: false, error: 'over 4.5MB' });
+
+    await expect(
+      encodeAndFormatDocuments(
+        req,
+        [docx],
+        { provider: Providers.OPENAI, recipients: [bedrock] },
+        jest.fn(),
+      ),
+    ).rejects.toThrow('Document validation failed: over 4.5MB');
+    expect(mockedValidateBedrockDocument).toHaveBeenCalledWith(
+      Buffer.from(csv).length,
+      docx.type,
+      undefined,
+      undefined,
+      'amazon.nova-pro',
+    );
+  });
+
+  it("checks a reader on the primary agent's own format whose model has a stricter limit", async () => {
+    const llama = 'meta.llama3-70b-instruct-v1:0';
+    mockedValidatePdf.mockImplementation(async (_buffer, _size, _provider, _limit, model) =>
+      model === llama ? { isValid: false, error: 'over 4.5MB' } : { isValid: true },
+    );
+
+    await expect(
+      encodeAndFormatDocuments(
+        req,
+        [pdf],
+        {
+          provider: Providers.BEDROCK,
+          model: 'anthropic.claude-sonnet-4-20250514-v1:0',
+          recipients: [{ provider: Providers.BEDROCK, model_parameters: { model: llama } }],
+        },
+        jest.fn(),
+      ),
+    ).rejects.toThrow('PDF validation failed: over 4.5MB');
+  });
+
+  it("applies a reader's configured size limit to every document type", async () => {
+    mockedGetConfiguredFileSizeLimit.mockImplementation((_req, params) =>
+      params.endpoint === 'small-gateway' ? 4 : undefined,
+    );
+    const docx = file(
+      'brief.docx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
+
+    await expect(
+      encodeAndFormatDocuments(
+        req,
+        [docx],
+        {
+          provider: Providers.OPENAI,
+          recipients: [{ provider: Providers.OPENAI, endpoint: 'small-gateway' }],
+        },
+        jest.fn(),
+      ),
+    ).rejects.toThrow('File size (~0.0MB) exceeds the configured limit for openAI');
+  });
+
+  it("refuses a file over a Bedrock reader's limit from its recorded size, without reading it", async () => {
+    const large = { ...pdf, bytes: 8 * 1024 * 1024 } as IMongoFile;
+    const llama = { provider: Providers.BEDROCK, model_parameters: { model: 'meta.llama3-70b' } };
+
+    await expect(
+      encodeAndFormatDocuments(
+        req,
+        [large],
+        { provider: Providers.OPENAI, recipients: [llama] },
+        jest.fn(),
+      ),
+    ).rejects.toBeInstanceOf(AttachmentSizeError);
+    expect(mockedGetFileStream).not.toHaveBeenCalled();
+  });
+
+  it("does not repeat the primary agent's checks for a reader that shares them", async () => {
+    await encodeAndFormatDocuments(
+      req,
+      [pdf],
+      { provider: Providers.ANTHROPIC, model: 'claude-sonnet-4-5', recipients: [claude] },
+      jest.fn(),
+    );
+
+    expect(mockedValidatePdf).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not count subagents, which never read the history, or agents without a provider', async () => {
+    const result = await encodeAndFormatDocuments(
+      req,
+      [pdf],
+      {
+        provider: Providers.ANTHROPIC,
+        recipients: [
+          { ...claude, subagentAgentConfigs: [{ provider: Providers.OPENAI }] },
+          { model_parameters: { useResponsesApi: true } },
+        ],
+      },
+      jest.fn(),
+    );
+
+    expect(result.documents).toEqual([expect.objectContaining({ type: 'document' })]);
   });
 });

@@ -55,14 +55,14 @@ describe('loadServiceKey', () => {
   });
 
   it('should load from file path', async () => {
-    const filePath = '/path/to/service-key.json';
+    const filePath = path.resolve('path', 'to', 'service-key.json');
     (readFileAsString as jest.Mock).mockResolvedValue({
       content: JSON.stringify(mockServiceKey),
       bytes: JSON.stringify(mockServiceKey).length,
     });
 
     const result = await loadServiceKey(filePath);
-    expect(readFileAsString).toHaveBeenCalledWith(path.resolve(filePath));
+    expect(readFileAsString).toHaveBeenCalledWith(filePath);
     expect(result).toEqual(mockServiceKey);
   });
 

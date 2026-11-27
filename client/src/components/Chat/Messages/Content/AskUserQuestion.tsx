@@ -1,30 +1,17 @@
 import { useContext } from 'react';
-import { AskUserQuestion as Question } from '@librechat/chat/components';
-import type { ComponentProps } from 'react';
-import { useApprovalContext, useResumeSubmit } from './ApprovalContext';
+import { PausedQuestion } from '@librechat/chat/components';
+import type { PausedQuestionProps } from '@librechat/chat/components';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
+import { useChatApprovalHost } from './ApprovalContext';
 import { ChatContext } from '~/Providers/ChatContext';
 
-type QuestionProps = ComponentProps<typeof Question>;
-
-/** The app's ask card: answer mode, resume, and the draft the approval host keeps. */
+/** The ask card for views outside a message, such as a response review: the chat package's card
+ *  with this app's composer answer mode and resume host. */
 export default function AskUserQuestion(
-  props: Omit<
-    QuestionProps,
-    'answerMode' | 'submitAskAnswer' | 'getAskAnswerDraft' | 'setAskAnswerDraft'
-  >,
+  props: Omit<PausedQuestionProps, 'answerMode' | 'resumeHost'>,
 ) {
   const conversationId = useContext(ChatContext)?.conversation?.conversationId;
   const answerMode = useAskAnswerMode(conversationId);
-  const { getAskAnswerDraft, setAskAnswerDraft } = useApprovalContext();
-  const { submitAskAnswer } = useResumeSubmit();
-  return (
-    <Question
-      {...props}
-      answerMode={answerMode}
-      submitAskAnswer={submitAskAnswer}
-      getAskAnswerDraft={getAskAnswerDraft}
-      setAskAnswerDraft={setAskAnswerDraft}
-    />
-  );
+  const resumeHost = useChatApprovalHost();
+  return <PausedQuestion {...props} answerMode={answerMode} resumeHost={resumeHost} />;
 }

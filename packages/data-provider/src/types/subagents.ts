@@ -1,6 +1,7 @@
 import type { StepEvents, SteerEvents, TSteerAppliedEvent } from './runs';
 import type { TMessageContentParts } from './content';
 import type { ChatStepFrame } from './transport';
+import type { TMessage } from '../schemas';
 import type { Agents } from './agents';
 
 export type SubagentThreadStatus =
@@ -14,7 +15,11 @@ export type SubagentThreadStatus =
 export type ParentSubagentTaskSummary = {
   taskId: string;
   status: SubagentThreadStatus;
+  /** ISO-8601 time of the task's newest record: its dispatch while it runs, its end after. */
   createdAt?: string;
+  /** ISO-8601 dispatch time. Absent from a server that predates it, and for a task whose
+   *  dispatch record was not among those the index read. */
+  startedAt?: string;
 };
 
 /**
@@ -173,6 +178,13 @@ export type SubagentThreadTurn = {
   messages: SubagentThreadMessage[];
 };
 
+/** One page of a child thread's messages, oldest first. */
+export type SubagentThreadMessagesPage = {
+  messages: TMessage[];
+  /** The cursor that reads the page before this one; `null` when this page holds the first row. */
+  earlier: string | null;
+};
+
 export type SubagentThreadView = {
   threadId: string;
   parentConversationId: string;
@@ -212,7 +224,8 @@ export type SubagentDigestStatus = 'running' | 'ok' | 'error' | 'cancelled';
  * node positionally (`3` is turn 3, `3.2` its second child, `3.2.1` the first
  * turn of a subagent that child started) and never shifts as the run grows. A
  * `range` folds consecutive turns (`1-14`). Labels are the child's own one-line
- * tool intents; tool arguments, outputs, and reply text are never included.
+ * tool intents: a tool node carries its own, and a folded turn its first call's.
+ * Tool arguments, outputs, and reply text are never included.
  */
 export type SubagentDigestNode = {
   path: string;
