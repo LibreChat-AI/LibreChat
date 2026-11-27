@@ -134,6 +134,30 @@ describe('discoverConnectedAgents', () => {
     expect(onAgentInitialized.mock.calls.map((c) => c[0])).toEqual(['B', 'C']);
   });
 
+  it("does not give a saved handoff agent the primary conversation's model spec", async () => {
+    const primaryConfig = makeConfig('A', [{ from: 'A', to: 'B', edgeType: 'handoff' }]);
+    await discoverConnectedAgents(
+      {
+        req: makeReq(),
+        res: makeRes(),
+        primaryConfig,
+        endpointOption: { endpoint: EModelEndpoint.agents, spec: 'primary-spec' },
+        allowedProviders: new Set(),
+        getEndpointModels: async () => ({ openai: ['gpt-4o'] }),
+        loadTools: jest.fn(),
+      },
+      {
+        getAgent: jest.fn(async () => makeAgent('B', [])),
+        checkPermission: jest.fn().mockResolvedValue(true),
+        logViolation: jest.fn(),
+        db: {} as never,
+      },
+    );
+
+    expect(mockInitializeAgent).toHaveBeenCalledTimes(1);
+    expect(mockInitializeAgent.mock.calls[0][0].modelSpec).toBeUndefined();
+  });
+
   it('validates each referenced agent through the endpoint model loader', async () => {
     const primaryConfig = makeConfig('A', [
       { from: 'A', to: 'B', edgeType: 'handoff' },
@@ -2042,6 +2066,22 @@ describe('model spec handoffs', () => {
       expect.objectContaining({
         accessibleSkillIds: [skillId],
         agent: expect.objectContaining({ skills: [skillId.toString()] }),
+      }),
+      expect.anything(),
+    );
+  });
+  test('initializes the target under its own spec, not the primary conversation one', async () => {
+    const options = params();
+    const preset = options.req.config?.modelSpecs?.list?.[0];
+    if (!preset) throw new Error('Missing test preset');
+    preset.vision = false;
+    await discoverConnectedAgents(
+      { ...options, endpointOption: { endpoint: EModelEndpoint.agents, spec: 'primary-spec' } },
+      deps(),
+    );
+    expect(mockInitializeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelSpec: expect.objectContaining({ name: 'specialist', vision: false }),
       }),
       expect.anything(),
     );

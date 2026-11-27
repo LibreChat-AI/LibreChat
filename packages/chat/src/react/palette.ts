@@ -45,9 +45,20 @@ export interface PaletteEntryView {
   section: PaletteSection;
   active: boolean;
   favoritable?: boolean;
+  /** Kept on the composer bar while off. */
+  pinned?: boolean;
+  /** Stores the pin. Rows without it draw no pin toggle. */
+  onPinChange?: (pinned: boolean) => void;
   onSelect: () => void;
   modes?: PaletteModeView[];
   status?: PaletteStatusView;
+}
+
+/** A section the host can pin to the composer bar as one control, such as the MCP Servers chip
+ *  that opens every server. Drawn as a toggle on the section's header. */
+export interface PalettePinView {
+  pinned: boolean;
+  onPinChange: (pinned: boolean) => void;
 }
 
 /** One upload destination. */
@@ -92,6 +103,8 @@ export interface PaletteSources {
   favorites: boolean;
   favoriteKeys: ReadonlySet<string>;
   toggleFavorite(itemType: string, itemId: string): void;
+  /** The sections whose header carries a pin toggle. */
+  pins: Readonly<Partial<Record<PaletteSection, PalettePinView>>>;
   attachEntries: readonly PaletteAttachView[];
   fileInputRef: Ref<HTMLInputElement>;
   onFileChange(event: ChangeEvent<HTMLInputElement>): void;
@@ -130,6 +143,7 @@ const EMPTY_PALETTE_SOURCES: PaletteSources = {
   favorites: false,
   favoriteKeys: NO_FAVORITES,
   toggleFavorite: () => undefined,
+  pins: {},
   attachEntries: [],
   fileInputRef: EMPTY_FILE_INPUT,
   onFileChange: () => undefined,

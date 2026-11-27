@@ -658,6 +658,22 @@ describe('stateful code environments', () => {
   });
 });
 
+describe('agent text-only switch', () => {
+  it('keeps the switch on create and update', () => {
+    const created = agentCreateSchema.parse({
+      provider: 'openAI',
+      model: 'gpt-4o-mini',
+      text_only: true,
+    });
+    expect(created.text_only).toBe(true);
+    expect(agentUpdateSchema.parse({ text_only: false })).toEqual({ text_only: false });
+  });
+
+  it('rejects a switch that is not a boolean', () => {
+    expect(agentUpdateSchema.safeParse({ text_only: 'yes' }).success).toBe(false);
+  });
+});
+
 describe('agentUpdateSchema with subagents', () => {
   it('accepts a partial update with only the disabled flag set', () => {
     const result = agentUpdateSchema.safeParse({

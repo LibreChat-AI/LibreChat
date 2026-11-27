@@ -1,5 +1,10 @@
+import axios from 'axios';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
 import { logger } from '@librechat/data-schemas';
 import { PassThrough, Readable } from 'node:stream';
+import type { AddressInfo } from 'node:net';
+import type { Server } from 'node:http';
 import { pipeSegment, abortOnClose, pipeToResponse, isClientDisconnect } from './streams';
 import { isAbortError } from './errors';
 import { logAxiosError } from './axios';
@@ -180,5 +185,73 @@ describe('abortOnClose', () => {
         resolve();
       }),
     );
+  });
+
+  it('is already aborted for a response that closed before it was asked', () => {
+    const res = new PassThrough();
+    res.destroy();
+
+    const signal = abortOnClose(res);
+
+    expect(signal.aborted).toBe(true);
+    expect(isClientDisconnect(signal.reason)).toBe(true);
+  });
+});
+
+describe('isClientDisconnect with a provider request', () => {
+  let server: Server;
+  let url: string;
+
+  beforeAll(async () => {
+    /** A provider that never answers, so a request stays in flight until it is canceled. */
+    server = createServer(() => undefined);
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+  });
+
+  afterAll(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+
+  it('counts a request refused because its client already left as a disconnect', async () => {
+    const res = new PassThrough();
+    res.destroy();
+    const requested = jest.fn();
+    server.on('request', requested);
+
+    const error = await axios.get(url, { signal: abortOnClose(res) }).catch((e: unknown) => e);
+    server.off('request', requested);
+
+    expect(axios.isCancel(error)).toBe(true);
+    expect(isClientDisconnect(error)).toBe(true);
+    expect(requested).not.toHaveBeenCalled();
+  });
+
+  it('counts a request cut off when its client leaves as a disconnect', async () => {
+    const res = new PassThrough();
+    const pending = axios.get(url, { signal: abortOnClose(res) }).catch((e: unknown) => e);
+    await once(server, 'request');
+
+    res.destroy();
+    const error = await pending;
+
+    expect(axios.isCancel(error)).toBe(true);
+    expect(isClientDisconnect(error)).toBe(true);
+  });
+
+  it('keeps a request canceled for another reason apart from a disconnect', async () => {
+    const aborted = await axios.get(url, { signal: AbortSignal.abort() }).catch((e: unknown) => e);
+    const expired = await axios
+      .get(url, { signal: AbortSignal.timeout(10) })
+      .catch((e: unknown) => e);
+
+    expect(axios.isCancel(aborted)).toBe(true);
+    expect(isClientDisconnect(aborted)).toBe(false);
+    expect(axios.isCancel(expired)).toBe(true);
+    expect(isClientDisconnect(expired)).toBe(false);
+    expect(isClientDisconnect(new Error('socket hang up'))).toBe(false);
+    expect(isClientDisconnect(undefined)).toBe(false);
   });
 });

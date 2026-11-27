@@ -32,6 +32,7 @@ import {
   resolveMCPAppRateLimits,
   resolveMCPAppsPolicy,
   endpointSchema,
+  azureEndpointSchema,
   isTwoFactorPolicyProvider,
   resolveEndpointType,
   webSearchSchema,
@@ -104,7 +105,7 @@ describe('telemetry.stackTraceLimit', () => {
 import { EModelEndpoint, isDocumentSupportedProvider } from './schemas';
 import { getEndpointFileConfig, mergeFileConfig } from './file-config';
 import { DEFAULT_MCP_APP_CSP_LIMITS } from './mcp/csp';
-import { modelSpecSubagentsSchema } from './models';
+import { modelSpecSubagentsSchema, tModelSpecSchema } from './models';
 
 const endpointsConfig: TEndpointsConfig = {
   [EModelEndpoint.openAI]: { userProvide: false, order: 0 },
@@ -3207,6 +3208,69 @@ describe('built-in endpoint model lists', () => {
       expect(parse({ [endpoint]: { models: 'model-a' } }).success).toBe(false);
     },
   );
+});
+
+describe('image input declarations', () => {
+  const parse = (endpoints: Record<string, unknown>) =>
+    configSchema.safeParse({ version: '1.0', endpoints });
+
+  it.each([
+    EModelEndpoint.openAI,
+    EModelEndpoint.google,
+    EModelEndpoint.anthropic,
+    EModelEndpoint.bedrock,
+  ])('keeps the endpoint and model entries of %s', (endpoint) => {
+    const config = {
+      vision: false,
+      models: ['model-a', { name: 'model-b', vision: true }],
+    };
+    const result = parse({ [endpoint]: config });
+    expect(result.success && result.data.endpoints?.[endpoint]).toMatchObject(config);
+  });
+
+  it('keeps a custom endpoint and its model entries', () => {
+    const endpoint = {
+      name: 'LiteLLM',
+      apiKey: 'key',
+      baseURL: 'https://litellm.example.com/v1',
+      vision: false,
+      models: { default: ['gpt-4o', { name: 'qwen3', vision: false }] },
+    };
+    const result = endpointSchema.safeParse(endpoint);
+    expect(result.success && result.data).toMatchObject(endpoint);
+  });
+
+  it('keeps an Azure endpoint and its model entries', () => {
+    const result = azureEndpointSchema.safeParse({
+      vision: true,
+      groups: [
+        {
+          group: 'east',
+          apiKey: 'key',
+          models: { 'gpt-4o': true, phi: { deploymentName: 'phi', vision: false } },
+        },
+      ],
+    });
+    expect(result.success && result.data).toMatchObject({
+      vision: true,
+      groups: [{ models: { phi: { deploymentName: 'phi', vision: false } } }],
+    });
+  });
+
+  it('keeps a model spec declaration', () => {
+    const result = tModelSpecSchema.safeParse({
+      name: 'qwen',
+      label: 'Qwen',
+      vision: false,
+      preset: { endpoint: 'LiteLLM', model: 'qwen3' },
+    });
+    expect(result.success && result.data.vision).toBe(false);
+  });
+
+  it('rejects a declaration that is not a boolean', () => {
+    expect(parse({ openAI: { vision: 'no' } }).success).toBe(false);
+    expect(parse({ openAI: { models: [{ name: 'gpt-4o', vision: 'no' }] } }).success).toBe(false);
+  });
 });
 
 describe('subagent activity policy', () => {

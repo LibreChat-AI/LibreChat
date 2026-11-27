@@ -1,4 +1,5 @@
 import { EModelEndpoint } from 'librechat-data-provider';
+import type { TAzureGroupMap, TAzureModelConfig } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 
 /** Parameter overrides belong to configured Azure groups, and so do the
@@ -10,14 +11,24 @@ export function getOpenAIEndpointParameters(
   endpoint: string,
   model?: string,
 ) {
-  const azure =
-    endpoint === EModelEndpoint.azureOpenAI ? appConfig?.endpoints?.azureOpenAI : undefined;
-  const groupName = model ? azure?.modelGroupMap[model]?.group : undefined;
-  const group = groupName ? azure?.groupMap[groupName] : undefined;
-  const config = model ? group?.models?.[model] : undefined;
+  const { group, config } = getAzureModelConfig(appConfig, endpoint, model);
   return {
     addParams: group?.addParams,
     dropParams: group?.dropParams,
     reasoningEfforts: typeof config === 'object' ? config.reasoningEfforts : undefined,
   };
+}
+
+/** The Azure group serving `model`, and that model's own entry in it. */
+export function getAzureModelConfig(
+  appConfig: AppConfig | undefined,
+  endpoint: string,
+  model?: string,
+): { group?: TAzureGroupMap[string]; config?: TAzureModelConfig } {
+  const azure =
+    endpoint === EModelEndpoint.azureOpenAI ? appConfig?.endpoints?.azureOpenAI : undefined;
+  const groupName = model ? azure?.modelGroupMap[model]?.group : undefined;
+  const group = groupName ? azure?.groupMap[groupName] : undefined;
+  const config = model ? group?.models?.[model] : undefined;
+  return { group, config };
 }

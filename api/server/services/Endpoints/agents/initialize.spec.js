@@ -1075,6 +1075,24 @@ describe('initializeClient — processAgent ACL gate', () => {
     expect(initializeParams.skillAuthoringAvailable).toBe(true);
   });
 
+  it("initializes the primary agent under the conversation's model spec", async () => {
+    const endpointOption = makeEndpointOption();
+    endpointOption.spec = 'text-only';
+    mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
+    const req = makeReq();
+    const spec = { name: 'text-only', vision: false };
+    req.config.modelSpecs = { list: [{ name: 'other' }, spec] };
+
+    await initializeClient({
+      req,
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption,
+    });
+
+    expect(mockInitializeAgent.mock.calls[0][0].modelSpec).toBe(spec);
+  });
+
   it('enables standalone authoring without exposing the persisted agent skill catalog', async () => {
     const endpointOption = makeEndpointOption();
     endpointOption.agent = Promise.resolve({
