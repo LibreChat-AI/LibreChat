@@ -1,10 +1,11 @@
 import { Permissions } from 'librechat-data-provider';
-import type { IRole } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
+import type { ProjectsRole } from './access';
 import { canUseProjects, projectsAccessFor, requireProjectsPermission } from './access';
 
-const role = (permissions: Record<string, Record<string, boolean>>) =>
-  ({ name: 'USER', permissions }) as unknown as IRole;
+const role = (permissions: Record<string, Record<string, boolean>>): ProjectsRole => ({
+  permissions,
+});
 
 describe('canUseProjects', () => {
   it('reads the role and honors a stored refusal', async () => {
@@ -74,7 +75,7 @@ describe('projectsAccessFor', () => {
 });
 
 describe('requireProjectsPermission', () => {
-  const run = async (stored: IRole | Error) => {
+  const run = async (stored: ProjectsRole | Error) => {
     const getRoleByName = jest.fn();
     if (stored instanceof Error) {
       getRoleByName.mockRejectedValue(stored);

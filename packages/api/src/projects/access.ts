@@ -1,7 +1,6 @@
 import { logger } from '@librechat/data-schemas';
 import { Permissions, hasProjectsPermission } from 'librechat-data-provider';
 import type { NextFunction, Request as ServerRequest, Response as ServerResponse } from 'express';
-import type { IRole } from '@librechat/data-schemas';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
 export type ProjectsPermission = Permissions.USE | Permissions.CREATE;
@@ -11,8 +10,13 @@ export interface ProjectsUser {
   role?: string | null;
 }
 
+/** The part of a stored role this check reads. */
+export interface ProjectsRole {
+  permissions?: Parameters<typeof hasProjectsPermission>[0];
+}
+
 export interface ProjectsAccessDeps {
-  getRoleByName: (roleName: string, fieldsToSelect?: string | string[]) => Promise<IRole | null>;
+  getRoleByName: (roleName: string) => Promise<ProjectsRole | null>;
 }
 
 /**
@@ -33,10 +37,7 @@ export async function canUseProjects(
   if (role == null) {
     return false;
   }
-  return hasProjectsPermission(
-    role?.permissions as Parameters<typeof hasProjectsPermission>[0],
-    permission,
-  );
+  return hasProjectsPermission(role.permissions, permission);
 }
 
 /** Middleware refusing a Chat Projects route with 403 unless the role allows `permission`. */
