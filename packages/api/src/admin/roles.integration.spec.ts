@@ -2,7 +2,8 @@ import mongoose from 'mongoose';
 import { SystemRoles } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createMethods, createModels, logger } from '@librechat/data-schemas';
-import type { RecordAuditEntryInput } from '@librechat/data-schemas';
+import type { IUser, RecordAuditEntryInput } from '@librechat/data-schemas';
+import type { FilterQuery } from 'mongoose';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types/http';
 import type { AdminRolesDeps } from './roles';
@@ -169,6 +170,46 @@ describe('adding a member to a role while it is deleted', () => {
     expect(deleted).toEqual({ status: 200, body: { success: true } });
     expect(added).toEqual({ status: 404, body: { error: 'Role not found' } });
     expect(await storedRole(userId)).toBe('viewer');
+    expect(entries.filter((entry) => entry.action === 'role.member_added')).toEqual([]);
+  });
+
+  it('an undone add whose previous role was deleted meanwhile moves the user on to USER', async () => {
+    await methods.createRoleByName({ name: 'editor' });
+    await methods.createRoleByName({ name: 'viewer' });
+    const userId = await createMember('viewer');
+    const entries: RecordAuditEntryInput[] = [];
+    const deleted: Reply[] = [];
+    /** `editor` is deleted after the add read it and before its write, and `viewer` right after
+     * the write, while the user holds `editor`: neither deletion sees the user. */
+    const handlers = roleHandlers(entries, {
+      findUser: async (criteria, fields) => {
+        if (deleted.length === 0) {
+          deleted.push(await call(handlers.deleteRole, { name: 'editor' }));
+        }
+        return methods.findUser(criteria, fields);
+      },
+      updateUser: async (id, data, expected) => {
+        const updated = await methods.updateUser(id, data, expected as FilterQuery<IUser>);
+        if (data.role === 'editor' && deleted.length === 1) {
+          deleted.push(await call(handlers.deleteRole, { name: 'viewer' }));
+        }
+        return updated;
+      },
+    });
+
+    const added = await call(handlers.addRoleMember, { name: 'editor' }, { userId });
+
+    const success = { status: 200, body: { success: true } };
+    expect(deleted).toEqual([success, success]);
+    expect(added).toEqual({ status: 404, body: { error: 'Role not found' } });
+    expect(await storedRole(userId)).toBe(SystemRoles.USER);
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        action: 'role.member_removed',
+        target: expect.objectContaining({ id: 'viewer' }),
+        metadata: { userId, newRole: SystemRoles.USER, cause: 'role_deleted' },
+      }),
+    );
     expect(entries.filter((entry) => entry.action === 'role.member_added')).toEqual([]);
   });
 });

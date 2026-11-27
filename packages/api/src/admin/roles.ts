@@ -400,6 +400,36 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       () => ({ known: false, role: null }),
     );
 
+  /**
+   * The previous role an add's undo put back can be gone as well: deleted after its own deletion
+   * swept its members. It is read back the same way, and when gone the user moves on to USER,
+   * which always exists, while they still hold that role; the move is audited as the deletion's
+   * would have been. A read or write that fails keeps the restored role.
+   */
+  async function leaveDeletedRole(req: ServerRequest, userId: string, role: string) {
+    const lookup = await readRole(role);
+    if (!lookup.known || lookup.role != null) {
+      return;
+    }
+    const moved = await updateUser(userId, { role: SystemRoles.USER }, { role }).catch(
+      (error: unknown) => {
+        logger.error(
+          `[adminRoles] user ${userId} may still hold the deleted role "${role}" an add restored:`,
+          getSafeErrorMetadata(error),
+        );
+        return null;
+      },
+    );
+    if (moved) {
+      await emitRevocationAudit(req, {
+        action: 'role.member_removed',
+        severity: memberChangeSeverity(role),
+        target: roleTarget(role),
+        metadata: { userId, newRole: SystemRoles.USER, cause: 'role_deleted' },
+      });
+    }
+  }
+
   /** Emits a `grant.removed` audit entry for each grant the role-deletion cascade
    * removed, so the cascade leaves the same forensic trail as an explicit revoke.
    * Sequential to keep the per-tenant hash chain ordered. */
@@ -1238,16 +1268,14 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         /**
          * A deletion of the role whose last member read came before this write cannot see the
          * user, so the role is read back. Gone, replaced under its name or unreadable, the add is
-         * undone while the user still holds the name. An add another write moved the user out of
-         * first (the deletion's own sweep, which audits its move) stood until then and is audited.
+         * undone while the user still holds the name (`leaveDeletedRole` when the previous role is
+         * gone too). An add another write moved the user out of first (the deletion's own sweep,
+         * which audits its move) stood until then and is audited.
          */
         const lookup = await readRole(name);
         if (!lookup.known || !isSameRole(existing, lookup.role)) {
-          const outcome = await updateUser(
-            userId,
-            { role: user.role ?? SystemRoles.USER },
-            { role: name },
-          ).then(
+          const previous = user.role ?? SystemRoles.USER;
+          const outcome = await updateUser(userId, { role: previous }, { role: name }).then(
             (undone) => (undone ? 'undone' : 'moved'),
             (undoError) => {
               logger.error(
@@ -1257,6 +1285,9 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
               return 'failed';
             },
           );
+          if (outcome === 'undone' && !isSystemRoleName(previous)) {
+            await leaveDeletedRole(req, userId, previous);
+          }
           if (outcome !== 'undone') {
             await recordAdded();
           }

@@ -471,12 +471,19 @@ describe('recordIdpRoleChange', () => {
 });
 
 describe('writeIdpRoleChange', () => {
-  /** A sync of user `u1` from USER into `role`, whose role lookup answers with `roles` (or
-   * rejects with it). */
-  function syncInto(role: string, roles: Array<{ name: string }> | Error) {
+  /** A sync of user `u1` from `previous` into `role`, whose role lookup answers with `roles`
+   * (or rejects with it). */
+  function syncInto(
+    role: string,
+    roles: Array<{ name: string }> | Error,
+    previous: string = SystemRoles.USER,
+  ) {
     const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
     const updateUser = jest.fn().mockResolvedValue({ role });
-    const getRolesByNames = jest.fn(async () => {
+    const getRolesByNames = jest.fn<
+      Promise<Array<{ name: string }>>,
+      [string[], (string | string[] | null)?]
+    >(async () => {
       if (roles instanceof Error) {
         throw roles;
       }
@@ -486,7 +493,7 @@ describe('writeIdpRoleChange', () => {
       writeIdpRoleChange({
         userId: 'u1',
         update: { role },
-        observedRole: SystemRoles.USER,
+        observedRole: previous,
         updateUser,
         findUser: jest.fn(),
         getRolesByNames,
@@ -534,6 +541,47 @@ describe('writeIdpRoleChange', () => {
       { role: 'BASIC-USER' },
     );
     expect(sync.recordAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('keeps a previous custom role it puts back while that role exists', async () => {
+    const sync = syncInto('BASIC-USER', [], 'STANDARD-USER');
+    sync.getRolesByNames.mockImplementation(async (names: string[]) =>
+      names.includes('STANDARD-USER') ? [{ name: 'STANDARD-USER' }] : [],
+    );
+
+    await expect(sync.write()).rejects.toThrow('configured roles do not exist: BASIC-USER');
+
+    expect(sync.updateUser).toHaveBeenCalledTimes(2);
+    expect(sync.updateUser).toHaveBeenLastCalledWith(
+      'u1',
+      { role: 'STANDARD-USER' },
+      { role: 'BASIC-USER' },
+    );
+    expect(sync.recordAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('moves the account on to USER, audited, when the previous role it puts back is gone too', async () => {
+    const sync = syncInto('BASIC-USER', [], 'STANDARD-USER');
+
+    await expect(sync.write()).rejects.toThrow('configured roles do not exist: BASIC-USER');
+
+    expect(sync.getRolesByNames).toHaveBeenLastCalledWith(['STANDARD-USER'], 'name');
+    expect(sync.updateUser).toHaveBeenCalledTimes(3);
+    expect(sync.updateUser).toHaveBeenLastCalledWith(
+      'u1',
+      { role: SystemRoles.USER },
+      { role: 'STANDARD-USER' },
+    );
+    expect(sync.recordAuditEntry).toHaveBeenCalledTimes(1);
+    expect(sync.recordAuditEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: {
+          previousRole: 'STANDARD-USER',
+          role: SystemRoles.USER,
+          source: 'openid_login',
+        },
+      }),
+    );
   });
 
   it('audits the change when another write moved the account out before the take-back', async () => {

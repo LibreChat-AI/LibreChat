@@ -93,10 +93,14 @@ test.describe('assigning a role while it is deleted', () => {
     );
   });
 
-  test('adding a member to a role deleted before the add commits answers Role not found and keeps their role @scenario:role-add-to-deleted-role-is-undone', () => {
+  test('adding a member to a role deleted before the add commits answers Role not found and leaves them on a role that exists @scenario:role-add-to-deleted-role-is-undone', () => {
     expectPassed(
       'handlers',
       `${ADMIN_RACE} an add whose role is deleted before its write commits is undone and answers 404`,
+    );
+    expectPassed(
+      'handlers',
+      `${ADMIN_RACE} an undone add whose previous role was deleted meanwhile moves the user on to USER`,
     );
   });
 

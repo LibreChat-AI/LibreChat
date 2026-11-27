@@ -403,8 +403,40 @@ async function roleExists(
 
 /** What reading back the custom role a write assigned found. `stood`: the change stayed in
  * place for a while (another write moved the account out first, or the undo failed), so it is
- * audited; `error`: the read that failed, so the role could not be confirmed. */
-type RoleReadBack = { kept: true } | { kept: false; stood: boolean; error?: unknown };
+ * audited; `fellBack`: the previous role the undo put back was gone too, so the account moved on
+ * to USER; `error`: the read that failed, so the role could not be confirmed. */
+type RoleReadBack =
+  | { kept: true }
+  | { kept: false; stood: boolean; fellBack: boolean; error?: unknown };
+
+type RoleReadBackDeps<T extends RoleRecord> = Pick<
+  IdpRoleWriteInput<T>,
+  'userId' | 'tenantId' | 'getRolesByNames' | 'updateUser'
+>;
+
+/**
+ * The previous role an undo put back can be gone as well: deleted after its own deletion swept
+ * its members. It is read back the same way, and when gone the account moves on to USER, which
+ * always exists, while it still holds that role. Resolves to whether it moved; a read or write
+ * that fails keeps the restored role.
+ */
+async function leaveDeletedRole<T extends RoleRecord>(
+  role: string,
+  { userId, tenantId, getRolesByNames, updateUser }: RoleReadBackDeps<T>,
+): Promise<boolean> {
+  try {
+    if (await roleExists(role, tenantId, getRolesByNames)) {
+      return false;
+    }
+    return (await updateUser(userId, { role: SystemRoles.USER } as Partial<T>, { role })) != null;
+  } catch (error) {
+    logger.error(
+      `[openidRoleSync] user ${userId} may still hold the deleted role "${role}" its sync restored:`,
+      getSafeErrorMetadata(error),
+    );
+    return false;
+  }
+}
 
 /**
  * A role deletion whose last member read came before a write cannot see the account it moved
@@ -414,13 +446,9 @@ type RoleReadBack = { kept: true } | { kept: false; stood: boolean; error?: unkn
 async function readBackRole<T extends RoleRecord>(
   role: string,
   previousRole: string | null,
-  {
-    userId,
-    tenantId,
-    getRolesByNames,
-    updateUser,
-  }: Pick<IdpRoleWriteInput<T>, 'userId' | 'tenantId' | 'getRolesByNames' | 'updateUser'>,
+  deps: RoleReadBackDeps<T>,
 ): Promise<RoleReadBack> {
+  const { userId, tenantId, getRolesByNames, updateUser } = deps;
   let error: unknown;
   try {
     if (await roleExists(role, tenantId, getRolesByNames)) {
@@ -431,13 +459,18 @@ async function readBackRole<T extends RoleRecord>(
   }
   try {
     const undone = await updateUser(userId, { role: previousRole } as Partial<T>, { role });
-    return { kept: false, stood: undone == null, error };
+    const fellBack =
+      undone != null &&
+      previousRole != null &&
+      !systemRoles.has(previousRole) &&
+      (await leaveDeletedRole(previousRole, deps));
+    return { kept: false, stood: undone == null, fellBack, error };
   } catch (undoError) {
     logger.error(
       `[openidRoleSync] user ${userId} may still hold the role "${role}" its sync assigned:`,
       getSafeErrorMetadata(undoError),
     );
-    return { kept: false, stood: true, error };
+    return { kept: false, stood: true, fellBack: false, error };
   }
 }
 
@@ -451,7 +484,8 @@ async function readBackRole<T extends RoleRecord>(
  * A write that moved the account into a custom role reads it back (`readBackRole`): when the
  * role was deleted meanwhile the change is taken back and this throws as role sync does for a
  * missing configured role. A change that stood for a while is audited either way, since the
- * deletion's sweep that moves an account out audits its own move.
+ * deletion's sweep that moves an account out audits its own move. When the previous role it
+ * puts back is gone too, the account moves on to USER and that move is audited.
  */
 export async function writeIdpRoleChange<T extends RoleRecord>({
   userId,
@@ -489,6 +523,16 @@ export async function writeIdpRoleChange<T extends RoleRecord>({
         });
       }
       if (!check.kept) {
+        if (check.fellBack) {
+          await recordIdpRoleChange({
+            recordAuditEntry,
+            userId,
+            previousRole,
+            role: SystemRoles.USER,
+            source,
+            tenantId,
+          });
+        }
         throw (
           check.error ??
           new Error(`[openidRoleSync] OpenID role sync configured roles do not exist: ${role}`)
