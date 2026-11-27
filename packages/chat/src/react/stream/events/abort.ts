@@ -1,5 +1,6 @@
 import { useCallback } from 'react';
 import { v4 } from 'uuid';
+import { useStore } from 'jotai';
 import { QueryKeys, Constants, isAssistantsEndpoint } from 'librechat-data-provider';
 import type { TMessage, TConversation, EventSubmission } from 'librechat-data-provider';
 import type { TResData, TFinalResData } from '../../../core';
@@ -8,9 +9,11 @@ import {
   resolveErrorTurn,
   createErrorMessage,
   mergeErrorMessages,
+  hasConcreteConversationId,
   keepLocalCodeApprovalMode,
   resolveSettledErrorReadState,
 } from '../../../core';
+import { submissionByIndex } from '../../submission';
 
 /** The handlers for a turn that failed or was stopped. */
 export type AbortHandlers = {
@@ -41,8 +44,10 @@ export default function useAbortHandlers(
     reconcileFailedCodeDecision,
     setConversation,
     isAddedRequest,
+    runIndex,
   } = ctx;
   const { conversations, navigation, transport, logger } = services;
+  const store = useStore();
 
   const cancelHandler = useCallback(
     (data: TResData, submission: EventSubmission) => {
@@ -205,6 +210,17 @@ export default function useAbortHandlers(
           );
         }
       } catch (error) {
+        /** The pane moved on while the stop was in flight: what it shows now is another
+         *  conversation, so a failed stop writes nothing there. It settles the pane unless a
+         *  run the pane started since (a resumed generation) holds its controls. */
+        if (hasConcreteConversationId(conversationId) && !navigation.shows(conversationId)) {
+          const current = store.get(submissionByIndex(runIndex));
+          if (current == null || Object.keys(current).length === 0) {
+            setShowStopButton(false);
+            setIsSubmitting(false);
+          }
+          return;
+        }
         const errorResponse = createErrorMessage({
           getMessages,
           submission,
@@ -224,8 +240,11 @@ export default function useAbortHandlers(
       }
     },
     [
+      store,
       logger,
+      runIndex,
       transport,
+      navigation,
       getMessages,
       setMessages,
       finalHandler,

@@ -13,6 +13,7 @@ import {
   MOCK_ENDPOINTS,
   sendMessage,
   getAccessToken,
+  isAssistantsStop,
   selectMockEndpoint,
   uploadViaUnifiedButton,
   sendMessageAndWaitForCompletion,
@@ -164,8 +165,12 @@ const ASSISTANT_MODEL = 'gpt-4o-mini';
 /**
  * Sends a new chat's first turn to a new assistant and returns once its reply is streaming. The
  * Assistants stream keeps the address at `/c/new`, so the chat's id is read from its saved prompt.
+ * With `stopFails`, the fake Assistants API cannot read the run back, so stopping it fails.
  */
-async function startSlowAssistantChat(page: Page, label: string) {
+async function startSlowAssistantChat(page: Page, label: string, { stopFails = false } = {}) {
+  const prompt = stopFails
+    ? `E2E_ASSISTANT_SLOW:E2E_ASSISTANT_STEPS_FAIL:${label}`
+    : `E2E_ASSISTANT_SLOW:${label}`;
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
   const token = await getAccessToken(page);
   const assistant = await requestJson<{ id: string }>(page, {
@@ -186,23 +191,21 @@ async function startSlowAssistantChat(page: Page, label: string) {
     { timeout: 15000 },
   );
   const input = page.getByRole('textbox', { name: 'Message input' });
-  await input.fill(`E2E_ASSISTANT_SLOW:${label}`);
-  await expect(input).toHaveValue(`E2E_ASSISTANT_SLOW:${label}`);
+  await input.fill(prompt);
+  await expect(input).toHaveValue(prompt);
   await input.press('Enter');
   await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20000 });
   let conversationId = '';
   await expect
     .poll(async () => {
       conversationId = await withMongo(async (db) => {
-        const prompt = await db
-          .collection('messages')
-          .findOne({ text: `E2E_ASSISTANT_SLOW:${label}` });
-        return typeof prompt?.conversationId === 'string' ? prompt.conversationId : '';
+        const saved = await db.collection('messages').findOne({ text: prompt });
+        return typeof saved?.conversationId === 'string' ? saved.conversationId : '';
       });
       return conversationId;
     })
     .not.toBe('');
-  return { conversationId, removeAssistant };
+  return { conversationId, prompt, removeAssistant };
 }
 
 /** Deletes or archives a chat from its sidebar row and waits for the change to land. */
@@ -407,17 +410,46 @@ test.describe('removing another chat', () => {
     test.setTimeout(120000);
     const armHold = await holdRemovalForNextChunk(page);
     const label = uniqueName('assistant-archive');
-    const { conversationId, removeAssistant } = await startSlowAssistantChat(page, label);
+    const { conversationId, prompt, removeAssistant } = await startSlowAssistantChat(page, label);
     cleanup.push(conversationId);
     try {
       await armHold();
+      const stopped = page.waitForResponse(isAssistantsStop, { timeout: 30000 });
       await removeFromSidebar(page, rowOf(page, conversationId), 'Archive');
 
+      /** Leaving the stream asks the server to stop the run; the composer is ready once it has. */
+      expect((await stopped).status()).toBe(200);
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
+      await expect(page.getByTestId('send-button')).toBeVisible();
       await expect(page).toHaveURL(/\/c\/new(\?|$)/);
       await expect(page.getByRole('textbox', { name: 'Message input' })).toHaveValue('');
-      /** Leaving the stream asks the server to stop the run, which the fake Assistants API cannot
-       *  settle (it has no run steps), so the composer's state is not asserted here. */
-      await expectNothingOf(page, `E2E_ASSISTANT_SLOW:${label}`, /achunk-\d{3}/);
+      await expectNothingOf(page, prompt, /achunk-\d{3}/);
+    } finally {
+      await removeAssistant();
+    }
+  });
+
+  test('archiving an assistant chat whose stop fails on the server still opens a new chat @scenario:archiving-an-assistant-chat-whose-stop-fails-opens-a-new-chat', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const label = uniqueName('assistant-stop-fails');
+    const { conversationId, prompt, removeAssistant } = await startSlowAssistantChat(page, label, {
+      stopFails: true,
+    });
+    cleanup.push(conversationId);
+    try {
+      const stopped = page.waitForResponse(isAssistantsStop, { timeout: 30000 });
+      await removeFromSidebar(page, rowOf(page, conversationId), 'Archive');
+
+      /** The run is cancelled but cannot be read back, and the stop answers with an error. Once
+       *  that answer lands the composer is ready, and the pane stays on the new chat. */
+      expect((await stopped).status()).toBe(500);
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
+      await expect(page.getByTestId('send-button')).toBeVisible();
+      await expect(page).toHaveURL(/\/c\/new(\?|$)/);
+      await expect(page.getByRole('textbox', { name: 'Message input' })).toHaveValue('');
+      await expectNothingOf(page, prompt, /achunk-\d{3}/);
     } finally {
       await removeAssistant();
     }

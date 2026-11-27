@@ -541,7 +541,11 @@ describe('useNewConvo reset cleanup', () => {
           conversations: createConversationCache(client),
           titles: appTitleServices,
           drafts: appDraftServices,
-          navigation: { pathname: window.location.pathname, navigate: jest.fn() },
+          navigation: {
+            pathname: window.location.pathname,
+            navigate: jest.fn(),
+            shows: () => true,
+          },
           focus: {
             announce: jest.fn(),
             showRegenerated: jest.fn(),

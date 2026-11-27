@@ -1,6 +1,12 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { replyPrompt, messagesView, requestJson, getAccessToken } from '../helpers';
+import {
+  replyPrompt,
+  messagesView,
+  requestJson,
+  getAccessToken,
+  isAssistantsStop,
+} from '../helpers';
 
 type CreatedAssistant = { id: string };
 
@@ -86,13 +92,50 @@ test.describe('assistants stream', () => {
       await sendToAssistant(page, assistant.id, `E2E_ASSISTANT_SLOW:${label}`);
       await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
 
-      await page.getByRole('button', { name: 'Stop generating' }).click();
+      const [stopped] = await Promise.all([
+        page.waitForResponse(isAssistantsStop, { timeout: 30_000 }),
+        page.getByRole('button', { name: 'Stop generating' }).click(),
+      ]);
+      expect(stopped.status()).toBe(200);
       await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0, {
         timeout: 20_000,
       });
       await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible();
       await expect(messagesView(page).getByText(/achunk-120/)).toHaveCount(0);
-      await expect(page.getByRole('textbox', { name: 'Message input' })).toBeEnabled();
+      const input = page.getByRole('textbox', { name: 'Message input' });
+      await expect(input).toBeEnabled();
+      /** Sending is possible again once the stop has settled the run. */
+      await input.fill(replyPrompt(label));
+      await expect(page.getByTestId('send-button')).toBeEnabled();
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('a stop that fails on the server keeps the chat open and re-enables sending @scenario:assistants-failed-stop-re-enables-sending', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('assistant-stop-fails');
+    const prompt = `E2E_ASSISTANT_SLOW:E2E_ASSISTANT_STEPS_FAIL:${label}`;
+    const assistant = await createAssistant(page, `E2E stop fails ${label}`);
+    try {
+      /** The fake Assistants API cancels this run but cannot read it back, so the stop fails. */
+      await sendToAssistant(page, assistant.id, prompt);
+      await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible({ timeout: 20_000 });
+
+      const [stopped] = await Promise.all([
+        page.waitForResponse(isAssistantsStop, { timeout: 30_000 }),
+        page.getByRole('button', { name: 'Stop generating' }).click(),
+      ]);
+      expect(stopped.status()).toBe(500);
+      /** The chat reloads at its own address from what the server kept, ready for the next turn. */
+      await expect(page).toHaveURL(/\/c\/(?!new)[^/?]+/, { timeout: 15_000 });
+      await expect(messagesView(page).getByText(prompt)).toBeVisible();
+      const input = page.getByRole('textbox', { name: 'Message input' });
+      await input.fill(replyPrompt(label));
+      await expect(page.getByTestId('send-button')).toBeEnabled();
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
     } finally {
       await deleteAssistant(page, assistant.id);
     }
