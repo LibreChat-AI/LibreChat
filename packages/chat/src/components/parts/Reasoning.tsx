@@ -15,8 +15,8 @@ import {
 import { toolPanelSpacingClassName, useReasoningDisclosure } from '../../react/parts/disclosure';
 import useLazyCollapseBody from '../../react/parts/useLazyCollapseBody';
 import { useMessagePartsHost } from '../../react/host';
+import { NAV_CLEARANCE, ROW_GLYPH_SLOT } from './rows';
 import useExpandCollapse from './useExpandCollapse';
-import { ROW_GLYPH_SLOT } from './rows';
 import CopyButton from './CopyButton';
 import { classes } from './classes';
 
@@ -392,7 +392,13 @@ export const ReasoningCompact: NamedExoticComponent<ReasoningCompactProps> = mem
         onFocus={revealBar}
         onBlur={handleBlur}
       >
-        <div ref={headerRef} className="relative my-1.5 flex h-5 shrink-0 items-center gap-1.5">
+        <div
+          ref={headerRef}
+          className={classes(
+            'relative my-1.5 flex h-5 shrink-0 items-center gap-1.5',
+            NAV_CLEARANCE.pad,
+          )}
+        >
           <Button
             variant="disclosure"
             onClick={handleToggle}
@@ -424,6 +430,7 @@ export const ReasoningCompact: NamedExoticComponent<ReasoningCompactProps> = mem
                *  lines up with every tool row's instead of moving left of it. */
               className={classes(
                 'absolute end-6 shrink-0 opacity-0 transition-opacity',
+                NAV_CLEARANCE.edge,
                 'group-focus-within/reasoning-compact:opacity-100 group-hover/reasoning-compact:opacity-100',
                 'focus-visible:opacity-100',
               )}

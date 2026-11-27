@@ -11,6 +11,8 @@ export interface IOpenIDRefreshFlight extends Document {
   deliveryId?: string;
   deliveryExpiresAt?: Date;
   revocationRequestedAt?: Date;
+  /** When the result `ownerId` completed stops being reusable; past it, a new flight may take over. */
+  usable?: { ownerId: string; until: Date };
   createdAt: Date;
   updatedAt: Date;
   lockExpiresAt: Date;
@@ -29,6 +31,7 @@ export interface OpenIDRefreshFlightCompleteData {
   ownerId: string;
   encryptedResult: string;
   expiresAt: Date;
+  usableUntil?: Date;
 }
 
 export interface OpenIDRefreshFlightRenewData {

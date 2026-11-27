@@ -11,6 +11,7 @@ import {
   projectStoredResponseMessage,
   saveForegroundResponseInputs,
   requireResponseStorageWrite,
+  withResponsePersistenceErrors,
   loadForegroundResponseHistory,
 } from './foreground';
 import {
@@ -196,7 +197,10 @@ it('stores canonical tool history and accounting, resolves the returned response
     expect(history[1].content).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          tool_call: expect.objectContaining({ output: 'tool-result-only-in-canonical-content' }),
+          tool_call: expect.objectContaining({
+            output: 'tool-result-only-in-canonical-content',
+            runStepStatus: 'completed',
+          }),
         }),
       ]),
     );
@@ -209,6 +213,27 @@ it('stores canonical tool history and accounting, resolves the returned response
       accounting: response.accounting,
       usage: response.usage,
     });
+    expect(read.body.output).toEqual(response.output);
+  }));
+
+it('keeps incomplete legacy tool rows out of the stored Responses output', () =>
+  scoped(async () => {
+    const response = result();
+    const saved = await save(response);
+    await mongoose.models.Message.updateOne(
+      { user: owner.userId, messageId: responseId },
+      {
+        $set: {
+          content: [
+            ...(saved?.content ?? []),
+            { type: 'tool_call', tool_call: { id: 'partial', name: 'existing_tool', args: '{}' } },
+          ],
+        },
+      },
+    );
+    const read = await request(appFor())
+      .get('/' + responseId)
+      .expect(200);
     expect(read.body.output).toEqual(response.output);
   }));
 
@@ -294,6 +319,46 @@ it('returns 404 for a foreign tenant or erased conversation without disclosing s
       .get('/' + responseId)
       .expect(404);
   }));
+
+it.each([
+  null,
+  'private-corrupt-content',
+  { privateField: 'private-corrupt-content' },
+  { type: 42 },
+  { type: 'text', text: { privateField: 'private-corrupt-content' } },
+])('fails closed with a safe 503 for malformed stored history %p', (part) =>
+  scoped(async () => {
+    await save(result());
+    // Bypass schema validation to reproduce corrupt or incompatible stored data.
+    const damaged = await mongoose.models.Message.collection.updateOne(
+      { user: owner.userId, tenantId: owner.tenantId, messageId: responseId },
+      { $set: { content: [part] } },
+    );
+    expect(damaged.matchedCount).toBe(1);
+
+    const app = express();
+    app.get(
+      '/',
+      withResponsePersistenceErrors(async (_req, res) => {
+        const history = await loadForegroundResponseHistory(
+          { conversationId, userId: owner.userId, previousResponseId: responseId },
+          db,
+        );
+        res.json(history);
+      }),
+    );
+    const read = await request(app).get('/').expect(503);
+    expect(read.body).toEqual({
+      error: {
+        message: 'Response storage is unavailable. Please try again.',
+        type: 'server_error',
+        code: 'response_storage_unavailable',
+        param: null,
+      },
+    });
+    expect(JSON.stringify(read.body)).not.toContain('private-corrupt-content');
+  }),
+);
 
 it('maps storage outages to a safe 503 and never returns an empty successful history', async () => {
   const failure = new Error('Authorization: Bearer private-secret');
@@ -401,22 +466,141 @@ it.each([true, false])(
   },
 );
 
-it('retains provider output but reports store false on a failed optional save', async () => {
-  const response = result();
-  const context = createResponseContext({ model: 'agent', input: '' }, response.id);
-  const terminal = createResponseTerminal({ context, requestedStore: true, logger });
-  const publish = jest.fn();
-  terminal.stage({
-    fail: jest.fn(),
-    response,
-    save: async () => {
-      throw new Error('storage outage');
-    },
-    publish,
-  });
-  await settleTerminal(terminal);
-  expect(publish).toHaveBeenCalledWith({ ...response, store: false });
-});
+it.each([false, true])(
+  'retains provider output but reports store false on a failed optional save (handoff=%s)',
+  async (handoff) => {
+    const response = result();
+    if (handoff) {
+      response.tools = [{ type: 'function', name: 'lookup' }];
+      response.output = response.output.filter((item) => item.type === 'function_call');
+    }
+    const context = createResponseContext({ model: 'agent', input: '' }, response.id);
+    const terminal = createResponseTerminal({ context, requestedStore: true, logger });
+    const publish = jest.fn();
+    terminal.stage({
+      fail: jest.fn(),
+      response,
+      save: async () => {
+        throw new Error('storage outage');
+      },
+      publish,
+    });
+    await settleTerminal(terminal);
+    expect(publish).toHaveBeenCalledWith({ ...response, store: false });
+  },
+);
+
+it.each(['stop', 'complete'] as const)(
+  'persists a pending handoff only after %s wins the terminal claim',
+  (winner) =>
+    scoped(async () => {
+      const manager = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore: new InMemoryJobStore(),
+        eventTransport: new InMemoryEventTransport(),
+      });
+      manager.initialize();
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const base = result();
+      const response: Response = {
+        ...base,
+        tools: [{ type: 'function', name: 'lookup' }],
+        output: base.output.filter((item) => item.type === 'function_call'),
+      };
+      const terminal = createResponseTerminal({
+        context: createResponseContext({ model: 'agent', input: '' }, responseId),
+        requestedStore: true,
+        logger,
+      });
+      const publish = jest.fn();
+      const fail = jest.fn();
+      const write = jest.fn(async () => {
+        started.resolve();
+        await release.promise;
+        return save(response);
+      });
+      terminal.stage({ response, save: write, publish, fail });
+      const running = executeAgentRun(
+        {
+          envelope: createAgentRunEnvelope({
+            protocol: 'responses',
+            requestId: 'stop-handoff',
+            receivedAt: Date.now(),
+            principal: { id: owner.userId, tenantId: owner.tenantId },
+            payload: { model: 'agent', input: 'lookup' },
+          }),
+          runId: responseId,
+          conversationId,
+          captureTerminalOutcome: true,
+          isPrincipalActive: async () => true,
+          execute: async () => undefined,
+          beforeSettle: async (execution, error) => {
+            terminal.beforeSettle(execution, error);
+            if (winner === 'stop')
+              expect(
+                (
+                  await manager.abortJob(responseId, {
+                    expectedCreatedAt: execution.createdAt,
+                    awaitProviderDrain: false,
+                  })
+                ).success,
+              ).toBe(true);
+          },
+          afterSettle: terminal.afterSettle,
+        },
+        { manager },
+      );
+      void running.catch(() => undefined);
+      try {
+        if (winner === 'stop') {
+          await running;
+          expect(write).not.toHaveBeenCalled();
+          expect(publish).not.toHaveBeenCalled();
+          expect(fail).toHaveBeenCalledWith(
+            expect.objectContaining({ code: 'response_execution_cancelled' }),
+          );
+          expect(await db.getMessage({ user: owner.userId, messageId: responseId })).toBeNull();
+        } else {
+          await Promise.race([
+            started.promise,
+            running.then(() => {
+              throw new Error('The response drained before the handoff write');
+            }),
+          ]);
+          const job = await manager.getJob(responseId);
+          expect(job?.status).toBe('complete');
+          expect(publish).not.toHaveBeenCalled();
+          expect(
+            await manager.getCleanupBlockingJobIdsForUser(owner.userId, owner.tenantId),
+          ).toContain(responseId);
+          expect(
+            (
+              await manager.abortJob(responseId, {
+                expectedCreatedAt: job?.createdAt,
+                awaitProviderDrain: false,
+              })
+            ).failureReason,
+          ).toBe('already_settled');
+          release.resolve();
+          await running;
+          expect(write).toHaveBeenCalledTimes(1);
+          expect(publish).toHaveBeenCalledWith(expect.objectContaining({ store: true }));
+          expect(
+            (
+              await request(appFor())
+                .get('/' + responseId)
+                .expect(200)
+            ).body.output,
+          ).toEqual(response.output);
+        }
+      } finally {
+        release.resolve();
+        await running.catch(() => undefined);
+        await manager.destroy();
+      }
+    }),
+);
 
 it.each(['error', 'cancelled'])(
   'does not save or publish a staged success after %s',

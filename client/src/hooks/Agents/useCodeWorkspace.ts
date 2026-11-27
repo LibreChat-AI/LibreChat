@@ -101,11 +101,20 @@ export default function useCodeWorkspace(
     | undefined;
   const reachable = useMemo(
     () =>
-      collectReachableAgents([primaryAgent, addedAgent], agentsMap, [
-        conversation?.agent_id,
-        addedConversation?.agent_id,
-      ]),
-    [addedAgent, agentsMap, primaryAgent, conversation?.agent_id, addedConversation?.agent_id],
+      collectReachableAgents(
+        [primaryAgent, addedAgent],
+        agentsMap,
+        [conversation?.agent_id, addedConversation?.agent_id],
+        agentsConfig?.capabilities,
+      ),
+    [
+      addedAgent,
+      agentsMap,
+      primaryAgent,
+      conversation?.agent_id,
+      addedConversation?.agent_id,
+      agentsConfig?.capabilities,
+    ],
   );
   const storedSelections = conversation?.codeWorkspaces;
   const { isNewChat, locked, undecided } = resolveCodeWorkspaceLock(
@@ -126,6 +135,7 @@ export default function useCodeWorkspace(
         reachableAgents: reachable.agents,
         supportsWorkspaceInheritance,
         undecided,
+        capabilities: agentsConfig?.capabilities,
       }),
     [
       addedAgent,
@@ -135,6 +145,7 @@ export default function useCodeWorkspace(
       conversation?.codeWorkspaces,
       primaryAgent,
       reachable.agents,
+      agentsConfig?.capabilities,
       statefulCodeSessions?.environments,
       statefulCodeSessions?.allowEnvironmentSelection,
       supportsWorkspaceInheritance,
@@ -198,6 +209,7 @@ export default function useCodeWorkspace(
           addedAgent,
           agentsMap,
           reachableAgents: reachable.agents,
+          capabilities: agentsConfig?.capabilities,
         },
         selections,
       ),
@@ -211,6 +223,7 @@ export default function useCodeWorkspace(
       required,
       selectionMetadataComplete,
       reachable.agents,
+      agentsConfig?.capabilities,
       statefulCodeSessions,
       supportsWorkspaceInheritance,
     ],

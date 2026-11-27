@@ -1,4 +1,9 @@
-const { isEnabled, publishConversationTitle, raceWithTimeout } = require('@librechat/api');
+const {
+  isEnabled,
+  publishConversationTitle,
+  raceWithTimeout,
+  allowsAssistantSideEffects,
+} = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
 const getLogStores = require('~/cache/getLogStores');
@@ -51,7 +56,7 @@ const addTitle = async (
     return;
   }
 
-  if (client.options.titleConvo === false) {
+  if (!allowsAssistantSideEffects(req?.config, client.options.titleConvo)) {
     return;
   }
 

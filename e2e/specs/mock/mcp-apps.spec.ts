@@ -17,7 +17,7 @@ import { expect, test, unroute } from './fixtures';
 
 const MCP_SERVER_TITLE = 'E2E MCP App';
 const LEGACY_FRAME_TITLE = 'MCP HTML Resource (Embedded Content)';
-const CHAT_ORIGIN = new URL(process.env.E2E_BASE_URL || 'http://127.0.0.1:3080').origin;
+const CHAT_ORIGIN = new URL(process.env.E2E_BASE_URL || 'http://127.0.0.1:3180').origin;
 const MCP_APP_ORIGIN = `http://127.0.0.1:${process.env.E2E_MCP_APP_PORT || '8768'}`;
 const MCP_APP_LINK_ORIGIN = `http://localhost:${process.env.E2E_MCP_APP_PORT || '8768'}`;
 const LABEL_SERVER = `http://127.0.0.1:${process.env.E2E_LABEL_PORT || '8889'}`;
@@ -454,7 +454,7 @@ test.describe('MCP Apps full integration', () => {
     expect(sandboxUrl).toBeTruthy();
     expect(new URL(sandboxUrl!).origin).not.toBe(new URL(page.url()).origin);
     expect(new URL(sandboxUrl!).origin).toBe(
-      new URL(process.env.E2E_MCP_SANDBOX_URL || 'http://localhost:3080/api/mcp/sandbox').origin,
+      new URL(process.env.E2E_MCP_SANDBOX_URL || 'http://localhost:3180/api/mcp/sandbox').origin,
     );
     await expect(outerFrame).toHaveAttribute(
       'sandbox',

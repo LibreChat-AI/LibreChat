@@ -228,6 +228,18 @@ const OPENID_ACCESS_CREDENTIAL_PLACEHOLDER_PATTERN =
   /\{\{LIBRECHAT_OPENID_(?:ACCESS_TOKEN|TOKEN)\}\}/;
 
 /**
+ * Whether resolving these header templates needs the user's OpenID access token. Environment
+ * variables expand first, as in `processSingleValue`, so a `${VAR}` that holds the placeholder counts.
+ */
+export function needsOpenIDAccessToken(headers?: Record<string, string>): boolean {
+  return Object.values(headers ?? {}).some(
+    (value) =>
+      typeof value === 'string' &&
+      OPENID_ACCESS_CREDENTIAL_PLACEHOLDER_PATTERN.test(extractEnvVariable(value)),
+  );
+}
+
+/**
  * Replaces resolvable-but-unresolved placeholders with an empty string so
  * LibreChat's internal template syntax is never sent upstream as if it were
  * real user data (e.g. a gateway trusting a literal

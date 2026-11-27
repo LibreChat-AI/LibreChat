@@ -1,171 +1,21 @@
-import React, { useRef, useState, useMemo, useEffect, useCallback } from 'react';
-import { Tools } from 'librechat-data-provider';
-import type { CodeBarProps } from '~/common';
-import FloatingCodeBar from '~/components/Messages/Content/FloatingCodeBar';
-import ResultSwitcher from '~/components/Messages/Content/ResultSwitcher';
-import { useToolCallsMapContext, useMessageContext } from '~/Providers';
-/* The module, not the parts barrel: the barrel registers the part renderers, which import the
- * whole markdown stack, and code blocks render on boot-time surfaces such as prompt previews. */
-import LogContent from '~/components/Chat/Messages/Content/Parts/LogContent';
-import CodeBar from '~/components/Messages/Content/CodeBar';
-import { useLocalize } from '~/hooks';
-import cn from '~/utils/cn';
+import { CodeBlock as Block } from '@librechat/chat/components';
+import type { CodeBlockProps, RunCodeProps } from '@librechat/chat/components';
+import CodeOutput from '~/components/Messages/Content/CodeOutput';
+import RunCode from '~/components/Messages/Content/RunCode';
 
-type CodeBlockProps = Pick<
-  CodeBarProps,
-  'lang' | 'plugin' | 'error' | 'allowExecution' | 'blockIndex'
-> & {
-  codeChildren: React.ReactNode;
-  classProp?: string;
-};
+const renderRun = (props: RunCodeProps) => <RunCode {...props} />;
 
-const CodeBlock: React.FC<CodeBlockProps> = ({
-  lang,
-  blockIndex,
-  codeChildren,
-  classProp = '',
+/** The chat package's code block, with LibreChat's run button and the output of its runs. */
+export default function CodeBlock({
   allowExecution = true,
-  plugin = null,
-  error,
-}) => {
-  const localize = useLocalize();
-  const codeRef = useRef<HTMLElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const codeBarRef = useRef<HTMLDivElement>(null);
-  const [isHovered, setIsHovered] = useState(false);
-  const [isCodeBarVisible, setIsCodeBarVisible] = useState(true);
-
-  const toolCallsMap = useToolCallsMapContext();
-  const { messageId, partIndex } = useMessageContext();
-  const key = allowExecution
-    ? `${messageId}_${partIndex ?? 0}_${blockIndex ?? 0}_${Tools.execute_code}`
-    : '';
-  const [currentIndex, setCurrentIndex] = useState(0);
-
-  const fetchedToolCalls = toolCallsMap?.[key];
-  const [toolCalls, setToolCalls] = useState(toolCallsMap?.[key] ?? null);
-
-  useEffect(() => {
-    if (fetchedToolCalls) {
-      setToolCalls(fetchedToolCalls);
-      setCurrentIndex(fetchedToolCalls.length - 1);
-    }
-  }, [fetchedToolCalls]);
-
-  useEffect(() => {
-    const el = codeBarRef.current;
-    if (!el) {
-      return;
-    }
-
-    const observer = new IntersectionObserver(
-      ([entry]) => setIsCodeBarVisible(entry.isIntersecting),
-      { root: null, threshold: 0 },
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  const handleFocus = useCallback(() => setIsHovered(true), []);
-
-  const handleBlur = useCallback((e: React.FocusEvent) => {
-    if (!containerRef.current?.contains(e.relatedTarget as Node)) {
-      setIsHovered(false);
-    }
-  }, []);
-
-  const handleMouseEnter = useCallback(() => setIsHovered(true), []);
-
-  const handleMouseLeave = useCallback(() => {
-    if (!containerRef.current?.contains(document.activeElement)) {
-      setIsHovered(false);
-    }
-  }, []);
-
-  const currentToolCall = useMemo(() => toolCalls?.[currentIndex], [toolCalls, currentIndex]);
-
-  const next = useCallback(() => {
-    if (toolCalls && currentIndex < toolCalls.length - 1) {
-      setCurrentIndex(currentIndex + 1);
-    }
-  }, [toolCalls, currentIndex]);
-
-  const previous = useCallback(() => {
-    if (currentIndex > 0) {
-      setCurrentIndex(currentIndex - 1);
-    }
-  }, [currentIndex]);
-
-  const isNonCode = !!(plugin === true || error === true);
-  const language = isNonCode ? 'json' : lang;
-  const showFloating = isHovered && !isCodeBarVisible;
-
+  ...props
+}: Omit<CodeBlockProps, 'renderRun' | 'output'>) {
   return (
-    <div
-      ref={containerRef}
-      className="border-border-inset theme-chrome-quiet:border-2 theme-chrome-quiet:border-surface-code theme-chrome-quiet:bg-surface-code relative w-full overflow-hidden rounded-xl border text-xs"
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
-      onFocus={handleFocus}
-      onBlur={handleBlur}
-    >
-      <div ref={codeBarRef}>
-        <CodeBar
-          lang={lang}
-          error={error}
-          codeRef={codeRef}
-          blockIndex={blockIndex}
-          plugin={plugin === true}
-          allowExecution={allowExecution}
-        />
-      </div>
-      <div dir="ltr" className={cn(classProp, 'bg-surface-code-body overflow-y-auto p-4')}>
-        <code
-          ref={codeRef}
-          className={cn(
-            isNonCode ? '!whitespace-pre-wrap' : `hljs language-${language} !whitespace-pre`,
-          )}
-        >
-          {codeChildren}
-        </code>
-      </div>
-      <FloatingCodeBar
-        lang={lang}
-        error={error}
-        codeRef={codeRef}
-        blockIndex={blockIndex}
-        plugin={plugin === true}
-        allowExecution={allowExecution}
-        isVisible={showFloating}
-      />
-      {allowExecution === true && toolCalls && toolCalls.length > 0 && (
-        <>
-          <div dir="ltr" className="border-border-inset bg-surface-code border-t p-4 text-xs">
-            <div className="text-text-secondary text-3xs mb-1 font-medium tracking-wide uppercase">
-              {localize('com_ui_output')}
-            </div>
-            <div className="text-text-primary flex flex-col-reverse">
-              <pre className="shrink-0">
-                <LogContent
-                  output={(currentToolCall?.result as string | undefined) ?? ''}
-                  attachments={currentToolCall?.attachments ?? []}
-                  renderImages={true}
-                />
-              </pre>
-            </div>
-          </div>
-          {toolCalls.length > 1 && (
-            <ResultSwitcher
-              currentIndex={currentIndex}
-              totalCount={toolCalls.length}
-              onPrevious={previous}
-              onNext={next}
-            />
-          )}
-        </>
-      )}
-    </div>
+    <Block
+      {...props}
+      allowExecution={allowExecution}
+      renderRun={renderRun}
+      output={allowExecution ? <CodeOutput blockIndex={props.blockIndex} /> : null}
+    />
   );
-};
-
-export default CodeBlock;
+}

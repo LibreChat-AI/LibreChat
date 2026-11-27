@@ -9,6 +9,7 @@ import {
   FileSources,
   PrincipalType,
   MAX_SUBAGENT_DEPTH,
+  validateAzureGroups,
   MAX_SUBAGENT_RUN_CONFIGS,
 } from 'librechat-data-provider';
 import type {
@@ -24,8 +25,8 @@ import type { OpenAI } from 'openai';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
 import type { OpenAIConfiguration, AzureOptions } from '~/types';
 import { clearToolApprovalHooks, registerToolApprovalHook } from '~/agents/hitl/hooks';
-import { executionFixture } from '~/schedules/authorization/execution.helper';
 import { createRun, isAskUserQuestionAdminDisabled } from '~/agents/run';
+import { executionFixture } from '~/agents/authority/execution.helper';
 import { initializeOpenAI } from '~/endpoints/openai/initialize';
 import { createSecretRebindingGuard } from '~/app/rebinding';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
@@ -103,7 +104,7 @@ jest.mock('~/agents/checkpointer', () => ({
   getAgentCheckpointer: jest.fn().mockResolvedValue({}),
 }));
 
-import { ChatOpenAI } from '@librechat/agents/llm/openai';
+import { ChatOpenAI, AzureChatOpenAI } from '@librechat/agents/llm/openai';
 import { ChatOpenRouter } from '@librechat/agents/llm/openrouter';
 import {
   Run,
@@ -112,6 +113,7 @@ import {
   ToolNode,
   Constants,
   buildChildInputs,
+  createPruneMessages,
   InMemorySubagentTaskStore,
   buildSubagentToolParams,
   executeHooks,
@@ -560,64 +562,46 @@ describe('model-level callbacks', () => {
 // Suite 1: reserveRatio
 // ---------------------------------------------------------------------------
 describe('reserveRatio', () => {
-  it('applies ratio from config using baseContextTokens, capped at maxContextTokens', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ baseContextTokens: 200_000, maxContextTokens: 200_000 })],
-      summarizationConfig: { reserveRatio: 0.03, provider: 'anthropic', model: 'claude' },
-    });
-    // Math.round(200000 * 0.97) = 194000, min(200000, 194000) = 194000
-    expect(agents[0].maxContextTokens).toBe(194_000);
-  });
+  it.each`
+    scenario                             | reserveRatio | baseContextTokens   | maxContextTokens | sent       | budget     | viable
+    ${'200k window minus 36,512 output'} | ${0.1}       | ${200_000 - 36_512} | ${200_000}       | ${163_488} | ${147_139} | ${true}
+    ${'no implicit default reserve'}     | ${0.1}       | ${163_488}          | ${155_314}       | ${163_488} | ${147_139} | ${true}
+    ${'smaller explicit cap'}            | ${0.1}       | ${50_000}           | ${50_000}        | ${50_000}  | ${45_000}  | ${true}
+    ${'unset ratio uses legacy budget'}  | ${undefined} | ${163_488}          | ${155_314}       | ${155_314} | ${147_548} | ${true}
+    ${'zero skips both reserves'}        | ${0}         | ${163_488}          | ${155_314}       | ${163_488} | ${163_488} | ${true}
+    ${'one follows SDK no-op semantics'} | ${1}         | ${163_488}          | ${155_314}       | ${163_488} | ${163_488} | ${true}
+    ${'no raw budget falls back'}        | ${0.05}      | ${undefined}        | ${100_000}       | ${100_000} | ${95_000}  | ${true}
+    ${'low budget is not floored'}       | ${0.99}      | ${500}              | ${1024}          | ${500}     | ${5}       | ${false}
+    ${'zero input is not raised'}        | ${0.1}       | ${0}                | ${1024}          | ${0}       | ${0}       | ${false}
+    ${'rounds the reserved tokens'}      | ${0.5}       | ${2047}             | ${2047}          | ${2047}    | ${1023}    | ${false}
+    ${'exactly the viable minimum'}      | ${0.5}       | ${2048}             | ${2048}          | ${2048}    | ${1024}    | ${true}
+  `(
+    '$scenario',
+    async ({ reserveRatio, baseContextTokens, maxContextTokens, sent, budget, viable }) => {
+      const [agent] = (await callAndCapture({
+        agents: [makeAgent({ baseContextTokens, maxContextTokens })],
+        summarizationConfig: { reserveRatio, provider: 'anthropic', model: 'claude' },
+      })) as Pick<
+        AgentInputs,
+        'maxContextTokens' | 'summarizationConfig' | 'summarizationEnabled'
+      >[];
+      expect(agent.maxContextTokens).toBe(sent);
+      expect(agent.summarizationEnabled).toBe(viable);
+      if (agent.maxContextTokens == null) {
+        throw new Error('Expected a context budget in the SDK input');
+      }
 
-  it('never exceeds user-configured maxContextTokens even when ratio computes higher', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ baseContextTokens: 200_000, maxContextTokens: 50_000 })],
-      summarizationConfig: { reserveRatio: 0.03, provider: 'anthropic', model: 'claude' },
-    });
-    // Math.round(200000 * 0.97) = 194000, but min(50000, 194000) = 50000
-    expect(agents[0].maxContextTokens).toBe(50_000);
-  });
-
-  it('falls back to maxContextTokens when ratio is not set', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000, baseContextTokens: 200_000 })],
-      summarizationConfig: { provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('falls back to maxContextTokens when ratio is 0', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000, baseContextTokens: 200_000 })],
-      summarizationConfig: { reserveRatio: 0, provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('falls back to maxContextTokens when ratio is 1', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000, baseContextTokens: 200_000 })],
-      summarizationConfig: { reserveRatio: 1, provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('falls back to maxContextTokens when baseContextTokens is undefined', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ maxContextTokens: 100_000 })],
-      summarizationConfig: { reserveRatio: 0.05, provider: 'anthropic', model: 'claude' },
-    });
-    expect(agents[0].maxContextTokens).toBe(100_000);
-  });
-
-  it('clamps to 1024 minimum but still capped at maxContextTokens', async () => {
-    const agents = await callAndCapture({
-      agents: [makeAgent({ baseContextTokens: 500, maxContextTokens: 2000 })],
-      summarizationConfig: { reserveRatio: 0.99, provider: 'anthropic', model: 'claude' },
-    });
-    // Math.round(500 * 0.01) = 5 → clamped to 1024, min(2000, 1024) = 1024
-    expect(agents[0].maxContextTokens).toBe(1024);
-  });
+      const prune = createPruneMessages({
+        maxTokens: agent.maxContextTokens,
+        reserveRatio: agent.summarizationConfig?.reserveRatio,
+        summarizationEnabled: agent.summarizationEnabled,
+        startIndex: 0,
+        tokenCounter: () => 1,
+        indexTokenCountMap: {},
+      });
+      expect(prune({ messages: [new HumanMessage('Hello')] }).contextBudget).toBe(budget);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -888,6 +872,231 @@ describe('summarization reasoning effort', () => {
     expect(request.reasoning_effort).toBe('low');
   });
 
+  it.each(['o3', 'gpt-5-mini'])(
+    "overrides the agent's Chat Completions effort for a summary on %s",
+    async (model) => {
+      /** Initialization replaces the saved parameters with the resolved client options. */
+      const { llmConfig } = getOpenAIConfig(
+        'test-key',
+        { modelOptions: { model: 'o3', reasoning_effort: ReasoningEffort.high } },
+        EModelEndpoint.openAI,
+      );
+      expect(llmConfig.modelKwargs).toEqual({ reasoning_effort: ReasoningEffort.high });
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: EModelEndpoint.openAI,
+            endpoint: EModelEndpoint.openAI,
+            model: 'o3',
+            model_parameters: { ...llmConfig },
+          }),
+        ],
+        summarizationConfig: {
+          provider: EModelEndpoint.openAI,
+          model,
+          parameters: { reasoning_effort: 'low' },
+        },
+      });
+
+      const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+      const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+      const summaryModel = new ChatOpenAI({
+        ...mainClientOptions,
+        ...(summaryConfig.parameters as Record<string, unknown>),
+        apiKey: 'test-key',
+        model,
+      } as never);
+      const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+      /** The client applies `reasoning.effort` after spreading `modelKwargs`. */
+      expect(request).toMatchObject({ model, reasoning_effort: 'low' });
+    },
+  );
+
+  /** The SDK's Azure client ignores `reasoning` for a deployment name without a model family. */
+  it("overrides the agent's effort on a same-deployment Azure summary", async () => {
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      {
+        azure: {
+          azureOpenAIApiKey: 'test-key',
+          azureOpenAIApiInstanceName: 'test-instance',
+          azureOpenAIApiDeploymentName: 'production-deployment',
+          azureOpenAIApiVersion: '2025-04-01-preview',
+        },
+        reasoningEfforts: [ReasoningEffort.low, ReasoningEffort.high],
+        modelOptions: { model: 'production-west', reasoning_effort: ReasoningEffort.high },
+      },
+      EModelEndpoint.azureOpenAI,
+    );
+    expect(llmConfig.modelKwargs).toEqual({ reasoning_effort: ReasoningEffort.high });
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: Providers.AZURE,
+          endpoint: EModelEndpoint.azureOpenAI,
+          model: 'production-west',
+          model_parameters: { ...llmConfig },
+        }),
+      ],
+      summarizationConfig: {
+        provider: EModelEndpoint.azureOpenAI,
+        parameters: { reasoning_effort: 'low' },
+      },
+    });
+
+    const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    const summaryModel = new AzureChatOpenAI({
+      ...mainClientOptions,
+      ...(summaryConfig.parameters as Record<string, unknown>),
+    } as never);
+    const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+    expect(request).toMatchObject({ reasoning_effort: 'low' });
+  });
+
+  /** GPT-5.1 takes sampling controls only at effort `none`. */
+  it('drops inherited sampling controls when a GPT-5.1 summary raises the effort above none', async () => {
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      {
+        modelOptions: {
+          model: 'gpt-5.1',
+          reasoning_effort: ReasoningEffort.none,
+          temperature: 0.7,
+        },
+      },
+      EModelEndpoint.openAI,
+    );
+    expect(llmConfig).toHaveProperty('temperature', 0.7);
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: EModelEndpoint.openAI,
+          endpoint: EModelEndpoint.openAI,
+          model: 'gpt-5.1',
+          model_parameters: { ...llmConfig },
+        }),
+      ],
+      summarizationConfig: {
+        provider: EModelEndpoint.openAI,
+        parameters: { reasoning_effort: 'high' },
+      },
+    });
+
+    const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    const summaryModel = new ChatOpenAI({
+      ...mainClientOptions,
+      ...(summaryConfig.parameters as Record<string, unknown>),
+      apiKey: 'test-key',
+    } as never);
+    const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+    expect(request).toMatchObject({ reasoning_effort: 'high' });
+    expect(request.temperature).toBeUndefined();
+  });
+
+  it("drops a summary's own sampling controls beside the GPT-5.1 effort it inherits", async () => {
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      { modelOptions: { model: 'gpt-5.1', reasoning_effort: ReasoningEffort.high } },
+      EModelEndpoint.openAI,
+    );
+    expect(llmConfig.modelKwargs).toEqual({ reasoning_effort: ReasoningEffort.high });
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: EModelEndpoint.openAI,
+          endpoint: EModelEndpoint.openAI,
+          model: 'gpt-5.1',
+          model_parameters: { ...llmConfig },
+        }),
+      ],
+      summarizationConfig: {
+        provider: EModelEndpoint.openAI,
+        parameters: { temperature: 0.7 },
+      },
+    });
+
+    const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    const summaryModel = new ChatOpenAI({
+      ...mainClientOptions,
+      ...(summaryConfig.parameters as Record<string, unknown>),
+      apiKey: 'test-key',
+    } as never);
+    const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+    expect(request).toMatchObject({ reasoning_effort: 'high' });
+    expect(request.temperature).toBeUndefined();
+  });
+
+  it('drops inherited sampling controls when a declared Azure summary raises the effort', async () => {
+    const declared = [ReasoningEffort.none, ReasoningEffort.low, ReasoningEffort.high];
+    const azure = validateAzureGroups([
+      {
+        group: 'test',
+        apiKey: 'test-key',
+        instanceName: 'test-instance',
+        version: '2025-04-01-preview',
+        models: {
+          'production-west': {
+            deploymentName: 'production-deployment',
+            reasoningEfforts: declared,
+          },
+        },
+      },
+    ]);
+    expect(azure.isValid).toBe(true);
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      {
+        azure: {
+          azureOpenAIApiKey: 'test-key',
+          azureOpenAIApiInstanceName: 'test-instance',
+          azureOpenAIApiDeploymentName: 'production-deployment',
+          azureOpenAIApiVersion: '2025-04-01-preview',
+        },
+        reasoningEfforts: declared,
+        modelOptions: {
+          model: 'production-west',
+          reasoning_effort: ReasoningEffort.none,
+          temperature: 0.7,
+        },
+      },
+      EModelEndpoint.azureOpenAI,
+    );
+    expect(llmConfig).toHaveProperty('temperature', 0.7);
+    const agents = await callAndCapture({
+      appConfig: { endpoints: { azureOpenAI: azure } } as AppConfig,
+      agents: [
+        makeReasoningAgent({
+          provider: Providers.AZURE,
+          endpoint: EModelEndpoint.azureOpenAI,
+          model: 'production-west',
+          model_parameters: { ...llmConfig },
+        }),
+      ],
+      summarizationConfig: {
+        provider: EModelEndpoint.azureOpenAI,
+        parameters: { reasoning_effort: 'high' },
+      },
+    });
+
+    const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    const summaryModel = new AzureChatOpenAI({
+      ...mainClientOptions,
+      ...(summaryConfig.parameters as Record<string, unknown>),
+    } as never);
+    const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+    expect(request).toMatchObject({ reasoning_effort: 'high' });
+    expect(request.temperature).toBeUndefined();
+  });
+
   it('maps effort to verbosity for OpenRouter adaptive Anthropic models', async () => {
     const agents = await callAndCapture({
       agents: [
@@ -1002,6 +1211,67 @@ describe('summarization reasoning effort', () => {
       temperature: 0.2,
       streaming: false,
       reasoning_effort: '',
+    });
+  });
+
+  describe("on another model of the agent's OpenAI endpoint", () => {
+    /** The request the summary client sends, built as the SDK builds it: the summary
+     *  parameters over the client options initialization resolves from the saved ones. */
+    async function summaryRequest(
+      saved: { reasoning_effort: ReasoningEffort; useResponsesApi?: boolean },
+      model: string,
+    ): Promise<Record<string, unknown>> {
+      const { llmConfig } = getOpenAIConfig(
+        'test-key',
+        { modelOptions: { model: 'o3', ...saved } },
+        EModelEndpoint.openAI,
+      );
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: EModelEndpoint.openAI,
+            endpoint: EModelEndpoint.openAI,
+            model: 'o3',
+            model_parameters: { ...llmConfig },
+          }),
+        ],
+        summarizationConfig: { provider: EModelEndpoint.openAI, model },
+      });
+      const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+      const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+      const summaryModel = new ChatOpenAI({
+        ...mainClientOptions,
+        ...(summaryConfig.parameters as Record<string, unknown>),
+        apiKey: 'test-key',
+        model,
+      } as never);
+      return summaryModel.invocationParams() as Record<string, unknown>;
+    }
+
+    it('leaves the Chat Completions effort behind for a model that takes none', async () => {
+      const request = await summaryRequest({ reasoning_effort: ReasoningEffort.high }, 'gpt-4.1');
+
+      expect(request).toMatchObject({ model: 'gpt-4.1' });
+      expect(request).not.toHaveProperty('reasoning_effort');
+    });
+
+    it('leaves the Responses reasoning object behind for a model that takes none', async () => {
+      const request = await summaryRequest(
+        { reasoning_effort: ReasoningEffort.high, useResponsesApi: true },
+        'gpt-4.1',
+      );
+
+      expect(request).toMatchObject({ model: 'gpt-4.1' });
+      expect(request.reasoning).toBeUndefined();
+    });
+
+    it('keeps the effort for a model that takes one', async () => {
+      const request = await summaryRequest(
+        { reasoning_effort: ReasoningEffort.high },
+        'gpt-5-mini',
+      );
+
+      expect(request).toMatchObject({ model: 'gpt-5-mini', reasoning_effort: 'high' });
     });
   });
 });
@@ -2921,22 +3191,20 @@ describe('multi-agent + per-agent overrides', () => {
     });
   });
 
-  it('different agents get different effectiveMaxContextTokens', async () => {
+  it('uses the base budget only for agents with a configured reserve', async () => {
     const agents = await callAndCapture({
       agents: [
-        makeAgent({ id: 'agent_1', baseContextTokens: 200_000, maxContextTokens: 100_000 }),
-        makeAgent({ id: 'agent_2', baseContextTokens: 100_000, maxContextTokens: 50_000 }),
+        makeAgent({ id: 'agent_1', baseContextTokens: 120_000, maxContextTokens: 114_000 }),
+        makeAgent({
+          id: 'agent_2',
+          baseContextTokens: 100_000,
+          maxContextTokens: 95_000,
+          summarization: { reserveRatio: 0 },
+        }),
       ],
-      summarizationConfig: {
-        reserveRatio: 0.1,
-        provider: 'anthropic',
-        model: 'claude',
-      },
+      summarizationConfig: { provider: 'anthropic', model: 'claude' },
     });
-    // agent_1: Math.round(200000 * 0.9) = 180000, but capped at user's maxContextTokens (100000)
-    expect(agents[0].maxContextTokens).toBe(100_000);
-    // agent_2: Math.round(100000 * 0.9) = 90000, but capped at user's maxContextTokens (50000)
-    expect(agents[1].maxContextTokens).toBe(50_000);
+    expect(agents.map((agent) => agent.maxContextTokens)).toEqual([114_000, 100_000]);
   });
 });
 
@@ -3760,6 +4028,16 @@ describe('built-in provider request shaping', () => {
     expect(config.parameters).toBeUndefined();
   });
 
+  it('leaves out sampling controls a GPT-5.1 summarizer rejects beside its effort', async () => {
+    const parameters = await summarizeWith(
+      { reasoning_effort: 'high', temperature: 0.7 },
+      'gpt-5.1',
+    );
+
+    expect(parameters).toMatchObject({ modelKwargs: { reasoning_effort: 'high' } });
+    expect(parameters.temperature).toBeUndefined();
+  });
+
   it('routes a reasoning model the way the agent flow would', async () => {
     /** `getOpenAIConfig` reads the effort from modelOptions, not from the merged
      * parameters, so it has to be handed the summarizer's own effort. */
@@ -3849,6 +4127,132 @@ describe('subagentConfigs', () => {
     expect(Array.isArray(configs)).toBe(true);
     expect(configs).toHaveLength(1);
     expect(configs[0]).toMatchObject({ self: true, type: 'self' });
+  });
+
+  it('lets self-spawn reuse the parent agent subagents', async () => {
+    const child = makeAgent({
+      id: 'agent_child',
+      name: 'Researcher',
+    });
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, agent_ids: ['agent_child'] },
+          subagentAgentConfigs: [child],
+        }),
+      ],
+    });
+
+    const configs = agents[0].subagentConfigs as Array<{
+      self?: boolean;
+      allowNested?: boolean;
+      agentInputs?: { subagentConfigs?: Array<{ type?: string }> };
+    }>;
+    const selfConfig = configs.find((config) => config.self);
+
+    expect(selfConfig?.allowNested).toBe(true);
+    expect(selfConfig?.agentInputs?.subagentConfigs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'agent_child' })]),
+    );
+  });
+
+  it('hands the SDK a copy that can reach the subagents but not spawn another copy', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, agent_ids: ['agent_child'] },
+          subagentAgentConfigs: [makeAgent({ id: 'agent_child', name: 'Researcher' })],
+        }),
+      ],
+    });
+    const configs = agents[0].subagentConfigs as SubagentConfig[];
+    const selfConfig = configs.find((config) => config.self === true);
+
+    expect(selfConfig?.description).toMatch(/The copy can delegate to the same subagents\.$/);
+    const copy = buildChildInputs(selfConfig as BuildChildInput, 'agent_1', MAX_SUBAGENT_DEPTH);
+    expect(copy.subagentConfigs?.map((config) => config.type)).toEqual(['agent_child']);
+    expect(copy.maxSubagentDepth).toBe(MAX_SUBAGENT_DEPTH - 1);
+  });
+
+  it('leaves the copy without subagents when subagentSelfNesting is off, and says so', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, agent_ids: ['agent_child'] },
+          subagentAgentConfigs: [makeAgent({ id: 'agent_child', name: 'Researcher' })],
+        }),
+      ],
+      appConfig: { endpoints: { agents: { subagentSelfNesting: false } } } as AppConfig,
+    });
+    const configs = agents[0].subagentConfigs as SubagentConfig[];
+    const selfConfig = configs.find((config) => config.self === true);
+
+    expect(configs.map((config) => config.type)).toEqual(['self', 'agent_child']);
+    expect(selfConfig?.allowNested).toBeUndefined();
+    expect(selfConfig?.agentInputs).toBeUndefined();
+    expect(selfConfig?.description).toMatch(/The copy cannot delegate to subagents;/);
+  });
+
+  it('says nothing about delegation for a copy of an agent with no subagents', async () => {
+    const agents = await callAndCapture({
+      agents: [makeAgent({ subagents: { enabled: true } })],
+    });
+    const [selfConfig] = agents[0].subagentConfigs as SubagentConfig[];
+
+    expect(selfConfig.allowNested).toBeUndefined();
+    expect(selfConfig.description).not.toMatch(/delegate/);
+  });
+
+  it('promises a copy subagents only where every path to it leaves a hop to spend', async () => {
+    const root = makeSubagentChain(MAX_SUBAGENT_DEPTH);
+    const chain: TestRunAgent[] = [root];
+    while (chain[chain.length - 1].subagentAgentConfigs?.[0] != null) {
+      chain.push(chain[chain.length - 1].subagentAgentConfigs![0]);
+    }
+    for (const agent of chain.slice(0, -1)) {
+      (agent.subagents as { allowSelf: boolean }).allowSelf = true;
+    }
+    const agents = await callAndCapture({ agents: [root] });
+
+    /** `levels[n]` holds the self entry and the saved child of the agent `n` hops below the root. */
+    const levels: { copy: SubagentConfig; child: SubagentConfig }[] = [];
+    let configs = agents[0].subagentConfigs as SubagentConfig[] | undefined;
+    while (configs != null) {
+      const copy = configs.find((config) => config.self === true);
+      const child = configs.find((config) => config.self !== true);
+      if (copy == null || child == null) {
+        break;
+      }
+      levels.push({ copy, child });
+      configs = child.agentInputs?.subagentConfigs as SubagentConfig[] | undefined;
+    }
+
+    expect(levels).toHaveLength(MAX_SUBAGENT_DEPTH);
+    expect(levels.map(({ copy }) => copy.allowNested === true)).toEqual(
+      levels.map((_, depth) => 2 * depth + 1 < MAX_SUBAGENT_DEPTH),
+    );
+    for (const { copy } of levels) {
+      expect(copy.description).toMatch(
+        copy.allowNested === true
+          ? /The copy can delegate to the same subagents\.$/
+          : /The copy cannot delegate to subagents;/,
+      );
+    }
+
+    /**
+     * The longest path to each agent goes through the copy of every agent above that has one to
+     * give. Counted down by the SDK itself, a promised copy still has a hop left at the end.
+     */
+    const spend = (config: SubagentConfig, hops: number): number =>
+      buildChildInputs(config as BuildChildInput, 'agent_chain', hops).maxSubagentDepth ?? 0;
+    let hops: number = MAX_SUBAGENT_DEPTH;
+    for (const { copy, child } of levels) {
+      if (copy.allowNested === true) {
+        hops = spend(copy, hops);
+        expect(hops).toBeGreaterThan(0);
+      }
+      hops = spend(child, hops);
+    }
   });
 
   it('omits self-spawn when allowSelf is false', async () => {
@@ -4084,6 +4488,37 @@ describe('subagentConfigs', () => {
     ).toMatchObject({ defer_loading: false });
     expect(memberRegistry.get('deep_tool')).toMatchObject({ defer_loading: true });
     expect(memberInput.toolDefinitions).toEqual([{ name: 'tool_search' }]);
+  });
+
+  it('advertises graph teams without enabling ordinary self-spawn or explicit agents', async () => {
+    const member = makeAgent({ id: 'graph_only_member' });
+    const definition = {
+      type: 'graph_only',
+      name: 'Graph only',
+      description: 'Delegate a team',
+      agent_ids: [member.id],
+      edges: [],
+      entry_agent_id: member.id,
+      result_agent_id: member.id,
+    };
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          id: 'parent',
+          subagents: {
+            enabled: false,
+            graphsEnabled: true,
+            allowSelf: true,
+            agent_ids: ['unused'],
+            graphs: [definition],
+          },
+          subagentGraphConfigs: [{ definition, memberConfigs: [member] }],
+        }),
+      ],
+    });
+    expect(agents[0].subagentConfigs).toHaveLength(1);
+    const configs = agents[0].subagentConfigs as Array<Record<string, unknown>>;
+    expect(configs[0]).toMatchObject({ kind: 'graph', type: 'graph_only' });
   });
 
   it('builds lazy graph inputs from initialized members instead of capability metadata', async () => {
@@ -5609,7 +6044,7 @@ describe('HITL wiring is gated on hitlCapable', () => {
       await createRun({
         agents: [agent] as never,
         signal: new AbortController().signal,
-        scheduledMCPExecution: f.execution,
+        grantExecution: f.execution,
         appConfig: {
           ...hitlAppConfig,
           endpoints: {
@@ -5671,7 +6106,7 @@ describe('HITL wiring is gated on hitlCapable', () => {
       await createRun({
         agents: [root] as never,
         signal: new AbortController().signal,
-        scheduledMCPExecution: execution,
+        grantExecution: execution,
         subagentTasks: tasks,
         appConfig: {
           ...hitlAppConfig,
@@ -5707,8 +6142,8 @@ describe('HITL wiring is gated on hitlCapable', () => {
       await createRun({
         agents: [makeAgent({ id: 'root' })] as never,
         signal: new AbortController().signal,
-        scheduledMCPExecution: f.execution,
-        recordScheduledMCPDenial: recorder,
+        grantExecution: f.execution,
+        recordGrantDenial: recorder,
         toolApprovalAllows: remembered ? ['write_action_api'] : undefined,
         appConfig: {
           ...hitlAppConfig,
@@ -5763,7 +6198,7 @@ describe('HITL wiring is gated on hitlCapable', () => {
     await createRun({
       agents: agents as never,
       signal: new AbortController().signal,
-      scheduledMCPExecution: f.execution,
+      grantExecution: f.execution,
       appConfig: {
         ...hitlAppConfig,
         endpoints: { agents: { toolApproval: { enabled: false } } },

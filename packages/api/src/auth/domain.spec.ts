@@ -407,6 +407,32 @@ describe('isPrivateIP - IPv4-mapped IPv6 hex-normalized form (CVE-style SSRF byp
     expect(isPrivateIP('2001::f7f7:f7f7')).toBe(false);
   });
 
+  it.each([
+    '2002:808:808:0:0:5efe:a00:1',
+    '2001:0:0:0:200:5efe:c0a8:1',
+    '64:ff9b:1::',
+    '0064:ff9b:0001:abcd:0:5431::',
+    '2001:0:102:304:0:beef:f5ff:fffe',
+    '[2001:db8:0:0:0:5efe:10.0.0.1]',
+    '2001:db8::200:5efe:a00:1',
+    '2002::1',
+    '64:ff9b::',
+  ])('classifies non-public IPv6 transition address %s', (address) => {
+    expect(isPrivateIP(address)).toBe(true);
+  });
+
+  it.each([
+    '64:ff9b::808:808',
+    '2002:808:808:0:0:5efe:808:808',
+    '64:ff9b:2::1',
+    '2001:0:102:304:0:beef:f7f7:f7f7',
+    '2001:db8::5efe:808:808',
+    '2001:db8::5eff:a00:1',
+    '2001:db8::1',
+  ])('leaves IPv6 address %s outside the private transition classifications', (address) => {
+    expect(isPrivateIP(address)).toBe(false);
+  });
+
   it('should confirm URL parser produces the hex form that bypasses dotted regex', () => {
     // This test documents the exact normalization gap
     const hostname = new URL('http://[::ffff:169.254.169.254]/').hostname.replace(/^\[|\]$/g, '');

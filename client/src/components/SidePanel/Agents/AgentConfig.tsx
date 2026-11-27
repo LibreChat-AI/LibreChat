@@ -23,11 +23,14 @@ export default function AgentConfig({
   instructionsPromptStatus,
   onRetryInstructionsPrompt,
   channels,
+  events,
 }: {
   instructionsPromptStatus?: InstructionsPromptStatus;
   onRetryInstructionsPrompt?: () => void;
   /** The Channels section, placed with the other parts that shape how people reach the agent. */
   channels?: ReactNode;
+  /** The viewer's event subscriptions on the agent: what outside events start a run of it. */
+  events?: ReactNode;
 }) {
   const localize = useLocalize();
   const methods = useFormContext<AgentForm>();
@@ -180,6 +183,9 @@ export default function AgentConfig({
 
       {/* CHANNELS: where else people can talk to the agent */}
       {channels}
+
+      {/* EVENTS: what outside events start a run of the agent */}
+      {events}
 
       {/* SUPPORT CONTACT */}
       <div className="mb-3 flex flex-col">

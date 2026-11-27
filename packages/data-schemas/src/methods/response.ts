@@ -226,6 +226,8 @@ export interface ResponseStorage {
     revision: number,
     update: { status: StoredResponseStatus; responseJSON: string; generationCreatedAt?: number },
   ): Promise<ResponseMutationResult>;
+  /** Publish an explicitly stopped, unreviewed generation only after its runtime is proven gone. */
+  cancelOrphan(record: StoredResponseRecord, responseJSON: string): Promise<ResponseMutationResult>;
   requestCancellation(
     owner: ResponseOwner,
     responseId: string,
@@ -1090,6 +1092,45 @@ export function createResponseStorage(
         )
         .lean();
       return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
+    },
+    async cancelOrphan(expected, responseJSON) {
+      const conflict = { ok: false, code: 'response_conflict' } as const;
+      if (
+        (expected.status !== 'in_progress' && expected.status !== 'queued') ||
+        expected.generationCreatedAt == null ||
+        expected.cancellationRequestedAt == null ||
+        expected.review ||
+        expected.resume ||
+        expected.pendingTerminal ||
+        expected.preparedTerminal
+      )
+        return conflict;
+      return commitInOpenScope<ResponseMutationResult>(
+        expected,
+        expected.responseId,
+        async (session) => {
+          const record = await model
+            .findOneAndUpdate(
+              {
+                ...scope(expected),
+                ...responseExecutionFilter({ execution: expected }),
+                responseId: expected.responseId,
+                requestKey: expected.requestKey,
+                parentMessageId: expected.parentMessageId,
+                revision: expected.revision,
+                status: expected.status,
+                cancellationRequestedAt: expected.cancellationRequestedAt,
+                pendingTerminal: { $exists: false },
+                preparedTerminal: { $exists: false },
+              },
+              { $set: { status: 'cancelled', responseJSON }, $inc: { revision: 1 } },
+              { new: true, session },
+            )
+            .lean();
+          return record ? { ok: true, record } : conflict;
+        },
+        conflict,
+      );
     },
     async requestCancellation(owner, responseId, now) {
       if (!Number.isFinite(now) || now <= 0) throw new TypeError('Invalid cancellation time');

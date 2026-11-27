@@ -2803,4 +2803,64 @@ describe('OpenIDSessionRefresh', () => {
       expect(req.session.openidTokens.accessTokenExpiresAt).toBe(accessExp);
     });
   });
+
+  describe('agent chat model-header refresh', () => {
+    const headers = { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' };
+    const config = { endpoints: { custom: [{ name: 'gateway', headers }] } };
+    const { createOpenIDTokenRefresh, resolveHeaders, OpenIDReauthRequiredError } =
+      jest.requireActual('@librechat/api');
+    const refreshOpenIDToken = createOpenIDTokenRefresh({ createOpenIDSessionTokenProvider });
+
+    /** A chat request the OpenID token-reuse strategy authenticated, with the token set it read. */
+    const buildChatReq = (sessionTokens, federatedTokens) =>
+      Object.assign(buildReq(sessionTokens), {
+        authStrategy: 'openidJwt',
+        config,
+        body: { endpointOption: { agent: Promise.resolve({ provider: 'gateway' }) } },
+        headers: { authorization: 'Bearer id-token-bearer' },
+        user: { ...makeOpenIdUser(), federatedTokens },
+      });
+
+    it('refreshes an expired session access token before the model header resolves', async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const sessionTokens = {
+        accessToken: makeJwt(now - 60),
+        idToken: makeJwt(now + 3600),
+        refreshToken: 'rt-chat',
+      };
+      const refreshed = makeJwt(now + 3600);
+      openIdClient.refreshTokenGrant.mockResolvedValueOnce({
+        access_token: refreshed,
+        id_token: makeJwt(now + 3600),
+        refresh_token: 'rt-chat-2',
+        expires_in: 3600,
+      });
+      const req = buildChatReq(sessionTokens, {
+        access_token: sessionTokens.accessToken,
+        id_token: sessionTokens.idToken,
+        refresh_token: 'rt-chat',
+        expires_at: now - 60,
+      });
+      const next = jest.fn();
+
+      await refreshOpenIDToken(req, buildRes(), next);
+
+      expect(next).toHaveBeenCalledWith();
+      expect(openIdClient.refreshTokenGrant).toHaveBeenCalledTimes(1);
+      expect(req.session.openidTokens.accessToken).toBe(refreshed);
+      expect(resolveHeaders({ headers, user: req.user })).toEqual({
+        Authorization: `Bearer ${refreshed}`,
+      });
+    });
+
+    it('asks for sign-in when the session no longer holds OpenID tokens', async () => {
+      const req = buildChatReq(undefined, { refresh_token: 'cookie-refresh-token' });
+      const next = jest.fn();
+
+      await refreshOpenIDToken(req, buildRes(), next);
+
+      expect(next).toHaveBeenCalledWith(expect.any(OpenIDReauthRequiredError));
+      expect(openIdClient.refreshTokenGrant).not.toHaveBeenCalled();
+    });
+  });
 });

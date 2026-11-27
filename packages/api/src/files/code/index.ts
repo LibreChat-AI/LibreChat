@@ -1,5 +1,7 @@
 export * from './classify';
 export * from './artifactDelivery';
+export * from './batch';
+export * from './cache';
 export * from './destinations';
 export * from './delete';
 export * from './errors';
@@ -12,5 +14,7 @@ export * from './preflight';
 export * from './priming';
 export * from './process';
 export * from './publication';
+export * from './receipt';
+export * from './scope';
 export * from './snapshot';
 export * from './text';

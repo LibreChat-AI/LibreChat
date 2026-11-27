@@ -3039,6 +3039,51 @@ describe('Message Operations', () => {
   });
 
   describe('CLIENT_MESSAGE_SELECT projection', () => {
+    it('returns what started a turn to the client read and to no other', async () => {
+      const conversationId = uuidv4();
+      const trigger = {
+        event: { type: 'subagent.completion', occurredAt: '2026-11-20T10:00:00.000Z' },
+        subject: { kind: 'schedule', id: 'schedule-1' },
+        origin: {
+          event: { type: 'schedule.occurrence', occurredAt: '2026-11-20T09:00:00.000Z' },
+        },
+      };
+      const row = { conversationId, user: 'user123', isCreatedByUser: true };
+      await saveMessage(mockCtx, {
+        ...row,
+        messageId: 'triggered',
+        text: 'wake',
+        trigger,
+      } as never);
+      await saveMessage(mockCtx, { ...row, messageId: 'typed', text: 'hello' });
+      const wire = (messages: unknown) =>
+        JSON.parse(JSON.stringify(messages)) as Array<Record<string, unknown>>;
+      const filter = { conversationId, user: 'user123' };
+
+      const listed = wire(await getMessages(filter, CLIENT_MESSAGE_SELECT));
+      const paged = wire(
+        (
+          await createMessageMethods(mongoose).getMessagesByCursor(filter, {
+            sortOrder: 1,
+            select: CLIENT_MESSAGE_SELECT,
+          })
+        ).messages,
+      );
+      for (const messages of [listed, paged]) {
+        expect(messages.map((message) => message.messageId)).toEqual(['triggered', 'typed']);
+        expect(messages[0].trigger).toEqual(trigger);
+        expect(messages[0]).not.toHaveProperty('_id');
+        expect(messages[1]).not.toHaveProperty('trigger');
+      }
+
+      for (const message of wire(await getMessages(filter))) {
+        expect(message).not.toHaveProperty('trigger');
+      }
+      for (const message of wire(await getMessages(filter, 'text messageId'))) {
+        expect(message).not.toHaveProperty('trigger');
+      }
+    });
+
     it('strips server-internal fields and dead SERP verticals, keeping rendered data', async () => {
       const conversationId = uuidv4();
       await Message.create({

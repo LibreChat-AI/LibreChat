@@ -1,13 +1,49 @@
 import { logger } from '@librechat/data-schemas';
 import {
+  ErrorTypes,
   Permissions,
   EndpointURLs,
+  ResourceType,
   EModelEndpoint,
   PermissionTypes,
   isAgentsEndpoint,
 } from 'librechat-data-provider';
 import type { NextFunction, Request as ServerRequest, Response as ServerResponse } from 'express';
 import type { IRole, IUser } from '@librechat/data-schemas';
+
+/**
+ * The 403 body for a refused resource permission check. A refused agent carries
+ * `ErrorTypes.AGENT_ACCESS`, so a chat turn the refusal stops says why instead of reading as a
+ * provider failure; other resources keep the plain refusal their callers read by status.
+ */
+export function accessDenied(resourceType: string): {
+  error: 'Forbidden';
+  message: string;
+  type?: ErrorTypes.AGENT_ACCESS;
+} {
+  const message = `Insufficient permissions to access this ${resourceType}`;
+  if (resourceType === ResourceType.AGENT) {
+    return { error: 'Forbidden', message, type: ErrorTypes.AGENT_ACCESS };
+  }
+  return { error: 'Forbidden', message };
+}
+
+/**
+ * The 404 body for a resource a permission check could not find. A missing agent carries
+ * `ErrorTypes.AGENT_NOT_FOUND`, so a chat turn sent to a deleted agent says the agent is gone
+ * instead of reading as a provider failure; other resources keep the plain body.
+ */
+export function notFound(resourceType: string): {
+  error: 'Not Found';
+  message: string;
+  type?: ErrorTypes.AGENT_NOT_FOUND;
+} {
+  const message = `${resourceType} not found`;
+  if (resourceType === ResourceType.AGENT) {
+    return { error: 'Not Found', message, type: ErrorTypes.AGENT_NOT_FOUND };
+  }
+  return { error: 'Not Found', message };
+}
 
 export function skipAgentCheck(req?: ServerRequest): boolean {
   if (!req || !req?.body?.endpoint) {

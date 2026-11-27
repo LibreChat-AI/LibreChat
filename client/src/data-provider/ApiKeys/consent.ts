@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, MutationKeys, dataService } from 'librechat-data-provider';
-import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from 'librechat-data-provider';
+import type { RunGrantView, ConfirmRunGrant } from 'librechat-data-provider';
 
 /** The agents a key can be granted for: the ones its owner may run remotely. */
 export function useApiKeyAgents() {
@@ -13,7 +13,7 @@ export function useApiKeyAgents() {
 
 /** The MCP grant an API key holds for one agent. Idle until an agent is chosen. */
 export function useApiKeyMCPConsent(keyId: string, agentId: string) {
-  return useQuery<ScheduleMCPConsentView>(
+  return useQuery<RunGrantView>(
     [QueryKeys.apiKeyMCPConsent, keyId, agentId],
     () => dataService.getApiKeyMCPConsent(keyId, agentId),
     {
@@ -31,8 +31,7 @@ export function useApiKeyMCPConsentMutations(keyId: string, agentId: string) {
   };
   const confirm = useMutation(
     [MutationKeys.confirmApiKeyMCPConsent, keyId, agentId],
-    (payload: ConfirmScheduleMCPConsent) =>
-      dataService.confirmApiKeyMCPConsent(keyId, agentId, payload),
+    (payload: ConfirmRunGrant) => dataService.confirmApiKeyMCPConsent(keyId, agentId, payload),
     { onSettled: refresh },
   );
   const revoke = useMutation(

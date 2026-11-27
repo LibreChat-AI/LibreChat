@@ -8,8 +8,10 @@ const { ContentTypes, EImageOutputType } = require('librechat-data-provider');
 const {
   formatToolError,
   oaiToolkit,
+  getImageData,
   extractBaseURL,
   getProxyDispatcher,
+  EMPTY_IMAGE_MESSAGE,
   applyAxiosProxyConfig,
 } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
@@ -195,12 +197,10 @@ function createOpenAIImageTools(fields = {}) {
 
       // For gpt-image-1, the response contains base64-encoded images
       // TODO: handle cost in `resp.usage`
-      const base64Image = resp.data[0].b64_json;
+      const base64Image = getImageData(resp);
 
       if (!base64Image) {
-        return returnValue(
-          'No image data returned from OpenAI API. There may be a problem with the API or your configuration.',
-        );
+        return returnValue(EMPTY_IMAGE_MESSAGE);
       }
 
       const content = [
@@ -360,17 +360,9 @@ function createOpenAIImageTools(fields = {}) {
         }
         const response = await axios.post('/images/edits', formData, axiosConfig);
 
-        if (!response.data || !response.data.data || !response.data.data.length) {
-          return returnValue(
-            'No image data returned from OpenAI API. There may be a problem with the API or your configuration.',
-          );
-        }
-
-        const base64Image = response.data.data[0].b64_json;
+        const base64Image = getImageData(response.data);
         if (!base64Image) {
-          return returnValue(
-            'No image data returned from OpenAI API. There may be a problem with the API or your configuration.',
-          );
+          return returnValue(EMPTY_IMAGE_MESSAGE);
         }
 
         const content = [

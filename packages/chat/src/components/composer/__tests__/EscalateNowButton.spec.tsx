@@ -6,12 +6,10 @@ import type { ComposerHost } from '../../../react/input';
 import { emptyPaletteSources } from '../../../react/palette';
 import { ComposerHostProvider } from '../../../react/input';
 import { NO_HOST_BINDINGS } from '../../../core/shortcuts';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import EscalateNowButton from '../EscalateNowButton';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 const host: ComposerHost = {
   useComposerBindings: () => NO_HOST_BINDINGS,
@@ -37,7 +35,7 @@ function Pane({ index }: { index: number }) {
 }
 
 const escalation = (index: number) =>
-  screen.getByRole('button', { name: `com_ui_interrupt_steer_now: waiting ${index}` });
+  screen.getByRole('button', { name: `Interrupt now: waiting ${index}` });
 
 describe('EscalateNowButton', () => {
   it('advertises a hovered button as the shortcut target only in the focused pane', () => {

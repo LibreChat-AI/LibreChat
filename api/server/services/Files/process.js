@@ -52,12 +52,14 @@ const {
   createRecordExists,
   createStoredUploadDelete,
   withStoredUploadCleanup,
+  recordAgentUpload,
   resolveStoredUploadTarget,
   startExpiredFileSweep: startExpiredFileSweepWithDeps,
   resolveToolRoleGrants,
   createCodeApiRateLimitBudget,
   getCodeApiUploadOptions,
   withCodeApiUploadRecovery,
+  failUnresolvedFile,
   isLeader,
 } = require('@librechat/api');
 const {
@@ -366,7 +368,7 @@ const processFileURL = async ({
   req,
 }) => {
   const retentionExpiryPromise = getRetentionExpiry(req);
-  const { saveURL, getFileURL } = getStrategyFunctions(fileStrategy);
+  const { saveURL, getFileURL, deleteByPath } = getStrategyFunctions(fileStrategy);
   try {
     const savedFile = await saveURL({ userId, URL, fileName, basePath, tenantId });
     if (!savedFile) {
@@ -388,7 +390,13 @@ const processFileURL = async ({
         : (savedFile.filepath ??
           (await getFileURL({ userId, fileName: fallbackFileName, basePath, tenantId })));
     if (!filepath) {
-      throw new Error(`Strategy "${fileStrategy}" did not return a file URL for "${fileName}"`);
+      await failUnresolvedFile({
+        source: fileStrategy,
+        remove: deleteByPath,
+        userId,
+        fileName,
+        basePath,
+      });
     }
     const storageMetadata = getStorageMetadata({
       filepath,
@@ -915,6 +923,10 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     messageAttachment,
     tool_resource: effectiveToolResource,
   });
+  const agentFileLink =
+    !messageAttachment && effectiveToolResource
+      ? { file_id, agent_id, tool_resource: effectiveToolResource, updatingUserId: req?.user?.id }
+      : undefined;
 
   const isImage = file.mimetype.startsWith('image');
   let fileInfoMetadata;
@@ -1059,21 +1071,13 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
         ...retentionExpiry,
       };
 
-      const result = await withStoredUploadCleanup(
-        { ...storedCleanup, trackWrite: true },
-        async (beginWrite) => {
-          if (!messageAttachment && effectiveToolResource) {
-            await db.addAgentResourceFile({
-              file_id,
-              agent_id,
-              tool_resource: effectiveToolResource,
-              updatingUserId: req?.user?.id,
-            });
-          }
-          beginWrite();
-          return db.createFile(fileInfo, true);
-        },
-      );
+      const result = await recordAgentUpload({
+        cleanup: storedCleanup,
+        link: agentFileLink,
+        addLink: db.addAgentResourceFile,
+        removeLinks: db.removeAgentResourceFiles,
+        createRecord: () => db.createFile(fileInfo, true),
+      });
       sendUploadSuccess(res, sseStream, 'Agent file uploaded and processed successfully', result);
     };
 
@@ -1446,21 +1450,13 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     ...retentionExpiry,
   };
 
-  const result = await withStoredUploadCleanup(
-    { ...storedCleanup, trackWrite: true },
-    async (beginWrite) => {
-      if (!messageAttachment && effectiveToolResource) {
-        await db.addAgentResourceFile({
-          file_id,
-          agent_id,
-          tool_resource: effectiveToolResource,
-          updatingUserId: req?.user?.id,
-        });
-      }
-      beginWrite();
-      return db.createFile(fileInfo, true);
-    },
-  );
+  const result = await recordAgentUpload({
+    cleanup: storedCleanup,
+    link: agentFileLink,
+    addLink: db.addAgentResourceFile,
+    removeLinks: db.removeAgentResourceFiles,
+    createRecord: () => db.createFile(fileInfo, true),
+  });
 
   sendUploadSuccess(res, sseStream, 'Agent file uploaded and processed successfully', result);
 };

@@ -1,7 +1,7 @@
 import { FileContext, FileSources } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
 import type { RunArtifact, RunFileScope, RunFileStore } from './manifest';
-import { createRunFileManifest } from './manifest';
+import { createRunFileManifest, describeRunFiles } from './manifest';
 
 const scope: RunFileScope = {
   userId: 'user',
@@ -122,6 +122,26 @@ describe('run file manifest', () => {
     expect(catalog[0].paths).toEqual(['execute_code', 'file_search']);
     expect(catalog[0]).not.toHaveProperty('filepath');
     expect(catalog[0].provenance).toEqual({ kind: 'user_attachment', runId: 'run' });
+  });
+
+  it('describes a generated image as an input the sandbox can read', () => {
+    /* No chooser ran for it, so like an upload that made no choice it reaches every tool
+     * that can read its type, which for an image is code execution alone. */
+    const [entry] = describeRunFiles(
+      [
+        {
+          ...input,
+          file_id: 'generated',
+          filename: 'generated.png',
+          type: 'image/png',
+          context: FileContext.image_generation,
+          llmDeliveryPath: undefined,
+          metadata: undefined,
+        },
+      ],
+      'run',
+    );
+    expect(entry.paths).toEqual(['execute_code']);
   });
 
   it('rejects unregistered actors, unapproved descendants and identity reassignment', async () => {

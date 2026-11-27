@@ -161,6 +161,28 @@ test('an artifact upload can fail a gated job only when another job downloads th
   }
 });
 
+/** Paths an upload step names, one per line of a multi-line `path`. */
+const uploadPaths = (step) =>
+  String(step.with?.path ?? '')
+    .split('\n')
+    .filter(Boolean);
+
+test('an upload whose glob walks a hidden directory opts into hidden files', () => {
+  /** upload-artifact skips every path under a dot-directory a glob reaches unless told not to;
+   *  `e2e/specs/.test-results/**` then uploads nothing, and a failed run keeps no trace. */
+  const hidden = (path) => path.includes('*') && /(^|\/)\.[^/]+\//.test(path);
+  const misses = Object.entries(workflows).flatMap(([file, workflow]) =>
+    Object.entries(workflow.jobs ?? {}).flatMap(([job, definition]) =>
+      (definition.steps ?? [])
+        .filter((step) => step.uses?.startsWith('actions/upload-artifact@'))
+        .filter((step) => uploadPaths(step).some(hidden))
+        .filter((step) => step.with['include-hidden-files'] !== true)
+        .map((step) => `${file} ${job}: ${step.name ?? step.with.name}`),
+    ),
+  );
+  assert.deepEqual(misses, []);
+});
+
 test('a required context is the name of exactly one gate job and of nothing else', () => {
   const contexts = SUITES.map((suite) => suite.context);
   assert.equal(new Set(contexts).size, contexts.length);
@@ -210,7 +232,7 @@ test('the Playwright merge group matrix is the pull request profile with no lane
   const profile = JSON.parse(selector.env.FULL_INCLUDE);
   const queued = simulate(workflow, mergeGroup());
   assert.deepEqual(queued.e2e_shards.matrix, profile);
-  assert.equal(profile.include.length, 17);
+  assert.equal(profile.include.length, 42);
   assert.deepEqual(ran(queued).sort(), [
     'e2e',
     'e2e_shards',
@@ -221,7 +243,7 @@ test('the Playwright merge group matrix is the pull request profile with no lane
   const opened = simulate(workflow, pullRequest('opened'));
   assert.deepEqual(opened.e2e_shards.matrix, profile);
   const nightly = simulate(workflow, { event_name: 'schedule', event: {} });
-  assert.equal(nightly.e2e_shards.matrix.include.length, 25);
+  assert.equal(nightly.e2e_shards.matrix.include.length, 50);
 });
 
 test('pull request runs keep their selection: full when opened, narrowed on synchronize', () => {

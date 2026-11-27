@@ -40,6 +40,7 @@ jest.mock('@tanstack/react-query', () => ({
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
   useNewConvo: () => ({ newConversation: jest.fn() }),
+  useGetConversation: () => () => null,
 }));
 
 jest.mock('~/hooks/useKeyboardShortcuts', () => ({

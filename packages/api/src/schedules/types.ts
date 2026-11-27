@@ -190,8 +190,9 @@ export interface ScheduleFileRef {
 }
 
 export interface ScheduleEngineDeps {
-  /** Retried even when Mongo has no active/unbookkept run left to enumerate. */
-  reconcileRetainedJobs?: () => Promise<void>;
+  /** Retried even when Mongo has no active/unbookkept run left to enumerate. Resolves how many
+   *  retained jobs it examined when it reports one. */
+  reconcileRetainedJobs?: () => Promise<number | void>;
   /** Host erasure fence for exact-generation receipt acknowledgements. */
   eraseSettledSchedule?: ScheduleMethods['eraseScheduleIfDrained'];
   preflightMCP: ScheduleMCPPreflight;

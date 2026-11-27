@@ -38,7 +38,7 @@ const handlers = createAdminConfigHandlers({
   listAllConfigs: db.listAllConfigs,
   findConfigByPrincipal: db.findConfigByPrincipal,
   writeConfigDocument: db.writeConfigDocument,
-  unsetConfigField: db.unsetConfigField,
+  unsetConfigFieldTracked: db.unsetConfigFieldTracked,
   deleteConfig: db.deleteConfig,
   toggleConfigActiveTracked: db.toggleConfigActiveTracked,
   setConfigPriority: db.setConfigPriority,

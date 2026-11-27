@@ -23,7 +23,7 @@ export type NewConversationParams = {
 };
 
 /** Options accepted by {@link ChatConversationContract.newConversation}: the shared params plus
- *  the two flags only the root pane's generator honors. */
+ *  the flags only the root pane's generator honors. */
 export type NewConversationOptions = NewConversationParams & {
   /** Skips focusing the composer after the new conversation renders. */
   disableFocus?: boolean;
@@ -31,6 +31,12 @@ export type NewConversationOptions = NewConversationParams & {
    * metadata arriving late. The user never left that composer, so its draft identity and its
    * in-flight attachments outlive the refresh. */
   keepComposerState?: boolean;
+  /** Set when a model, endpoint, spec, preset or agent selection changes what the open chat is
+   * sent to, rather than starting another (New Chat). An unsent chat keeps its composer through
+   * it, attachments and draft identity included, unless a run is in flight or the switch crosses
+   * into or out of an assistants endpoint, whose uploads live in that provider's storage. Unlike
+   * `keepComposerState`, the call is the user's own, so it still supersedes a pending navigation. */
+  retarget?: boolean;
 };
 
 /** Conversation identity and the per-pane settings attached to it. */

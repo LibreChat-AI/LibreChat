@@ -19,6 +19,33 @@ import { buildResponse, createResponseTracker } from '../handlers';
 import { createResponseAccountingCollector } from '../accounting';
 import { buildRunToolSet } from '~/agents/tools';
 
+describe('Responses storage intent validation', () => {
+  it.each(['false', 'true', null, 0, 1, {}, []].map((store) => [store]))(
+    'rejects malformed store=%p instead of coercing storage intent',
+    (store) => {
+      expect(validateResponseRequest({ model: 'agent', input: 'hello', store })).toEqual({
+        valid: false,
+        error: 'store must be a boolean',
+      });
+    },
+  );
+
+  it('preserves the background storage requirement', () => {
+    expect(
+      validateResponseRequest({ model: 'agent', input: 'hello', background: true, store: false }),
+    ).toEqual({ valid: false, error: 'background responses require store: true' });
+    expect(
+      validateResponseRequest({ model: 'agent', input: 'hello', background: true, store: true })
+        .valid,
+    ).toBe(true);
+  });
+
+  it.each([undefined, false, true])('preserves supported store=%p', (store) => {
+    const request = { model: 'agent', input: 'hello', ...(store === undefined ? {} : { store }) };
+    expect(validateResponseRequest(request)).toEqual({ valid: true, request });
+  });
+});
+
 describe('response usage aggregation', () => {
   const context: ResponseContext = {
     responseId: 'resp_test',

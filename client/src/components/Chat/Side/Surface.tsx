@@ -51,9 +51,11 @@ export default function SideChatSurface({
       ready: target.ready,
       pending: target.pending,
       failed: target.failed,
+      denied: target.denied,
+      missing: target.missing,
       retry: target.retry,
     }),
-    [target.ready, target.pending, target.failed, target.retry],
+    [target.ready, target.pending, target.failed, target.denied, target.missing, target.retry],
   );
   const sendable = ready && target.ready;
   const conversationId = conversation?.conversationId ?? '';
@@ -180,31 +182,50 @@ export default function SideChatSurface({
     field.focus({ preventScroll: true });
   }, [focusWhenReady, ready, conversation?.endpoint]);
 
-  return (
-    <ChatContext.Provider value={chat}>
-      <TargetContext.Provider value={readiness}>
-        <ChatFormProvider {...methods}>
-          <ComposerRestoreProvider>
-            <AddedChatContext.Provider value={alone}>
-              <DragDropWrapper className="min-h-0 flex-1 flex-col">
-                {children}
-                <div ref={form} className="shrink-0">
-                  <ChatForm
-                    index={index}
-                    routePending={!ready}
-                    isLandingPage={false}
-                    enterToSend={enterToSend}
-                    autoSendText={autoSendText}
-                    speechSettingsInitialized={speechSettingsInitialized}
-                    footerBelow={clearsFooter}
-                    centerFormOnLanding={false}
-                  />
-                </div>
-              </DragDropWrapper>
-            </AddedChatContext.Provider>
-          </ComposerRestoreProvider>
-        </ChatFormProvider>
-      </TargetContext.Provider>
-    </ChatContext.Provider>
+  /**
+   * Drawn again only for what it is made of. The words in the field change with every key and
+   * are this component's to carry between the panel and the form, not something the providers,
+   * the drop target or the list under them are drawn from.
+   */
+  return useMemo(
+    () => (
+      <ChatContext.Provider value={chat}>
+        <TargetContext.Provider value={readiness}>
+          <ChatFormProvider {...methods}>
+            <ComposerRestoreProvider>
+              <AddedChatContext.Provider value={alone}>
+                <DragDropWrapper className="min-h-0 flex-1 flex-col">
+                  {children}
+                  <div ref={form} className="shrink-0">
+                    <ChatForm
+                      index={index}
+                      routePending={!ready}
+                      isLandingPage={false}
+                      enterToSend={enterToSend}
+                      autoSendText={autoSendText}
+                      speechSettingsInitialized={speechSettingsInitialized}
+                      footerBelow={clearsFooter}
+                      centerFormOnLanding={false}
+                    />
+                  </div>
+                </DragDropWrapper>
+              </AddedChatContext.Provider>
+            </ComposerRestoreProvider>
+          </ChatFormProvider>
+        </TargetContext.Provider>
+      </ChatContext.Provider>
+    ),
+    [
+      chat,
+      index,
+      ready,
+      methods,
+      children,
+      readiness,
+      enterToSend,
+      autoSendText,
+      clearsFooter,
+      speechSettingsInitialized,
+    ],
   );
 }

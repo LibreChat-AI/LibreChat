@@ -258,6 +258,95 @@ export function createRoutedGraphMemberLoader<TAgent, TConfig>({
   };
 }
 
+/** What the run's build recorded for a graph member of a lazily resolved subagent. */
+export interface GraphMemberPin<TFlags> {
+  configId: string;
+  subagentCodeFlags?: TFlags;
+  /** Set when the member's machine had no usable workspace when the run was built. */
+  codeWorkspaceUnavailable?: CodeWorkspaceSelectionErrorReason;
+  /** The member's per-call machine choices; without them it has no other route to follow. */
+  subagentHostArgs?: object | null;
+}
+
+/** The inputs a graph member initializes with. */
+export interface GraphMemberInputs<TFlags> {
+  configId: string;
+  codeFlags?: TFlags;
+  codeWorkspaceUnavailable?: CodeWorkspaceSelectionErrorReason;
+}
+
+/**
+ * Initializes a graph member with the inputs its run was built with. A member resolved for a
+ * lazily selected parent is pinned to its build-time record: a document edited since fails the
+ * config id check, and a member the build recorded as unavailable stays unavailable unless it
+ * follows a machine it listed. That refusal is rethrown without `CODE_WORKSPACE_UNAVAILABLE`,
+ * which is fatal to initialization, so the loader drops the member and its parent still runs.
+ *
+ * A member with no record, or one initialized while the run is built, uses its fresh read.
+ * Pinned flags lose nothing on a per-call route: the config id covers every field they derive
+ * from, so a member that passes the id check has the flags the build recorded.
+ */
+export function createGraphMemberInitializer<
+  TAgent extends VersionedAgent,
+  TFlags,
+  TContext,
+  TConfig,
+>({
+  getPin,
+  getFlags,
+  initialize,
+}: {
+  getPin: (memberId: string) => GraphMemberPin<TFlags> | undefined;
+  getFlags: (agent: TAgent) => TFlags;
+  initialize: (
+    input: { agent: TAgent; agentId: string; context: TContext } & GraphMemberInputs<TFlags>,
+  ) => Promise<TConfig>;
+}): (input: {
+  agent: TAgent;
+  memberId: string;
+  context: TContext;
+  /** False while the run is built: a root-level member has no earlier record to hold it to. */
+  pinned: boolean;
+}) => Promise<TConfig> {
+  const unavailable = (memberId: string, reason: CodeWorkspaceSelectionErrorReason): Error =>
+    new Error(`Graph member ${memberId} has no usable code workspace in this run (${reason}).`);
+  return async ({ agent, memberId, context, pinned }) => {
+    const pin = pinned ? getPin(memberId) : undefined;
+    if (pin == null) {
+      return initialize({
+        agent,
+        agentId: memberId,
+        context,
+        configId: getLazySubagentConfigId(agent),
+        codeFlags: getFlags(agent),
+      });
+    }
+    const { codeWorkspaceUnavailable } = pin;
+    if (codeWorkspaceUnavailable != null && pin.subagentHostArgs == null) {
+      throw unavailable(memberId, codeWorkspaceUnavailable);
+    }
+    try {
+      return await initialize({
+        agent,
+        agentId: memberId,
+        context,
+        configId: pin.configId,
+        codeFlags: pin.subagentCodeFlags,
+        codeWorkspaceUnavailable,
+      });
+    } catch (error) {
+      const reason =
+        codeWorkspaceUnavailable == null
+          ? undefined
+          : getSubagentCodeWorkspaceUnavailableReason(error);
+      if (reason == null) {
+        throw error;
+      }
+      throw unavailable(memberId, reason);
+    }
+  };
+}
+
 export interface SubagentCodeAvailability {
   codeEnvAvailable: boolean;
   statefulCodeSessions: boolean;

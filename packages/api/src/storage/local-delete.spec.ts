@@ -37,7 +37,12 @@ describe('local file deletion', () => {
     expect(deleteRagFile).toHaveBeenCalledWith({ userId: 'user-1', file });
   });
 
-  it.each(['a#b.txt', 'what?.txt', '100%.txt', 'a%41.txt', 'my report.txt', '会社.txt'])(
+  const uploadNames = ['a#b.txt', '100%.txt', 'a%41.txt', 'my report.txt', '会社.txt'];
+  if (process.platform !== 'win32') {
+    uploadNames.push('what?.txt');
+  }
+
+  it.each(uploadNames)(
     'removes the bytes saved as %s through the filepath returned at save time',
     async (name) => {
       const filepath = await saveLocalBuffer({
@@ -168,5 +173,57 @@ describe('local file deletion', () => {
     await expect(remove(req, file)).rejects.toThrow('Invalid file owner');
     expect(deleteRagFile).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(root, 'uploads', 'user-1', 'retained.txt'))).toBe(true);
+  });
+});
+
+describe('local file deletion with win32 paths', () => {
+  const req = {
+    user: { id: 'user-1' },
+    config: { paths: { publicPath: 'C:\\public', uploads: 'C:\\uploads' } },
+  };
+  const access = jest.fn().mockRejectedValue(new Error('Missing raw filename'));
+  const unlink = jest.fn().mockResolvedValue(undefined);
+  const deleteRagFile = jest.fn().mockResolvedValue(undefined);
+  const logger = { warn: jest.fn(), error: jest.fn() };
+  let remove: ReturnType<typeof createLocalFileDeleter>;
+
+  beforeAll(() => {
+    try {
+      jest.isolateModules(() => {
+        jest.doMock('path', () => path.win32);
+        jest.doMock('fs/promises', () => ({ access, unlink }));
+        const local = jest.requireActual<typeof import('./local')>('./local');
+        remove = local.createLocalFileDeleter({ deleteRagFile, logger });
+      });
+    } finally {
+      jest.dontMock('fs/promises');
+      jest.dontMock('path');
+    }
+  });
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it.each([
+    ['/images/user-1/chart%20%231.png?v=1', 'chart #1.png'],
+    ['\\images\\user-1\\legacy.png', 'legacy.png'],
+  ])('removes an owned image recorded as %s', async (filepath, name) => {
+    const file = { file_id: 'file-1', filepath };
+
+    await remove(req, file);
+
+    expect(deleteRagFile).toHaveBeenCalledWith({ userId: 'user-1', file });
+    expect(unlink).toHaveBeenCalledWith(path.win32.join('C:\\public', 'images', 'user-1', name));
+  });
+
+  it.each([
+    '/images/user-2/protected.png',
+    '/images/user-1/../user-2/protected.png',
+    '/images/user-1\\mixed.png',
+    '/other/user-1/protected.png',
+  ])('does not authorize deletion of %s', async (filepath) => {
+    await expect(remove(req, { file_id: 'file-1', filepath })).rejects.toThrow('Invalid file path');
+
+    expect(deleteRagFile).not.toHaveBeenCalled();
+    expect(unlink).not.toHaveBeenCalled();
   });
 });

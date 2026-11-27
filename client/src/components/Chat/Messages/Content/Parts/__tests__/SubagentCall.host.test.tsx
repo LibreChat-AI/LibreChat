@@ -1,10 +1,10 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { useAtomValue } from 'jotai';
-import { SubagentConversation } from '@librechat/chat/components';
 import { Constants, ContentTypes } from 'librechat-data-provider';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { SubagentCall, SubagentConversation } from '@librechat/chat/components';
 import { activeSubagentPanel, MessagePartsHostProvider } from '@librechat/chat/react';
 import type { TAgentsMap, TAttachment } from 'librechat-data-provider';
 import type { ActiveSubagentPanel } from '@librechat/chat/react';
@@ -13,7 +13,6 @@ import { AgentsMapContext } from '~/Providers/AgentsMapContext';
 import { MessageContext } from '~/Providers/MessageContext';
 import { ShareContext } from '~/Providers/ShareContext';
 import { ChatSurfaceHarness } from 'test/harness';
-import SubagentCall from '../SubagentCall';
 import '~/Providers/SubagentsHostContext';
 import '~/components/Chat/Messages/hosts';
 
@@ -57,7 +56,9 @@ function renderCard(ui: React.ReactElement, share?: { isSharedConvo?: boolean; s
   return { ...rendered, getSelection: () => selection };
 }
 
-describe('app subagent call adapter', () => {
+/** The package's card under the app's hosts: the agents, the share and the run's files are the
+ *  app's, and the card reads them without an adapter. */
+describe('the subagent card under the app hosts', () => {
   it('shows the saved agent and opens the panel through the app subscriptions', () => {
     const rendered = renderCard(
       <SubagentCall

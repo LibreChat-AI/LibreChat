@@ -365,6 +365,14 @@ export function createCustomConfigLoader({
             'https://www.librechat.ai/docs/configuration/librechat_yaml',
         );
       }
+      if (
+        !result.success &&
+        loadedConfig != null &&
+        typeof loadedConfig === 'object' &&
+        'outputProtection' in loadedConfig
+      ) {
+        throw new ConfigReloadError('Invalid configuration containing output protection');
+      }
       if (!result.success) {
         const message = `Invalid custom config file at ${configPath}:\n${JSON.stringify(result.error, null, 2)}`;
         logger.error(message);

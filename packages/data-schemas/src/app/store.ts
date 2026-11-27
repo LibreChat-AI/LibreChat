@@ -18,6 +18,7 @@ import {
 import { parseFieldPath, parseConfigPath, ConfigPathError } from './paths';
 import { BASE_CONFIG_PRINCIPAL_ID } from '~/admin/capabilities';
 import { getSafeErrorFields } from '~/utils/errors';
+import { isSameConfigValue } from './changes';
 import logger from '~/config/winston';
 
 /**
@@ -360,6 +361,17 @@ function toDraft(
   };
 }
 
+/** Whether writing `draft` over `current` would leave the stored document as it is. */
+function isUnchangedDraft(current: ConfigRecord, draft: ConfigDraft): boolean {
+  return (
+    draft.priority === current.priority &&
+    draft.isActive === current.isActive &&
+    draft.principalModel === current.principalModel &&
+    isSameConfigValue(draft.overrides, current.overrides) &&
+    isSameConfigValue(draft.tombstones, current.tombstones)
+  );
+}
+
 /** Everything a stored document carries over to another principal or into a rewrite. */
 export function toConfigDraft(record: ConfigRecord): ConfigDraft {
   return {
@@ -445,7 +457,7 @@ export interface ConfigOperations {
     principal: ConfigPrincipal,
     fieldPaths: ConfigPathInputs,
     options?: ConfigWriteOptions,
-  ): Promise<ConfigRecord | null>;
+  ): Promise<ConfigWriteOutcome | null>;
   deleteConfig(
     principal: ConfigPrincipal,
     options?: ConfigLifecycleOptions,
@@ -576,7 +588,10 @@ export function createConfigOperations(store: ConfigStore): ConfigOperations {
     return outcome.written ? outcome.record : null;
   }
 
-  /** Sets dotted field paths, clearing the tombstones they write over. Creates the document. */
+  /**
+   * Sets dotted field paths, clearing the tombstones they write over. Creates the document; one
+   * that already holds every value is returned as stored, without a write.
+   */
   async function setFields(
     principal: ConfigPrincipal,
     principalModel: PrincipalModel,
@@ -588,19 +603,18 @@ export function createConfigOperations(store: ConfigStore): ConfigOperations {
       segments: parseFieldPath(fieldPath),
       value,
     }));
-    const outcome = await mutate(
+    const outcome = await mutate<ConfigRecord>(
       principal,
-      (current) => ({
-        draft: toDraft(
-          principal,
-          current,
-          setConfigFields(toConfigOverrideState(current), writes),
-          { principalModel, priority },
-        ),
-      }),
+      (current) => {
+        const state = setConfigFields(toConfigOverrideState(current), writes);
+        const draft = toDraft(principal, current, state, { principalModel, priority });
+        return current && isUnchangedDraft(current, draft)
+          ? { draft: null, result: current }
+          : { draft };
+      },
       options,
     );
-    return writtenRecord(outcome);
+    return outcome.written ? outcome.record : outcome.result;
   }
 
   /** Tombstones every path in one write (a secret and its preview companion together). */
@@ -627,25 +641,31 @@ export function createConfigOperations(store: ConfigStore): ConfigOperations {
     return writtenRecord(outcome);
   }
 
-  /** Removes every path in one write, pruning emptied parents. `null` when there is no document. */
+  /**
+   * Removes every path in one write, pruning emptied parents, and reports whether it changed the
+   * document: one that holds none of the paths is not written. `null` when there is no document.
+   */
   async function unsetFields(
     principal: ConfigPrincipal,
     fieldPaths: ConfigPathInputs,
     options?: ConfigWriteOptions,
-  ): Promise<ConfigRecord | null> {
+  ): Promise<ConfigWriteOutcome | null> {
     const paths = toPathList(fieldPaths);
-    const outcome = await mutate<null>(
+    const outcome = await mutate<ConfigWriteOutcome | null>(
       principal,
       (current) => {
         if (!current) {
           return { draft: null, result: null };
         }
         const state = unsetConfigPaths(toConfigOverrideState(current), paths);
-        return { draft: toDraft(principal, current, state, current) };
+        const draft = toDraft(principal, current, state, current);
+        return isUnchangedDraft(current, draft)
+          ? { draft: null, result: { config: current, changed: false } }
+          : { draft };
       },
       options,
     );
-    return outcome.written ? outcome.record : null;
+    return outcome.written ? { config: outcome.record, changed: true } : outcome.result;
   }
 
   /** Deletes the principal's document; `null` when there is none (or `expectEmpty` refused). */

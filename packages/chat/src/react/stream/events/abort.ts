@@ -1,5 +1,6 @@
 import { useCallback } from 'react';
 import { v4 } from 'uuid';
+import { useStore } from 'jotai';
 import { QueryKeys, Constants, isAssistantsEndpoint } from 'librechat-data-provider';
 import type { TMessage, TConversation, EventSubmission } from 'librechat-data-provider';
 import type { TResData, TFinalResData } from '../../../core';
@@ -8,9 +9,11 @@ import {
   resolveErrorTurn,
   createErrorMessage,
   mergeErrorMessages,
+  hasConcreteConversationId,
   keepLocalCodeApprovalMode,
   resolveSettledErrorReadState,
 } from '../../../core';
+import { submissionByIndex } from '../../submission';
 
 /** The handlers for a turn that failed or was stopped. */
 export type AbortHandlers = {
@@ -22,6 +25,10 @@ export type AbortHandlers = {
     messages?: TMessage[],
   ) => Promise<void>;
 };
+
+/** The failure of a stop the server answered with an error. */
+const unexpectedResponse = (response: Response) =>
+  new Error(`Unexpected response from server; Status: ${response.status} ${response.statusText}`);
 
 /** Writes a failed or stopped turn: the error card, a cancelled run, and an abort that settles from what streamed. */
 export default function useAbortHandlers(
@@ -41,8 +48,10 @@ export default function useAbortHandlers(
     reconcileFailedCodeDecision,
     setConversation,
     isAddedRequest,
+    runIndex,
   } = ctx;
   const { conversations, navigation, transport, logger } = services;
+  const store = useStore();
 
   const cancelHandler = useCallback(
     (data: TResData, submission: EventSubmission) => {
@@ -184,11 +193,16 @@ export default function useAbortHandlers(
         // Check if the response is JSON
         const contentType = response.headers.get('content-type');
         if (contentType != null && contentType.includes('application/json')) {
-          const data = await response.json();
           if (response.status === 404) {
             setIsSubmitting(false);
             return;
           }
+          /** A refusal (a run the server has not named yet, a lapsed session, an account being
+           *  deleted) carries an error, not the turn's messages, so the stop failed. */
+          if (!response.ok) {
+            throw unexpectedResponse(response);
+          }
+          const data = await response.json();
           if (data.final === true) {
             finalHandler(data, submission);
           } else {
@@ -197,14 +211,23 @@ export default function useAbortHandlers(
         } else if (response.status === 204 || response.status === 200) {
           setIsSubmitting(false);
         } else {
-          throw new Error(
-            'Unexpected response from server; Status: ' +
-              response.status +
-              ' ' +
-              response.statusText,
-          );
+          throw unexpectedResponse(response);
         }
       } catch (error) {
+        /** The pane moved on while the stop was in flight: what it shows now is another
+         *  conversation, so a failed stop writes nothing there. A run the server never named was
+         *  left too: Stop is offered once the server names the run, so before that only leaving
+         *  the run (a new chat, another chat) stops it, and there is no conversation to recover.
+         *  It settles the pane unless a run the pane started since (a resumed generation) holds
+         *  its controls. */
+        if (!hasConcreteConversationId(conversationId) || !navigation.shows(conversationId)) {
+          const current = store.get(submissionByIndex(runIndex));
+          if (current == null || Object.keys(current).length === 0) {
+            setShowStopButton(false);
+            setIsSubmitting(false);
+          }
+          return;
+        }
         const errorResponse = createErrorMessage({
           getMessages,
           submission,
@@ -219,13 +242,16 @@ export default function useAbortHandlers(
             ? [...submission.messages, errorResponse]
             : [...submission.messages, submission.userMessage, errorResponse],
         );
-        recoverConversation(conversationId || errorResponse.conversationId || v4(), submission);
+        recoverConversation(conversationId, submission);
         setIsSubmitting(false);
       }
     },
     [
+      store,
       logger,
+      runIndex,
       transport,
+      navigation,
       getMessages,
       setMessages,
       finalHandler,

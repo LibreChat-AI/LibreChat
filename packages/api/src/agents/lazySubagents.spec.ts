@@ -1,14 +1,18 @@
 import { ErrorTypes } from 'librechat-data-provider';
 import { SkillsScope } from 'librechat-data-provider';
+import type { CodeWorkspaceSelectionErrorReason } from 'librechat-data-provider';
 import type { CodeExecutionContext } from './execution';
+import type { GraphMemberPin } from './lazySubagents';
 import {
   guardUnavailableSubagent,
   getLazySubagentConfigId,
+  createGraphMemberInitializer,
   createViewableSubagentLoader,
   createRoutedGraphMemberLoader,
   resolveSubagentCodeAvailability,
 } from './lazySubagents';
 import { CodeWorkspaceSelectionError } from '~/code/errors';
+import { isFatalAgentInitializationError } from './errors';
 
 const agent = {
   id: 'child-agent',
@@ -312,5 +316,225 @@ describe('createRoutedGraphMemberLoader', () => {
     const aborted = new AbortController();
     aborted.abort(new Error('canceled'));
     await expect(fatal.load('member', 'run-parent', aborted.signal)).rejects.toThrow('canceled');
+  });
+});
+
+describe('createGraphMemberInitializer', () => {
+  type Member = typeof agent;
+  interface Flags {
+    statefulCodeSessions: boolean;
+  }
+  interface Context {
+    signal: AbortSignal;
+  }
+  interface Inputs {
+    agent: Member;
+    agentId: string;
+    context: Context;
+    configId: string;
+    codeFlags?: Flags;
+    codeWorkspaceUnavailable?: CodeWorkspaceSelectionErrorReason;
+  }
+  const context: Context = { signal: new AbortController().signal };
+  const built: Member = { ...agent, id: 'member' };
+  const edited: Member = { ...built, model: 'gpt-5-mini', version: 5 };
+  const pinnedFlags: Flags = { statefulCodeSessions: true };
+  const freshFlags: Flags = { statefulCodeSessions: false };
+  const hostArgs = { machine: { description: 'Machine to run on.' } };
+  const pinOf = (overrides: Partial<GraphMemberPin<Flags>> = {}): GraphMemberPin<Flags> => ({
+    configId: getLazySubagentConfigId(built),
+    subagentCodeFlags: pinnedFlags,
+    ...overrides,
+  });
+
+  /**
+   * Stands in for `initializeLoadedSubagent`: the config id check, then the refusal
+   * `SubagentCodeRouting.place` makes for an unavailable default route nothing else replaces.
+   */
+  const setup = ({ pin, follows = false }: { pin?: GraphMemberPin<Flags>; follows?: boolean }) => {
+    const initialize = jest.fn(async (input: Inputs) => {
+      if (getLazySubagentConfigId(input.agent) !== input.configId) {
+        throw new Error(`Subagent ${input.agentId} changed before it could be initialized.`);
+      }
+      if (input.codeWorkspaceUnavailable != null && !follows) {
+        throw new CodeWorkspaceSelectionError(input.codeWorkspaceUnavailable);
+      }
+      return `${input.agentId}:${input.agent.model}`;
+    });
+    const getFlags = jest.fn(() => freshFlags);
+    const getPin = jest.fn((_memberId: string) => pin);
+    return {
+      initialize,
+      getFlags,
+      getPin,
+      member: createGraphMemberInitializer<Member, Flags, Context, string>({
+        getPin,
+        getFlags,
+        initialize,
+      }),
+    };
+  };
+
+  it('initializes an unchanged member with the inputs its run was built with', async () => {
+    const { member, initialize, getFlags, getPin } = setup({ pin: pinOf() });
+
+    await expect(member({ agent: built, memberId: 'member', context, pinned: true })).resolves.toBe(
+      'member:gpt-5',
+    );
+    expect(getPin).toHaveBeenCalledWith('member');
+    expect(getFlags).not.toHaveBeenCalled();
+    expect(initialize).toHaveBeenCalledWith({
+      agent: built,
+      agentId: 'member',
+      context,
+      configId: getLazySubagentConfigId(built),
+      codeFlags: pinnedFlags,
+    });
+  });
+
+  it('refuses a member whose document changed after the run was built', async () => {
+    const { member } = setup({ pin: pinOf() });
+
+    const refusal = await member({
+      agent: edited,
+      memberId: 'member',
+      context,
+      pinned: true,
+    }).catch((error: Error) => error);
+    expect(refusal).toEqual(new Error('Subagent member changed before it could be initialized.'));
+    expect(isFatalAgentInitializationError(refusal)).toBe(false);
+    /** Read fresh, the same edit passes a check against its own id and initializes. */
+    await expect(
+      member({ agent: edited, memberId: 'member', context, pinned: false }),
+    ).resolves.toBe('member:gpt-5-mini');
+  });
+
+  it('keeps a member unavailable when its machine recovers after the build', async () => {
+    const guarded = setup({ pin: pinOf({ codeWorkspaceUnavailable: 'worker_unavailable' }) });
+    const refusal = await guarded
+      .member({ agent: built, memberId: 'member', context, pinned: true })
+      .catch((error: Error) => error);
+    expect(refusal).toEqual(
+      new Error(
+        'Graph member member has no usable code workspace in this run (worker_unavailable).',
+      ),
+    );
+    expect(isFatalAgentInitializationError(refusal)).toBe(false);
+    expect(guarded.initialize).not.toHaveBeenCalled();
+
+    /** With per-call choices routing decides, and its refusal is the same member failure. */
+    const routable = setup({
+      pin: pinOf({ codeWorkspaceUnavailable: 'missing', subagentHostArgs: hostArgs }),
+    });
+    const routed = await routable
+      .member({ agent: built, memberId: 'member', context, pinned: true })
+      .catch((error: Error) => error);
+    expect(routed).toEqual(
+      new Error('Graph member member has no usable code workspace in this run (missing).'),
+    );
+    expect(isFatalAgentInitializationError(routed)).toBe(false);
+    expect(isFatalAgentInitializationError(new CodeWorkspaceSelectionError('missing'))).toBe(true);
+    expect(routable.initialize).toHaveBeenCalledWith(
+      expect.objectContaining({ codeWorkspaceUnavailable: 'missing', codeFlags: pinnedFlags }),
+    );
+  });
+
+  it('lets an unavailable member follow a machine it listed', async () => {
+    const { member, initialize, getFlags } = setup({
+      pin: pinOf({ codeWorkspaceUnavailable: 'required', subagentHostArgs: hostArgs }),
+      follows: true,
+    });
+
+    await expect(member({ agent: built, memberId: 'member', context, pinned: true })).resolves.toBe(
+      'member:gpt-5',
+    );
+    expect(getFlags).not.toHaveBeenCalled();
+    expect(initialize).toHaveBeenCalledWith({
+      agent: built,
+      agentId: 'member',
+      context,
+      configId: getLazySubagentConfigId(built),
+      codeFlags: pinnedFlags,
+      codeWorkspaceUnavailable: 'required',
+    });
+  });
+
+  it.each([
+    ['a locked decision', new CodeWorkspaceSelectionError('locked')],
+    ['an unrelated failure', new Error('tools failed to load')],
+  ])('propagates %s from an unavailable member unchanged', async (_case, error) => {
+    const { member, initialize } = setup({
+      pin: pinOf({ codeWorkspaceUnavailable: 'required', subagentHostArgs: hostArgs }),
+    });
+    initialize.mockRejectedValueOnce(error);
+
+    await expect(member({ agent: built, memberId: 'member', context, pinned: true })).rejects.toBe(
+      error,
+    );
+  });
+
+  it('keeps a workspace failure fatal for a member the build recorded as available', async () => {
+    const error = new CodeWorkspaceSelectionError('worker_unavailable');
+    const { member, initialize } = setup({ pin: pinOf() });
+    initialize.mockRejectedValueOnce(error);
+
+    await expect(member({ agent: built, memberId: 'member', context, pinned: true })).rejects.toBe(
+      error,
+    );
+  });
+
+  it.each([
+    ['has no record', undefined, true],
+    ['initializes while the run is built', pinOf({ codeWorkspaceUnavailable: 'missing' }), false],
+  ])('reads a member that %s fresh', async (_case, pin, pinned) => {
+    const { member, initialize, getFlags } = setup({ pin });
+
+    await expect(member({ agent: edited, memberId: 'member', context, pinned })).resolves.toBe(
+      'member:gpt-5-mini',
+    );
+    expect(getFlags).toHaveBeenCalledWith(edited);
+    expect(initialize).toHaveBeenCalledWith({
+      agent: edited,
+      agentId: 'member',
+      context,
+      configId: getLazySubagentConfigId(edited),
+      codeFlags: freshFlags,
+    });
+  });
+
+  it('drops a changed or unavailable member from a routed parent instead of failing its call', async () => {
+    const signal = new AbortController().signal;
+    const load = (pin: GraphMemberPin<Flags> | undefined, stored: Member, pinned: boolean) => {
+      const { member } = setup({ pin });
+      return createRoutedGraphMemberLoader<Member, string>({
+        getShared: () => undefined,
+        isSkipped: () => false,
+        skip: () => undefined,
+        getAgent: async () => stored,
+        canView: async () => true,
+        initialize: ({ agent: loaded, memberId }) =>
+          member({ agent: loaded, memberId, context, pinned }),
+        isFatal: (error) => isFatalAgentInitializationError(error),
+      })('member', 'run-parent', signal);
+    };
+
+    await expect(load(pinOf(), built, true)).resolves.toBe('member:gpt-5');
+    await expect(load(pinOf(), edited, true)).resolves.toBeNull();
+    const unavailable = pinOf({ codeWorkspaceUnavailable: 'missing', subagentHostArgs: hostArgs });
+    await expect(load(unavailable, built, true)).resolves.toBeNull();
+    /** The raw routing refusal is fatal, so without the pin's translation the call would fail. */
+    await expect(
+      createRoutedGraphMemberLoader<Member, string>({
+        getShared: () => undefined,
+        isSkipped: () => false,
+        skip: () => undefined,
+        getAgent: async () => built,
+        canView: async () => true,
+        initialize: async () => {
+          throw new CodeWorkspaceSelectionError('missing');
+        },
+        isFatal: (error) => isFatalAgentInitializationError(error),
+      })('member', 'run-parent', signal),
+    ).rejects.toMatchObject({ code: ErrorTypes.CODE_WORKSPACE_UNAVAILABLE });
   });
 });

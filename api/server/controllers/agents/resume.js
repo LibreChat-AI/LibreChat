@@ -10,6 +10,7 @@ const {
 } = require('librechat-data-provider');
 const {
   checkAccess,
+  completedOutcome,
   GenerationJobManager,
   GENERATION_RECOVERY_FAILED_ERROR,
   isPendingActionStale,
@@ -54,7 +55,7 @@ const {
   PROJECT_CONTEXT_CHANGED_RESPONSE,
   restoreExecutionContext,
   collectApprovedToolCalls,
-  scheduleAsksEveryUse,
+  asksEveryUse,
   recoverTurnMessageReference,
   applyForcedRetention,
   applyForcedTemporaryRequest,
@@ -498,6 +499,7 @@ async function finalizeResumedTurn({
     iconURL: meta.iconURL,
     model: meta.model,
     unfinished: preemptIncomplete || stepLimitReached,
+    ...client?.metadata,
     ...(stepLimitReached && { finish_reason: Constants.TOOL_CALL_LIMIT_FINISH_REASON }),
     error: false,
     isCreatedByUser: false,
@@ -686,15 +688,12 @@ async function finalizeResumedTurn({
         scheduledFor: meta.scheduledFor,
         streamId,
         jobCreatedAt: job.createdAt,
-        status: preemptIncomplete || stepLimitReached ? 'interrupted' : 'success',
         conversationId,
-        ...(preemptIncomplete && {
-          error: 'Scheduled run was interrupted before completion',
+        ...completedOutcome({
+          preempted: preemptIncomplete,
+          stepLimit: stepLimitReached,
+          content,
         }),
-        ...(stepLimitReached &&
-          !preemptIncomplete && {
-            error: 'Scheduled run reached its tool call limit before completion',
-          }),
       });
     }
 
@@ -2043,7 +2042,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           appConfig: req.config,
         },
         pluginHookSource: getPluginHookSource(),
-        asksEveryUse: scheduleAsksEveryUse(req),
+        asksEveryUse: asksEveryUse(req),
         request: req,
         addConvoToolApprovalAllows,
       });

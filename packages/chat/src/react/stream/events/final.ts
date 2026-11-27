@@ -6,6 +6,7 @@ import type { TFinalResData } from '../../../core';
 import {
   hasRealTitle,
   getAllContentText,
+  hasConcreteConversationId,
   keepLocalCodeApprovalMode,
   mergeRegenerateFinalMessages,
   preserveStreamedContentIdentity,
@@ -24,6 +25,62 @@ const firstTextValue = (message?: Partial<TMessage> | null): string | undefined 
 /** The auth URL of a first tool call that stopped to ask for sign-in. */
 const firstToolAuth = (message?: Partial<TMessage> | null): string | undefined =>
   (message?.content?.[0] as FirstPart | undefined)?.tool_call?.auth;
+
+const targetFields = [
+  'endpoint',
+  'endpointType',
+  'model',
+  'spec',
+  'agent_id',
+  'assistant_id',
+] as const;
+
+/** Fields the completed run may settle without changing the next turn's preset. */
+const settledFields = [
+  'conversationId',
+  'createdAt',
+  'updatedAt',
+  'messages',
+  'file_ids',
+  'parentMessageId',
+  'lastResponseAt',
+  'lastResponseMessageId',
+  'lastResponseIsManual',
+  'lastSeenAt',
+  'isMarkedUnread',
+  'chatProjectId',
+  'isTemporary',
+  'expiredAt',
+  'codeApprovalMode',
+  'codeEnvironmentMode',
+  'codeWorkspaces',
+  'subagentThread',
+] as const;
+
+function mergePaneConversation(
+  local: TConversation | null,
+  finalized: TFinalResData['conversation'],
+  submitted: EventSubmission['conversation'],
+): TConversation {
+  // A reattached run has no submitted target. Its final frame cannot claim the pane's pick.
+  if (
+    !local?.endpoint ||
+    (submitted.endpoint != null &&
+      !targetFields.some((key) => (local[key] ?? '') !== (submitted[key] ?? '')))
+  ) {
+    return { ...local, ...finalized } as TConversation;
+  }
+
+  // Keep the whole next-turn preset, including options absent on the new provider.
+  const update = { ...local };
+  for (const key of settledFields) {
+    const value = finalized[key];
+    if (value !== undefined) {
+      Object.assign(update, { [key]: value });
+    }
+  }
+  return update;
+}
 
 /** Settles a turn from its final frame. */
 export type FinalHandler = (data: TFinalResData, submission: EventSubmission) => void;
@@ -259,14 +316,6 @@ export default function useFinalHandler(ctx: EventHandlerContext): FinalHandler 
             });
           }
           setConversation((prevState) => {
-            const update = keepLocalCodeApprovalMode(
-              { ...prevState, ...(conversation as TConversation) },
-              prevState,
-              conversation.conversationId,
-            );
-            if (prevState?.model != null && prevState.model !== submissionConvo.model) {
-              update.model = prevState.model;
-            }
             const titleState = conversations.getTitle({
               conversationId: conversation.conversationId,
               titleSetByUser: conversation.titleSetByUser,
@@ -280,7 +329,6 @@ export default function useFinalHandler(ctx: EventHandlerContext): FinalHandler 
                   ? prevState.title
                   : conversation.title,
             });
-            Object.assign(update, titleState);
             if (conversation.conversationId) {
               conversations.update(conversation.conversationId, (convo) => ({
                 ...convo,
@@ -301,7 +349,23 @@ export default function useFinalHandler(ctx: EventHandlerContext): FinalHandler 
                 },
               );
             }
-            return update;
+            const previousId = prevState?.conversationId;
+            const adoptsRun = hasConcreteConversationId(previousId)
+              ? previousId === submissionConvo.conversationId
+              : previousId === Constants.NEW_CONVO &&
+                pathname === `/c/${Constants.NEW_CONVO}` &&
+                !hasConcreteConversationId(submissionConvo.conversationId);
+            if (previousId != null && previousId !== conversation.conversationId && !adoptsRun) {
+              return prevState;
+            }
+            return Object.assign(
+              keepLocalCodeApprovalMode(
+                mergePaneConversation(prevState, conversation, submissionConvo),
+                prevState,
+                conversation.conversationId,
+              ),
+              titleState,
+            );
           });
 
           if (conversation.conversationId && submission.ephemeralAgent) {

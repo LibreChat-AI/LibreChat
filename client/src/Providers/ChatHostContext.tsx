@@ -19,6 +19,7 @@ import useNewConvo from '~/hooks/useNewConvo';
 const dataEvents = new Set<QueryCacheNotifyEvent['type']>(['added', 'removed', 'updated']);
 
 const messagesHash = (key: string) => hashQueryKey([QueryKeys.messages, key]);
+const statusProps: Array<'isLoading' | 'isFetching'> = ['isLoading', 'isFetching'];
 
 /**
  * The chat's message cache over the app's query cache. A subscription counts only events that
@@ -29,7 +30,9 @@ const messagesHash = (key: string) => hashQueryKey([QueryKeys.messages, key]);
  */
 export function createMessageCache(queryClient: QueryClient): ChatMessageCache {
   return {
-    read: (key) => queryClient.getQueryData<TMessage[]>([QueryKeys.messages, key]),
+    /** By the query's hash: `getQueryData` compares the key against every query in the cache,
+     *  and this is read several times for each frame of a reply. */
+    read: (key) => queryClient.getQueryCache().get<TMessage[]>(messagesHash(key))?.state.data,
     write: (key, messages) => {
       queryClient.setQueryData<TMessage[]>([QueryKeys.messages, key], messages);
     },
@@ -69,7 +72,7 @@ export function createMessageCache(queryClient: QueryClient): ChatMessageCache {
       queryClient.invalidateQueries({ queryKey: [QueryKeys.messages, conversationId] });
     },
     messagesUpdatedAt: (conversationId) =>
-      queryClient.getQueryState([QueryKeys.messages, conversationId])?.dataUpdatedAt,
+      queryClient.getQueryCache().get(messagesHash(conversationId))?.state.dataUpdatedAt,
     reloadMessages: async (conversationId) => {
       await queryClient.refetchQueries(
         { queryKey: [QueryKeys.messages, conversationId], exact: true },
@@ -89,24 +92,32 @@ function useMessageCache(): ChatMessageCache {
 /** The conversation's messages query. Refetches stale caches on mount: navigation invalidates
  *  (not removes) messages, so a warm conversation renders instantly from cache and reconciles in
  *  the background instead of unmounting into a spinner. A payload or failure `ChatRoute` just
- *  prefetched counts as this mount's own load. */
+ *  prefetched counts as this mount's own load. With `enabled: false` it is a second reader of
+ *  that query, which never fetches. */
 function useMessages(
   conversationId: string | undefined,
-  { isStreaming, enabled = true }: { isStreaming: boolean; enabled?: boolean },
+  {
+    isStreaming,
+    enabled = true,
+    messages: reads = true,
+  }: { isStreaming: boolean; enabled?: boolean; messages?: boolean },
 ): ChatMessagesQuery {
-  const {
-    data = null,
-    isLoading,
-    isFetching,
-  } = useGetMessagesByConvoId(
+  const query = useGetMessagesByConvoId(
     conversationId ?? '',
     {
       enabled: enabled && !!conversationId && conversationId !== Constants.SEARCH,
-      refetchOnMount: refetchMessagesOnMount,
+      /** A reader that only follows the query leaves its mount, and the prefetch's mark, alone. */
+      ...(enabled && { refetchOnMount: refetchMessagesOnMount }),
+      /** One that asks only whether they are loading is told of that and of nothing else. */
+      ...(!reads && { notifyOnChangeProps: statusProps }),
     },
     { isStreaming },
   );
-  return { messages: data, isLoading, isFetching };
+  return {
+    messages: reads ? (query.data ?? null) : null,
+    isLoading: query.isLoading,
+    isFetching: query.isFetching,
+  };
 }
 
 /** The app's services behind `useChatHelpers`: its pane store, message query cache, turn

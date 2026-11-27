@@ -199,6 +199,51 @@ function chosenWorkspaceId(
   return target.workspaces.length === 1 ? target.workspaces[0].id : undefined;
 }
 
+/** Names that more than one entry uses, so those entries need another detail to read apart. */
+function repeatedNames(names: string[]): Set<string> {
+  return new Set(names.filter((name, index) => names.indexOf(name) !== index));
+}
+
+/** Machines whose display name another known machine shares; their id tells them apart. */
+function ambiguousMachines(machines: Pick<TPublicCodeEnvironment, 'id' | 'name'>[]): Set<string> {
+  const repeated = repeatedNames(machines.map(({ id, name }) => name ?? id));
+  return new Set(
+    machines.flatMap(({ id, name }) =>
+      name != null && name !== id && repeated.has(name) ? [id] : [],
+    ),
+  );
+}
+
+/** A machine's name, with its id beside it when another machine reads the same. The id keeps
+ *  its width up to the whole row and the name truncates first, so a long name never hides it. */
+function MachineName({
+  machine,
+  showId,
+  truncate = false,
+}: {
+  machine: { id: string; name?: string };
+  showId: boolean;
+  /** Lets the name shrink even when no id follows it. */
+  truncate?: boolean;
+}) {
+  return (
+    <>
+      <span className={truncate || showId ? 'min-w-0 truncate' : 'shrink-0'}>
+        {machine.name ?? machine.id}
+      </span>
+      {/* The space keeps the name and id apart in the accessible name. */}
+      {showId && (
+        <>
+          {' '}
+          <span className="text-text-tertiary max-w-full shrink-0 truncate font-normal">
+            {machine.id}
+          </span>
+        </>
+      )}
+    </>
+  );
+}
+
 function EnvironmentWorkspaces({
   environment,
   requiredBy,
@@ -210,6 +255,7 @@ function EnvironmentWorkspaces({
   checkout,
   allowCheckoutSelection = false,
   allowAutoCheckout = false,
+  showId = false,
   localize,
 }: {
   environment: CodeWorkspaceEnvironmentResult['environment'];
@@ -223,6 +269,8 @@ function EnvironmentWorkspaces({
   allowCheckoutSelection?: boolean;
   /** Offers Auto, which clears an override back to the worker's policy. */
   allowAutoCheckout?: boolean;
+  /** Another machine shares this one's name, so the heading carries its id. */
+  showId?: boolean;
   localize: WorkspaceLocalize;
 }) {
   const { chipMenuHeadingClasses: headingClasses, chipMenuItemClasses: menuItemClasses } =
@@ -231,21 +279,18 @@ function EnvironmentWorkspaces({
   const currentCheckout: CheckoutChoice | undefined = allowAutoCheckout
     ? (checkout ?? 'auto')
     : checkout;
-  const names = workspaces.map(({ id, name }) => name ?? id);
-  const sharedNames = new Set(names.filter((name, index) => names.indexOf(name) !== index));
+  const sharedNames = repeatedNames(workspaces.map(({ id, name }) => name ?? id));
+  /** The group's label names the machine, so assistive technology announces it with the rows. */
   return (
-    <div data-code-environment-id={environment.id}>
-      <Ariakit.MenuHeading
-        render={<div />}
-        className={cn(headingClasses, 'flex min-w-0 items-baseline gap-1.5')}
-      >
-        <span className="shrink-0">{environment.name ?? environment.id}</span>
+    <Ariakit.MenuGroup data-code-environment-id={environment.id}>
+      <Ariakit.MenuGroupLabel className={cn(headingClasses, 'flex min-w-0 items-baseline gap-1.5')}>
+        <MachineName machine={environment} showId={showId} />
         {owners && (
           <span className="text-text-tertiary min-w-0 truncate font-normal">
             {localize('com_ui_code_workspace_used_by', { 0: owners })}
           </span>
         )}
-      </Ariakit.MenuHeading>
+      </Ariakit.MenuGroupLabel>
       {workspaces.length === 0 && (
         <div className="text-text-secondary px-2.5 py-1.5 text-sm">{emptyLabel}</div>
       )}
@@ -324,7 +369,7 @@ function EnvironmentWorkspaces({
           </Fragment>
         );
       })}
-    </div>
+    </Ariakit.MenuGroup>
   );
 }
 
@@ -843,6 +888,13 @@ export default function CodeWorkspaceMenu({
     workspace.environments.map(({ environment }) => [environment.id, environment]),
   );
   workspace.machineOptions?.forEach((candidate) => machines.set(candidate.id, candidate));
+  /** Every machine the reader can meet here, so one keeps the same label in each list. */
+  const ambiguous = ambiguousMachines([
+    ...machines.values(),
+    ...(transition?.targets
+      .map(({ environment }) => environment)
+      .filter(({ id }) => !machines.has(id)) ?? []),
+  ]);
   const showMachinePicker = !workspace.locked && machines.size > 0;
   const machineLabel =
     workspace.mode === 'without_attached' || workspace.environments.length === 0
@@ -905,8 +957,12 @@ export default function CodeWorkspaceMenu({
                 }}
               >
                 <Monitor className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-                <span className="text-text-primary min-w-0 flex-1 truncate text-start text-sm">
-                  {candidate.name ?? candidate.id}
+                <span className="text-text-primary flex min-w-0 flex-1 items-baseline gap-1.5 text-start text-sm">
+                  <MachineName
+                    machine={candidate}
+                    showId={ambiguous.has(candidate.id)}
+                    truncate={true}
+                  />
                 </span>
                 {workspace.mode === 'attached' && environmentIds.has(candidate.id) && (
                   <Check className="text-text-primary size-4 shrink-0" aria-hidden="true" />
@@ -978,6 +1034,7 @@ export default function CodeWorkspaceMenu({
                   localize={localize}
                   key={target.environment.id}
                   environment={target.environment}
+                  showId={ambiguous.has(target.environment.id)}
                   requiredBy={target.requiredBy}
                   workspaces={target.workspaces}
                   emptyLabel={localize('com_ui_code_workspace_unavailable')}
@@ -1076,6 +1133,7 @@ export default function CodeWorkspaceMenu({
                     localize={localize}
                     key={environment.id}
                     environment={environment}
+                    showId={ambiguous.has(environment.id)}
                     requiredBy={requiredBy}
                     workspaces={workspaces}
                     emptyLabel={localize(stateLabels[state] ?? 'com_ui_code_workspace_unavailable')}
@@ -1096,6 +1154,7 @@ export default function CodeWorkspaceMenu({
                   <EnvironmentWorkspaces
                     localize={localize}
                     environment={machine}
+                    showId={ambiguous.has(machine.id)}
                     workspaces={machineStatus?.workspaces ?? []}
                     emptyLabel={localize('com_ui_code_workspace_unavailable')}
                     hideOnClick={true}

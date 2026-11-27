@@ -88,7 +88,10 @@ function useTaskContent(
     data: query.data,
     isError: query.isError,
     isUnavailable: query.isUnavailable,
-    refetch: () => void query.refetch(),
+    /** React Query settles a failed read into `isError` instead of rejecting. */
+    refetch: async () => {
+      await query.refetch();
+    },
   };
 }
 

@@ -360,13 +360,6 @@ test.describe('tool activity headers', () => {
       description: 'Drafts release notes.',
       body: 'Group merged PRs by type.',
     };
-    await page.route(/\/api\/skills(?:\?.*)?$/, (route: Route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ skills: [skill], has_more: false, after: null }),
-      }),
-    );
     await page.route(new RegExp(`/api/skills/${skill._id}$`), (route: Route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(skill) }),
     );
@@ -376,6 +369,7 @@ test.describe('tool activity headers', () => {
         'skill',
         { skillName: 'release-notes' },
         'Skill "release-notes" loaded. Follow the instructions below.',
+        { skillId: skill._id },
       ),
     ]);
     const view = messagesView(page);
@@ -404,6 +398,56 @@ test.describe('tool activity headers', () => {
     const view = messagesView(page);
     await expand(page, /deployment-only/);
     await expect(view.getByText('Skill "deployment-only" loaded.')).toBeVisible();
+    await expect(view.getByRole('button', { name: 'Open skill' })).toHaveCount(0);
+  });
+
+  test("a skill call saved without its skill's id keeps its output instead of a same-named skill @scenario:legacy-skill-call-keeps-output", async ({
+    page,
+  }) => {
+    const ownSkill = {
+      _id: 'e2e-skill-own-release-notes',
+      name: 'release-notes',
+      description: "The reader's own release notes skill.",
+      body: 'The reader wrote these instructions.',
+    };
+    await page.route(/\/api\/skills(?:\?.*)?$/, (route: Route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ skills: [ownSkill], has_more: false, after: null }),
+      }),
+    );
+    await page.route(new RegExp(`/api/skills/${ownSkill._id}$`), (route: Route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(ownSkill),
+      }),
+    );
+    /** Saved before calls recorded their skill, or copied from a share link, which leaves it out. */
+    await openConversation(page, [
+      call(
+        'k4',
+        'skill',
+        { skillName: 'release-notes' },
+        'Skill "release-notes" loaded. Follow the instructions below.',
+      ),
+    ]);
+    const view = messagesView(page);
+    const lookup = page
+      .waitForRequest((request) => new URL(request.url()).pathname.startsWith('/api/skills'), {
+        timeout: 2000,
+      })
+      .then(
+        () => true,
+        () => false,
+      );
+    await expand(page, /release-notes/);
+    await expect(
+      view.getByText('Skill "release-notes" loaded. Follow the instructions below.'),
+    ).toBeVisible();
+    expect(await lookup).toBe(false);
+    await expect(view.getByText('The reader wrote these instructions.')).toHaveCount(0);
     await expect(view.getByRole('button', { name: 'Open skill' })).toHaveCount(0);
   });
 

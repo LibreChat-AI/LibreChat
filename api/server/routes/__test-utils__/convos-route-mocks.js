@@ -85,9 +85,17 @@ module.exports = {
   agents: () => ({ sleep: jest.fn() }),
 
   api: (overrides = {}) => ({
+    createModelsService: jest.fn(() => ({ getEndpointModelsConfig: jest.fn() })),
+    createSavedSpecTargetResolver: jest.fn(() => jest.fn()),
     createGetConversationHandler: jest.requireActual(
       '../../../../packages/api/src/conversations/load.ts',
     ).createGetConversationHandler,
+    createFileExclusionHandler: jest.requireActual(
+      '../../../../packages/api/src/conversations/exclusion.ts',
+    ).createFileExclusionHandler,
+    createFileExclusionReadHandler: jest.requireActual(
+      '../../../../packages/api/src/conversations/exclusion.ts',
+    ).createFileExclusionReadHandler,
     withToolCallPreviews: (_req, result) => result,
     createGeneratedTitleHandler: jest.fn(() => jest.fn()),
     createRenameConversationHandler: jest.fn((deps) => {
@@ -247,6 +255,7 @@ module.exports = {
   }),
 
   dataSchemas: () => ({
+    MAX_EXCLUDED_FILES: 500,
     logger: {
       debug: jest.fn(),
       info: jest.fn(),
@@ -296,6 +305,8 @@ module.exports = {
     setConvoPinned: jest.fn(),
     markConvoSeen: jest.fn(),
     markConvoUnread: jest.fn(),
+    setConvoFileExclusion: jest.fn(),
+    getConvoExcludedFiles: jest.fn(),
     deleteAllSharedLinks: jest.fn(),
     deleteConvoSharedLink: jest.fn(),
     deleteToolCalls: jest.fn(),

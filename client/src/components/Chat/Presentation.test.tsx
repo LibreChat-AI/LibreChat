@@ -18,6 +18,7 @@ import type { Artifact } from '~/common';
 import { prepareUndockedDocument } from '~/components/Artifacts/undockedWindow';
 import { undockedArtifacts } from '~/components/Artifacts/state';
 import { SubagentIndexHostProvider } from 'test/streamHost';
+import { sessionRailDocked } from './Session/state';
 import { ChatSurfaceHarness } from 'test/harness';
 import Presentation from './Presentation';
 import store from '~/store';
@@ -290,8 +291,9 @@ describe('Presentation Artifact loading', () => {
   });
 
   it('gives the session rail a column of its own, past the side panel', () => {
+    let atoms!: JotaiStore;
     renderPresentation(
-      <ChatSurfaceHarness>
+      <ChatSurfaceHarness seed={(store) => (atoms = store)}>
         <RecoilRoot>
           <Presentation>
             <div />
@@ -300,13 +302,19 @@ describe('Presentation Artifact loading', () => {
       </ChatSurfaceHarness>,
     );
 
-    const slot = screen.getByTestId('session-rail-slot');
+    /** No rail is docked, so there is no column and the side panel has the whole row. */
     const group = screen.getByTestId('side-panel-group');
-    expect(group.nextElementSibling).toBe(slot);
-    expect(group).not.toContainElement(slot);
-    /** Empty, the column takes no room: it is not a box until a rail is drawn in it. */
-    expect(slot).toHaveClass('contents');
+    expect(screen.queryByTestId('session-rail-slot')).toBeNull();
+    expect(screen.queryByRole('separator')).toBeNull();
+
+    act(() => atoms.set(sessionRailDocked, true));
+
+    const slot = screen.getByTestId('session-rail-slot');
     expect(slot).toBeEmptyDOMElement();
+    expect(group).not.toContainElement(slot);
+    expect(group.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    /** Docking adds a column beside the side panel; it does not draw the side panel again. */
+    expect(screen.getByTestId('side-panel-group')).toBe(group);
   });
 
   it('loads the parent child index only for Agent conversations', () => {

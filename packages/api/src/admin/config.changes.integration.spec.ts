@@ -95,7 +95,7 @@ function createDeps(overrides: Partial<AdminConfigDeps> = {}): AdminConfigDeps {
     listAllConfigs: methods.listAllConfigs,
     findConfigByPrincipal: methods.findConfigByPrincipal,
     writeConfigDocument: jest.fn(methods.writeConfigDocument),
-    unsetConfigField: methods.unsetConfigField,
+    unsetConfigFieldTracked: methods.unsetConfigFieldTracked,
     deleteConfig: methods.deleteConfig,
     toggleConfigActiveTracked: methods.toggleConfigActiveTracked,
     hasConfigCapability: async () => true,
@@ -2813,5 +2813,211 @@ describe('PATCH /fields and POST …/changes: tombstones a write lifts', () => {
       },
     ]);
     expect(await storedDocument(params.principalId)).toEqual(before);
+  });
+});
+
+describe('PATCH, DELETE and tombstone /fields: retries and paths that change nothing', () => {
+  type FieldRoute = 'patchConfigField' | 'deleteConfigField' | 'tombstoneConfigField';
+
+  async function fieldWrite(
+    route: FieldRoute,
+    request: { body?: Record<string, unknown>; query?: Record<string, unknown> },
+    params: { principalType: string; principalId: string },
+  ) {
+    const deps = createDeps();
+    const res = mockRes();
+    await createAdminConfigHandlers(deps)[route](mockReq({ params, ...request }), res);
+    const audits = (deps.recordAuditEntry as jest.Mock).mock.calls.map(
+      ([entry]) => entry as { action: string; metadata: Record<string, unknown> },
+    );
+    return { status: res.statusCode, body: res.body as unknown as ChangesBody, deps, audits };
+  }
+
+  const version = async (principalId: string) => (await storedDocument(principalId))?.configVersion;
+
+  it('a PATCH retry that finds every value stored writes nothing and records no audit entry', async () => {
+    const params = nextParams();
+    const entries = [
+      { fieldPath: 'interface.customWelcome', value: 'Hello' },
+      { fieldPath: 'balance.startBalance', value: 100 },
+    ];
+    const first = await fieldWrite('patchConfigField', { body: { entries } }, params);
+    expect(first.status).toBe(200);
+    expect(first.audits).toHaveLength(1);
+    const written = await version(params.principalId);
+
+    const retry = await fieldWrite('patchConfigField', { body: { entries } }, params);
+
+    expect(retry.status).toBe(200);
+    expect(retry.body.config).toEqual(first.body.config);
+    expect(retry.deps.writeConfigDocument).not.toHaveBeenCalled();
+    expect(retry.audits).toEqual([]);
+    expect(retry.deps.invalidateConfigCaches).toHaveBeenCalledTimes(1);
+    expect(await version(params.principalId)).toBe(written);
+  });
+
+  it('a mixed PATCH audits only the path whose value changed', async () => {
+    const params = nextParams();
+    await seedDocument(params.principalId, { interface: { customWelcome: 'Hello' } }, []);
+
+    const { status, audits } = await fieldWrite(
+      'patchConfigField',
+      {
+        body: {
+          entries: [
+            { fieldPath: 'interface.customWelcome', value: 'Hello' },
+            { fieldPath: 'balance.startBalance', value: 100 },
+          ],
+        },
+      },
+      params,
+    );
+
+    expect(status).toBe(200);
+    expect(audits).toEqual([
+      expect.objectContaining({
+        action: 'config.updated',
+        metadata: { operation: 'patch', fieldPaths: 'balance.startBalance' },
+      }),
+    ]);
+  });
+
+  it('a PATCH that lifts a tombstone with the value already stored audits that path', async () => {
+    const params = nextParams();
+    await seedDocument(params.principalId, { memory: { agent: { id: 'agent_other' } } }, [
+      'memory.agent.id',
+    ]);
+
+    const { status, audits } = await fieldWrite(
+      'patchConfigField',
+      { body: { entries: [{ fieldPath: 'memory.agent.id', value: 'agent_other' }] } },
+      params,
+    );
+
+    expect(status).toBe(200);
+    expect(audits.map((entry) => entry.metadata.fieldPaths)).toEqual(['memory.agent.id']);
+    expect((await storedDocument(params.principalId))!.tombstones).toEqual([]);
+  });
+
+  it('a PATCH that only moves the priority audits the new priority and no field path', async () => {
+    const params = nextParams();
+    await seedDocument(params.principalId, { interface: { customWelcome: 'Hello' } }, []);
+
+    const { status, audits } = await fieldWrite(
+      'patchConfigField',
+      {
+        body: {
+          entries: [{ fieldPath: 'interface.customWelcome', value: 'Hello' }],
+          priority: 25,
+        },
+      },
+      params,
+    );
+
+    expect(status).toBe(200);
+    expect(audits).toEqual([
+      expect.objectContaining({
+        action: 'config.updated',
+        metadata: { operation: 'patch', fieldPaths: '', priority: 25 },
+      }),
+    ]);
+    expect((await storedDocument(params.principalId))!.priority).toBe(25);
+  });
+
+  it('a DELETE retry, or a DELETE of a path never stored, writes nothing and records no audit entry', async () => {
+    const params = nextParams();
+    await seedDocument(params.principalId, { interface: { customWelcome: 'Hello' } }, []);
+
+    const removed = await fieldWrite(
+      'deleteConfigField',
+      { query: { fieldPath: 'interface.customWelcome' } },
+      params,
+    );
+    expect(removed.status).toBe(200);
+    expect(removed.audits).toEqual([
+      expect.objectContaining({
+        action: 'config.updated',
+        metadata: { operation: 'unset', fieldPath: 'interface.customWelcome' },
+      }),
+    ]);
+    const written = await version(params.principalId);
+
+    for (const fieldPath of ['interface.customWelcome', 'balance.startBalance']) {
+      const retry = await fieldWrite('deleteConfigField', { query: { fieldPath } }, params);
+      expect(retry.status).toBe(200);
+      expect(retry.body.config).toEqual(removed.body.config);
+      expect(retry.audits).toEqual([]);
+      expect(retry.deps.invalidateConfigCaches).toHaveBeenCalledTimes(1);
+    }
+    expect(await version(params.principalId)).toBe(written);
+  });
+
+  it('a DELETE of an entry the document does not hold writes nothing and records no audit entry', async () => {
+    const params = nextParams();
+    await seedDocument(params.principalId, { endpoints: { custom: [endpoint('kept')] } }, []);
+    const seeded = await version(params.principalId);
+
+    const absent = await fieldWrite(
+      'deleteConfigField',
+      { query: { fieldPath: 'endpoints.custom["gone"]' } },
+      params,
+    );
+
+    expect(absent.status).toBe(200);
+    expect(absent.deps.writeConfigDocument).not.toHaveBeenCalled();
+    expect(absent.audits).toEqual([]);
+    expect(await version(params.principalId)).toBe(seeded);
+
+    const removed = await fieldWrite(
+      'deleteConfigField',
+      { query: { fieldPath: 'endpoints.custom["kept"]' } },
+      params,
+    );
+    expect(removed.status).toBe(200);
+    expect(removed.audits).toHaveLength(1);
+    expect((await storedDocument(params.principalId))!.overrides).toEqual({});
+  });
+
+  it('a DELETE on a principal without a document still answers 404', async () => {
+    const params = nextParams();
+
+    for (const fieldPath of ['interface.customWelcome', 'endpoints.custom["gone"]']) {
+      const { status, audits } = await fieldWrite(
+        'deleteConfigField',
+        { query: { fieldPath } },
+        params,
+      );
+      expect(status).toBe(404);
+      expect(audits).toEqual([]);
+    }
+  });
+
+  it('a tombstone retry writes nothing and records no audit entry', async () => {
+    const params = nextParams();
+    const first = await fieldWrite(
+      'tombstoneConfigField',
+      { body: { fieldPath: 'memory.agent' } },
+      params,
+    );
+    expect(first.status).toBe(200);
+    expect(first.audits).toEqual([
+      expect.objectContaining({
+        action: 'config.created',
+        metadata: { operation: 'tombstone', fieldPath: 'memory.agent' },
+      }),
+    ]);
+    const written = await version(params.principalId);
+
+    const retry = await fieldWrite(
+      'tombstoneConfigField',
+      { body: { fieldPath: 'memory.agent' } },
+      params,
+    );
+
+    expect(retry.status).toBe(200);
+    expect(retry.body.config).toEqual(first.body.config);
+    expect(retry.deps.writeConfigDocument).not.toHaveBeenCalled();
+    expect(retry.audits).toEqual([]);
+    expect(await version(params.principalId)).toBe(written);
   });
 });

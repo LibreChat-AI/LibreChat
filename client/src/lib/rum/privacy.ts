@@ -28,6 +28,7 @@ const CREDENTIAL_ROUTES = [
   /\/api\/admin\/(?:login|oauth|config)(?:\/|$)/i,
   /\/api\/admin\/langfuse\/connection(?:\/|$)/i,
   /\/api\/admin\/skills\/sync\/credentials(?:\/|$)/i,
+  /\/api\/admin\/events\/connections(?:\/install)?\/?$/i,
   /\/api\/admin\/code-environments\/[^/]+\/pairings\/?$/i,
   /\/api\/mcp\/(?:oauth|servers)(?:\/|$)/i,
   /\/api\/mcp\/[^/]+\/oauth(?:\/|$)/i,

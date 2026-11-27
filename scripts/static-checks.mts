@@ -35,7 +35,7 @@
  *
  * Flags: --staged, --full, --fast, --only <ids>, --skip <ids>, --verbose,
  * --list. Check ids: eslint, prettier, imports, eslint-config, json,
- * suppressions, css-colors, circular-deps, typecheck, config-tests, i18n, depcheck.
+ * suppressions, css-colors, casing, circular-deps, typecheck, config-tests, i18n, depcheck.
  */
 
 import { fileURLToPath } from 'node:url';
@@ -58,8 +58,9 @@ import {
 
 import type { Dirent } from 'node:fs';
 import type { LintReport, SuppressionsFile } from './diagnostics.mts';
-import { isTranslationReferenced } from './i18n.mts';
+import { isTranslationReferenced, referenceIn } from './i18n.mts';
 import { introducedViolations, isDesignRule } from './diagnostics.mts';
+import { findCasingCollisions, trackedPaths } from './casing.mts';
 import { resolveTypecheck } from './typecheck.mts';
 import { importedPackages } from './imports.mts';
 
@@ -153,6 +154,9 @@ const FILTERS = {
     '.github/workflows/static-checks.yml',
     '!**.md',
   ],
+  /** Any added or renamed path can collide with a tracked one on a file system that ignores case.
+   *  CI runs this check in the Repository Safety workflow, which has no path filter. */
+  casing: ['**'],
   // Mirrors the Backend Unit Tests workflow, which owns both of these jobs.
   circular_deps: [
     'api/**',
@@ -1794,12 +1798,7 @@ async function findUnusedI18nKeys(): Promise<CheckOutcome> {
     }
   }
 
-  let tokenList: string[] | null = null;
-  const isReferenced = (key: string): boolean => {
-    if (tokens.has(key)) return true;
-    tokenList ??= [...tokens];
-    return tokenList.some((token) => token.includes(key));
-  };
+  const isReferenced = referenceIn(tokens);
 
   const unused = keys.filter((key) => {
     // Special variable labels are built dynamically from TSpecialVarLabel.
@@ -1839,6 +1838,30 @@ function checkCssColors(): CheckOutcome {
     output: [scan.output, scannerTests.status === 0 ? '' : scannerTests.output]
       .filter(Boolean)
       .join('\n'),
+  };
+}
+
+// --------------------------------------------------------------- path casing
+
+/** Changed paths that are one path on macOS or Windows, where the file system ignores case. */
+function checkCasing(context: CheckContext): CheckOutcome {
+  const tracked = trackedPaths(ROOT);
+  const index = new Set(tracked);
+  /** Exact index spellings, not `existsSync`: on macOS the old spelling of a case-only rename
+   *  still opens the renamed file. */
+  const changed = context.files.filter((file) => index.has(file));
+  if (changed.length === 0) return { ok: true, skipped: 'no added or changed paths' };
+  const collisions = findCasingCollisions(tracked, changed);
+  if (collisions.length === 0) return { ok: true };
+  return {
+    ok: false,
+    output: `Found ${collisions.length} path(s) that differ only by case or extension:\n${collisions
+      .map((collision) => `  ${collision}`)
+      .join('\n')}`,
+    hints: [
+      'An import such as `./Files` resolves to `files.ts` on macOS and Windows.',
+      'Rename one side to a different word (for example `files.ts` -> `rows.ts`), not a different case.',
+    ],
   };
 }
 
@@ -2201,6 +2224,7 @@ const CHECKS: Check[] = [
     group: 'css_colors',
     run: checkCssColors,
   },
+  { id: 'casing', title: 'Path casing', tier: 'fast', group: 'casing', run: checkCasing },
   {
     id: 'circular-deps',
     title: 'Circular dependencies',
