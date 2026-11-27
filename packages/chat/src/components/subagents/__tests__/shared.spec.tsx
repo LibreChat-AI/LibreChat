@@ -129,7 +129,11 @@ const messagesHost = createMessagesHost({
 const subagentsHost: SubagentsHost = createSubagentsHost({
   renderSteer: () => null,
   useRetainedControl: () => ({ isFetching: false, isError: false, refetch: () => undefined }),
-  useTaskContent: () => ({ isError: false, isUnavailable: false, refetch: () => undefined }),
+  useTaskContent: () => ({
+    isError: false,
+    isUnavailable: false,
+    refetch: () => Promise.resolve(),
+  }),
   useAgentsMap: () => ({}),
   useChildPartsHost: (host) => host,
 });
