@@ -320,11 +320,11 @@ export interface MessagePartsHost {
   /** Whether the calling message renders under a public share link, and which. */
   useShare: () => MessagePartsShare;
   /**
-   * The skill a call loaded by name, when the reader can open exactly that skill: names are
-   * unique only per author, so a name that matches none, several, or a skill the reader cannot
-   * see resolves to `undefined`. While `enabled` is false the lookup is skipped.
+   * The skill a call loaded, by the id the server stamped on the call, when the reader can open
+   * that skill; an id the reader cannot open, or no longer exists, resolves to `undefined`. An
+   * empty id, or `enabled` false, skips the lookup.
    */
-  useLoadedSkill: (name: string, enabled: boolean) => LoadedSkill | undefined;
+  useLoadedSkill: (id: string, enabled: boolean) => LoadedSkill | undefined;
   /** Localization, MCP lookups, OAuth binding and the app's renderers for a generic tool call. */
   useToolCallChrome: () => ToolCallChrome;
   /**

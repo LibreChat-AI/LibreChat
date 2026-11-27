@@ -29,7 +29,15 @@ jest.mock('../parts/Reasoning', () => ({
 }));
 jest.mock('../Summary', () => ({ __esModule: true, default: mockStub('summary') }));
 jest.mock('../Text', () => ({ __esModule: true, default: mockStub('text') }));
-jest.mock('../parts/SkillCall', () => ({ __esModule: true, default: mockStub('skill-call') }));
+/** The props the package's skill card was last drawn with. */
+let mockSkillProps: Record<string, unknown> | undefined;
+jest.mock('../parts/SkillCall', () => ({
+  __esModule: true,
+  default: (props: Record<string, unknown>) => {
+    mockSkillProps = props;
+    return <div data-testid="skill-call" />;
+  },
+}));
 jest.mock('../parts/MemoryCall', () => ({ __esModule: true, default: mockStub('memory-call') }));
 jest.mock('../parts/ReadFileCall', () => ({
   __esModule: true,
@@ -226,6 +234,31 @@ describe('the package’s part renderers', () => {
 
   it.each(TOOL_NAMES)('routes a %s call with args %s to the same card', (name, args, expected) => {
     expect(drawn(agentCall(name, args))).toBe(expected);
+  });
+});
+
+describe('the package’s skill card', () => {
+  it('is given the id of the skill the call loaded, and none for a call saved without it', () => {
+    drawn(
+      asPart({
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: {
+          id: 'call_skill',
+          name: 'skill',
+          args: '{"skillName":"release-notes"}',
+          output: 'Skill "release-notes" loaded. Follow the instructions below.',
+          progress: 1,
+          skillId: '6650f0c2a1b2c3d4e5f60718',
+        },
+      }),
+    );
+    expect(mockSkillProps).toMatchObject({
+      args: '{"skillName":"release-notes"}',
+      skillId: '6650f0c2a1b2c3d4e5f60718',
+    });
+
+    drawn(agentCall('skill', '{"skillName":"release-notes"}'));
+    expect(mockSkillProps?.skillId).toBeUndefined();
   });
 });
 

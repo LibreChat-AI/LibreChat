@@ -1,7 +1,7 @@
 import { Constants, ContentTypes } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import type { SubagentBuffer } from './aggregation';
-import { attachSubagentContent } from './aggregation';
+import { attachSubagentContent, stampSkillId } from './aggregation';
 
 type Call = {
   id: string;
@@ -115,5 +115,37 @@ describe('attachSubagentContent', () => {
     attachSubagentContent(undefined, buffers);
     expect(buffers.size).toBe(1);
     expect(() => attachSubagentContent([call('outer')], undefined)).not.toThrow();
+  });
+});
+
+describe('stampSkillId', () => {
+  const SKILL_ID = '6650f0c2a1b2c3d4e5f60718';
+  const skillCalls = new Map([['skill-2', { stepId: 'step-1', skillId: SKILL_ID }]]);
+
+  it('stamps the call where its step keeps it, not the step’s first call', () => {
+    const parts = [call('skill-1', 'skill'), call('skill-2', 'skill')];
+    const result: { id: string; tool_call: { id: string; skillId?: string } } = {
+      id: 'step-1',
+      tool_call: { id: 'skill-2' },
+    };
+
+    stampSkillId(skillCalls, result, parts, 0);
+
+    expect(result.tool_call.skillId).toBe(SKILL_ID);
+    expect(callOf(parts[0])).not.toHaveProperty('skillId');
+    expect(callOf(parts[1])).toMatchObject({ id: 'skill-2', skillId: SKILL_ID });
+  });
+
+  it('leaves a call alone when its record came from another step', () => {
+    const parts = [call('skill-2', 'skill')];
+    const result: { id: string; tool_call: { id: string; skillId?: string } } = {
+      id: 'step-9',
+      tool_call: { id: 'skill-2' },
+    };
+
+    stampSkillId(skillCalls, result, parts, 0);
+
+    expect(result.tool_call).not.toHaveProperty('skillId');
+    expect(callOf(parts[0])).not.toHaveProperty('skillId');
   });
 });

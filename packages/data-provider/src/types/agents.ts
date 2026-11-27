@@ -155,6 +155,12 @@ export namespace Agents {
     inputValidationError?: true;
     /** Server-stamped provenance; see `PartMetadata.executor`. */
     executor?: 'attached_workspace';
+    /**
+     * Server-stamped id of the skill a `skill` call loaded. Names are unique only per author,
+     * so this is what names the skill that ran; a call saved without it can vouch only for its
+     * output. Public share links leave it out.
+     */
+    skillId?: string;
     /** Auth URL */
     auth?: string;
     /** Expiration time */

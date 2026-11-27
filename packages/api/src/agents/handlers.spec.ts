@@ -2290,6 +2290,46 @@ describe('createToolExecuteHandler', () => {
       );
     });
 
+    it('records the skill each loaded call ran under its tool call and step, and no failed call', async () => {
+      const skillCalls: NonNullable<ToolExecuteOptions['skillCalls']> = new Map();
+      const getSkillByName = jest.fn(async (name: string) =>
+        name === 'analysis'
+          ? {
+              _id: { toString: () => '6650f0c2a1b2c3d4e5f60718' } as never,
+              name: 'analysis',
+              body: 'Analyze the position.',
+              fileCount: 0,
+              version: 2,
+            }
+          : null,
+      );
+      const loadTools: ToolExecuteOptions['loadTools'] = jest.fn(async () => ({
+        loadedTools: [],
+        configurable: { accessibleSkillIds: skillsInScope() },
+      }));
+      const handler = createToolExecuteHandler({ loadTools, getSkillByName, skillCalls });
+
+      const results = await invokeHandler(handler, [
+        {
+          id: 'call_skill_loaded',
+          stepId: 'step_skill_loaded',
+          name: Constants.SKILL_TOOL,
+          args: { skillName: 'analysis' },
+        },
+        {
+          id: 'call_skill_missing',
+          stepId: 'step_skill_missing',
+          name: Constants.SKILL_TOOL,
+          args: { skillName: 'missing' },
+        },
+      ]);
+
+      expect(results.map((result) => result.status)).toEqual(['success', 'error']);
+      expect([...skillCalls]).toEqual([
+        ['call_skill_loaded', { stepId: 'step_skill_loaded', skillId: '6650f0c2a1b2c3d4e5f60718' }],
+      ]);
+    });
+
     it('blocks stored skill instructions before injecting them into model context', async () => {
       const protectedValue = 'PRIVATE-SKILL-BODY';
       const getSkillByName = jest.fn(async () => ({

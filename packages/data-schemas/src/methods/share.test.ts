@@ -1210,6 +1210,60 @@ describe('Share Methods', () => {
       expect(share?.fileSnapshots?.[0].llmDeliveryPath).toBe('text');
     });
 
+    test("drops the author's skill ids from the shared payload and the copy a fork reads", async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      const shareId = `share_${nanoid()}`;
+      const skillId = new mongoose.Types.ObjectId().toString();
+      const loaded = 'Skill "release-notes" loaded. Follow the instructions below.';
+      const skillCall = (id: string) => ({
+        type: 'tool_call',
+        tool_call: {
+          id,
+          name: 'skill',
+          args: '{"skillName":"release-notes"}',
+          output: loaded,
+          progress: 1,
+          skillId,
+        },
+      });
+      const message = await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: '',
+        isCreatedByUser: false,
+        content: [
+          skillCall('call_skill'),
+          {
+            type: 'tool_call',
+            tool_call: {
+              id: 'call_subagent',
+              name: 'subagent',
+              args: '{}',
+              output: 'done',
+              progress: 1,
+              subagent_content: [skillCall('call_child_skill'), { type: 'text', text: 'ok' }],
+            },
+          },
+        ],
+      });
+      await SharedLink.create({ shareId, conversationId, user: userId, messages: [message._id] });
+
+      const shared = await shareMethods.getSharedMessages(shareId);
+      const fork = await shareMethods.getSharedForkSnapshot(shareId);
+
+      for (const content of [shared?.messages[0]?.content, fork?.share.messages[0]?.content]) {
+        const parts = content as Array<{ tool_call: Record<string, unknown> }>;
+        const child = (parts[1].tool_call.subagent_content as typeof parts)[0].tool_call;
+        expect(parts[0].tool_call).toMatchObject({ id: 'call_skill', output: loaded });
+        expect(child).toMatchObject({ id: 'call_child_skill', output: loaded });
+        expect(JSON.stringify(content)).not.toContain(skillId);
+      }
+      const stored = await Message.findById(message._id).lean();
+      expect(JSON.stringify(stored?.content)).toContain(skillId);
+    });
+
     test('leaves safe non-steer content untouched (same array reference)', () => {
       const plainContent = [
         { type: 'text', text: 'no steers here' },

@@ -533,11 +533,39 @@ function applyShareFileRoute(
 }
 
 /**
+ * A skill call's `skillId` names a record in the author's library, which a shared view never
+ * opens, so a link (and a copy continued from it) carries only the output the call recorded.
+ * Subagent transcripts nest calls of their own. Returns the same array when no call has one.
+ */
+function withoutSkillIds(content: unknown[]): unknown[] {
+  let result: unknown[] | null = null;
+  for (let i = 0; i < content.length; i++) {
+    const part = content[i] as Record<string, unknown> | null | undefined;
+    const call = part != null && typeof part === 'object' ? part.tool_call : undefined;
+    if (part == null || call == null || typeof call !== 'object') {
+      continue;
+    }
+    const { skillId, subagent_content: transcript, ...rest } = call as Record<string, unknown>;
+    const nested = Array.isArray(transcript) ? withoutSkillIds(transcript) : transcript;
+    if (skillId === undefined && nested === transcript) {
+      continue;
+    }
+    result ??= [...content];
+    result[i] = {
+      ...part,
+      tool_call: transcript === undefined ? rest : { ...rest, subagent_content: nested },
+    };
+  }
+  return result ?? content;
+}
+
+/**
  * Steer parts persisted inline in `message.content` carry the same user file
  * refs as a message's top-level `files`, so they follow the identical share
  * policy: dropped entirely when files are excluded from the link, sanitized and
  * rewritten to the share-scoped route (with anonymized ids) when included.
- * Returns the original array untouched when no steer part carries files.
+ * Skill calls lose their `skillId` (see `withoutSkillIds`). Returns the original
+ * array untouched when nothing changed.
  */
 export function anonymizeSharedContent(
   content: unknown[] | undefined,
@@ -557,9 +585,11 @@ export function anonymizeSharedContent(
   }
 
   let result: unknown[] | null = null;
-  const sanitized = sanitizeUIResourceContent(content, params.sanitizeUIResourceMarkers === true);
+  const sanitized = withoutSkillIds(
+    sanitizeUIResourceContent(content, params.sanitizeUIResourceMarkers === true) as unknown[],
+  );
   if (sanitized !== content) {
-    result = sanitized as unknown[];
+    result = sanitized;
   }
 
   for (let i = 0; i < content.length; i++) {
