@@ -7,6 +7,9 @@
     ],
     "api/server/experimental.spec.js": ["api/server/experimental.js", "api/server/index.js"],
     "api/server/index.spec.js": ["api/server/index.js", "api/server/experimental.js"],
+    "api/server/middleware/accessResources/canAccessResource.model.spec.js": [
+      "formal/authz/vectors/"
+    ],
     "api/server/persistence.spec.js": ["api/server/index.js", "api/server/experimental.js"],
     "api/server/routes/agents/__tests__/openapi.contract.spec.js": [
       "packages/api/openapi/agents.openapi.json"
@@ -55,6 +58,11 @@
       "package-lock.json"
     ],
     "client/src/utils/__tests__/mcpSandbox.spec.ts": ["client/public/mcp-sandbox.html"],
+    "packages/api/src/acl/bits.test.ts": [
+      "api/",
+      "packages/api/src/",
+      "packages/data-schemas/src/"
+    ],
     "packages/api/src/admin/meta.spec.ts": ["packages/data-provider/package.json"],
     "packages/api/src/admin/secrets.runtime.spec.ts": [
       "packages/api/src/app/",
@@ -69,6 +77,7 @@
     "packages/api/src/files/documents/libreoffice.spec.ts": ["packages/api/src/files/documents/"],
     "packages/api/src/files/documents/spreadsheet.spec.ts": ["packages/api/src/files/documents/"],
     "packages/api/src/mcp/__tests__/sandbox.test.ts": ["client/public/mcp-sandbox.html"],
+    "packages/api/src/shared-links/access.model.test.ts": ["formal/authz/vectors/"],
     "packages/client/src/components/Progress.spec.tsx": ["packages/client/src/theme/tokens.css"],
     "packages/client/src/components/SegmentedMeter.spec.tsx": [
       "packages/client/src/theme/tokens.css"

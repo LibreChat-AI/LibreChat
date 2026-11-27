@@ -1,0 +1,126 @@
+name: Authorization Model
+
+# Advisory. Checks the Lean proofs in formal/authz, that the committed vectors are the model's,
+# and that the strict-isolation conformance runs and the mutants agree with the code. The
+# default-mode conformance specs also run in Backend Unit Tests (backend-review.yml, registered in
+# .github/guard-specs.json).
+on:
+  pull_request:
+    paths:
+      - 'formal/authz/**'
+      - '.github/workflows/formal-authz.yml'
+      - 'packages/api/src/shared-links/access*.ts'
+      - 'packages/api/src/acl/**'
+      - 'packages/data-schemas/src/methods/aclEntry.ts'
+      - 'packages/data-schemas/src/methods/share.ts'
+      - 'packages/data-schemas/src/methods/userGroup.ts'
+      - 'packages/data-schemas/src/tenant/**'
+      - 'packages/data-schemas/src/config/tenantContext.ts'
+      - 'packages/data-schemas/src/models/plugins/tenantIsolation.ts'
+      - 'packages/data-schemas/src/models/aclEntry.ts'
+      - 'packages/data-schemas/src/models/group.ts'
+      - 'packages/data-schemas/src/models/sharedLink.ts'
+      - 'packages/data-schemas/src/utils/retention.ts'
+      - 'packages/data-schemas/src/common/permissions.ts'
+      - 'packages/data-schemas/src/admin/capabilities.ts'
+      - 'api/server/middleware/accessResources/**'
+      - 'api/server/services/PermissionService.js'
+      - 'api/server/middleware/canAccessSharedLink.js'
+      - 'packages/data-provider/src/accessPermissions.ts'
+      - 'api/server/routes/share.js'
+      - 'api/server/routes/__tests__/share.authz.spec.js'
+  push:
+    branches: [dev]
+    paths:
+      - 'formal/authz/**'
+      - '.github/workflows/formal-authz.yml'
+      - 'packages/api/src/shared-links/access*.ts'
+      - 'packages/api/src/acl/**'
+      - 'packages/data-schemas/src/methods/aclEntry.ts'
+      - 'packages/data-schemas/src/methods/share.ts'
+      - 'packages/data-schemas/src/methods/userGroup.ts'
+      - 'packages/data-schemas/src/tenant/**'
+      - 'packages/data-schemas/src/config/tenantContext.ts'
+      - 'packages/data-schemas/src/models/plugins/tenantIsolation.ts'
+      - 'packages/data-schemas/src/models/aclEntry.ts'
+      - 'packages/data-schemas/src/models/group.ts'
+      - 'packages/data-schemas/src/models/sharedLink.ts'
+      - 'packages/data-schemas/src/utils/retention.ts'
+      - 'packages/data-schemas/src/common/permissions.ts'
+      - 'packages/data-schemas/src/admin/capabilities.ts'
+      - 'api/server/middleware/accessResources/**'
+      - 'api/server/services/PermissionService.js'
+      - 'api/server/middleware/canAccessSharedLink.js'
+      - 'packages/data-provider/src/accessPermissions.ts'
+      - 'api/server/routes/share.js'
+      - 'api/server/routes/__tests__/share.authz.spec.js'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: formal-authz-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  SCARF_ANALYTICS: 'false'
+  NODE_ENV: CI
+  NODE_OPTIONS: '--max-old-space-size=6144'
+
+jobs:
+  proofs:
+    name: Check proofs, axioms and vectors
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: formal/authz
+          use-mathlib-cache: 'false'
+          build: 'true'
+          test: 'false'
+          lint: 'false'
+          axiom-audit: 'true'
+          axiom-audit-root: 'Authz'
+          axiom-audit-allow: 'propext,Classical.choice,Quot.sound'
+      - name: Regenerate vectors
+        working-directory: formal/authz
+        run: lake exe authz_vectors
+      - name: Fail on stale or extra vectors
+        run: |
+          git status --porcelain -- formal/authz/vectors
+          test -z "$(git status --porcelain -- formal/authz/vectors)"
+
+  mutants:
+    name: Strict conformance and mutants
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.3'
+      - run: npm ci
+      - run: npm run build:data-provider
+      - run: npm run build:data-schemas
+      - run: npm run build:api
+      - uses: ./.github/actions/mongodb-binary
+      # A separate process: `isTenantIsolationStrict` is memoised on first read.
+      - name: Shared-link conformance (strict tenant isolation)
+        working-directory: packages/api
+        env:
+          TENANT_ISOLATION_STRICT: 'true'
+        run: npx jest src/shared-links/access.model.test.ts
+      - name: Resource gate conformance (strict tenant isolation)
+        working-directory: api
+        env:
+          TENANT_ISOLATION_STRICT: 'true'
+        run: npx jest server/middleware/accessResources/canAccessResource.model.spec.js
+      - name: Calibrate checks with mutants
+        run: node formal/authz/scripts/mutants.mjs

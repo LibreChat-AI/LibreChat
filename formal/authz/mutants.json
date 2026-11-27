@@ -1,0 +1,191 @@
+{
+  "tests": {
+    "sharedLink": {
+      "cwd": "packages/api",
+      "file": "src/shared-links/access.model.test.ts"
+    },
+    "resource": {
+      "cwd": "api",
+      "file": "server/middleware/accessResources/canAccessResource.model.spec.js"
+    },
+    "routes": {
+      "cwd": "api",
+      "file": "server/routes/__tests__/share.authz.spec.js"
+    }
+  },
+  "mutants": [
+    {
+      "id": "fallback-lookup",
+      "property": "context_irrelevant",
+      "file": "packages/api/src/shared-links/access.ts",
+      "find": "if (!rawShare && viewerTenantId) {",
+      "replace": "if (false) {",
+      "test": "sharedLink"
+    },
+    {
+      "id": "cross-tenant-role",
+      "property": "cross_tenant_role_irrelevant",
+      "file": "packages/api/src/shared-links/access.ts",
+      "find": "role: rawShare.tenantId === user.tenantId ? user.role : null,",
+      "replace": "role: user.role,",
+      "test": "sharedLink"
+    },
+    {
+      "id": "role-principal",
+      "property": "private_grant_admits_viewer",
+      "file": "packages/api/src/shared-links/access.ts",
+      "find": "role: rawShare.tenantId === user.tenantId ? user.role : null,",
+      "replace": "role: null,",
+      "test": "sharedLink"
+    },
+    {
+      "id": "public-sign-in",
+      "property": "allow_without_anonymous_flag_is_authenticated",
+      "file": "packages/api/src/shared-links/access.ts",
+      "find": "        if (!user) {\n          res.status(401)",
+      "replace": "        if (false) {\n          res.status(401)",
+      "test": "sharedLink"
+    },
+    {
+      "id": "private-sign-in",
+      "property": "anonymous_private_is_unauthenticated",
+      "file": "packages/api/src/shared-links/access.ts",
+      "find": "\n      if (!user) {\n        res.status(401)",
+      "replace": "\n      if (false) {\n        res.status(401)",
+      "test": "sharedLink"
+    },
+    {
+      "id": "anonymous-flag",
+      "property": "anonymous_allow_requires_public_flag",
+      "file": "packages/api/src/shared-links/access.ts",
+      "find": "if (isEnabled(process.env.ALLOW_SHARED_LINKS_PUBLIC)) {",
+      "replace": "if (true) {",
+      "test": "sharedLink"
+    },
+    {
+      "id": "private-deny",
+      "property": "private_allow_has_grant",
+      "file": "packages/api/src/shared-links/access.ts",
+      "find": "if (!hasAccess) {",
+      "replace": "if (false) {",
+      "test": "sharedLink"
+    },
+    {
+      "id": "run-with-tenant",
+      "property": "share_ignores_foreign_rows",
+      "file": "packages/api/src/shared-links/access.ts",
+      "find": "return tenantStorage.run({ tenantId: rawShare.tenantId }, fn);",
+      "replace": "return fn();",
+      "test": "sharedLink"
+    },
+    {
+      "id": "public-access",
+      "property": "revoked_share_denies_everyone",
+      "file": "packages/api/src/acl/accessControlService.ts",
+      "find": "return await this._dbMethods.hasPermission(\n        [{ principalType: PrincipalType.PUBLIC }],",
+      "replace": "return true;\n      await this._dbMethods.hasPermission(\n        [{ principalType: PrincipalType.PUBLIC }],",
+      "test": "sharedLink"
+    },
+    {
+      "id": "resource-auth",
+      "property": "resource_allow_is_authenticated",
+      "file": "api/server/middleware/accessResources/canAccessResource.js",
+      "find": "if (!req.user || !req.user.id) {",
+      "replace": "if (false) {",
+      "test": "resource"
+    },
+    {
+      "id": "resource-gate",
+      "property": "resource_allow_without_capability_has_grant",
+      "file": "api/server/middleware/accessResources/canAccessResource.js",
+      "find": "if (hasPermission) {",
+      "replace": "if (true) {",
+      "test": "resource"
+    },
+    {
+      "id": "resource-check",
+      "property": "resource_without_rows_denied",
+      "file": "api/server/services/PermissionService.js",
+      "find": "return await db.hasPermission(principals, resourceType, resourceId, requiredPermission);",
+      "replace": "return true;",
+      "test": "resource"
+    },
+    {
+      "id": "capability-bypass",
+      "property": "resource_allow_without_capability_has_grant",
+      "file": "api/server/middleware/accessResources/canAccessResource.js",
+      "find": "      if (hasCap) {",
+      "replace": "      if (true) {",
+      "test": "resource"
+    },
+    {
+      "id": "capability-error",
+      "property": "resource_allow_without_capability_has_grant",
+      "file": "api/server/middleware/accessResources/canAccessResource.js",
+      "find": "logger.warn(`[canAccessResource] capability check failed, denying bypass: ${err.message}`);",
+      "replace": "hasCap = true;",
+      "test": "resource"
+    },
+    {
+      "id": "fork-auth",
+      "property": "fork_allow_is_authenticated_view",
+      "file": "api/server/routes/share.js",
+      "find": "'/:shareId/fork',\n    requireJwtAuth,",
+      "replace": "'/:shareId/fork',\n    optionalJwtAuth,",
+      "test": "routes"
+    },
+    {
+      "id": "file-gate",
+      "property": "revoked_share_denies_everyone",
+      "file": "api/server/routes/share.js",
+      "find": "'/:shareId/files/:file_id/download',\n    optionalJwtAuth,\n    optionalShareFileAuth,\n    canAccessSharedLink,",
+      "replace": "'/:shareId/files/:file_id/download',\n    optionalJwtAuth,\n    optionalShareFileAuth,",
+      "test": "routes"
+    },
+    {
+      "id": "share-expiry",
+      "property": "view_allow_requires_active_share",
+      "file": "packages/data-schemas/src/methods/share.ts",
+      "find": "await SharedLink.findOne({ shareId, ...activeExpirationFilter<t.ISharedLink>() })",
+      "replace": "await SharedLink.findOne({ shareId })",
+      "test": "sharedLink",
+      "build": "npm run build:data-schemas"
+    },
+    {
+      "id": "tenant-filter",
+      "property": "scoped_grant_is_tenant_row",
+      "file": "packages/data-schemas/src/tenant/policy.ts",
+      "find": "return scope.kind === 'scoped' ? { tenantId: scope.tenantId } : undefined;",
+      "replace": "return undefined;",
+      "test": "sharedLink",
+      "build": "npm run build:data-schemas"
+    },
+    {
+      "id": "bit-superset",
+      "property": "covers_single_bit",
+      "file": "packages/data-schemas/src/methods/aclEntry.ts",
+      "find": "if ((v & requiredBits) === requiredBits) {",
+      "replace": "if (true) {",
+      "test": "sharedLink",
+      "build": "npm run build:data-schemas"
+    },
+    {
+      "id": "principal-match",
+      "property": "private_allow_has_grant",
+      "file": "packages/data-schemas/src/methods/aclEntry.ts",
+      "find": "      ...(p.principalType !== PrincipalType.PUBLIC && { principalId: p.principalId }),\n    }));\n\n    const entry = await AclEntry.findOne({",
+      "replace": "      ...(p.principalType === PrincipalType.GROUP && { principalId: p.principalId }),\n    }));\n\n    const entry = await AclEntry.findOne({",
+      "test": "sharedLink",
+      "build": "npm run build:data-schemas"
+    },
+    {
+      "id": "tenantless-rows",
+      "property": "scoped_grant_is_tenant_row",
+      "file": "packages/data-schemas/src/tenant/policy.ts",
+      "find": "return scope.kind === 'scoped' ? { tenantId: scope.tenantId } : undefined;",
+      "replace": "return scope.kind === 'scoped' ? { tenantId: { $in: [scope.tenantId, null] } } : undefined;",
+      "test": "sharedLink",
+      "build": "npm run build:data-schemas"
+    }
+  ]
+}
