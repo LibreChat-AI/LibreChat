@@ -1292,6 +1292,23 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         }
       };
 
+      /** Before reading the role back: an add moved out of its role by that role's deletion
+       * must still never leave the partition without an admin. */
+      if (user.role === SystemRoles.ADMIN && name !== SystemRoles.ADMIN) {
+        const postCount = await countUsersByRole(SystemRoles.ADMIN);
+        if (postCount === 0) {
+          try {
+            await updateUser(userId, { role: SystemRoles.ADMIN });
+          } catch (rollbackError) {
+            logger.error(
+              `[adminRoles] CRITICAL: admin rollback failed in addRoleMember for user ${userId}:`,
+              rollbackError,
+            );
+          }
+          return res.status(400).json({ error: 'Cannot remove the last admin user' });
+        }
+      }
+
       if (!isSystemRoleName(name)) {
         /**
          * A deletion of the role whose last member read came before this write cannot see the
@@ -1322,21 +1339,6 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
             return res.status(404).json({ error: 'Role not found' });
           }
           return res.status(500).json({ error: 'Failed to add role member' });
-        }
-      }
-
-      if (user.role === SystemRoles.ADMIN && name !== SystemRoles.ADMIN) {
-        const postCount = await countUsersByRole(SystemRoles.ADMIN);
-        if (postCount === 0) {
-          try {
-            await updateUser(userId, { role: SystemRoles.ADMIN });
-          } catch (rollbackError) {
-            logger.error(
-              `[adminRoles] CRITICAL: admin rollback failed in addRoleMember for user ${userId}:`,
-              rollbackError,
-            );
-          }
-          return res.status(400).json({ error: 'Cannot remove the last admin user' });
         }
       }
 

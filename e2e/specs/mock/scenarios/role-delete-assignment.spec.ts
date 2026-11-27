@@ -106,6 +106,10 @@ test.describe('assigning a role while it is deleted', () => {
       'handlers',
       `${ADMIN_RACE} an undone add whose previous role was deleted and recreated under its name meanwhile moves the user on to USER`,
     );
+    expectPassed(
+      'handlers',
+      `${ADMIN_RACE} keeps an admin when the last two are added to a role deleted before either reads it back`,
+    );
   });
 
   test('an OpenID login that syncs an account into a role deleted meanwhile fails and keeps its role @scenario:idp-sync-into-deleted-role-is-undone', () => {

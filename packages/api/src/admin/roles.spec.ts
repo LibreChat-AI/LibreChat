@@ -2339,6 +2339,27 @@ describe('createAdminRolesHandlers', () => {
         },
       );
 
+      it('keeps the last admin before reading back a role deleted meanwhile', async () => {
+        const deps = createDeps({
+          getRoleByName: jest.fn().mockResolvedValueOnce(mockRole()).mockResolvedValue(null),
+          findUser: jest.fn().mockResolvedValue(mockUser({ role: SystemRoles.ADMIN })),
+          /** Two admins before the write; none after it and the deletion's sweep. */
+          countUsersByRole: jest.fn().mockResolvedValueOnce(2).mockResolvedValueOnce(0),
+          updateUser: jest.fn().mockResolvedValue(mockUser({ role: 'editor' })),
+        });
+        const { req, res, status, json } = createReqRes({
+          params: { name: 'editor' },
+          body: { userId: validUserId },
+        });
+
+        await createAdminRolesHandlers(deps).addRoleMember(req, res);
+
+        expect(deps.updateUser).toHaveBeenLastCalledWith(validUserId, { role: SystemRoles.ADMIN });
+        expect(deps.getRoleByName).toHaveBeenCalledTimes(1);
+        expect(status).toHaveBeenCalledWith(400);
+        expect(json).toHaveBeenCalledWith({ error: 'Cannot remove the last admin user' });
+      });
+
       it('treats a role recreated under the name as gone', async () => {
         const add = await addWhileDeleting(
           mockRole({ _id: new Types.ObjectId() }),
@@ -2349,7 +2370,7 @@ describe('createAdminRolesHandlers', () => {
         expect(add.status).toHaveBeenCalledWith(404);
       });
 
-      it('puts an admin it moved back to ADMIN without counting admins again', async () => {
+      it('puts an admin it moved back to ADMIN after checking an admin remains', async () => {
         const add = await addWhileDeleting(null, mockUser({ role: SystemRoles.ADMIN }), {
           previousRole: SystemRoles.ADMIN,
         });
@@ -2359,7 +2380,8 @@ describe('createAdminRolesHandlers', () => {
           { role: SystemRoles.ADMIN },
           { role: 'editor' },
         );
-        expect(add.deps.countUsersByRole).toHaveBeenCalledTimes(1);
+        /** Before the write and after it, ahead of the read-back. */
+        expect(add.deps.countUsersByRole).toHaveBeenCalledTimes(2);
         expect(add.status).toHaveBeenCalledWith(404);
       });
 

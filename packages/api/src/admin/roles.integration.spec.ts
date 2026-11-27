@@ -94,8 +94,8 @@ function roleHandlers(entries: RecordAuditEntryInput[], overrides: Partial<Admin
   });
 }
 
-async function createMember(role: string): Promise<string> {
-  const user = await mongoose.models.User.create({ email: 'member@example.com', role });
+async function createMember(role: string, email = 'member@example.com'): Promise<string> {
+  const user = await mongoose.models.User.create({ email, role });
   return user._id.toString();
 }
 
@@ -221,4 +221,51 @@ describe('adding a member to a role while it is deleted', () => {
       expect(entries.filter((entry) => entry.action === 'role.member_added')).toEqual([]);
     },
   );
+
+  it('keeps an admin when the last two are added to a role deleted before either reads it back', async () => {
+    await methods.createRoleByName({ name: 'editor' });
+    const admins = [
+      await createMember(SystemRoles.ADMIN, 'first-admin@example.com'),
+      await createMember(SystemRoles.ADMIN, 'second-admin@example.com'),
+    ];
+    const entries: RecordAuditEntryInput[] = [];
+    /** Opens once every add has reached it. */
+    const barrier = () => {
+      let count = 0;
+      let open: () => void = () => undefined;
+      const opened = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      return async (before?: () => Promise<unknown>) => {
+        count += 1;
+        if (count === admins.length) {
+          await before?.();
+          open();
+        }
+        await opened;
+      };
+    };
+    /** Both adds pass their admin check before either writes; once both writes commit, the role
+     * is deleted (moving both to USER) before either goes on. */
+    const checked = barrier();
+    const written = barrier();
+    const handlers = roleHandlers(entries, {
+      updateUser: async (id, data, expected) => {
+        if (data.role !== 'editor') {
+          return methods.updateUser(id, data, expected as FilterQuery<IUser>);
+        }
+        await checked();
+        const updated = await methods.updateUser(id, data, expected as FilterQuery<IUser>);
+        await written(() => call(handlers.deleteRole, { name: 'editor' }));
+        return updated;
+      },
+    });
+
+    const replies = await Promise.all(
+      admins.map((userId) => call(handlers.addRoleMember, { name: 'editor' }, { userId })),
+    );
+
+    expect(replies.map(({ status }) => status)).not.toContain(200);
+    expect(await methods.countUsersByRole(SystemRoles.ADMIN)).toBeGreaterThanOrEqual(1);
+  });
 });
