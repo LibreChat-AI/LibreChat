@@ -2355,6 +2355,40 @@ export function createConversationMethods(
     }
   }
 
+  /**
+   * Makes a stored chat temporary. A temporary chat is in no bookmark-filtered list and TTL removes
+   * it without a decrement, so it gives up its bookmarks. Conditional on the transition, so
+   * concurrent writers release the counts once; the tags are cleared in the same write and
+   * released from the document it replaced, so a later delete cannot release them again. Inside a
+   * transaction the counts are released on commit. Resolves whether this call converted the chat.
+   */
+  async function convertToTemporary(
+    userId: string,
+    _id: Types.ObjectId,
+    expiredAt: Date,
+  ): Promise<boolean> {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const replaced = await withoutMeiliIndexing(
+      Conversation.findOneAndUpdate(
+        { _id, isTemporary: { $ne: true } },
+        { $set: { isTemporary: true, expiredAt, tags: [] } },
+        { new: false, timestamps: false, session: deps?.saveSession },
+      ),
+    )
+      .select('tags')
+      .lean<Pick<IConversation, 'tags'> | null>();
+    if (replaced == null) {
+      return false;
+    }
+    const tags = [...new Set(replaced.tags ?? [])];
+    if (tags.length > 0) {
+      await runAfterTransaction(deps?.saveSession, () =>
+        decrementTagCounts(mongoose, userId, tags),
+      );
+    }
+    return true;
+  }
+
   async function stampForcedRetention(
     { userId, interfaceConfig }: { userId: string; interfaceConfig?: AppConfig['interfaceConfig'] },
     { conversationId, messageIds = [] }: { conversationId: string; messageIds?: string[] },
@@ -2365,12 +2399,11 @@ export function createConversationMethods(
 
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const stored = await Conversation.findOne({ conversationId, user: userId })
-      .select({ _id: 1, isTemporary: 1, expiredAt: 1, tags: 1, tenantId: 1 })
+      .select({ _id: 1, isTemporary: 1, expiredAt: 1, tenantId: 1 })
       .lean<{
         _id: Types.ObjectId;
         isTemporary?: boolean;
         expiredAt?: Date | null;
-        tags?: string[];
         tenantId?: string;
       } | null>();
     if (!stored) {
@@ -2390,19 +2423,8 @@ export function createConversationMethods(
     await retainResponses({ userId, tenantId: stored.tenantId }, conversationId, expiredAt);
     let stampedDeadline = stored.expiredAt != null;
     if (stored.isTemporary !== true) {
-      /**
-       * Conditional on the transition, so concurrent stamps release the bookmark counts once;
-       * the released tags are cleared with it so a later delete cannot release them again.
-       */
-      const converted = await Conversation.updateOne(
-        { _id: stored._id, isTemporary: { $ne: true } },
-        { $set: { isTemporary: true, expiredAt, tags: [] } },
-        { timestamps: false },
-      );
-      stampedDeadline ||= converted.modifiedCount > 0;
-      if (converted.modifiedCount > 0 && stored.tags?.length) {
-        await decrementTagCounts(mongoose, userId, stored.tags);
-      }
+      const converted = await convertToTemporary(userId, stored._id, expiredAt);
+      stampedDeadline ||= converted;
     } else if (stored.expiredAt == null) {
       const stamped = await Conversation.updateOne(
         { _id: stored._id, expiredAt: null },
@@ -2621,8 +2643,10 @@ export function createConversationMethods(
       if (responseDeadline || replacingConversationId) {
         const stored = await Conversation.findOne({ user: userId, conversationId })
           .session(deps?.saveSession ?? null)
-          .select('tenantId expiredAt')
-          .lean<Pick<IConversation, 'tenantId' | 'expiredAt'>>();
+          .select('tenantId expiredAt isTemporary')
+          .lean<
+            Pick<IConversation, 'tenantId' | 'expiredAt' | 'isTemporary'> & { _id: Types.ObjectId }
+          >();
         const contextTenant = getTenantId();
         const responseOwner = {
           userId,
@@ -2645,6 +2669,16 @@ export function createConversationMethods(
             newConversationId || conversationId,
             stored?.expiredAt && stored.expiredAt < deadline ? stored.expiredAt : deadline,
           );
+        /* The write below would hide a stored chat while it still counted toward its bookmarks;
+         * converting it first, as `stampForcedRetention` does, releases them once. */
+        if (
+          stored != null &&
+          stored.isTemporary !== true &&
+          update.isTemporary === true &&
+          update.expiredAt instanceof Date
+        ) {
+          await convertToTemporary(userId, stored._id, update.expiredAt);
+        }
       }
 
       const createdAtOnInsert =
