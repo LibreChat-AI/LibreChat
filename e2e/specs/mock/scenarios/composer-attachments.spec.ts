@@ -109,6 +109,40 @@ async function sendFileIds(page: Page, label: string): Promise<Array<string | un
   return (payload.files ?? []).map((file) => file.file_id);
 }
 
+/** Attaches a file while a new chat streams its first reply and holds the upload past the reply's
+ * end, when the chat has its id and saved address, then checks that the file is still in the
+ * composer, finishes uploading there and rides the next message. */
+async function attachDuringFirstReply(page: Page, path: string): Promise<void> {
+  const release = await holdUploads(page);
+  try {
+    await page.goto(path, { timeout: 10000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    const messages = messagesView(page);
+    const run = await sendMessage(page, `E2E_SLOW_REPLY:${uniqueName('first-reply')}`);
+    expect(run.ok()).toBe(true);
+    await expect(messages.getByText('chunk-010')).toBeVisible({ timeout: 15000 });
+
+    const { chip, request } = await attachHeldFile(page, 'first-reply');
+    await expect(page.getByTestId('stop-generation-button')).toBeVisible();
+    await expect(messages.getByText('chunk-159')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByTestId('stop-generation-button')).toBeHidden({ timeout: 30000 });
+    await expect(page).toHaveURL(/\/c\/[0-9a-f-]{36}$/);
+    await settle(page);
+    await expect(chip).toBeVisible();
+
+    release();
+    const stored = await request.response();
+    if (stored == null) throw new Error('The held upload was never answered');
+    expect(stored.ok()).toBe(true);
+    const { file_id: fileId } = (await stored.json()) as UploadedFile;
+    expect(fileId).toBeTruthy();
+    await expect(chip).toBeVisible();
+    expect(await sendFileIds(page, 'after-first-reply')).toEqual([fileId]);
+  } finally {
+    release();
+  }
+}
+
 test.describe('composer attachments', () => {
   test('a long paste becomes a chip whose editor saves the corrected text @scenario:a-long-paste-becomes-an-editable-chip-whose-edit-is-saved', async ({
     page,
@@ -271,63 +305,29 @@ test.describe('composer attachments', () => {
     }
   });
 
-  for (const { scope, scenario } of [
-    {
-      scope: 'chat',
-      scenario: 'a-file-attached-during-a-new-chats-first-reply-stays-after-it-ends',
-    },
-    {
-      scope: 'project chat',
-      scenario: 'a-file-attached-during-a-new-project-chats-first-reply-stays-after-it-ends',
-    },
-  ]) {
-    test(`a file attached while a new ${scope} streams its first reply stays after the reply ends @scenario:${scenario}`, async ({
-      page,
-    }) => {
-      test.setTimeout(90000);
-      let projectId: string | undefined;
-      if (scope === 'project chat') {
-        await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
-        const project = await requestJson<{ _id: string }>(page, {
-          path: '/api/projects',
-          token: await getAccessToken(page),
-          method: 'POST',
-          body: { name: uniqueName('first-reply project') },
-        });
-        projectId = project._id;
-      }
-      const release = await holdUploads(page);
-      try {
-        await page.goto(projectId ? `${NEW_CHAT_PATH}?projectId=${projectId}` : NEW_CHAT_PATH, {
-          timeout: 10000,
-        });
-        await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
-        const messages = messagesView(page);
-        const run = await sendMessage(page, `E2E_SLOW_REPLY:${uniqueName('first-reply')}`);
-        expect(run.ok()).toBe(true);
-        await expect(messages.getByText('chunk-010')).toBeVisible({ timeout: 15000 });
+  test('a file attached while a new chat streams its first reply stays after the reply ends @scenario:a-file-attached-during-a-new-chats-first-reply-stays-after-it-ends', async ({
+    page,
+  }) => {
+    test.setTimeout(90000);
+    await attachDuringFirstReply(page, NEW_CHAT_PATH);
+  });
 
-        const { chip, request } = await attachHeldFile(page, 'first-reply');
-        await expect(page.getByTestId('stop-generation-button')).toBeVisible();
-        /** The reply ends while the upload is still held: the chat now has its id and address. */
-        await expect(messages.getByText('chunk-159')).toBeVisible({ timeout: 30000 });
-        await expect(page.getByTestId('stop-generation-button')).toBeHidden({ timeout: 30000 });
-        await expect(page).toHaveURL(/\/c\/[0-9a-f-]{36}$/);
-        await settle(page);
-        await expect(chip).toBeVisible();
-
-        release();
-        const stored = await request.response();
-        if (stored == null) throw new Error('The held upload was never answered');
-        expect(stored.ok()).toBe(true);
-        const { file_id: fileId } = (await stored.json()) as UploadedFile;
-        expect(fileId).toBeTruthy();
-        await expect(chip).toBeVisible();
-        expect(await sendFileIds(page, 'after-first-reply')).toEqual([fileId]);
-      } finally {
-        release();
-        if (projectId) await deleteProjects([projectId]);
-      }
+  test('a file attached while a new project chat streams its first reply stays after the reply ends @scenario:a-file-attached-during-a-new-project-chats-first-reply-stays-after-it-ends', async ({
+    page,
+  }) => {
+    test.setTimeout(90000);
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    const project = await requestJson<{ _id: string }>(page, {
+      path: '/api/projects',
+      token: await getAccessToken(page),
+      method: 'POST',
+      body: { name: uniqueName('first-reply project') },
     });
-  }
+    try {
+      /** The run ends on the saved chat's own path, which no longer carries the project. */
+      await attachDuringFirstReply(page, `${NEW_CHAT_PATH}?projectId=${project._id}`);
+    } finally {
+      await deleteProjects([project._id]);
+    }
+  });
 });
