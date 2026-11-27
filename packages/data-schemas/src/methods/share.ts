@@ -951,6 +951,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
   ) => Promise<{ isTemporary?: boolean; expiredAt?: Date } | null>;
   findActiveSharedLink: (shareId: string) => Promise<SharedLinkAccessRecord | null>;
   findSharedLinkById: (resourceId: string) => Promise<SharedLinkAccessRecord | null>;
+  findExistingSharedLinkIds: (resourceIds: string[]) => Promise<string[]>;
   findOwnedSharedLink: (user: string, shareId: string) => Promise<SharedLinkAccessRecord | null>;
   clearSharedLinkLegacyVisibility: (resourceId: string) => Promise<void>;
   deleteSharedLinkById: (resourceId: string) => Promise<void>;
@@ -1051,6 +1052,18 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         .select('_id conversationId user shareId tenantId expiredAt isPublic')
         .lean(),
     );
+  }
+
+  /** The ids among `resourceIds` whose shared link rows still exist. */
+  async function findExistingSharedLinkIds(resourceIds: string[]): Promise<string[]> {
+    if (resourceIds.length === 0) {
+      return [];
+    }
+    const SharedLink = mongoose.models.SharedLink as Model<t.ISharedLink>;
+    const links = await SharedLink.find({ _id: { $in: resourceIds } })
+      .select('_id')
+      .lean();
+    return links.map((link) => link._id.toString());
   }
 
   async function findOwnedSharedLink(
@@ -1831,6 +1844,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
     findShareConversationRetention,
     findActiveSharedLink,
     findSharedLinkById,
+    findExistingSharedLinkIds,
     findOwnedSharedLink,
     clearSharedLinkLegacyVisibility,
     deleteSharedLinkById,

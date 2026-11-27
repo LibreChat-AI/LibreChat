@@ -2783,6 +2783,9 @@
               "none"
             ]
           },
+          "text_only": {
+            "type": "boolean"
+          },
           "memory_scope": {
             "type": "string",
             "enum": [
@@ -3272,6 +3275,9 @@
               "selected",
               "none"
             ]
+          },
+          "text_only": {
+            "type": "boolean"
           },
           "memory_scope": {
             "type": "string",
@@ -3800,6 +3806,9 @@
               "selected",
               "none"
             ]
+          },
+          "text_only": {
+            "type": "boolean"
           },
           "memory_scope": {
             "type": "string",

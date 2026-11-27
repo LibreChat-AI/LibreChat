@@ -351,6 +351,7 @@ export type {
   PaletteSection,
   PaletteModeView,
   PaletteEntryView,
+  PalettePinView,
   PaletteAttachView,
   PaletteListProps,
   PaletteListHandle,

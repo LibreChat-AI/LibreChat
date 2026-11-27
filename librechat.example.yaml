@@ -1251,6 +1251,13 @@ endpoints:
   # openAI:
   #   headers:
   #     cf-aig-metadata: '{"user_email":"{{LIBRECHAT_USER_EMAIL}}","app":"librechat"}'
+  #   # (optional) Built-in model lists take the same entries as custom endpoints:
+  #   # `vision: false` gives agents on that model a text note in place of each image.
+  #   # `vision` on the endpoint itself covers every model without its own entry.
+  #   models:
+  #     - 'gpt-4o'
+  #     - name: 'gpt-3.5-turbo'
+  #       vision: false
   # google:
   #   # (optional) Override USD rates per million tokens for your billing tier.
   #   # Set all three rates to 0 for the Gemini Developer API free tier.
@@ -1423,7 +1430,17 @@ endpoints:
           - 'llama2-70b-4096'
           - 'mixtral-8x7b-32768'
           - 'gemma-7b-it'
+          # (optional) A model entry can declare its own `vision`, which overrides
+          # the endpoint's:
+          # - name: 'your-vision-model'
+          #   vision: true
         fetch: false
+      # (optional) These models cannot read images. An agent on one of them gets a
+      # short text note in place of each image, while vision agents in the same
+      # chain or handoff still get the image. Precedence, first declaration wins:
+      # the agent builder's "Text-only model" switch, the agent's model spec, the
+      # model's entry, then the endpoint.
+      vision: false
       titleConvo: true
       titleModel: 'mixtral-8x7b-32768'
       modelDisplayLabel: 'groq'
@@ -1554,6 +1571,9 @@ endpoints:
 #       label: "Llama 3 70B"
 #       description: "Fastest inference available - great for quick responses"
 #       group: "groq"  # String value matching your custom endpoint name from endpoints.custom
+#       # Text-only model: the spec's agent gets a short note in place of each image.
+#       # A spec's `vision` outranks the model entry's and the endpoint's.
+#       vision: false
 #       preset:
 #         endpoint: "groq"
 #         model: "llama3-70b-8192"

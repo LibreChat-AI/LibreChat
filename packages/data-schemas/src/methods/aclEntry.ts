@@ -148,7 +148,7 @@ export const OWNER_ACL_PERMISSION_BIT_SUPERSETS: readonly number[] =
 const OBJECT_ID_HEX = /^[0-9a-fA-F]{24}$/;
 
 export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
-  deleteSharedLinkAclEntries: (resourceIds: string[]) => Promise<DeleteResult>;
+  deleteSharedLinkAclEntries: (resourceIds: string[], keepUser?: string) => Promise<DeleteResult>;
   updateSharedLinkAclExpiration: (resourceId: string, expiredAt: Date | null) => Promise<void>;
   findEntriesByResource: (
     resourceType: string,
@@ -950,11 +950,21 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     return ownedIds.filter((id) => !multiOwnerIds.has(id.toString()));
   }
 
-  async function deleteSharedLinkAclEntries(resourceIds: string[]): Promise<DeleteResult> {
+  /**
+   * Removes the ACL entries of the given shared links. `keepUser` spares that user's own entries,
+   * the owner grants, which still name the links once their rows are gone.
+   */
+  async function deleteSharedLinkAclEntries(
+    resourceIds: string[],
+    keepUser?: string,
+  ): Promise<DeleteResult> {
     const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
     return AclEntry.deleteMany({
       resourceType: ResourceType.SHARED_LINK,
       resourceId: { $in: resourceIds },
+      ...(keepUser && {
+        $nor: [{ principalType: PrincipalType.USER, principalId: new Types.ObjectId(keepUser) }],
+      }),
     });
   }
 
