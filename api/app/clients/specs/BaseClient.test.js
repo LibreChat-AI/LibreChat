@@ -1,4 +1,7 @@
-const { Constants, ContentTypes, EModelEndpoint } = require('librechat-data-provider');
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const { Constants, ContentTypes, FileSources, EModelEndpoint } = require('librechat-data-provider');
 const BaseClientClass = require('../BaseClient');
 const {
   ContentFilterError,
@@ -142,6 +145,26 @@ describe('BaseClient', () => {
         text: 'Private event payload',
       }),
     ).toEqual(expect.objectContaining({ subagentTriggerProjection: projection }));
+  });
+
+  test('puts what the server recorded of a triggered turn on its first message, and nothing else', () => {
+    const trigger = {
+      event: { type: 'subagent.completion', occurredAt: '2026-11-20T10:00:00.000Z' },
+    };
+    const turn = {
+      messageId: 'wake:user',
+      parentMessageId: 'parent',
+      conversationId: 'thread',
+      text: 'A task has settled.',
+      trigger: { event: { type: 'forged' } },
+    };
+    TestClient.options.req = { _messageTrigger: trigger, body: { trigger: turn.trigger } };
+
+    expect(TestClient.createUserMessage(turn).trigger).toBe(trigger);
+
+    TestClient.options.req = { body: { trigger: turn.trigger } };
+
+    expect(TestClient.createUserMessage(turn)).not.toHaveProperty('trigger');
   });
 
   test('returns the input messages without instructions when addInstructions() is called with empty instructions', () => {
@@ -383,7 +406,10 @@ describe('BaseClient', () => {
           addPreviousAttachments: async (messages) => messages,
           onHistoryLoaded: jest.fn(),
         });
-      const wholeConversationQuery = [{ conversationId, user: 'user-1' }, '+privateTextTokens'];
+      const wholeConversationQuery = [
+        { conversationId, user: 'user-1' },
+        '+privateTextTokens +trigger',
+      ];
       const messageIds = (messages) => messages.map((message) => message.messageId);
 
       test('fetches only the active branch, and hands that branch to the history consumer', async () => {
@@ -397,7 +423,7 @@ describe('BaseClient', () => {
         const [filter, select] = getMessages.mock.calls[0];
         expect(filter).toMatchObject({ conversationId, user: 'user-1' });
         expect([...filter.messageId.$in].sort()).toEqual(['a1', 'a2b', 'u1', 'u2b']);
-        expect(select).toBe('+privateTextTokens');
+        expect(select).toBe('+privateTextTokens +trigger');
         expect(messageIds(result)).toEqual(['u1', 'a1', 'u2b', 'a2b']);
         expect(messageIds(client.onHistoryLoaded.mock.calls[0][0])).toEqual([
           'u1',
@@ -798,6 +824,16 @@ describe('BaseClient', () => {
       parentMessageId = response.messageId;
       conversationId = response.conversationId;
       expect(response).toEqual(expectedResult);
+    });
+
+    test('carries the finish reason the run recorded in `metadata` onto the response', async () => {
+      TestClient.metadata = { finish_reason: 'length' };
+      try {
+        const response = await TestClient.sendMessage(userMessage);
+        expect(response.finish_reason).toBe('length');
+      } finally {
+        TestClient.metadata = undefined;
+      }
     });
 
     test('persists exact provenance paths for edited and steered assistant content', async () => {
@@ -1727,7 +1763,10 @@ describe('BaseClient', () => {
 
       const chatMessages = await TestClient.loadHistory(conversationId, '1');
 
-      expect(getMessages).toHaveBeenCalledWith({ conversationId, user }, '+privateTextTokens');
+      expect(getMessages).toHaveBeenCalledWith(
+        { conversationId, user },
+        '+privateTextTokens +trigger',
+      );
       expect(chatMessages).toHaveLength(1);
       expect(chatMessages[0].text).toBe('Hello');
     });
@@ -3806,6 +3845,122 @@ describe('BaseClient', () => {
       expect(TestClient.modelBoundHistoricalSteerFiles).toEqual([modelFile, modelFile]);
     });
 
+    describe('files the conversation leaves out', () => {
+      const keptFile = { ...ownerFile, metadata: undefined };
+      const leftFile = {
+        ...ownerFile,
+        metadata: undefined,
+        file_id: 'left-out-file',
+        filename: 'left-out.txt',
+        _id: 'left-out-mongo-id',
+      };
+
+      beforeEach(() => {
+        TestClient.options.excludedFiles = [leftFile.file_id];
+      });
+
+      afterEach(() => {
+        delete TestClient.options.excludedFiles;
+        delete TestClient.assertHistoricalAttachmentLimits;
+      });
+
+      test('replays what is kept, counts the left-out file toward no limit, and still shows it', async () => {
+        getFiles.mockResolvedValueOnce([keptFile, leftFile]);
+        TestClient.assertHistoricalAttachmentLimits = jest.fn(async (files) => files);
+
+        const [message] = await TestClient.addPreviousAttachments([
+          {
+            messageId: 'msg-1',
+            text: 'Use the attachments',
+            files: [{ file_id: keptFile.file_id }, { file_id: leftFile.file_id }],
+          },
+        ]);
+
+        expect(TestClient.assertHistoricalAttachmentLimits).toHaveBeenCalledWith([keptFile]);
+        expect(TestClient.addFileContextToMessage).toHaveBeenCalledWith(message, [keptFile]);
+        expect(TestClient.processAttachments.mock.calls[0][1]).toEqual([keptFile]);
+        expect(TestClient.authorizedHistoricalReplayFiles.has(leftFile.file_id)).toBe(false);
+        expect(message.files).toEqual([
+          expect.objectContaining({ file_id: keptFile.file_id }),
+          expect.objectContaining({ file_id: leftFile.file_id }),
+        ]);
+      });
+
+      test('replays nothing of a message whose only file is left out', async () => {
+        getFiles.mockResolvedValueOnce([leftFile]);
+        TestClient.assertHistoricalAttachmentLimits = jest.fn(async (files) => files);
+
+        const [message] = await TestClient.addPreviousAttachments([
+          { messageId: 'msg-1', text: '', files: [{ file_id: leftFile.file_id }] },
+        ]);
+
+        expect(TestClient.assertHistoricalAttachmentLimits).toHaveBeenCalledWith([]);
+        expect(TestClient.addFileContextToMessage).not.toHaveBeenCalled();
+        expect(TestClient.processAttachments).not.toHaveBeenCalled();
+        expect(message.files).toEqual([expect.objectContaining({ file_id: leftFile.file_id })]);
+      });
+
+      test('leaves a left-out file out of a steer replay', async () => {
+        getFiles.mockResolvedValueOnce([keptFile, leftFile]);
+        TestClient.assertHistoricalAttachmentLimits = jest.fn(async (files) => files);
+
+        await TestClient.addPreviousAttachments([
+          {
+            messageId: 'msg-steer',
+            content: [
+              {
+                type: 'steer',
+                steer: 'Use these',
+                files: [{ file_id: keptFile.file_id }, { file_id: leftFile.file_id }],
+              },
+            ],
+          },
+        ]);
+
+        expect(TestClient.assertHistoricalAttachmentLimits).toHaveBeenCalledWith([keptFile]);
+        expect(TestClient.modelBoundHistoricalSteerFiles).toEqual([keptFile]);
+        expect(TestClient.authorizedHistoricalReplayFiles.has(leftFile.file_id)).toBe(false);
+      });
+
+      test('holds for a client that applies no admission step of its own', async () => {
+        getFiles.mockResolvedValueOnce([keptFile, leftFile]);
+
+        const [message] = await TestClient.addPreviousAttachments([
+          {
+            messageId: 'msg-1',
+            text: 'Use the attachments',
+            files: [{ file_id: keptFile.file_id }, { file_id: leftFile.file_id }],
+          },
+        ]);
+
+        expect(TestClient.addFileContextToMessage).toHaveBeenCalledWith(message, [keptFile]);
+        expect(TestClient.authorizedHistoricalReplayFiles.has(leftFile.file_id)).toBe(false);
+      });
+
+      test('keeps the left-out file out of the stored view the content guard checks', () => {
+        const stored = [
+          {
+            messageId: 'msg-1',
+            files: [{ file_id: keptFile.file_id }, { file_id: leftFile.file_id }],
+          },
+          { messageId: 'msg-2', text: 'no files' },
+        ];
+
+        const view = TestClient.getModelBoundStoredMessages(stored);
+
+        expect(view[0].files).toEqual([{ file_id: keptFile.file_id }]);
+        expect(view[1]).toBe(stored[1]);
+        expect(stored[0].files).toHaveLength(2);
+      });
+
+      test('gives the content guard the stored messages themselves when nothing is left out', () => {
+        delete TestClient.options.excludedFiles;
+        const stored = [{ messageId: 'msg-1', files: [{ file_id: keptFile.file_id }] }];
+
+        expect(TestClient.getModelBoundStoredMessages(stored)).toBe(stored);
+      });
+    });
+
     test('keeps canonical byte metadata for processed historical survivors', async () => {
       const modelFile = { ...ownerFile, metadata: undefined, bytes: 120 * 1024 * 1024 };
       getFiles.mockResolvedValueOnce([modelFile]);
@@ -4159,6 +4314,72 @@ describe('BaseClient', () => {
       expect(TestClient.mergeEditedContent(existing, completion, ContentTypes.TEXT)).toEqual([
         existing[0],
         completion[0],
+      ]);
+    });
+  });
+
+  describe('addDocuments for agents that share the history', () => {
+    const pdf = Buffer.from('%PDF-1.4\n1 0 obj << /Type /Page >> endobj\n%%EOF\n');
+    const file = {
+      file_id: 'file-invoice',
+      filename: 'invoice.pdf',
+      filepath: '/uploads/user-1/invoice.pdf',
+      source: FileSources.local,
+      type: 'application/pdf',
+      bytes: pdf.length,
+    };
+    let uploads;
+
+    beforeAll(async () => {
+      uploads = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'uploads-'));
+      await fs.promises.mkdir(path.join(uploads, 'user-1'));
+      await fs.promises.writeFile(path.join(uploads, 'user-1', 'invoice.pdf'), pdf);
+    });
+
+    afterAll(() => fs.promises.rm(uploads, { recursive: true, force: true }));
+
+    beforeEach(() => {
+      TestClient.options = {
+        endpoint: EModelEndpoint.agents,
+        req: { config: { paths: { uploads } } },
+        agent: {
+          provider: EModelEndpoint.anthropic,
+          endpoint: EModelEndpoint.anthropic,
+          model_parameters: { model: 'claude-sonnet-4-5' },
+        },
+      };
+      TestClient.modelOptions = { model: 'claude-sonnet-4-5' };
+    });
+
+    it("encodes the primary agent's own block when no other agent reads the history", async () => {
+      const message = {};
+      await TestClient.addDocuments(message, [file]);
+
+      expect(message.documents).toEqual([
+        expect.objectContaining({ type: 'document', context: 'File: "invoice.pdf"' }),
+      ]);
+    });
+
+    it('encodes a block every agent can read when a chained agent runs on another provider', async () => {
+      TestClient.agentConfigs = new Map([
+        ['agent_gpt', { provider: EModelEndpoint.openAI, model_parameters: { model: 'gpt-4.1' } }],
+      ]);
+      const message = {};
+      await TestClient.addDocuments(message, [file]);
+
+      expect(message.documents).toEqual([
+        {
+          type: 'file',
+          source_type: 'base64',
+          mime_type: 'application/pdf',
+          data: pdf.toString('base64'),
+          metadata: {
+            name: 'invoice_pdf',
+            filename: 'invoice.pdf',
+            context: 'File: "invoice.pdf"',
+            citations: { enabled: true },
+          },
+        },
       ]);
     });
   });

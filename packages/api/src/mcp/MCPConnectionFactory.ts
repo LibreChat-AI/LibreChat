@@ -37,6 +37,7 @@ import {
   createScheduledMCPTransportError,
   MCPAuthenticationRejectedError,
   isMCPInitializationError,
+  MCPOAuthDeferredError,
 } from './errors';
 import {
   isOAuthServer,
@@ -467,7 +468,10 @@ export class MCPConnectionFactory {
         );
         oauthRequired = true;
         rejectionRecorded = this.recordRejectedOAuthAuthorization(oauthTokens?.credential_set_id);
-        connection?.emit('oauthFailed', new Error('OAuth required during tool discovery'));
+        connection?.emit(
+          'oauthFailed',
+          new MCPOAuthDeferredError('OAuth required during tool discovery'),
+        );
       };
 
       // Register unconditionally: non-OAuth servers that return 401 also emit 'oauthRequired',
@@ -2027,7 +2031,10 @@ export class MCPConnectionFactory {
                 }
                 await publication.completed;
               }
-              connection.emit('oauthFailed', new Error('Pending OAuth flow reused - return early'));
+              connection.emit(
+                'oauthFailed',
+                new MCPOAuthDeferredError('Pending OAuth flow reused - return early'),
+              );
               return;
             }
 
@@ -2104,7 +2111,10 @@ export class MCPConnectionFactory {
             logger.info(`${this.logPrefix} OAuth flow started, issuing authorization URL`);
           }
 
-          connection.emit('oauthFailed', new Error('OAuth flow initiated - return early'));
+          connection.emit(
+            'oauthFailed',
+            new MCPOAuthDeferredError('OAuth flow initiated - return early'),
+          );
           return;
         } catch {
           logger.error(`${this.logPrefix} Failed to initiate OAuth flow`);

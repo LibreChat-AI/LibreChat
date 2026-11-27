@@ -37,6 +37,7 @@ import {
 } from '../../react/subagents/adapters';
 import {
   agentAuthor,
+  callerAuthor,
   useParentAuthor,
   resolveChildAgent,
   readableSubagentType,
@@ -53,11 +54,14 @@ import {
   useSubagentPanelState,
   useSubagentPanelActions,
 } from '../../react/subagents/surface';
+import {
+  resolveSubagentAgentId,
+  resolvePendingSubagentAgentId,
+} from '../../react/subagents/identity';
 import { useFollowedThread, useThreadFollows } from '../../react/subagents/follows';
 import { SubagentActivity, SubagentActivityScrollSurface } from './transcript';
 import { eventSubagentSelection } from '../../react/subagents/eventSelection';
 import { isMacPlatform, resolveComposerKeyDown } from '../../core/shortcuts';
-import { resolveSubagentAgentId } from '../../react/subagents/identity';
 import { TaskContentScopeContext } from '../../react/subagents/scope';
 import { isLiveSubagentStatus } from '../../react/subagents/status';
 import { useParentSubagents } from '../../react/subagents/parents';
@@ -66,6 +70,7 @@ import { useSubagentsHost } from '../../react/subagents/host';
 import { subagentProgressKey } from '../../core/stream/state';
 import { useMessagePartsHost } from '../../react/host';
 import SubagentConversation from './conversation';
+import PendingFace from '../parts/PendingFace';
 import FollowedChildThread from './followed';
 
 const EVENT_TASK_PAGE_SIZE = 3;
@@ -183,13 +188,17 @@ export default function SubagentThreadPanel({
       selection.partIndex,
     ),
   );
-  const parentAuthor = useParentAuthor(
+  const dispatchAuthor = useParentAuthor(
     selection.parentConversationId,
     selection.parentMessageId,
     localize('com_ui_subagent_parent_agent'),
     selection.toolCallId,
     selection.partIndex,
     selection.durable?.threadId,
+  );
+  const parentAuthor = useMemo(
+    () => callerAuthor(selection.caller, dispatchAuthor, agentsMap),
+    [agentsMap, dispatchAuthor, selection.caller],
   );
   const threadId = selection.durable?.threadId ?? '';
   const taskId = selection.durable?.taskId ?? '';
@@ -272,11 +281,28 @@ export default function SubagentThreadPanel({
     selection.subagentIdentity?.subagentKind ??
     byThreadId.get(threadId)?.subagentKind;
   const isSelfSpawn = isSelfSpawnType(selection.subagentType, childKind);
+  /** A live foreground call whose child has not reported yet: nothing but its arguments says
+   *  who it will be. */
+  const childPending =
+    progress == null &&
+    selection.event == null &&
+    selection.durable == null &&
+    selection.subagentIdentity == null &&
+    selection.isSubmitting &&
+    selection.runStepStatus == null &&
+    selection.initialProgress < 1;
   const foregroundAgentId =
     childKind === 'graph'
       ? undefined
       : (resolveSubagentAgentId(progress, selection.subagentIdentity) ??
-        byThreadId.get(threadId)?.agentId);
+        byThreadId.get(threadId)?.agentId ??
+        (childPending
+          ? resolvePendingSubagentAgentId(selection.subagentType, agentsMap)
+          : undefined));
+  /** Before the parent has named a type there is no alias to show either. */
+  const unnamedChild = localize(
+    selection.subagentType === '' ? 'com_ui_subagent_unnamed' : 'com_ui_subagent_actor',
+  );
   const foregroundAgent = foregroundAgentId == null ? undefined : agentsMap?.[foregroundAgentId];
   /** Named the way main chat names an agent turn — never by its id. A
    *  self-spawn is the parent agent working on its own behalf. */
@@ -285,7 +311,7 @@ export default function SubagentThreadPanel({
     (isSelfSpawn
       ? parentAuthor.name
       : readableSubagentType(selection.subagentType, foregroundAgentId, childKind)) ||
-    localize('com_ui_subagent_actor');
+    unnamedChild;
   const selectedEventActorName =
     (selectedEventActor?.agentId == null
       ? undefined
@@ -1023,36 +1049,41 @@ export default function SubagentThreadPanel({
   );
   /** One author for the header, the composer and every child turn, so the three
    *  can never name the child differently. */
-  const childAuthor = useMemo(
-    () =>
-      selection.event != null
-        ? agentAuthor(selectedActorAgent, selectedEventActorName)
-        : resolveSubagentAuthor(
-            {
-              agentId: selectedActorAgentId,
-              subagentType: selection.subagentType,
-              subagentKind: childKind,
-              title: threadView?.title ?? byThreadId.get(threadId)?.title,
-            },
-            parentAuthor,
-            agentsMap,
-            localize('com_ui_subagent_actor'),
-          ),
-    [
-      agentsMap,
-      byThreadId,
-      childKind,
-      localize,
+  const childAuthor = useMemo(() => {
+    if (selection.event != null) {
+      return agentAuthor(selectedActorAgent, selectedEventActorName);
+    }
+    const author = resolveSubagentAuthor(
+      {
+        agentId: selectedActorAgentId,
+        subagentType: selection.subagentType,
+        subagentKind: childKind,
+        title: threadView?.title ?? byThreadId.get(threadId)?.title,
+      },
       parentAuthor,
-      selectedActorAgent,
-      selectedActorAgentId,
-      selectedEventActorName,
-      selection.event,
-      selection.subagentType,
-      threadId,
-      threadView?.title,
-    ],
-  );
+      agentsMap,
+      unnamedChild,
+    );
+    /** Until it is known whom the call goes to, the child wears no one's face. */
+    return childPending && author.agent == null && !isSelfSpawn
+      ? { ...author, icon: <PendingFace /> }
+      : author;
+  }, [
+    agentsMap,
+    byThreadId,
+    childKind,
+    childPending,
+    isSelfSpawn,
+    parentAuthor,
+    selectedActorAgent,
+    selectedActorAgentId,
+    selectedEventActorName,
+    selection.event,
+    selection.subagentType,
+    threadId,
+    threadView?.title,
+    unnamedChild,
+  ]);
   /**
    * Who a child's brief came from. A self-spawn is briefed by the agent it runs as, and its
    * enclosing message can belong to another agent on a parallel lane, so the child's author is
@@ -1131,6 +1162,9 @@ export default function SubagentThreadPanel({
       ),
     [taskView, taskId],
   );
+  /** The card's snapshot says the brief is still being written; once the child reports, it has
+   *  started, even if the card that would refresh the snapshot has since unmounted. */
+  const briefing = selection.briefing === true && progress == null;
   const conversationTurns = useMemo(() => {
     const durableTurns = retainedTurnsValid
       ? mergeChildConversationTurns(
@@ -1195,6 +1229,7 @@ export default function SubagentThreadPanel({
       {
         taskId: taskId || `${selection.parentMessageId}:${selection.toolCallId}`,
         ...(selectedOutcome == null ? {} : { outcome: selectedOutcome }),
+        ...(briefing ? { briefing: true } : {}),
         trigger: {
           kind:
             selection.event == null ? ('parent_dispatch' as const) : ('external_event' as const),
@@ -1218,6 +1253,7 @@ export default function SubagentThreadPanel({
     selectedOutcome,
     taskId,
     turnDetailOverrides,
+    briefing,
   ]);
   const effectiveTurnDetailStates = useMemo(() => {
     const states = new Map(turnDetailStates);

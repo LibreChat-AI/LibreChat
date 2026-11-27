@@ -4,12 +4,10 @@
 import { Provider, createStore } from 'jotai';
 import { act, render, screen } from '@testing-library/react';
 import { composerOverlayCountFamily } from '../../../react/overlay';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import ScrollButton from '../ScrollButton';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 const CONVO_ID = 'convo-1';
 /** `visibilityDebounceRate` in the component, plus the exit transition. */
@@ -87,7 +85,7 @@ const finishExit = () =>
     jest.advanceTimersByTime(EXIT_TRANSITION + 1);
   });
 
-const button = () => screen.queryByRole('button', { name: 'com_ui_scroll_to_bottom' });
+const button = () => screen.queryByRole('button', { name: 'Scroll to bottom' });
 
 describe('ScrollButton', () => {
   beforeEach(() => {

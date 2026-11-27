@@ -1,6 +1,6 @@
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { TConfig, TModelSpec, TEndpointsConfig } from 'librechat-data-provider';
-import { getUserKeyEndpoints, isUserProvidedEndpointConfig } from './utils';
+import { getUserKeyEndpoints } from './utils';
 
 const cfg = (overrides: Partial<TConfig> = {}): TConfig => ({ order: 0, ...overrides });
 
@@ -17,29 +17,6 @@ const endpointsConfig: TEndpointsConfig = {
   bedrock: cfg({ userProvideBearerToken: true }),
   [EModelEndpoint.agents]: cfg({ allowedProviders: ['anthropic'] }),
 };
-
-describe('isUserProvidedEndpointConfig', () => {
-  it('returns false for nullish config', () => {
-    expect(isUserProvidedEndpointConfig(null)).toBe(false);
-    expect(isUserProvidedEndpointConfig(undefined)).toBe(false);
-  });
-
-  it('returns true for an API key endpoint', () => {
-    expect(isUserProvidedEndpointConfig(cfg({ userProvide: true }))).toBe(true);
-  });
-
-  it('returns true for a Bedrock credential endpoint', () => {
-    expect(isUserProvidedEndpointConfig(cfg({ userProvideSecretAccessKey: true }))).toBe(true);
-  });
-
-  it('returns false for a user-provided base URL alone', () => {
-    expect(isUserProvidedEndpointConfig(cfg({ userProvideURL: true }))).toBe(false);
-  });
-
-  it('returns false when no credential is user-provided', () => {
-    expect(isUserProvidedEndpointConfig(cfg())).toBe(false);
-  });
-});
 
 describe('getUserKeyEndpoints', () => {
   it('returns an empty list when endpoints have not loaded', () => {

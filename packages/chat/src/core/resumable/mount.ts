@@ -192,6 +192,25 @@ function rememberDetachedRun(run: ResumableRun, host: ResumableHost): void {
 }
 
 /**
+ * The conversation of a new chat's first turn the pane is leaving while it still streams. Until
+ * its stream closes, each frame writes the new chat's messages as well as its own, including after
+ * the reset that left it. A turn that published its end leaves them for the route to move off,
+ * and one the pane did not start never wrote them.
+ */
+function leavingFirstTurn(run: ResumableRun): string | undefined {
+  const conversationId = run.submission?.conversation?.conversationId;
+  if (
+    run.stream == null ||
+    run.runEndPublished ||
+    conversationId == null ||
+    !run.optimisticStreamIds.has(conversationId)
+  ) {
+    return undefined;
+  }
+  return conversationId;
+}
+
+/**
  * Serves `submission` in the pane: starts its generation (or resumes the one it names) and
  * attaches to the stream. Returns the cleanup that closes the connection without aborting the
  * generation server-side and resets the pane's controls.
@@ -263,10 +282,15 @@ export function mountSubmission(
     // Reset reconnect counter before closing (so abort handler doesn't think we're reconnecting)
     run.reconnectAttempt = 0;
     rememberDetachedRun(run, host);
+    const firstTurn = leavingFirstTurn(run);
     run.stream?.abort();
     run.stream = null;
     // Clear handler maps to prevent memory leaks and stale state
     host.events.clearStepMaps();
+    /** After the abort and the cancelled frame flush, so nothing of the turn can write it back. */
+    if (firstTurn != null) {
+      host.cache.releaseNewConversation(firstTurn);
+    }
     // Reset UI state on ordinary cleanup. A generation handoff already
     // cached the replacement and must remain non-idle until resume-on-load
     // installs its epoch-fenced submission.

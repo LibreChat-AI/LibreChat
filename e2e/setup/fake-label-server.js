@@ -110,9 +110,12 @@ function sendStream(res, model, label) {
     created: 0,
     model,
   };
-  res.write(
-    `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: label }, finish_reason: null }] })}\n\n`,
-  );
+  const parts = Array.isArray(label) ? label : [label];
+  for (const [index, content] of parts.entries()) {
+    res.write(
+      `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: { ...(index === 0 && { role: 'assistant' }), content }, finish_reason: null }] })}\n\n`,
+    );
+  }
   res.write(
     `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 42, completion_tokens: 7, total_tokens: 49 } })}\n\n`,
   );
@@ -187,6 +190,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     /** Whitespace-only output must fill null, leaving the block unlabeled. */
+    const lastUser = flattenPrompt(
+      (body.messages ?? []).filter((message) => message.role === 'user').slice(-1),
+    );
+    const assistantFixture = lastUser.includes('E2E_ASSISTANT_OUTPUT:')
+      ? lastUser.includes('withhold')
+        ? ['Do not send this private ', 'phrase example.']
+        : ['This is an ', 'approved answer.']
+      : undefined;
     const promptLabel = Object.entries(behavior.labelsByPrompt ?? {}).find(([needle]) =>
       prompt.includes(needle),
     )?.[1];
@@ -200,7 +211,7 @@ const server = http.createServer(async (req, res) => {
 
     recorded.completed = true;
     if (body.stream === true) {
-      sendStream(res, body.model, label);
+      sendStream(res, body.model, assistantFixture ?? label);
       return;
     }
     sendJson(res, 200, completionPayload(body.model, label));

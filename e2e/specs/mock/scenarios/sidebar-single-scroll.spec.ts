@@ -4,6 +4,7 @@ import type { Locator, Page } from '@playwright/test';
 import { getE2EUser } from '../../../setup/user';
 import { clearUserConversations, seedConversations, withMongo } from '../db';
 import type { SeedConvo } from '../db';
+import { openSidebar } from './sidebar';
 
 /* Seeding a list long enough to scroll, then loading the app against a database
  * that may be a network hop away, is the slow part of every test here and it
@@ -71,35 +72,23 @@ async function seedPins(prefix: string, count: number, ageDays = 0): Promise<See
 }
 
 /**
- * Brings the sidebar on screen. A narrow viewport keeps the drawer mounted and
- * slides it out of view instead of unmounting it, so every row still answers a
- * query while nothing on it can be scrolled — the wheel would land on the page
- * beside the drawer. The chat header's opener is what a person reaches for
- * there, and it only exists once that header has rendered, so the click is
- * retried rather than taken once. Desktop renders no opener at all, where a
- * box still left of the origin is a panel mid-layout, not a closed drawer.
+ * Brings the chat history on screen. A narrow viewport keeps the closed drawer
+ * mounted but unpainted, so nothing inside it answers a role query until the
+ * chat header's opener has been pressed; waiting for the region first would
+ * wait out the whole budget. The shared opener presses it, retrying while that
+ * header renders, and leaves the panel desktop already shows alone. Its close
+ * control is painted as the slide starts, and a desktop panel can still be
+ * mid-layout, so the region is then waited into the viewport before anything
+ * measures it or turns the wheel over it.
  */
-async function openSidebar(page: Page): Promise<void> {
+async function showHistory(page: Page): Promise<void> {
+  await openSidebar(page);
   await expect(historyRegion(page)).toBeVisible({ timeout: 30_000 });
-  const placement = async () => {
-    const box = await historyRegion(page).boundingBox();
-    if (box === null) {
-      return 'unlaid';
-    }
-    return box.x >= 0 ? 'on-screen' : 'off-screen';
-  };
-  await expect.poll(placement, { timeout: 30_000 }).not.toBe('unlaid');
-  for (let attempt = 0; attempt < 3 && (await placement()) === 'off-screen'; attempt++) {
-    const opener = page.getByRole('button', { name: 'Open sidebar' }).first();
-    if (await opener.isVisible().catch(() => false)) {
-      await opener.click();
-    }
-    await expect
-      .poll(placement, { timeout: 10_000 })
-      .toBe('on-screen')
-      .catch(() => undefined);
-  }
-  await expect.poll(placement, { timeout: 15_000 }).toBe('on-screen');
+  await expect
+    .poll(async () => (await historyRegion(page).boundingBox())?.x ?? Number.NEGATIVE_INFINITY, {
+      timeout: 15_000,
+    })
+    .toBeGreaterThanOrEqual(0);
 }
 
 type Surface = { top: number; height: number; scrollTop: number; scrollHeight: number };
@@ -279,7 +268,7 @@ test.describe('sidebar single scroll', () => {
     remember(await seedChats('E2E chat', 40));
 
     await page.goto('/c/new', { timeout: 30_000 });
-    await openSidebar(page);
+    await showHistory(page);
     await expect(pinnedRegion(page)).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId('convo-item').first()).toBeVisible({ timeout: 30_000 });
 
@@ -317,7 +306,7 @@ test.describe('sidebar single scroll', () => {
     const oldest = chats[chats.length - 1].title;
 
     await page.goto('/c/new', { timeout: 30_000 });
-    await openSidebar(page);
+    await showHistory(page);
     await expect(page.getByTestId('convo-item').first()).toBeVisible({ timeout: 30_000 });
 
     const oldestRow = page.getByTestId('convo-item').filter({ hasText: oldest });
@@ -338,7 +327,7 @@ test.describe('sidebar single scroll', () => {
     remember(await seedChats('E2E chat', 50));
 
     await page.goto('/c/new', { timeout: 30_000 });
-    await openSidebar(page);
+    await showHistory(page);
     await expect(pinnedRegion(page)).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId('convo-item').first()).toBeVisible({ timeout: 30_000 });
 
@@ -373,7 +362,7 @@ test.describe('sidebar single scroll', () => {
     remember(await seedChats('E2E chat', 30));
 
     await page.goto('/c/new', { timeout: 30_000 });
-    await openSidebar(page);
+    await showHistory(page);
     await expect(pinnedRegion(page)).toBeVisible({ timeout: 30_000 });
 
     const pinnedScrollers = await pinnedRegion(page).evaluate(
@@ -419,7 +408,7 @@ test.describe('sidebar single scroll', () => {
     const pages = trackChatPages(page);
 
     await page.goto('/c/new', { timeout: 30_000 });
-    await openSidebar(page);
+    await showHistory(page);
     await expect(pinnedRegion(page).getByTestId('convo-item').first()).toBeVisible({
       timeout: 30_000,
     });
@@ -460,7 +449,7 @@ test.describe('sidebar single scroll', () => {
     const pages = trackChatPages(page);
 
     await page.goto('/c/new', { timeout: 30_000 });
-    await openSidebar(page);
+    await showHistory(page);
     await expect(pinnedRegion(page).getByTestId('convo-item').first()).toBeVisible({
       timeout: 30_000,
     });

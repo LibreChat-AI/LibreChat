@@ -5,6 +5,7 @@ import {
 import type { JobMetadataPatch, SerializableJobData } from './interfaces/IJobStore';
 import type { GenerationJobMetadata } from '~/types';
 import { parseScheduleMCPCompletion } from '~/schedules/authorization/continuation';
+import { parseRunTrigger } from '~/agents/authority/trigger';
 
 /** Trusted persisted capability, not an endpoint or caller-body inference. */
 export function parseTerminalPersistenceOwner(value: unknown): 'external' | undefined {
@@ -133,6 +134,10 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
   }
   if (metadata.agentEventLegacyTurnToken) {
     patch.agentEventLegacyTurnToken = metadata.agentEventLegacyTurnToken;
+  }
+  if (metadata.trigger !== undefined) {
+    const trigger = parseRunTrigger(metadata.trigger);
+    if (trigger) patch.trigger = trigger;
   }
   if (metadata.scheduleMCPCompletion !== undefined) {
     patch.scheduleMCPCompletion = parseScheduleMCPCompletion(metadata.scheduleMCPCompletion);

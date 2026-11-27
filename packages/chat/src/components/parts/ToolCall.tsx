@@ -25,10 +25,13 @@ import { useToolCallIntent } from '../../react/parts/intent';
 import useProgress from '../../react/parts/useProgress';
 import { hasToolParams } from '../../core/parts/params';
 import { useMessagePartsHost } from '../../react/host';
+import ToolIcon, { getToolIconType } from './ToolIcon';
 import useRowHandoff from '../../react/parts/handoff';
 import useExpandCollapse from './useExpandCollapse';
 import { useToolPreparation } from './preparation';
 import { useFailedReveal } from './reveal';
+import ToolCallInfo from './ToolCallInfo';
+import ProgressText from './ProgressText';
 import { TOOL_ROW_CLASSES } from './rows';
 import { ToolAuthWarning } from './auth';
 
@@ -36,6 +39,7 @@ const INFO_PANEL_CLASS = `${toolPanelSpacingClassName} border-border-light bg-su
 
 export type ToolCallProps = {
   initialProgress: number;
+  clientToolCall?: true;
   isLast?: boolean;
   isSubmitting: boolean;
   toolCallId?: string;
@@ -57,6 +61,7 @@ export type ToolCallProps = {
 
 export default function ToolCall({
   initialProgress = 0.1,
+  clientToolCall,
   isLast = false,
   isSubmitting,
   toolCallId,
@@ -83,9 +88,6 @@ export default function ToolCall({
     bindActionOAuth,
     openUrl,
     logError,
-    renderProgress,
-    renderInfo,
-    renderIcon,
     renderAttachments,
   } = useMessagePartsHost().useToolCallChrome();
   const [oauthError, setOAuthError] = useState<string | null>(null);
@@ -105,6 +107,9 @@ export default function ToolCall({
   const { function_name, domain, isMCPToolCall, mcpServerName } = useMemo(() => {
     if (typeof name !== 'string') {
       return { function_name: '', domain: null, isMCPToolCall: false, mcpServerName: '' };
+    }
+    if (clientToolCall) {
+      return { function_name: name, domain: null, isMCPToolCall: false, mcpServerName: '' };
     }
     if (name.includes(Constants.mcp_delimiter)) {
       const [func, server = ''] = splitToolCallName(name, mcpServerNames);
@@ -139,7 +144,7 @@ export default function ToolCall({
       isMCPToolCall: false,
       mcpServerName: '',
     };
-  }, [name, parsedAuthUrl, mcpServerNames]);
+  }, [name, clientToolCall, parsedAuthUrl, mcpServerNames]);
 
   const displayFunctionName = useMemo(
     () =>
@@ -147,8 +152,10 @@ export default function ToolCall({
        *  above, so re-parsing it would classify an MCP function that happens to
        *  share a built-in's name (`read_file`, `set_memory`) as that native
        *  tool and show, and announce, an unrelated label. */
-      isMCPToolCall ? function_name : getToolDisplayLabel(function_name, localize, mcpServerNames),
-    [function_name, isMCPToolCall, localize, mcpServerNames],
+      isMCPToolCall || clientToolCall
+        ? function_name
+        : getToolDisplayLabel(function_name, localize, mcpServerNames),
+    [function_name, isMCPToolCall, clientToolCall, localize, mcpServerNames],
   );
   const mcpIconUrl = isMCPToolCall ? iconUrlForServer(mcpServerName) : undefined;
 
@@ -192,7 +199,8 @@ export default function ToolCall({
    * `hasError`, so output parsing cannot demote a stopped step back into an
    * in-flight state.
    */
-  const isClosed = runStepStatus != null;
+  const clientToolPending = clientToolCall === true && output == null;
+  const isClosed = runStepStatus != null || clientToolPending;
 
   const args = useMemo(() => {
     if (typeof _args === 'string') {
@@ -234,6 +242,7 @@ export default function ToolCall({
    */
   const phase = resolveToolCallPhase({
     runStepStatus,
+    clientToolPending,
     displayProgress: rawProgress,
     reportedProgress: initialProgress,
     isSubmitting,
@@ -416,6 +425,9 @@ export default function ToolCall({
         ? localize('com_ui_failed_subject', { 0: failedSubject })
         : localize('com_ui_failed');
     }
+    if (phase === 'delegated') {
+      return localize('com_ui_client_tool_requested', { 0: displayFunctionName });
+    }
     if (intent != null) {
       return intent;
     }
@@ -463,29 +475,32 @@ export default function ToolCall({
           data-task-tool-call={toolCallId}
           data-task-step={stepId}
         >
-          {renderProgress({
-            phase,
-            onClick: handleToggleInfo,
-            inProgressText,
-            authText:
+          <ProgressText
+            phase={phase}
+            onClick={handleToggleInfo}
+            inProgressText={inProgressText}
+            authText={
               phase === 'running' && authDomain.length > 0
                 ? localize('com_ui_requires_auth')
-                : undefined,
-            finishedText: getFinishedText(),
-            subtitle,
-            durationMs: runStepDurationMs,
-            toolPreparationDurationMs,
-            toolExecutionDurationMs,
-            phaseStartAt: toolDispatchedAt ?? toolPreparationStartedAt,
-            phaseStepId: stepId,
-            icon: renderIcon({
-              name,
-              iconUrl: mcpIconUrl,
-              isAnimating: phase === 'running',
-            }),
-            hasInput: hasInfo,
-            isExpanded: showInfo,
-          })}
+                : undefined
+            }
+            finishedText={getFinishedText()}
+            subtitle={subtitle}
+            durationMs={runStepDurationMs}
+            toolPreparationDurationMs={toolPreparationDurationMs}
+            toolExecutionDurationMs={toolExecutionDurationMs}
+            phaseStartAt={toolDispatchedAt ?? toolPreparationStartedAt}
+            phaseStepId={stepId}
+            icon={
+              <ToolIcon
+                type={getToolIconType(clientToolCall ? '' : name)}
+                iconUrl={mcpIconUrl}
+                isAnimating={phase === 'running'}
+              />
+            }
+            hasInput={hasInfo}
+            isExpanded={showInfo}
+          />
         </div>
       )}
       <div
@@ -502,7 +517,9 @@ export default function ToolCall({
       >
         <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasInfo && shouldRenderBody && (
-            <div className={INFO_PANEL_CLASS}>{renderInfo({ input: args ?? '', output })}</div>
+            <div className={INFO_PANEL_CLASS}>
+              <ToolCallInfo input={args ?? ''} output={output} />
+            </div>
           )}
         </div>
       </div>

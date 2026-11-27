@@ -72,8 +72,9 @@ export interface StreamHost {
    * latest render; it changes only when they do.
    */
   useResumableServices(params: ResumableStreamParams): () => ResumableServices;
-  /** The transport, balance refresh and terms check the Assistants stream posts its turn with. */
-  useLegacyServices(): LegacyStreamServices;
+  /** The transport, balance refresh and terms check the Assistants stream of pane `runIndex`
+   *  posts its turn with. */
+  useLegacyServices(runIndex: number): LegacyStreamServices;
   /**
    * The signed-in user's stream transport, or `null` before sign-in, for feeds outside a chat
    * turn such as a subagent's activity. Changes when the token does.

@@ -9,6 +9,7 @@ import {
   sideChatBesideAtom,
   sideChatRequestAtom,
   useIsSubmitting,
+  activeRunFamily,
   activeSubagentPanel,
   SideChatHostProvider,
   ParentSubagentsProvider,
@@ -16,12 +17,14 @@ import {
 import type { SideChat } from '@librechat/chat/react';
 import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
+import useArtifactsLiveReply from '~/hooks/Artifacts/useArtifactsLiveReply';
 import DragDropWrapper from '~/components/Chat/Input/Files/DragDropWrapper';
 import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
+import { useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
 import { appSideChatHost } from '~/Providers/SideChatHostContext';
 import { artifactsUndocked } from '~/components/Artifacts/state';
 import { EditorProvider, ArtifactsProvider } from '~/Providers';
-import { SessionRailSlot } from '~/components/Chat/Session';
+import { SessionRailLayout } from '~/components/Chat/Session';
 import { SidePanelGroup } from '~/components/SidePanel';
 import AppChatSurface from '~/components/Chat/Surface';
 import { useGetStartupConfig } from '~/data-provider';
@@ -59,8 +62,9 @@ export default function Presentation({
   // when *something* is actively focused. Conversation navigation
   // resets `currentArtifactId` to null, so the panel stays closed when
   // a user revisits an old conversation full of artifacts. New artifacts
-  // arriving via SSE auto-focus through `ToolArtifactCard`'s mount effect
-  // (gated on `isSubmitting`), restoring the legacy streaming UX.
+  // arriving via SSE auto-focus through `ToolArtifactCard` (gated on its
+  // response generating) and, for an authored `:::artifact`, `ArtifactButton`
+  // (gated on the live reply recorded below), restoring the legacy streaming UX.
   const currentArtifactId = useRecoilValue(store.currentArtifactId);
   const conversationId = useRecoilValue(store.conversationIdByIndex(0));
   const conversationEndpoint = useRecoilValue(store.effectiveEndpointByIndex(0));
@@ -87,7 +91,10 @@ export default function Presentation({
   );
   const previousConversationIdRef = useRef<string | null>(null);
 
+  const latestMessageId = useLatestMessageId(0);
+  const runId = useAtomValue(activeRunFamily(0));
   useArtifactsRegistryLifetime(conversationId);
+  useArtifactsLiveReply(conversationId, isSubmitting, latestMessageId, runId);
 
   useEffect(
     () => () =>
@@ -260,19 +267,21 @@ export default function Presentation({
             enabled={conversationEndpoint === EModelEndpoint.agents && conversationAgentId != null}
             isSubmitting={isSubmitting}
           >
-            <SidePanelGroup panel={panelElement}>
-              {/* A size container: the composer caps its width against this column
-                  (`cqw`), so it keeps clear of the edges when the sidebar or a side panel
-                  narrows the column, which a viewport unit cannot see. */}
-              <main className="@container flex h-full flex-col overflow-y-auto" role="main">
-                <MessageSurfaceContext.Provider value="bg-surface-canvas">
-                  {children}
-                </MessageSurfaceContext.Provider>
-              </main>
-            </SidePanelGroup>
-            {/* The session rail's own column, past the side panel: the header's control draws
-                the rail here, so the list of what is running stays put while a panel opens. */}
-            <SessionRailSlot />
+            {/* The session rail's own column sits past the side panel: the header's control
+                draws the rail there, so the list of what is running stays put while a panel
+                opens. */}
+            <SessionRailLayout>
+              <SidePanelGroup panel={panelElement}>
+                {/* A size container: the composer caps its width against this column
+                    (`cqw`), so it keeps clear of the edges when the sidebar or a side panel
+                    narrows the column, which a viewport unit cannot see. */}
+                <main className="@container flex h-full flex-col overflow-y-auto" role="main">
+                  <MessageSurfaceContext.Provider value="bg-surface-canvas">
+                    {children}
+                  </MessageSurfaceContext.Provider>
+                </main>
+              </SidePanelGroup>
+            </SessionRailLayout>
           </ParentSubagentsProvider>
           {isUndocked && artifactsElement != null && (
             <UndockedArtifacts hidden={routePending}>{artifactsElement}</UndockedArtifacts>

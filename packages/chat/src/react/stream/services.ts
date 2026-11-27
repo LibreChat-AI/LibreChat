@@ -85,6 +85,11 @@ export type NavigationServices = {
   /** The conversation id in the route, `new` on a new chat. */
   conversationId?: string;
   navigate: (path: string, options?: { replace?: boolean }) => void;
+  /**
+   * Whether the pane shows this conversation now. It reads the latest state, not the render a
+   * handler was made in, so a request that settles after the pane moved on can tell.
+   */
+  shows: (conversationId: string) => boolean;
 };
 
 /** Where attention goes as a turn opens and settles. */
@@ -154,10 +159,13 @@ export type LegacyStreamServices = {
     conversationId?: string | null,
     options?: { includeNewChatDraft?: boolean },
   ) => void;
+  /** As `ResumableCache.releaseNewConversation`, for a first turn this stream was closed on. */
+  releaseNewConversation: (conversationId: string) => void;
 };
 
 /** The pane a set of event services writes for. */
 export type EventServicesParams = {
+  runIndex: number;
   setConversation?: ChatContract['setConversation'];
 };
 

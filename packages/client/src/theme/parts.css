@@ -153,6 +153,36 @@
   }
 }
 
+/* Firefox does not keep the two transforms in step once the band carries a
+   mask: the copy's glyphs lurch away from the glyphs under them and snap back,
+   several pixels on a short label and tens on a long one. Chromium holds the
+   pair to a fraction of a pixel, and so does Firefox when the band has no mask.
+   Firefox therefore leaves the band still and unmasked, and slides the mask
+   over the copy itself with the same stops, speed and phase: one animation, and
+   no second transform to drift from. The mask is two labels wide and repeats,
+   so 200% to 0% moves it one image width, the period of the sweep. */
+@supports (-moz-appearance: none) {
+  @keyframes shimmer-mask {
+    from {
+      mask-position: 200% 0;
+    }
+    to {
+      mask-position: 0% 0;
+    }
+  }
+
+  .shimmer-band {
+    -webkit-mask: none;
+    mask: none;
+    animation: none;
+  }
+
+  .shimmer-copy {
+    mask: var(--shimmer-mask) 0 0 / 200% 100% repeat-x;
+    animation: shimmer-mask 2s linear infinite;
+  }
+}
+
 /**
  * Type scale of the tool and status rows `@librechat/chat` renders. The label
  * follows the chat font setting (`--markdown-font-size`) at nine tenths, the
@@ -225,15 +255,14 @@
   line-height: inherit;
 }
 
-/**
- * Message body typography for the package's message text, steers and queued turns. Following the
- * chat font setting, it ships here so a consumer with only `@librechat/client/style.css` gets it.
- */
-.message-content {
-  font-size: var(--markdown-font-size, var(--font-size-base, 1rem));
-  line-height: 1.6;
-  /* `.prose` sets max-width: 65ch; fill the message column instead. */
-  max-width: none;
+/** A scroll container that draws no scrollbar: the message rail, and the app's own side lists. */
+.hide-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /**
@@ -588,5 +617,95 @@
 @media (prefers-reduced-motion: reduce) {
   [data-lc-fade] {
     animation: none;
+  }
+}
+
+/* Forced-colors overrides the `background-color: currentColor` a masked CustomIcon
+ * paints with. */
+@media (forced-colors: active) {
+  .custom-icon-tint {
+    background-color: CanvasText !important;
+  }
+}
+
+/* Ariakit owns presence and interrupts transitions on reopen. Keep every child
+ * exit shorter than the shell: only its duration determines when to unmount. */
+[data-usage-popover] {
+  --usage-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: var(--popover-transform-origin, bottom);
+  transform: translateY(6px) scale(0.97);
+  opacity: 0;
+  transition:
+    transform 360ms var(--usage-ease),
+    opacity 360ms var(--usage-ease);
+}
+
+[data-usage-popover][data-enter] {
+  transform: translateY(0) scale(1);
+  opacity: 1;
+}
+
+[data-usage-popover][data-leave] {
+  transform: translateY(4px) scale(0.985);
+  transition-duration: 180ms;
+  pointer-events: none;
+}
+
+[data-usage-popover] [data-usage-stage] {
+  opacity: 0;
+  filter: blur(3px);
+  transform: translateY(4px);
+  transition:
+    opacity 220ms var(--usage-ease),
+    filter 220ms var(--usage-ease),
+    transform 220ms var(--usage-ease);
+}
+
+[data-usage-popover] [data-usage-stage='details'] {
+  --usage-delay: 85ms;
+}
+
+[data-usage-popover] [data-usage-stage='footer'] {
+  --usage-delay: 140ms;
+}
+
+[data-usage-popover] [data-usage-stage='meter'] {
+  --usage-delay: 45ms;
+  filter: none;
+  transform: translateY(0) scaleX(0);
+  transform-origin: left;
+  transition-property: opacity, transform;
+  transition-duration: 300ms;
+}
+
+[data-usage-popover] [data-usage-stage='meter']:dir(rtl) {
+  transform-origin: right;
+}
+
+[data-usage-popover][data-enter] [data-usage-stage] {
+  opacity: 1;
+  filter: blur(0);
+  transform: translateY(0) scaleX(1);
+  transition-delay: var(--usage-delay, 0ms);
+}
+
+[data-usage-popover][data-leave] [data-usage-stage] {
+  transform: translateY(2px);
+  transition-delay: 0ms;
+  transition-duration: 120ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-usage-popover],
+  [data-usage-popover]:is([data-enter], [data-leave]),
+  [data-usage-popover] [data-usage-stage],
+  [data-usage-popover]:is([data-enter], [data-leave]) [data-usage-stage] {
+    transition: none;
+    transform: none;
+    filter: none;
+  }
+
+  [data-usage-popover] [data-usage-stage] {
+    opacity: 1;
   }
 }

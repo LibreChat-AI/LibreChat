@@ -26,13 +26,10 @@
  * the tool call and a matching tool result, which is the adjacency providers
  * require.
  *
- * Replay is the only continuation this endpoint supports for a tool exchange.
- * `previous_response_id` does not carry an unanswered client exchange: stored
- * assistant turns retain completed server tool pairs, not unexecuted client calls,
- * and `saveInputMessages` keeps only `role: 'user'`. The id is rejected outright
- * with 404 unless the first request also asked for `store: true`. Sending
- * `previous_response_id` with a bare `function_call_output` therefore produces
- * a tool result whose call is missing.
+ * With `store: true`, the caller can instead supply `previous_response_id`
+ * and the result for each pending call. Admission resolves the owned response's
+ * canonical calls and normalizes the same explicit replay before execution.
+ * The previous response stays immutable; each continuation is a new turn.
  *
  * This is the stateless shape OpenAI defines: no run is suspended, nothing is
  * checkpointed, and no per-caller state is held between the two requests.

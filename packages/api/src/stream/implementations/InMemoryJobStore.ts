@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { logger } from '@librechat/data-schemas';
 import type { StandardGraph } from '@librechat/agents';
 import type { Agents } from 'librechat-data-provider';
@@ -513,6 +514,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
       now,
       previousCreatedAt == null ? 0 : previousCreatedAt + 1,
       this.lastGenerationEpoch + 1,
+      // The Responses restart fence compares journaled epochs to process start.
+      safeInitialMetadata.endpoint === 'responses' &&
+        safeInitialMetadata.terminalPersistenceOwner === 'external'
+        ? Math.ceil(performance.timeOrigin)
+        : 0,
     );
     const replacedJobs: ReplacedGeneration[] = [];
     const replacedEpochs = new Set<number>();
@@ -554,6 +560,12 @@ export class InMemoryJobStore implements IJobStoreV2 {
       if (previousJob.providerDrained != null) {
         Object.defineProperty(replaced, 'providerDrained', {
           value: previousJob.providerDrained,
+          enumerable: false,
+        });
+      }
+      if (previousJob.completedAt != null) {
+        Object.defineProperty(replaced, 'completedAt', {
+          value: previousJob.completedAt,
           enumerable: false,
         });
       }

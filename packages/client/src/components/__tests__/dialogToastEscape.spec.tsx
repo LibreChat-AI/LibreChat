@@ -159,9 +159,9 @@ describe('dialog Escape', () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
-  /** Every mounted dialog runs the fallback listener, so one underneath must not
-   *  fire its consumer's Escape handler for a keystroke that belongs to the
-   *  dialog above it. */
+  /** The fallback listener answers for every mounted dialog, so one underneath
+   *  must not fire its consumer's Escape handler for a keystroke that belongs to
+   *  the dialog above it. */
   it("does not run a lower dialog's Escape handler for the frontmost dialog", async () => {
     const lowerEscape = jest.fn();
     const upperOpenChange = jest.fn();

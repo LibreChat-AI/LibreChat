@@ -1,4 +1,5 @@
 import { errors } from 'undici';
+import { ProviderTextProtectionError } from '@librechat/agents';
 import { ErrorTypes, ViolationTypes } from 'librechat-data-provider';
 import {
   getUpstreamModelErrorMetadata,
@@ -555,4 +556,24 @@ describe('getUserFacingGenerationError', () => {
       getUserFacingGenerationError(new Error('wrapped', { cause: error }), protectedConfig, 'x'),
     ).toBe('Submitted content contains a Bearer token. Remove it and try again.');
   });
+});
+
+it('preserves the assistant policy decision when the model boundary observed it', () => {
+  const logger = { error: jest.fn() };
+  const observer = createTerminalRunErrorObserver({
+    logger,
+    source: 'test',
+    protectionEnabled: true,
+  });
+  const failure = new ProviderTextProtectionError('blocked');
+  observer.modelCallback.handleLLMError(failure);
+  const error = new Error('test wrapper', { cause: failure });
+  expect(observer.getUserFacingError(error, () => 'fallback')).toBe(
+    '{"type":"assistant_output_withheld"}',
+  );
+  observer.log(error);
+  expect(logger.error).not.toHaveBeenCalledWith(
+    expect.stringContaining('Upstream model error'),
+    expect.anything(),
+  );
 });

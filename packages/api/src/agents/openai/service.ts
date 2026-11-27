@@ -1,4 +1,5 @@
 import type { LocatorTraversalReporter } from '../../protection/diagnostics';
+import type { AssistantConfig } from '../../protection/assistant';
 import type { SdkModelHost } from '../remoteSdk/builder';
 import type { ServerToolResultFields } from './types';
 import { validateChatIncludes } from './results';
@@ -23,7 +24,7 @@ import { validateChatIncludes } from './results';
  * ```
  */
 import { nanoid } from 'nanoid';
-import { AgentCapabilities, EModelEndpoint } from 'librechat-data-provider';
+import { ErrorTypes, AgentCapabilities, EModelEndpoint } from 'librechat-data-provider';
 import type {
   FiltersConfig,
   MessageFilterConfig,
@@ -77,6 +78,7 @@ import {
 } from '~/middleware/modelBoundContent';
 import { contentFilterBlockResponse, isContentFilterError } from '~/middleware/contentFilter';
 import { contentFilterUninspectableResponse } from '~/protection/files';
+import { requiresAssistantProtection } from '../../protection/assistant';
 import { resolveToolRoleGrants } from '../../tools/rolePermissions';
 import { createMCPRuntimeRequestBody } from '~/mcp/request';
 import { getUserFacingProviderError } from '../errors';
@@ -328,7 +330,7 @@ type CreateRunFn = (params: {
 /**
  * App config type
  */
-interface AppConfig {
+interface AppConfig extends AssistantConfig {
   endpoints?: Record<string, unknown>;
   filters?: FiltersConfig;
   langfuse?: Record<string, unknown>;
@@ -654,6 +656,17 @@ export async function createAgentChatCompletion(
   res: ServerResponse,
   deps: ChatCompletionDependencies,
 ): Promise<void> {
+  if (requiresAssistantProtection(deps.appConfig)) {
+    sendErrorResponse(
+      res,
+      400,
+      'Assistant reply protection is not supported on this endpoint.',
+      'invalid_request_error',
+      ErrorTypes.ASSISTANT_OUTPUT_UNSUPPORTED,
+    );
+    return;
+  }
+
   // Validate request
   const validation = validateRequest(req.body);
   if (isChatCompletionValidationFailure(validation)) {

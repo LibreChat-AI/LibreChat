@@ -2,12 +2,10 @@
  * @jest-environment jsdom
  */
 import { render, screen } from '@testing-library/react';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import ScrollToBottom from '../ScrollToBottom';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 const renderButton = ({
   maximizeChatSpace = false,
@@ -112,7 +110,7 @@ describe('ScrollToBottom', () => {
   it('names the control for assistive tech', () => {
     renderButton();
 
-    expect(screen.getByRole('button', { name: 'com_ui_scroll_to_bottom' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: 'Scroll to bottom' })).toHaveAttribute(
       'type',
       'button',
     );

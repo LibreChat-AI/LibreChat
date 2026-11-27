@@ -3,7 +3,7 @@ import { Provider, createStore } from 'jotai';
 import userEvent from '@testing-library/user-event';
 import { dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, within, waitFor, fireEvent, configure } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 import type { AxiosResponse } from 'axios';
 import type { CodeWorkspaceResult } from '~/hooks';
@@ -52,6 +52,12 @@ jest.mock('@librechat/client', () => {
     TooltipAnchor,
   };
 });
+
+/** Each test opens Ariakit menus and waits for them to render and take focus. With the CPU shared
+ *  (a full jest-client lane beside other work), those waits outran Testing Library's 1 s default
+ *  and the slowest tests outran Jest's 5 s, so both budgets leave room for a busy machine. */
+configure({ asyncUtilTimeout: 5000 });
+jest.setTimeout(20000);
 
 const conversation = {
   conversationId: 'new',
@@ -549,6 +555,39 @@ describe('CodeWorkspaceMenu', () => {
     expect(screen.getByRole('menuitemradio', { name: /Repo.*repo-copy/ })).toBeInTheDocument();
     /** A unique name stays one compact line. */
     expect(screen.getByRole('menuitemradio', { name: 'Solo' })).toBeInTheDocument();
+  });
+
+  test('tells machines that share a display name apart by id', async () => {
+    const twin = (id: string) => ({ ...environment, id, name: 'Laptop' });
+    const graph = workspace({ machineOptions: [twin('vm-a'), twin('vm-b'), environment] });
+    graph.environments = ['vm-a', 'vm-b'].map((id) => ({
+      environment: twin(id),
+      state: 'ready' as const,
+      workspaces: [
+        {
+          id: 'repo',
+          name: 'Repo',
+          environment: { fingerprint: 'f', repo: 'org/repo', ref: 'main', actions: [] },
+        },
+      ],
+      selected: { environmentId: id, workspaceId: 'repo' },
+    }));
+    renderMenu(
+      <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
+    );
+    await userEvent.click(screen.getByTestId('code-machine'));
+    expect(screen.getByRole('menuitem', { name: /^Laptop\s*vm-a$/ })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /^Laptop\s*vm-b$/ })).toBeInTheDocument();
+    /** A unique name stays bare. */
+    expect(screen.getByRole('menuitem', { name: 'Personal VM' })).toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    for (const id of ['vm-a', 'vm-b']) {
+      /** Each machine's rows sit in a group its label names, so the pick names its machine. */
+      const section = screen.getByRole('group', { name: new RegExp(`^Laptop\\s*${id}$`) });
+      expect(within(section).getByRole('menuitemradio', { name: /^Repo/ })).toBeInTheDocument();
+    }
   });
 
   test('hides Git context when continuing without an attached workspace', () => {

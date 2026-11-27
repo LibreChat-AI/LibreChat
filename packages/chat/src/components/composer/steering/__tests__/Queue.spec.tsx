@@ -13,6 +13,7 @@ import { revealedQueuedTurnFamily, resetSteerFamilies } from '../../../../react/
 import { queuedMessagesByConvoId, resetQueueFamilies } from '../../../../react/steer/queue';
 import { hasQueuedIntent, releaseQueuedIntent } from '../../../../core/steer/intent';
 import { QueuedTurnPortalProvider, useQueuedTurnPortal } from '../QueuedTurnPortal';
+import { initEnglish } from '../../../../__fixtures__/i18n';
 import Queue from '../Queue';
 
 /** Seeds the default Jotai store before the first render, where the app's queue state lives. */
@@ -95,11 +96,11 @@ jest.mock('@librechat/client', () => {
         ? ReactActual.cloneElement(render, props)
         : ReactActual.createElement('span', props, children),
     useMediaQuery: () => true,
-    useLocalize: () => (key: string, options?: Record<string, string | number>) =>
-      options ? `${key}:${options.count ?? options['0']}` : key,
     useToastContext: () => ({ showToast: mockShowToast }),
   };
 });
+
+beforeAll(initEnglish);
 
 const CONVO_ID = 'convo-1';
 const mockSendQueuedNow = jest.fn();
@@ -219,20 +220,20 @@ describe('Queue', () => {
     expect(rows).toHaveLength(2);
 
     const firstRow = within(rows[0]);
-    expect(firstRow.getByRole('button', { name: 'com_ui_send_now' })).toBeInTheDocument();
+    expect(firstRow.getByRole('button', { name: 'Send now' })).toBeInTheDocument();
     expect(firstRow.getByTestId('queued-interrupt-now')).toBeInTheDocument();
-    expect(firstRow.getByLabelText('com_ui_remove_queued')).toBeInTheDocument();
-    expect(firstRow.getByLabelText('com_ui_more_options')).toBeInTheDocument();
-    expect(firstRow.getByLabelText('com_ui_edit_message')).toBeInTheDocument();
-    expect(firstRow.getByLabelText('com_ui_queue_start_new_chat')).toBeInTheDocument();
-    expect(firstRow.getByLabelText('com_ui_queue_disable')).toBeInTheDocument();
+    expect(firstRow.getByLabelText('Remove message')).toBeInTheDocument();
+    expect(firstRow.getByLabelText('More options')).toBeInTheDocument();
+    expect(firstRow.getByLabelText('Edit message')).toBeInTheDocument();
+    expect(firstRow.getByLabelText('Start in a new chat')).toBeInTheDocument();
+    expect(firstRow.getByLabelText('Disable Queue')).toBeInTheDocument();
   });
 
   it('starts a queued message in a new chat and drops it from the queue', async () => {
     const onStartNewChat = jest.fn();
     renderQueue([queued({ id: 'q1', text: 'carry me over' })], steering, { onStartNewChat });
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('com_ui_queue_start_new_chat'));
+      fireEvent.click(screen.getByLabelText('Start in a new chat'));
     });
     expect(mockDiscardQueued).toHaveBeenCalled();
     expect(mockRemoveQueued).toHaveBeenCalledWith('q1');
@@ -241,13 +242,13 @@ describe('Queue', () => {
 
   it('keeps a message with attachments out of "Start in a new chat"', () => {
     renderQueue([queued({ id: 'q1', files: [{ file_id: 'f1' }] as never })]);
-    expect(screen.getByLabelText('com_ui_queue_start_new_chat')).toBeDisabled();
+    expect(screen.getByLabelText('Start in a new chat')).toBeDisabled();
   });
 
   it('holds a row out of the drain and releases it from the same menu item', () => {
     const toggle = jest.fn();
     renderQueue([queued({ id: 'q1' })], steeringWith({ toggleQueuedHold: toggle }));
-    fireEvent.click(screen.getByLabelText('com_ui_queue_disable'));
+    fireEvent.click(screen.getByLabelText('Disable Queue'));
     expect(toggle).toHaveBeenCalledWith('q1', true);
   });
 
@@ -257,20 +258,20 @@ describe('Queue', () => {
       [queued({ id: 'q1', needsExplicitSend: true, heldByUser: true })],
       steeringWith({ toggleQueuedHold: toggle }),
     );
-    expect(screen.getByText('com_ui_queue_held')).toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText('com_ui_queue_enable'));
+    expect(screen.getByText('Will not send automatically')).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Enable Queue'));
     expect(toggle).toHaveBeenCalledWith('q1', false);
     expect(mockRewakeDrain).toHaveBeenCalledWith(CONVO_ID);
   });
 
   it('does not let the user release a hold that a rejected steer placed', () => {
     renderQueue([queued({ id: 'q1', needsExplicitSend: true })]);
-    expect(screen.getByLabelText('com_ui_queue_disable')).toBeDisabled();
+    expect(screen.getByLabelText('Disable Queue')).toBeDisabled();
   });
 
   it('sends the row that was clicked, not the first one', () => {
     renderQueue([queued({ id: 'q1' }), queued({ id: 'q2', text: 'the second one' })]);
-    fireEvent.click(screen.getAllByRole('button', { name: 'com_ui_send_now' })[1]);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Send now' })[1]);
     expect(mockSendQueuedNow).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'q2', text: 'the second one' }),
     );
@@ -278,9 +279,12 @@ describe('Queue', () => {
 
   it('disables send now while the run is paused on approval', () => {
     renderQueue([queued()], pausedSteering);
-    const sendButton = screen.getByRole('button', { name: 'com_ui_send_now' });
+    const sendButton = screen.getByRole('button', { name: 'Send now' });
     expect(sendButton).toBeDisabled();
-    expect(sendButton).toHaveAttribute('title', 'com_ui_send_now_paused');
+    expect(sendButton).toHaveAttribute(
+      'title',
+      'Available after you respond to the pending request',
+    );
 
     fireEvent.click(sendButton);
     expect(mockSendQueuedNow).not.toHaveBeenCalled();
@@ -294,7 +298,7 @@ describe('Queue', () => {
       [queued()],
       steeringWith({ duringRunActive: false, canSteer: false, canSendQueuedNow: false }),
     );
-    const sendButton = screen.getByRole('button', { name: 'com_ui_send_now' });
+    const sendButton = screen.getByRole('button', { name: 'Send now' });
     expect(sendButton).toBeDisabled();
     fireEvent.click(sendButton);
     expect(mockSendQueuedNow).not.toHaveBeenCalled();
@@ -302,7 +306,7 @@ describe('Queue', () => {
 
   it('disables send now for a receipt-bound recovery during a live run', () => {
     renderQueue([queued({ recoverySteerId: 'srv-1' })]);
-    const sendButton = screen.getByRole('button', { name: 'com_ui_send_now' });
+    const sendButton = screen.getByRole('button', { name: 'Send now' });
 
     expect(sendButton).toBeDisabled();
     fireEvent.click(sendButton);
@@ -319,12 +323,15 @@ describe('Queue', () => {
         reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       }),
     ]);
-    const sendButton = screen.getByRole('button', { name: 'com_ui_send_now' });
+    const sendButton = screen.getByRole('button', { name: 'Send now' });
     const interruptButton = screen.getByTestId('queued-interrupt-now');
 
     expect(sendButton).toBeDisabled();
     expect(interruptButton).toBeDisabled();
-    expect(sendButton).toHaveAttribute('title', 'com_ui_send_now_paused');
+    expect(sendButton).toHaveAttribute(
+      'title',
+      'Available after you respond to the pending request',
+    );
     fireEvent.click(sendButton);
     fireEvent.click(interruptButton);
     expect(mockSendQueuedNow).not.toHaveBeenCalled();
@@ -339,7 +346,7 @@ describe('Queue', () => {
       ],
       steeringWith({ duringRunActive: false, canSteer: false, canSendQueuedNow: true }),
     );
-    const sendButton = screen.getByRole('button', { name: 'com_ui_send_now' });
+    const sendButton = screen.getByRole('button', { name: 'Send now' });
 
     expect(sendButton).toBeEnabled();
     fireEvent.click(sendButton);
@@ -374,11 +381,13 @@ describe('Queue', () => {
     expect(mockReorderQueued).not.toHaveBeenCalled();
     expect(mockShowToast).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: 'com_ui_queue_reorder_blocked',
+        message: 'Queued turns already acknowledged by the server cannot be reordered.',
         status: 'warning',
       }),
     );
-    expect(screen.getByRole('status')).toHaveTextContent('com_ui_queue_reorder_blocked');
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Queued turns already acknowledged by the server cannot be reordered.',
+    );
   });
 
   it('refuses to move a message past either end of the queue', () => {
@@ -393,7 +402,7 @@ describe('Queue', () => {
   it('announces where a moved message landed', () => {
     renderQueue([queued({ id: 'q1' }), queued({ id: 'q2' })]);
     fireEvent.keyDown(screen.getAllByTestId('queued-message-grip')[0], { key: 'ArrowDown' });
-    expect(screen.getByRole('status')).toHaveTextContent('com_ui_queue_moved:2');
+    expect(screen.getByRole('status')).toHaveTextContent('Moved to 2 of 2');
   });
 
   /* Swapping the handle out from under a keyboard user is how focus gets
@@ -433,7 +442,7 @@ describe('Queue', () => {
       { onRestoreToComposer: onRestore },
     );
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('com_ui_remove_queued'));
+      fireEvent.click(screen.getByLabelText('Remove message'));
     });
     expect(onRestore).toHaveBeenCalledWith(
       'follow up on this',
@@ -454,14 +463,16 @@ describe('Queue', () => {
     const onRestore = jest.fn().mockReturnValue(false);
     renderQueue([queued({ id: 'q1' })], steering, { onRestoreToComposer: onRestore });
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('com_ui_remove_queued'));
+      fireEvent.click(screen.getByLabelText('Remove message'));
     });
     expect(onRestore).toHaveBeenCalled();
     expect(mockRemoveQueued).not.toHaveBeenCalled();
     /* Keeping the words is right; saying nothing about it is not. Without this
        the row simply does not react and the button reads as broken. */
     expect(mockShowToast).toHaveBeenCalledWith(
-      expect.objectContaining({ message: 'com_ui_queue_remove_blocked' }),
+      expect.objectContaining({
+        message: 'Clear the message box in this chat to take this message back.',
+      }),
     );
     /* A run end that landed while this row was claimed had no unclaimed row to
        drain and spent its one-shot signal. The row is back in the queue, so a
@@ -472,8 +483,11 @@ describe('Queue', () => {
   /* Discarding the parked server copy leaves the row only in memory, so a
      composer that refuses has to refuse before that copy is given up. */
   it.each([
-    ['com_ui_remove_queued', 'com_ui_queue_remove_blocked'],
-    ['com_ui_edit_message', 'com_ui_queue_edit_blocked'],
+    ['Remove message', 'Clear the message box in this chat to take this message back.'],
+    [
+      'Edit message',
+      'Clear the message box in this chat, or finish answering the question, to edit this message.',
+    ],
   ])('keeps the parked copy when the composer would refuse (%s)', async (label, toast) => {
     const onRestore = jest.fn().mockReturnValue(true);
     renderQueue([queued({ id: 'q1' })], steering, {
@@ -493,8 +507,11 @@ describe('Queue', () => {
      being cancelled: the words go back on the durable queue in their place
      rather than living only in memory until the next reload. */
   it.each([
-    ['com_ui_remove_queued', 'com_ui_queue_remove_blocked'],
-    ['com_ui_edit_message', 'com_ui_queue_edit_blocked'],
+    ['Remove message', 'Clear the message box in this chat to take this message back.'],
+    [
+      'Edit message',
+      'Clear the message box in this chat, or finish answering the question, to edit this message.',
+    ],
   ])(
     're-queues a durable row the composer refuses after cancelling it (%s)',
     async (label, toast) => {
@@ -537,8 +554,11 @@ describe('Queue', () => {
       queued({ id: 'q1', recoverySteerId: 'steer-1', recoveryClientSteerId: 'client-1' });
 
     it.each([
-      ['com_ui_remove_queued', 'com_ui_queue_remove_blocked'],
-      ['com_ui_edit_message', 'com_ui_queue_edit_blocked'],
+      ['Remove message', 'Clear the message box in this chat to take this message back.'],
+      [
+        'Edit message',
+        'Clear the message box in this chat, or finish answering the question, to edit this message.',
+      ],
     ])('keeps the parked copy when the composer refuses (%s)', async (label, toast) => {
       renderQueue([recovered()], steering, {
         onRestoreToComposer: jest.fn().mockReturnValue(false),
@@ -561,7 +581,7 @@ describe('Queue', () => {
       });
       renderQueue([recovered()], steering, { onRestoreToComposer: onRestore });
       await act(async () => {
-        fireEvent.click(screen.getByLabelText('com_ui_edit_message'));
+        fireEvent.click(screen.getByLabelText('Edit message'));
       });
       expect(mockDiscardQueued).toHaveBeenCalledWith(expect.objectContaining({ id: 'q1' }));
       expect(mockRemoveQueued).toHaveBeenCalledWith('q1');
@@ -574,7 +594,7 @@ describe('Queue', () => {
         onRestoreToComposer: jest.fn().mockReturnValue(true),
       });
       await act(async () => {
-        fireEvent.click(screen.getByLabelText('com_ui_remove_queued'));
+        fireEvent.click(screen.getByLabelText('Remove message'));
       });
       expect(mockRemoveQueued).not.toHaveBeenCalled();
       expect(mockHoldQueued).toHaveBeenCalledWith('q1');
@@ -587,7 +607,7 @@ describe('Queue', () => {
       onRestoreToComposer: jest.fn().mockReturnValue(false),
     });
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('com_ui_remove_queued'));
+      fireEvent.click(screen.getByLabelText('Remove message'));
     });
     expect(mockEnqueue).not.toHaveBeenCalled();
     expect(mockRemoveQueued).not.toHaveBeenCalled();
@@ -608,7 +628,7 @@ describe('Queue', () => {
       { onEditToComposer: onEdit },
     );
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('com_ui_edit_message'));
+      fireEvent.click(screen.getByLabelText('Edit message'));
     });
     expect(onEdit).toHaveBeenCalledWith(
       'follow up on this',
@@ -630,12 +650,15 @@ describe('Queue', () => {
     const onEdit = jest.fn().mockReturnValue(false);
     renderQueue([queued({ id: 'q1' })], steering, { onEditToComposer: onEdit });
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('com_ui_edit_message'));
+      fireEvent.click(screen.getByLabelText('Edit message'));
     });
     expect(onEdit).toHaveBeenCalled();
     expect(mockRemoveQueued).not.toHaveBeenCalled();
     expect(mockShowToast).toHaveBeenCalledWith(
-      expect.objectContaining({ message: 'com_ui_queue_edit_blocked' }),
+      expect.objectContaining({
+        message:
+          'Clear the message box in this chat, or finish answering the question, to edit this message.',
+      }),
     );
   });
 
@@ -649,7 +672,7 @@ describe('Queue', () => {
     const onRestore = jest.fn().mockReturnValue(true);
     renderQueue([queued({ id: 'q1' })], steering, { onRestoreToComposer: onRestore });
 
-    fireEvent.click(screen.getByLabelText('com_ui_edit_message'));
+    fireEvent.click(screen.getByLabelText('Edit message'));
     expect(onRestore).not.toHaveBeenCalled();
 
     await act(async () => settleDiscard(true));
@@ -667,7 +690,7 @@ describe('Queue', () => {
   describe('claiming a row for the handoff', () => {
     afterEach(() => releaseQueuedIntent('q1'));
 
-    it.each(['com_ui_edit_message', 'com_ui_remove_queued'] as const)(
+    it.each(['Edit message', 'Remove message'] as const)(
       'holds the row across %s and lets it go afterwards',
       async (label) => {
         let settleDiscard: (value: boolean) => void = () => undefined;
@@ -694,7 +717,7 @@ describe('Queue', () => {
         onRestoreToComposer: jest.fn().mockReturnValue(false),
       });
       await act(async () => {
-        fireEvent.click(screen.getByLabelText('com_ui_remove_queued'));
+        fireEvent.click(screen.getByLabelText('Remove message'));
       });
       expect(hasQueuedIntent('q1')).toBe(false);
     });
@@ -736,7 +759,9 @@ describe('Queue', () => {
       </DndProvider>,
     );
 
-    const hints = screen.getAllByText('com_ui_queue_reorder_hint');
+    const hints = screen.getAllByText(
+      'Use the up and down arrow keys to move this message in the queue.',
+    );
     expect(hints).toHaveLength(2);
     expect(hints[0].id).not.toBe(hints[1].id);
 
@@ -784,7 +809,7 @@ describe('Queue', () => {
     );
 
     fireEvent.keyDown(screen.getAllByTestId('queued-message-grip')[0], { key: 'ArrowDown' });
-    expect(screen.getByRole('status')).toHaveTextContent('com_ui_queue_moved:2');
+    expect(screen.getByRole('status')).toHaveTextContent('Moved to 2 of 2');
 
     act(() => setQueue([]));
     act(() => setQueue([queued({ id: 'q3', text: 'a new message' })]));
@@ -872,7 +897,7 @@ describe('Queue', () => {
       expect(mockReorderQueued).not.toHaveBeenCalled();
       expect(mockShowToast).toHaveBeenCalledWith(
         expect.objectContaining({
-          message: 'com_ui_queue_reorder_blocked',
+          message: 'Queued turns already acknowledged by the server cannot be reordered.',
           status: 'warning',
         }),
       );
@@ -881,31 +906,33 @@ describe('Queue', () => {
 
   it('shows an attachment count when files ride along', () => {
     renderQueue([queued({ files: [{ file_id: 'f1' }, { file_id: 'f2' }] as never })]);
-    const attachmentLabel = screen.getByText('com_ui_attachment_count:2');
+    const attachmentLabel = screen.getByText('2 attachments');
     expect(attachmentLabel).toBeInTheDocument();
     expect(attachmentLabel.parentElement).toHaveAttribute(
       'title',
-      'com_ui_queued_attachment_count:2',
+      '2 attachments queued with this message',
     );
     expect(attachmentLabel.parentElement).not.toHaveAttribute('aria-label');
-    expect(screen.getByText('com_ui_queued_attachment_count:2')).toHaveClass('sr-only');
+    expect(screen.getByText('2 attachments queued with this message')).toHaveClass('sr-only');
   });
 
   it('shows a quoted-excerpt count when quotes ride along', () => {
     renderQueue([queued({ quotes: ['first', 'second'] })]);
 
     expect(screen.getByText('2')).toHaveAttribute('aria-hidden', 'true');
-    expect(screen.getByText('com_ui_queued_quote_count:2')).toHaveClass('sr-only');
+    expect(screen.getByText('2 quoted excerpts included with this message')).toHaveClass('sr-only');
   });
 
   it('puts the during-run hint on each queued row', () => {
     renderQueue([queued({ id: 'q1' }), queued({ id: 'q2' })]);
 
     const rows = screen.getAllByTestId('queued-message-row');
-    expect(screen.getAllByRole('img', { name: 'com_ui_steer_queued_info' })).toHaveLength(2);
+    expect(screen.getAllByRole('img', { name: 'Sends when this response finishes' })).toHaveLength(
+      2,
+    );
     rows.forEach((row) => {
       expect(
-        within(row).getByRole('img', { name: 'com_ui_steer_queued_info' }),
+        within(row).getByRole('img', { name: 'Sends when this response finishes' }),
       ).toBeInTheDocument();
     });
     expect(screen.queryByTestId('queued-caption')).not.toBeInTheDocument();
@@ -913,7 +940,9 @@ describe('Queue', () => {
 
   it('hides the queued hint after the run ends', () => {
     renderQueue([queued()], steeringWith({ duringRunActive: false }));
-    expect(screen.queryByRole('img', { name: 'com_ui_steer_queued_info' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('img', { name: 'Sends when this response finishes' }),
+    ).not.toBeInTheDocument();
   });
   it('reveals an admitted claimed row with only cancellation available', () => {
     const jotaiStore = getDefaultStore();
@@ -938,10 +967,10 @@ describe('Queue', () => {
       );
 
       const firstRow = within(screen.getAllByTestId('queued-message-row')[0]);
-      expect(firstRow.getByText('com_ui_queued_turn_starting')).toBeInTheDocument();
-      expect(firstRow.queryByRole('button', { name: 'com_ui_send_now' })).not.toBeInTheDocument();
-      expect(firstRow.queryByLabelText('com_ui_edit_message')).not.toBeInTheDocument();
-      expect(firstRow.getByLabelText('com_ui_remove_queued')).toBeEnabled();
+      expect(firstRow.getByText('Starting as the next turn')).toBeInTheDocument();
+      expect(firstRow.queryByRole('button', { name: 'Send now' })).not.toBeInTheDocument();
+      expect(firstRow.queryByLabelText('Edit message')).not.toBeInTheDocument();
+      expect(firstRow.getByLabelText('Remove message')).toBeEnabled();
     } finally {
       jotaiStore.set(revealedQueuedTurnFamily(CONVO_ID), null);
     }
@@ -969,9 +998,9 @@ describe('Queue', () => {
         { portalRequestId: 'req-1' },
       );
       const turn = within(screen.getByTestId('pending-turn'));
-      expect(turn.getByLabelText('com_ui_remove_queued')).toBeEnabled();
-      expect(turn.queryByRole('button', { name: 'com_ui_send_now' })).not.toBeInTheDocument();
-      expect(turn.queryByLabelText('com_ui_edit_message')).not.toBeInTheDocument();
+      expect(turn.getByLabelText('Remove message')).toBeEnabled();
+      expect(turn.queryByRole('button', { name: 'Send now' })).not.toBeInTheDocument();
+      expect(turn.queryByLabelText('Edit message')).not.toBeInTheDocument();
       /* The row that moved into the turn plays its exit before it leaves the rail. */
       await waitFor(() => expect(screen.getAllByTestId('queued-message-row')).toHaveLength(1));
       const row = screen.getByTestId('queued-message-row');
@@ -988,9 +1017,9 @@ describe('Queue', () => {
       (status) => {
         renderQueue([queued({ server: { id: 'server-q1', status } })]);
 
-        expect(screen.getByRole('button', { name: 'com_ui_send_now' })).toBeDisabled();
-        expect(screen.getByLabelText('com_ui_edit_message')).toBeDisabled();
-        expect(screen.getByLabelText('com_ui_remove_queued')).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Send now' })).toBeDisabled();
+        expect(screen.getByLabelText('Edit message')).toBeDisabled();
+        expect(screen.getByLabelText('Remove message')).toBeDisabled();
         expect(screen.getByTestId('queued-interrupt-now')).toBeDisabled();
       },
     );
@@ -998,27 +1027,27 @@ describe('Queue', () => {
     it('keeps a rejected row actionable and labels its failure', () => {
       renderQueue([queued({ server: { status: 'rejected' } })]);
 
-      expect(screen.getByText('com_ui_queued_turn_failed')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'com_ui_send_now' })).toBeEnabled();
-      expect(screen.getByLabelText('com_ui_edit_message')).toBeEnabled();
-      expect(screen.getByLabelText('com_ui_remove_queued')).toBeEnabled();
+      expect(screen.getByText('Queued message failed')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Send now' })).toBeEnabled();
+      expect(screen.getByLabelText('Edit message')).toBeEnabled();
+      expect(screen.getByLabelText('Remove message')).toBeEnabled();
     });
 
     it('keeps an acknowledged queued server row actionable', () => {
       renderQueue([queued({ server: { id: 'server-q1', status: 'queued' } })]);
 
-      expect(screen.getByRole('button', { name: 'com_ui_send_now' })).toBeEnabled();
-      expect(screen.getByLabelText('com_ui_edit_message')).toBeEnabled();
-      expect(screen.getByLabelText('com_ui_remove_queued')).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'Send now' })).toBeEnabled();
+      expect(screen.getByLabelText('Edit message')).toBeEnabled();
+      expect(screen.getByLabelText('Remove message')).toBeEnabled();
     });
 
     it('requires reconciliation and blocks removal for an indeterminate row', () => {
       renderQueue([queued({ server: { id: 'server-q1', status: 'indeterminate' } })]);
 
-      expect(screen.getByText('com_ui_queued_turn_reconciliation_required')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'com_ui_send_now' })).toBeDisabled();
-      expect(screen.getByLabelText('com_ui_edit_message')).toBeDisabled();
-      expect(screen.getByLabelText('com_ui_remove_queued')).toBeDisabled();
+      expect(screen.getByText('Awaiting reconciliation')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Send now' })).toBeDisabled();
+      expect(screen.getByLabelText('Edit message')).toBeDisabled();
+      expect(screen.getByLabelText('Remove message')).toBeDisabled();
     });
 
     it('dismisses an expired uncertain row without discarding or restoring it', () => {
@@ -1037,11 +1066,11 @@ describe('Queue', () => {
         { onRestoreToComposer: onRestore },
       );
 
-      expect(screen.getByText('com_ui_steer_delivery_unconfirmed')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'com_ui_send_now' })).toBeDisabled();
-      expect(screen.getByLabelText('com_ui_edit_message')).toBeDisabled();
+      expect(screen.getByText('Delivery unconfirmed')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Send now' })).toBeDisabled();
+      expect(screen.getByLabelText('Edit message')).toBeDisabled();
 
-      fireEvent.click(screen.getByLabelText('com_ui_dismiss_unconfirmed_delivery'));
+      fireEvent.click(screen.getByLabelText('Dismiss unconfirmed delivery'));
       expect(mockRemoveQueued).toHaveBeenCalledWith('q1');
       expect(mockDiscardQueued).not.toHaveBeenCalled();
       expect(onRestore).not.toHaveBeenCalled();
@@ -1062,7 +1091,7 @@ describe('Queue', () => {
 
     it('leaves Send now as an ordinary steer', () => {
       renderQueue([queued({ id: 'q1' })]);
-      fireEvent.click(screen.getByRole('button', { name: 'com_ui_send_now' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Send now' }));
       expect(mockSendQueuedNow).toHaveBeenCalledWith(expect.objectContaining({ id: 'q1' }));
     });
 

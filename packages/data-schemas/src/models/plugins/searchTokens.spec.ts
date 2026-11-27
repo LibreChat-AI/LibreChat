@@ -2,9 +2,9 @@ import mongoose from 'mongoose';
 import { PrincipalType } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type * as t from '~/types';
+import { buildUserExactFilter, buildUserSearchFilter } from '~/utils/search';
 import { createUserGroupMethods } from '~/methods/userGroup';
 import { tenantStorage } from '~/config/tenantContext';
-import { buildUserSearchFilter } from '~/utils/search';
 import { createModels } from '~/models';
 
 jest.mock('~/config/winston', () => ({
@@ -210,6 +210,81 @@ describe('searchPrincipals word-prefix search', () => {
     const groups = await methods.searchPrincipals('plat', 10, [PrincipalType.GROUP]);
     expect(groups.map((g) => g.name)).toEqual(['Platform Team']);
   });
+
+  it('keeps an exact user match that sits past the per-type window of prefix matches', async () => {
+    await User.create(
+      Array.from({ length: 12 }, (_, i) => user(`Ada Prefix${i}`, `ada${i}@window.io`)),
+    );
+    await User.create(user('Adà', 'exact@window.io'));
+    const results = await methods.searchPrincipals('ada', 10, [PrincipalType.USER]);
+    expect(results).toHaveLength(10);
+    expect(results[0].name).toBe('Adà');
+  });
+
+  it('keeps an exact legacy user match, saved without tokens, that sits past the window', async () => {
+    await User.collection.insertMany(
+      Array.from({ length: 12 }, (_, i) => ({
+        name: `Old Prefix${i}`,
+        email: `old${i}@legacy.io`,
+      })),
+    );
+    await User.collection.insertOne({ name: 'Old', email: 'exact@legacy.io' });
+    const results = await methods.searchPrincipals('old', 10, [PrincipalType.USER]);
+    expect(results).toHaveLength(10);
+    expect(results[0].name).toBe('Old');
+  });
+
+  it('keeps an exact group match that sits past the per-type window of prefix matches', async () => {
+    await Group.create(
+      Array.from({ length: 12 }, (_, i) => ({ name: `Ops Prefix${i}`, source: 'local' })),
+    );
+    await Group.create([{ name: 'Ops', source: 'local' }]);
+    const results = await methods.searchPrincipals('ops', 10, [PrincipalType.GROUP]);
+    expect(results).toHaveLength(10);
+    expect(results[0].name).toBe('Ops');
+  });
+});
+
+describe('exact search filter', () => {
+  beforeEach(async () => {
+    await User.create([
+      user('Zoë', 'zoe.solo@acme.com', 'zsolo'),
+      user('Zoe Adams', 'zadams@acme.com', 'zadams'),
+      user('John Smith', 'jsmith@acme.com', 'jsmith'),
+      user('Smith Johnson', 'sjohnson@acme.com', 'sjohnson'),
+      user('Alice Bee', 'alice@my-co.com', 'alice_b'),
+      user('Alicia', 'alicia@acme.com', 'alice_bob'),
+    ]);
+  });
+
+  async function exactNames(query: string): Promise<string[]> {
+    const filter = buildUserExactFilter(query);
+    if (!filter) {
+      return [];
+    }
+    const users = await User.find(filter).lean<t.IUser[]>();
+    return users.map((u) => u.name ?? '').sort();
+  }
+
+  it('matches a field holding exactly the query words, in any order and accent-folded', async () => {
+    expect(await exactNames('zoe')).toEqual(['Zoë']);
+    expect(await exactNames('SMITH john')).toEqual(['John Smith']);
+  });
+
+  it('matches a whole email address, including one whose domain has a hyphen', async () => {
+    expect(await exactNames('jsmith@acme.com')).toEqual(['John Smith']);
+    expect(await exactNames('alice@my-co.com')).toEqual(['Alice Bee']);
+  });
+
+  it('matches a whole username without matching a longer one', async () => {
+    expect(await exactNames('alice_b')).toEqual(['Alice Bee']);
+    expect(await exactNames('zadams')).toEqual(['Zoe Adams']);
+  });
+
+  it('builds nothing for a query without words', () => {
+    expect(buildUserExactFilter('  ')).toBeNull();
+    expect(buildUserExactFilter('@.-')).toBeNull();
+  });
 });
 
 describe('search token serialization', () => {
@@ -264,6 +339,23 @@ describe('search query plan', () => {
       const stages = planStages(explain.queryPlanner.winningPlan);
       expect(stages).toContain('IXSCAN');
       expect(stages).not.toContain('COLLSCAN');
+    },
+  );
+
+  it.each(['john', 'smith john', 'john.smith@acme.com'])(
+    'uses index scans, never a collection scan, for the exact filter of "%s"',
+    async (query) => {
+      const filter = buildUserExactFilter(query)!;
+      const explain = (await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        User.find(filter).limit(10).explain('queryPlanner').exec(),
+      )) as unknown as { queryPlanner: { winningPlan: unknown } };
+      const stages = planStages(explain.queryPlanner.winningPlan);
+      expect(stages).toContain('IXSCAN');
+      expect(stages).not.toContain('COLLSCAN');
+      const unscoped = (await User.find(filter).limit(10).explain('queryPlanner')) as unknown as {
+        queryPlanner: { winningPlan: unknown };
+      };
+      expect(planStages(unscoped.queryPlanner.winningPlan)).not.toContain('COLLSCAN');
     },
   );
 

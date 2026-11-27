@@ -2,8 +2,9 @@
  * @jest-environment jsdom
  */
 import React from 'react';
+import { useLocalize } from '@librechat/client';
 import { Tools, Constants } from 'librechat-data-provider';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type { ToolCallChrome } from '../../../react/host';
 import {
   LoneGroupContext,
@@ -11,20 +12,39 @@ import {
   GeneratedToolLabelContext,
 } from '../../../react/parts/disclosure';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
-import { translate } from '../../../__fixtures__/toolCallLocale';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import { ToolAuthWarningContext } from '../auth';
 import ToolCall from '../ToolCall';
 
-jest.mock('@librechat/client', () => {
-  const { translate: localize } = jest.requireActual(
-    '../../../__fixtures__/toolCallLocale',
-  ) as typeof import('../../../__fixtures__/toolCallLocale');
-  return {
-    ...jest.requireActual('@librechat/client'),
-    useLocalize: () => localize,
-  };
-});
+jest.mock('../ProgressText', () => ({
+  __esModule: true,
+  default: ({
+    onClick,
+    inProgressText,
+    finishedText,
+    subtitle,
+  }: {
+    onClick?: () => void;
+    inProgressText?: string;
+    finishedText?: string;
+    subtitle?: string;
+  }) => (
+    <div data-testid="progress-text" onClick={onClick}>
+      {finishedText || inProgressText}
+      {subtitle ? <span data-testid="subtitle">{subtitle}</span> : null}
+    </div>
+  ),
+}));
+
+jest.mock('../ToolCallInfo', () => ({
+  __esModule: true,
+  default: (props: { input: string; output?: string | null }) => (
+    <div data-testid="tool-call-info">{JSON.stringify(props)}</div>
+  ),
+}));
+
+beforeAll(initEnglish);
 
 const bindMCPOAuth = jest.fn();
 const bindActionOAuth = jest.fn();
@@ -41,44 +61,17 @@ function openUrl(url: string): void {
   link.remove();
 }
 
-function ProgressStub({
-  onClick,
-  inProgressText,
-  finishedText,
-  subtitle,
-}: {
-  onClick?: () => void;
-  inProgressText?: string;
-  finishedText?: string;
-  subtitle?: string;
-}) {
-  return (
-    <div data-testid="progress-text" onClick={onClick}>
-      {finishedText || inProgressText}
-      {subtitle ? <span data-testid="subtitle">{subtitle}</span> : null}
-    </div>
-  );
-}
-
-function InfoStub(props: { input: string; output?: string | null }) {
-  return <div data-testid="tool-call-info">{JSON.stringify(props)}</div>;
-}
-
 function AttachmentStub({ attachments }: { attachments?: unknown }) {
   return <div data-testid="attachment-group">{JSON.stringify(attachments)}</div>;
 }
 
-const chrome: ToolCallChrome = {
-  localize: translate,
+const chrome: Omit<ToolCallChrome, 'localize'> = {
   mcpServerNames: [],
   mcpIconUrl: () => undefined,
   bindMCPOAuth,
   bindActionOAuth,
   openUrl,
   logError,
-  renderProgress: (props) => <ProgressStub {...props} />,
-  renderInfo: (props) => <InfoStub input={props.input} output={props.output} />,
-  renderIcon: () => null,
   renderAttachments: (attachments) => <AttachmentStub attachments={attachments} />,
 };
 
@@ -89,11 +82,12 @@ function Host({
   children: React.ReactNode;
   autoExpand?: boolean;
 }): React.ReactElement {
+  const localize = useLocalize();
   return (
     <MessagePartsHostProvider
       host={createMessagePartsHost({
         useAutoExpandTools: () => autoExpand,
-        useToolCallChrome: () => chrome,
+        useToolCallChrome: () => ({ ...chrome, localize }),
       })}
     >
       {children}
@@ -116,6 +110,61 @@ describe('ToolCall', () => {
     jest.clearAllMocks();
     bindMCPOAuth.mockResolvedValue({ success: true });
     bindActionOAuth.mockResolvedValue({ success: true });
+  });
+
+  describe('client tool handoff', () => {
+    it.each(['testFunction', `lookup${Constants.mcp_delimiter}server`, 'read_file'])(
+      'announces the caller handoff %s with its original name',
+      async (name) => {
+        await act(async () => {
+          renderWithRecoil(
+            <ToolCall
+              {...mockProps}
+              name={name}
+              clientToolCall
+              initialProgress={0.1}
+              isSubmitting={false}
+              output={undefined}
+            />,
+          );
+        });
+        expect(screen.getByTestId('progress-text')).toHaveTextContent(
+          `Requested ${name} from client`,
+        );
+        expect(screen.queryByText('Cancelled')).not.toBeInTheDocument();
+      },
+    );
+    it.each(['', 'client result'])(
+      'treats a received result %j as completed rather than a handoff',
+      async (output) => {
+        await act(async () => {
+          renderWithRecoil(
+            <ToolCall
+              {...mockProps}
+              clientToolCall
+              runStepStatus="completed"
+              isSubmitting={false}
+              output={output}
+            />,
+          );
+        });
+        expect(screen.getByTestId('progress-text')).toHaveTextContent('Ran testFunction');
+      },
+    );
+    it('keeps a genuinely cancelled client call cancelled', async () => {
+      await act(async () => {
+        renderWithRecoil(
+          <ToolCall
+            {...mockProps}
+            clientToolCall
+            runStepStatus="cancelled"
+            isSubmitting={false}
+            output={undefined}
+          />,
+        );
+      });
+      expect(screen.getByTestId('progress-text')).toHaveTextContent('Cancelled');
+    });
   });
 
   describe('tool preparation feedback', () => {
@@ -163,19 +212,19 @@ describe('ToolCall', () => {
         <ToolCall {...mockProps} args={'{"intent":"Looking up the customer record","q":"acme"}'} />,
       );
       expect(screen.getAllByText('Looking up the customer record').length).toBeGreaterThan(0);
-      expect(screen.queryByText('Completed testFunction')).not.toBeInTheDocument();
+      expect(screen.queryByText('Ran testFunction')).not.toBeInTheDocument();
     });
 
     it('falls back to the generic labels when args carry no intent', () => {
       renderWithRecoil(<ToolCall {...mockProps} />);
-      expect(screen.getAllByText('Completed testFunction').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('Ran testFunction').length).toBeGreaterThan(0);
     });
   });
 
   it('uses a friendly label for the set_memory tool', () => {
     renderWithRecoil(<ToolCall {...mockProps} name="set_memory" />);
 
-    expect(screen.getByTestId('progress-text')).toHaveTextContent('Completed Save Memory');
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Ran Save Memory');
     expect(screen.queryByText(/set_memory/)).not.toBeInTheDocument();
   });
 
@@ -358,7 +407,7 @@ describe('ToolCall', () => {
         />,
       );
 
-      const signInButton = screen.getByText('Sign in to auth.example.com');
+      const signInButton = screen.getByText('Sign-in to auth.example.com');
       expect(signInButton).toBeInTheDocument();
 
       fireEvent.click(signInButton);
@@ -396,7 +445,7 @@ describe('ToolCall', () => {
         click.mockRestore();
       });
 
-      const signInButton = () => screen.getByRole('button', { name: 'Sign in to mcp.example.com' });
+      const signInButton = () => screen.getByRole('button', { name: 'Sign-in to mcp.example.com' });
 
       it('binds when the prompt appears and opens the provider within the tap', async () => {
         bindMCPOAuth.mockResolvedValue({ success: true });
@@ -417,7 +466,7 @@ describe('ToolCall', () => {
         const notionCallback = 'https://chat.example.com/api/mcp/notion/oauth/callback';
         const notionAuth = `https://notion.example.com/authorize?redirect_uri=${encodeURIComponent(notionCallback)}`;
         const notionButton = () =>
-          screen.getByRole('button', { name: 'Sign in to notion.example.com' });
+          screen.getByRole('button', { name: 'Sign-in to notion.example.com' });
         renderWithRecoil(
           <>
             <ToolCall {...mcpProps} />
@@ -470,7 +519,9 @@ describe('ToolCall', () => {
         fireEvent.click(signInButton());
 
         expect(click).not.toHaveBeenCalled();
-        expect(screen.getByRole('alert')).toHaveTextContent('com_ui_oauth_error_generic');
+        expect(screen.getByRole('alert')).toHaveTextContent(
+          'Authentication failed. Please try again.',
+        );
         await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
         expect(bindMCPOAuth).toHaveBeenCalledTimes(2);
         await waitFor(() => expect(signInButton()).toBeEnabled());
@@ -490,7 +541,7 @@ describe('ToolCall', () => {
         />,
       );
 
-      expect(screen.queryByText('Sign in to auth.example.com')).not.toBeInTheDocument();
+      expect(screen.queryByText('Sign-in to auth.example.com')).not.toBeInTheDocument();
     });
 
     it('should not show auth section when progress is complete', () => {
@@ -503,7 +554,7 @@ describe('ToolCall', () => {
         />,
       );
 
-      expect(screen.queryByText('Sign in to auth.example.com')).not.toBeInTheDocument();
+      expect(screen.queryByText('Sign-in to auth.example.com')).not.toBeInTheDocument();
     });
   });
 
@@ -577,9 +628,9 @@ describe('ToolCall', () => {
       );
 
       expect(
-        screen.getByRole('button', { name: 'Sign in to auth.example.com' }),
+        screen.getByRole('button', { name: 'Sign-in to auth.example.com' }),
       ).toBeInTheDocument();
-      expect(screen.getByText('Only allow sites you trust')).toBeInTheDocument();
+      expect(screen.getByText('Only allow sites you trust.')).toBeInTheDocument();
     });
 
     it('keeps the sign-in action while a group suppresses the repeated warning', () => {
@@ -596,9 +647,9 @@ describe('ToolCall', () => {
       );
 
       expect(
-        screen.getByRole('button', { name: 'Sign in to auth.example.com' }),
+        screen.getByRole('button', { name: 'Sign-in to auth.example.com' }),
       ).toBeInTheDocument();
-      expect(screen.queryByText('Only allow sites you trust')).not.toBeInTheDocument();
+      expect(screen.queryByText('Only allow sites you trust.')).not.toBeInTheDocument();
     });
 
     it('should detect MCP OAuth from delimiter in tool-call name', () => {
@@ -612,7 +663,7 @@ describe('ToolCall', () => {
         />,
       );
       const subtitle = screen.getByTestId('subtitle');
-      expect(subtitle.textContent).toBe('via my-server');
+      expect(subtitle.textContent).toBe('in my-server');
     });
 
     it('should preserve full server name when it contains the delimiter substring', () => {
@@ -626,7 +677,7 @@ describe('ToolCall', () => {
         />,
       );
       const subtitle = screen.getByTestId('subtitle');
-      expect(subtitle.textContent).toBe(`via foo${d}bar`);
+      expect(subtitle.textContent).toBe(`in foo${d}bar`);
     });
 
     it('should display server name (not "oauth") as function_name for OAuth tool calls', () => {
@@ -641,8 +692,8 @@ describe('ToolCall', () => {
         />,
       );
       const progressText = screen.getByTestId('progress-text');
-      expect(progressText.textContent).toContain('Completed my-server');
-      expect(progressText.textContent).not.toContain('Completed oauth');
+      expect(progressText.textContent).toContain('Ran my-server');
+      expect(progressText.textContent).not.toContain('Ran oauth');
     });
 
     it('should display server name even when auth is cleared (post-completion)', () => {
@@ -658,8 +709,8 @@ describe('ToolCall', () => {
         />,
       );
       const progressText = screen.getByTestId('progress-text');
-      expect(progressText.textContent).toContain('Completed my-server');
-      expect(progressText.textContent).not.toContain('Completed oauth');
+      expect(progressText.textContent).toContain('Ran my-server');
+      expect(progressText.textContent).not.toContain('Ran oauth');
     });
 
     it('should fallback to auth URL redirect_uri when name lacks delimiter', () => {
@@ -676,7 +727,7 @@ describe('ToolCall', () => {
         />,
       );
       const subtitle = screen.getByTestId('subtitle');
-      expect(subtitle.textContent).toBe('via my-server');
+      expect(subtitle.textContent).toBe('in my-server');
     });
 
     it('should display server name (not raw tool-call ID) in fallback path finished text', () => {
@@ -694,7 +745,7 @@ describe('ToolCall', () => {
         />,
       );
       const progressText = screen.getByTestId('progress-text');
-      expect(progressText.textContent).toContain('Completed my-server');
+      expect(progressText.textContent).toContain('Ran my-server');
       expect(progressText.textContent).not.toContain('bare_name');
     });
 
@@ -713,7 +764,7 @@ describe('ToolCall', () => {
         />,
       );
       const subtitle = screen.getByTestId('subtitle');
-      expect(subtitle.textContent).toBe(`via oauth${d}server`);
+      expect(subtitle.textContent).toBe(`in oauth${d}server`);
     });
 
     it('should not misidentify non-MCP action auth as MCP via fallback', () => {

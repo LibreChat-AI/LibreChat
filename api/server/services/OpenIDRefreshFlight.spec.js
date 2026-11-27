@@ -434,6 +434,7 @@ describe('OpenIDRefreshFlight', () => {
       ownerId: 'owner-1',
       encryptedResult: `encrypted:${JSON.stringify(tokens)}`,
       expiresAt: expect.any(Date),
+      usableUntil: new Date(123_000 - 30_000),
     });
   });
 

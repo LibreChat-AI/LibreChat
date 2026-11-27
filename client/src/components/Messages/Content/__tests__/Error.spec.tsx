@@ -51,20 +51,6 @@ jest.mock('~/hooks', () => ({
   useHasAccess: ({ permission }: { permission: string }) => mockAccess[permission] === true,
 }));
 
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  /** Mirrors the real hook's contract — a grid style plus a ref — without pulling `useMediaQuery`
-   *  and its `matchMedia` dependency into a spec that asserts copy, not motion. */
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: {
-      display: 'grid',
-      gridTemplateRows: isExpanded ? '1fr' : '0fr',
-      opacity: isExpanded ? 1 : 0,
-    },
-    ref: { current: null },
-  }),
-}));
-
 let mockPresetTargets: AgentDisplay[] = [];
 jest.mock('~/data-provider/Agents/queries', () => ({
   useModelSpecHandoffsQuery: () => ({ data: mockPresetTargets }),
@@ -296,6 +282,35 @@ describe('Error — reader-facing provider and fallback copy', () => {
     expect(screen.getByText(catalog[key])).toBeInTheDocument();
     expect(screen.getByText(info)).toBeInTheDocument();
     expectReadable();
+  });
+
+  it.each([
+    [ErrorTypes.MODEL_RATE_LIMIT, 'com_error_model_rate_limit'],
+    [ErrorTypes.MODEL_NOT_FOUND, 'com_error_model_not_found'],
+  ])('keeps a long, multi-line gateway explanation of %s in view', (type, key) => {
+    const info = [
+      'You reached the budget assigned to your team for this month; it resets on the first.',
+      'To keep working now, request a higher budget at https://service.example.com/ai/budget and include your user id, the model you were using and the reason you need more.',
+    ].join('\n');
+    renderError({ type, info });
+
+    expect(info.length).toBeGreaterThan(240);
+    expect(screen.getByText(catalog[key])).toBeInTheDocument();
+    expect(
+      screen.getByText((_, element) => element?.textContent === info && element.tagName === 'DIV'),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole('button', { name: catalog.com_error_details_provider }),
+    ).not.toBeInTheDocument();
+    expectReadable();
+  });
+
+  it('does not promise that waiting clears a rate or spending limit', () => {
+    renderError({ type: ErrorTypes.MODEL_RATE_LIMIT });
+
+    const headline = screen.getByText(catalog.com_error_model_rate_limit);
+    expect(headline.textContent).toMatch(/rate or spending limit/);
+    expect(headline.textContent).not.toMatch(/wait a moment/i);
   });
 
   it('keeps provider text for a LangChain code without localized copy, minus the URL', () => {
@@ -1013,6 +1028,22 @@ describe('Error — manual compaction', () => {
     renderError({ type: ErrorTypes.COMPACTION_SKIPPED, reason: 'exhausted' });
 
     expect(screen.getByText(catalog.com_error_compaction_failed)).toBeInTheDocument();
+  });
+});
+
+describe('Error: output budget exhausted', () => {
+  it.each([
+    ['the code alone', JSON.stringify({ type: ErrorTypes.OUTPUT_BUDGET_EXHAUSTED })],
+    [
+      'the failed-run text the server persists',
+      `An error occurred while processing the request: ${JSON.stringify({
+        type: ErrorTypes.OUTPUT_BUDGET_EXHAUSTED,
+      })}`,
+    ],
+  ])('renders the reasoning-budget notice from %s', (_label, text) => {
+    renderError(text, { endpoint: EModelEndpoint.google, model: 'gemini-3-pro' } as TMessage);
+
+    expect(screen.getByText(catalog.com_error_output_budget_exhausted)).toBeInTheDocument();
   });
 });
 

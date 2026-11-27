@@ -1,7 +1,7 @@
 import { useState, useId } from 'react';
 import { Button, Input, Label, Spinner, OGDialog, OGDialogTemplate } from '@librechat/client';
-import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from 'librechat-data-provider';
 import type { UseMutationResult, UseQueryResult } from '@tanstack/react-query';
+import type { RunGrantView, ConfirmRunGrant } from 'librechat-data-provider';
 import type { MutableRefObject, ReactNode } from 'react';
 import type { TranslationKeys } from '~/hooks';
 import GrantTools, { useGrantChoice } from './GrantTools';
@@ -9,8 +9,8 @@ import { useLocalize } from '~/hooks';
 
 /** Where a grant is read and written: a schedule's, or an API key's for one agent. */
 export interface GrantSource {
-  query: UseQueryResult<ScheduleMCPConsentView>;
-  confirm: UseMutationResult<ScheduleMCPConsentView, unknown, ConfirmScheduleMCPConsent>;
+  query: UseQueryResult<RunGrantView>;
+  confirm: UseMutationResult<RunGrantView, unknown, ConfirmRunGrant>;
   revoke: UseMutationResult<void, unknown, string>;
 }
 
@@ -19,7 +19,9 @@ export interface GrantCopy {
   title: TranslationKeys;
   boundary: TranslationKeys;
   /** Replaces the status line for a state, where the default speaks of schedules. */
-  status?: Partial<Record<ScheduleMCPConsentView['state'], TranslationKeys>>;
+  status?: Partial<Record<RunGrantView['state'], TranslationKeys>>;
+  /** Replaces the notice that the subject's tools are refused until a grant is made. */
+  required?: TranslationKeys;
   confirmed?: TranslationKeys;
 }
 
@@ -115,7 +117,7 @@ function Grant({
   const hours = typed ?? (longest ? query.data?.offer?.maxLifetimeHours : undefined) ?? 1;
   const [message, setMessage] = useState<'success' | 'revoked' | 'error' | null>(null);
   const busy = confirm.isLoading || revoke.isLoading || query.isFetching;
-  const data: ScheduleMCPConsentView | undefined = query.data;
+  const data: RunGrantView | undefined = query.data;
   const choosing = canConfirm && data?.offer != null;
   const state = useGrantChoice(data);
   const commit = () => {
@@ -161,7 +163,7 @@ function Grant({
           <p role="status">{localize(copy.status?.[data.state] ?? statusKeys[data.state])}</p>
           {data.required && (
             <p className="text-status-warning text-sm">
-              {localize('com_ui_schedule_consent_required')}
+              {localize(copy.required ?? 'com_ui_schedule_consent_required')}
             </p>
           )}
           {data.requireAfterMs != null && (

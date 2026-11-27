@@ -48,6 +48,19 @@ describe('agents addTitle', () => {
     mockGetConvo.mockReset().mockResolvedValue(null);
   });
 
+  it('does not start title generation when assistant output protection is required', async () => {
+    const client = makeClient();
+    const req = makeReq();
+    req.config = {
+      config: { outputProtection: { version: 1, assistantText: { timeoutMs: 5_000 } } },
+    };
+
+    await addTitle(req, { text: 'hello', client, conversationId: 'cid-protected' });
+
+    expect(client.titleConvo).not.toHaveBeenCalled();
+    expect(mockSaveConvo).not.toHaveBeenCalled();
+  });
+
   it('uses the explicit conversationId for the cache key and saveConvo (immediate mode)', async () => {
     const client = makeClient('My Title');
 

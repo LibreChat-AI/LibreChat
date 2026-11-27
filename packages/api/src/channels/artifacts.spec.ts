@@ -341,20 +341,32 @@ it('bounds source fallback at listing and honors a reduced byte limit at downloa
 });
 
 it('destroys timed out or invalid streams without losing retained response text', async () => {
-  await publish();
+  const file = await publish();
+  deps.readArtifacts = async () => [file];
   limits.artifactReadTimeoutMs = 15;
   run.snapshot!.text = '```text\nanswer\n```';
-  const hanging = new Readable({ read() {} });
+  const read = jest.fn();
+  const hanging = new Readable({ read });
   jest.mocked(deps.readFile).mockResolvedValueOnce(hanging);
-  const listed = await service.list(run, run.snapshot!);
-  expect(hanging.destroyed).toBe(true);
-  expect(listed.unavailable).toBe(true);
-  expect(listed.artifacts).toEqual([]);
-  expect(run.snapshot!.text).toBe('```text\nanswer\n```');
-  const invalid = Readable.from([{ unexpected: 'object' }]);
-  jest.mocked(deps.readFile).mockResolvedValueOnce(invalid);
-  expect((await service.list(run, run.snapshot!)).unavailable).toBe(true);
-  expect(invalid.destroyed).toBe(true);
+  jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  try {
+    const listing = service.list(run, run.snapshot!);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(limits.artifactReadTimeoutMs);
+    const listed = await listing;
+    expect(hanging.destroyed).toBe(true);
+    expect(listed.unavailable).toBe(true);
+    expect(listed.artifacts).toEqual([]);
+    expect(run.snapshot!.text).toBe('```text\nanswer\n```');
+
+    const invalid = Readable.from([{ unexpected: 'object' }]);
+    jest.mocked(deps.readFile).mockResolvedValueOnce(invalid);
+    expect((await service.list(run, run.snapshot!)).unavailable).toBe(true);
+    expect(invalid.destroyed).toBe(true);
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 it('does not resolve files for incomplete or missing responses, but propagates database failures', async () => {
@@ -523,7 +535,8 @@ it('requires the attachment content witness even when a new write reuses the sam
   }));
 
 it('bounds stream acquisition even when its reader ignores cancellation and destroys late streams', async () => {
-  await publish();
+  const file = await publish();
+  deps.readArtifacts = async () => [file];
   limits.artifactReadTimeoutMs = 15;
   run.snapshot!.text = '```text\nanswer\n```';
   let deliver!: (stream: Readable) => void;
@@ -531,18 +544,27 @@ it('bounds stream acquisition even when its reader ignores cancellation and dest
     deliver = resolve;
   });
   jest.mocked(deps.readFile).mockReturnValueOnce(stalled);
-  const listed = await service.list(run, run.snapshot!);
-  expect(listed.unavailable).toBe(true);
-  expect(listed.artifacts).toEqual([]);
-  const late = new Readable({
-    read() {},
-    destroy(_error, callback) {
-      callback(new Error('late cleanup failure'));
-    },
-  });
-  deliver(late);
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  expect(late.destroyed).toBe(true);
+  jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  try {
+    const listing = service.list(run, run.snapshot!);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(deps.readFile).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(limits.artifactReadTimeoutMs);
+    const listed = await listing;
+    expect(listed.unavailable).toBe(true);
+    expect(listed.artifacts).toEqual([]);
+    const late = new Readable({
+      read() {},
+      destroy(_error, callback) {
+        callback(new Error('late cleanup failure'));
+      },
+    });
+    deliver(late);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(late.destroyed).toBe(true);
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 it('rejects invalid catalog bounds and cross-tenant contexts rather than hiding query failures', async () => {

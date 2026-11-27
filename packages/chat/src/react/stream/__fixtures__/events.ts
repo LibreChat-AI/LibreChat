@@ -20,7 +20,12 @@ export const createEventServices = (overrides: Partial<EventServices> = {}): Eve
     getId: (runIndex, conversationId) => conversationId ?? `new-${runIndex}`,
     adopt: jest.fn(),
   },
-  navigation: { pathname: '/c/new', conversationId: 'new', navigate: jest.fn() },
+  navigation: {
+    pathname: '/c/new',
+    conversationId: 'new',
+    navigate: jest.fn(),
+    shows: jest.fn(() => true),
+  },
   focus: {
     announce: jest.fn(),
     showRegenerated: jest.fn(),

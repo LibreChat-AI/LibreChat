@@ -26,7 +26,7 @@ const {
   mergeUserSubmittedPaths,
   mergeUserSubmittedMessageFieldPaths,
   isContentFilterError,
-  withoutTraceRefs,
+  withoutServerRecords,
   createPrivateTextView,
   stripPrivateMessageFields,
   applyForcedRetention,
@@ -585,8 +585,11 @@ router.post('/:conversationId', storedMessageMutationMiddleware, async (req, res
     if (await rejectSubagentThreadWrite(req, res, req.params.conversationId)) {
       return;
     }
-    /** Trace sampling fields are ownership claims only the server writes. */
-    const message = withoutTraceRefs({ ...req.body, conversationId: req.params.conversationId });
+    /** Trace sampling and what started a turn are records only the server writes. */
+    const message = withoutServerRecords({
+      ...req.body,
+      conversationId: req.params.conversationId,
+    });
     delete message.isUserSubmitted;
     delete message.userSubmittedPaths;
     delete message.userSubmittedMessageFieldPaths;

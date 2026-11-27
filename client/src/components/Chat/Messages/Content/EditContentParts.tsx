@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { NAV_CLEARANCE } from '@librechat/chat/components';
 import { Alert, Button, TextareaAutosize } from '@librechat/client';
 import { useUpdateMessageContentMutation } from 'librechat-data-provider/react-query';
 import { findRerunParent, getPartText, isEditablePart, withPartText } from '@librechat/chat';
@@ -395,7 +396,10 @@ export default function EditContentParts({
             <label
               key={`editor-${messageId}-${absoluteIndex}`}
               dir={chatDirection === 'auto' ? undefined : chatDirection}
-              className="text-text-secondary flex min-w-0 flex-col gap-1.5 text-xs font-medium"
+              className={cn(
+                'text-text-secondary flex min-w-0 flex-col gap-1.5 text-xs font-medium',
+                NAV_CLEARANCE.pad,
+              )}
             >
               {label}
               <TextareaAutosize
@@ -433,7 +437,9 @@ export default function EditContentParts({
       {/* The actions wrap rather than hold one unbreakable row: on a 320px assistant
           turn the identity column and page padding leave less width than the three
           English labels need, and a translated label needs more still. */}
-      <footer className="flex flex-wrap items-center justify-between gap-2">
+      <footer
+        className={cn('flex flex-wrap items-center justify-between gap-2', NAV_CLEARANCE.pad)}
+      >
         <span
           className="text-text-secondary line-clamp-2 min-w-0 flex-1 text-xs"
           aria-live="polite"

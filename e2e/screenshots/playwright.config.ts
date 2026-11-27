@@ -2,13 +2,14 @@ import path from 'node:path';
 import { defineConfig } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import mockConfig from '../playwright.config.mock';
+import { getE2EBaseURL } from '../setup/env';
 
 const revision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 if (process.env.E2E_CAPTURE_SHA !== revision) {
   throw new Error('E2E_CAPTURE_SHA must equal the checked-out commit');
 }
 execFileSync('git', ['diff', '--quiet', 'HEAD']);
-const baseURL = new URL(process.env.E2E_BASE_URL ?? 'http://localhost:3080');
+const baseURL = new URL(getE2EBaseURL());
 if (
   baseURL.protocol !== 'http:' ||
   !['127.0.0.1', 'localhost', '[::1]'].includes(baseURL.hostname)

@@ -1,7 +1,7 @@
 import React from 'react';
 import { getDefaultStore, useAtom } from 'jotai';
-import { filesFamily } from '@librechat/chat/react';
 import { renderHook, act } from '@testing-library/react';
+import { filesFamily, isSubmittingFamily } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StreamHostProvider, useEventHandlers } from '@librechat/chat/react';
 import { Constants, LocalStorageKeys, EModelEndpoint } from 'librechat-data-provider';
@@ -30,7 +30,9 @@ import {
 } from '~/hooks/Files/search';
 import { appDraftServices, appTitleServices, createConversationCache } from '~/hooks/SSE/services';
 import { setFileSearchChoice, transferFileSearchChoice } from '~/utils/choices';
+import { supersedeNavigation } from '~/hooks/Conversations/useNavigateToConvo';
 import { clearUploadRecovery } from '~/hooks/Files/useFileHandling';
+import { renewNewConversationDraftToken } from '~/utils';
 import { useAutoSave } from '~/hooks/Input/useAutoSave';
 
 function QueryWrapper({ children }: { children: React.ReactNode }) {
@@ -178,7 +180,7 @@ jest.mock('@librechat/client', () => ({
 }));
 jest.mock('~/Providers/AgentsMapContext', () => ({ useAgentsMapContext: () => ({}) }));
 jest.mock('../Files/useDelayedUploadToast', () => ({
-  useDelayedUploadToast: () => ({ startUploadTimer: jest.fn(), clearUploadTimer: jest.fn() }),
+  useDelayedUploadToast: () => jest.fn(),
 }));
 jest.mock('../Files/useClientResize', () => ({
   __esModule: true,
@@ -539,7 +541,11 @@ describe('useNewConvo reset cleanup', () => {
           conversations: createConversationCache(client),
           titles: appTitleServices,
           drafts: appDraftServices,
-          navigation: { pathname: window.location.pathname, navigate: jest.fn() },
+          navigation: {
+            pathname: window.location.pathname,
+            navigate: jest.fn(),
+            shows: () => true,
+          },
           focus: {
             announce: jest.fn(),
             showRegenerated: jest.fn(),
@@ -1834,6 +1840,90 @@ describe('useNewConvo reset cleanup', () => {
     expect(mockStorePendingDiscardIds).toHaveBeenCalledWith(0, ['inflight-paste']);
     expect(mockPendingDiscardIds).toEqual(new Set(['inflight-paste']));
   });
+
+  describe('a selection in the unsent chat', () => {
+    const select = (endpoint: EModelEndpoint) => ({
+      template: { conversationId: 'new', endpoint },
+      preset: { endpoint },
+      retarget: true,
+    });
+    const composerFiles = () => Array.from(getDefaultStore().get(filesFamily(2)).keys());
+
+    afterEach(() => {
+      getDefaultStore().set(isSubmittingFamily(2), false);
+    });
+
+    it.each([
+      [EModelEndpoint.openAI, EModelEndpoint.anthropic, false],
+      [EModelEndpoint.openAI, EModelEndpoint.anthropic, true],
+      [EModelEndpoint.assistants, EModelEndpoint.assistants, false],
+    ])(
+      'keeps its attachments through a switch from %s to %s (draft saving: %s)',
+      (from, to, saveDrafts) => {
+        mockSaveDrafts = saveDrafts;
+        mockPreviousConversation = { conversationId: 'new', endpoint: from };
+        const { result } = renderHook(() => useNewConvo(2), { wrapper: QueryWrapper });
+
+        act(() => result.current.newConversation(select(to)));
+
+        expect(composerFiles()).toEqual(['claimed-file', 'own-file']);
+        expect(mockDeleteFiles).not.toHaveBeenCalled();
+        expect(mockRemoveTabAttachmentPresence).not.toHaveBeenCalled();
+        expect(renewNewConversationDraftToken).not.toHaveBeenCalled();
+        /** Still the user's own choice, so a conversation that is still loading cannot take over. */
+        expect(supersedeNavigation).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('lets an upload still in flight land in the composer it was started from', () => {
+      mockFiles.clear();
+      mockPreviousConversation = { conversationId: 'new', endpoint: EModelEndpoint.openAI };
+      const release = registerComposerDraft(2, 'new', 'new:2', {});
+      const owner = captureComposerDraft(2, 'new');
+      const { result, unmount } = renderHook(() => useNewConvo(2), { wrapper: QueryWrapper });
+
+      act(() => result.current.newConversation(select(EModelEndpoint.anthropic)));
+
+      expect(owner()).toBe(true);
+      unmount();
+      release();
+    });
+
+    it.each([
+      [EModelEndpoint.openAI, EModelEndpoint.assistants],
+      [EModelEndpoint.assistants, EModelEndpoint.agents],
+      [EModelEndpoint.azureAssistants, EModelEndpoint.assistants],
+    ])('starts over for a switch from %s to %s, which keeps uploads elsewhere', (from, to) => {
+      mockPreviousConversation = { conversationId: 'new', endpoint: from };
+      const { result } = renderHook(() => useNewConvo(2), { wrapper: QueryWrapper });
+
+      act(() => result.current.newConversation(select(to)));
+
+      expect(composerFiles()).toEqual([]);
+      expect(renewNewConversationDraftToken).toHaveBeenCalledWith(2);
+    });
+
+    it.each(['leaves an open conversation', 'comes during the first run', 'is a New Chat'])(
+      'starts the composer over when the change %s',
+      (change) => {
+        mockPreviousConversation = {
+          conversationId: change === 'leaves an open conversation' ? 'open-conversation' : 'new',
+          endpoint: EModelEndpoint.openAI,
+        };
+        getDefaultStore().set(isSubmittingFamily(2), change === 'comes during the first run');
+        const { result } = renderHook(() => useNewConvo(2), { wrapper: QueryWrapper });
+
+        act(() =>
+          result.current.newConversation(
+            change === 'is a New Chat' ? undefined : select(EModelEndpoint.anthropic),
+          ),
+        );
+
+        expect(composerFiles()).toEqual([]);
+        expect(renewNewConversationDraftToken).toHaveBeenCalledWith(2);
+      },
+    );
+  });
 });
 
 describe('passive route navigation', () => {
@@ -2109,5 +2199,39 @@ describe('remembered New Chat identity', () => {
       },
     } as Partial<TStartupConfig>;
     expect((await open()).agent_id).toBe('agent_spec');
+  });
+
+  describe('hard default spec without prioritize', () => {
+    beforeEach(() => {
+      mockStartup = {
+        interface: { modelSelect: true },
+        modelSpecs: {
+          prioritize: false,
+          list: [
+            {
+              name: 'general',
+              label: 'General',
+              default: true,
+              executeCode: true,
+              preset: { endpoint: EModelEndpoint.openAI, model: 'spec-model' },
+            },
+          ],
+        },
+      } as Partial<TStartupConfig>;
+    });
+
+    it('applies the default spec to a bare New Chat', async () => {
+      const selected = await open();
+      expect(selected.spec).toBe('general');
+      expect(selected.model).toBe('spec-model');
+    });
+
+    it('keeps an explicit template selection over the default spec', async () => {
+      const selected = await open(0, {
+        template: { endpoint: EModelEndpoint.openAI, model: 'explicit-model' },
+      });
+      expect(selected.spec).toBeFalsy();
+      expect(selected.model).toBe('explicit-model');
+    });
   });
 });

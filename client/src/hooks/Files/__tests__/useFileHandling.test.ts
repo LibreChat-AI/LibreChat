@@ -53,6 +53,7 @@ beforeAll(() => {
 
 let mockHeicModuleError: Error | undefined;
 const mockShowToast = jest.fn();
+const mockStartUploadWarning = jest.fn();
 const mockSetFilesLoading = jest.fn();
 const mockMutate = jest.fn();
 let mockUploadSignal:
@@ -178,10 +179,7 @@ jest.mock('../useSharePointDownload', () => ({
 }));
 
 jest.mock('../useDelayedUploadToast', () => ({
-  useDelayedUploadToast: jest.fn(() => ({
-    startUploadTimer: jest.fn(),
-    clearUploadTimer: jest.fn(),
-  })),
+  useDelayedUploadToast: () => mockStartUploadWarning,
 }));
 
 jest.mock('~/utils/heicConverter', () => {
@@ -2438,7 +2436,9 @@ describe('useFileHandling', () => {
       expect(mockMutate).not.toHaveBeenCalled();
     });
 
-    it('reports the temporary id at upload start and success', async () => {
+    it('dismisses the upload warning and reports the temporary id on success', async () => {
+      const dismissWarning = jest.fn();
+      mockStartUploadWarning.mockReturnValueOnce(dismissWarning);
       const onStart = jest.fn();
       const onSuccess = jest.fn();
       const useFileHandling = await loadHook();
@@ -2472,6 +2472,7 @@ describe('useFileHandling', () => {
       });
 
       expect(onSuccess).toHaveBeenCalledWith(fileId);
+      expect(dismissWarning).toHaveBeenCalledTimes(1);
     });
 
     it('keeps the upload delivery path on the completed attachment', async () => {
@@ -2534,7 +2535,10 @@ describe('useFileHandling', () => {
       consoleLog.mockRestore();
     });
 
-    it('runs the matching recovery when the first of two concurrent uploads fails', async () => {
+    it('dismisses only the failed upload warning and runs its recovery', async () => {
+      const dismissFirst = jest.fn();
+      const dismissSecond = jest.fn();
+      mockStartUploadWarning.mockReturnValueOnce(dismissFirst).mockReturnValueOnce(dismissSecond);
       const consoleLog = jest.spyOn(console, 'log').mockImplementation(() => undefined);
       const firstRecovery = jest.fn();
       const secondRecovery = jest.fn();
@@ -2564,10 +2568,14 @@ describe('useFileHandling', () => {
 
       act(() => mockUploadOptions.onError?.(new Error('first upload failed'), firstUploadBody));
       expect(firstRecovery).toHaveBeenCalledTimes(1);
+      expect(dismissFirst).toHaveBeenCalledTimes(1);
+      expect(dismissSecond).not.toHaveBeenCalled();
       consoleLog.mockRestore();
     });
 
-    it('does not recover pasted text after a separate file form removes the pending attachment', async () => {
+    it('dismisses the warning when a separate file form removes the pending attachment', async () => {
+      const dismissWarning = jest.fn();
+      mockStartUploadWarning.mockReturnValueOnce(dismissWarning);
       const consoleLog = jest.spyOn(console, 'log').mockImplementation(() => undefined);
       const recovery = jest.fn();
       const { default: useFileHandling, useFileHandlingNoChatContext } = await import(
@@ -2596,6 +2604,7 @@ describe('useFileHandling', () => {
       act(() => {
         removalResult.current.abortUpload(fileId);
       });
+      expect(dismissWarning).toHaveBeenCalledTimes(1);
       act(() => uploadOptions.onError?.(new Error('upload failed after removal'), uploadBody));
 
       expect(recovery).not.toHaveBeenCalled();

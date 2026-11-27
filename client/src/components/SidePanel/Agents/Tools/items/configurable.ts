@@ -17,6 +17,7 @@ export function hasConfigurableSettings(item: AgentItem): boolean {
         item.id === 'context' ||
         item.id === 'memory' ||
         item.id === 'subagents' ||
+        item.id === 'subagent_graphs' ||
         item.id === 'handoffs' ||
         (item.id === 'web_search' && item.userProvidedAuth === true)
       );

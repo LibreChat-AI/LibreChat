@@ -58,6 +58,34 @@ describe('countFormattedMessageTokens media blocks', () => {
     expect(added({ type: 'media', mimeType: 'text/csv', data: 'AAAA' })).toBeGreaterThan(0);
   });
 
+  it('counts a base64 text document by its decoded text, not its base64', () => {
+    const csv = 'id,name,amount\n'.concat('7,Zoë,12.50\n'.repeat(4000));
+    const block = {
+      type: 'file',
+      source_type: 'base64',
+      mime_type: 'text/csv',
+      data: Buffer.from(csv).toString('base64'),
+      metadata: { name: 'ledger_csv' },
+    };
+    const decoded = added({ type: 'text', text: csv });
+
+    expect(added(block)).toBe(decoded);
+  });
+
+  it('counts a base64 binary document by its decoded size', () => {
+    const bytes = 400_000;
+    const block = {
+      type: 'file',
+      source_type: 'base64',
+      mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      data: Buffer.alloc(bytes, 7).toString('base64'),
+      metadata: { name: 'report_docx' },
+    };
+
+    expect(added(block)).toBe(Math.ceil((block.data.length * 3) / 4 / 4));
+    expect(added(block)).toBeGreaterThanOrEqual(bytes / 4);
+  });
+
   it('rejects an oversized Google PDF before invoking the model', async () => {
     const content = [
       text,

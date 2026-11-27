@@ -5,24 +5,11 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/extend-expect';
 import type { MemoryArtifact } from 'librechat-data-provider';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import MemoryInfo from '../MemoryInfo';
 
 // Mock the localize hook
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string, params?: Record<string, unknown>) => {
-    const translations: Record<string, string> = {
-      com_ui_memory_already_exceeded: `Memory storage already full - exceeded by ${params?.tokens || 0} tokens. Delete existing memories before adding new ones.`,
-      com_ui_memory_would_exceed: `Cannot save - would exceed limit by ${params?.tokens || 0} tokens. Delete existing memories to make space.`,
-      com_ui_memory_deleted: 'This memory has been deleted',
-      com_ui_memory_storage_full: 'Memory Storage Full',
-      com_ui_memory_error: 'Memory Error',
-      com_ui_updated_successfully: 'Updated successfully',
-      com_ui_none_selected: 'None selected',
-    };
-    return translations[key] || key;
-  },
-}));
+beforeAll(initEnglish);
 
 describe('MemoryInfo', () => {
   const createMemoryArtifact = (

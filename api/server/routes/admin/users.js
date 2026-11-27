@@ -8,7 +8,12 @@ const {
   createAdminUsersHandlers,
   revokeUserCodeEnvironmentWorkers,
 } = require('@librechat/api');
-const { SystemCapabilities, runAsSystem, tenantStorage } = require('@librechat/data-schemas');
+const {
+  runAsSystem,
+  tenantStorage,
+  SystemCapabilities,
+  createSubscriptions,
+} = require('@librechat/data-schemas');
 const { requireCapability } = require('~/server/middleware/roles/capabilities');
 const { requireJwtAuth } = require('~/server/middleware');
 const {
@@ -50,6 +55,7 @@ const resolveErasure = createErasureResolver({
   },
   openCheckpointDeletion,
   deleteSharedLinks: (userId) => deleteAllSharedLinksWithCleanup(userId, { awaitCleanup: true }),
+  deleteSubscriptions: createSubscriptions(mongoose).purge,
 });
 
 const requireAdminAccess = requireCapability(SystemCapabilities.ACCESS_ADMIN);

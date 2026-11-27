@@ -3466,6 +3466,41 @@ describe('primeResources', () => {
       expect(result.attachments?.map((f) => f?.file_id) ?? []).not.toContain('deferred-file');
     });
 
+    it('queues an image a tool generated on an earlier turn for the code environment', async () => {
+      /* A generated image never passes through the destination chooser, so its record names
+       * no destination at all. Read as a legacy upload that declined the sandbox, it was never
+       * queued, and a later code call ran without it. */
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+      const generated = makeCodeFile({
+        file_id: 'generated-image',
+        filename: 'generated-image-image_gen_oai_img_abc.png',
+        type: 'image/png',
+        context: FileContext.image_generation,
+        llmDeliveryPath: undefined,
+        metadata: undefined,
+      });
+
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code, EToolResources.file_search]),
+        provisionCandidates: [generated],
+      });
+
+      expect(result.provisionState?.codeEnvFiles.map((f) => f.file_id)).toEqual([
+        'generated-image',
+      ]);
+      /* An image is no search input, so the vector store is not asked to read it. */
+      expect(result.provisionState?.vectorDBFiles).toEqual([]);
+      expect(result.attachments?.map((f) => f?.file_id) ?? []).not.toContain('generated-image');
+    });
+
     it('does not double-queue a candidate that is already an attachment', async () => {
       process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
       const file = makeCodeFile({ file_id: 'shared-file' });
@@ -3694,6 +3729,17 @@ describe('primeResources snapshot upload receipts', () => {
       'the receipt belongs to another identity',
       snapshot({
         metadata: { ...snapshot().metadata, codeEnvRefs: { default: { ...receipt, id: 'other' } } },
+      }),
+      new Set(['snapshot']),
+      true,
+    ],
+    [
+      'the receipt was filed under an agent for a file the user owns this turn',
+      snapshot({
+        metadata: {
+          ...snapshot().metadata,
+          codeEnvRefs: { default: { ...receipt, kind: 'agent' as const, id: 'agent1' } },
+        },
       }),
       new Set(['snapshot']),
       true,

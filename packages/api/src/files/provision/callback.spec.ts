@@ -1,16 +1,17 @@
 import { Constants } from '@librechat/agents';
 import { FileSources, FileContext, EToolResources } from 'librechat-data-provider';
 import type { FileProvisionCommit, FileStorageClaim } from '@librechat/data-schemas';
+import type { SubagentExecutionContext } from '@librechat/agents';
 import type { CodeEnvRef, TFile } from 'librechat-data-provider';
 import type { ProvisionCallbackDeps, ProvisionToolContext } from './callback';
 import type { ProvisionState } from '~/agents/resources';
 import type { CodeFileAgent } from '../code/queued';
 import type { ServerRequest } from '~/types';
+import { createProvisionFilesCallback, createGeneratedFileQueue } from './callback';
 import { createFileProvisionRecovery, withFileProvisioning } from '../operations';
 import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
 import { prepareQueuedCodeFileContext } from '../code/queued';
 import { createSubagentCodeRouting } from '~/code/targets';
-import { createProvisionFilesCallback } from './callback';
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), warn: jest.fn(), debug: jest.fn(), info: jest.fn() },
@@ -408,6 +409,17 @@ describe('createProvisionFilesCallback', () => {
         'Failed to provision',
       );
       expect(harness.fileStorage.releaseFileProvision).not.toHaveBeenCalled();
+      const [unknownClaim] = harness.fileStorage.acquireFileProvision.mock.calls[0];
+      if (destination === 'code') {
+        /* Each Code API upload opens its own session, so the next call uploads again beside
+         * the unknown attempt instead of waiting on it, and that attempt's claim stays stored. */
+        await expect(harness.provisionFiles(toolNames, 'agent-a')).resolves.toHaveLength(1);
+        expect(harness.upload).toHaveBeenCalledTimes(2);
+        expect(harness.fileStorage.acquireFileProvision).toHaveBeenCalledTimes(2);
+        expect(harness.fileStorage.releaseFileProvision).toHaveBeenCalledTimes(1);
+        expect(harness.fileStorage.releaseFileProvision).not.toHaveBeenCalledWith(unknownClaim);
+        return;
+      }
       await expect(harness.provisionFiles(toolNames, 'agent-a')).rejects.toThrow(
         'Failed to provision',
       );
@@ -1779,5 +1791,183 @@ describe('createProvisionFilesCallback batched code uploads', () => {
       'remote-file-1',
       'remote-file-2',
     ]);
+  });
+});
+
+describe('files a tool generates during the run', () => {
+  const image = (fileId = 'generated-image') =>
+    makeFile({
+      file_id: fileId,
+      filename: `${fileId}-flux_img_abc.png`,
+      type: 'image/png',
+      context: FileContext.image_generation,
+    });
+
+  function harness(contexts: Array<[string, ProvisionToolContext]>) {
+    const h = buildHarness({ contexts });
+    return { ...h, queue: createGeneratedFileQueue({ agentToolContexts: h.agentToolContexts }) };
+  }
+
+  it('uploads an image generated earlier in the run on the next code call', async () => {
+    /* The agent had nothing queued when the turn started, so it has no provisioning state
+     * until the image arrives. */
+    const context: ProvisionToolContext = {};
+    const h = harness([['agent-a', context]]);
+    const file = image();
+    h.queue(Promise.resolve(file), { executingAgentId: 'agent-a' });
+
+    const provisioned = await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(1);
+    expect(h.provisionToCodeEnv.mock.calls[0][0]).toMatchObject({
+      file: { file_id: 'generated-image' },
+      entity_id: undefined,
+    });
+    expect(provisioned.map((codeFile) => codeFile.id)).toEqual(['remote-1']);
+    /* Later code calls in the run reuse the upload instead of queueing it again. */
+    expect(context.provisionState?.codeEnvFiles).toEqual([]);
+    expect(context.tool_resources?.execute_code?.files?.map((f) => f.file_id)).toEqual([
+      'generated-image',
+    ]);
+    expect(context.generatedFiles).toBeUndefined();
+  });
+
+  it('waits for an image that is still being saved', async () => {
+    const h = harness([['agent-a', {}]]);
+    let finishSave: (file: TFile) => void = () => undefined;
+    h.queue(
+      new Promise<TFile>((resolve) => {
+        finishSave = resolve;
+      }),
+      { executingAgentId: 'agent-a' },
+    );
+
+    const provisioning = h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(h.provisionToCodeEnv).not.toHaveBeenCalled();
+
+    finishSave(image());
+    await provisioning;
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes a concurrent code call wait for the same image and uploads it once', async () => {
+    const h = harness([['agent-a', {}]]);
+    let finishSave: (file: TFile) => void = () => undefined;
+    h.queue(
+      new Promise<TFile>((resolve) => {
+        finishSave = resolve;
+      }),
+      { executingAgentId: 'agent-a' },
+    );
+
+    const first = h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    const second = h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    finishSave(image());
+    const results = await Promise.all([first, second]);
+
+    expect(results.map((files) => files.map((codeFile) => codeFile.id))).toEqual([
+      ['remote-1'],
+      ['remote-1'],
+    ]);
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops waiting for a save once the tool call is cancelled', async () => {
+    const h = harness([['agent-a', {}]]);
+    h.queue(new Promise<TFile>(() => undefined), { executingAgentId: 'agent-a' });
+    const controller = new AbortController();
+
+    const provisioning = h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a', controller.signal);
+    controller.abort(new Error('stopped'));
+
+    await expect(provisioning).rejects.toThrow('stopped');
+    expect(h.provisionToCodeEnv).not.toHaveBeenCalled();
+  });
+
+  it('fails the next code call once for images that could not be saved', async () => {
+    /* The code may need the image, so the call says it is missing instead of running without
+     * it. The image never reached storage, so later calls run with what was saved. */
+    const h = harness([['agent-a', {}]]);
+    const outage = new Error('storage unavailable at s3://private-bucket');
+    const failed = Promise.reject(outage);
+    failed.catch(() => undefined);
+    h.queue(failed, { executingAgentId: 'agent-a' });
+    h.queue(Promise.resolve(null), { executingAgentId: 'agent-a' });
+    h.queue(Promise.resolve(image()), { executingAgentId: 'agent-a' });
+
+    const call = h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    await expect(call).rejects.toMatchObject({
+      message: expect.stringMatching(/^Failed to save 2 generated file\(s\)/),
+      cause: outage,
+    });
+    await expect(call).rejects.not.toThrow(/private-bucket/);
+    expect(h.provisionToCodeEnv).not.toHaveBeenCalled();
+
+    const provisioned = await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    expect(provisioned.map((codeFile) => codeFile.id)).toEqual(['remote-1']);
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the image with the agent that generated it', async () => {
+    const h = harness([
+      ['agent-a', {}],
+      ['agent-b', {}],
+    ]);
+    h.queue(Promise.resolve(image()), { executingAgentId: 'agent-a' });
+
+    await expect(h.provisionFiles([Constants.EXECUTE_CODE], 'agent-b')).resolves.toEqual([]);
+    expect(h.provisionToCodeEnv).not.toHaveBeenCalled();
+
+    await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds the image until a code tool runs', async () => {
+    const context: ProvisionToolContext = { provisionState: state([], []) };
+    const h = harness([['agent-a', context]]);
+    h.queue(Promise.resolve(image()), { executingAgentId: 'agent-a' });
+
+    await h.provisionFiles([EToolResources.file_search], 'agent-a');
+    expect(h.provisionToVectorDB).not.toHaveBeenCalled();
+    expect(context.generatedFiles).toHaveLength(1);
+
+    await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues an image a routed child generated on that execution only', async () => {
+    const source: ProvisionToolContext = {};
+    const shared: ProvisionToolContext = {};
+    const routed: ProvisionToolContext = {};
+    const executionContext = { rootRunId: 'root', depth: 1 } as SubagentExecutionContext;
+    const queue = createGeneratedFileQueue({
+      agentToolContexts: new Map([['agent-a', source]]),
+      resolveExecutionContext: (_agentId, context) =>
+        context === executionContext ? routed : undefined,
+      resolveSharedContext: () => shared,
+    });
+
+    queue(Promise.resolve(image()), { executingAgentId: 'agent-a', executionContext });
+
+    expect(routed.generatedFiles).toHaveLength(1);
+    expect(shared.generatedFiles).toBeUndefined();
+    expect(source.generatedFiles).toBeUndefined();
+  });
+
+  it('queues an image a shared-file execution generated on that execution context', async () => {
+    /* With file sharing active, each execution provisions in a context of its own. */
+    const source: ProvisionToolContext = {};
+    const execution: ProvisionToolContext = {};
+    const queue = createGeneratedFileQueue({
+      agentToolContexts: new Map([['agent-a', source]]),
+      resolveExecutionContext: () => undefined,
+      resolveSharedContext: (agentId) => (agentId === 'agent-a' ? execution : undefined),
+    });
+
+    queue(Promise.resolve(image()), { executingAgentId: 'agent-a' });
+
+    expect(execution.generatedFiles).toHaveLength(1);
+    expect(source.generatedFiles).toBeUndefined();
   });
 });

@@ -11,7 +11,7 @@ import {
 } from '@librechat/client';
 import type { Agents } from 'librechat-data-provider';
 import type { KeyboardEvent, ReactNode } from 'react';
-import type { AskAnswerSubmit } from '../../../react/parts/ask';
+import type { AskAnswerSubmit, AskCardMode } from '../../../react/parts/ask';
 import {
   isCancelKey,
   isReboundSubmitChord,
@@ -25,6 +25,7 @@ import { forceResize, insertTextAtCursor } from '../../../core/textarea';
 import { askSubmitStatusAtom } from '../../../react/parts/ask';
 import { NO_HOST_BINDINGS } from '../../../core/shortcuts';
 import AskUserQuestions from './Questions';
+import { NAV_CLEARANCE } from '../rows';
 import AskOptions from '../AskOptions';
 
 /**
@@ -35,19 +36,7 @@ import AskOptions from '../AskOptions';
  */
 const arrivedSingleQuestions = new Set<string>();
 
-/** What the live pause shares with the composer. Omitted outside a live chat. */
-export type AskCardMode = {
-  popoverVisible: boolean;
-  collapsed: boolean;
-  expand: () => void;
-  liveAsk: { actionId: string } | null;
-  checked: number[];
-  toggleChecked: (index: number) => void;
-  submitOption: (index: number) => void;
-  submitAnswer: (values: string[]) => void;
-  answerText: string;
-  setAnswerText: (value: string) => void;
-};
+export type { AskCardMode };
 
 const INERT_ASK_MODE: AskCardMode = {
   popoverVisible: false,
@@ -406,7 +395,12 @@ function AskUserQuestionSingle({
       aria-hidden={showPlaceholder || undefined}
       onKeyDown={handleCardKeyDown}
     >
-      <div className="text-text-secondary flex items-start justify-between gap-2">
+      <div
+        className={cn(
+          'text-text-secondary flex items-start justify-between gap-2',
+          NAV_CLEARANCE.pad,
+        )}
+      >
         <div className="min-w-0 pt-1">
           <p className="text-text-primary text-sm font-medium [overflow-wrap:anywhere]">
             {question.question}
@@ -467,7 +461,7 @@ function AskUserQuestionSingle({
         aria-label={localize('com_ui_your_answer')}
       />
 
-      <div className="flex items-center gap-3">
+      <div className={cn('flex items-center gap-3', NAV_CLEARANCE.pad)}>
         <Button size="sm" variant="outline" disabled={locked} onClick={handleSkip}>
           {localize('com_ui_skip')}
         </Button>

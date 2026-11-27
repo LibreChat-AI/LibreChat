@@ -3,8 +3,8 @@
  */
 import * as React from 'react';
 import userEvent from '@testing-library/user-event';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { QueryClient, QueryObserver, QueryClientProvider } from '@tanstack/react-query';
 import type { Agent, TAgentsEndpoint } from 'librechat-data-provider';
 import type { UseFormReturn } from 'react-hook-form';
 import type { useModelCatalog } from '~/data-provider/Endpoints/models';
@@ -187,6 +187,16 @@ jest.mock('~/common', () => ({
 }));
 
 // Mock child components to simplify testing
+jest.mock('./InstructionsPromptFields', () => ({
+  LoadError: ({ onRetry }: { onRetry: () => void }) => (
+    <div role="alert">
+      <button type="button" onClick={onRetry}>
+        {'Retry agent load'}
+      </button>
+    </div>
+  ),
+}));
+
 jest.mock('./AgentPanelSkeleton', () => ({
   __esModule: true,
   default: () => <div>{`Loading...`}</div>,
@@ -687,6 +697,30 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
 
       expect(capturedFormMethods?.getValues('provider')).toBe('anthropic');
       expect(capturedFormMethods?.getValues('model')).toBe('chosen-claude');
+    });
+
+    it('offers a retry when the basic agent request fails before hydration', async () => {
+      const { mockUseGetAgentByIdQuery } = setupMocks();
+      mockFormDefaults = { id: '' };
+      const cache = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const query = {
+        queryKey: ['agent', 'agent-123'],
+        queryFn: async (): Promise<Agent> => {
+          throw new Error('Agent unavailable');
+        },
+      };
+      await expect(cache.fetchQuery(query)).rejects.toThrow('Agent unavailable');
+      const result = new QueryObserver(cache, query).getCurrentResult();
+      const refetch = jest.fn().mockResolvedValue(result);
+      mockUseGetAgentByIdQuery.mockReturnValue({ ...result, refetch });
+
+      render(<AgentPanel />, { wrapper: createWrapper() });
+
+      expect(await screen.findByRole('alert')).toBeInTheDocument();
+      expect(screen.queryByText('Loading...')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Retry agent load' }));
+      expect(refetch).toHaveBeenCalledTimes(1);
+      cache.clear();
     });
 
     it('keeps instructions controls loading for an admin without ACL EDIT until the expanded agent arrives', async () => {
@@ -1385,9 +1419,15 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
         } as any);
         rerender(<AgentPanel />);
 
-        await waitFor(() => expect(mockAgentConfigStatus).toBe('loading'));
+        await screen.findByText('Loading...');
 
         // The form keeps agent A's link; the user edits an unrelated field and saves.
+        fireEvent.submit(container.querySelector('form')!);
+        await act(async () => {
+          mockFormSubmitHandler?.();
+        });
+        expect(mockUpdateAgent).not.toHaveBeenCalled();
+
         act(() => {
           capturedFormMethods!.setValue('id', 'agent-B', { shouldDirty: false });
           capturedFormMethods!.setValue('name', 'Renamed B', { shouldDirty: true });
@@ -1442,7 +1482,13 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
         } as any);
         rerender(<AgentPanel />);
 
-        await waitFor(() => expect(mockAgentConfigStatus).toBe('error'));
+        await screen.findByRole('alert');
+
+        fireEvent.submit(container.querySelector('form')!);
+        await act(async () => {
+          mockFormSubmitHandler?.();
+        });
+        expect(mockUpdateAgent).not.toHaveBeenCalled();
 
         act(() => {
           capturedFormMethods!.setValue('id', 'agent-B', { shouldDirty: false });
