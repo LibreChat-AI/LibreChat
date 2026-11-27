@@ -3,8 +3,8 @@ import type { Types, Model, ClientSession, FilterQuery } from 'mongoose';
 import type { ISystemGrant, SystemGrantMove } from '~/types';
 import type { SystemCapability } from '~/types/admin';
 import { SystemCapabilities, CapabilityImplications } from '~/admin/capabilities';
+import { normalizePrincipalId, principalClauses } from '~/utils/principal';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
-import { normalizePrincipalId } from '~/utils/principal';
 import { getSafeErrorFields } from '~/utils/errors';
 import logger from '~/config/winston';
 
@@ -208,7 +208,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
 
     const query: FilterQuery<ISystemGrant> = {
       $and: [
-        { $or: principalsQuery },
+        { $or: principalClauses(principalsQuery) },
         { capability: CONFIG_READ_ACCESS_PATTERN },
         tenantCondition(tenantId),
       ],
@@ -257,7 +257,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
     const capabilityQuery = allMatches.length > 1 ? { $in: allMatches } : capability;
 
     const query: FilterQuery<ISystemGrant> = {
-      $or: principalsQuery,
+      $or: principalClauses(principalsQuery),
       capability: capabilityQuery,
       ...tenantCondition(tenantId),
     };
@@ -304,7 +304,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
 
     const docs = await SystemGrant.find(
       {
-        $or: principalsQuery,
+        $or: principalClauses(principalsQuery),
         capability: { $in: [...allCaps] },
         ...tenantCondition(tenantId),
       },
@@ -522,7 +522,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
     }
 
     const filter: FilterQuery<ISystemGrant> = {
-      $or: principalsQuery,
+      $or: principalClauses(principalsQuery),
       ...tenantCondition(tenantId),
     };
 

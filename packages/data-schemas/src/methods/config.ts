@@ -35,6 +35,7 @@ import {
 } from './encoding';
 import { tenantPartitionFilter } from '~/models/plugins/tenantIsolation';
 import { isFieldNameRejection } from '~/utils/fields';
+import { principalClauses } from '~/utils/principal';
 import logger from '~/config/winston';
 
 /** A config document as MongoDB returns it, before the binding decodes it. */
@@ -226,7 +227,7 @@ export function createConfigStore(mongoose: typeof import('mongoose')): ConfigSt
     const documents = await model()
       .find({
         $and: [
-          { $or: principals.map(identityFilter) },
+          { $or: principalClauses(principals) },
           tenantPartitionFilter('configStore.listActive'),
         ],
         isActive: true,
