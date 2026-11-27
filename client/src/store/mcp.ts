@@ -22,9 +22,11 @@ export const mcpValuesAtomFamily = atomFamily((conversationId: string | null) =>
 });
 
 /**
- * Global storage atom for MCP pinned state (shared across all conversations)
+ * Global storage atom for MCP pinned state (shared across all conversations).
+ * Unpinned until `interface.defaultPinnedTools` seeds it or the user pins it, like
+ * the built-in tools: the pin puts the MCP Servers chip on the composer bar.
  */
-export const mcpPinnedAtom = atomWithStorage<boolean>(LocalStorageKeys.PIN_MCP_, true, undefined, {
+export const mcpPinnedAtom = atomWithStorage<boolean>(LocalStorageKeys.PIN_MCP_, false, undefined, {
   getOnInit: true,
 });
 
@@ -69,3 +71,23 @@ export const getServerInitState = (
 ): MCPServerInitState => {
   return states[serverName] || defaultServerInitState;
 };
+
+/** Session connection evidence, fenced by the latest explicit Connect operation. */
+export interface MCPConnectResult {
+  id: string;
+  configKey: string;
+  requestedConfigurationUpdatedAt?: number;
+  configurationUpdatedAt?: number;
+  /** Browser monotonic time; only newer status reads can prove recovery. */
+  settledAt?: number;
+  state: 'connecting' | 'connected' | 'error';
+  authorizationGeneration?: string;
+}
+
+export const mcpConnectResultsAtom = atom<Record<string, MCPConnectResult>>({});
+
+/** Clearing the map also fences late callbacks from the session that just ended. */
+export const resetMCPStateAtom = atom(null, (_get, set) => {
+  set(mcpServerInitStatesAtom, {});
+  set(mcpConnectResultsAtom, {});
+});

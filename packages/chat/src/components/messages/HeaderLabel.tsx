@@ -65,9 +65,9 @@ export default function HeaderLabel({ label, hoverLabel }: HeaderLabelProps): Re
         className={cn(
           labelSlot,
           'group-hover/label:blur-crossfade group-hover/label:-translate-y-1 group-hover/label:opacity-0',
-          'group-focus-visible:-translate-y-1 group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:-translate-y-1',
-          'group-focus-visible:opacity-0 group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:opacity-0',
-          'group-focus-visible:blur-crossfade group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:blur-crossfade',
+          'grouped-keyboard-focus:-translate-y-1 group-focus-visible:-translate-y-1',
+          'grouped-keyboard-focus:opacity-0 group-focus-visible:opacity-0',
+          'group-focus-visible:blur-crossfade grouped-keyboard-focus:blur-crossfade',
         )}
       >
         {label}
@@ -78,9 +78,9 @@ export default function HeaderLabel({ label, hoverLabel }: HeaderLabelProps): Re
           labelSlot,
           'blur-crossfade translate-y-1 opacity-0',
           'group-hover/label:translate-y-0 group-hover/label:opacity-100 group-hover/label:blur-none',
-          'group-focus-visible:translate-y-0 group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:translate-y-0',
-          'group-focus-visible:opacity-100 group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:opacity-100',
-          'group-focus-visible:blur-none group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:blur-none',
+          'grouped-keyboard-focus:translate-y-0 group-focus-visible:translate-y-0',
+          'grouped-keyboard-focus:opacity-100 group-focus-visible:opacity-100',
+          'grouped-keyboard-focus:blur-none group-focus-visible:blur-none',
         )}
       >
         {hoverLabel}

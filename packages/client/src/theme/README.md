@@ -440,7 +440,10 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - `border-border-field-focus` - A form field's edge while it holds focus, under
   `fieldFocusStyle: border`. Follows `focus-control` when a theme names only that.
 - Form fields and labels - `h-theme-field` (`fieldHeight`) sizes `Input`, `Dropdown`
-  and `ControlCombobox`. `fieldFocusStyle` picks the focus treatment: `ring` (the
+  and `ControlCombobox`. On touch devices, where field text never drops under 16px,
+  `h-theme-field`, `h-theme-field-lg` and `h-theme-auth-field` never draw under 24px,
+  so a small UI scale or a compact theme keeps a line of room for that text; a field a
+  caller sizes itself keeps its own height. `fieldFocusStyle` picks the focus treatment: `ring` (the
   default) draws the keyboard-only focus ring, and `border` swaps the field's edge
   to `border-field-focus` on any focus, adding a 1px ring in that color on keyboard
   focus so the indicator keeps the 2px focus floor, through the
@@ -450,6 +453,14 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   `applyTheme` writes on every root it themes, through CSS style queries, so a
   control follows the nearest themed root. A browser without style queries
   (Firefox before 151) keeps the default `ring` and `dim` treatment.
+- `welcomeBackdrop` - What the welcome screen paints behind its greeting and
+  composer, from a closed list. `none` (the default) keeps the plain surface.
+  `dots` names a dot field; the app paints a backdrop only when a component is
+  registered for its value with `registerWelcomeBackdrop`, so a theme that asks
+  for one the build does not provide keeps the plain surface. Read from the
+  `--theme-welcome-backdrop` property `applyTheme` writes on the root, so the
+  backdrop follows a theme swap without any component naming a theme. A
+  backdrop honors `prefers-reduced-motion`.
   `Label` reads `labelSize` (follows `textSm`), `labelLeading` and
   `labelFontWeight` (`inherit` by default, so a label keeps the weight around it).
 - `text-badge-label` - The shared `Badge`'s resting label ink; a hovered or selected

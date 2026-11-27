@@ -20,6 +20,7 @@ const producer = createAgentTriggerProducerBinding();
 const dependencies = {
   storage: createResponseStorage(mongoose, { getMCPAppMessageBudget: db.getMCPAppMessageBudget }),
   jobs: GenerationJobManager,
+  getDeploymentConfig: getAppConfig,
   publicBaseURL: process.env.DOMAIN_CLIENT,
   findUser: (userId) => db.findUser({ _id: userId }),
   getKey: db.getAgentApiKeyById,

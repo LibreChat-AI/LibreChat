@@ -1,4 +1,4 @@
-import { scheduledMCPFailureReasonSchema } from 'librechat-data-provider';
+import { runGrantFailureReasonSchema } from 'librechat-data-provider';
 import { readScheduleMCPReceipts, projectScheduleMCPReceipt } from 'librechat-data-provider';
 import type { ScheduleMCPOutcome } from 'librechat-data-provider';
 
@@ -17,7 +17,7 @@ export const SCHEDULE_MCP_RECEIPT_LUA: string =
   SCHEDULE_RETENTION_LUA +
   `
 local function retainScheduleReceipt(hset, current, force, original)
-  local allowed = cjson.decode('${JSON.stringify(Object.fromEntries(scheduledMCPFailureReasonSchema.options.map((reason) => [reason, true])))}')
+  local allowed = cjson.decode('${JSON.stringify(Object.fromEntries(runGrantFailureReasonSchema.options.map((reason) => [reason, true])))}')
   local incoming = nil
   local touched = false
   for i = 1, #hset, 2 do

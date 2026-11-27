@@ -52,7 +52,9 @@ export type ChatTurnsParams = {
   setMessages: ChatContract['setMessages'];
   isSubmitting: boolean;
   conversation: TConversation | null;
-  latestMessage: TMessage | null;
+  /** The tail of the branch on screen, read when a turn is built: streaming rewrites it on
+   *  every delta, and a pane that held it would render that often. */
+  getLatestMessage: () => TMessage | null;
   setSubmission: Dispatch<SetStateAction<TSubmission | null>>;
   setConversation: Dispatch<SetStateAction<TConversation | null>>;
 };
@@ -164,10 +166,13 @@ export interface ChatHost {
   /** Whether message feedback controls are on. */
   useFeedbackEnabled(): boolean;
   /** Loads a conversation's messages; `isStreaming` lets the query hold off refetching under a
-   *  live stream. An absent id loads nothing. */
+   *  live stream. An absent id loads nothing. With `enabled: false` it loads nothing either,
+   *  and follows what another reader of the same conversation loaded. With `messages: false`
+   *  the caller wants only to know whether they are loading: it is handed no messages, and is
+   *  not re-rendered when they change. */
   useMessages(
     conversationId: string | undefined,
-    options: { isStreaming: boolean; enabled?: boolean },
+    options: { isStreaming: boolean; enabled?: boolean; messages?: boolean },
   ): ChatMessagesQuery;
 }
 

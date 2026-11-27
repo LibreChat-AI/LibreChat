@@ -10,6 +10,7 @@ import {
 import { GENERATION_PROTOCOL_VERSION, supportsGenerationProtocolV2 } from '../protocol';
 import { MAX_RETRIES, getReconnectDelay, getRecoverySteerId } from './start';
 import { settleAfterRetryCeiling } from './ceiling';
+import { restoreReleasedSource } from './steers';
 import { recoverMissingStream } from './missing';
 
 /**
@@ -83,19 +84,13 @@ async function handleServedError(
       if (!sub.isCurrent()) {
         return;
       }
-      const releasedSource = terminalStatus.unrecoveredSteers?.find(
-        (steer) => steer.steerId === recoverySteerId,
+      restoreReleasedSource(
+        host.steers,
+        recoveryConvoId,
+        recoverySteerId,
+        terminalStatus,
+        generationProtocolVersion,
       );
-      if (
-        terminalStatus.active === false &&
-        supportsGenerationProtocolV2(terminalStatus) &&
-        releasedSource != null
-      ) {
-        host.steers.convertToQueued(recoveryConvoId, [releasedSource], {
-          generationProtocolVersion,
-          allowPreviouslyConvertedIds: [recoverySteerId],
-        });
-      }
     } catch (error) {
       if (!sub.isCurrent()) {
         return;

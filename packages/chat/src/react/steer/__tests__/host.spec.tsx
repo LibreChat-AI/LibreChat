@@ -1,12 +1,13 @@
 /**
  * @jest-environment jsdom
  */
+import { useLocalize } from '@librechat/client';
 import { renderHook } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import type { SteerHost } from '../host';
-import { SteerHostProvider, useSteerHost } from '../host';
+import { SteerHostProvider, useOptionalSteerHost, useSteerHost } from '../host';
 
-const createHost = (label: string): SteerHost => ({
+const createHost = (): SteerHost => ({
   useSteerMessage: () => () => undefined,
   useSteerMessageAsync: () => async () => ({
     status: 'queued',
@@ -26,7 +27,7 @@ const createHost = (label: string): SteerHost => ({
   useFetchStreamStatus: () => async () => ({ active: false }),
   useRouteConversationId: () => undefined,
   useCodeApprovalInputs: () => ({ conversation: null, reachable: { agents: [], complete: true } }),
-  useLocalize: () => (key) => `${label}:${key}`,
+  useLocalize,
   useNotify: () => () => undefined,
   useFileMap: () => undefined,
   useClearFilesToDelete: () => () => undefined,
@@ -37,17 +38,16 @@ const createHost = (label: string): SteerHost => ({
   }),
 });
 
-const translate = (host: SteerHost) => host.useLocalize()('com_ui_steer_cancel_failed');
-
 describe('useSteerHost', () => {
   it('reads the host the nearest provider supplies', () => {
+    const provided = createHost();
     const wrapper = ({ children }: { children: ReactNode }) => (
-      <SteerHostProvider host={createHost('outer')}>
-        <SteerHostProvider host={createHost('provided')}>{children}</SteerHostProvider>
+      <SteerHostProvider host={createHost()}>
+        <SteerHostProvider host={provided}>{children}</SteerHostProvider>
       </SteerHostProvider>
     );
-    const { result } = renderHook(() => translate(useSteerHost()), { wrapper });
-    expect(result.current).toBe('provided:com_ui_steer_cancel_failed');
+    const { result } = renderHook(() => useSteerHost(), { wrapper });
+    expect(result.current).toBe(provided);
   });
 
   it('throws a named error when no provider is mounted', () => {
@@ -56,5 +56,19 @@ describe('useSteerHost', () => {
       'The steer hooks need a SteerHostProvider above them.',
     );
     consoleError.mockRestore();
+  });
+
+  it('returns null from the optional lookup when no provider is mounted', () => {
+    const { result } = renderHook(() => useOptionalSteerHost());
+    expect(result.current).toBeNull();
+  });
+
+  it('returns the provided host from the optional lookup', () => {
+    const host = createHost();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <SteerHostProvider host={host}>{children}</SteerHostProvider>
+    );
+    const { result } = renderHook(() => useOptionalSteerHost(), { wrapper });
+    expect(result.current).toBe(host);
   });
 });

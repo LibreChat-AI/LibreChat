@@ -1,4 +1,4 @@
-import type { TMessage, TSubmission } from 'librechat-data-provider';
+import type { TMessage, TSubmission, TConversation } from 'librechat-data-provider';
 import type { TerminalContext, StreamStatusResponse } from '../resumable';
 import { ResumableRun, ResumableSubscription, handleTransportFailure } from '../resumable';
 import { createHost, createScheduler } from '../__fixtures__/resumable';
@@ -126,5 +126,89 @@ describe('handleTransportFailure', () => {
     expect(host.pane.publishRunEnd).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: 'aborted', generationCreatedAt: 2000 }),
     );
+  });
+  describe('in a conversation the pane created, whose created frame never arrived', () => {
+    const persisted = [
+      submission.userMessage,
+      {
+        messageId: 'r-1',
+        conversationId: 'c-1',
+        parentMessageId: 'u-1',
+        text: 'Whole',
+      } as TMessage,
+    ];
+    const saved = { conversationId: 'c-1', title: 'Saved' } as TConversation;
+    const over: StreamStatusResponse = {
+      active: false,
+      status: 'complete',
+      createdAt: 2000,
+      generationProtocolVersion: 2,
+    };
+    const optimistic = () => {
+      const harness = setup();
+      harness.run.optimisticStreamIds.add('c-1');
+      harness.fetchStatus.mockResolvedValue(over);
+      (harness.host.cache.fetchMessages as jest.Mock).mockResolvedValue(persisted);
+      return harness;
+    };
+
+    it('reads the reply and the saved conversation back past the retry ceiling', async () => {
+      const { ctx, host, run } = optimistic();
+      run.reconnectAttempt = 5;
+      (host.cache.fetchConversation as jest.Mock).mockResolvedValue(saved);
+
+      await handleTransportFailure(ctx, { status: 0 });
+
+      /** Read directly: no query for the conversation is mounted until `created` names it. */
+      expect(host.cache.fetchMessages).toHaveBeenCalledWith('c-1', true);
+      expect(host.cache.setConversation).toHaveBeenCalledWith('c-1', saved);
+      expect(host.cache.upsertConversation).toHaveBeenCalledWith(saved);
+      expect(host.cache.removeConversation).not.toHaveBeenCalled();
+      expect(host.messages.set).toHaveBeenCalledWith(persisted);
+      expect(host.pane.publishRunEnd).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'completed' }),
+      );
+    });
+
+    it('removes it past the retry ceiling only when the server has no such conversation', async () => {
+      const unknown = optimistic();
+      unknown.run.reconnectAttempt = 5;
+      (unknown.host.cache.fetchConversation as jest.Mock).mockRejectedValue(new Error('offline'));
+      await handleTransportFailure(unknown.ctx, { status: 0 });
+      expect(unknown.host.cache.removeConversation).not.toHaveBeenCalled();
+      expect(unknown.host.cache.refreshConversationLists).toHaveBeenCalled();
+
+      const absent = optimistic();
+      absent.run.reconnectAttempt = 5;
+      (absent.host.cache.fetchConversation as jest.Mock).mockRejectedValue(
+        Object.assign(new Error('Not Found'), { response: { status: 404 } }),
+      );
+      await handleTransportFailure(absent.ctx, { status: 0 });
+      expect(absent.host.cache.removeConversation).toHaveBeenCalledWith('c-1');
+    });
+
+    it('leaves a conversation the created frame confirmed as it is', async () => {
+      const { ctx, host, run } = optimistic();
+      run.createdStreamIds.add('c-1');
+      run.reconnectAttempt = 5;
+
+      await handleTransportFailure(ctx, { status: 0 });
+
+      expect(host.cache.fetchConversation).not.toHaveBeenCalled();
+      expect(host.cache.removeConversation).not.toHaveBeenCalled();
+      expect(host.messages.set).toHaveBeenCalledWith(persisted);
+    });
+
+    it('reads the saved conversation back when its stream is gone', async () => {
+      const { ctx, host } = optimistic();
+      (host.cache.fetchConversation as jest.Mock).mockResolvedValue(saved);
+
+      await handleTransportFailure(ctx, { status: 404 });
+
+      expect(host.cache.setConversation).toHaveBeenCalledWith('c-1', saved);
+      expect(host.cache.upsertConversation).toHaveBeenCalledWith(saved);
+      expect(host.cache.removeConversation).not.toHaveBeenCalled();
+      expect(host.messages.set).toHaveBeenCalledWith(persisted);
+    });
   });
 });

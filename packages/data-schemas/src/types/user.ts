@@ -25,6 +25,8 @@ export interface IUser extends Document {
   avatar?: string;
   provider: string;
   role?: string;
+  /** See the `roleToken` path of the user schema; not selected by default. */
+  roleToken?: string;
   googleId?: string;
   facebookId?: string;
   openidId?: string;
@@ -138,6 +140,7 @@ export interface BalanceConfig {
   refillIntervalUnit?: RefillIntervalUnit;
   refillAmount?: number;
   refillMode?: BalanceRefillMode;
+  refillAnchor?: string;
   reservationTtlMs?: number;
 }
 

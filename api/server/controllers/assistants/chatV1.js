@@ -39,6 +39,7 @@ const {
   initThread,
   recordUsage,
   saveUserMessage,
+  saveCutOffReply,
   checkMessageGaps,
   addThreadMetadata,
   saveAssistantMessage,
@@ -729,7 +730,20 @@ const chatV1 = async (req, res) => {
     });
 
     if (response.run.status === RunStatus.CANCELLED) {
-      logger.debug('[/assistants/chat/] Run cancelled, handled by `abortRun`');
+      logger.debug('[/assistants/chat/] Run cancelled, read back by `abortRun`');
+      await saveCutOffReply({
+        openai,
+        run: response,
+        thread_id,
+        conversationId,
+        messageId: responseMessageId,
+        parentMessageId: userMessageId,
+        userMessage: userMessagePromise,
+        assistant_id,
+        endpoint,
+        spec: endpointOption.spec,
+        iconURL: endpointOption.iconURL,
+      });
       return res.end();
     }
 

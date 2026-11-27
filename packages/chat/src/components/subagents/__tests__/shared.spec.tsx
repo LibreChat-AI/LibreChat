@@ -18,13 +18,16 @@ import { SubagentsHostProvider } from '../../../react/subagents/host';
 import { activeSubagentPanel } from '../../../react/subagents/state';
 import { MessagesHostProvider } from '../../../react/messages/host';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { emptyToolCallChrome } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import SharedSubagentActivityDialog from '../shared';
 
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
   useLanguage: () => 'en',
-  useLocalize: () => (key: string) => key,
 }));
+
+beforeAll(initEnglish);
 
 jest.mock('../transcript', () => ({
   ...jest.requireActual('../transcript'),
@@ -109,11 +112,14 @@ const partsHost: MessagePartsHost = {
   useFileMap: () => undefined,
   useToast: () => jest.fn(),
   useSandboxStarting: () => false,
+  usePtcTrace: () => ({ entries: [], dropped: 0 }),
+  useLoadedSkill: () => undefined,
   useToolArtifactClaim: () => [null, jest.fn()],
   useSteerEscalating: () => false,
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, jest.fn()],
   useShare: () => ({}),
+  useToolCallChrome: emptyToolCallChrome,
 };
 
 const messagesHost = createMessagesHost({
@@ -125,7 +131,11 @@ const messagesHost = createMessagesHost({
 const subagentsHost: SubagentsHost = createSubagentsHost({
   renderSteer: () => null,
   useRetainedControl: () => ({ isFetching: false, isError: false, refetch: () => undefined }),
-  useTaskContent: () => ({ isError: false, isUnavailable: false, refetch: () => undefined }),
+  useTaskContent: () => ({
+    isError: false,
+    isUnavailable: false,
+    refetch: () => Promise.resolve(),
+  }),
   useAgentsMap: () => ({}),
   useChildPartsHost: (host) => host,
 });
@@ -303,7 +313,7 @@ describe('SharedSubagentActivityDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Ran agent' }));
     expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
       'data-parent-author',
-      'com_ui_subagent_parent_agent',
+      'Parent agent',
     );
     expect(screen.queryByRole('heading', { name: 'Lia' })).not.toBeInTheDocument();
   });

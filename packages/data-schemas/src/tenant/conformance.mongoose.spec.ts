@@ -18,7 +18,7 @@ describeTenantIsolationConformance(
       return server.getUri();
     },
     async release() {
-      await server.stop();
+      await server?.stop();
     },
   }),
 );

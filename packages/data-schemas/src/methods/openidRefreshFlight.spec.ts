@@ -145,6 +145,127 @@ describe('OpenIDRefreshFlight Methods', () => {
     expect(reclaimed.flight?.errorMessage).toBeUndefined();
   });
 
+  describe('a completed flight that is still alive', () => {
+    const complete = async (key: string, usableUntil?: Date) => {
+      await methods.acquireOpenIDRefreshFlight({
+        key,
+        ownerId: 'owner-1',
+        lockExpiresAt: new Date(Date.now() + 30000),
+        expiresAt: new Date(Date.now() + 60000),
+      });
+      await methods.completeOpenIDRefreshFlight({
+        key,
+        ownerId: 'owner-1',
+        encryptedResult: 'encrypted-result',
+        expiresAt: new Date(Date.now() + 60000),
+        usableUntil,
+      });
+    };
+    const acquire = (key: string) =>
+      methods.acquireOpenIDRefreshFlight({
+        key,
+        ownerId: 'owner-2',
+        lockExpiresAt: new Date(Date.now() + 30000),
+        expiresAt: new Date(Date.now() + 60000),
+      });
+    const spent = () => new Date(Date.now() - 1000);
+
+    it('is superseded once its result is spent, though a delivery kept the record alive', async () => {
+      await complete('flight-key', spent());
+      await methods.claimOpenIDRefreshFlightDelivery({
+        key: 'flight-key',
+        ownerId: 'owner-1',
+        deliveryId: 'delivery-1',
+        deliveryExpiresAt: new Date(Date.now() + 30000),
+      });
+      await methods.releaseOpenIDRefreshFlightDelivery({
+        key: 'flight-key',
+        ownerId: 'owner-1',
+        deliveryId: 'delivery-1',
+      });
+
+      const next = await acquire('flight-key');
+
+      expect(next.acquired).toBe(true);
+      expect(next.flight).toMatchObject({ ownerId: 'owner-2', status: 'pending' });
+      expect(next.flight?.encryptedResult).toBeUndefined();
+      expect(next.flight?.usable).toBeUndefined();
+    });
+
+    it('is joined while its result is usable or its lifetime is unknown', async () => {
+      await complete('usable', new Date(Date.now() + 60000));
+      await complete('unknown');
+
+      for (const key of ['usable', 'unknown']) {
+        const joined = await acquire(key);
+        expect(joined.acquired).toBe(false);
+        expect(joined.flight).toMatchObject({ ownerId: 'owner-1', status: 'completed' });
+      }
+    });
+
+    it('ignores the spent time of a result an older replica has since replaced', async () => {
+      await complete('flight-key', spent());
+      /** An older replica reclaims and completes the record without knowing the field. */
+      await mongoose.models.OpenIDRefreshFlight.updateOne(
+        { key: 'flight-key' },
+        {
+          $set: {
+            ownerId: 'owner-0',
+            encryptedResult: 'newer-result',
+            createdAt: new Date(),
+            expiresAt: new Date(Date.now() + 60000),
+          },
+        },
+      );
+
+      await expect(acquire('flight-key')).resolves.toMatchObject({
+        acquired: false,
+        flight: { ownerId: 'owner-0', encryptedResult: 'newer-result' },
+      });
+    });
+
+    it('stays while a response is delivering its spent result', async () => {
+      await complete('flight-key', spent());
+      await methods.claimOpenIDRefreshFlightDelivery({
+        key: 'flight-key',
+        ownerId: 'owner-1',
+        deliveryId: 'delivery-1',
+        deliveryExpiresAt: new Date(Date.now() + 30000),
+      });
+
+      await expect(acquire('flight-key')).resolves.toMatchObject({ acquired: false });
+
+      await methods.releaseOpenIDRefreshFlightDelivery({
+        key: 'flight-key',
+        ownerId: 'owner-1',
+        deliveryId: 'delivery-1',
+      });
+      await expect(acquire('flight-key')).resolves.toMatchObject({ acquired: true });
+    });
+
+    it('stays fenced while logout revokes its spent result', async () => {
+      await complete('revoked', spent());
+      await methods.revokeOpenIDRefreshFlight({
+        key: 'revoked',
+        expiresAt: new Date(Date.now() + 3600000),
+      });
+      await complete('revoking', spent());
+      await mongoose.models.OpenIDRefreshFlight.updateOne(
+        { key: 'revoking' },
+        { $set: { revocationRequestedAt: new Date() } },
+      );
+
+      await expect(acquire('revoked')).resolves.toMatchObject({
+        acquired: false,
+        flight: { status: 'revoked' },
+      });
+      await expect(acquire('revoking')).resolves.toMatchObject({
+        acquired: false,
+        flight: { ownerId: 'owner-1', status: 'completed' },
+      });
+    });
+  });
+
   it('renews a lease only for the owning pending worker', async () => {
     await methods.acquireOpenIDRefreshFlight({
       key: 'flight-key',

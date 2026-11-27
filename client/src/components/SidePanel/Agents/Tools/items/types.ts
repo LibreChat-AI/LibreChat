@@ -22,6 +22,7 @@ export type BuiltinId =
    * in `selectors.ts` / `mutations.ts`.
    */
   | 'ask_user_question'
+  | `${AgentCapabilities.subagent_graphs}`
   | `${AgentCapabilities.subagents}`
   | 'handoffs';
 
@@ -84,8 +85,9 @@ export type AgentItem = BuiltinItem | ToolItem | McpItem | SkillItem | ActionIte
 
 /** A live state shown beside an item, such as an MCP server's connection. */
 export interface ItemStatus {
-  label: string;
-  /** Semantic `bg-status-*` fill for the dot that accompanies the label. */
+  /** Visible status when the application has an observation to report. */
+  label?: string;
+  /** Semantic `bg-status-*` fill for the status dot. */
   tone: string;
 }
 

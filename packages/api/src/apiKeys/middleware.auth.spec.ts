@@ -76,6 +76,8 @@ describe('remote Agent API key authentication', () => {
       expect(authorize).toHaveBeenCalledWith({ keyId: String(keyId), binding, user, request: req });
       expect(req.user?.id).toBe(String(userId));
       expect(req.apiKeyId).toBe(String(keyId));
+      // Marked, so nothing downstream takes it for the owner's personal key.
+      expect(req.apiKeyBound).toBe(true);
       expect(next).toHaveBeenCalledTimes(1);
       expect(status).not.toHaveBeenCalled();
     });
@@ -113,13 +115,15 @@ describe('remote Agent API key authentication', () => {
       const authorize = jest.fn().mockResolvedValue(false);
       const { deps, userId, keyId } = fixture(authorize);
       deps.validateAgentApiKey = jest.fn().mockResolvedValue({ userId, keyId });
+      const req = createRequest();
       const { res } = createResponse();
       const next = jest.fn();
 
-      await createRequireApiKeyAuth(deps)(createRequest(), res, next);
+      await createRequireApiKeyAuth(deps)(req, res, next);
 
       expect(authorize).not.toHaveBeenCalled();
       expect(next).toHaveBeenCalledTimes(1);
+      expect(req.apiKeyBound).toBeUndefined();
     });
 
     it('maps a grant lookup outage to a sanitized server error without authenticating', async () => {

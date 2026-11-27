@@ -73,6 +73,10 @@ jest.mock(
   { virtual: true },
 );
 
+// A cold Jest cache (a fresh CI runner, the Change Quality coverage job) boots this in over 30 s,
+// and in over 60 s on a busy host.
+const BOOT_TIMEOUT_MS = 120_000;
+
 describe('Content Security Policy', () => {
   jest.setTimeout(30_000);
 
@@ -83,6 +87,7 @@ describe('Content Security Policy', () => {
   const originalReadFileSync = fs.readFileSync;
 
   beforeAll(async () => {
+    const bootDeadline = Date.now() + BOOT_TIMEOUT_MS;
     fs.readFileSync = function (filepath, options) {
       if (filepath.includes('index.html')) {
         return INDEX_HTML;
@@ -111,10 +116,10 @@ describe('Content Security Policy', () => {
     /* index.js listens at module scope and exports only the app, so capture the server to close it. */
     const listenSpy = jest.spyOn(express.application, 'listen');
     app = require('~/server');
-    await healthCheckPoll(app);
+    await healthCheckPoll(app, bootDeadline);
     server = listenSpy.mock.results[0].value;
     listenSpy.mockRestore();
-  });
+  }, BOOT_TIMEOUT_MS);
 
   afterAll(async () => {
     fs.readFileSync = originalReadFileSync;
@@ -229,9 +234,8 @@ describe('Content Security Policy', () => {
   });
 });
 
-// Polls the /health endpoint every 30ms for up to 10 seconds to wait for the server to start completely
-async function healthCheckPoll(app, retries = 0) {
-  const maxRetries = Math.floor(10000 / 30);
+// Polls the /health endpoint every 30ms until the server is healthy or the boot deadline passes
+async function healthCheckPoll(app, deadline) {
   try {
     const response = await request(app).get('/health');
     if (response.status === 200) {
@@ -241,10 +245,10 @@ async function healthCheckPoll(app, retries = 0) {
     // Ignore connection errors during polling
   }
 
-  if (retries < maxRetries) {
+  if (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 30));
-    await healthCheckPoll(app, retries + 1);
+    await healthCheckPoll(app, deadline);
   } else {
-    throw new Error('App did not become healthy within 10 seconds.');
+    throw new Error(`App did not become healthy within ${BOOT_TIMEOUT_MS / 1000} seconds.`);
   }
 }

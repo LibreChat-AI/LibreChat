@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { Link2Off, RotateCw, Trash2 } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Link2Off, RotateCw, SlackIcon, Trash2 } from 'lucide-react';
 import { MutationKeys, QueryKeys, dataService } from 'librechat-data-provider';
 import {
   Alert,
@@ -9,6 +9,7 @@ import {
   IconButton,
   OGDialog,
   OGDialogTemplate,
+  SlackIcon,
   Spinner,
   TooltipAnchor,
 } from '@librechat/client';
@@ -19,6 +20,7 @@ import { useSlackWorkspaces } from './useSlackWorkspaces';
 import { channelErrorLabel } from '~/utils/channelErrors';
 import { useAuthContext, useLocalize } from '~/hooks';
 import BotManagers from './BotManagers';
+import Loading from './Loading';
 import Apps from './Apps';
 
 function workspaceStatusLabel(workspace: SlackWorkspace, configured?: boolean) {
@@ -56,6 +58,7 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const settingsRef = useRef<HTMLElement | null>(null);
   const attempt = useRef<ConnectionAttempt | null>(null);
+  const popupBlocked = useRef(false);
   const connectionTrigger = useRef<HTMLElement | null>(null);
   const deadline = useRef<ReturnType<typeof setTimeout>>();
   const mounted = useRef(true);
@@ -169,6 +172,7 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
       cancelling: false,
     };
     attempt.current = current;
+    popupBlocked.current = !current.popup;
     if (!current.popup) {
       setConnection('failed');
       return;
@@ -407,17 +411,17 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
           }
           main={
             <div className="space-y-4">
-              {status.isLoading && <Spinner />}
+              {status.isLoading && <Loading />}
               {(status.isError || retire.isError) && (
-                <div role="alert" className="space-y-2">
-                  <p>
+                <div className="flex flex-col items-start gap-2">
+                  <Alert variant="error">
                     {localize(
                       channelErrorLabel(
                         retire.error ?? status.error,
                         'com_ui_slack_workspaces_error',
                       ),
                     )}
-                  </p>
+                  </Alert>
                   <Button
                     variant="outline"
                     onClick={() => {
@@ -482,14 +486,16 @@ function OwnedWorkspaces({ principalKey }: { principalKey: string }) {
             }}
             main={
               connection === 'failed' ? (
-                <p role="alert" className="text-text-secondary text-sm">
+                <Alert variant="error">
                   {localize(
-                    channelErrorLabel(
-                      cancel.error ?? connect.error,
-                      'com_ui_slack_workspaces_error',
-                    ),
+                    popupBlocked.current
+                      ? 'com_ui_slack_popup_blocked'
+                      : channelErrorLabel(
+                          cancel.error ?? connect.error,
+                          'com_ui_slack_workspaces_error',
+                        ),
                   )}
-                </p>
+                </Alert>
               ) : (
                 <div role="status" className="text-text-secondary flex items-center gap-3 text-sm">
                   <Spinner className="size-5 shrink-0" aria-hidden="true" />

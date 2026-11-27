@@ -12,7 +12,7 @@ import {
 } from '@librechat/client';
 import type { TConversation, TMessage, TFeedback } from 'librechat-data-provider';
 import type { NamedExoticComponent, ReactNode } from 'react';
-import { MessageAudioSlot, useMessagesHost } from '../../react/messages/host';
+import { MessageAudioSlot, MessageUsageSlot, useMessagesHost } from '../../react/messages/host';
 import useGenerationsByLatest from '../../react/messages/generations';
 import { hasEditablePart } from '../../core/parts/editableParts';
 import { ChatContext } from '../../react/chat/context';
@@ -49,7 +49,28 @@ type HoverButtonProps = {
   reveal?: boolean;
   dataTestId?: string;
   disabled?: boolean;
+  /** Kept in the row but out of sight and out of reach: no ink, no focus, no click. Where the
+   *  toolbar is centered the control also gives up its box, so the rest stay centered. */
+  concealed?: boolean;
 };
+
+/**
+ * Invisible rather than removed where the toolbar starts at the row's edge, so concealing the
+ * trailing control moves nothing: a run starting or ending conceals one on every row of the
+ * thread at once. Below `lg` the toolbar is centered and an invisible box would pull the others
+ * off center, so there it leaves the flow.
+ *
+ * Visibility does the whole job: a hidden control takes no focus, no pointer and no place in
+ * the accessibility tree. It is deliberately NOT also `disabled`. The stylesheet holds
+ * `:has(:disabled)` rules and a message row is a `:has()` anchor, so a `disabled` flip inside a
+ * row re-styles that row's entire subtree; flipped on every row at once that is the whole
+ * transcript, 90 ms of it in a 250-message thread against 9 ms for the class alone. Mounting and
+ * unmounting the button invalidates the same way.
+ *
+ * `data-concealed` is for the app's narrow-screen stylesheet, which forces every toolbar button
+ * visible from outside any cascade layer and would otherwise outrank both utilities.
+ */
+const CONCEALED = 'max-lg:hidden lg:invisible';
 
 const HoverButton = memo(
   ({
@@ -62,6 +83,7 @@ const HoverButton = memo(
     reveal = !isLast,
     dataTestId,
     disabled = false,
+    concealed = false,
   }: HoverButtonProps) => {
     return (
       <TooltipAnchor
@@ -73,8 +95,11 @@ const HoverButton = memo(
             data-testid={dataTestId}
             data-hover-active={isActive || undefined}
             aria-label={title}
-            onClick={onClick}
+            aria-hidden={concealed || undefined}
+            data-concealed={concealed || undefined}
+            onClick={concealed ? undefined : onClick}
             disabled={disabled}
+            className={concealed ? CONCEALED : undefined}
           >
             {icon}
           </Button>
@@ -86,7 +111,32 @@ const HoverButton = memo(
 
 HoverButton.displayName = 'HoverButton';
 
-const HoverButtons = ({
+type ToolbarIcons = Record<'copy' | 'copied' | 'edit' | 'regenerate' | 'continue', ReactNode>;
+
+let toolbarIcons: ToolbarIcons | undefined;
+
+/**
+ * The toolbar's glyphs, one element each for every row. A send and its completion re-render the
+ * toolbar of every row in the thread, and an element built in that render is a new `icon` prop:
+ * `HoverButton`'s memo then fails for each button of each row, and the tooltip and button under
+ * it render again for nothing. Built on first use, since this module must not read
+ * `@librechat/client` while it loads.
+ */
+function getToolbarIcons(): ToolbarIcons {
+  toolbarIcons ??= {
+    copy: <MorphIcon icon={Copy} size="1.1875rem" />,
+    copied: <MorphIcon icon={Check} size="1.1875rem" />,
+    edit: <EditIcon size="19" />,
+    regenerate: <RegenerateIcon size="19" />,
+    continue: <ContinueIcon className="size-4.75" />,
+  };
+  return toolbarIcons;
+}
+
+/** What the toolbar takes from the pane's chat contract, beside what its row passes it. */
+type ToolbarProps = THoverButtons & { isSubmitting: boolean; readOnly: boolean };
+
+const Toolbar: NamedExoticComponent<ToolbarProps> = memo(function Toolbar({
   index,
   isEditing,
   enterEdit,
@@ -100,11 +150,10 @@ const HoverButtons = ({
   getLatestMessageId,
   isLast,
   handleFeedback,
-}: THoverButtons): ReactNode => {
+  isSubmitting,
+  readOnly,
+}: ToolbarProps): ReactNode {
   const localize = useLocalize();
-  /** Read from the pane's chat contract here rather than passed down: a send toggles the
-   *  rerun controls on every row, and only this toolbar has to re-render for it. */
-  const isSubmitting = useContext(ChatContext)?.isSubmitting === true;
   const [isCopied, setIsCopied] = useState(false);
   const { useGetMessages, useHasPendingTurn } = useMessagesHost();
   const getMessages = useGetMessages();
@@ -156,10 +205,12 @@ const HoverButtons = ({
     parentIsUserMessage,
     isUserInitiatedCompaction: isUserInitiatedCompaction(message),
     latestMessageId: latestMessageId,
+    readOnly,
   });
 
   const {
     hideEditButton,
+    regenerateOffered,
     regenerateEnabled,
     continueSupported,
     forkingSupported,
@@ -172,21 +223,26 @@ const HoverButtons = ({
     [isActiveStreamingMessage, getCanCopy],
   );
 
+  /** Stable for the same reason the icons are: a handler made in render is a new `onClick`. */
+  const onEdit = useCallback(() => {
+    if (isEditing) {
+      return enterEdit(true);
+    }
+    enterEdit();
+  }, [isEditing, enterEdit]);
+  const handleCopy = useCallback(() => copyToClipboard(setIsCopied), [copyToClipboard]);
+  const onContinue = useCallback(
+    (e?: React.MouseEvent<HTMLButtonElement>) => e && handleContinue(e),
+    [handleContinue],
+  );
+
   if (!conversation) {
     return null;
   }
 
   const { isCreatedByUser, error } = message;
   const isSubagentThreadReadOnly = conversation.subagentThread != null;
-
-  const onEdit = () => {
-    if (isEditing) {
-      return enterEdit(true);
-    }
-    enterEdit();
-  };
-
-  const handleCopy = () => copyToClipboard(setIsCopied);
+  const icons = getToolbarIcons();
   const speechText = getSpeechText(message);
 
   return (
@@ -218,7 +274,7 @@ const HoverButtons = ({
           title={
             isCopied ? localize('com_ui_copied_to_clipboard') : localize('com_ui_copy_to_clipboard')
           }
-          icon={<MorphIcon icon={isCopied ? Check : Copy} size="1.1875rem" />}
+          icon={isCopied ? icons.copied : icons.copy}
           isLast={isLast}
           disabled={!canCopy}
           reveal={!isLast || (isSubmitting && isCreatedByUser)}
@@ -232,7 +288,7 @@ const HoverButtons = ({
           id={`edit-${message.messageId}`}
           onClick={onEdit}
           title={localize('com_ui_edit')}
-          icon={<EditIcon size="19" />}
+          icon={icons.edit}
           isActive={isEditing}
           isLast={isLast}
         />
@@ -255,13 +311,18 @@ const HoverButtons = ({
         <Feedback handleFeedback={handleFeedback} feedback={message.feedback} isLast={isLast} />
       )}
 
-      {/* Regenerate Button */}
-      {!isSubagentThreadReadOnly && regenerateEnabled && (
+      {/* Regenerate Button: mounted for as long as the row has a rerun to offer, and concealed
+          while a run is in flight. Every row loses and regains its rerun together when a run
+          starts and ends; unmounting and remounting a button on each of them is a layout of the
+          whole thread at exactly the two moments the reader is waiting on. The reply being
+          written is the one row that offers nothing at all, so it mounts none. */}
+      {!isSubagentThreadReadOnly && regenerateOffered && !isActiveStreamingMessage && (
         <HoverButton
           onClick={regenerate}
           title={localize('com_ui_regenerate')}
-          icon={<RegenerateIcon size="19" />}
+          icon={icons.regenerate}
           isLast={isLast}
+          concealed={!regenerateEnabled}
           dataTestId={isLast ? 'regenerate-generation-button' : undefined}
         />
       )}
@@ -269,14 +330,40 @@ const HoverButtons = ({
       {/* Continue Button */}
       {!isSubagentThreadReadOnly && continueSupported && (
         <HoverButton
-          onClick={(e) => e && handleContinue(e)}
+          onClick={onContinue}
           title={localize('com_ui_continue')}
-          icon={<ContinueIcon className="size-4.75" />}
+          icon={icons.continue}
           isLast={isLast}
           dataTestId={isLast ? 'continue-generation-button' : undefined}
         />
       )}
+      {!isCreatedByUser && (
+        <MessageUsageSlot
+          message={message}
+          conversationId={conversation.conversationId ?? undefined}
+          isLast={isLast}
+        />
+      )}
     </div>
+  );
+});
+
+/**
+ * Reads the pane's chat contract here rather than have it passed down: a send toggles the rerun
+ * controls on every row, and only the toolbar has to render for it.
+ *
+ * The contract is one object, replaced several times in a send as the tail moves, and the
+ * toolbar reads two of its fields. This component renders for each replacement and hands those
+ * two on; the toolbar under it, with its buttons and tooltips, renders when one of them changed.
+ */
+const HoverButtons = (props: THoverButtons): ReactNode => {
+  const chat = useContext(ChatContext);
+  return (
+    <Toolbar
+      {...props}
+      isSubmitting={chat?.isSubmitting === true}
+      readOnly={chat?.readOnly === true}
+    />
   );
 };
 

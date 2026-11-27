@@ -58,6 +58,34 @@ describe('countFormattedMessageTokens media blocks', () => {
     expect(added({ type: 'media', mimeType: 'text/csv', data: 'AAAA' })).toBeGreaterThan(0);
   });
 
+  it('counts a base64 text document by its decoded text, not its base64', () => {
+    const csv = 'id,name,amount\n'.concat('7,Zoë,12.50\n'.repeat(4000));
+    const block = {
+      type: 'file',
+      source_type: 'base64',
+      mime_type: 'text/csv',
+      data: Buffer.from(csv).toString('base64'),
+      metadata: { name: 'ledger_csv' },
+    };
+    const decoded = added({ type: 'text', text: csv });
+
+    expect(added(block)).toBe(decoded);
+  });
+
+  it('counts a base64 binary document by its decoded size', () => {
+    const bytes = 400_000;
+    const block = {
+      type: 'file',
+      source_type: 'base64',
+      mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      data: Buffer.alloc(bytes, 7).toString('base64'),
+      metadata: { name: 'report_docx' },
+    };
+
+    expect(added(block)).toBe(Math.ceil((block.data.length * 3) / 4 / 4));
+    expect(added(block)).toBeGreaterThanOrEqual(bytes / 4);
+  });
+
   it('rejects an oversized Google PDF before invoking the model', async () => {
     const content = [
       text,
@@ -343,8 +371,8 @@ describe('countRetainedToolTokens', () => {
     expect(
       countRetainedToolTokens({
         contentParts: [
-          toolPart('call_1', 'grep', 'a'.repeat(60)),
-          toolPart('call_2', 'read_file', 'b'.repeat(60)),
+          toolPart('call_1', 'grep', 'ab '.repeat(20)),
+          toolPart('call_2', 'read_file', 'cd '.repeat(20)),
         ],
         priorToolCallIds: new Set(),
         countExact: counted,
@@ -353,6 +381,80 @@ describe('countRetainedToolTokens', () => {
     ).toBeUndefined();
     /** It stops at the budget rather than counting the rest for nothing. */
     expect(counted).toHaveBeenCalledTimes(1);
+  });
+
+  it('charges a long unbroken run its quadratic merge work, not its length', () => {
+    /** 200 KB of whitespace is far under the 8 MiB character ceiling, yet merging it as
+     *  one piece blocks the event loop for ~25 s, so the budget must refuse it. */
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'web_search', `results${' '.repeat(200_000)}end`)],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+  });
+
+  it('charges a multi-byte run by its UTF-8 bytes', () => {
+    /** 16,000 astral letters are 64,000 bytes in one piece and take ~2 s to merge.
+     *  Charged per character they would fit the default ceiling; per byte they do not. */
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', '\u{1D400}'.repeat(16_000))],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+  });
+
+  it('charges an unbroken digit run quadratically for the Claude encoding only', () => {
+    /** o200k splits digits into threes; the Claude encoding merges the whole run. */
+    const output = '7'.repeat(200_000);
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', output)],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+        isClaude: true,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', output)],
+        priorToolCallIds: new Set(),
+        countExact,
+      }),
+    ).toBe(countExact(output));
+  });
+
+  it('refuses output longer than the remaining budget without scanning it', () => {
+    const counted = jest.fn(countExact);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', 'word '.repeat(100))],
+        priorToolCallIds: new Set(),
+        countExact: counted,
+        maxCountChars: 100,
+      }),
+    ).toBeUndefined();
+    expect(counted).not.toHaveBeenCalled();
+  });
+
+  it('still counts ordinary text up to the ceiling', () => {
+    const output = 'The quick brown fox jumps over the lazy dog. '.repeat(20_000);
+    expect(
+      countRetainedToolTokens({
+        contentParts: [toolPart('call_1', 'read_file', output)],
+        priorToolCallIds: new Set(),
+        countExact,
+      }),
+    ).toBe(countExact(output));
   });
 
   it('defaults the budget to the shipped ceiling', () => {

@@ -9,11 +9,10 @@ import type { TMessageChatContext } from '../../../react/messages/types';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { MessagesHostProvider } from '../../../react/messages/host';
 import { MessagePartsHostProvider } from '../../../react/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import useMessageActions from '../useMessageActions';
 
-jest.mock('@librechat/client', () => ({
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 const agent = { id: 'agent-1', name: 'Research Agent' } as Agent;
 const assistant = { id: 'asst-1', name: 'Helper' } as Assistant;
@@ -165,7 +164,7 @@ describe('useMessageActions', () => {
 
     it('shows the localized label when username display is off', () => {
       const { result } = run(prompt, chatContextOf({}), { user, usernameDisplay: false });
-      expect(result.current.messageLabel).toBe('com_user_message');
+      expect(result.current.messageLabel).toBe('You');
     });
   });
 

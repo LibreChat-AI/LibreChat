@@ -1,7 +1,9 @@
+import { createElement, createContext, useContext } from 'react';
 import { atomFamily } from 'jotai/utils';
 import { atom, useAtomValue } from 'jotai';
 import { Constants } from 'librechat-data-provider';
-import type { Agents } from 'librechat-data-provider';
+import type { Agents, TEphemeralAgent, TMessage } from 'librechat-data-provider';
+import type { ReactNode } from 'react';
 import type { Family } from './steer/family';
 
 /**
@@ -40,4 +42,73 @@ export function useComposerPresentsApproval(
     pendingAction?.actionId === actionId &&
     pendingAction.payload.type === 'tool_approval'
   );
+}
+
+/** Fields the ordinary chat resume sends so the server can rebuild the paused agent. */
+export interface ApprovalResumeFields {
+  conversationId: string;
+  /** Exact paused generation, when the client has observed it. */
+  generationCreatedAt?: number;
+  endpoint?: string | null;
+  endpointType?: string | null;
+  agent_id?: string | null;
+  model?: string | null;
+  spec?: string | null;
+  promptPrefix?: string | null;
+  ephemeralAgent?: TEphemeralAgent | null;
+}
+
+export type ApprovalResumeCallbacks = {
+  onSuccess: () => void;
+  onError: (error: unknown) => void;
+};
+
+/**
+ * Ordinary chat I/O for a tool approval or an ask answer: the conversation fields, the resume
+ * request, and the thread an ask answer patches locally. Absent when this view has no live
+ * conversation. An explicit resume transport still wins over this host.
+ *
+ * This is not a member of the steer or stream hosts. Those providers throw when they are
+ * missing, and this hook also runs from the composer, a response review, and shared renders,
+ * where it must stay inert instead of throwing.
+ */
+export interface ApprovalResumeHost {
+  /** Resume fields for the active conversation, or null when there is nothing to resume. */
+  readFields: () => ApprovalResumeFields | null;
+  submitToolApproval: (
+    body: ApprovalResumeFields & {
+      actionId: string;
+      decisions: Agents.ToolApprovalResolution[];
+    },
+    callbacks: ApprovalResumeCallbacks,
+  ) => void;
+  submitAskAnswer: (
+    body: ApprovalResumeFields & {
+      actionId: string;
+      answer?: string;
+      answers?: Record<string, string>;
+    },
+    callbacks: ApprovalResumeCallbacks,
+  ) => void;
+  /** The thread the ordinary transport may patch after an ask answer. */
+  readMessages: () => {
+    messages: TMessage[];
+    setMessages: (messages: TMessage[]) => void;
+  } | null;
+}
+
+const ApprovalResumeHostContext = createContext<ApprovalResumeHost | null>(null);
+
+export function ApprovalResumeHostProvider({
+  host,
+  children,
+}: {
+  host: ApprovalResumeHost;
+  children?: ReactNode;
+}): ReactNode {
+  return createElement(ApprovalResumeHostContext.Provider, { value: host }, children);
+}
+
+export function useApprovalResumeHost(): ApprovalResumeHost | null {
+  return useContext(ApprovalResumeHostContext);
 }

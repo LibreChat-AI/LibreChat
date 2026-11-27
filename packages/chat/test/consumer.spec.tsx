@@ -2,7 +2,10 @@
  * @jest-environment jsdom
  */
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { Chat } from '@librechat/chat';
 import { createInstance } from 'i18next';
 import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
@@ -10,6 +13,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   Part,
   Text,
+  Reasoning,
   MessageRow,
   MentionPopover,
   ChatScreen,
@@ -33,10 +37,13 @@ import {
   MessagePartIndex,
   StreamHostProvider,
   ChatSurfaceProvider,
+  SteerHostProvider,
   MessagesHostProvider,
   MessagePartsHostProvider,
   ParentSubagentsProvider,
+  emptyToolCallChrome,
 } from '@librechat/chat/react';
+import { createSteerHost } from '../src/__fixtures__/steerHost';
 import type {
   ChatEvent,
   TMessage,
@@ -208,11 +215,14 @@ const host: MessagePartsHost = {
   useFileMap: () => undefined,
   useToast: () => () => undefined,
   useSandboxStarting: () => false,
+  usePtcTrace: () => ({ entries: [], dropped: 0 }),
+  useLoadedSkill: () => undefined,
   useToolArtifactClaim: () => [null, () => undefined],
   useSteerEscalating: () => false,
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, () => undefined],
   useShare: () => ({}),
+  useToolCallChrome: emptyToolCallChrome,
 };
 
 const messagesHost: MessagesHost = {
@@ -246,7 +256,9 @@ const messagesHost: MessagesHost = {
   }),
   renderMessageIcon: () => null,
   useMaximizeChatSpace: () => false,
+  useFlatThread: () => true,
   useHideSelectedAuthor: () => false,
+  useSelectedSender: () => undefined,
   useAgentsMap: () => undefined,
   renderMessageBody: () => null,
   renderWakeup: () => null,
@@ -369,6 +381,57 @@ const renderConsumer = (transport: ChatTransport) =>
       </ThemeProvider>
     </I18nextProvider>,
   );
+
+/** A composer put together from the package's frame, field and actions. */
+function DraftComposer({
+  textAreaRef,
+}: {
+  textAreaRef: { current: HTMLTextAreaElement | null };
+}): ReactElement {
+  const [text, setText] = useState('');
+  return (
+    <ThemeProvider themeDefinition={clickHouseTheme} persistThemeDefinition={false}>
+      <ComposerFrame
+        onSubmit={(event) => event.preventDefault()}
+        direction="auto"
+        maximizeChatSpace={false}
+        focused={false}
+        isTemporary={false}
+        onFocusDraft={() => textAreaRef.current?.focus()}
+      >
+        <ComposerField
+          textAreaRef={textAreaRef}
+          ariaLabel="Message"
+          textareaProps={{ value: text, onChange: (event) => setText(event.target.value) }}
+          value={text}
+          listening={false}
+          dictationActive={false}
+          locked={false}
+        />
+        <ComposerActions
+          text={text}
+          submitButtonRef={{ current: null }}
+          isSubmitting={false}
+          answersAsk={false}
+          hasEndpoint
+          steering={{ duringRunActive: false } as SteeringControls}
+          isNewConversation
+          getText={() => text}
+          onConsumed={() => undefined}
+          enterToSend
+          fileCount={0}
+          sendDisabled={false}
+          duringRunDisabled={false}
+          showStopButton={false}
+          setShowStopButton={() => undefined}
+          stop={() => undefined}
+          canStop
+          isPreparingFromUrl={false}
+        />
+      </ComposerFrame>
+    </ThemeProvider>
+  );
+}
 
 describe('a consumer built on the public entries', () => {
   it('sends a turn and streams the reply into the message list', async () => {
@@ -510,52 +573,7 @@ describe('a consumer built on the public entries', () => {
 
   it('drafts in the composer frame and offers send once there is text', () => {
     const textAreaRef = { current: null as HTMLTextAreaElement | null };
-    function Composer(): ReactElement {
-      const [text, setText] = useState('');
-      return (
-        <ThemeProvider themeDefinition={clickHouseTheme} persistThemeDefinition={false}>
-          <ComposerFrame
-            onSubmit={(event) => event.preventDefault()}
-            direction="auto"
-            maximizeChatSpace={false}
-            focused={false}
-            isTemporary={false}
-            onFocusDraft={() => textAreaRef.current?.focus()}
-          >
-            <ComposerField
-              textAreaRef={textAreaRef}
-              ariaLabel="Message"
-              textareaProps={{ value: text, onChange: (event) => setText(event.target.value) }}
-              value={text}
-              listening={false}
-              dictationActive={false}
-              locked={false}
-            />
-            <ComposerActions
-              text={text}
-              submitButtonRef={{ current: null }}
-              isSubmitting={false}
-              answersAsk={false}
-              hasEndpoint
-              steering={{ duringRunActive: false } as SteeringControls}
-              isNewConversation
-              getText={() => text}
-              onConsumed={() => undefined}
-              enterToSend
-              fileCount={0}
-              sendDisabled={false}
-              duringRunDisabled={false}
-              showStopButton={false}
-              setShowStopButton={() => undefined}
-              stop={() => undefined}
-              canStop
-              isPreparingFromUrl={false}
-            />
-          </ComposerFrame>
-        </ThemeProvider>
-      );
-    }
-    render(<Composer />);
+    render(<DraftComposer textAreaRef={textAreaRef} />);
 
     const field = screen.getByRole('textbox', { name: 'Message' });
     expect(textAreaRef.current).toBe(field);
@@ -670,16 +688,18 @@ describe('a consumer rendering subagent activity', () => {
       <I18nextProvider i18n={i18n}>
         <QueryClientProvider client={new QueryClient()}>
           <ChatContext.Provider value={contract}>
-            <MessagesHostProvider host={threadHost}>
-              <MessagePartsHostProvider host={host}>
-                <MessagesView
-                  messages={messages}
-                  messagesTree={messages}
-                  showScrollButton={false}
-                  maximizeChatSpace={false}
-                />
-              </MessagePartsHostProvider>
-            </MessagesHostProvider>
+            <SteerHostProvider host={createSteerHost()}>
+              <MessagesHostProvider host={threadHost}>
+                <MessagePartsHostProvider host={host}>
+                  <MessagesView
+                    messages={messages}
+                    messagesTree={messages}
+                    showScrollButton={false}
+                    maximizeChatSpace={false}
+                  />
+                </MessagePartsHostProvider>
+              </MessagesHostProvider>
+            </SteerHostProvider>
           </ChatContext.Provider>
         </QueryClientProvider>
       </I18nextProvider>,
@@ -743,14 +763,117 @@ describe('a consumer styled by the published stylesheet alone', () => {
     const statusRule = declaredFor(screen.getByText('Woke up'));
     expect(statusRule.match(/var\(--font-size-base, 1rem\)/g)).toHaveLength(2);
 
-    expect(declaredFor(screen.getByTestId('stream-elapsed'))).toMatch(/animation:[^;]*\bshimmer\b/);
-    expect(stylesheet).toMatch(/@keyframes shimmer\s*\{/);
-    expect(stylesheet).toMatch(/@keyframes shimmer-rtl\s*\{/);
+    const band = screen.getByTestId('stream-elapsed').querySelector('.shimmer-band');
+    expect(band && declaredFor(band)).toMatch(/animation:[^;]*\bshimmer-band\b/);
+    expect(stylesheet).toMatch(/@keyframes shimmer-band\s*\{/);
+    expect(stylesheet).toMatch(/@keyframes shimmer-copy\s*\{/);
     expect(stylesheet).toMatch(/html\.high-contrast\s*\{[^}]*--shimmer-dip-alpha: 1/);
 
     const icon = screen.getByRole('button', { name: 'Remove report.pdf' }).querySelector('svg');
     const iconRule = declaredFor(icon as SVGElement);
     expect(iconRule).toContain('width: 1rem');
     expect(iconRule).toContain('height: 1rem');
+  });
+
+  it('opens and fades a streaming thought from the shipped rules, as plain text', () => {
+    const streaming: MessagePartsHost = {
+      ...host,
+      useMessage: () => ({ messageId: 'reply-1', isSubmitting: true, isLatestMessage: true }),
+      useSmoothStreaming: () => true,
+    };
+    render(
+      <I18nextProvider i18n={i18n}>
+        <MessagePartsHostProvider host={streaming}>
+          <Reasoning reasoning="Checking the manifest. Reading the lockfile." isLast />
+        </MessagePartsHostProvider>
+      </I18nextProvider>,
+    );
+
+    /** The peek's edge fade and the panel's grid-rows motion are the package's, not the app's. */
+    const peek = screen.getByTestId('streaming-thought-peek');
+    expect(declaredFor(peek.firstElementChild as Element)).toMatch(/mask-image/);
+    const panel = document.querySelector('.part-expand') as Element;
+    expect(declaredFor(panel)).toMatch(/grid-template-rows:\s*0fr/);
+    expect(declaredFor(panel)).toMatch(/transition:[^;]*\.01ms/);
+
+    /** This host supplies no streaming renderer, so the opened thought is the text as it is. */
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_thinking' }));
+    expect(screen.getByText('Checking the manifest. Reading the lockfile.')).toBeInTheDocument();
+    expect(document.querySelector('[data-lc-fade]')).toBeNull();
+  });
+});
+
+describe('a consumer reading the shipped strings alone', () => {
+  /**
+   * What `@librechat/chat/locales/*` holds, written by the step that builds it: a file per
+   * language with the copy the chat UI can name, and the list of languages.
+   */
+  const out = mkdtempSync(join(tmpdir(), 'chat-strings-'));
+  const read = <T,>(name: string): T => JSON.parse(readFileSync(join(out, name), 'utf8')) as T;
+  const full = (language: string): Record<string, string> =>
+    JSON.parse(
+      readFileSync(
+        resolve(__dirname, `../../../client/src/locales/${language}/translation.json`),
+        'utf8',
+      ),
+    ) as Record<string, string>;
+
+  beforeAll(() => {
+    execFileSync(process.execPath, [
+      resolve(__dirname, '../../../scripts/i18n-chat.mts'),
+      '--out',
+      out,
+    ]);
+  });
+  afterAll(() => rmSync(out, { recursive: true, force: true }));
+
+  it('gets a part of the app\u2019s copy, word for word, in every language the app has', () => {
+    const languages = read<string[]>('index.json');
+    expect(languages).toEqual(expect.arrayContaining(['en', 'de', 'ja', 'zh-Hans']));
+    for (const language of languages) {
+      const shipped = read<Record<string, string>>(`${language}.json`);
+      const app = full(language);
+      expect(app).toMatchObject(shipped);
+      /** A fraction of it; a language still to be translated ships as empty as it is. */
+      expect(Object.keys(shipped).length).toBeLessThanOrEqual(Object.keys(app).length / 2);
+    }
+    /** A counted string comes with every form the language picks from. */
+    const english = read<Record<string, string>>('en.json');
+    expect(Object.keys(english).length).toBeGreaterThan(500);
+    const counted = Object.keys(full('en')).filter((key) =>
+      key.startsWith('com_ui_attachment_count_'),
+    );
+    expect(counted.length).toBeGreaterThan(1);
+    expect(Object.keys(english)).toEqual(expect.arrayContaining(counted));
+  });
+
+  it.each([
+    ['en', 'Send message'],
+    ['de', 'Nachricht senden'],
+  ])('says what the app says in %s', async (language, label) => {
+    const i18n = createInstance();
+    await i18n.use(initReactI18next).init({
+      lng: language,
+      fallbackLng: 'en',
+      resources: {
+        en: { translation: read<Record<string, string>>('en.json') },
+        [language]: { translation: read<Record<string, string>>(`${language}.json`) },
+      },
+      interpolation: { escapeValue: false },
+    });
+    render(
+      <I18nextProvider i18n={i18n}>
+        <DraftComposer textAreaRef={{ current: null }} />
+      </I18nextProvider>,
+    );
+
+    expect(screen.getByTestId('send-button')).toHaveAccessibleName(label);
+    /** Nothing the composer says is a key left untranslated. */
+    const said = Array.from(document.body.querySelectorAll('*')).flatMap((element) => [
+      element.getAttribute('aria-label') ?? '',
+      element.getAttribute('title') ?? '',
+      element.children.length === 0 ? (element.textContent ?? '') : '',
+    ]);
+    expect(said.filter((text) => /\bcom_[a-z0-9_]+\b/.test(text))).toEqual([]);
   });
 });

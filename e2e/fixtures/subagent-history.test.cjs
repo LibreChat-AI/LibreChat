@@ -303,7 +303,7 @@ test('browser history worker uses an isolated endpoint with enough retained outp
   assert.ok(retainedChars > history.output('retention-budget', 0).length);
   assert.match(endpoint, /mock-retained-history/);
   const browser = await fs.readFile(
-    path.resolve(__dirname, '../specs/mock/subagent-activity.spec.ts'),
+    path.resolve(__dirname, '../specs/mock/subagents.helpers.ts'),
     'utf8',
   );
   assert.match(browser, /provider: tools\?\.length \? 'Mock Retained History'/);

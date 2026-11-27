@@ -10,6 +10,7 @@ import {
   CODE_WORKSPACE_CHECKOUT_MODES,
   MAX_AGENT_CODE_ENVIRONMENT_CHOICES,
 } from './code/workspace';
+import { isGeminiHydrogen, GEMINI_HYDROGEN_OUTPUT_TOKENS } from './gemini';
 import { userSubmittedMessageFieldPathSchema } from './filters';
 import { TFeedback, feedbackSchema } from './feedback';
 import { CODE_APPROVAL_MODES } from './code/approval';
@@ -326,6 +327,7 @@ export enum ThinkingLevel {
   low = 'low',
   medium = 'medium',
   high = 'high',
+  xhigh = 'xhigh',
 }
 
 /** OpenAI Responses API `reasoning.mode` (GPT-5.6+). */
@@ -544,6 +546,9 @@ const GOOGLE_LEGACY_MAX_OUTPUT = 8192 as const;
  * (2.0 and earlier, including legacy image models) and Gemma retain the 8K limit.
  */
 const getGoogleMaxOutputTokens = (modelName: string): number => {
+  if (isGeminiHydrogen(modelName)) {
+    return GEMINI_HYDROGEN_OUTPUT_TOKENS;
+  }
   if (/gemini-(?:2\.5|[3-9]|\d{2,})/i.test(modelName)) {
     if (/image/i.test(modelName)) {
       return GOOGLE_IMAGE_MAX_OUTPUT;
@@ -939,6 +944,64 @@ const agentFadingTierSchema = z.object({
   masked: z.boolean(),
 });
 
+const tTriggerEventSchema = z.object({
+  type: z.string(),
+  /** ISO 8601. */
+  occurredAt: z.string(),
+});
+
+/**
+ * What an outside event was about, on the first message of the turn an event subscription
+ * started: the pull request it concerns and what was said about it. Copied from the verified
+ * event, field by field and bounded. Its text was written by people outside the deployment,
+ * so a model is given it only as labelled data, never as part of the prompt.
+ */
+export const tTriggerDetailSchema = z.object({
+  /** `owner/name` of the repository, as it read when the event was sent. */
+  repo: z.string(),
+  /** The pull request's number in that repository. */
+  number: z.number(),
+  /** The account that caused the event. */
+  actor: z.string(),
+  /** True when that account is a bot, such as an app's own. */
+  bot: z.boolean().optional(),
+  /** The page of the review, the comment or the pull request. */
+  url: z.string().optional(),
+  /** The pull request's title. */
+  title: z.string().optional(),
+  /** A review's verdict, a check suite's conclusion, or `merged` or `closed`. */
+  state: z.string().optional(),
+  /** An excerpt of the review's or comment's text. */
+  text: z.string().optional(),
+  /** The commit the event applies to. */
+  sha: z.string().optional(),
+  /** The branch the pull request merges into. */
+  branch: z.string().optional(),
+  /** The pull request's labels. */
+  labels: z.array(z.string()).optional(),
+});
+
+export type TTriggerDetail = z.infer<typeof tTriggerDetailSchema>;
+
+/**
+ * What started a turn no person sent, on the turn's first message. The server writes it from
+ * the run it verified and returns it to the conversation's owner alone: no request sets it,
+ * and it is left out of shared links and exports. A model reads none of it but `detail`,
+ * which it is given as labelled data. Later servers may add fields; none is renamed or removed.
+ */
+export const tMessageTriggerSchema = z.object({
+  /** The event whose delivery started the turn. */
+  event: tTriggerEventSchema,
+  /** The schedule or API key the run acts for. Absent on a turn the server began for a chat. */
+  subject: z.object({ kind: z.string(), id: z.string() }).optional(),
+  /** On a turn that reports background work: the event that began the run the work belongs to. */
+  origin: z.object({ event: tTriggerEventSchema }).optional(),
+  /** On a turn an event subscription started: what the event was about. */
+  detail: tTriggerDetailSchema.optional(),
+});
+
+export type TMessageTrigger = z.infer<typeof tMessageTriggerSchema>;
+
 export const tMessageSchema = z.object({
   messageId: z.string(),
   endpoint: z.string().optional(),
@@ -959,6 +1022,7 @@ export const tMessageSchema = z.object({
   privacyRevision: z.string().optional(),
   /** True when the complete stored row came from outside the model. */
   isUserSubmitted: z.boolean().optional(),
+  trigger: tMessageTriggerSchema.optional(),
   /** JSON pointers to caller-authored fields in an otherwise mixed model response. */
   userSubmittedPaths: z.array(z.string().startsWith('/')).optional(),
   /** Exact HITL message-field identity for caller-authored values stored in mixed responses. */
@@ -1536,6 +1600,11 @@ export type TSetOption = (
 export type TConversation = z.infer<typeof tConversationSchema> & {
   presetOverride?: Partial<TPreset>;
   disableParams?: boolean;
+};
+
+export type TConversationDetail = TConversation & {
+  /** The stored conversation was returned because target resolution threw. */
+  targetResolutionFailed?: true;
 };
 
 export const tSharedLinkSchema = z.object({

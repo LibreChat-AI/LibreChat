@@ -1,6 +1,6 @@
 import { createContext, useRef, useContext, RefObject, ReactNode } from 'react';
-import { completeProgressiveRowMounts } from '@librechat/chat/react';
 import { ThemeContext, isDark, readThemeColor } from '@librechat/client';
+import { completeProgressiveRowMounts, revealOffscreenRows } from '@librechat/chat/react';
 import { importWithRecovery } from '~/lib/assets/lazy';
 
 type ScreenshotContextType = {
@@ -112,9 +112,15 @@ export const useScreenshot = () => {
     /** Pin the transcript before mounting or cloning can yield to navigation. */
     await completeProgressiveRowMounts();
     assertTarget();
-    const image = await takeScreenShot(node);
-    assertTarget();
-    return image;
+    /** A clone carries no remembered size, so every row is laid out for the capture. */
+    const resumeSkipping = revealOffscreenRows();
+    try {
+      const image = await takeScreenShot(node);
+      assertTarget();
+      return image;
+    } finally {
+      resumeSkipping();
+    }
   };
 
   return { screenshotTargetRef: ref, captureScreenshot };

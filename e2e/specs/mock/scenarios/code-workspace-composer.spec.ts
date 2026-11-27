@@ -215,6 +215,44 @@ test.describe('composer code workspace chips', () => {
     ).toBeChecked();
   });
 
+  test('machines that share a name read apart in the menus @scenario:same-named-machines-read-apart', async ({
+    page,
+  }) => {
+    /** Wider than any menu row, so only a reserved id keeps the two machines apart. */
+    const name = 'ZimaCube in the north rack with a display name too long for one menu row';
+    const twin = {
+      ...secondMachine(),
+      name,
+      defaultWorkspaceId: 'librechat',
+      workspaces: [
+        workspace('librechat', { worktree: true, repo: 'danny-avila/LibreChat', ref: 'dev' }),
+      ],
+    };
+    await installCodeMocks(page, { environments: [singleMachine({ name }), twin] });
+    await openCodeChat(page);
+    const ids = ['env-zimacube', 'env-studio'];
+
+    const machines = await openChip(page, '[data-testid="code-machine"]');
+    for (const id of ids) {
+      const item = machines.getByRole('menuitem', { name: new RegExp(`^${name}\\s*${id}$`) });
+      await expect(item).toBeVisible();
+      await expectUnclipped(item.getByText(id, { exact: true }));
+    }
+    await closeMenu(page);
+
+    const menu = await openChip(page, WORKSPACE);
+    for (const id of ids) {
+      /** The group's label is what assistive technology announces with each row. */
+      const section = menu.getByRole('group', { name: new RegExp(`^${name}\\s*${id}(\\s|$)`) });
+      await expect(section).toBeVisible();
+      await expectUnclipped(section.getByText(id, { exact: true }));
+      await expect(
+        section.getByRole('menuitemradio', { name: /^librechat.*danny-avila\/LibreChat · dev/ }),
+      ).toBeVisible();
+    }
+    await closeMenu(page);
+  });
+
   test('an open chip menu does not read as disabled @scenario:open-chip-menu-not-disabled', async ({
     page,
   }) => {
@@ -288,4 +326,20 @@ async function closeMenuIfOpen(page: Page) {
     await page.keyboard.press('Escape');
   }
   await expect(openMenu(page)).toHaveCount(0);
+}
+
+/** The whole text is painted: not cut by its own ellipsis nor pushed out of the menu. */
+async function expectUnclipped(text: Locator) {
+  await expect(text).toBeVisible();
+  const fits = await text.evaluate((element) => {
+    const menu = element.closest('[role="menu"]')?.getBoundingClientRect();
+    const box = element.getBoundingClientRect();
+    return (
+      element.scrollWidth <= element.clientWidth + 1 &&
+      menu != null &&
+      box.left >= menu.left &&
+      box.right <= menu.right
+    );
+  });
+  expect(fits).toBe(true);
 }

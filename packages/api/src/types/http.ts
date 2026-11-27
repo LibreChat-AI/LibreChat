@@ -17,6 +17,8 @@ import type { BranchLinks } from '../messages/history';
  * (have to use type alias because you can't extend indexed access types like Request['body'])
  */
 export type RequestBody = {
+  /** Server-assigned MCP tool owner; overwrite browser input at tool construction and invocation. */
+  agentId?: string;
   messageId?: string;
   fileTokenLimit?: number;
   conversationId?: string;

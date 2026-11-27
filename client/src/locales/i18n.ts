@@ -1,58 +1,14 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
-
+import type { SupportedLocale } from './resolve';
+import { resolveLocale, supportedLocales } from './resolve';
 import translationEn from './en/translation.json';
+
+export { supportedLocales };
+export type { SupportedLocale };
 
 export const defaultNS = 'translation';
 
-export const supportedLocales = [
-  'ar',
-  'bo',
-  'bs',
-  'ca',
-  'cs',
-  'da',
-  'de',
-  'en',
-  'es',
-  'et',
-  'fa',
-  'fi',
-  'fr',
-  'he',
-  'hi',
-  'hu',
-  'hy',
-  'id',
-  'is',
-  'it',
-  'ja',
-  'ka',
-  'ko',
-  'lt',
-  'lv',
-  'mr',
-  'nb',
-  'nl',
-  'nn',
-  'pl',
-  'pt-BR',
-  'pt-PT',
-  'ru',
-  'sk',
-  'sl',
-  'sv',
-  'ta',
-  'th',
-  'tr',
-  'ug',
-  'uk',
-  'vi',
-  'zh-Hans',
-  'zh-Hant',
-] as const;
-
-export type SupportedLocale = (typeof supportedLocales)[number];
 export type TranslationResource = Record<string, string>;
 
 export const resources = {
@@ -108,54 +64,6 @@ const localeLoaders: Record<
   'zh-Hant': () => import('./zh-Hant/translation.json'),
 };
 
-const localeByLowercase = supportedLocales.reduce<Record<string, SupportedLocale>>(
-  (acc, locale) => {
-    acc[locale.toLowerCase()] = locale;
-    return acc;
-  },
-  {},
-);
-
-const localeAliases: Record<string, SupportedLocale> = {
-  'ar-eg': 'ar',
-  'ca-es': 'ca',
-  'cs-cz': 'cs',
-  'da-dk': 'da',
-  'de-de': 'de',
-  'en-us': 'en',
-  'es-es': 'es',
-  'et-ee': 'et',
-  'fa-ir': 'fa',
-  'fi-fi': 'fi',
-  'fr-fr': 'fr',
-  'he-he': 'he',
-  'he-il': 'he',
-  'hu-hu': 'hu',
-  'hy-am': 'hy',
-  'id-id': 'id',
-  'it-it': 'it',
-  'ja-jp': 'ja',
-  'ka-ge': 'ka',
-  'ko-kr': 'ko',
-  'lt-lt': 'lt',
-  'lv-lv': 'lv',
-  'nl-nl': 'nl',
-  'pl-pl': 'pl',
-  pt: 'pt-PT',
-  'ru-ru': 'ru',
-  'sv-se': 'sv',
-  'th-th': 'th',
-  'tr-tr': 'tr',
-  'uk-ua': 'uk',
-  'vi-vn': 'vi',
-  zh: 'zh-Hans',
-  'zh-cn': 'zh-Hans',
-  'zh-sg': 'zh-Hans',
-  'zh-tw': 'zh-Hant',
-  'zh-hk': 'zh-Hant',
-  'zh-mo': 'zh-Hant',
-};
-
 const loadedLocales = new Set<SupportedLocale>(['en']);
 const loadingLocales: Partial<Record<SupportedLocale, Promise<SupportedLocale>>> = {};
 let languageRequestId = 0;
@@ -201,24 +109,7 @@ function getNavigatorLanguage() {
 }
 
 export function normalizeLocale(locale?: string | null): SupportedLocale {
-  const requested = locale === 'auto' ? getNavigatorLanguage() : locale;
-  if (!requested) {
-    return 'en';
-  }
-
-  const normalized = requested.replace(/_/g, '-').toLowerCase();
-  const exact = localeByLowercase[normalized];
-  if (exact) {
-    return exact;
-  }
-
-  const alias = localeAliases[normalized];
-  if (alias) {
-    return alias;
-  }
-
-  const base = normalized.split('-')[0];
-  return localeByLowercase[base] ?? localeAliases[base] ?? 'en';
+  return resolveLocale(locale === 'auto' ? getNavigatorLanguage() : locale);
 }
 
 export function detectInitialLanguage() {

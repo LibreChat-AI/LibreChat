@@ -27,11 +27,14 @@ module.exports = {
         'theme-button-xs': 'var(--theme-button-height-xs, 1.75rem)',
         'theme-button-lg': 'var(--theme-button-height-lg, 2.75rem)',
         'theme-button-compact': 'var(--theme-button-height-compact, 2rem)',
-        /** A form field's height, and the large `title` field's. */
-        'theme-field': 'var(--theme-field-height, 2.5rem)',
-        'theme-field-lg': 'var(--theme-field-height-lg, 3rem)',
-        /** The sign-in form's floating-label field and submit button. */
-        'theme-auth-field': 'var(--theme-auth-field-height, 2.75rem)',
+        /** A form field's height, and the large `title` field's. Held at `--lc-field-floor`, which
+         *  the package's field stylesheet sets on touch devices only, so text floored at 16px there
+         *  keeps a line of room at a small UI scale. */
+        'theme-field': 'max(var(--theme-field-height, 2.5rem), var(--lc-field-floor, 0px))',
+        'theme-field-lg': 'max(var(--theme-field-height-lg, 3rem), var(--lc-field-floor, 0px))',
+        /** The sign-in form's floating-label field, held at the same floor, and submit button. */
+        'theme-auth-field':
+          'max(var(--theme-auth-field-height, 2.75rem), var(--lc-field-floor, 0px))',
         'theme-auth-button': 'var(--theme-auth-button-height, 3rem)',
         'theme-auth-action': 'var(--theme-auth-action-height, 2.5rem)',
         /** WCAG 2.5.8's 24px target minimum, fixed so a theme can draw controls larger, never
@@ -159,6 +162,11 @@ module.exports = {
           from: { height: 'var(--radix-collapsible-content-height)', opacity: 1 },
           to: { height: 0, opacity: 0 },
         },
+        /** Pins a panel at `--hold-width` while its container resizes around it, then
+         *  releases it to the container. Lasts as long as `collapsible-down`. */
+        'hold-width': {
+          'from, to': { width: 'var(--hold-width)' },
+        },
       },
       animation: {
         'loading-dot': 'loading-dot 1.2s ease-in-out var(--loading-dot-delay, 0ms) infinite',
@@ -166,8 +174,13 @@ module.exports = {
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
         'caret-blink': 'caret-blink 1.25s ease-out infinite',
-        'collapsible-down': 'collapsible-down 0.3s cubic-bezier(0, 0, 0.2, 1)',
-        'collapsible-up': 'collapsible-up 0.2s cubic-bezier(0.4, 0, 1, 1)',
+        /** Two panels trading places set one `--collapsible-duration` and `--collapsible-ease`
+         *  for both rolls; paced apart, their combined height overshoots. */
+        'collapsible-down':
+          'collapsible-down var(--collapsible-duration, 0.3s) var(--collapsible-ease, cubic-bezier(0, 0, 0.2, 1))',
+        'collapsible-up':
+          'collapsible-up var(--collapsible-duration, 0.2s) var(--collapsible-ease, cubic-bezier(0.4, 0, 1, 1))',
+        'hold-width': 'hold-width 0.3s',
       },
       /**
        * `rounded-sm` through `rounded-3xl` are not restated here: `@librechat/client/theme.css`
@@ -213,6 +226,8 @@ module.exports = {
         'max-width': 'max-width',
         /** A progress ring filling as its dash offset falls. */
         'stroke-dashoffset': 'stroke-dashoffset',
+        /** A card that widens or narrows as a panel inside it opens or closes. */
+        width: 'width',
       },
       blur: {
         /** The soft blur a crossfading label passes through on its way out or in. */
@@ -230,6 +245,18 @@ module.exports = {
      * Declared as a peer dependency so the consumer's install provides it.
      */
     require('tailwindcss-animate'),
+    /** The fold's animation properties need distinct names: `ease-*` also controls transitions,
+     *  and the design parser reads the plugin's `fill-mode-*` utilities as SVG fill colors. */
+    {
+      handler: ({ addUtilities }) => {
+        addUtilities({
+          '.animation-ease-fold': {
+            animationTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)',
+          },
+          '.animation-fill-forwards': { animationFillMode: 'forwards' },
+        });
+      },
+    },
     /**
      * A bare function rather than `plugin()` from `tailwindcss/plugin`, because
      * this preset ships as a raw file through the `./tailwind-preset` export and

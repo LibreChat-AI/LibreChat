@@ -1,3 +1,4 @@
+const { getUserKey, getUserKeyValues } = require('~/models');
 const { createModelsService } = require('@librechat/api');
 const {
   config,
@@ -13,4 +14,5 @@ module.exports = createModelsService({
   loadConfigModels,
   loadAsyncEndpoints,
   defaultEndpointsConfig: config,
+  credentials: { getUserKey, getUserKeyValues },
 });

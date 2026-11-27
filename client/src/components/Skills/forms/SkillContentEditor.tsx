@@ -1,35 +1,26 @@
 import { memo } from 'react';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
 import supersub from 'remark-supersub';
 import { Check, SquarePen } from 'lucide';
 import ReactMarkdown from 'react-markdown';
-import rehypeHighlight from 'rehype-highlight';
-import { Controller, useFormContext } from 'react-hook-form';
+import { Controller, useFormContext, useWatch } from 'react-hook-form';
 import { TextareaAutosize, Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import type { RegisterOptions } from 'react-hook-form';
 import type { PluggableList } from 'unified';
+import {
+  DETECT_HIGHLIGHT,
+  toRehypePlugins,
+  useRehypeModules,
+} from '~/components/Chat/Messages/Content/rehype';
 import { codeNoExecution } from '~/components/Chat/Messages/Content/MarkdownComponents';
-import { cn, langSubset } from '~/utils';
 import { useLocalize } from '~/hooks';
+import { cn } from '~/utils';
 
 const REMARK_PLUGINS: PluggableList = [
   supersub,
   remarkGfm,
   [remarkMath, { singleDollarTextMath: false }],
-];
-
-const REHYPE_PLUGINS: PluggableList = [
-  [rehypeKatex],
-  [
-    rehypeHighlight,
-    {
-      detect: true,
-      ignoreMissing: true,
-      subset: langSubset,
-    },
-  ],
 ];
 
 const MARKDOWN_COMPONENTS = { code: codeNoExecution };
@@ -52,6 +43,8 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
     control,
     formState: { errors },
   } = useFormContext();
+  const value = useWatch({ control, name }) as string | undefined;
+  const rehypePlugins = toRehypePlugins(useRehypeModules(value ?? '', true), DETECT_HIGHLIGHT);
 
   return (
     <div className="flex max-h-[85vh] flex-col sm:max-h-[85vh]">
@@ -125,7 +118,7 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
                     /** @ts-ignore - PluggableList vs Pluggable[] shape drift */
                     remarkPlugins={REMARK_PLUGINS}
                     /** @ts-ignore - PluggableList vs Pluggable[] shape drift */
-                    rehypePlugins={REHYPE_PLUGINS}
+                    rehypePlugins={rehypePlugins}
                     components={MARKDOWN_COMPONENTS as unknown as Record<string, React.ElementType>}
                     className="markdown prose light text-text-primary w-full break-words"
                   >

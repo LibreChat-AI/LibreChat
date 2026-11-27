@@ -8,6 +8,10 @@ import {
 } from 'librechat-data-provider';
 import type { MCPOptions } from 'librechat-data-provider';
 import type * as t from '~/types';
+import { applyTenantIsolation } from '~/models/plugins/tenantIsolation';
+import { migrateTenantIndexes } from '~/migrations/tenantIndexes';
+import { tenantStorage } from '~/config/tenantContext';
+import { createMCPNameModel } from '../models/mcpName';
 import { createMCPServerMethods } from './mcpServer';
 import { createAclEntryMethods } from './aclEntry';
 import mcpServerSchema from '~/schema/mcpServer';
@@ -22,6 +26,8 @@ let methods: ReturnType<typeof createMCPServerMethods>;
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
   const mongoUri = mongoServer.getUri();
+  createMCPNameModel(mongoose);
+  applyTenantIsolation(mcpServerSchema);
   MCPServer = mongoose.models.MCPServer || mongoose.model('MCPServer', mcpServerSchema);
   if (!mongoose.models.AclEntry) {
     mongoose.model('AclEntry', aclEntrySchema);
@@ -40,11 +46,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(async () => {
   await mongoose.connection.dropDatabase();
+  await mongoose.models.MCPName.syncIndexes();
 });
 
 describe('MCPServer Model Tests', () => {
@@ -877,5 +884,64 @@ describe('MCPServer Model Tests', () => {
       // Whitespace-only title after trimming results in fallback
       expect(server.serverName).toBe('mcp-server');
     });
+  });
+});
+
+test.each(['single', 'bulk'])(
+  'deleted server names remain reserved after %s deletion',
+  async (mode) => {
+    const author = new mongoose.Types.ObjectId();
+    const config: MCPOptions = { title: 'Reserved', type: 'sse', url: 'https://example.test/mcp' };
+    const first = await methods.createMCPServer({ author, config });
+    if (mode === 'single') await methods.deleteMCPServer(first.serverName);
+    else await methods.deleteMCPServersWithAcl([first._id.toString()]);
+    const next = await methods.createMCPServer({ author, config });
+    expect(next.serverName).not.toBe(first.serverName);
+  },
+);
+
+describe('tenant-scoped durable name reservations', () => {
+  const config: MCPOptions = { type: 'sse', url: 'https://example.com/mcp', title: 'Shared' };
+  const author = new mongoose.Types.ObjectId();
+  const run = <T>(tenantId: string, fn: () => Promise<T>) => tenantStorage.run({ tenantId }, fn);
+
+  it('persists tenant identity and permits the same title in two tenants', async () => {
+    const a = await run('a', async () => methods.createMCPServer({ config, author }));
+    const b = await run('b', async () => methods.createMCPServer({ config, author }));
+    expect(a.serverName).toBe(b.serverName);
+    expect(await mongoose.models.MCPName.collection.distinct('tenantId')).toEqual(
+      expect.arrayContaining(['a', 'b']),
+    );
+  });
+
+  it('retains names after single and bulk deletion without touching another tenant', async () => {
+    const a = await run('a', async () => methods.createMCPServer({ config, author }));
+    const b = await run('b', async () => methods.createMCPServer({ config, author }));
+    await run('a', async () => methods.deleteMCPServer(a.serverName));
+    expect(await run('a', async () => methods.createMCPServer({ config, author }))).toMatchObject({
+      serverName: 'shared-2',
+    });
+    expect(await run('a', async () => methods.deleteMCPServersWithAcl([String(b._id)]))).toBe(0);
+    expect(await run('b', async () => methods.deleteMCPServersWithAcl([String(b._id)]))).toBe(1);
+    expect(await run('b', async () => methods.createMCPServer({ config, author }))).toMatchObject({
+      serverName: 'shared-2',
+    });
+  });
+
+  it('migrates the global index while preserving unattributable retired names', async () => {
+    const collection = mongoose.models.MCPName.collection;
+    await collection.dropIndex('name_1_tenantId_1');
+    await collection.createIndex({ name: 1 }, { unique: true });
+    await collection.insertOne({ name: 'shared' });
+    const result = await migrateTenantIndexes(mongoose.connection);
+    expect(result.errors).toEqual([]);
+    expect(result.dropped).toContain('mcpnames.name_1');
+    for (const tenantId of ['a', 'b']) {
+      expect(
+        await run(tenantId, async () => methods.createMCPServer({ config, author })),
+      ).toMatchObject({ serverName: 'shared-2' });
+    }
+    expect(await collection.findOne({ name: 'shared' })).not.toHaveProperty('tenantId');
+    expect((await migrateTenantIndexes(mongoose.connection)).errors).toEqual([]);
   });
 });

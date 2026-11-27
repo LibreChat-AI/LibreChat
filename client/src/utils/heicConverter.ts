@@ -1,12 +1,12 @@
 import { importWithRecovery } from '~/lib/assets/lazy';
 const HEIC_MIME_TYPES = new Set(['image/heic', 'image/heif']);
 const HEIC_EXTENSION_REGEX = /\.(heic|heif)$/i;
-type HeicToModule = typeof import('heic-to');
+type HeicToModule = typeof import('heic-to/csp');
 
 let heicConverterPromise: Promise<HeicToModule> | null = null;
 
 const loadHeicConverter = async (): Promise<HeicToModule> => {
-  heicConverterPromise ??= importWithRecovery(() => import('heic-to')).catch((error) => {
+  heicConverterPromise ??= importWithRecovery(() => import('heic-to/csp')).catch((error) => {
     heicConverterPromise = null;
     throw error;
   });

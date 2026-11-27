@@ -8,6 +8,7 @@ export const DEFAULT_LOOKUP_CONCURRENCY = {
   skillNameLookups: 8,
   skillFileInspections: 4,
   resumeAgentLoads: 4,
+  codeOutputDownloads: 4,
 } as const;
 
 export type LookupConcurrency = keyof typeof DEFAULT_LOOKUP_CONCURRENCY;

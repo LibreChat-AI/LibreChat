@@ -10,6 +10,7 @@ export * from './json';
 export * from './sanitize';
 export * from './capabilities';
 export * from './auth';
+export * from './ldap';
 export {
   TENANT_CONTEXT_REQUIRED,
   createPreAuthTenantGuard,
@@ -36,4 +37,5 @@ export * from './code';
 export * from './management';
 export * from './twoFactor';
 export * from './messageIds';
+export * from './openid';
 export * from './promptResolveLimiter';

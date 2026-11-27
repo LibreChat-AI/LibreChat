@@ -7,6 +7,7 @@ import {
   MAX_PII_PATTERNS_PER_SOURCE,
   MAX_PII_PATTERN_LENGTH,
   setMessageFilterRegexValidator,
+  setPiiRegexProgramSizer,
 } from 'librechat-data-provider';
 import type {
   NextFunction,
@@ -41,6 +42,7 @@ import {
   extractStoredMessageContent,
 } from '../protection/adapters/submissions';
 import { extractMessageContent } from '../protection/adapters/messages';
+import { getPiiRegexProgramSize } from '../protection/programSize';
 import { extractChatContent } from '../protection/adapters/chat';
 import { contentFilterBlockResponse } from './contentFilter';
 import { inspectContent } from '../protection/runtime';
@@ -67,6 +69,8 @@ function validateMessageFilterRegex(pattern: string): {
  */
 export function configureMessageFilterRegexValidator(): void {
   setMessageFilterRegexValidator(validateMessageFilterRegex);
+  /* `filters` PII patterns are sized by the same engine; the shared package cannot carry it. */
+  setPiiRegexProgramSizer(getPiiRegexProgramSize);
 }
 
 const LEGACY_CONFIG_VALIDITY = new WeakMap<object, boolean>();

@@ -6,8 +6,13 @@ import { openSidebar } from './sidebar';
 
 test.use({ viewport: { width: 1280, height: 860 }, hasTouch: false, isMobile: false });
 
-for (const mode of ['light', 'dark']) {
-  test(`channel confirmation and personal withdrawal use current state (${mode})`, async ({
+const SCENARIO = {
+  light: '@scenario:channel-confirmation-and-personal-withdrawal-light',
+  dark: '@scenario:channel-confirmation-and-personal-withdrawal-dark',
+} as const;
+
+for (const mode of ['light', 'dark'] as const) {
+  test(`channel confirmation and personal withdrawal use current state (${mode}) ${SCENARIO[mode]}`, async ({
     page,
     baseURL,
   }) => {
@@ -87,11 +92,14 @@ for (const mode of ['light', 'dark']) {
         path: `${process.env.E2E_CHANNEL_VISUAL_PREFIX}-settings-${mode}.png`,
       });
     }
-    await settings.getByRole('button', { name: 'Revoke link', exact: true }).click();
+    await settings.getByRole('button', { name: /^Disconnect from agent / }).click();
     expect(revokes).toBe(0);
-    const confirmation = page.getByRole('dialog', { name: 'Revoke link', exact: true });
+    const confirmation = page.getByRole('dialog', {
+      name: 'Disconnect this account?',
+      exact: true,
+    });
     await expect(confirmation.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
-    await confirmation.getByRole('button', { name: 'Revoke link', exact: true }).click();
+    await confirmation.getByRole('button', { name: 'Disconnect', exact: true }).click();
     await expect(confirmation).not.toBeVisible();
     await expect(settings.getByRole('status')).toHaveText('Revoked');
     expect(revokes).toBe(1);

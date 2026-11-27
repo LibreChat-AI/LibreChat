@@ -990,6 +990,37 @@ describe('Agent queued-turn delivery scheduling', () => {
     }
   });
 
+  it.each([
+    ['raised above the default to 5 minutes', 300_000, [0, 60_000, 180_000, 420_000, 720_000]],
+    ['held at the 30 second interval when lower than it', 10_000, [0, 30_000, 60_000, 90_000]],
+  ])('follows a deployment-wide ceiling %s', async (_name, idleCeilingMs, readsAt) => {
+    jest.useFakeTimers();
+    try {
+      const findQueuedTurnsNeedingDelivery = jest.fn(async () => []);
+      const scheduler = createAgentQueuedTurnScheduler({
+        methods: {
+          ensureAgentQueuedTurnIndexes: jest.fn(async () => undefined),
+          findQueuedTurnsNeedingDelivery,
+          claimQueuedTurnsForAdmissionReconciliation: jest.fn(async () => []),
+        } as unknown as AgentQueuedTurnMethods,
+        enqueue: jest.fn(),
+        getGenerationAdmissionEvidence: async () => null,
+      });
+      await scheduler.initialize({ maxIdleIntervalMs: 120_000, idleCeilingMs });
+      for (const [index, at] of readsAt.entries()) {
+        if (index > 0) {
+          await jest.advanceTimersByTimeAsync(at - readsAt[index - 1] - 1);
+          expect(findQueuedTurnsNeedingDelivery).toHaveBeenCalledTimes(index);
+          await jest.advanceTimersByTimeAsync(1);
+        }
+        expect(findQueuedTurnsNeedingDelivery).toHaveBeenCalledTimes(index + 1);
+      }
+      await scheduler.stop();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('does not treat a deferred indeterminate admission as an empty queue', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date(NOW));

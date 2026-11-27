@@ -22,6 +22,13 @@ import type { MutationReport } from './merge.mts';
 import { git, reportJobs } from './changes.mts';
 import { assertMutants, mutantKey } from './shards.mts';
 import { mutationSummary } from './merge.mts';
+import {
+  REPORT_JOB,
+  REPORT_ARTIFACT,
+  FINDINGS_ARTIFACT,
+  REPORT_UPLOAD_STEP,
+  FINDINGS_UPLOAD_STEP,
+} from './comment.mts';
 
 interface Step {
   if?: string;
@@ -32,8 +39,11 @@ interface Step {
   with?: Record<string, string | number | boolean>;
   env?: Record<string, string>;
   'working-directory'?: string;
+  'timeout-minutes'?: number;
+  'continue-on-error'?: boolean;
 }
 interface Job {
+  name?: string;
   env?: Record<string, string>;
   services?: Record<string, { image: string }>;
   'timeout-minutes'?: string | number;
@@ -135,7 +145,8 @@ test('workflow separates tooling, source, installs and artifacts without changin
   );
   assert.equal(
     workflow.jobs['mutation-summary'].if,
-    "always() && needs.select.outputs.hasMutations == 'true'",
+    "always() && needs.select.outputs.hasMutations == 'true' && " +
+      "(needs.reports.result == 'success' || needs.reports.result == 'failure')",
   );
   assert.deepEqual(workflow.jobs['mutation-summary'].strategy?.matrix, {
     workspace: '${{ fromJSON(needs.select.outputs.mutationWorkspaces) }}',
@@ -180,6 +191,40 @@ test('PR updates retain PostgreSQL contracts without starting source quality rep
   assert.equal(report.steps[prewarm].with?.['working-directory'], 'source');
 });
 
+test('API risk coverage provisions pinned host Redis before executing source tests', () => {
+  const provision = report.steps.findIndex(
+    ({ uses }) => uses === './tooling/.github/actions/redis-binaries',
+  );
+  const node = report.steps.findIndex(({ uses }) => uses === 'actions/setup-node@v5');
+  const tooling = report.steps.findIndex(({ name }) => name === 'Check out quality tooling');
+  assert.ok(provision > node && provision > tooling, 'trusted provisioning needs Node and tooling');
+  assert.ok(provision < report.steps.indexOf(runner), 'test fixtures need host Redis on PATH');
+  assert.equal(
+    report.steps[provision].if,
+    "matrix.workspace == 'api' && matrix.task.check == 'risk'",
+  );
+  assert.equal(report.steps[provision]['timeout-minutes'], 8);
+  assert.ok(
+    workflow.jobs.verify.steps.some(
+      ({ run }) => run === 'node --test .github/actions/redis-binaries/provision.test.mjs',
+    ),
+  );
+  assert.ok(workflow.on.pull_request?.paths.includes('.github/actions/redis-binaries/**'));
+});
+
+test('comment commands from humans and bots reach trusted admission before report jobs', () => {
+  const request = workflow.jobs.request;
+  assert.equal(
+    request.if,
+    "github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, '/quality')",
+  );
+  assert.equal(checkouts(request)[0].with?.ref, '${{ github.sha }}');
+  assert.ok(request.steps.some(({ run }) => run === 'node scripts/quality/comment.mts request'));
+  for (const name of ['verify', 'select']) {
+    assert.match(workflow.jobs[name].if!, /needs\.request\.outputs\.accepted == 'true'/);
+  }
+});
+
 test('comment publication is trusted and serialized while PR execution stays read-only', (t) => {
   assert.ok(workflow.on.pull_request?.paths.includes('scripts/quality/**'));
   assert.equal(
@@ -189,7 +234,7 @@ test('comment publication is trusted and serialized while PR execution stays rea
   assert.deepEqual(workflow.on.issue_comment?.types, ['created']);
   assert.equal(workflow.jobs.request.permissions?.issues, 'write');
   assert.match(workflow['run-name']!, /Quality PR #\{0\} request \{1\}/);
-  for (const name of ['verify', 'select', 'reports', 'mutation-summary']) {
+  for (const name of ['verify', 'select', 'reports', 'mutation-summary', 'report']) {
     assert.deepEqual(workflow.jobs[name].permissions ?? workflow.permissions, { contents: 'read' });
   }
   for (const name of ['reports', 'mutation-summary']) {
@@ -197,7 +242,43 @@ test('comment publication is trusted and serialized while PR execution stays rea
       ({ uses }) => uses === 'actions/upload-artifact@v6',
     );
     assert.equal(upload?.with?.overwrite, true, 'reruns replace failed artifacts');
+    // A failed run still uploads its record (`failure.json` for failing tests) for the bundle.
+    assert.equal(upload?.if, 'always()', `${name} uploads after a failed step`);
+    // Intermediate data: never linked from the comment and kept only long enough to bundle.
+    assert.match(String(upload?.with?.name), /^quality-internal-/u);
+    assert.equal(upload?.with?.['retention-days'], 1);
   }
+  const report = workflow.jobs.report;
+  assert.equal(report.name, REPORT_JOB, 'comment.mts finds the report job by this name');
+  assert.deepEqual(report.needs, ['request', 'select', 'reports', 'mutation-summary']);
+  assert.ok(report.steps.every(({ run }) => !run?.includes('npm')));
+  assert.equal(checkouts(report)[0].with?.['sparse-checkout'], 'scripts/quality');
+  const downloads = report.steps.filter(({ uses }) =>
+    uses?.startsWith('actions/download-artifact'),
+  );
+  const internal = [
+    'quality-internal-risk-data-schemas',
+    'quality-internal-risk-api',
+    'quality-internal-risk-server',
+    'quality-internal-mutation-data-schemas',
+  ].map((name) => `${name}-\${{ env.QUALITY_HEAD }}`);
+  // bundle.mts reads `<directory>/<artifact name>/`; a single pattern match extracts into `path`.
+  assert.deepEqual(
+    downloads.map(({ with: options }) => [options?.pattern, options?.path]),
+    internal.map((name) => [name, `coverage/internal/${name}`]),
+  );
+  assert.ok(downloads.every((step) => step['continue-on-error'] === undefined));
+  const uploads = report.steps.filter(({ uses }) => uses === 'actions/upload-artifact@v6');
+  assert.deepEqual(
+    uploads.map(({ name, with: options }) => [name, options?.name, options?.['retention-days']]),
+    [
+      [REPORT_UPLOAD_STEP, REPORT_ARTIFACT, 14],
+      [FINDINGS_UPLOAD_STEP, FINDINGS_ARTIFACT, 1],
+    ],
+    'comment.mts trusts these exact step names before reading or linking the artifacts',
+  );
+  assert.ok(uploads.every(({ with: options }) => options?.overwrite === true));
+  assert.equal(uploads[1].with?.path, 'coverage/quality-report/findings.json');
   for (const name of ['request', 'progress']) {
     const job = workflow.jobs[name];
     assert.equal(checkouts(job)[0].with?.ref, '${{ github.sha }}');
@@ -247,11 +328,17 @@ test('comment publication is trusted and serialized while PR execution stays rea
       ({ run, uses }) => !run?.includes('npm') && !uses?.startsWith('actions/download-artifact'),
     ),
   );
-  assert.ok(
-    publisher.jobs.publish.steps.every(
-      ({ run, uses }) => !run?.includes('npm') && !uses?.startsWith('actions/download-artifact'),
-    ),
+  assert.equal(publisher.jobs.inline, undefined);
+  assert.ok(publisher.jobs.publish.steps.every(({ run }) => !run?.includes('npm')));
+  // The privileged job downloads only the small findings file from the triggering run.
+  const fetched = publisher.jobs.publish.steps.filter(({ uses }) =>
+    uses?.startsWith('actions/download-artifact'),
   );
+  assert.deepEqual(
+    fetched.map(({ with: options }) => [options?.name, options?.['run-id'], options?.path]),
+    [[FINDINGS_ARTIFACT, '${{ github.event.workflow_run.id }}', 'findings']],
+  );
+  assert.equal(fetched[0]['continue-on-error'], true);
   const directory = mkdtempSync(join(tmpdir(), 'quality-event-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   for (const [event, expected] of [
@@ -401,12 +488,40 @@ for (const olderHead of [true, false]) {
         'junction',
       );
     }
+    // The source-alias pass compiles packages/api/src with the measured checkout's own Babel,
+    // which the real repository installs for api/'s Jest transform.
+    mkdirSync(join(source, 'node_modules/@babel'), { recursive: true });
+    for (const dependency of [
+      'babel-jest',
+      '@babel/core',
+      '@babel/preset-env',
+      '@babel/preset-typescript',
+      '@babel/plugin-transform-dynamic-import',
+      '@babel/plugin-transform-modules-commonjs',
+    ]) {
+      symlinkSync(
+        dirname(require.resolve(`${dependency}/package.json`)),
+        join(source, 'node_modules', dependency),
+        'junction',
+      );
+    }
     git(['update-ref', 'refs/remotes/origin/dev', base], source);
+    // The real job inherits a workflow-level QUALITY_BASE/QUALITY_HEAD (and, on other triggers,
+    // QUALITY_SCOPE/QUALITY_CHECK/QUALITY_WORKSPACE/QUALITY_STATIC/QUALITY_SHARD/QUALITY_PR/
+    // QUALITY_REPOSITORY) from its own CI run. Drop every inherited QUALITY_* value so this
+    // fixture's explicit values below are the only ones each step call ever sees.
+    const inherited = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !key.startsWith('QUALITY_')),
+    );
     const env = {
-      ...process.env,
+      ...inherited,
       QUALITY_HEAD: head,
       QUALITY_WORKSPACE: 'data-schemas',
       QUALITY_STATIC: mode,
+      // The merge step's --repository/--pr: a fixed fixture value, standing in for the real
+      // workflow's github.repository / pull_request.number context.
+      QUALITY_REPOSITORY: 'quality-fixture/quality-fixture',
+      QUALITY_PR: '1',
       GITHUB_OUTPUT: '',
       GITHUB_STEP_SUMMARY: '',
     };
@@ -487,7 +602,10 @@ for (const olderHead of [true, false]) {
         }
         cpSync(
           output,
-          join(tooling, `coverage/shards/change-mutation-data-schemas-${head}-shard-${shard}`),
+          join(
+            tooling,
+            `coverage/shards/quality-internal-mutation-data-schemas-${head}-shard-${shard}`,
+          ),
           { recursive: true },
         );
       }
@@ -497,7 +615,9 @@ for (const olderHead of [true, false]) {
     const combine = workflow.jobs['mutation-summary'].steps.find(
       ({ name }) => name === 'Verify and combine mutation results',
     )!;
-    run(combine.run!, tooling, {});
+    // The real job sets QUALITY_BASE at job level, so give the combine step the same base SHA
+    // each shard's report was generated against.
+    run(combine.run!, tooling, { QUALITY_BASE: base });
     const combined = JSON.parse(
       readFileSync(join(tooling, 'coverage/changes/data-schemas/mutation/mutation.json'), 'utf8'),
     );

@@ -101,6 +101,24 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
             { status: 'failed' },
             { expiresAt: { $lte: now } },
             { status: 'pending', lockExpiresAt: { $lte: now } },
+            /**
+             * Delivery claims keep a completed record alive past the life of its result, and no
+             * caller may reuse a spent result, so it would otherwise block the next flight. It
+             * stays while a response is delivering it or a logout is fencing it. The owner check
+             * ignores a time left behind by a replica that reclaimed the record without clearing
+             * it.
+             */
+            {
+              status: 'completed',
+              'usable.until': { $lte: now },
+              $expr: { $eq: ['$usable.ownerId', '$ownerId'] },
+              revocationRequestedAt: { $exists: false },
+              $or: [
+                { deliveryId: { $exists: false } },
+                { deliveryExpiresAt: { $exists: false } },
+                { deliveryExpiresAt: { $lte: now } },
+              ],
+            },
           ],
         },
         {
@@ -114,6 +132,7 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
           },
           $unset: {
             encryptedResult: '',
+            usable: '',
             errorMessage: '',
             deliveryId: '',
             deliveryExpiresAt: '',
@@ -158,6 +177,9 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
             status: 'completed',
             encryptedResult: data.encryptedResult,
             expiresAt: data.expiresAt,
+            ...(data.usableUntil
+              ? { usable: { ownerId: data.ownerId, until: data.usableUntil } }
+              : {}),
             updatedAt: new Date(),
           },
           $unset: {
@@ -223,6 +245,7 @@ export function createOpenIDRefreshFlightMethods(mongoose: typeof import('mongoo
           },
           $unset: {
             encryptedResult: '',
+            usable: '',
             deliveryId: '',
             deliveryExpiresAt: '',
             revocationRequestedAt: '',

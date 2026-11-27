@@ -12,6 +12,8 @@ export interface IAgentApiKey extends Document {
   createdAt: Date;
   updatedAt: Date;
   tenantId?: string;
+  /** MCP grants the owner made for this key, by the agent each one covers. */
+  mcpGrants?: Record<string, unknown>;
 }
 
 const agentApiKeySchema: Schema<IAgentApiKey> = new Schema(
@@ -58,6 +60,10 @@ const agentApiKeySchema: Schema<IAgentApiKey> = new Schema(
     tenantId: {
       type: String,
       index: true,
+    },
+    mcpGrants: {
+      type: Schema.Types.Mixed,
+      default: undefined,
     },
   },
   { timestamps: true },

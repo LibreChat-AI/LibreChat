@@ -3,7 +3,12 @@
  */
 import { render, screen } from '@testing-library/react';
 import type { MessagePartsHost } from '../host';
-import { MessagePartsHostProvider, setDefaultMessagePartsHost, useMessagePartsHost } from '../host';
+import {
+  emptyToolCallChrome,
+  MessagePartsHostProvider,
+  setDefaultMessagePartsHost,
+  useMessagePartsHost,
+} from '../host';
 
 const createHost = (fontSize: string): MessagePartsHost => ({
   useMessage: () => ({ messageId: 'm1' }),
@@ -29,11 +34,14 @@ const createHost = (fontSize: string): MessagePartsHost => ({
   useFileMap: () => undefined,
   useToast: () => jest.fn(),
   useSandboxStarting: () => false,
+  usePtcTrace: () => ({ entries: [], dropped: 0 }),
+  useLoadedSkill: () => undefined,
   useToolArtifactClaim: () => [null, jest.fn()],
   useSteerEscalating: () => false,
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, jest.fn()],
   useShare: () => ({}),
+  useToolCallChrome: emptyToolCallChrome,
 });
 
 function FontSize() {

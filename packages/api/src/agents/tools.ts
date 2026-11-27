@@ -481,6 +481,8 @@ export interface RegisterCodeExecutionToolsParams {
   workspaceLinkedWorktrees?: boolean;
   /** The worker advertises its native SRT sandbox; describe the read-only filesystem to the model. */
   workspaceNativeSandbox?: boolean;
+  /** Background commands are sent detached; tell the model they overlap later commands. */
+  workspaceDetachedCommands?: boolean;
   /**
    * When `true`, the registered `bash_tool` description includes the
    * LLM-facing `{{tool<idx>turn<turn>}}` reference syntax guide so the
@@ -1175,6 +1177,7 @@ function createBashToolDef(
   workspaceLinkedWorktrees = false,
   workspaceCommandTimeoutDefaultMs?: number,
   workspaceNativeSandbox = false,
+  workspaceDetachedCommands = false,
 ): LCTool {
   /* Passed as a variable (not an inline literal) so the extra
    * `statefulSessions` key stays assignable against pinned SDK versions
@@ -1188,6 +1191,7 @@ function createBashToolDef(
           enableToolOutputReferences,
           workspaceEnvironment,
           workspaceNativeSandbox,
+          workspaceDetachedCommands,
         )
       : buildBashExecutionToolDescription(descriptionOpts),
     parameters: (workspaceTools
@@ -1214,6 +1218,7 @@ function buildBashToolDef(opts: {
   /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
   workspaceLinkedWorktrees?: boolean;
   workspaceNativeSandbox?: boolean;
+  workspaceDetachedCommands?: boolean;
 }): LCTool {
   /* Stateful defs are built on demand: the stateless pair covers the
    * default path, and per-run construction is negligible next to init. */
@@ -1227,6 +1232,7 @@ function buildBashToolDef(opts: {
       opts.workspaceLinkedWorktrees === true,
       opts.workspaceCommandTimeoutDefaultMs,
       opts.workspaceNativeSandbox === true,
+      opts.workspaceDetachedCommands === true,
     );
   }
   return opts.enableToolOutputReferences
@@ -1264,6 +1270,7 @@ export function registerCodeExecutionTools(
     workspaceEnvironment,
     workspaceLinkedWorktrees,
     workspaceNativeSandbox,
+    workspaceDetachedCommands,
     enableToolOutputReferences = false,
     statefulSessions = false,
   } = params;
@@ -1296,6 +1303,7 @@ export function registerCodeExecutionTools(
         workspaceEnvironment,
         workspaceLinkedWorktrees,
         workspaceNativeSandbox,
+        workspaceDetachedCommands,
       }),
     );
   }

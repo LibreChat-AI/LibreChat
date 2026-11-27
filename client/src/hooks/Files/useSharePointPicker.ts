@@ -37,6 +37,8 @@ export default function useSharePointPicker({
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const portRef = useRef<MessagePort | null>(null);
   const channelIdRef = useRef<string>('');
+  /** Names the open waiting on a token, so a close or a newer open can call it off. */
+  const requestRef = useRef(0);
 
   const { data: startupConfig } = useGetStartupConfig();
 
@@ -44,7 +46,7 @@ export default function useSharePointPicker({
   const isEntraIdUser = user?.provider === 'openid';
 
   const {
-    token,
+    getToken,
     isLoading: isTokenLoading,
     error: tokenError,
   } = useSharePointToken({
@@ -79,7 +81,8 @@ export default function useSharePointPicker({
             const command = message.data.data;
 
             switch (command.command) {
-              case 'authenticate':
+              case 'authenticate': {
+                const token = await getToken();
                 if (token?.access_token) {
                   port.postMessage({
                     type: 'result',
@@ -104,6 +107,7 @@ export default function useSharePointPicker({
                   });
                 }
                 break;
+              }
 
               case 'close':
                 port.postMessage({
@@ -180,7 +184,7 @@ export default function useSharePointPicker({
         console.error('Error processing port message:', error);
       }
     },
-    [token, onFilesSelected, showToast, onClose],
+    [getToken, onFilesSelected, showToast, onClose],
   );
 
   // Initialization message handler - establishes MessagePort communication
@@ -213,16 +217,22 @@ export default function useSharePointPicker({
   );
 
   const openSharePointPicker = async () => {
-    if (!token) {
+    if (!containerNode) {
+      console.error('No container ref provided for SharePoint picker');
+      return;
+    }
+
+    const request = ++requestRef.current;
+    const token = await getToken();
+    if (request !== requestRef.current) {
+      return;
+    }
+
+    if (!token?.access_token) {
       showToast({
         message: 'Unable to access SharePoint. Please ensure you are logged in with Microsoft.',
         status: 'error',
       });
-      return;
-    }
-
-    if (!containerNode) {
-      console.error('No container ref provided for SharePoint picker');
       return;
     }
 
@@ -327,6 +337,7 @@ export default function useSharePointPicker({
   const activeEventListenerRef = useRef<((event: MessageEvent) => void) | null>(null);
 
   const cleanup = useCallback(() => {
+    requestRef.current += 1;
     if (activeEventListenerRef.current) {
       window.removeEventListener('message', activeEventListenerRef.current);
       activeEventListenerRef.current = null;
@@ -356,7 +367,9 @@ export default function useSharePointPicker({
     cleanup();
   }, [cleanup]);
 
-  const isAvailable = startupConfig?.sharePointFilePickerEnabled && isEntraIdUser && !tokenError;
+  /** A failed token request does not disable the picker: the next open asks for a token again. */
+  const isAvailable =
+    startupConfig?.sharePointFilePickerEnabled && isEntraIdUser && !disabled && !!sharePointBaseUrl;
 
   return {
     openSharePointPicker: isAvailable ? openSharePointPicker : () => {},

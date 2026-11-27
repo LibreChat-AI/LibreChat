@@ -2876,6 +2876,64 @@ describe('sanitizeGeminiSchema', () => {
     });
   });
 
+  it('strips the OpenAPI `discriminator` keyword from a Pydantic discriminated union', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        ops: {
+          type: 'array',
+          items: {
+            $ref: '#/$defs/Op',
+          },
+        },
+      },
+      required: ['ops'],
+      $defs: {
+        Op: {
+          oneOf: [{ $ref: '#/$defs/Add' }, { $ref: '#/$defs/Remove' }],
+          discriminator: {
+            propertyName: 'op',
+            mapping: { add: '#/$defs/Add', remove: '#/$defs/Remove' },
+          },
+        },
+        Add: {
+          type: 'object',
+          properties: { op: { const: 'add', type: 'string' }, value: { type: 'string' } },
+          required: ['op', 'value'],
+        },
+        Remove: {
+          type: 'object',
+          properties: { op: { const: 'remove', type: 'string' }, id: { type: 'integer' } },
+          required: ['op', 'id'],
+        },
+      },
+    } as any;
+    const result = sanitizeGeminiSchema(normalizeJsonSchema(resolveJsonSchemaRefs(schema)));
+    expect(JSON.stringify(result)).not.toContain('discriminator');
+    expect(result.properties.ops).toEqual({
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { op: { type: 'string', enum: ['add'] }, value: { type: 'string' } },
+        required: ['op', 'value'],
+      },
+    });
+  });
+
+  it('keeps a property named `discriminator` while stripping the keyword', () => {
+    const schema = {
+      type: 'object',
+      properties: { discriminator: { type: 'string' } },
+      required: ['discriminator'],
+      discriminator: { propertyName: 'discriminator' },
+    } as any;
+    expect(sanitizeGeminiSchema(schema)).toEqual({
+      type: 'object',
+      properties: { discriminator: { type: 'string' } },
+      required: ['discriminator'],
+    });
+  });
+
   it('strips tuple/array-extension keywords Gemini rejects (prefixItems, additionalItems)', () => {
     const schema = {
       type: 'array',

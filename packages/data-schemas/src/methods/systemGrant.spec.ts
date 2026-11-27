@@ -32,7 +32,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 beforeEach(async () => {
@@ -342,6 +342,53 @@ describe('systemGrant methods', () => {
         principalId: userId,
       }).lean();
       expect(grant).toBeNull();
+    });
+
+    it('revokes every legacy duplicate without touching another tenant or capability', async () => {
+      const keys = { principalType: 1, principalId: 1, capability: 1, tenantId: 1 } as const;
+      await SystemGrant.collection.dropIndex(
+        'principalType_1_principalId_1_capability_1_tenantId_1',
+      );
+      try {
+        const principalId = new Types.ObjectId();
+        const base = {
+          principalType: PrincipalType.USER,
+          principalId,
+          capability: SystemCapabilities.READ_USERS,
+        };
+        await SystemGrant.collection.insertMany([
+          { ...base },
+          { ...base },
+          { ...base, tenantId: 'a' },
+          { ...base, tenantId: 'a' },
+          { ...base, tenantId: 'b' },
+          { ...base, capability: SystemCapabilities.READ_USAGE },
+        ]);
+        expect(
+          await methods.revokeCapability({
+            ...base,
+            principalId: principalId.toString(),
+            tenantId: 'a',
+          }),
+        ).toEqual({ deletedCount: 2 });
+        expect(await methods.revokeCapability(base)).toEqual({ deletedCount: 2 });
+        expect(
+          await methods.hasCapabilityForPrincipals({
+            principals: [{ principalType: PrincipalType.USER, principalId }],
+            capability: base.capability,
+            tenantId: 'a',
+          }),
+        ).toBe(false);
+        const remaining = await SystemGrant.find({ principalId }).lean();
+        expect(remaining).toHaveLength(2);
+        expect(remaining.some((grant) => grant.tenantId === 'b')).toBe(true);
+        expect(remaining.some((grant) => grant.capability === SystemCapabilities.READ_USAGE)).toBe(
+          true,
+        );
+      } finally {
+        await SystemGrant.deleteMany({});
+        await SystemGrant.collection.createIndex(keys, { unique: true });
+      }
     });
 
     it('is a no-op when the grant does not exist', async () => {

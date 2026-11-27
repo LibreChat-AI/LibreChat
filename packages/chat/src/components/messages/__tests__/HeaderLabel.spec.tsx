@@ -3,12 +3,9 @@
  */
 import { render, screen } from '@testing-library/react';
 import HeaderLabel, { getHeaderHoverLabel, getHeaderModelName } from '../HeaderLabel';
+import { initEnglish } from '../../../__fixtures__/i18n';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string, values?: Record<string, string>) =>
-    key === 'com_ui_message_model' ? `Model: ${values?.[0]}` : key,
-}));
+beforeAll(initEnglish);
 
 describe('getHeaderModelName', () => {
   it('prefers a real model over an agent document id', () => {
@@ -65,7 +62,7 @@ describe('HeaderLabel', () => {
     render(<HeaderLabel label="Ollama" hoverLabel="gemma4:12b-it-qat" />);
 
     const self = 'group-focus-visible';
-    const descendant = 'group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]';
+    const descendant = 'grouped-keyboard-focus';
 
     const provider = screen.getByText('Ollama').className;
     const model = screen.getByText('gemma4:12b-it-qat').className;

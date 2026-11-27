@@ -42,9 +42,10 @@ jest.mock('~/components/Chat/Messages/Content/Wakeup', () => ({
   __esModule: true,
   default: () => <div data-testid="wakeup-card" />,
 }));
-jest.mock('~/components/Chat/Messages/Content/MessageContent', () => ({
-  __esModule: true,
-  default: () => <div data-testid="message-content" />,
+/** A row's body is the chat package's now; this stands in for its module. */
+jest.mock('@librechat/chat/dist/components/messages/MessageBody.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/messages/MessageBody.cjs'),
+  renderMessageBody: () => <div data-testid="message-content" />,
 }));
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),

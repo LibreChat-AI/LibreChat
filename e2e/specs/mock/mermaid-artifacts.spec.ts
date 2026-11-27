@@ -87,17 +87,17 @@ test.describe('Mermaid Artifact resource boundary', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
+    /* The reply opens its artifact as it arrives, and that is when Sandpack loads. */
+    const sandpackRequest = page.waitForRequest(isSandboxResourceRequest, { timeout: 40000 });
     const response = await sendMessage(page, 'E2E_HTML_ARTIFACT_REPLY');
     expect(response.ok()).toBeTruthy();
 
-    const artifactButton = messagesView(page).getByRole('button', {
-      name: 'E2E HTML Artifact HTML Opens as a rendered preview Click to open',
-      exact: true,
-    });
-    await expect(artifactButton).toBeVisible();
-
-    const sandpackRequest = page.waitForRequest(isSandboxResourceRequest, { timeout: 10000 });
-    await artifactButton.click();
+    await expect(
+      messagesView(page).getByRole('button', {
+        name: 'Close artifact: E2E HTML Artifact. Opens as a rendered preview',
+        exact: true,
+      }),
+    ).toBeVisible({ timeout: 30000 });
 
     await expect(page.getByRole('region', { name: 'E2E HTML Artifact' })).toBeVisible();
     expect((await sandpackRequest).resourceType()).toBe('script');

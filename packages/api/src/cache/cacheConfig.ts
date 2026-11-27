@@ -174,7 +174,7 @@ const cacheConfig: {
   /** Max delay between reconnection attempts in ms */
   REDIS_RETRY_MAX_DELAY: math(process.env.REDIS_RETRY_MAX_DELAY, 3000),
   /** Max number of reconnection attempts (0 = infinite) */
-  REDIS_RETRY_MAX_ATTEMPTS: math(process.env.REDIS_RETRY_MAX_ATTEMPTS, 10),
+  REDIS_RETRY_MAX_ATTEMPTS: math(process.env.REDIS_RETRY_MAX_ATTEMPTS, 0),
   /** Connection timeout in ms */
   REDIS_CONNECT_TIMEOUT: math(process.env.REDIS_CONNECT_TIMEOUT, 10000),
   /** Min spacing in ms between reconnects forced by READONLY replies after a failover */

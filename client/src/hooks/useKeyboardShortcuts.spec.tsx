@@ -1,8 +1,17 @@
-import { MemoryRouter } from 'react-router-dom';
-import { RecoilRoot, useRecoilValue } from 'recoil';
+import { dataService } from 'librechat-data-provider';
+import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
 import { bindingDisplayString, bindingToString } from '@librechat/chat';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, act, cleanup, renderHook, fireEvent, screen } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import {
+  render,
+  act,
+  cleanup,
+  waitFor,
+  renderHook,
+  fireEvent,
+  screen,
+} from '@testing-library/react';
 import type { SettingDefinition, TConversation } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import type { ReactNode } from 'react';
@@ -24,6 +33,8 @@ import store from '~/store';
 
 /** `copy-to-clipboard` exports a single callable: `copy(text, options?)`. */
 const mockCopy = jest.fn((_text: string, _options?: { format?: string }) => true);
+const mockReachRow = jest.fn((_row?: Element | null) => undefined);
+const mockFinishRowMounts = jest.fn((_which: 'all' | 'later') => false);
 
 jest.mock('~/components/Chat/Input/Reasoning', () => ({
   __esModule: true,
@@ -57,16 +68,25 @@ jest.mock('~/Providers', () => ({
 jest.mock('@librechat/chat/react', () => ({
   ...jest.requireActual('@librechat/chat/react'),
   useReducedMotion: () => true,
+  reachRow: (row?: Element | null) => mockReachRow(row),
+  finishProgressiveRowMounts: (which?: 'all' | 'later') => mockFinishRowMounts(which ?? 'all'),
 }));
 
 jest.mock('copy-to-clipboard', () => ({
   __esModule: true,
   default: (text: string, options?: { format?: string }) => mockCopy(text, options),
 }));
+const mockNewConversation = jest.fn();
 jest.mock('./useNewConvo', () => ({
   __esModule: true,
-  default: () => ({ newConversation: jest.fn() }),
+  default: () => ({ newConversation: mockNewConversation }),
 }));
+
+/** A copy, so a test can hold an archive request open with `jest.spyOn`. */
+jest.mock('librechat-data-provider', () => {
+  const actual = jest.requireActual('librechat-data-provider');
+  return { ...actual, dataService: { ...actual.dataService } };
+});
 
 const STORAGE_KEY = 'customKeyboardShortcuts';
 let queryClient: QueryClient;
@@ -128,6 +148,9 @@ beforeEach(() => {
   queryClient = new QueryClient();
   window.localStorage.clear();
   mockCopy.mockClear();
+  mockReachRow.mockReset();
+  mockFinishRowMounts.mockReset();
+  mockFinishRowMounts.mockReturnValue(false);
 });
 
 afterEach(() => {
@@ -583,6 +606,32 @@ describe('clipboard shortcuts', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
+  it('copies the last response from a row that had not mounted its toolbar yet', () => {
+    const earlierCopy = jest.fn();
+    const lastCopy = jest.fn();
+    renderHarness();
+    appendResponseCopyButton(earlierCopy);
+    /** A long thread leaves the toolbar out of a row the reader has not been near. */
+    const row = document.createElement('div');
+    row.className = 'message-render';
+    const turn = document.createElement('div');
+    turn.className = 'agent-turn';
+    row.appendChild(turn);
+    document.body.appendChild(row);
+    mockReachRow.mockImplementation((reached) => {
+      const button = document.createElement('button');
+      button.dataset.testid = 'copy-response-button';
+      button.addEventListener('click', lastCopy);
+      reached?.appendChild(button);
+    });
+
+    dispatchKey({ key: ';', ctrlKey: true, shiftKey: true });
+
+    expect(mockReachRow).toHaveBeenCalledWith(row);
+    expect(earlierCopy).not.toHaveBeenCalled();
+    expect(lastCopy).toHaveBeenCalledTimes(1);
+  });
+
   it('copies the last code block through the clipboard fallback helper', () => {
     renderHarness();
     appendCodeBlock('const x = 1;');
@@ -598,6 +647,65 @@ describe('clipboard shortcuts', () => {
 
     const event = dispatchKey({ key: 'k', ctrlKey: true, shiftKey: true });
 
+    expect(mockCopy).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('copies a code block from a row a long thread had not mounted yet', () => {
+    renderHarness();
+    /** A thread opened at its end and still mounting: the older rows arrive when asked for. */
+    mockFinishRowMounts.mockImplementation((which) => {
+      if (which === 'later') {
+        return false;
+      }
+      appendCodeBlock('const earlier = true;');
+      return true;
+    });
+
+    const event = dispatchKey({ key: 'k', ctrlKey: true, shiftKey: true });
+
+    expect(mockFinishRowMounts.mock.calls).toEqual([['later'], ['all']]);
+    expect(mockCopy).toHaveBeenCalledWith('const earlier = true;', { format: 'text/plain' });
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('leaves a mounting thread to its steps when the rows already in hold the last code block', () => {
+    renderHarness();
+    appendCodeBlock('const latest = 1;');
+    /** Opened at its end: only older rows are waiting. */
+    mockFinishRowMounts.mockImplementation((which) => which === 'all');
+
+    dispatchKey({ key: 'k', ctrlKey: true, shiftKey: true });
+
+    expect(mockFinishRowMounts.mock.calls).toEqual([['later']]);
+    expect(mockCopy).toHaveBeenCalledWith('const latest = 1;', { format: 'text/plain' });
+  });
+
+  it('waits for the latest rows of a thread that opened at its start before copying', () => {
+    renderHarness();
+    appendCodeBlock('const older = 1;');
+    /** Auto-scroll off: the rows already in are the oldest, and the latest arrive when asked. */
+    mockFinishRowMounts.mockImplementation((which) => {
+      if (which === 'later') {
+        appendCodeBlock('const latest = 2;');
+      }
+      return which === 'later';
+    });
+
+    const event = dispatchKey({ key: 'k', ctrlKey: true, shiftKey: true });
+
+    expect(mockCopy).toHaveBeenCalledTimes(1);
+    expect(mockCopy).toHaveBeenCalledWith('const latest = 2;', { format: 'text/plain' });
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('does not claim the key press when the whole thread holds no code', () => {
+    renderHarness();
+    mockFinishRowMounts.mockImplementation((which) => which === 'all');
+
+    const event = dispatchKey({ key: 'k', ctrlKey: true, shiftKey: true });
+
+    expect(mockFinishRowMounts.mock.calls).toEqual([['later'], ['all']]);
     expect(mockCopy).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
   });
@@ -944,6 +1052,32 @@ describe('composer submit shortcuts', () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
+  it('sends from the composer of the pane holding focus, not the first on the page', () => {
+    bindSubmitMessage('Alt+Enter');
+    renderHarness();
+    const pane = (index: number) => {
+      const element = document.createElement('div');
+      element.dataset.chatPane = String(index);
+      const onClick = jest.fn();
+      const send = document.createElement('button');
+      send.dataset.testid = 'send-button';
+      send.addEventListener('click', onClick);
+      const control = document.createElement('button');
+      element.append(send, control);
+      document.body.appendChild(element);
+      return { onClick, control };
+    };
+    const main = pane(0);
+    const beside = pane(3);
+    beside.control.focus();
+
+    const event = dispatchKey({ key: 'Enter', altKey: true }, beside.control);
+
+    expect(beside.onClick).toHaveBeenCalledTimes(1);
+    expect(main.onClick).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
   it('runs a custom Alt+Enter submit binding outside the composer', () => {
     bindSubmitMessage('Alt+Enter');
     renderHarness();
@@ -953,6 +1087,107 @@ describe('composer submit shortcuts', () => {
 
     expect(sendClick).toHaveBeenCalledTimes(1);
     expect(event.defaultPrevented).toBe(true);
+  });
+});
+
+describe('archive shortcut', () => {
+  let landArchive: () => void = () => undefined;
+
+  beforeEach(() => {
+    mockNewConversation.mockClear();
+    jest.spyOn(dataService, 'archiveConversation').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          landArchive = () => resolve({ conversationId: 'test-convo', isArchived: true } as never);
+        }),
+    );
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  /** Lets the request through once it is in flight; its callbacks have run once it reports success. */
+  const archiveLanded = async () => {
+    await waitFor(() => expect(dataService.archiveConversation).toHaveBeenCalledTimes(1));
+    await act(async () => landArchive());
+    await waitFor(() =>
+      expect(queryClient.getMutationCache().getAll()[0]?.state.status).toBe('success'),
+    );
+  };
+
+  function renderArchive() {
+    const conversation = buildConversation('test-convo', 'My Chat');
+    return renderHook(
+      () => ({
+        archive: useShortcutActions().find((action) => action.id === 'archiveConversation')?.run,
+        navigate: useNavigate(),
+        location: useLocation(),
+        setChat: useSetRecoilState(store.conversationByIndex(0)),
+      }),
+      {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <QueryClientProvider client={queryClient}>
+            <RecoilRoot
+              initializeState={({ set }) => set(store.conversationByIndex(0), conversation)}
+            >
+              <MemoryRouter initialEntries={['/c/test-convo']}>
+                <Routes>
+                  <Route path="/c/:conversationId" element={children} />
+                </Routes>
+              </MemoryRouter>
+            </RecoilRoot>
+          </QueryClientProvider>
+        ),
+      },
+    );
+  }
+
+  it('opens a new chat once the archive of the chat on screen lands', async () => {
+    const { result } = renderArchive();
+
+    act(() => {
+      expect(result.current.archive?.()).toBe(true);
+    });
+    await archiveLanded();
+
+    expect(dataService.archiveConversation).toHaveBeenCalledWith({
+      conversationId: 'test-convo',
+      isArchived: true,
+    });
+    expect(mockNewConversation).toHaveBeenCalledTimes(1);
+    expect(result.current.location.pathname).toBe('/c/new');
+  });
+
+  it('leaves a chat opened while the archive was in flight', async () => {
+    const { result } = renderArchive();
+
+    act(() => {
+      result.current.archive?.();
+    });
+    act(() => {
+      result.current.navigate('/c/other-convo');
+      result.current.setChat(buildConversation('other-convo', 'Other'));
+    });
+    await archiveLanded();
+
+    expect(mockNewConversation).not.toHaveBeenCalled();
+    expect(result.current.location.pathname).toBe('/c/other-convo');
+  });
+
+  it('leaves a new chat opened while the archive was in flight', async () => {
+    const { result } = renderArchive();
+
+    act(() => {
+      result.current.archive?.();
+    });
+    act(() => {
+      result.current.navigate('/c/new');
+      result.current.setChat(buildConversation('new', ''));
+    });
+    await archiveLanded();
+
+    expect(mockNewConversation).not.toHaveBeenCalled();
   });
 });
 

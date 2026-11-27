@@ -13,8 +13,10 @@ import { createOpenIDRefreshFlightModel } from './openidRefreshFlight';
 import { createAgentTriggerUserPurgeModel } from './triggerUserPurge';
 import { createRefreshTokenBridgeModel } from './refreshTokenBridge';
 import { createAgentTriggerDeliveryModel } from './triggerDelivery';
+import { createAgentEventSubscriptionModel } from './subscription';
 import { createToolApprovalGrantModel } from './toolApprovalGrant';
 import { createSkillUploadIntentModel } from './skillUploadIntent';
+import { createAgentEventConnectionModel } from './connection';
 import { createSubagentContentModel } from './subagentContent';
 import { createChannelIdentityModel } from './channelIdentity';
 import { createSkillSyncStatusModel } from './skillSyncStatus';
@@ -43,6 +45,7 @@ import { createConversationModel } from './convo';
 import { createToolCallModel } from './toolCall';
 import { createAclEntryModel } from './aclEntry';
 import { createAuditLogModel } from './auditLog';
+import { createMCPNameModel } from './mcpName';
 import { createSessionModel } from './session';
 import { createPasskeyModel } from './passkey';
 import { createBalanceModel } from './balance';
@@ -91,6 +94,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   ChannelFeedbackEvent: ReturnType<typeof createChannelFeedbackEventModel>;
   ChannelFeedback: ReturnType<typeof createChannelFeedbackModel>;
   AgentCategory: ReturnType<typeof createAgentCategoryModel>;
+  MCPName: ReturnType<typeof createMCPNameModel>;
   MCPServer: ReturnType<typeof createMCPServerModel>;
   Role: ReturnType<typeof createRoleModel>;
   Action: ReturnType<typeof createActionModel>;
@@ -125,6 +129,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
   AgentTriggerUserPurge: ReturnType<typeof createAgentTriggerUserPurgeModel>;
   AgentQueuedTurn: ReturnType<typeof createAgentQueuedTurnModel>;
   AgentQueuedTurnSequence: ReturnType<typeof createAgentQueuedTurnSequenceModel>;
+  AgentEventConnection: ReturnType<typeof createAgentEventConnectionModel>;
+  AgentEventSubscription: ReturnType<typeof createAgentEventSubscriptionModel>;
   Schedule: ReturnType<typeof createScheduleModel>;
   ScheduleRun: ReturnType<typeof createScheduleRunModel>;
   RefreshTokenBridge: ReturnType<typeof createRefreshTokenBridgeModel>;
@@ -156,6 +162,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     ChannelFeedbackEvent: createChannelFeedbackEventModel(mongoose),
     ChannelFeedback: createChannelFeedbackModel(mongoose),
     AgentCategory: createAgentCategoryModel(mongoose),
+    MCPName: createMCPNameModel(mongoose),
     MCPServer: createMCPServerModel(mongoose),
     Role: createRoleModel(mongoose),
     Action: createActionModel(mongoose),
@@ -190,6 +197,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
     AgentTriggerUserPurge: createAgentTriggerUserPurgeModel(mongoose),
     AgentQueuedTurn: createAgentQueuedTurnModel(mongoose),
     AgentQueuedTurnSequence: createAgentQueuedTurnSequenceModel(mongoose),
+    AgentEventConnection: createAgentEventConnectionModel(mongoose),
+    AgentEventSubscription: createAgentEventSubscriptionModel(mongoose),
     Schedule: createScheduleModel(mongoose),
     ScheduleRun: createScheduleRunModel(mongoose),
     RefreshTokenBridge: createRefreshTokenBridgeModel(mongoose),

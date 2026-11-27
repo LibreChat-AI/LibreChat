@@ -1,9 +1,10 @@
 import React from 'react';
+import { RecoilRoot } from 'recoil';
 import { useAtomValue, getDefaultStore } from 'jotai';
 import { RetentionMode } from 'librechat-data-provider';
 import { act, renderHook } from '@testing-library/react';
-import { RecoilRoot, useRecoilValue, type MutableSnapshot } from 'recoil';
 import type { TStartupConfig, TUser } from 'librechat-data-provider';
+import type { MutableSnapshot } from 'recoil';
 import { defaultChatSettings, useChatSettings } from '~/Providers/ChatSettingsContext';
 import { duringRunActionAtom } from '~/store/duringRun';
 import ChatSettingsProvider from '../ChatSettings';
@@ -29,7 +30,7 @@ const renderSettings = (initialize?: (snapshot: MutableSnapshot) => void) =>
     () => ({
       settings: useChatSettings(),
       storedAction: useAtomValue(duringRunActionAtom),
-      visibleArtifacts: useRecoilValue(store.visibleArtifacts),
+      visibleArtifacts: useAtomValue(store.visibleArtifacts),
     }),
     {
       wrapper: ({ children }: { children: React.ReactNode }) => (
@@ -66,9 +67,8 @@ describe('ChatSettingsProvider', () => {
   });
 
   it('closes the artifacts panel through the host', () => {
-    const { result } = renderSettings(({ set }) => {
-      set(store.visibleArtifacts, { a1: undefined });
-    });
+    getDefaultStore().set(store.visibleArtifacts, { a1: undefined });
+    const { result } = renderSettings();
 
     act(() => result.current.settings.resetVisibleArtifacts());
 
@@ -99,6 +99,7 @@ describe('ChatSettingsProvider', () => {
       canRenameRunningChat: false,
       loaded: false,
       balanceEnabled: false,
+      sideChat: false,
     });
   });
 
@@ -129,6 +130,7 @@ describe('ChatSettingsProvider', () => {
       steerArmConfirmationTimeoutMs: 3_000,
       loaded: true,
       balanceEnabled: true,
+      sideChat: true,
     });
   });
 

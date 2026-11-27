@@ -1,9 +1,8 @@
 import { createContext, useContext, useEffect, useMemo } from 'react';
 import { atom, useAtom } from 'jotai';
-import type { ToolCallPartParams, ToolCallPartResponse } from 'librechat-data-provider';
-import type { UseQueryOptions, QueryObserverResult } from '@tanstack/react-query';
 import type { PrimitiveAtom, SetStateAction } from 'jotai';
 import type { Context } from 'react';
+import type { ToolContentQuery } from '../host';
 import { useMessagePartsHost } from '../host';
 
 export type ReasoningDisclosures = Map<number, PrimitiveAtom<boolean | undefined>>;
@@ -128,12 +127,7 @@ export function useToolExpansion(
   return [expanded, setOverride] as const;
 }
 
-/** Loads a stored tool call part; the app's query, or a nested transcript's own. */
-export type ToolContentQuery = (
-  params: ToolCallPartParams,
-  config?: UseQueryOptions<ToolCallPartResponse>,
-  revision?: string,
-) => QueryObserverResult<ToolCallPartResponse>;
+export type { ToolContentQuery };
 
 /** Undefined uses normal message access; null keeps a nested transcript view-only. */
 export const ToolContentQueryContext: Context<ToolContentQuery | null | undefined> = createContext<

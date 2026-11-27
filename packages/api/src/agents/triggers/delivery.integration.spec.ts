@@ -33,7 +33,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 }, DB_SETUP_TIMEOUT_MS);
 
 const envelope = () =>
@@ -161,6 +161,119 @@ describe('durable trigger delivery integration', () => {
       await Promise.all(workers.map((worker) => worker.stop()));
       scans.forEach((scan) => scan.mockRestore());
     }
+  });
+
+  it('backs off idle maintenance while the conversation sweep spans many full pages', async () => {
+    /** The legacy-receipt sweep pages the whole conversations collection, and every full page
+     * used to count as activity. With more conversations than one page holds the loop never went
+     * idle: it polled at its base interval whatever `maintenanceMaxIntervalMs` said. */
+    const Conversation = mongoose.models.Conversation;
+    await Conversation.insertMany(
+      Array.from({ length: 20 }, () => ({
+        conversationId: new mongoose.Types.ObjectId().toString(),
+        user: 'sweep-user',
+        endpoint: 'agents',
+      })),
+    );
+    const methods = createMethods(mongoose);
+    const sweep = methods.expireLegacyAgentEventActorReceipts.bind(methods);
+    const passes: number[] = [];
+    jest.spyOn(methods, 'expireLegacyAgentEventActorReceipts').mockImplementation((...args) => {
+      passes.push(Date.now());
+      return sweep(...args);
+    });
+    service = createAgentTriggerService({
+      methods: methods as typeof methods & AgentTriggerDeliveryPersistence,
+      purgeRecoveryIntervalMs: 40,
+      purgeRecoveryLimit: 2,
+      deliveryOptions: { concurrency: 1, tickMs: 60_000 },
+    });
+    try {
+      await service.initialize({
+        address: { address: '127.0.0.1', family: 'IPv4', port: 3080 },
+        idlePolling: { maintenanceMaxIntervalMs: 640 },
+      });
+      const deadline = Date.now() + 8_000;
+      while (passes.length < 5) {
+        if (Date.now() >= deadline)
+          throw new Error('Timed out waiting for five maintenance passes');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const gaps = passes.slice(1, 5).map((at, index) => at - passes[index]);
+      /** Idle passes double the wait (80, 160, 320, 640 ms); a loop held at its base interval stays near 40 ms. */
+      expect(gaps[3]).toBeGreaterThan(gaps[0] * 3);
+    } finally {
+      await Conversation.deleteMany({});
+    }
+  });
+
+  it('lets the deployment-wide ceiling replace a lower maintenance cap', async () => {
+    await mongoose.models.Conversation.insertMany(
+      Array.from({ length: 20 }, () => ({
+        conversationId: new mongoose.Types.ObjectId().toString(),
+        user: 'sweep-user',
+        endpoint: 'agents',
+      })),
+    );
+    const methods = createMethods(mongoose);
+    const sweep = methods.expireLegacyAgentEventActorReceipts.bind(methods);
+    const passes: number[] = [];
+    jest.spyOn(methods, 'expireLegacyAgentEventActorReceipts').mockImplementation((...args) => {
+      passes.push(Date.now());
+      return sweep(...args);
+    });
+    service = createAgentTriggerService({
+      methods: methods as typeof methods & AgentTriggerDeliveryPersistence,
+      purgeRecoveryIntervalMs: 40,
+      purgeRecoveryLimit: 2,
+      deliveryOptions: { concurrency: 1, tickMs: 60_000 },
+    });
+    try {
+      await service.initialize({
+        address: { address: '127.0.0.1', family: 'IPv4', port: 3080 },
+        idlePolling: { maintenanceMaxIntervalMs: 80 },
+        idleCeilingMs: 640,
+      });
+      const deadline = Date.now() + 8_000;
+      while (passes.length < 5) {
+        if (Date.now() >= deadline)
+          throw new Error('Timed out waiting for five maintenance passes');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const gaps = passes.slice(1, 5).map((at, index) => at - passes[index]);
+      /** The 80 ms cap would hold every gap near 80 ms; the ceiling lets them double to 640 ms. */
+      expect(gaps[3]).toBeGreaterThan(gaps[0] * 3);
+    } finally {
+      await mongoose.models.Conversation.deleteMany({});
+    }
+  });
+
+  it('lets the deployment-wide ceiling replace the delivery claim cap', async () => {
+    const methods = createMethods(mongoose);
+    const claim = methods.claimNextAgentTriggerDelivery.bind(methods);
+    const polls: number[] = [];
+    jest.spyOn(methods, 'claimNextAgentTriggerDelivery').mockImplementation((...args) => {
+      polls.push(Date.now());
+      return claim(...args);
+    });
+    service = createAgentTriggerService({
+      methods: methods as typeof methods & AgentTriggerDeliveryPersistence,
+      purgeRecoveryIntervalMs: 60_000,
+      deliveryOptions: { concurrency: 1, tickMs: 20 },
+    });
+    await service.initialize({
+      address: { address: '127.0.0.1', family: 'IPv4', port: 3080 },
+      idlePolling: { deliveryMaxIntervalMs: 40 },
+      idleCeilingMs: 320,
+    });
+    const deadline = Date.now() + 8_000;
+    while (polls.length < 6) {
+      if (Date.now() >= deadline) throw new Error('Timed out waiting for six claim passes');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const gaps = polls.slice(1, 6).map((at, index) => at - polls[index]);
+    /** The 40 ms cap would hold every gap near 40 ms; the ceiling lets the claim polls double to 320 ms. */
+    expect(gaps[4]).toBeGreaterThan(gaps[0] * 4);
   });
 
   it('moves a trusted envelope through Mongo, the lease worker, and host admission', async () => {

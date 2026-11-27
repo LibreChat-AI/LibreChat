@@ -315,7 +315,8 @@ async function writeStorageState(env, storagePath) {
   const browser = await chromium.launch({ headless: true });
 
   try {
-    const page = await browser.newPage();
+    /** Pinned like the test fixtures; the host locale would translate the English locators. */
+    const page = await browser.newPage({ locale: 'en-US' });
     await page.context().addInitScript(() => {
       localStorage.setItem('navVisible', 'true');
     });

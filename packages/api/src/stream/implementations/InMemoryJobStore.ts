@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { logger } from '@librechat/data-schemas';
 import type { StandardGraph } from '@librechat/agents';
 import type { Agents } from 'librechat-data-provider';
@@ -25,6 +26,7 @@ import type {
   ParkedSteerClaim,
   ScheduleCleanupScope,
   ScheduleProviderOwner,
+  ActiveJobFilter,
 } from '~/stream/interfaces/IJobStore';
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { RecoveredSteerPayload } from '~/stream/SteerRecovery';
@@ -512,6 +514,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
       now,
       previousCreatedAt == null ? 0 : previousCreatedAt + 1,
       this.lastGenerationEpoch + 1,
+      // The Responses restart fence compares journaled epochs to process start.
+      safeInitialMetadata.endpoint === 'responses' &&
+        safeInitialMetadata.terminalPersistenceOwner === 'external'
+        ? Math.ceil(performance.timeOrigin)
+        : 0,
     );
     const replacedJobs: ReplacedGeneration[] = [];
     const replacedEpochs = new Set<number>();
@@ -553,6 +560,12 @@ export class InMemoryJobStore implements IJobStoreV2 {
       if (previousJob.providerDrained != null) {
         Object.defineProperty(replaced, 'providerDrained', {
           value: previousJob.providerDrained,
+          enumerable: false,
+        });
+      }
+      if (previousJob.completedAt != null) {
+        Object.defineProperty(replaced, 'completedAt', {
+          value: previousJob.completedAt,
           enumerable: false,
         });
       }
@@ -1134,6 +1147,15 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
   }
 
+  async touchJob(streamId: string, expectedCreatedAt: number): Promise<boolean> {
+    const job = this.jobs.get(streamId);
+    if (job?.createdAt !== expectedCreatedAt || job.status !== 'running') {
+      return false;
+    }
+    this.recordActivity(streamId, expectedCreatedAt);
+    return true;
+  }
+
   async hasJob(streamId: string): Promise<boolean> {
     return this.jobs.has(streamId);
   }
@@ -1413,16 +1435,34 @@ export class InMemoryJobStore implements IJobStoreV2 {
     return toDelete.length + retainedRecovered;
   }
 
+  /** Makes room at capacity. A finished job goes before any live one: evicting a running
+   * or paused generation ends a run somebody is still waiting on. A terminal job that still
+   * owes persistence, a host action, a schedule reconciliation or a provider drain is not
+   * finished, since its owner comes back for the record. */
   private async evictOldest(): Promise<void> {
     let oldestId: string | null = null;
     let oldestTime = Infinity;
+    let oldestFinishedId: string | null = null;
+    let oldestFinishedTime = Infinity;
 
     for (const [streamId, job] of this.jobs) {
       if (job.createdAt < oldestTime) {
         oldestTime = job.createdAt;
         oldestId = streamId;
       }
+      const live =
+        job.status === 'running' ||
+        job.status === 'requires_action' ||
+        job.terminalPersistencePending === true ||
+        job.terminalHostActionPending === true ||
+        job.preserveForScheduleReconcile === true ||
+        job.providerDrained === false;
+      if (!live && job.createdAt < oldestFinishedTime) {
+        oldestFinishedTime = job.createdAt;
+        oldestFinishedId = streamId;
+      }
     }
+    oldestId = oldestFinishedId ?? oldestId;
 
     if (oldestId) {
       logger.warn(`[InMemoryJobStore] Evicting oldest job: ${oldestId}`);
@@ -1476,8 +1516,12 @@ export class InMemoryJobStore implements IJobStoreV2 {
    * Returns conversation IDs of running jobs belonging to the user.
    * Also performs self-healing cleanup: removes stale entries for jobs that no longer exist.
    */
-  async getActiveJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
-    return this.getJobIdsByUser(userId, tenantId, false);
+  async getActiveJobIdsByUser(
+    userId: string,
+    tenantId?: string,
+    accept?: ActiveJobFilter,
+  ): Promise<string[]> {
+    return this.getJobIdsByUser(userId, tenantId, false, accept);
   }
 
   async getCleanupBlockingJobIdsByUser(userId: string, tenantId?: string): Promise<string[]> {
@@ -1501,6 +1545,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
     userId: string,
     tenantId: string | undefined,
     includeUndrained: boolean,
+    accept?: ActiveJobFilter,
   ): string[] {
     const userKey = tenantId ? `${tenantId}:${userId}` : userId;
     const trackedIds = this.userJobMap.get(userKey);
@@ -1544,7 +1589,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
         ) {
           continue;
         }
-        activeIds.push(streamId);
+        if (accept == null || accept(job)) {
+          activeIds.push(streamId);
+        }
       } else if (
         job.providerDrained !== false &&
         job.terminalPersistencePending !== true &&

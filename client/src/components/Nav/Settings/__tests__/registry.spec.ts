@@ -26,6 +26,8 @@ const settingsContext: SettingsContextValue = {
   allowAccountDeletion: true,
   aboutEnabled: false,
   mascotAllowed: true,
+  sessionRailAutoOpenAllowed: true,
+  engineSTT: 'browser',
   engineTTS: 'browser',
   langfuseConnectionAccess: false,
   adminPanelURL: '',
@@ -73,6 +75,42 @@ describe('settings registry', () => {
     const entry = registry.find((e) => e.id === 'analyticsConsent');
     expect(entry?.show?.(settingsContext)).toBe(false);
     expect(entry?.show?.({ ...settingsContext, analyticsConfigured: true })).toBe(true);
+  });
+
+  it('offers the session rail switch only where the deployment lets the rail show itself', () => {
+    const entry = registry.find((e) => e.id === 'sessionRailAutoOpen');
+    expect(entry?.show?.(settingsContext)).toBe(true);
+    expect(entry?.show?.({ ...settingsContext, sessionRailAutoOpenAllowed: false })).toBe(false);
+  });
+
+  describe('setting applicability', () => {
+    it.each(['usernameDisplay', 'saveBadgesState'])(
+      'does not offer the obsolete %s control',
+      (id) => {
+        expect(registry.find((entry) => entry.id === id)).toBeUndefined();
+      },
+    );
+
+    it.each(['advancedPrompts', 'alwaysMakeProd', 'autoSendPrompts'])(
+      'offers %s only with prompt access',
+      (id) => {
+        const entry = registry.find((setting) => setting.id === id);
+        expect(entry?.show?.(settingsContext)).toBe(false);
+        expect(entry?.show?.({ ...settingsContext, hasPrompts: true })).toBe(true);
+      },
+    );
+
+    it.each(['playbackRate', 'cacheTTS'])('offers %s only for external speech synthesis', (id) => {
+      const entry = registry.find((setting) => setting.id === id);
+      expect(entry?.show?.(settingsContext)).toBe(false);
+      expect(entry?.show?.({ ...settingsContext, engineTTS: 'external' })).toBe(true);
+    });
+
+    it('offers silence sensitivity only for external speech recognition', () => {
+      const entry = registry.find((setting) => setting.id === 'decibelValue');
+      expect(entry?.show?.(settingsContext)).toBe(false);
+      expect(entry?.show?.({ ...settingsContext, engineSTT: 'external' })).toBe(true);
+    });
   });
 
   describe('two-factor security visibility', () => {

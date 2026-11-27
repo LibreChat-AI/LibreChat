@@ -23,7 +23,7 @@ import type {
   EnqueueAgentQueuedTurnRequest,
 } from '~/data-provider';
 import type { MessagesEditing } from '~/Providers/MessagesViewContext';
-import type { Artifact, PtcTrace } from '~/common';
+import type { Artifact } from '~/common';
 
 export type {
   ChatContract,
@@ -72,6 +72,8 @@ export type ChatConfig = {
   loaded?: boolean;
   /** Whether the deployment tracks token balances, refreshed after each turn. */
   balanceEnabled?: boolean;
+  /** Whether a conversation may open beside the main one; off until the deployment has answered. */
+  sideChat?: boolean;
 };
 
 /** The signed-in account, as far as the chat reads it. */
@@ -207,8 +209,6 @@ export type MessagePartArtifactPanel = {
 /** The host members of parts the app still owns, whose types the app still owns too. */
 declare module '@librechat/chat/react' {
   interface MessagePartsHost {
-    /** Live inner-call trace of one programmatic tool call in one message. */
-    usePtcTrace: (messageId: string, toolCallId: string) => PtcTrace;
     /** The artifact panel, scoped to one artifact. */
     useArtifactPanel: (artifactId: string) => MessagePartArtifactPanel;
     /** Steers sent to a conversation that the server has not confirmed yet. */

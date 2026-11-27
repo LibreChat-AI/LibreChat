@@ -1,12 +1,20 @@
+import { createServer } from 'node:http';
+import axios, { AxiosError } from 'axios';
 import type { FileStorageClaim } from '@librechat/data-schemas';
+import type { AddressInfo } from 'node:net';
 import type { FileStorageUploadObserver } from './operations';
+import {
+  dispatchCodeApiUpload,
+  dispatchFileDeletion,
+  dispatchFileStorageOperation,
+  isUndispatchedRequestError,
+} from './dispatch';
 import {
   createCodeApiRateLimitBudget,
   createCodeApiUploadRegistry,
   withCodeApiUploadRecovery,
 } from '../utils/code';
 import { createFileProvisionRecovery, withFileDeletion, withFileProvisioning } from './operations';
-import { dispatchFileDeletion, dispatchFileStorageOperation } from './dispatch';
 
 function fixture() {
   const claims = new Set<string>();
@@ -138,5 +146,110 @@ describe('dispatchFileDeletion', () => {
 
   it('supports callers without an observer', async () => {
     await expect(dispatchFileDeletion(undefined, async () => true)).resolves.toBe(true);
+  });
+});
+
+describe('Code API upload dispatch', () => {
+  async function refusedConnection(): Promise<unknown> {
+    const closed = createServer();
+    await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
+    const { port } = closed.address() as AddressInfo;
+    await new Promise<void>((resolve) => closed.close(() => resolve()));
+    return axios.post(`http://127.0.0.1:${port}/v1/upload`, 'body', { proxy: false }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+  }
+  const connectFailure = (code: string) =>
+    Object.assign(new Error(`connect ${code}`), { code, syscall: 'connect' });
+
+  it('recognizes a request that never reached the server', async () => {
+    const refused = await refusedConnection();
+    expect(refused).toMatchObject({ code: 'ECONNREFUSED' });
+    expect(isUndispatchedRequestError(refused)).toBe(true);
+    expect(isUndispatchedRequestError(new Error('upload failed', { cause: refused }))).toBe(true);
+    expect(
+      isUndispatchedRequestError(
+        AxiosError.from(
+          new AggregateError([connectFailure('ETIMEDOUT'), connectFailure('ENETUNREACH')]),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isUndispatchedRequestError(
+        Object.assign(new Error('getaddrinfo ENOTFOUND'), { syscall: 'getaddrinfo' }),
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    ['a reset after the request was written', { code: 'ECONNRESET', syscall: 'read' }],
+    ['a broken pipe while sending', { code: 'EPIPE', syscall: 'write' }],
+    ['a response timeout', { code: 'ECONNABORTED' }],
+    ['an answered request', { response: { status: 500 }, cause: connectFailure('ETIMEDOUT') }],
+    [
+      'address attempts that did not all fail to connect',
+      { errors: [connectFailure('ETIMEDOUT'), { code: 'ECONNRESET', syscall: 'read' }] },
+    ],
+  ])('leaves %s unknown', (_label, shape) => {
+    expect(isUndispatchedRequestError(Object.assign(new Error('failed'), shape))).toBe(false);
+  });
+
+  it('releases every claim of a request the Code API never received', async () => {
+    const refused = await refusedConnection();
+    const files = [fixture(), fixture()];
+    const observers: FileStorageUploadObserver[] = [];
+    let resolveJoined!: () => void;
+    const joined = new Promise<void>((resolve) => {
+      resolveJoined = resolve;
+    });
+    const request = joined.then(() =>
+      dispatchCodeApiUpload(observers, async () => {
+        throw refused;
+      }),
+    );
+    const results = await Promise.allSettled(
+      files.map(({ storage, file }, index) =>
+        withFileProvisioning({
+          file: { ...file, file_id: `file-${index}` },
+          userId: 'owner',
+          storage,
+          destination: 'code',
+          operation: async (_claim, onUploadStart) => {
+            observers.push(onUploadStart);
+            if (observers.length === files.length) resolveJoined();
+            await request;
+            return { value: 'uploaded', commit: { embedded: true } };
+          },
+        }),
+      ),
+    );
+    for (const result of results) {
+      expect(result).toMatchObject({ status: 'rejected', reason: refused });
+    }
+    for (const { claims, storage } of files) {
+      expect(claims.size).toBe(0);
+      expect(storage.releaseFileProvision).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('keeps the claims of a request whose answer was lost', async () => {
+    const { storage, file, claims } = fixture();
+    const lost = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+    await expect(
+      withFileProvisioning({
+        file,
+        userId: 'owner',
+        storage,
+        destination: 'code',
+        operation: async (_claim, onUploadStart) => {
+          await dispatchCodeApiUpload([onUploadStart], async () => {
+            throw lost;
+          });
+          return { value: 'uploaded', commit: { embedded: true } };
+        },
+      }),
+    ).rejects.toMatchObject({ name: 'FileProvisionOutcomeUnknownError' });
+    expect(claims.size).toBe(1);
   });
 });

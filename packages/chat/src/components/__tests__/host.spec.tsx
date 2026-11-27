@@ -4,14 +4,12 @@
 import { render, screen } from '@testing-library/react';
 import type { Agent } from 'librechat-data-provider';
 import type { MessagePartsHost, MessagePartsMarkdownProps } from '../../react/host';
-import { MessagePartsHostProvider } from '../../react/host';
+import { emptyToolCallChrome, MessagePartsHostProvider } from '../../react/host';
+import { initEnglish } from '../../__fixtures__/i18n';
 import AgentUpdate from '../AgentUpdate';
 import Text from '../Text';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 const agent = { id: 'agent-1', name: 'Researcher' } as Agent;
 
@@ -44,11 +42,14 @@ function createHost(enableUserMsgMarkdown = false): MessagePartsHost {
     useFileMap: () => undefined,
     useToast: () => jest.fn(),
     useSandboxStarting: () => false,
+    usePtcTrace: () => ({ entries: [], dropped: 0 }),
+    useLoadedSkill: () => undefined,
     useToolArtifactClaim: () => [null, jest.fn()],
     useSteerEscalating: () => false,
     usePaneConversationId: () => null,
     useLiveAppliedSteer: () => [false, jest.fn()],
     useShare: () => ({}),
+    useToolCallChrome: emptyToolCallChrome,
   };
 }
 
@@ -84,7 +85,7 @@ describe('text-like parts read the app through the host', () => {
 
   it('falls back to the generic agent label for an agent the host does not know', () => {
     renderWith(createHost(), <AgentUpdate currentAgentId="agent-2" />);
-    expect(screen.getByText('com_ui_agent')).toBeInTheDocument();
+    expect(screen.getByText('Agent')).toBeInTheDocument();
     expect(screen.getByTestId('agent-icon')).toHaveTextContent('unknown');
   });
 

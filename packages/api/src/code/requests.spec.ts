@@ -42,6 +42,39 @@ test('keeps one logical request across admission polls, with refreshed credentia
   expect(authHeaders).toHaveBeenCalledTimes(4);
 });
 
+test('submits a detached command unchanged and validates its result against it', async () => {
+  const command = {
+    protocolVersion: 1 as const,
+    operation: 'execute_command' as const,
+    workspaceId: 'root',
+    command: 'npm test',
+    timeoutMs: 60_000,
+    detached: true as const,
+  };
+  const commandResult = {
+    protocolVersion: 1,
+    operation: 'execute_command',
+    workspaceId: 'root',
+    exitCode: 0,
+    stdout: 'ready',
+    stderr: '',
+    timedOut: false,
+    truncated: false,
+  };
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(json({ requestId, state: 'queued' }, 202))
+    .mockResolvedValueOnce(json({ requestId, state: 'completed', result: commandResult }));
+  expect(await executeWorkspaceTool({ ...input, request: command, fetchImpl })).toEqual(
+    commandResult,
+  );
+  const [url, init] = fetchImpl.mock.calls[1];
+  expect(url).toBe('https://code.example/v1/workspace-tools/requests');
+  expect(init.method).toBe('POST');
+  expect(init.body).toBe(JSON.stringify(command));
+});
+
 test('recovers a lost submission response by lookup without rejoining admission', async () => {
   const fetchImpl = jest
     .fn()
@@ -359,7 +392,7 @@ test('credential and discovery delays reduce the server queue allowance before t
       }),
     ).toEqual(result);
     expect(Number(fetchImpl.mock.calls[1][1].headers['X-LibreChat-Workspace-Queue-Wait-Ms'])).toBe(
-      21000,
+      21000 - 2100,
     );
   } finally {
     clock.mockRestore();
@@ -384,6 +417,120 @@ test('a lost POST is never resent with an allowance that extends past the origin
     expect(await pending).toMatchObject({ reason: 'timeout' });
     expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
     expect(fetchImpl.mock.calls[fetchImpl.mock.calls.length - 1]?.[1].method).toBe('DELETE');
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test('a submission lost before reaching the server is resent under the default queue horizon', async () => {
+  jest.useFakeTimers();
+  const command = {
+    protocolVersion: 1 as const,
+    operation: 'execute_command' as const,
+    workspaceId: 'root',
+    command: 'git worktree add .worktrees/feature',
+    timeoutMs: 30_000,
+  };
+  const commandResult = {
+    protocolVersion: 1,
+    operation: 'execute_command',
+    workspaceId: 'root',
+    exitCode: 0,
+    stdout: '',
+    stderr: '',
+    timedOut: false,
+    truncated: false,
+  };
+  const posts: Array<{ at: number; allowance: number; id: string; body: string }> = [];
+  const fetchImpl = jest.fn().mockImplementation(async (url: string, init: RequestInit) => {
+    if (url.endsWith('/capabilities')) return json({ durableWorkspaceRequests: 1 });
+    if (init.method === 'GET') return json({ error: 'Workspace request not found' }, 404);
+    if (init.method === 'DELETE') return json({ error: 'Workspace request not found' }, 404);
+    const headers = init.headers as Record<string, string>;
+    posts.push({
+      at: Date.now(),
+      allowance: Number(headers['X-LibreChat-Workspace-Queue-Wait-Ms']),
+      id: headers['X-LibreChat-Workspace-Request-Id'],
+      body: String(init.body),
+    });
+    if (posts.length === 1) throw new TypeError('fetch failed');
+    return json({ requestId, state: 'completed', result: commandResult }, 202);
+  });
+  const started = Date.now();
+  try {
+    const pending = executeWorkspaceTool({
+      ...input,
+      request: command,
+      maxQueueWaitMs: 300_000,
+      admission: codeEnvironmentAdmissionSchema.parse({ durableRequests: true }),
+      fetchImpl,
+    }).catch((error: unknown) => error);
+    await jest.advanceTimersByTimeAsync(400_000);
+    expect(await pending).toEqual(commandResult);
+    expect(posts).toHaveLength(2);
+    expect(posts[1].id).toBe(posts[0].id);
+    expect(posts[1].body).toBe(posts[0].body);
+    expect(posts[1].allowance).toBe(posts[0].allowance);
+    expect(posts[1].at - posts[0].at).toBeLessThan(5_000);
+    /** The resend keeps the original admission window inside the run's admission horizon. */
+    expect(posts[1].at + posts[1].allowance).toBeLessThanOrEqual(started + 300_000);
+    expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'GET')).toHaveLength(2);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test.each([
+  ['the transport-derived default', {}, 20_100],
+  ['a configured window', { resubmissionWindowMs: 5_000 }, 5_000],
+  ['a window above a tenth of the horizon', { resubmissionWindowMs: 60_000 }, 30_000],
+  ['a disabled window', { resubmissionWindowMs: 0 }, 0],
+])('a first submission holds back %s for a same-ID resend', async (_name, policy, held) => {
+  jest.useFakeTimers();
+  const fetchImpl = jest
+    .fn()
+    .mockResolvedValueOnce(json({ durableWorkspaceRequests: 1 }))
+    .mockResolvedValueOnce(status('completed'));
+  try {
+    expect(
+      await executeWorkspaceTool({
+        ...input,
+        maxQueueWaitMs: 300_000,
+        admission: codeEnvironmentAdmissionSchema.parse({
+          durableRequests: true,
+          pollIntervalMs: 100,
+          ...policy,
+        }),
+        fetchImpl,
+      }),
+    ).toEqual(result);
+    const post = fetchImpl.mock.calls.find(([, init]) => init.method === 'POST');
+    expect(Number(post?.[1].headers['X-LibreChat-Workspace-Queue-Wait-Ms'])).toBe(300_000 - held);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test('a disabled resubmission window keeps observing a lost submission without resending it', async () => {
+  jest.useFakeTimers();
+  const fetchImpl = jest.fn().mockImplementation(async (url: string, init: RequestInit) => {
+    if (url.endsWith('/capabilities')) return json({ durableWorkspaceRequests: 1 });
+    if (init.method === 'POST') throw new TypeError('fetch failed');
+    return json({}, 404);
+  });
+  try {
+    const pending = executeWorkspaceTool({
+      ...input,
+      maxQueueWaitMs: 300_000,
+      admission: codeEnvironmentAdmissionSchema.parse({
+        durableRequests: true,
+        resubmissionWindowMs: 0,
+      }),
+      fetchImpl,
+    }).catch((error: unknown) => error);
+    await jest.advanceTimersByTimeAsync(400_000);
+    expect(await pending).toMatchObject({ reason: 'timeout' });
+    expect(fetchImpl.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
   } finally {
     jest.useRealTimers();
   }

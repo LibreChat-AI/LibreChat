@@ -80,7 +80,7 @@ describe('mongoMeili findOneAndUpdate with includeResultMetadata (saveConvo path
 
   afterAll(async () => {
     await mongoose.disconnect();
-    await mongoServer.stop();
+    await mongoServer?.stop();
     for (const key of MEILI_ENV_KEYS) {
       if (savedMeiliEnv[key] === undefined) {
         delete process.env[key];

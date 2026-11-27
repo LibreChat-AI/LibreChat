@@ -4,6 +4,10 @@
  * Redis-backed and cross-process build deduplication is enabled.
  */
 export interface CacheStore {
+  /** A generation captured before a database read; late fills cannot repopulate a newer one. */
+  snapshot?: () => Promise<CacheStore>;
+  /** A snapshot that must be populated from the primary rather than a regional replica. */
+  primaryReads?: boolean;
   get: (key: string) => Promise<unknown>;
   /** The optional ttl overrides the store's namespace default for this entry. */
   set: (key: string, value: unknown, ttl?: number) => Promise<unknown>;

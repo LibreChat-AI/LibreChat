@@ -4,13 +4,36 @@ import {
   parseLangChainErrorCode,
   stripLangChainTroubleshootingUrl,
 } from 'librechat-data-provider';
-import { ScheduledMCPPolicyError } from '~/schedules/authorization/policy';
 import { MCPErrorCodes, isMCPInitializationError } from '~/mcp/errors';
+import { RunGrantPolicyError } from '~/agents/authority/policy';
 import { AGENT_TOOL_OPTIONS_LIMIT_EXCEEDED } from './options';
 import { OboTokenResolutionError } from '~/mcp/oauth/obo';
 
 export const AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE = 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE';
 export const AGENT_ATTACHMENT_LIMIT_EXCEEDED = 'AGENT_ATTACHMENT_LIMIT_EXCEEDED';
+
+export class AgentModelPolicyError extends Error {
+  readonly status = 403;
+  readonly code = 'model_not_allowed';
+
+  constructor() {
+    super('The configured agent model is unavailable for this request.');
+  }
+}
+
+/**
+ * The selected agent no longer exists. Thrown where a run first needs it, for requesters whose
+ * capability skips the chat route's agent check, so the turn names the same code that check's 404
+ * would have.
+ */
+export class AgentNotFoundError extends Error {
+  readonly status = 404;
+  readonly code: ErrorTypes.AGENT_NOT_FOUND = ErrorTypes.AGENT_NOT_FOUND;
+
+  constructor() {
+    super('Agent not found');
+  }
+}
 
 const FATAL_AGENT_INITIALIZATION_CODES = new Set(
   [
@@ -62,7 +85,7 @@ export function isFatalAgentInitializationError(
 ): boolean {
   const code = getErrorCode(error);
   return (
-    error instanceof ScheduledMCPPolicyError ||
+    error instanceof RunGrantPolicyError ||
     isMCPInitializationError(error, options.signal) ||
     FATAL_AGENT_INITIALIZATION_CODES.has(code as string) ||
     (code === AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE && options.allowExpectedMCPFallback !== true)
@@ -204,6 +227,9 @@ export function resolveModelStreamError(error: unknown): string | undefined {
  * typed payloads the LibreChat client localizes.
  */
 export function getUserFacingProviderError(error: unknown, protectionEnabled: boolean): string {
+  if (error instanceof AgentModelPolicyError) {
+    return error.message;
+  }
   if (protectionEnabled) {
     return GENERIC_PROVIDER_ERROR;
   }
@@ -301,13 +327,19 @@ export function isStepLimitError(error: unknown): boolean {
 /** Outward metadata shared by UI generation failures and both remote agent APIs. */
 export function getAgentErrorMetadata(
   error: unknown,
+  protectionEnabled = false,
 ): { status?: number; code?: string; retryable?: boolean } | undefined {
+  if (error instanceof AgentModelPolicyError) {
+    return { status: 403, code: 'model_not_allowed' };
+  }
   if (error instanceof OboTokenResolutionError) {
     return {
       status: error.retryable ? 503 : 403,
-      code: error.retryable
-        ? MCPErrorCodes.AUTHENTICATION_REFRESH_FAILED
-        : MCPErrorCodes.AUTHENTICATION_REJECTED,
+      ...(!protectionEnabled && {
+        code: error.retryable
+          ? MCPErrorCodes.AUTHENTICATION_REFRESH_FAILED
+          : MCPErrorCodes.AUTHENTICATION_REJECTED,
+      }),
       retryable: error.retryable,
     };
   }
@@ -320,6 +352,6 @@ export function getAgentErrorMetadata(
     ...(typeof status === 'number' && Number.isInteger(status) && status >= 400 && status < 600
       ? { status }
       : {}),
-    ...(typeof candidate.code === 'string' ? { code: candidate.code } : {}),
+    ...(!protectionEnabled && typeof candidate.code === 'string' ? { code: candidate.code } : {}),
   };
 }

@@ -6,6 +6,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { CommandListProps, ComposerHost } from '../../../../react/input';
 import type { MentionPopoverProps } from '../Mention';
 import type { CommandOption } from '../Command';
+import { emptyPaletteSources } from '../../../../react/palette';
 import { ComposerHostProvider } from '../../../../react/input';
 import { NO_HOST_BINDINGS } from '../../../../core/shortcuts';
 import MentionPopover from '../Mention';
@@ -229,6 +230,7 @@ describe('MentionPopover through a host list', () => {
       useComposerBindings: () => NO_HOST_BINDINGS,
       useShortcutDisplay: () => '',
       useShortcutAriaKey: () => undefined,
+      usePaletteSources: emptyPaletteSources,
       renderCommandList,
     };
     renderMention({}, host);

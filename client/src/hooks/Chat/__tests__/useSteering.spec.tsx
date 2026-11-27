@@ -735,6 +735,10 @@ describe('useSteering', () => {
         }).result.current.duringRunActive,
       ).toBe(false);
       expect(setup({ index: 1 }).result.current.duringRunActive).toBe(false);
+      /** Another pane's composer joins in only when its chat says it runs these actions. */
+      expect(setup({ index: 3, duringRun: false }).result.current.duringRunActive).toBe(false);
+      expect(setup({ index: 3, duringRun: true }).result.current.duringRunActive).toBe(true);
+      expect(setup({ duringRun: false }).result.current.duringRunActive).toBe(false);
       const answerMode = setup({ answerModeActive: true }).result.current;
       expect(answerMode.duringRunActive).toBe(false);
       expect(answerMode.pausedOnApproval).toBe(true);

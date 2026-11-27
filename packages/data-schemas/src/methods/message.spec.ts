@@ -106,7 +106,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 describe('Message Operations', () => {
@@ -3039,6 +3039,51 @@ describe('Message Operations', () => {
   });
 
   describe('CLIENT_MESSAGE_SELECT projection', () => {
+    it('returns what started a turn to the client read and to no other', async () => {
+      const conversationId = uuidv4();
+      const trigger = {
+        event: { type: 'subagent.completion', occurredAt: '2026-11-20T10:00:00.000Z' },
+        subject: { kind: 'schedule', id: 'schedule-1' },
+        origin: {
+          event: { type: 'schedule.occurrence', occurredAt: '2026-11-20T09:00:00.000Z' },
+        },
+      };
+      const row = { conversationId, user: 'user123', isCreatedByUser: true };
+      await saveMessage(mockCtx, {
+        ...row,
+        messageId: 'triggered',
+        text: 'wake',
+        trigger,
+      } as never);
+      await saveMessage(mockCtx, { ...row, messageId: 'typed', text: 'hello' });
+      const wire = (messages: unknown) =>
+        JSON.parse(JSON.stringify(messages)) as Array<Record<string, unknown>>;
+      const filter = { conversationId, user: 'user123' };
+
+      const listed = wire(await getMessages(filter, CLIENT_MESSAGE_SELECT));
+      const paged = wire(
+        (
+          await createMessageMethods(mongoose).getMessagesByCursor(filter, {
+            sortOrder: 1,
+            select: CLIENT_MESSAGE_SELECT,
+          })
+        ).messages,
+      );
+      for (const messages of [listed, paged]) {
+        expect(messages.map((message) => message.messageId)).toEqual(['triggered', 'typed']);
+        expect(messages[0].trigger).toEqual(trigger);
+        expect(messages[0]).not.toHaveProperty('_id');
+        expect(messages[1]).not.toHaveProperty('trigger');
+      }
+
+      for (const message of wire(await getMessages(filter))) {
+        expect(message).not.toHaveProperty('trigger');
+      }
+      for (const message of wire(await getMessages(filter, 'text messageId'))) {
+        expect(message).not.toHaveProperty('trigger');
+      }
+    });
+
     it('strips server-internal fields and dead SERP verticals, keeping rendered data', async () => {
       const conversationId = uuidv4();
       await Message.create({
@@ -3960,6 +4005,76 @@ describe('Message Operations', () => {
           status: 'running',
           statusDerived: true,
         }),
+      ]);
+    });
+
+    /**
+     * A task is two rows: its brief, written when it is dispatched, and its reply, written when
+     * it ends. Once the reply exists it is the task's newest row, so its time alone says when the
+     * task finished and nothing of how long it ran.
+     */
+    it('reports when each task was dispatched beside when its newest row was written', async () => {
+      const conversationId = uuidv4();
+      await Message.create([
+        {
+          user: 'user123',
+          messageId: 'task-done:user',
+          conversationId,
+          isCreatedByUser: true,
+          createdAt: new Date('2026-08-21T10:00:00.000Z'),
+        },
+        {
+          user: 'user123',
+          messageId: 'task-done:assistant',
+          conversationId,
+          isCreatedByUser: false,
+          createdAt: new Date('2026-08-21T10:04:30.000Z'),
+        },
+        {
+          user: 'user123',
+          messageId: 'task-live:user',
+          conversationId,
+          isCreatedByUser: true,
+          createdAt: new Date('2026-08-21T10:05:00.000Z'),
+        },
+        {
+          user: 'user123',
+          messageId: 'task-briefless:assistant',
+          conversationId,
+          isCreatedByUser: false,
+          createdAt: new Date('2026-08-21T09:00:00.000Z'),
+        },
+      ]);
+
+      const times = (record: {
+        tasks: Array<{ messageId: string; createdAt?: Date; startedAt?: Date | null }>;
+      }) =>
+        record.tasks.map((task) => [
+          task.messageId,
+          task.createdAt?.toISOString(),
+          task.startedAt?.toISOString(),
+        ]);
+
+      const [record] = await listSubagentTasksForThreads({
+        user: 'user123',
+        conversationIds: [conversationId],
+        limitPerThread: 5,
+      });
+      expect(times(record)).toEqual([
+        ['task-live:user', '2026-08-21T10:05:00.000Z', '2026-08-21T10:05:00.000Z'],
+        ['task-done:assistant', '2026-08-21T10:04:30.000Z', '2026-08-21T10:00:00.000Z'],
+        /** A reply whose brief is not among the rows read has no start to report. */
+        ['task-briefless:assistant', '2026-08-21T09:00:00.000Z', undefined],
+      ]);
+
+      /** The one newest task per child comes from its own read, and carries its start too. */
+      const [newest] = await listSubagentTasksForThreads({
+        user: 'user123',
+        conversationIds: [conversationId],
+        limitPerThread: 1,
+      });
+      expect(times(newest)).toEqual([
+        ['task-live:user', '2026-08-21T10:05:00.000Z', '2026-08-21T10:05:00.000Z'],
       ]);
     });
 

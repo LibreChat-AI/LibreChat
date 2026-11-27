@@ -1,11 +1,10 @@
 import { test } from 'node:test';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { strict as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-
 import { changes, git, isSource } from './changes.mts';
 
 const TEST_SUPPORT = [
@@ -191,3 +190,45 @@ for (const names of [
     }
   });
 }
+
+test('a pure rename selects no ranges; a rename with an edit diffs only the real change', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'quality-rename-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const file = 'packages/data-schemas/src/old.ts';
+  const renamed = 'packages/data-schemas/src/new.ts';
+  mkdirSync(dirname(join(directory, file)), { recursive: true });
+  writeFileSync(join(directory, file), 'export function feature() {\n  return 1;\n}\n');
+  git(['init', '-q'], directory);
+  const commit = (message: string) => {
+    git(['add', '.'], directory);
+    git(
+      [
+        '-c',
+        'user.name=Quality Test',
+        '-c',
+        'user.email=quality@example.invalid',
+        'commit',
+        '--no-gpg-sign',
+        '-qm',
+        message,
+      ],
+      directory,
+    );
+  };
+  commit('base');
+  const base = git(['rev-parse', 'HEAD'], directory).trim();
+
+  git(['mv', file, renamed], directory);
+  commit('pure rename');
+  const pureRenameHead = git(['rev-parse', 'HEAD'], directory).trim();
+  const pureSelection = changes(base, pureRenameHead, directory);
+  assert.deepEqual(pureSelection.files, [{ file: renamed, oldFile: file, ranges: [] }]);
+
+  writeFileSync(join(directory, renamed), 'export function feature() {\n  return 2;\n}\n');
+  commit('rename and edit');
+  const editedHead = git(['rev-parse', 'HEAD'], directory).trim();
+  const editedSelection = changes(base, editedHead, directory);
+  assert.deepEqual(editedSelection.files, [
+    { file: renamed, oldFile: file, ranges: [{ start: 2, count: 1 }] },
+  ]);
+});

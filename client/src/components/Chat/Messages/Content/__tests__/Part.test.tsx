@@ -1,314 +1,109 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import { Constants, ContentTypes } from 'librechat-data-provider';
+import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import Part from '../Part';
 
-jest.mock('../Parts', () => ({
-  ImageGen: () => <div data-testid="image-gen" />,
-  ExecuteCode: () => <div data-testid="execute-code" />,
-  AgentUpdate: () => <div data-testid="agent-update" />,
-  EmptyText: () => <div data-testid="empty-text" />,
-  Reasoning: () => <div data-testid="reasoning" />,
-  ReasoningMarker: ({ label, encrypted }: { label?: string; encrypted?: boolean }) => (
-    <div data-testid="reasoning-marker" data-encrypted={String(encrypted === true)}>
-      {label}
+/** An error part is the chat package's card now; this stands in for its module. */
+jest.mock('@librechat/chat/dist/components/errors/ErrorMessage.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/errors/ErrorMessage.cjs'),
+  __esModule: true,
+  default: ({ text }: { text: string }) => <div data-testid="error-message">{text}</div>,
+}));
+jest.mock('~/components/Messages/Content/Error/register', () => ({}));
+/** The paused question and the approval controls are the chat package's; the app supplies only
+ *  how they resume, so they stand in by their package module here. */
+jest.mock('@librechat/chat/dist/components/approval/hosted.cjs', () => ({
+  HostedQuestion: ({ actionId, question }: { actionId: string; question?: string }) => (
+    <div data-testid="ask-user-question" data-action-id={actionId}>
+      {question}
     </div>
   ),
-  Summary: () => <div data-testid="summary" />,
-  Text: ({ text }: { text?: string }) => <div data-testid="text">{text}</div>,
-  SkillCall: () => <div data-testid="skill-call" />,
-  ReadFileCall: () => <div data-testid="read-file-call" />,
-  FileAuthoringCall: ({ toolName }: { toolName: string }) => (
-    <div data-testid="file-authoring-call" data-tool-name={toolName} />
+  HostedToolApproval: ({ toolCallId }: { toolCallId: string }) => (
+    <div data-testid="tool-approval" data-tool-call-id={toolCallId} />
   ),
-  BashCall: ({ commandField }: { commandField?: string }) => (
-    <div data-testid="bash-call" data-command-field={commandField ?? 'command'} />
+}));
+/** Web search is the chat package's card now; this stands in for its module. */
+jest.mock('@librechat/chat/dist/components/parts/WebSearch.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/WebSearch.cjs'),
+  WebSearchCall: () => <div data-testid="web-search" />,
+}));
+/** The subagent card is the chat package's now; this stands in for its module. */
+jest.mock('@librechat/chat/dist/components/parts/SubagentCall.cjs', () => ({
+  ...jest.requireActual('@librechat/chat/dist/components/parts/SubagentCall.cjs'),
+  __esModule: true,
+  default: ({ toolCallId }: { toolCallId: string }) => (
+    <div data-testid="subagent-call" data-tool-call-id={toolCallId} />
   ),
-  SubagentCall: () => <div data-testid="subagent-call" />,
 }));
-
-jest.mock('../MessageContent', () => ({
-  ErrorMessage: () => <div data-testid="error-message" />,
-}));
-
-jest.mock('../RetrievalCall', () => ({
-  __esModule: true,
-  default: () => <div data-testid="retrieval-call" />,
-}));
-
-jest.mock('../AgentHandoff', () => ({
-  __esModule: true,
-  default: () => <div data-testid="agent-handoff" />,
-}));
-
-jest.mock('../CodeAnalyze', () => ({
-  __esModule: true,
-  default: () => <div data-testid="code-analyze" />,
-}));
-
+jest.mock('../toolCallSlots', () => ({}));
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
-  Container: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
-}));
-jest.mock('../WebSearch', () => ({
-  __esModule: true,
-  default: () => <div data-testid="web-search" />,
 }));
 
-jest.mock('../ToolCall', () => ({
-  __esModule: true,
-  default: ({ runStepStatus }: { runStepStatus?: string }) => (
-    <div data-testid="tool-call" data-run-step-status={runStepStatus} />
-  ),
-}));
+const asPart = (part: Record<string, unknown>) => part as unknown as TMessageContentParts;
 
-jest.mock('../Parts/BackgroundTaskCall', () => ({
-  __esModule: true,
-  default: ({ output }: { output: string }) => (
-    <div data-testid="background-task-call" data-output={output} />
-  ),
-}));
-
-jest.mock('../Image', () => ({
-  __esModule: true,
-  default: ({ alignRight }: { alignRight?: boolean }) => (
-    <div data-testid="image" data-aligned-right={String(alignRight)} />
-  ),
-}));
-
-jest.mock('~/utils', () => ({
-  getPartKeyIndex: jest.requireActual('~/utils').getPartKeyIndex,
-  getCachedPreview: jest.fn(),
-}));
-
-const renderPart = (part: TMessageContentParts) =>
-  render(<Part part={part} isSubmitting={false} showCursor={false} isCreatedByUser={false} />);
-
-const toolCallPart = (name: string, args = '{"code":"echo hi"}'): TMessageContentParts =>
-  ({
+const call = (name: string, toolCall: Record<string, unknown> = {}) =>
+  asPart({
     type: ContentTypes.TOOL_CALL,
     [ContentTypes.TOOL_CALL]: {
       id: 'call_1',
       name,
-      args,
-      output: 'hi',
+      args: '{}',
+      output: 'done',
       progress: 1,
+      ...toolCall,
     },
-  }) as unknown as TMessageContentParts;
+  });
 
-describe('Part image alignment', () => {
-  it('right-aligns user image parts without moving assistant images', () => {
-    const imagePart = {
-      type: ContentTypes.IMAGE_FILE,
-      [ContentTypes.IMAGE_FILE]: {
-        file_id: 'image-1',
-        filename: 'upload.png',
-        filepath: '/images/upload.png',
-      },
-    } as TMessageContentParts;
-    const { rerender } = render(
-      <Part part={imagePart} isSubmitting={false} showCursor={false} isCreatedByUser={false} />,
+const draw = (part: TMessageContentParts) =>
+  render(<Part part={part} isSubmitting={false} showCursor={false} isCreatedByUser={false} />);
+
+describe('the app’s part renderers, over the chat package’s', () => {
+  it('draws an error part with the package’s error message, from whichever field holds the text', () => {
+    const { unmount } = draw(asPart({ type: ContentTypes.ERROR, [ContentTypes.ERROR]: 'bad' }));
+    expect(screen.getByTestId('error-message')).toHaveTextContent('bad');
+    unmount();
+    draw(asPart({ type: ContentTypes.ERROR, text: { value: 'worse' } }));
+    expect(screen.getByTestId('error-message')).toHaveTextContent('worse');
+  });
+
+  it('claims a paused question for the package’s ask card', () => {
+    draw(
+      asPart({
+        type: 'ask_user_question',
+        ask_user_question: { actionId: 'action-1', question: 'Which?' },
+      }),
     );
-    expect(screen.getByTestId('image')).toHaveAttribute('data-aligned-right', 'false');
-
-    rerender(<Part part={imagePart} isSubmitting={false} showCursor={false} isCreatedByUser />);
-    expect(screen.getByTestId('image')).toHaveAttribute('data-aligned-right', 'true');
-  });
-});
-
-describe('Part tool renderer selection', () => {
-  it.each(['image_gen_oai', 'image_edit_oai', 'gemini_image_gen'])(
-    'keeps a successful %s call on the image renderer',
-    (name) => {
-      renderPart(toolCallPart(name));
-      expect(screen.getByTestId('image-gen')).toBeInTheDocument();
-    },
-  );
-
-  it.each(['completed', 'failed'] as const)(
-    'makes a failed image-generation step with %s status revealable',
-    (runStepStatus) => {
-      renderPart({
-        ...toolCallPart('image_gen_oai'),
-        tool_call: {
-          id: 'call_1',
-          name: 'image_gen_oai',
-          args: '{}',
-          output: 'Error: Invalid image arguments\n Please fix your mistakes.',
-          progress: 1,
-          runStepStatus,
-        },
-      } as TMessageContentParts);
-      expect(screen.getByTestId('tool-call')).toHaveAttribute(
-        'data-run-step-status',
-        runStepStatus,
-      );
-      expect(screen.queryByTestId('image-gen')).not.toBeInTheDocument();
-    },
-  );
-
-  it('keeps a cancelled image-generation step out of the failed disclosure', () => {
-    renderPart({
-      ...toolCallPart('image_gen_oai'),
-      tool_call: {
-        id: 'call_1',
-        name: 'image_gen_oai',
-        args: '{}',
-        output: 'Error: Invalid image arguments\n Please fix your mistakes.',
-        progress: 1,
-        runStepStatus: 'cancelled',
-      },
-    } as TMessageContentParts);
-    expect(screen.getByTestId('image-gen')).toBeInTheDocument();
-    expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
+    const card = screen.getByTestId('ask-user-question');
+    expect(card).toHaveAttribute('data-action-id', 'action-1');
+    expect(card).toHaveTextContent('Which?');
   });
 
-  it('routes a failed function-style image call through the shared disclosure', () => {
-    renderPart({
-      type: ContentTypes.TOOL_CALL,
-      tool_call: {
-        type: 'function',
-        progress: 1,
-        function: {
-          name: 'image_gen_oai',
-          arguments: '{}',
-          output: 'Error: Invalid image arguments\n Please fix your mistakes.',
-        },
-      },
-    } as TMessageContentParts);
-    expect(screen.getByTestId('tool-call')).toBeInTheDocument();
+  it('draws a subagent call and a web search with the package’s cards', () => {
+    const { unmount } = draw(call(Constants.SUBAGENT as string));
+    expect(screen.getByTestId('subagent-call')).toHaveAttribute('data-tool-call-id', 'call_1');
+    unmount();
+    draw(call(Tools.web_search));
+    expect(screen.getByTestId('web-search')).toBeInTheDocument();
   });
 
-  it('routes bash PTC tool calls through the BashCall renderer', () => {
-    renderPart(toolCallPart(Constants.BASH_PROGRAMMATIC_TOOL_CALLING));
-
-    expect(screen.getByTestId('bash-call')).toHaveAttribute('data-command-field', 'code');
-    expect(screen.queryByTestId('execute-code')).not.toBeInTheDocument();
+  it('puts approval controls under any tool call that is paused with nothing to show yet', () => {
+    draw(call(Tools.web_search, { output: '', approval: { actionId: 'a1' } }));
+    expect(screen.getByTestId('web-search')).toBeInTheDocument();
+    expect(screen.getByTestId('tool-approval')).toHaveAttribute('data-tool-call-id', 'call_1');
   });
 
-  it('routes default run_tools_with_code PTC calls through the BashCall renderer', () => {
-    renderPart(toolCallPart(Constants.PROGRAMMATIC_TOOL_CALLING));
-
-    expect(screen.getByTestId('bash-call')).toHaveAttribute('data-command-field', 'code');
-    expect(screen.queryByTestId('execute-code')).not.toBeInTheDocument();
+  it('shows no approval controls once the call has output, or when it never paused', () => {
+    const { unmount } = draw(call(Tools.web_search, { approval: { actionId: 'a1' } }));
+    expect(screen.queryByTestId('tool-approval')).not.toBeInTheDocument();
+    unmount();
+    draw(call(Tools.web_search, { output: '' }));
+    expect(screen.queryByTestId('tool-approval')).not.toBeInTheDocument();
   });
 
-  it('keeps Python PTC calls on the ExecuteCode renderer', () => {
-    renderPart(
-      toolCallPart(Constants.PROGRAMMATIC_TOOL_CALLING, '{"lang":"py","code":"print(1)"}'),
-    );
-
-    expect(screen.getByTestId('execute-code')).toBeInTheDocument();
-    expect(screen.queryByTestId('bash-call')).not.toBeInTheDocument();
-  });
-
-  it('routes create_file calls through the file-authoring renderer', () => {
-    renderPart(
-      toolCallPart('create_file', '{"file_path":"skills/demo/SKILL.md","content":"# Demo"}'),
-    );
-
-    expect(screen.getByTestId('file-authoring-call')).toHaveAttribute(
-      'data-tool-name',
-      'create_file',
-    );
-    expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
-  });
-
-  it('routes edit_file calls through the file-authoring renderer', () => {
-    renderPart(
-      toolCallPart(
-        'edit_file',
-        '{"file_path":"skills/demo/SKILL.md","old_text":"Demo","new_text":"Updated"}',
-      ),
-    );
-
-    expect(screen.getByTestId('file-authoring-call')).toHaveAttribute(
-      'data-tool-name',
-      'edit_file',
-    );
-    expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
-  });
-
-  it('routes the native background poll tool to its structured task renderer', () => {
-    const output = JSON.stringify({ tasks: [], outstanding: 0 });
-    const part = toolCallPart(Constants.CHECK_BACKGROUND_TASK) as Extract<
-      TMessageContentParts,
-      { type: typeof ContentTypes.TOOL_CALL }
-    >;
-    Object.assign(part[ContentTypes.TOOL_CALL], { output });
-
-    renderPart(part);
-
-    expect(screen.getByTestId('background-task-call')).toHaveAttribute('data-output', output);
-    expect(screen.queryByTestId('tool-call')).not.toBeInTheDocument();
-  });
-
-  it('renders a cancelled generic background tool as cancelled', () => {
-    const part = toolCallPart('search_mcp_docs') as Extract<
-      TMessageContentParts,
-      { type: typeof ContentTypes.TOOL_CALL }
-    >;
-    Object.assign(part[ContentTypes.TOOL_CALL], {
-      runStepStatus: 'failed',
-      backgroundTask: { cancelled: true },
-    });
-
-    renderPart(part);
-
-    expect(screen.getByTestId('tool-call')).toHaveAttribute('data-run-step-status', 'cancelled');
-  });
-
-  it('routes an unavailable reasoning marker to the marker renderer', () => {
-    renderPart({
-      type: ContentTypes.THINK,
-      think: '',
-      reasoning_unavailable: true,
-      reasoning_label: 'Planning the answer',
-    } as TMessageContentParts);
-
-    expect(screen.getByTestId('reasoning-marker')).toHaveTextContent('Planning the answer');
-    expect(screen.queryByTestId('reasoning')).not.toBeInTheDocument();
-  });
-
-  it('keeps reasoning with text on the full Reasoning renderer even when marked unavailable', () => {
-    renderPart({
-      type: ContentTypes.THINK,
-      think: 'Actual thoughts',
-      reasoning_unavailable: true,
-    } as TMessageContentParts);
-
-    expect(screen.getByTestId('reasoning')).toBeInTheDocument();
-    expect(screen.queryByTestId('reasoning-marker')).not.toBeInTheDocument();
-  });
-
-  it('renders encrypted reasoning as an encrypted marker without its stale label', () => {
-    /** Bedrock `redactedContent`, base64-encoded into THINK text by the SDK. */
-    const encoded = Buffer.from(Array.from({ length: 900 }, (_, i) => (i * 37 + 3) % 256)).toString(
-      'base64',
-    );
-    renderPart({
-      type: ContentTypes.THINK,
-      think: encoded,
-      reasoning_label: 'Inspecting an encoded data snapshot',
-    } as TMessageContentParts);
-
-    const marker = screen.getByTestId('reasoning-marker');
-    expect(marker).toHaveAttribute('data-encrypted', 'true');
-    expect(marker).not.toHaveTextContent('Inspecting an encoded data snapshot');
-    expect(screen.queryByTestId('reasoning')).not.toBeInTheDocument();
-  });
-
-  it('renders persisted encrypted reasoning inside think tags as an encrypted marker', () => {
-    const encoded = Buffer.from(Array.from({ length: 900 }, (_, i) => (i * 37 + 3) % 256)).toString(
-      'base64',
-    );
-    renderPart({
-      type: ContentTypes.THINK,
-      think: `<think>${encoded}</think>`,
-    } as TMessageContentParts);
-
-    expect(screen.getByTestId('reasoning-marker')).toHaveAttribute('data-encrypted', 'true');
-    expect(screen.queryByTestId('reasoning')).not.toBeInTheDocument();
+  it('leaves every other part to the chat package', () => {
+    draw(asPart({ type: ContentTypes.ACTIVITY_LABEL, [ContentTypes.ACTIVITY_LABEL]: 'Searched' }));
+    expect(screen.getByText('Searched')).toBeInTheDocument();
   });
 });

@@ -9,6 +9,7 @@ import {
   messagesView,
   MOCK_ENDPOINTS,
   isAgentsStream,
+  sendMessage,
   selectMockEndpoint,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
@@ -51,7 +52,52 @@ async function replyInNewChat(page: Page, prefix: string) {
   return { label, reply };
 }
 
+/**
+ * A run in flight withholds rerun on every settled reply without removing the button, so the
+ * check is what the reader gets, not which classes the button carries: nothing to see, nothing
+ * to focus, and the same button back when the run ends. Below `lg` the app's own stylesheet
+ * forces toolbar buttons visible, which a concealed one has to be exempt from.
+ */
+async function expectRerunWithheldDuringRun(page: Page, width: number) {
+  const { reply, label } = await replyInNewChat(page, 'hover-conceal');
+  await page.setViewportSize({ width, height: 900 });
+  const row = messageRender(page, reply);
+  const rerun = row.locator('button[aria-label="Regenerate"]');
+  await row.hover();
+  await expect(rerun).toBeVisible();
+
+  const run = await sendMessage(page, `E2E_SLOW_REPLY:${label}`);
+  expect(run.ok()).toBeTruthy();
+  const stop = page.getByTestId('stop-generation-button');
+  await expect(stop).toBeVisible({ timeout: 15_000 });
+
+  await row.hover();
+  await expect(rerun).toHaveCount(1);
+  await expect(rerun).toBeHidden();
+  const tookFocus = await rerun.evaluate((button: HTMLElement) => {
+    button.focus();
+    return document.activeElement === button;
+  });
+  expect(tookFocus).toBe(false);
+
+  await expect(stop).toBeHidden({ timeout: 60_000 });
+  await row.hover();
+  await expect(rerun).toBeVisible();
+}
+
 test.describe('message hover toolbar', () => {
+  test('a settled reply withholds rerun on a wide screen while a run is in flight @scenario:hover-rerun-withheld-during-run-wide', async ({
+    page,
+  }) => {
+    await expectRerunWithheldDuringRun(page, 1280);
+  });
+
+  test('a settled reply withholds rerun on a narrow screen while a run is in flight @scenario:hover-rerun-withheld-during-run-narrow', async ({
+    page,
+  }) => {
+    await expectRerunWithheldDuringRun(page, 800);
+  });
+
   test('regenerating a reply replays its turn @scenario:hover-regenerate-replays-turn', async ({
     page,
   }) => {

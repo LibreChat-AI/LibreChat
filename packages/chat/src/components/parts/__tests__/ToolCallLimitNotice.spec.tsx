@@ -6,21 +6,9 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
 import { ChatContext } from '../../../react/chat/context';
 import ToolCallLimitNotice from '../ToolCallLimitNotice';
+import { initEnglish } from '../../../__fixtures__/i18n';
 
-const TRANSLATIONS: Record<string, string> = {
-  com_ui_tool_call_limit_title: 'Reached the tool call limit for this turn',
-  com_ui_tool_call_limit_body: 'The agent used every step allowed in a single turn.',
-  com_ui_tool_call_limit_continue: 'Keep going',
-  com_ui_tool_call_limit_continue_prompt: 'Keep going from where you stopped.',
-  com_ui_tool_call_limit_answer: 'Answer now',
-  com_ui_tool_call_limit_answer_prompt: 'Stop using tools and answer now.',
-  com_ui_tool_call_limit_dismiss: 'Dismiss',
-};
-
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => TRANSLATIONS[key] ?? key,
-}));
+beforeAll(initEnglish);
 
 const MESSAGE = { messageId: 'response-1' } as TMessage;
 
@@ -50,8 +38,12 @@ describe('ToolCallLimitNotice', () => {
   it('explains what happened rather than reporting an error', () => {
     renderNotice();
 
-    expect(screen.getByText(TRANSLATIONS.com_ui_tool_call_limit_title)).toBeInTheDocument();
-    expect(screen.getByText(TRANSLATIONS.com_ui_tool_call_limit_body)).toBeInTheDocument();
+    expect(screen.getByText('Reached the tool call limit for this turn')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'The agent used every step allowed in a single turn, so it stopped before finishing. Everything above is saved. Choose how to carry on.',
+      ),
+    ).toBeInTheDocument();
     /** An `alert` role would announce this as a failure; it is a normal outcome. */
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
@@ -60,7 +52,7 @@ describe('ToolCallLimitNotice', () => {
     renderNotice();
 
     expect(
-      screen.getByRole('group', { name: TRANSLATIONS.com_ui_tool_call_limit_title }),
+      screen.getByRole('group', { name: 'Reached the tool call limit for this turn' }),
     ).toBeInTheDocument();
   });
 
@@ -68,13 +60,11 @@ describe('ToolCallLimitNotice', () => {
     const ask = jest.fn();
     renderNotice({ ask, isSubmitting: false, latestMessageId: 'response-1' });
 
-    fireEvent.click(
-      screen.getByRole('button', { name: TRANSLATIONS.com_ui_tool_call_limit_continue }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'Keep going' }));
 
     expect(ask).toHaveBeenCalledTimes(1);
     expect(ask).toHaveBeenCalledWith(
-      { text: TRANSLATIONS.com_ui_tool_call_limit_continue_prompt },
+      { text: 'Keep going from where you stopped.' },
       {
         overrideFiles: [],
         overrideManualSkills: [],
@@ -88,12 +78,12 @@ describe('ToolCallLimitNotice', () => {
     const ask = jest.fn();
     renderNotice({ ask, isSubmitting: false, latestMessageId: 'response-1' });
 
-    fireEvent.click(
-      screen.getByRole('button', { name: TRANSLATIONS.com_ui_tool_call_limit_answer }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'Answer now' }));
 
     expect(ask).toHaveBeenCalledWith(
-      { text: TRANSLATIONS.com_ui_tool_call_limit_answer_prompt },
+      {
+        text: 'Stop using tools and answer now with what you already have. Say briefly what you could not finish checking.',
+      },
       {
         overrideFiles: [],
         overrideManualSkills: [],
@@ -103,48 +93,52 @@ describe('ToolCallLimitNotice', () => {
     );
   });
 
+  it('offers no actions in a conversation the reader takes no turn in', () => {
+    renderNotice({
+      ask: jest.fn(),
+      readOnly: true,
+      isSubmitting: false,
+      latestMessageId: 'response-1',
+    });
+
+    expect(screen.queryByRole('button', { name: 'Keep going' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Answer now' })).toBeNull();
+  });
+
   it('offers no actions with no live chat behind it, as in a shared link or export', () => {
     renderNotice();
 
-    expect(
-      screen.queryByRole('button', { name: TRANSLATIONS.com_ui_tool_call_limit_continue }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: TRANSLATIONS.com_ui_tool_call_limit_answer }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Keep going' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Answer now' })).not.toBeInTheDocument();
     /** The explanation and the way to hide it must survive. */
-    expect(screen.getByText(TRANSLATIONS.com_ui_tool_call_limit_body)).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: TRANSLATIONS.com_ui_tool_call_limit_dismiss }),
+      screen.getByText(
+        'The agent used every step allowed in a single turn, so it stopped before finishing. Everything above is saved. Choose how to carry on.',
+      ),
     ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Dismiss this notice' })).toBeInTheDocument();
   });
 
   it('offers no actions on a message that is not the branch tail', () => {
     const ask = jest.fn();
     renderNotice({ ask, isSubmitting: false, latestMessageId: 'some-newer-message' });
 
-    expect(
-      screen.queryByRole('button', { name: TRANSLATIONS.com_ui_tool_call_limit_continue }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Keep going' })).not.toBeInTheDocument();
     expect(ask).not.toHaveBeenCalled();
   });
 
   it('offers no actions while a generation is already running', () => {
     renderNotice({ ask: jest.fn(), isSubmitting: true, latestMessageId: 'response-1' });
 
-    expect(
-      screen.queryByRole('button', { name: TRANSLATIONS.com_ui_tool_call_limit_continue }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Keep going' })).not.toBeInTheDocument();
   });
 
   it('can be dismissed', () => {
     renderNotice({ ask: jest.fn(), isSubmitting: false, latestMessageId: 'response-1' });
 
-    fireEvent.click(
-      screen.getByRole('button', { name: TRANSLATIONS.com_ui_tool_call_limit_dismiss }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss this notice' }));
 
-    expect(screen.queryByText(TRANSLATIONS.com_ui_tool_call_limit_title)).not.toBeInTheDocument();
+    expect(screen.queryByText('Reached the tool call limit for this turn')).not.toBeInTheDocument();
   });
 
   it('shows the notice again when switching to another sibling message', () => {
@@ -155,10 +149,8 @@ describe('ToolCallLimitNotice', () => {
       latestMessageId: 'response-1',
     });
 
-    fireEvent.click(
-      screen.getByRole('button', { name: TRANSLATIONS.com_ui_tool_call_limit_dismiss }),
-    );
-    expect(screen.queryByText(TRANSLATIONS.com_ui_tool_call_limit_title)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss this notice' }));
+    expect(screen.queryByText('Reached the tool call limit for this turn')).not.toBeInTheDocument();
 
     rerender(
       <ChatContext.Provider
@@ -168,6 +160,6 @@ describe('ToolCallLimitNotice', () => {
       </ChatContext.Provider>,
     );
 
-    expect(screen.getByText(TRANSLATIONS.com_ui_tool_call_limit_title)).toBeInTheDocument();
+    expect(screen.getByText('Reached the tool call limit for this turn')).toBeInTheDocument();
   });
 });

@@ -8,6 +8,7 @@ const {
   matchModelName,
   findMatchingPattern,
   isDeploymentSkillId,
+  isSharedLinksEnabled,
   createMessageBudgetReader,
   createFavoriteRuntime,
   getPersistenceConfig,
@@ -32,6 +33,7 @@ const methods = createMethods(mongoose, {
   getCache: getLogStores,
   getChannelStorageConfig: channelStorageConfig.getConfig,
   getMCPAppMessageBudget: messageBudget.getBudget,
+  allowSharedLinks: isSharedLinksEnabled(),
 });
 
 const seedDatabase = async () => {

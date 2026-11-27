@@ -8,12 +8,15 @@ import { areMessageFieldsEqual, isSameTailRelation } from '../../react/messages/
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from './labels';
 import { MessageIconSlot, useMessagesHost } from '../../react/messages/host';
 import useContentMetadata from '../../react/messages/useContentMetadata';
+import { useUserTurnAuthor } from '../../react/messages/author';
 import { parseWakeupMessage } from '../../core/parts/wakeup';
 import { MessageContext } from '../../react/message';
 import { getHeaderHoverLabel } from './HeaderLabel';
 import useMessageActions from './useMessageActions';
+import { renderMessageBody } from './MessageBody';
 import MessageFooter from './MessageFooter';
 import HoverButtons from './HoverButtons';
+import EventOrigin from './EventOrigin';
 import MessageRow from './MessageRow';
 import WakeupRow from './WakeupRow';
 
@@ -103,6 +106,7 @@ const MessageRender: NamedExoticComponent<MessageRenderProps> = memo(function Me
     chatContext,
   });
   const maximizeChatSpace = host.useMaximizeChatSpace();
+  const userAuthor = useUserTurnAuthor();
 
   const handleRegenerateMessage = useCallback(() => regenerateMessage(), [regenerateMessage]);
   const getLatestMessageId = useCallback(() => chatContext.latestMessageId, [chatContext]);
@@ -156,6 +160,8 @@ const MessageRender: NamedExoticComponent<MessageRenderProps> = memo(function Me
   const Row = subagentWakeup == null ? MessageRow : WakeupRow;
   const isUserSide =
     msg.isCreatedByUser === true && (edit || wakeupDisplay == null || subagentWakeup != null);
+  /** A user-side turn someone other than the reader wrote is drawn as that author's. */
+  const authored = msg.isCreatedByUser === true && wakeupDisplay == null ? userAuthor : undefined;
 
   return (
     <Row
@@ -164,15 +170,27 @@ const MessageRender: NamedExoticComponent<MessageRenderProps> = memo(function Me
       conversationId={msg.conversationId ?? conversation?.conversationId ?? ''}
       message={wakeupDisplay != null ? undefined : msg}
       id={msg.messageId}
-      icon={<MessageIconSlot iconData={iconData} assistant={assistant} agent={agent} />}
-      label={messageLabel ?? ''}
-      hoverLabel={getHeaderHoverLabel(
-        hasConfiguredSender,
-        agent?.model,
-        assistant?.model,
-        msg.model,
-        conversation?.model,
-      )}
+      icon={
+        authored != null ? (
+          authored.icon
+        ) : (
+          <MessageIconSlot iconData={iconData} assistant={assistant} agent={agent} />
+        )
+      }
+      label={authored != null ? authored.label : (messageLabel ?? '')}
+      showAuthor={authored != null}
+      hoverLabel={
+        /** The model is the conversation's agent's, not this author's, so it is not shown. */
+        authored != null
+          ? undefined
+          : getHeaderHoverLabel(
+              hasConfiguredSender,
+              agent?.model,
+              assistant?.model,
+              msg.model,
+              conversation?.model,
+            )
+      }
       timestamp={msg.createdAt ?? msg.clientTimestamp}
       ariaLabel={getMessageAriaLabel(msg, localize)}
       headerPrefix={getHeaderPrefixForScreenReader(msg, localize)}
@@ -217,6 +235,11 @@ const MessageRender: NamedExoticComponent<MessageRenderProps> = memo(function Me
       }
     >
       <MessageContext.Provider value={messageContextValue}>
+        {/* Read off the message alone, so a row with no subscription's record adds no hook
+            and no element: only the first message of such a turn mounts the origin. */}
+        {!edit && wakeupDisplay == null && msg.trigger?.detail != null && (
+          <EventOrigin message={msg} />
+        )}
         {showOwnerText && host.renderPrivateText({ message: msg })}
         {!showOwnerText &&
           (wakeupDisplay != null && !edit
@@ -224,7 +247,7 @@ const MessageRender: NamedExoticComponent<MessageRenderProps> = memo(function Me
                 display: wakeupDisplay,
                 conversationId: conversation?.conversationId,
               })
-            : host.renderMessageBody({
+            : (host.renderMessageBody ?? renderMessageBody)({
                 ask,
                 edit,
                 isLast,

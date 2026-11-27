@@ -64,6 +64,7 @@ jest.mock('@librechat/client', () => ({
   Button: ({ children, onClick }: React.PropsWithChildren<{ onClick: () => void }>) => (
     <button onClick={onClick}>{children}</button>
   ),
+  Shimmer: jest.requireActual('@librechat/client').Shimmer,
 }));
 
 const props = {

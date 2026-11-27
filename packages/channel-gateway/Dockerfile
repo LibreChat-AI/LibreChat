@@ -1,4 +1,4 @@
-FROM node:24.22.3-alpine AS build
+FROM docker.io/library/node:24.22.3-alpine AS build
 
 ENV SCARF_ANALYTICS=false HUSKY=0
 WORKDIR /build
@@ -22,7 +22,7 @@ RUN npm run build --workspace librechat-data-provider \
     && npm run typecheck --workspace @librechat/channel-gateway \
     && npm run build --workspace @librechat/channel-gateway
 
-FROM node:24.22.3-alpine AS runtime
+FROM docker.io/library/node:24.22.3-alpine AS runtime
 
 ENV NODE_ENV=production PORT=8080 LISTEN_HOST=0.0.0.0
 WORKDIR /app

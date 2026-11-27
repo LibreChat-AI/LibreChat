@@ -10,9 +10,11 @@ import type { MessagesHost } from '../../../../react/messages/host';
 import type { ChatContract } from '../../../../react/chat/contract';
 import type { MessagePartsHost } from '../../../../react/host';
 import type { MessagesViewProps } from '../../MessagesView';
+import { emptyToolCallChrome, MessagePartsHostProvider } from '../../../../react/host';
 import { createMessagesHost } from '../../../../__fixtures__/messagesHost';
 import { MessagesHostProvider } from '../../../../react/messages/host';
-import { MessagePartsHostProvider } from '../../../../react/host';
+import { createSteerHost } from '../../../../__fixtures__/steerHost';
+import { SteerHostProvider } from '../../../../react/steer/host';
 import { ChatContext } from '../../../../react/chat/context';
 import { initEnglish } from '../../../../__fixtures__/i18n';
 import { resolveThreadRows } from '../../../../core/thread';
@@ -77,11 +79,14 @@ const partsHost: MessagePartsHost = {
   useFileMap: () => undefined,
   useToast: () => () => undefined,
   useSandboxStarting: () => false,
+  usePtcTrace: () => ({ entries: [], dropped: 0 }),
+  useLoadedSkill: () => undefined,
   useToolArtifactClaim: () => [null, () => undefined],
   useSteerEscalating: () => false,
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, () => undefined],
   useShare: () => ({}),
+  useToolCallChrome: emptyToolCallChrome,
 };
 
 const renderActivity = jest.fn<null, Parameters<MessagesHost['renderActivity']>>(() => null);
@@ -115,18 +120,20 @@ function renderThread(
   const view = (next: Partial<MessagesViewProps>) => (
     <Provider store={store}>
       <QueryClientProvider client={queryClient}>
-        <ChatContext.Provider value={contract}>
-          <MessagesHostProvider host={host}>
-            <MessagePartsHostProvider host={partsHost}>
-              <MessagesView
-                showScrollButton={false}
-                maximizeChatSpace={false}
-                {...props}
-                {...next}
-              />
-            </MessagePartsHostProvider>
-          </MessagesHostProvider>
-        </ChatContext.Provider>
+        <SteerHostProvider host={createSteerHost()}>
+          <ChatContext.Provider value={contract}>
+            <MessagesHostProvider host={host}>
+              <MessagePartsHostProvider host={partsHost}>
+                <MessagesView
+                  showScrollButton={false}
+                  maximizeChatSpace={false}
+                  {...props}
+                  {...next}
+                />
+              </MessagePartsHostProvider>
+            </MessagesHostProvider>
+          </ChatContext.Provider>
+        </SteerHostProvider>
       </QueryClientProvider>
     </Provider>
   );
@@ -162,6 +169,16 @@ describe('MessagesView default thread', () => {
   it('renders the flat rows from the messages by default', () => {
     renderThread({ messages: branched(), messagesTree: [message('from-tree', ROOT)] });
     expect(rows()).toEqual(['u1', 'a1']);
+  });
+
+  it('draws a prompt with the package’s body when the host names none', () => {
+    renderThread(
+      { messages: [message('u1', ROOT, { text: 'What changed?\nAnd why?' })] },
+      createHost({ renderMessageBody: undefined }),
+    );
+    const body = row('u1').querySelector('.message-content');
+    expect(body?.textContent).toBe('What changed?\nAnd why?');
+    expect(body).toHaveClass('whitespace-pre-wrap');
   });
 
   it('renders the recursive tree when the flat thread is off', () => {

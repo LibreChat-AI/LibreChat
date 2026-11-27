@@ -1,4 +1,6 @@
 import type { MessagePartsHost } from '../react/host';
+import { EMPTY_PTC_TRACE } from '../react/stream/ptc';
+import { emptyToolCallChrome } from '../react/host';
 
 /** A parts host that renders nothing app-specific: no markdown, icons, files or preferences. */
 export function createMessagePartsHost(
@@ -28,11 +30,14 @@ export function createMessagePartsHost(
     useFileMap: () => undefined,
     useToast: () => () => undefined,
     useSandboxStarting: () => false,
+    usePtcTrace: () => EMPTY_PTC_TRACE,
     useToolArtifactClaim: () => [null, () => undefined],
     useSteerEscalating: () => false,
     usePaneConversationId: () => null,
     useLiveAppliedSteer: () => [false, () => undefined],
     useShare: () => ({}),
+    useLoadedSkill: () => undefined,
+    useToolCallChrome: emptyToolCallChrome,
     ...overrides,
   };
 }

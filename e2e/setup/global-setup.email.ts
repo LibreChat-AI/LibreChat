@@ -1,7 +1,7 @@
 import { chromium } from '@playwright/test';
 import type { FullConfig } from '@playwright/test';
 import cleanupUser from './cleanupUser';
-import { appURL, login, submitRegistration } from './authenticate';
+import { appURL, login, newSetupPage, submitRegistration } from './authenticate';
 import { clearMailbox, getVerificationURL, waitForMessage } from './mailbox';
 import { getEmailChangeTarget, getEmailChangeUser } from './users.email';
 
@@ -24,7 +24,7 @@ async function globalSetup(config: FullConfig) {
     ...(chromiumChannel ? { channel: chromiumChannel } : {}),
   });
   try {
-    const page = await browser.newPage();
+    const page = await newSetupPage(browser, config);
     const pageErrors: string[] = [];
     const failedResponses: string[] = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));

@@ -1,16 +1,17 @@
 import { Constants } from '@librechat/agents';
 import { FileSources, FileContext, EToolResources } from 'librechat-data-provider';
 import type { FileProvisionCommit, FileStorageClaim } from '@librechat/data-schemas';
+import type { SubagentExecutionContext } from '@librechat/agents';
 import type { CodeEnvRef, TFile } from 'librechat-data-provider';
 import type { ProvisionCallbackDeps, ProvisionToolContext } from './callback';
 import type { ProvisionState } from '~/agents/resources';
 import type { CodeFileAgent } from '../code/queued';
 import type { ServerRequest } from '~/types';
+import { createProvisionFilesCallback, createGeneratedFileQueue } from './callback';
 import { createFileProvisionRecovery, withFileProvisioning } from '../operations';
 import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
 import { prepareQueuedCodeFileContext } from '../code/queued';
 import { createSubagentCodeRouting } from '~/code/targets';
-import { createProvisionFilesCallback } from './callback';
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), warn: jest.fn(), debug: jest.fn(), info: jest.fn() },
@@ -408,6 +409,17 @@ describe('createProvisionFilesCallback', () => {
         'Failed to provision',
       );
       expect(harness.fileStorage.releaseFileProvision).not.toHaveBeenCalled();
+      const [unknownClaim] = harness.fileStorage.acquireFileProvision.mock.calls[0];
+      if (destination === 'code') {
+        /* Each Code API upload opens its own session, so the next call uploads again beside
+         * the unknown attempt instead of waiting on it, and that attempt's claim stays stored. */
+        await expect(harness.provisionFiles(toolNames, 'agent-a')).resolves.toHaveLength(1);
+        expect(harness.upload).toHaveBeenCalledTimes(2);
+        expect(harness.fileStorage.acquireFileProvision).toHaveBeenCalledTimes(2);
+        expect(harness.fileStorage.releaseFileProvision).toHaveBeenCalledTimes(1);
+        expect(harness.fileStorage.releaseFileProvision).not.toHaveBeenCalledWith(unknownClaim);
+        return;
+      }
       await expect(harness.provisionFiles(toolNames, 'agent-a')).rejects.toThrow(
         'Failed to provision',
       );
@@ -1505,5 +1517,457 @@ describe('createProvisionFilesCallback', () => {
 
     expect(provisionToCodeEnv).not.toHaveBeenCalled();
     expect(provisionToVectorDB).not.toHaveBeenCalled();
+  });
+});
+
+describe('createProvisionFilesCallback batched code uploads', () => {
+  type BatchParams = Parameters<NonNullable<ProvisionCallbackDeps['provisionBatchToCodeEnv']>>[0];
+  type BatchResult = Awaited<
+    ReturnType<NonNullable<ProvisionCallbackDeps['provisionBatchToCodeEnv']>>
+  >;
+
+  const stored = (file: TFile, sandboxFilename: string | undefined, session: string) => {
+    const ref: CodeEnvRef = {
+      kind: 'user',
+      id: 'user-1',
+      storage_session_id: session,
+      file_id: `remote-${file.file_id}`,
+    };
+    return {
+      referenceSet: { codeEnvRefs: { default: ref } },
+      refUpdate: { file_id: file.file_id, routeKey: 'default', ref },
+      sandboxFilename: sandboxFilename ?? file.filename,
+    };
+  };
+
+  function batchHarness(
+    contexts: Array<[string, ProvisionToolContext]>,
+    batchImpl?: (params: BatchParams) => Promise<BatchResult>,
+  ) {
+    let sessions = 0;
+    const provisionBatchToCodeEnv = jest.fn(
+      batchImpl ??
+        (async ({ files }: BatchParams): Promise<BatchResult> => {
+          const session = `batch-${++sessions}`;
+          return files.map(({ file, sandboxFilename, onUploadStart }) => {
+            onUploadStart?.();
+            return { status: 'fulfilled', value: stored(file, sandboxFilename, session) };
+          });
+        }),
+    );
+    const provisionToCodeEnv = jest.fn(
+      async ({
+        file,
+        sandboxFilename,
+      }: Parameters<ProvisionCallbackDeps['provisionToCodeEnv']>[0]) =>
+        stored(file, sandboxFilename, `single-${file.file_id}`),
+    );
+    const fileStorage = {
+      recovery: createFileProvisionRecovery(),
+      acquireFileProvision: jest.fn(async (_claim: FileStorageClaim) => true),
+      releaseFileProvision: jest.fn(async (_claim: FileStorageClaim) => true),
+      commitFileProvision: jest.fn(async (_commit: FileProvisionCommit) => true),
+    };
+    return {
+      provisionBatchToCodeEnv,
+      provisionToCodeEnv,
+      fileStorage,
+      provisionFiles: createProvisionFilesCallback({
+        req,
+        fileStorage,
+        agentToolContexts: new Map(contexts),
+        provisionToCodeEnv,
+        provisionBatchToCodeEnv,
+        provisionToVectorDB: jest.fn() as never,
+        updateFile: jest.fn(),
+        updateCodeEnvRef: jest.fn(),
+        addEmbeddedEntity: jest.fn(),
+      }),
+    };
+  }
+
+  const files = (count: number): TFile[] =>
+    Array.from({ length: count }, (_, index) =>
+      makeFile({ file_id: `file-${index}`, filename: `data-${index}.csv` }),
+    );
+
+  it('sends every queued file of a tool batch in one request and applies each result', async () => {
+    const queued = files(5);
+    const provisionState = state(queued, []);
+    const context: ProvisionToolContext = { provisionState };
+    const h = batchHarness([['agent-a', context]]);
+
+    const provisioned = await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+
+    expect(h.provisionBatchToCodeEnv).toHaveBeenCalledTimes(1);
+    expect(h.provisionToCodeEnv).not.toHaveBeenCalled();
+    const [request] = h.provisionBatchToCodeEnv.mock.calls[0];
+    expect(request.entity_id).toBeUndefined();
+    expect(request.files.map(({ file }) => file.file_id).sort()).toEqual(
+      queued.map((file) => file.file_id).sort(),
+    );
+    expect(provisioned.map((file) => [file.id, file.storage_session_id]).sort()).toEqual(
+      queued.map((file) => [`remote-${file.file_id}`, 'batch-1']).sort(),
+    );
+    expect(h.fileStorage.commitFileProvision).toHaveBeenCalledTimes(5);
+    expect(h.fileStorage.releaseFileProvision).toHaveBeenCalledTimes(5);
+    expect(provisionState.codeEnvFiles).toEqual([]);
+    expect(context.tool_resources?.execute_code?.files?.map((file) => file.file_id).sort()).toEqual(
+      queued.map((file) => file.file_id).sort(),
+    );
+  });
+
+  it('keeps each resource identity in its own request', async () => {
+    const queued = files(4);
+    const h = batchHarness([
+      ['agent-a', { provisionState: state(queued, [], ['file-0', 'file-1']) }],
+    ]);
+
+    await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+
+    expect(
+      h.provisionBatchToCodeEnv.mock.calls
+        .map(([{ entity_id, files: sent }]) => [
+          entity_id,
+          sent.map(({ file }) => file.file_id).sort(),
+        ])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    ).toEqual([
+      ['agent-a', ['file-0', 'file-1']],
+      [undefined, ['file-2', 'file-3']],
+    ]);
+  });
+
+  it('streams a file it cannot size while the rest share a request', async () => {
+    const queued = files(3);
+    queued[1] = makeFile({ file_id: 'file-1', filename: 'data-1.csv', bytes: undefined });
+    const h = batchHarness([['agent-a', { provisionState: state(queued, []) }]]);
+
+    await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(1);
+    expect(h.provisionToCodeEnv.mock.calls[0][0].file.file_id).toBe('file-1');
+    expect(h.provisionBatchToCodeEnv).toHaveBeenCalledTimes(1);
+    expect(
+      h.provisionBatchToCodeEnv.mock.calls[0][0].files.map(({ file }) => file.file_id).sort(),
+    ).toEqual(['file-0', 'file-2']);
+  });
+
+  it('uploads without a file whose claim was denied', async () => {
+    const queued = files(3);
+    const provisionState = state(queued, []);
+    const h = batchHarness([['agent-a', { provisionState }]]);
+    h.fileStorage.acquireFileProvision.mockImplementation(
+      async ({ file_id }: FileStorageClaim) => file_id !== 'file-1',
+    );
+
+    await expect(h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a')).rejects.toThrow(
+      'Failed to provision 1 file(s)',
+    );
+
+    expect(h.provisionBatchToCodeEnv).toHaveBeenCalledTimes(1);
+    expect(
+      h.provisionBatchToCodeEnv.mock.calls[0][0].files.map(({ file }) => file.file_id).sort(),
+    ).toEqual(['file-0', 'file-2']);
+    expect(provisionState.codeEnvFiles.map((file) => file.file_id)).toEqual(['file-1']);
+  });
+
+  it('shares one request between agents that queue the same files', async () => {
+    const queued = files(3);
+    const h = batchHarness([
+      ['agent-a', { provisionState: state([...queued], []) }],
+      ['agent-b', { provisionState: state([...queued], []) }],
+    ]);
+
+    const [first, second] = await Promise.all([
+      h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a'),
+      h.provisionFiles([Constants.EXECUTE_CODE], 'agent-b'),
+    ]);
+
+    expect(h.provisionBatchToCodeEnv).toHaveBeenCalledTimes(1);
+    expect(first.map((file) => file.id).sort()).toEqual(second.map((file) => file.id).sort());
+    expect(h.fileStorage.commitFileProvision).toHaveBeenCalledTimes(3);
+  });
+
+  it('reports one rate-limit failure for the turn and keeps every file queued', async () => {
+    const rateLimit = Object.assign(new Error('Code API rate limit reached'), {
+      name: 'CodeApiRateLimitError',
+      code: 'CODE_API_RATE_LIMITED',
+      status: 429,
+      statusCode: 429,
+      retryAfterMs: 219_000,
+    });
+    const queued = files(30);
+    const provisionState = state(queued, []);
+    const h = batchHarness([['agent-a', { provisionState }]], async ({ files: sent }) => {
+      for (const { onUploadStart } of sent) {
+        onUploadStart?.();
+        onUploadStart?.('rejected');
+      }
+      throw rateLimit;
+    });
+    const { logger } = jest.requireMock('@librechat/data-schemas');
+    logger.error.mockClear();
+
+    await expect(h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a')).rejects.toBe(rateLimit);
+
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(provisionState.codeEnvFiles).toHaveLength(30);
+    expect(h.fileStorage.releaseFileProvision).toHaveBeenCalledTimes(30);
+  });
+
+  it('reports the longest wait when separate requests were rate limited', async () => {
+    const limited = (retryAfterMs: number) =>
+      Object.assign(new Error(`retry in ${retryAfterMs}`), {
+        code: 'CODE_API_RATE_LIMITED',
+        status: 429,
+        retryAfterMs,
+      });
+    const waits = [30_000, 219_000];
+    const errors = waits.map(limited);
+    const h = batchHarness(
+      [['agent-a', { provisionState: state(files(2), [], ['file-0']) }]],
+      async ({ entity_id }) => {
+        throw errors[entity_id ? 0 : 1];
+      },
+    );
+
+    await expect(h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a')).rejects.toBe(errors[1]);
+  });
+
+  it('names the rate limit when other files failed for another reason', async () => {
+    const rateLimit = Object.assign(new Error('Code API rate limit reached'), {
+      code: 'CODE_API_RATE_LIMITED',
+      status: 429,
+      retryAfterMs: 262_000,
+    });
+    const unknown = new Error('File provisioning outcome is unknown');
+    const h = batchHarness(
+      [['agent-a', { provisionState: state(files(3), []) }]],
+      async ({ files: sent }) =>
+        sent.map(({ file }) => ({
+          status: 'rejected',
+          reason: file.file_id === 'file-0' ? unknown : rateLimit,
+        })),
+    );
+
+    await expect(h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a')).rejects.toMatchObject({
+      message:
+        'Failed to provision 3 file(s) to the code environment; aborting tool execution rather than running without them. The Code API rate limit turned away 2 of them (retry in 262s)',
+      errors: expect.arrayContaining([unknown, rateLimit]),
+    });
+  });
+
+  it('retries only the file a request refused', async () => {
+    const refused = new Error('Code API did not store "data-1.csv"');
+    const queued = files(3);
+    const provisionState = state(queued, []);
+    let refuse = true;
+    const h = batchHarness([['agent-a', { provisionState }]], async ({ files: sent }) =>
+      sent.map(({ file, sandboxFilename, onUploadStart }) => {
+        onUploadStart?.();
+        if (refuse && file.file_id === 'file-1') {
+          onUploadStart?.('rejected');
+          return { status: 'rejected', reason: refused };
+        }
+        return { status: 'fulfilled', value: stored(file, sandboxFilename, 'batch') };
+      }),
+    );
+
+    await expect(h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a')).rejects.toMatchObject({
+      cause: refused,
+      errors: [refused],
+    });
+    expect(provisionState.codeEnvFiles.map((file) => file.file_id)).toEqual(['file-1']);
+
+    refuse = false;
+    const provisioned = await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    expect(h.provisionBatchToCodeEnv).toHaveBeenCalledTimes(2);
+    expect(
+      h.provisionBatchToCodeEnv.mock.calls[1][0].files.map(({ file }) => file.file_id),
+    ).toEqual(['file-1']);
+    expect(provisioned.map((file) => file.id).sort()).toEqual([
+      'remote-file-0',
+      'remote-file-1',
+      'remote-file-2',
+    ]);
+  });
+});
+
+describe('files a tool generates during the run', () => {
+  const image = (fileId = 'generated-image') =>
+    makeFile({
+      file_id: fileId,
+      filename: `${fileId}-flux_img_abc.png`,
+      type: 'image/png',
+      context: FileContext.image_generation,
+    });
+
+  function harness(contexts: Array<[string, ProvisionToolContext]>) {
+    const h = buildHarness({ contexts });
+    return { ...h, queue: createGeneratedFileQueue({ agentToolContexts: h.agentToolContexts }) };
+  }
+
+  it('uploads an image generated earlier in the run on the next code call', async () => {
+    /* The agent had nothing queued when the turn started, so it has no provisioning state
+     * until the image arrives. */
+    const context: ProvisionToolContext = {};
+    const h = harness([['agent-a', context]]);
+    const file = image();
+    h.queue(Promise.resolve(file), { executingAgentId: 'agent-a' });
+
+    const provisioned = await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(1);
+    expect(h.provisionToCodeEnv.mock.calls[0][0]).toMatchObject({
+      file: { file_id: 'generated-image' },
+      entity_id: undefined,
+    });
+    expect(provisioned.map((codeFile) => codeFile.id)).toEqual(['remote-1']);
+    /* Later code calls in the run reuse the upload instead of queueing it again. */
+    expect(context.provisionState?.codeEnvFiles).toEqual([]);
+    expect(context.tool_resources?.execute_code?.files?.map((f) => f.file_id)).toEqual([
+      'generated-image',
+    ]);
+    expect(context.generatedFiles).toBeUndefined();
+  });
+
+  it('waits for an image that is still being saved', async () => {
+    const h = harness([['agent-a', {}]]);
+    let finishSave: (file: TFile) => void = () => undefined;
+    h.queue(
+      new Promise<TFile>((resolve) => {
+        finishSave = resolve;
+      }),
+      { executingAgentId: 'agent-a' },
+    );
+
+    const provisioning = h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(h.provisionToCodeEnv).not.toHaveBeenCalled();
+
+    finishSave(image());
+    await provisioning;
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes a concurrent code call wait for the same image and uploads it once', async () => {
+    const h = harness([['agent-a', {}]]);
+    let finishSave: (file: TFile) => void = () => undefined;
+    h.queue(
+      new Promise<TFile>((resolve) => {
+        finishSave = resolve;
+      }),
+      { executingAgentId: 'agent-a' },
+    );
+
+    const first = h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    const second = h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    finishSave(image());
+    const results = await Promise.all([first, second]);
+
+    expect(results.map((files) => files.map((codeFile) => codeFile.id))).toEqual([
+      ['remote-1'],
+      ['remote-1'],
+    ]);
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops waiting for a save once the tool call is cancelled', async () => {
+    const h = harness([['agent-a', {}]]);
+    h.queue(new Promise<TFile>(() => undefined), { executingAgentId: 'agent-a' });
+    const controller = new AbortController();
+
+    const provisioning = h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a', controller.signal);
+    controller.abort(new Error('stopped'));
+
+    await expect(provisioning).rejects.toThrow('stopped');
+    expect(h.provisionToCodeEnv).not.toHaveBeenCalled();
+  });
+
+  it('fails the next code call once for images that could not be saved', async () => {
+    /* The code may need the image, so the call says it is missing instead of running without
+     * it. The image never reached storage, so later calls run with what was saved. */
+    const h = harness([['agent-a', {}]]);
+    const outage = new Error('storage unavailable at s3://private-bucket');
+    const failed = Promise.reject(outage);
+    failed.catch(() => undefined);
+    h.queue(failed, { executingAgentId: 'agent-a' });
+    h.queue(Promise.resolve(null), { executingAgentId: 'agent-a' });
+    h.queue(Promise.resolve(image()), { executingAgentId: 'agent-a' });
+
+    const call = h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    await expect(call).rejects.toMatchObject({
+      message: expect.stringMatching(/^Failed to save 2 generated file\(s\)/),
+      cause: outage,
+    });
+    await expect(call).rejects.not.toThrow(/private-bucket/);
+    expect(h.provisionToCodeEnv).not.toHaveBeenCalled();
+
+    const provisioned = await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    expect(provisioned.map((codeFile) => codeFile.id)).toEqual(['remote-1']);
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the image with the agent that generated it', async () => {
+    const h = harness([
+      ['agent-a', {}],
+      ['agent-b', {}],
+    ]);
+    h.queue(Promise.resolve(image()), { executingAgentId: 'agent-a' });
+
+    await expect(h.provisionFiles([Constants.EXECUTE_CODE], 'agent-b')).resolves.toEqual([]);
+    expect(h.provisionToCodeEnv).not.toHaveBeenCalled();
+
+    await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds the image until a code tool runs', async () => {
+    const context: ProvisionToolContext = { provisionState: state([], []) };
+    const h = harness([['agent-a', context]]);
+    h.queue(Promise.resolve(image()), { executingAgentId: 'agent-a' });
+
+    await h.provisionFiles([EToolResources.file_search], 'agent-a');
+    expect(h.provisionToVectorDB).not.toHaveBeenCalled();
+    expect(context.generatedFiles).toHaveLength(1);
+
+    await h.provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+    expect(h.provisionToCodeEnv).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues an image a routed child generated on that execution only', async () => {
+    const source: ProvisionToolContext = {};
+    const shared: ProvisionToolContext = {};
+    const routed: ProvisionToolContext = {};
+    const executionContext = { rootRunId: 'root', depth: 1 } as SubagentExecutionContext;
+    const queue = createGeneratedFileQueue({
+      agentToolContexts: new Map([['agent-a', source]]),
+      resolveExecutionContext: (_agentId, context) =>
+        context === executionContext ? routed : undefined,
+      resolveSharedContext: () => shared,
+    });
+
+    queue(Promise.resolve(image()), { executingAgentId: 'agent-a', executionContext });
+
+    expect(routed.generatedFiles).toHaveLength(1);
+    expect(shared.generatedFiles).toBeUndefined();
+    expect(source.generatedFiles).toBeUndefined();
+  });
+
+  it('queues an image a shared-file execution generated on that execution context', async () => {
+    /* With file sharing active, each execution provisions in a context of its own. */
+    const source: ProvisionToolContext = {};
+    const execution: ProvisionToolContext = {};
+    const queue = createGeneratedFileQueue({
+      agentToolContexts: new Map([['agent-a', source]]),
+      resolveExecutionContext: () => undefined,
+      resolveSharedContext: (agentId) => (agentId === 'agent-a' ? execution : undefined),
+    });
+
+    queue(Promise.resolve(image()), { executingAgentId: 'agent-a' });
+
+    expect(execution.generatedFiles).toHaveLength(1);
+    expect(source.generatedFiles).toBeUndefined();
   });
 });

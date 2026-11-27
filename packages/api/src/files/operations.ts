@@ -7,6 +7,8 @@ import type {
   FileProvisionCommit,
 } from '@librechat/data-schemas';
 
+import { RagEmbeddingError } from './rag/errors';
+
 export type FileStorageUploadObserver = (outcome?: 'rejected') => void;
 
 export type RawProvisionStorage = Pick<
@@ -33,6 +35,9 @@ type ProvisionRun<T> = {
   userId: string;
   storage: RawProvisionStorage;
   destination: string;
+  /** Every upload lands in a new remote location (a Code API upload opens its own session), so
+   *  one whose outcome is unknown can neither overwrite nor be overwritten by a later upload. */
+  uniqueRemote?: boolean;
   upload: (
     claim: FileStorageClaim,
     onUploadStart: FileStorageUploadObserver,
@@ -90,6 +95,9 @@ export function isDefinitiveFileStorageFailure(error: unknown): boolean {
   // RAG wraps the HTTP failure; inspect at most two nested causes.
   for (let depth = 0; depth < 3; depth++) {
     if (typeof current !== 'object' || current === null) return false;
+    if (current instanceof RagEmbeddingError) {
+      return current.code === 'RAG_EMBEDDING_REFUSED';
+    }
     let status: unknown;
     let hasStatus = true;
     if (
@@ -229,13 +237,19 @@ export function createFileProvisionRecovery(): FileProvisionRecovery {
   }
 
   async function run<T>(options: ProvisionRun<T>): Promise<T> {
-    const { file, userId, storage, destination, upload } = options;
+    const { file, userId, storage, destination, upload, uniqueRemote } = options;
     const scope = fileScope(file, userId);
     const key = scopeKey(scope);
     if (deletions.has(key)) throw new Error('File provisioning conflicts with deletion');
     let entries = files.get(key);
     const existing = entries?.get(destination);
-    if (existing) {
+    if (entries && existing?.phase === 'ambiguous' && uniqueRemote) {
+      /* A new upload cannot collide with the unknown one, so it takes the destination. The
+       * unknown attempt stays in this scope under its own NUL-prefixed key: recovery and
+       * deletion still fail closed on it, and its stored claim is never released. */
+      entries.delete(destination);
+      entries.set(`\0${existing.claim.token}`, existing);
+    } else if (existing) {
       const reusable = existing.phase !== 'release' || existing.hasResult;
       const value = await (existing.attempt ?? retry(key, destination, existing, storage));
       // Only values from this exact scope and destination cross the internal generic map.
