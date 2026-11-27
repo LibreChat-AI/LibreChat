@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from 'react';
 import debounce from 'lodash/debounce';
 import { useSetRecoilState } from 'recoil';
 import { Constants } from 'librechat-data-provider';
@@ -288,7 +288,10 @@ export const useAutoSave = ({
     currentConversationId === pendingDraftId ? pendingDraftId : conversationId;
   const composerHostRef = useRef({});
   const composerRoute = window.location.pathname + window.location.search;
-  useEffect(() => {
+  /** Re-registering releases the scope and claims it again. Doing both during layout means no
+   * passive effect of the same commit reads the released scope: the upload hooks' ownership check
+   * would take it for a departed composer and remove an attachment that is still uploading. */
+  useLayoutEffect(() => {
     if (!activeStorageId) return;
     return registerComposerDraft(
       index,

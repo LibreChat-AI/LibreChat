@@ -9,6 +9,7 @@ const {
   pipeSegment,
   abortOnClose,
   pipeToResponse,
+  streamSpeech,
   capSpeechInput,
   createSpeechBudget,
 } = require('@librechat/api');
@@ -406,85 +407,27 @@ class TTSService {
     const ttsSchema = appConfig?.speech?.tts?.[provider];
     const allowedAddresses = appConfig?.speech?.tts?.allowedAddresses;
     const voice = await this.getVoice(ttsSchema, req.body.voice);
-    const nextBudget = createSpeechBudget(appConfig, abortOnClose(res));
-
-    let shouldContinue = true;
-
-    req.on('close', () => {
-      logger.warn('[streamAudio] Audio Stream Request closed by client');
-      shouldContinue = false;
-    });
-
-    const processChunks = createChunkProcessor(
+    const signal = abortOnClose(res);
+    const nextBudget = createSpeechBudget(appConfig, signal);
+    const poll = createChunkProcessor(
       req.user.id,
       req.body.messageId,
       appConfig?.speech?.tts?.maxInputChars,
     );
 
-    try {
-      while (shouldContinue) {
-        const updates = await processChunks();
-        if (typeof updates === 'string') {
-          logger.error(`Error processing audio stream updates: ${updates}`);
-          return res.status(500).end();
-        }
-
-        if (updates.length === 0) {
-          await new Promise((resolve) => setTimeout(resolve, 1250));
-          continue;
-        }
-
-        for (const update of updates) {
-          try {
-            const response = await this.ttsRequest(
-              provider,
-              ttsSchema,
-              {
-                voice,
-                input: update.text,
-                stream: true,
-              },
-              allowedAddresses,
-              nextBudget(),
-            );
-
-            if (!shouldContinue) {
-              break;
-            }
-
-            logger.debug(`[streamAudio] user: ${req?.user?.id} | writing audio stream`);
-            await pipeSegment(response.data, res, { end: update.isFinished });
-
-            if (update.isFinished) {
-              shouldContinue = false;
-              break;
-            }
-          } catch (innerError) {
-            logAxiosError({
-              message: `[TTS] Error processing audio stream update: ${update?.text?.substring(0, 50)}...`,
-              error: innerError,
-            });
-            if (!res.headersSent) {
-              return res.status(500).end();
-            }
-            return;
-          }
-        }
-
-        if (!shouldContinue) {
-          break;
-        }
-      }
-
-      if (!res.headersSent) {
-        res.end();
-      }
-    } catch (error) {
-      logAxiosError({ message: '[TTS] Failed to fetch audio:', error });
-      if (!res.headersSent) {
-        res.status(500).end();
-      }
-    }
+    await streamSpeech({
+      res,
+      poll,
+      signal,
+      synthesize: (input) =>
+        this.ttsRequest(
+          provider,
+          ttsSchema,
+          { voice, input, stream: true },
+          allowedAddresses,
+          nextBudget(),
+        ).then((response) => response.data),
+    });
   }
 }
 

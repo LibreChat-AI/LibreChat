@@ -178,6 +178,7 @@ export function composeAgentUpdatePayload(
     skill_authoring_enabled,
     skills_scope,
     memory_scope,
+    text_only,
     avatar_action: avatarActionState,
   } = data;
 
@@ -270,6 +271,7 @@ export function composeAgentUpdatePayload(
       skills_enabled,
       skill_authoring_enabled,
       skills_scope,
+      text_only,
       /** A hidden stale 'agent' scope must not survive disabling memory —
        *  runtime partitioning keys off memory_scope alone. */
       memory_scope: data.memory === true ? memory_scope : MemoryScope.user,

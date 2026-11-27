@@ -38,6 +38,7 @@ type VersionedAgent = Pick<
   | 'edges'
   | 'end_after_tools'
   | 'hide_sequential_outputs'
+  | 'text_only'
   | 'subagents'
   | 'memory_scope'
   | 'instructionsPrompt'
@@ -114,6 +115,7 @@ export function selectLazySubagentConfig(agent: VersionedAgent): Omit<VersionedA
     edges,
     end_after_tools,
     hide_sequential_outputs,
+    text_only,
     subagents,
     memory_scope,
     actions,
@@ -149,6 +151,7 @@ export function selectLazySubagentConfig(agent: VersionedAgent): Omit<VersionedA
     edges,
     end_after_tools,
     hide_sequential_outputs,
+    text_only,
     subagents,
     memory_scope,
     actions,

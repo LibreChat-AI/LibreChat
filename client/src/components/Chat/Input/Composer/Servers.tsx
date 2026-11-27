@@ -46,7 +46,7 @@ export function useServersEntry(entries: PaletteEntry[], onOpen: () => void): Pa
       pinned: true,
       favoritable: false,
       onSelect: onOpen,
-      onUnpin: () => setIsPinned(false),
+      onPinChange: setIsPinned,
     };
   }, [listable, isPinned, setIsPinned, label, onOpen]);
 }
@@ -76,7 +76,7 @@ export function ServersChip({ entry, triggerRef }: ServersChipProps) {
           <Plus className="text-text-secondary size-3" aria-hidden="true" />
         </IconButton>
       }
-      onRemove={entry.onUnpin}
+      onRemove={() => entry.onPinChange?.(false)}
       removeLabel={localize('com_ui_unpin')}
       data-testid="composer-mcp-servers"
     />

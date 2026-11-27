@@ -382,6 +382,11 @@ endpoints:
       modelDisplayLabel: 'Mock Provider E'
       activityLabel: true
       activityModel: 'mock-label-model'
+      # Reasoning labels ride the same label model, so a thought of 40 visible
+      # characters is titled by the label server. activity-labels.spec.ts streams
+      # no reasoning here, so its label requests are unchanged.
+      reasoningLabel: true
+      reasoningLabelMinChars: 40
 
     # Parent activity phases need at least two sequential logical activities
     # and have their own generated summary. Keep that behavior isolated from

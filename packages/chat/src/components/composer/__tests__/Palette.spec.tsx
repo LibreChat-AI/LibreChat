@@ -253,6 +253,92 @@ describe('ComposerPalette', () => {
       expect(screen.getByText('com_ui_composer_palette_help')).toBeInTheDocument();
     });
 
+    it('draws a pin toggle only on rows the host can pin, and stores the flipped pin', () => {
+      const onPinChange = jest.fn();
+      const onSelect = jest.fn();
+      const memory = (pinned: boolean) =>
+        entry({ key: 'memory', label: 'Memory', pinned, onPinChange, onSelect });
+      const skill = entry({ key: 'skill-a', label: 'Skill A', section: 'skill' });
+      const { rerender, anchor } = renderPalette({
+        canAttach: false,
+        entries: [memory(false), skill],
+      });
+
+      const pin = screen.getByRole('button', { name: 'com_ui_pin_var' });
+      expect(pin).toHaveAttribute('aria-pressed', 'false');
+      expect(pin.closest('[data-row-key]')).toHaveAttribute('data-row-key', 'memory');
+      fireEvent.click(pin);
+      expect(onPinChange).toHaveBeenCalledWith(true);
+
+      rerender(
+        <ComposerHostProvider host={host}>
+          <ComposerPalette
+            index={0}
+            conversationId="convo-1"
+            conversation={null}
+            files={new Map()}
+            setFiles={jest.fn()}
+            setFilesLoading={jest.fn()}
+            canAttach={false}
+            entries={[memory(true), skill]}
+            anchorRef={{ current: anchor }}
+          />
+        </ComposerHostProvider>,
+      );
+      const pressed = screen.getByRole('button', { name: 'com_ui_pin_var' });
+      expect(pressed).toHaveAttribute('aria-pressed', 'true');
+      fireEvent.click(pressed);
+      expect(onPinChange).toHaveBeenLastCalledWith(false);
+      /* Storing the pin neither turns the tool on nor off. */
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it('draws a section pin on its header, kept while every row of it is a favorite', () => {
+      const onPinChange = jest.fn();
+      const server = entry({ key: 'mcp:github', label: 'Github', section: 'mcp' });
+      renderPalette(
+        { canAttach: false, entries: [server] },
+        hostWith({
+          ...sources,
+          favorites: true,
+          favoriteKeys: new Set(['mcp:github']),
+          catalogs: ['mcp'],
+          pins: { mcp: { pinned: false, onPinChange } },
+        }),
+      );
+
+      const header = screen.getByRole('columnheader', { name: 'com_ui_composer_mcp' });
+      const pin = screen.getByRole('button', { name: 'com_ui_pin_var' });
+      expect(pin.closest('[role="row"]')).toBe(header.closest('[role="row"]'));
+      expect(pin).toHaveAttribute('aria-pressed', 'false');
+      fireEvent.click(pin);
+      expect(onPinChange).toHaveBeenCalledWith(true);
+      expect(server.onSelect).not.toHaveBeenCalled();
+
+      /* A search drops a section none of whose own rows match, pin and all. */
+      fireEvent.change(screen.getByTestId('composer-palette-search'), {
+        target: { value: 'git' },
+      });
+      expect(
+        screen.queryByRole('columnheader', { name: 'com_ui_composer_mcp' }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('draws no section header for a section the host does not pin once its rows are favorites', () => {
+      renderPalette(
+        {
+          canAttach: false,
+          entries: [entry({ key: 'mcp:github', label: 'Github', section: 'mcp' })],
+        },
+        hostWith({ ...sources, favorites: true, favoriteKeys: new Set(['mcp:github']) }),
+      );
+
+      expect(
+        screen.queryByRole('columnheader', { name: 'com_ui_composer_mcp' }),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'com_ui_pin_var' })).not.toBeInTheDocument();
+    });
+
     it('keeps the cap and the Show all button where the host has the dialog', () => {
       const skills = Array.from({ length: 8 }, (_, i) =>
         entry({ key: `skill-${i}`, label: `Skill ${i}`, section: 'skill' }),
