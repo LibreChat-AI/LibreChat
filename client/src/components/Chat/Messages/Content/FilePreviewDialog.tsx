@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useId, useState, useEffect, useCallback, useMemo } from 'react';
 import copy from 'copy-to-clipboard';
 import { Download } from 'lucide-react';
 import { CopyButton } from '@librechat/chat/components';
 import {
+  Radio,
   Button,
   Shimmer,
   OGDialog,
@@ -44,6 +45,17 @@ interface FilePreviewDialogProps {
   deliveryPath?: TFile['llmDeliveryPath'];
   /** Where focus returns on close when the dialog is opened without a trigger. */
   triggerRef?: React.RefObject<HTMLElement | null>;
+}
+
+type PreviewView = 'original' | 'text';
+
+/** The view a text-delivered PDF opens on when its original is stored. */
+export const DEFAULT_PREVIEW_VIEW: PreviewView = 'original';
+
+/** Browsers accept a PDF whose `%PDF-` header starts within the first 1024 bytes. */
+export async function isPdfBlob(blob: Blob): Promise<boolean> {
+  const head = await blob.slice(0, 1024).text();
+  return head.includes('%PDF-');
 }
 
 /** Formats bytes with unit suffix (differs from ~/utils/formatBytes which returns a raw number). */
@@ -109,26 +121,19 @@ export default function FilePreviewDialog({
   triggerRef,
 }: FilePreviewDialogProps) {
   const localize = useLocalize();
+  const viewLabelId = useId();
   const { useUser, useFileMap } = useMessagePartsHost();
   const user = useUser();
   const { shareId } = useShareContext();
   const fileMap = useFileMap();
-  const showExtractedText = shouldUseExtractedTextPreview(
+  const textDelivery = shouldUseExtractedTextPreview(
     deliveryPath ?? (!shareId && fileId ? fileMap?.[fileId]?.llmDeliveryPath : undefined),
   );
-  const {
-    data: extractedPreview,
-    isInitialLoading: extractedTextLoading,
-    isFetching: extractedTextFetching,
-    isError: extractedTextError,
-    refetch: refetchExtractedPreview,
-  } = useFilePreview(
-    fileId,
-    {
-      enabled: open && showExtractedText && !!fileId,
-    },
-    shareId,
-  );
+  const kind = getPreviewKind(fileName, fileType, fileSource);
+  /** A text-delivered PDF whose original is stored can show either; how the
+   *  model receives the file never depends on which one the user views. */
+  const dual = textDelivery && kind === 'pdf';
+  const [view, setView] = useState<PreviewView>(DEFAULT_PREVIEW_VIEW);
   // Downloads own URLs; previews share bytes and create only their display URL.
   const { refetch: downloadOwned } = useFileDownload(user?.id ?? '', fileId, { direct: false });
   const { refetch: downloadShared } = useSharedFileDownload(shareId, fileId);
@@ -144,7 +149,23 @@ export default function FilePreviewDialog({
   const [previewError, setPreviewError] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
 
-  const previewKind = showExtractedText ? false : getPreviewKind(fileName, fileType, fileSource);
+  const previewKind = textDelivery && !dual ? false : kind;
+  /** A missing, unreadable or non-PDF original falls back to the extracted text. */
+  const hasOriginal = dual && !previewError;
+  const showExtractedText = textDelivery && (!hasOriginal || view === 'text');
+  const {
+    data: extractedPreview,
+    isInitialLoading: extractedTextLoading,
+    isFetching: extractedTextFetching,
+    isError: extractedTextError,
+    refetch: refetchExtractedPreview,
+  } = useFilePreview(
+    fileId,
+    {
+      enabled: open && showExtractedText && !!fileId,
+    },
+    shareId,
+  );
   const downloadFilename = getDownloadFilename(fileName, fileId, fileSource);
   const displayedText = showExtractedText ? (extractedPreview?.text ?? null) : fileContent;
   const isLoading =
@@ -179,6 +200,12 @@ export default function FilePreviewDialog({
         const { data: blob } = await previewFile();
         if (!blob) {
           throw new Error('Preview download unavailable');
+        }
+        if (cancelled) {
+          return;
+        }
+        if (previewKind === 'pdf' && !(await isPdfBlob(blob))) {
+          throw new Error('Preview original is not a PDF');
         }
         if (cancelled) {
           return;
@@ -232,6 +259,18 @@ export default function FilePreviewDialog({
     }
   }, [open]);
 
+  useEffect(() => {
+    setView(DEFAULT_PREVIEW_VIEW);
+  }, [open, fileId]);
+
+  const viewOptions = useMemo(
+    () => [
+      { value: 'original', label: localize('com_ui_preview_original') },
+      { value: 'text', label: localize('com_ui_preview_extracted_text') },
+    ],
+    [localize],
+  );
+
   const handleCopy = useCallback(() => {
     if (!displayedText) {
       return;
@@ -278,13 +317,27 @@ export default function FilePreviewDialog({
                 type="button"
                 onClick={handleDownload}
                 className="text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle inline-flex shrink-0 items-center gap-1 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
-                aria-label={`${localize('com_ui_download')} ${fileName}`}
+                aria-label={`${localize(hasOriginal ? 'com_ui_download_original' : 'com_ui_download')} ${fileName}`}
               >
                 <Download className="size-3" aria-hidden="true" />
-                {localize('com_ui_download')}
+                {localize(hasOriginal ? 'com_ui_download_original' : 'com_ui_download')}
               </button>
             )}
           </div>
+          {hasOriginal && (
+            <div className="mt-3">
+              <span id={viewLabelId} className="sr-only">
+                {localize('com_ui_preview_view')}
+              </span>
+              <Radio
+                size="sm"
+                options={viewOptions}
+                value={view}
+                onChange={(value) => setView(value === 'text' ? 'text' : 'original')}
+                aria-labelledby={viewLabelId}
+              />
+            </div>
+          )}
         </div>
 
         <div className="relative min-h-0 flex-1 overflow-y-auto px-6 pt-4 pb-6">
