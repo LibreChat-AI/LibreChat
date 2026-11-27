@@ -158,11 +158,11 @@ export const clearDeletedConversationMessagesCache = (
 };
 
 /**
- * Drops the new-chat alias of a conversation that was just archived, so returning to a new chat
- * does not keep rendering it. Its own history stays cached: unlike a deleted chat, an archived
- * one can still be reopened from the archive.
+ * Drops the new-chat alias of a conversation, so returning to a new chat does not keep rendering
+ * it: one just archived, or a first turn the pane left while it streamed. Its own history stays
+ * cached: unlike a deleted chat, it can still be reopened.
  */
-export const clearArchivedConversationMessagesCache = (
+export const clearNewConversationAlias = (
   queryClient: QueryClient,
   conversationId: string,
 ): void => {
