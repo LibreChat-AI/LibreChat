@@ -25,6 +25,8 @@ export interface ThreadMessage {
   file_ids?: string[];
   files?: unknown[];
   model?: string;
+  /** The provider messages a read-back reply was folded from (`foldRun`), tagged with its id. */
+  aggregateMessages?: { id: string }[];
 }
 
 /** A LibreChat message as synchronization builds or reuses it. */
@@ -275,7 +277,7 @@ export async function syncMessages(
           /* A row read back from the database carries no aggregation list of its own */
           lastMessage.aggregateMessages = [
             ...(lastMessage.aggregateMessages ?? []),
-            { id: apiMessage.id },
+            ...(apiMessage.aggregateMessages ?? [{ id: apiMessage.id }]),
           ];
           pending = apiMessage;
           continue;
@@ -291,7 +293,7 @@ export async function syncMessages(
           isCreatedByUser: apiMessage.role === 'user',
           // TODO: process generated files in content parts
           content: apiMessage.content,
-          aggregateMessages: [{ id: apiMessage.id }],
+          aggregateMessages: apiMessage.aggregateMessages ?? [{ id: apiMessage.id }],
           model: apiMessage.role === 'user' ? null : apiMessage.assistant_id,
           user: openai.req.user.id,
           unfinished: false,
@@ -364,6 +366,78 @@ export async function syncMessages(
   );
 
   return result;
+}
+
+/** The run step fields the read-back reads. */
+export interface ThreadRunStep {
+  created_at: number;
+  assistant_id?: string | null;
+  step_details?: {
+    type?: string;
+    message_creation?: { message_id?: string };
+    tool_calls?: Record<string, unknown>[];
+  } | null;
+}
+
+export interface FoldRunParams {
+  /** The thread's messages, in any order. */
+  messages: ThreadMessage[];
+  /** The steps of the run read back, in any order. */
+  steps: ThreadRunStep[];
+  run_id: string;
+  /** The LibreChat id the client shows the run's reply under. */
+  messageId?: string;
+}
+
+/**
+ * Folds a run read back after a stop or an error into the thread's messages, oldest first: its
+ * messages and tool calls, in step order, become one reply. The reply takes the place of every
+ * provider message it carries and lists them, so synchronization saves each part once and tags
+ * each of those messages with the reply's id, as a completed run does.
+ */
+export function foldRun({ messages, steps, run_id, messageId }: FoldRunParams): ThreadMessage[] {
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  const reply: ThreadMessage = {
+    id: randomUUID(),
+    role: 'assistant',
+    created_at: Math.floor(Date.now() / 1000),
+    content: [],
+    assistant_id: null,
+    run_id,
+    metadata: { messageId },
+  };
+  const carried: { id: string }[] = [];
+
+  for (const step of [...steps].sort((a, b) => a.created_at - b.created_at)) {
+    if (!reply.assistant_id && step.assistant_id) {
+      reply.assistant_id = step.assistant_id;
+    }
+    const message = byId.get(step.step_details?.message_creation?.message_id ?? '');
+    if (message) {
+      reply.id = message.id;
+      reply.created_at = message.created_at;
+      reply.content.push(...message.content);
+      carried.push({ id: message.id });
+      continue;
+    }
+    if (step.step_details?.type !== 'tool_calls') {
+      continue;
+    }
+    for (const toolCall of step.step_details.tool_calls ?? []) {
+      reply.content.push({
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: { ...toolCall, progress: 2 },
+      });
+    }
+  }
+
+  if (carried.length > 0) {
+    reply.aggregateMessages = carried;
+  }
+  const ids = new Set(carried.map(({ id }) => id));
+  return [...messages.filter((message) => !ids.has(message.id)), reply].sort(
+    (a, b) => a.created_at - b.created_at,
+  );
 }
 
 /** A file record the retrieval produced. */

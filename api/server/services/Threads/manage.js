@@ -1,12 +1,12 @@
-const { v4 } = require('uuid');
 const {
+  foldRun,
   countTokens,
   isAnnounceableReply,
   syncMessages: syncThreadMessages,
   saveCutOffReply: saveThreadCutOffReply,
   processMessages: processThreadMessages,
 } = require('@librechat/api');
-const { Constants, ContentTypes, defaultOrderQuery } = require('librechat-data-provider');
+const { Constants, defaultOrderQuery } = require('librechat-data-provider');
 const {
   saveConvo,
   getMessages,
@@ -255,34 +255,6 @@ const saveCutOffReply = (params) =>
   saveThreadCutOffReply({ saveMessage, addThreadMetadata }, params);
 
 /**
- * Maps messages to their corresponding steps. Steps with message creation will be paired with their messages,
- * while steps without message creation will be returned as is.
- *
- * @param {RunStep[]} steps - An array of steps from the run.
- * @param {Message[]} messages - An array of message objects.
- * @returns {(StepMessage | RunStep)[]} An array where each element is either a step with its corresponding message (StepMessage) or a step without a message (RunStep).
- */
-function mapMessagesToSteps(steps, messages) {
-  // Create a map of messages indexed by their IDs for efficient lookup
-  const messageMap = messages.reduce((acc, msg) => {
-    acc[msg.id] = msg;
-    return acc;
-  }, {});
-
-  // Map each step to its corresponding message, or return the step as is if no message ID is present
-  return steps
-    .sort((a, b) => a.created_at - b.created_at)
-    .map((step) => {
-      const messageId = step.step_details?.message_creation?.message_id;
-
-      if (messageId && messageMap[messageId]) {
-        return { step, message: messageMap[messageId] };
-      }
-      return step;
-    });
-}
-
-/**
  * Checks for any missing messages; if missing,
  * synchronizes LibreChat messages to Thread Messages
  *
@@ -309,58 +281,12 @@ async function checkMessageGaps({
   /** @type {[{ data: ThreadMessage[] }, { data: RunStep[] }]} */
   const [response, stepsResponse] = await Promise.all(promises);
 
-  const steps = mapMessagesToSteps(stepsResponse.data, response.data);
-  /** @type {ThreadMessage} */
-  const currentMessage = {
-    id: v4(),
-    content: [],
-    assistant_id: null,
-    created_at: Math.floor(new Date().getTime() / 1000),
-    object: 'thread.message',
-    role: 'assistant',
+  const apiMessages = foldRun({
     run_id,
-    thread_id,
-    endpoint,
-    metadata: {
-      messageId: latestMessageId,
-    },
-  };
-
-  for (const step of steps) {
-    if (!currentMessage.assistant_id && step.assistant_id) {
-      currentMessage.assistant_id = step.assistant_id;
-    }
-    if (step.message) {
-      currentMessage.id = step.message.id;
-      currentMessage.created_at = step.message.created_at;
-      currentMessage.content = currentMessage.content.concat(step.message.content);
-    } else if (step.step_details?.type === 'tool_calls' && step.step_details?.tool_calls?.length) {
-      currentMessage.content = currentMessage.content.concat(
-        step.step_details?.tool_calls.map((toolCall) => ({
-          [ContentTypes.TOOL_CALL]: {
-            ...toolCall,
-            progress: 2,
-          },
-          type: ContentTypes.TOOL_CALL,
-        })),
-      );
-    }
-  }
-
-  let addedCurrentMessage = false;
-  const apiMessages = response.data
-    .map((msg) => {
-      if (msg.id === currentMessage.id) {
-        addedCurrentMessage = true;
-        return currentMessage;
-      }
-      return msg;
-    })
-    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-
-  if (!addedCurrentMessage) {
-    apiMessages.push(currentMessage);
-  }
+    steps: stepsResponse.data,
+    messages: response.data,
+    messageId: latestMessageId,
+  });
 
   const dbMessages = await getMessages({ conversationId, user: openai.req.user.id });
   const assistant_id = dbMessages?.[0]?.model;
@@ -437,6 +363,5 @@ module.exports = {
   saveCutOffReply,
   checkMessageGaps,
   addThreadMetadata,
-  mapMessagesToSteps,
   saveAssistantMessage,
 };
