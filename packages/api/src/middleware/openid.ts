@@ -18,6 +18,7 @@ import {
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { needsOpenIDAccessToken } from '~/utils/env';
+import { resolveAddedModel } from '~/agents/added';
 import { isUserProvided } from '~/utils/common';
 import { mergeHeaders } from '~/utils/headers';
 
@@ -28,7 +29,7 @@ type Target = { endpoint: string; model?: string };
 
 /** `buildEndpointOption` also carries the added conversation of a multi-response turn. */
 type TurnOption = Partial<TEndpointOption> & {
-  addedConvo?: Pick<TConversation, 'endpoint' | 'model' | 'agent_id'> | null;
+  addedConvo?: Pick<TConversation, 'endpoint' | 'model' | 'agent_id' | 'spec'> | null;
 };
 
 /** The request cache of the added conversation's saved agent, read by `loadAddedAgent`. */
@@ -141,8 +142,8 @@ async function getTurnTargets(
   add(agent?.provider, agent?.model);
   if (savedAgentId) {
     add(addedAgent?.provider, addedAgent?.model);
-  } else {
-    add(added?.endpoint, added?.model);
+  } else if (added) {
+    add(added.endpoint, resolveAddedModel(added, req.config?.modelSpecs));
   }
   return targets;
 }
