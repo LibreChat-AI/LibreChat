@@ -9,6 +9,7 @@ import {
   FileSources,
   PrincipalType,
   MAX_SUBAGENT_DEPTH,
+  validateAzureGroups,
   MAX_SUBAGENT_RUN_CONFIGS,
 } from 'librechat-data-provider';
 import type {
@@ -953,6 +954,112 @@ describe('summarization reasoning effort', () => {
     const request = summaryModel.invocationParams() as Record<string, unknown>;
 
     expect(request).toMatchObject({ reasoning_effort: 'low' });
+  });
+
+  /** GPT-5.1 takes sampling controls only at effort `none`. */
+  it('drops inherited sampling controls when a GPT-5.1 summary raises the effort above none', async () => {
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      {
+        modelOptions: {
+          model: 'gpt-5.1',
+          reasoning_effort: ReasoningEffort.none,
+          temperature: 0.7,
+        },
+      },
+      EModelEndpoint.openAI,
+    );
+    expect(llmConfig).toHaveProperty('temperature', 0.7);
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: EModelEndpoint.openAI,
+          endpoint: EModelEndpoint.openAI,
+          model: 'gpt-5.1',
+          model_parameters: { ...llmConfig },
+        }),
+      ],
+      summarizationConfig: {
+        provider: EModelEndpoint.openAI,
+        parameters: { reasoning_effort: 'high' },
+      },
+    });
+
+    const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    const summaryModel = new ChatOpenAI({
+      ...mainClientOptions,
+      ...(summaryConfig.parameters as Record<string, unknown>),
+      apiKey: 'test-key',
+    } as never);
+    const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+    expect(request).toMatchObject({ reasoning_effort: 'high' });
+    expect(request.temperature).toBeUndefined();
+  });
+
+  it('drops inherited sampling controls when a declared Azure summary raises the effort', async () => {
+    const declared = [ReasoningEffort.none, ReasoningEffort.low, ReasoningEffort.high];
+    const azure = validateAzureGroups([
+      {
+        group: 'test',
+        apiKey: 'test-key',
+        instanceName: 'test-instance',
+        version: '2025-04-01-preview',
+        models: {
+          'production-west': {
+            deploymentName: 'production-deployment',
+            reasoningEfforts: declared,
+          },
+        },
+      },
+    ]);
+    expect(azure.isValid).toBe(true);
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      {
+        azure: {
+          azureOpenAIApiKey: 'test-key',
+          azureOpenAIApiInstanceName: 'test-instance',
+          azureOpenAIApiDeploymentName: 'production-deployment',
+          azureOpenAIApiVersion: '2025-04-01-preview',
+        },
+        reasoningEfforts: declared,
+        modelOptions: {
+          model: 'production-west',
+          reasoning_effort: ReasoningEffort.none,
+          temperature: 0.7,
+        },
+      },
+      EModelEndpoint.azureOpenAI,
+    );
+    expect(llmConfig).toHaveProperty('temperature', 0.7);
+    const agents = await callAndCapture({
+      appConfig: { endpoints: { azureOpenAI: azure } } as AppConfig,
+      agents: [
+        makeReasoningAgent({
+          provider: Providers.AZURE,
+          endpoint: EModelEndpoint.azureOpenAI,
+          model: 'production-west',
+          model_parameters: { ...llmConfig },
+        }),
+      ],
+      summarizationConfig: {
+        provider: EModelEndpoint.azureOpenAI,
+        parameters: { reasoning_effort: 'high' },
+      },
+    });
+
+    const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    const summaryModel = new AzureChatOpenAI({
+      ...mainClientOptions,
+      ...(summaryConfig.parameters as Record<string, unknown>),
+    } as never);
+    const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+    expect(request).toMatchObject({ reasoning_effort: 'high' });
+    expect(request.temperature).toBeUndefined();
   });
 
   it('maps effort to verbosity for OpenRouter adaptive Anthropic models', async () => {

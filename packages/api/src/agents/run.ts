@@ -96,7 +96,9 @@ import {
 } from '~/agents/hitl/byom';
 import {
   takesReasoningEffort,
+  clearSamplingControls,
   extractDefaultParams,
+  limitsSamplingToNoEffort,
   getOpenAILLMConfig,
   isNativeCyberRequest,
   resolveReasoningParams,
@@ -1614,6 +1616,25 @@ function shapeSummarizationConfig(
       ...parameters,
       modelKwargs: { ...carriedKwargs, reasoning_effort: summaryEffort },
     };
+  }
+  /** A summary's own effort above `none` follows the main request's rule: a model that takes
+   *  sampling controls only at `none` cannot keep the ones it would inherit. */
+  const summaryKey =
+    model === fallbackModel ? ((agent?.model as string | undefined) ?? model) : model;
+  if (
+    typeof mergedParameters?.reasoning_effort === 'string' &&
+    typeof summaryEffort === 'string' &&
+    summaryEffort !== ReasoningEffort.none &&
+    provider === fallbackProvider &&
+    limitsSamplingToNoEffort(
+      summaryKey,
+      targetsAzure
+        ? getOpenAIEndpointParameters(appConfig, EModelEndpoint.azureOpenAI, summaryKey)
+            .reasoningEfforts
+        : undefined,
+    )
+  ) {
+    parameters = clearSamplingControls(parameters ?? {});
   }
 
   const inheritedParameters: Record<string, unknown> | undefined =

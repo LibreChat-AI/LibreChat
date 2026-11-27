@@ -151,6 +151,21 @@ export function takesReasoningEffort(model?: string | null): boolean {
 }
 
 /**
+ * Whether a model takes sampling controls only at effort `none` and rejects
+ * them beside any other effort: GPT-5.1 and later, and a deployment known only
+ * by its declared efforts, whose name cannot say which model it runs.
+ */
+export function limitsSamplingToNoEffort(
+  model?: string | null,
+  reasoningEfforts?: readonly string[],
+): boolean {
+  return (
+    versionedGpt5Pattern.test(model ?? '') ||
+    (reasoningEfforts != null && !takesReasoningEffort(model))
+  );
+}
+
+/**
  * GPT-5.6 models reason by default and reject function tools alongside
  * reasoning in `/v1/chat/completions` (400: "To use function tools, use
  * /v1/responses or set reasoning_effort to 'none'"). Tools are bound after
@@ -512,6 +527,27 @@ const sol62SamplingKeys = [
   'topLogprobs',
   'top_logprobs',
 ] as const;
+
+/** Clears the sampling controls from request options layered over inherited
+ * ones: an explicit undefined replaces an inherited value, and `modelKwargs`
+ * is copied without them. */
+export function clearSamplingControls(
+  parameters: Record<string, unknown>,
+): Record<string, unknown> {
+  const cleared: Record<string, unknown> = { ...parameters };
+  for (const key of sol62SamplingKeys) {
+    cleared[key] = undefined;
+  }
+  const kwargs = cleared.modelKwargs;
+  if (kwargs != null && typeof kwargs === 'object' && !Array.isArray(kwargs)) {
+    const copy = { ...(kwargs as Record<string, unknown>) };
+    for (const key of sol62SamplingKeys) {
+      delete copy[key];
+    }
+    cleared.modelKwargs = copy;
+  }
+  return cleared;
+}
 
 /** Mutates request copies; explicit undefined values clear inherited summary options. */
 export function applySol62Constraints(
@@ -1244,15 +1280,12 @@ export function getOpenAILLMConfig({
     solLunaRulesApply &&
     llmConfig.useResponsesApi === true &&
     llmConfig.reasoning?.effort !== ReasoningEffort.none;
-  /** GPT-5.1 and later take sampling controls only at effort `none`, and reject
-   * them alongside any other effort the request sends, on either API. A
-   * deployment known only by its declared efforts is treated the same way,
-   * since its name does not say which model it runs. */
+  /** Some models take sampling controls only at effort `none` and reject them
+   * alongside any other effort the request sends, on either API. */
   const sentEffort =
     llmConfig.useResponsesApi === true ? llmConfig.reasoning?.effort : modelKwargs.reasoning_effort;
   const rejectsSampling =
-    (versionedGpt5Pattern.test(llmConfig.model ?? '') ||
-      (reasoningEfforts != null && !takesReasoningEffort(llmConfig.model))) &&
+    limitsSamplingToNoEffort(llmConfig.model, reasoningEfforts) &&
     sentEffort != null &&
     sentEffort !== ReasoningEffort.none;
   if ((!sol62 && solLunaResponsesReasoning) || rejectsSampling) {

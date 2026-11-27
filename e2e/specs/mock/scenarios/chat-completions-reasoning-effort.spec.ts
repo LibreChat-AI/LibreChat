@@ -141,5 +141,13 @@ test.describe('reasoning effort on Chat Completions', () => {
       );
     }
     expectPassed(SUMMARY, "overrides the agent's effort on a same-deployment Azure summary");
+    expectPassed(
+      SUMMARY,
+      'drops inherited sampling controls when a GPT-5.1 summary raises the effort above none',
+    );
+    expectPassed(
+      SUMMARY,
+      'drops inherited sampling controls when a declared Azure summary raises the effort',
+    );
   });
 });
