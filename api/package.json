@@ -41,7 +41,7 @@
     "@aws-sdk/cloudfront-signer": "^3.1036.0",
     "@aws-sdk/credential-providers": "^3.1045.0",
     "@aws-sdk/s3-request-presigner": "^3.1167.0",
-    "@azure/identity": "^4.13.1",
+    "@azure/identity": "^4.14.1",
     "@azure/search-documents": "^12.0.0",
     "@azure/storage-blob": "^12.30.0",
     "@google/genai": "^2.0.1",
