@@ -10,9 +10,12 @@
  * - `POST /embed`: embed an uploaded file (`uploadVectors`); returns
  *   `known_type: true` so the file is marked `embedded`.
  * - `POST /query`: semantic query from the `file_search` tool; returns an
- *   empty result set (valid, handled gracefully), or one chunk of a stored file
- *   when the query contains `HIT_MARKER`, sourced from the path the file was
- *   embedded from as the RAG API does. A query for `PROBE_K` chunks
+ *   empty result set (valid, handled gracefully), or, when the query contains
+ *   `HIT_MARKER`, the same chunk once per stored copy of the file that the RAG API
+ *   would read: copies owned by the token's user or by the queried `entity_id`.
+ *   Each chunk is sourced from the path its copy was embedded from, as the RAG API
+ *   does, and the owners of the copies it read are recorded under `answers`. A query
+ *   for `PROBE_K` chunks
  *   is priming's presence check, recorded under `probes` and answered from the
  *   stored embeds the way RAG authorizes chunks: a hit only when the file was
  *   embedded under the queried `entity_id`.
@@ -22,6 +25,8 @@
  * assert a file's bytes actually reached the RAG env, independent of the DB write.
  * `/__debug/reset` clears those recordings only; the stored embeds behind presence
  * checks persist like real vectors until `DELETE /documents` removes them.
+ * `POST /__debug/store` with `{ file_id, filename, entity_id?, user_id? }` adds a stored
+ * copy without recording an embed, standing in for vectors a deployment already holds.
  *
  * `POST /__debug/stall` with `{ stall: true }` records file_search queries but never
  * answers them or `DELETE /documents`, standing in for a hung RAG API; reset or `{ stall: false }` clears it.
@@ -42,9 +47,13 @@ const HOST = '127.0.0.1';
 const embedded = [];
 /** @type {Array<{ file_id: string; query: string }>} */
 const queries = [];
+/** The owners of the stored copies each file_search query read, in query order.
+ *  @type {Array<{ file_id: string; owners: string[] }>} */
+const answers = [];
 /** @type {Array<{ file_id: string; entity_id: string; present: boolean }>} */
 const probes = [];
-/** @type {Array<{ file_id: string; entity_id: string }>} */
+/** Owner is the entity a copy was embedded for, else the user whose token embedded it.
+ *  @type {Array<{ file_id: string; entity_id: string; owner: string; filename: string }>} */
 const stored = [];
 let stallQueries = false;
 /** @type {string[]} */
@@ -81,6 +90,16 @@ function parseMultipart(req) {
   });
 }
 
+/** The user a bearer token names. Like the rest of this fake, it trusts the token unverified. */
+function tokenUser(req) {
+  const payload = (req.headers['authorization'] || '').split('.')[1];
+  try {
+    return (payload && JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')).id) || '';
+  } catch {
+    return '';
+  }
+}
+
 function readJson(req) {
   return new Promise((resolve, reject) => {
     let raw = '';
@@ -110,6 +129,7 @@ async function handleEmbed(req, res) {
   stored.push({
     file_id: fields.file_id || '',
     entity_id: fields.entity_id || '',
+    owner: fields.entity_id || tokenUser(req),
     filename: files[0]?.filename || '',
   });
   sendJson(res, 200, { status: true, known_type: true });
@@ -120,28 +140,31 @@ async function handleQuery(req, res) {
   const entityId = body.entity_id || '';
   if (body.k !== PROBE_K) {
     const query = body.query || '';
+    /* Like the RAG API, a query reads only copies owned by the caller or the named entity,
+     * and returns a chunk for each, named by the path its copy was embedded from. */
+    const owners = [tokenUser(req), entityId].filter(Boolean);
+    const hits = query.includes(HIT_MARKER)
+      ? stored.filter((entry) => entry.file_id === body.file_id && owners.includes(entry.owner))
+      : [];
     queries.push({ file_id: body.file_id || '', query });
+    answers.push({ file_id: body.file_id || '', owners: hits.map((hit) => hit.owner) });
     if (stallQueries) {
       return;
     }
-    const hit = query.includes(HIT_MARKER)
-      ? stored.find((entry) => entry.file_id === body.file_id)
-      : undefined;
-    /* Like the RAG API, a hit names its document by the path it was embedded from. */
     sendJson(
       res,
       200,
-      hit
-        ? [
-            [
-              {
-                page_content: 'Either party may terminate with 30 days notice.',
-                metadata: { source: `/app/uploads/${hit.filename}`, file_id: hit.file_id },
-              },
-              0.1,
-            ],
-          ]
-        : [],
+      hits.map((hit) => [
+        {
+          page_content: 'Either party may terminate with 30 days notice.',
+          metadata: {
+            source: `/app/uploads/${hit.filename}`,
+            file_id: hit.file_id,
+            user_id: hit.owner,
+          },
+        },
+        0.1,
+      ]),
     );
     return;
   }
@@ -195,7 +218,7 @@ const server = http.createServer((req, res) => {
     }
 
     if (pathname === '/__debug/embedded' && req.method === 'GET') {
-      sendJson(res, 200, { embedded, queries, probes, deleted });
+      sendJson(res, 200, { embedded, queries, answers, probes, deleted });
       return;
     }
 
@@ -205,10 +228,18 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    if (pathname === '/__debug/store' && req.method === 'POST') {
+      const { file_id = '', filename = '', entity_id = '', user_id = '' } = await readJson(req);
+      stored.push({ file_id, entity_id, owner: entity_id || user_id, filename });
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
     if (pathname === '/__debug/reset' && req.method === 'POST') {
       stallQueries = false;
       embedded.length = 0;
       queries.length = 0;
+      answers.length = 0;
       probes.length = 0;
       deleted.length = 0;
       sendJson(res, 200, { ok: true });
