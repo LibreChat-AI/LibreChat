@@ -247,11 +247,48 @@
         );
       }
 
+      // An opaque View has no origin to keep anything for, so reading document.cookie, localStorage
+      // or sessionStorage throws a SecurityError inside it, and an App that touches them without a
+      // guard crashes before it renders. Give each View in-memory stand-ins, but only for what
+      // actually throws, so a View that is ever granted real storage keeps it. Nothing is shared
+      // between Views or persisted, and the frame stays opaque: isolation is unchanged. indexedDB is
+      // left alone, since it has no small synchronous stand-in. The View policy allows inline
+      // scripts, and this runs right after the bootstrap, ahead of any App script.
+      function buildStorageStandIns() {
+        return (
+          '<script>(function(){' +
+          'function blocked(read){try{read();return false}catch(e){return true}}' +
+          'function memoryStorage(){var items=Object.create(null);return{' +
+          'getItem:function(k){k=String(k);return k in items?items[k]:null},' +
+          'setItem:function(k,v){items[String(k)]=String(v)},' +
+          'removeItem:function(k){delete items[String(k)]},' +
+          'clear:function(){items=Object.create(null)},' +
+          'key:function(i){var keys=Object.keys(items);return i>=0&&i<keys.length?keys[i]:null},' +
+          'get length(){return Object.keys(items).length}}}' +
+          '["localStorage","sessionStorage"].forEach(function(name){' +
+          'if(blocked(function(){return window[name]})){' +
+          'try{Object.defineProperty(window,name,{value:memoryStorage(),configurable:true})}' +
+          'catch(e){}}});' +
+          'if(blocked(function(){return document.cookie})){var jar=Object.create(null);' +
+          'try{Object.defineProperty(Document.prototype,"cookie",{configurable:true,' +
+          'get:function(){return Object.keys(jar).map(function(k){return k+"="+jar[k]}).join("; ")},' +
+          'set:function(v){var parts=String(v).split(";");var pair=parts[0];' +
+          'var i=pair.indexOf("=");if(i<1)return;' +
+          'var k=pair.slice(0,i).trim();var val=pair.slice(i+1).trim();var gone=false;' +
+          'parts.slice(1).forEach(function(a){var kv=a.split("=");var n=kv[0].trim().toLowerCase();' +
+          'var x=kv.slice(1).join("=").trim();' +
+          'if(n==="max-age"&&Number(x)<=0)gone=true;' +
+          'if(n==="expires"&&Date.parse(x)<Date.now())gone=true});' +
+          'if(gone)delete jar[k];else jar[k]=val}})}catch(e){}}' +
+          '})();<\/script>'
+        );
+      }
+
       function buildViewInjection(nonce) {
         const meta = document.createElement('meta');
         meta.httpEquiv = 'Content-Security-Policy';
         meta.content = window.__MCP_VIEW_CSP;
-        return meta.outerHTML + buildBootstrap(nonce);
+        return meta.outerHTML + buildBootstrap(nonce) + buildStorageStandIns();
       }
 
       function createInnerFrame(params) {
