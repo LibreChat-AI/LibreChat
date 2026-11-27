@@ -48,6 +48,10 @@ jest.mock('~/server/services/Schedules', () => ({
   initializeScheduleEngine: jest.fn().mockResolvedValue(undefined),
 }));
 
+// A cold Jest cache (a fresh CI runner, the Change Quality coverage job) boots this in over 30 s,
+// and in over 60 s on a busy host.
+const BOOT_TIMEOUT_MS = 120_000;
+
 describe('Server metrics route', () => {
   jest.setTimeout(30_000);
 
@@ -71,6 +75,7 @@ describe('Server metrics route', () => {
   });
 
   beforeAll(async () => {
+    const bootDeadline = Date.now() + BOOT_TIMEOUT_MS;
     const fs = require('fs');
     const path = require('path');
 
@@ -94,10 +99,10 @@ describe('Server metrics route', () => {
     const listenSpy = jest.spyOn(express.application, 'listen');
     app = require('~/server');
 
-    await healthCheckPoll(app);
+    await healthCheckPoll(app, bootDeadline);
     server = listenSpy.mock.results[0].value;
     listenSpy.mockRestore();
-  });
+  }, BOOT_TIMEOUT_MS);
 
   afterEach(() => {
     process.env.METRICS_SECRET = 'test-secret';
@@ -169,8 +174,7 @@ describe('Server metrics route', () => {
   });
 });
 
-async function healthCheckPoll(app, retries = 0) {
-  const maxRetries = Math.floor(10000 / 30);
+async function healthCheckPoll(app, deadline) {
   try {
     const response = await request(app).get('/health');
     if (response.status === 200) {
@@ -180,11 +184,11 @@ async function healthCheckPoll(app, retries = 0) {
     // Ignore connection errors during polling.
   }
 
-  if (retries < maxRetries) {
+  if (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 30));
-    await healthCheckPoll(app, retries + 1);
+    await healthCheckPoll(app, deadline);
     return;
   }
 
-  throw new Error('App did not become healthy within 10 seconds.');
+  throw new Error(`App did not become healthy within ${BOOT_TIMEOUT_MS / 1000} seconds.`);
 }
