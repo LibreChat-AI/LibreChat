@@ -139,6 +139,12 @@ describe('getLazySubagentConfigId', () => {
     expect(explicitlyUnset).toBe(withoutLink);
   });
 
+  it('changes when the text-only switch changes', () => {
+    expect(getLazySubagentConfigId({ ...agent, text_only: true })).not.toBe(
+      getLazySubagentConfigId(agent),
+    );
+  });
+
   it('changes when the persisted skill catalog scope changes', () => {
     expect(
       getLazySubagentConfigId({

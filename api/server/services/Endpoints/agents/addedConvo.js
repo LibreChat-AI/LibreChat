@@ -207,6 +207,7 @@ const processAddedConvo = async ({
         requestBody,
         agent: addedAgent,
         endpointOption,
+        modelSpec: selectedModelSpec,
         allowedProviders,
         accessibleSkillIds: scopedSkillIds,
         skillAuthoringAvailable: canAuthorSkillFiles({

@@ -1,9 +1,15 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { logger, scopedCacheKey } from '@librechat/data-schemas';
 import { Time, getSpeechText, findLastSeparatorIndex } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
+import type { Readable } from 'node:stream';
+import type { Response } from 'express';
+import { logAxiosError, pipeSegment } from '~/utils';
 
 const MAX_NOT_FOUND_COUNT = 6;
 const MAX_NO_CHANGE_COUNT = 10;
+/** How long automatic playback waits before reading a message with no new text again. */
+const POLL_INTERVAL_MS = 1250;
 
 export type SpeechChunk = { text: string; isFinished: boolean };
 
@@ -108,6 +114,77 @@ export function createSpeechChunkProcessor({
 
     return chunks;
   };
+}
+
+/**
+ * Speaks a message while it is written: reads its finished text with `poll`, synthesizes each
+ * chunk and writes the audio into `res` until the last chunk is spoken. Once `signal` aborts (the
+ * client left), the message is not read again and no provider request is made for it.
+ */
+export async function streamSpeech({
+  res,
+  poll,
+  signal,
+  synthesize,
+}: {
+  res: Response;
+  /** The chunk processor from `createSpeechChunkProcessor`. */
+  poll: () => Promise<SpeechChunk[] | string>;
+  /** Aborts when the client leaves, as the one from `abortOnClose(res)` does. */
+  signal: AbortSignal;
+  /** One provider request for `text`, resolving to its audio. */
+  synthesize: (text: string) => Promise<Readable>;
+}): Promise<void> {
+  try {
+    while (!signal.aborted) {
+      const chunks = await poll();
+      if (typeof chunks === 'string') {
+        logger.error(`Error processing audio stream updates: ${chunks}`);
+        res.status(500).end();
+        return;
+      }
+
+      if (chunks.length === 0) {
+        try {
+          await delay(POLL_INTERVAL_MS, undefined, { signal });
+        } catch (error) {
+          if (signal.aborted) {
+            return;
+          }
+          throw error;
+        }
+        continue;
+      }
+
+      for (const chunk of chunks) {
+        /** The client can leave while the message is read or a segment is written. */
+        if (signal.aborted) {
+          return;
+        }
+        try {
+          const audio = await synthesize(chunk.text);
+          await pipeSegment(audio, res, { end: chunk.isFinished });
+        } catch (error) {
+          logAxiosError({
+            message: `[TTS] Error processing an audio stream update of ${chunk.text.length} characters:`,
+            error,
+          });
+          if (!res.headersSent) {
+            res.status(500).end();
+          }
+          return;
+        }
+        if (chunk.isFinished) {
+          return;
+        }
+      }
+    }
+  } catch (error) {
+    logAxiosError({ message: '[TTS] Failed to fetch audio:', error });
+    if (!res.headersSent) {
+      res.status(500).end();
+    }
+  }
 }
 
 /**

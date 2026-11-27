@@ -49,6 +49,9 @@ const THINK_REPLY_MARKER = 'E2E_THINK_REPLY:';
 const LONG_THINK_REPLY_MARKER = 'E2E_LONG_THINK_REPLY:';
 const LONG_THINK_WORDS = 400;
 const SLOW_THINK_REPLY_MARKER = 'E2E_SLOW_THINK_REPLY:';
+/** `E2E_LIST_THINK_REPLY:<label>`: a slow thought written as markdown, with a numbered plan,
+ *  bullets and web-search citation anchors in both forms, for the collapsed live header. */
+const LIST_THINK_REPLY_MARKER = 'E2E_LIST_THINK_REPLY:';
 /** `E2E_OUTPUT_BUDGET:<label>`: a Gemini call that spends its whole output budget on reasoning,
  *  ending with the raw `MAX_TOKENS` finish reason and no answer text. */
 const OUTPUT_BUDGET_MARKER = 'E2E_OUTPUT_BUDGET:';
@@ -896,6 +899,19 @@ function replyResponses(text) {
       responses: [
         '<think>First I read the request slowly. Then I gather the evidence with some care. ' +
           `Finally I decide how to answer it.</think>\n\nE2E slow think reply done ${slowThinkName}`,
+      ],
+      sleep: 120,
+    };
+  }
+
+  const listThinkName = getMarkerValue(text, LIST_THINK_REPLY_MARKER);
+  if (listThinkName) {
+    return {
+      responses: [
+        '<think>I read the request first. Here is my plan:\n1. Check the refs.\n2. Compare the ordering.\n' +
+          '3. Read the notes.\nThe docs confirm the flag exists.\ue202turn0search0 The notes agree.' +
+          '\\ue202turn0search1 Options to weigh:\n- Use the cache.\n- Skip the read.\n4. ' +
+          `</think>\n\nE2E list think reply done ${listThinkName}`,
       ],
       sleep: 120,
     };

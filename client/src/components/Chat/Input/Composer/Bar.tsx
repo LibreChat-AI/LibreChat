@@ -368,7 +368,7 @@ function Bar({
             </span>
           ) : undefined
         }
-        onRemove={pinnedInactive ? entry.onUnpin : entry.onSelect}
+        onRemove={pinnedInactive ? () => entry.onPinChange?.(false) : entry.onSelect}
         removeLabel={
           pinnedInactive
             ? localize('com_ui_unpin')

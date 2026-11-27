@@ -47,7 +47,14 @@ export function configuredModelList(
   if (!Array.isArray(models)) {
     return undefined;
   }
-  return models.filter((model): model is string => typeof model === 'string');
+  const names: string[] = [];
+  for (const model of models) {
+    const name = typeof model === 'string' ? model : model?.name;
+    if (typeof name === 'string') {
+      names.push(name);
+    }
+  }
+  return names;
 }
 import { resolveConfigSecret } from '~/admin/secrets';
 import { validateEndpointURL } from '~/auth';

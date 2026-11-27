@@ -58,6 +58,12 @@ export type TModelSpec = {
   fileSearch?: boolean;
   executeCode?: boolean;
   memory?: boolean;
+  /**
+   * Whether this spec's model reads images. `false` gives the spec's agent a short text note in
+   * place of each image; it outranks the `vision` of the model's entry and of its endpoint, and
+   * yields only to the agent's own "Text-only model" switch.
+   */
+  vision?: boolean;
   /** Equip the spec's ephemeral agent with the `ask_user_question` HITL tool. */
   askUserQuestion?: boolean;
   /**
@@ -223,6 +229,7 @@ export const tModelSpecSchema = z.object({
   fileSearch: z.boolean().optional(),
   executeCode: z.boolean().optional(),
   memory: z.boolean().optional(),
+  vision: z.boolean().optional(),
   askUserQuestion: z.boolean().optional(),
   runInBackground: z.union([z.boolean(), z.array(z.string())]).optional(),
   describeIntent: z.union([z.boolean(), z.array(z.string())]).optional(),
