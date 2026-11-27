@@ -12,6 +12,7 @@ import type { ActiveSubagentPanel } from '../../../react/subagents/state';
 import type { ChatSurface } from '../../../react/subagents/context';
 import type { StreamHost } from '../../../react/stream/host';
 import type { SubagentCallProps } from '../SubagentCall';
+import { MessagePartsHostProvider, emptyToolCallChrome } from '../../../react/host';
 import { ParentSubagentsProvider } from '../../../react/subagents/parents';
 import { createSubagentsHost } from '../../../__fixtures__/subagentsHost';
 import { createMessagePartsHost } from '../../../__fixtures__/partsHost';
@@ -19,7 +20,7 @@ import { ChatSurfaceProvider } from '../../../react/subagents/provider';
 import { SubagentsHostProvider } from '../../../react/subagents/host';
 import { activeSubagentPanel } from '../../../react/subagents/state';
 import { StreamHostProvider } from '../../../react/stream/host';
-import { MessagePartsHostProvider } from '../../../react/host';
+import { MessageContext } from '../../../react/message';
 import PackageSubagentCall from '../SubagentCall';
 
 const localize = (key: string): string => {
@@ -28,20 +29,26 @@ const localize = (key: string): string => {
   return key;
 };
 
+const message = {
+  messageId: 'shared-parent',
+  conversationId: 'shared-conversation',
+  partIndex: 0,
+  isExpanded: false as const,
+};
+
 function SubagentCall(props: SubagentCallProps) {
   return (
-    <PackageSubagentCall
-      {...props}
-      message={{ messageId: 'shared-parent', conversationId: 'shared-conversation', partIndex: 0 }}
-      isSharedConvo
-      shareId="share-1"
-      localize={localize}
-      renderAgentIcon={() => null}
-      renderAttachments={() => null}
-    />
+    <MessageContext.Provider value={message}>
+      <PackageSubagentCall {...props} />
+    </MessageContext.Provider>
   );
 }
-const partsHost = createMessagePartsHost();
+/** A public share: the card reads the share and its strings from the host. */
+const partsHost = createMessagePartsHost({
+  useShare: () => ({ isSharedConvo: true, shareId: 'share-1' }),
+  useToolCallChrome: () => ({ ...emptyToolCallChrome(), localize }),
+  renderAgentIcon: () => null,
+});
 
 const streamHost = {
   useParentSubagentIndex: () => ({

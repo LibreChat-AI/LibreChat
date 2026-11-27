@@ -41,6 +41,8 @@ beforeAll(async () => {
 
   // Initialize all models
   createModels(mongoose);
+  /** Lock acquisition gives a cold index build only 2s, so finish it before the first write. */
+  await mongoose.models.ResourceLock.createIndexes();
 
   AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
 
@@ -571,6 +573,48 @@ describe('AccessControlService', () => {
         message: expect.not.stringContaining('secret'),
       });
       acquire.mockRestore();
+    });
+
+    test('answers a retryable 503 without writing when lock indexes are not ready', async () => {
+      const model = mongoose.models.ResourceLock;
+      await model.init();
+      let finish!: () => void;
+      const build = jest.spyOn(model, 'createIndexes').mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+      );
+      const insert = jest.spyOn(model.collection, 'insertOne');
+      const beforeWrite = jest.fn();
+      const cold = new AccessControlService(mongoose);
+
+      try {
+        await expect(
+          cold.bulkUpdateResourcePermissions({
+            resourceType: ResourceType.PROMPTGROUP,
+            resourceId,
+            updatedPrincipals: [
+              {
+                type: PrincipalType.USER,
+                id: userId.toString(),
+                accessRoleId: AccessRoleIds.PROMPTGROUP_VIEWER,
+              },
+            ],
+            grantedBy: grantedById,
+            leaseWaitMs: 0,
+            beforeWrite,
+          }),
+        ).rejects.toMatchObject({
+          statusCode: 503,
+          code: 'RESOURCE_PERMISSIONS_UNAVAILABLE',
+        });
+        expect(build).toHaveBeenCalledTimes(1);
+        expect(insert).not.toHaveBeenCalled();
+        expect(beforeWrite).not.toHaveBeenCalled();
+        await expect(AclEntry.exists({ resourceId })).resolves.toBeNull();
+      } finally {
+        finish();
+      }
     });
 
     test('answers a retryable 503 when the lease renewal fails', async () => {

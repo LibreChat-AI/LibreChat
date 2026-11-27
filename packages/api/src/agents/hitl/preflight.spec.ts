@@ -1,4 +1,15 @@
-import { FileSources, type Agents } from 'librechat-data-provider';
+import {
+  FileSources,
+  AgentCapabilities,
+  MAX_SUBAGENT_GRAPH_NODES,
+  MAX_GRAPH_SUBAGENT_MEMBERS,
+} from 'librechat-data-provider';
+import type {
+  Agent,
+  Agents,
+  AgentSubagentGraph,
+  AgentSubagentsConfig,
+} from 'librechat-data-provider';
 import type { ResumeContentProtectionDependencies } from './protection';
 import type { PreflightResumeContentInput } from './preflight';
 import { getResumeProvenance, preflightResumeContent } from './preflight';
@@ -331,4 +342,280 @@ describe('preflightResumeContent', () => {
       body: { source: 'message', field: 'content_part' },
     });
   });
+});
+
+describe('graph-member preflight', () => {
+  const agent = (id: string, subagents?: AgentSubagentsConfig): Agent =>
+    ({
+      id,
+      name: id,
+      description: null,
+      created_at: 0,
+      avatar: null,
+      provider: 'openAI',
+      model: 'test',
+      model_parameters: {
+        temperature: null,
+        maxContextTokens: null,
+        max_context_tokens: null,
+        max_output_tokens: null,
+        top_p: null,
+        frequency_penalty: null,
+        presence_penalty: null,
+      },
+      tools: [],
+      subagents,
+    }) as Agent;
+  const graph = (id: string) => ({
+    type: 'team',
+    name: 'Team',
+    description: 'Work',
+    agent_ids: [id],
+    edges: [],
+    entry_agent_id: id,
+    result_agent_id: id,
+  });
+  const policy = {
+    config: {},
+    fileStrategy: FileSources.local,
+    imageOutputType: 'webp',
+    endpoints: {
+      agents: { capabilities: [AgentCapabilities.subagents, AgentCapabilities.subagent_graphs] },
+    },
+    filters: {
+      agentInstructions: { pii: { fields: ['instructions'], starterPatterns: ['sk_prefix'] } },
+    },
+  } satisfies NonNullable<PreflightResumeContentInput['appConfig']>;
+
+  it.each(['safe', 'blocked', 'missing', 'revoked', 'over-budget', 'inert'])(
+    'enforces the exact member boundary through content-policy preflight: %s',
+    async (state) => {
+      const count = MAX_SUBAGENT_GRAPH_NODES + (state === 'over-budget' ? 1 : 0);
+      const ids = Array.from({ length: count }, (_, index) => `member-${index}`);
+      const graphs: AgentSubagentGraph[] = [];
+      for (let start = 0; start < count; start += MAX_GRAPH_SUBAGENT_MEMBERS) {
+        const members = ids.slice(start, start + MAX_GRAPH_SUBAGENT_MEMBERS);
+        graphs.push({
+          ...graph(members[0]),
+          type: `team-${start}`,
+          agent_ids: members,
+          result_agent_id: members[members.length - 1],
+          edges: members.slice(1).map((id, index) => ({
+            from: members[index],
+            to: id,
+            edgeType: 'direct' as const,
+          })),
+        });
+      }
+      const subagents = { enabled: false, graphsEnabled: true, graphs };
+      const primary = agent('primary', subagents);
+      const last = ids[count - 1];
+      const dependencies = createDependencies();
+      dependencies.getAgent = jest.fn(async ({ id }) =>
+        id === last && state === 'missing'
+          ? null
+          : {
+              ...agent(id),
+              instructions:
+                id === last && state === 'blocked' ? 'Use sk-boundary-member-secret' : '',
+            },
+      );
+      dependencies.canAccessAgent = jest.fn(async ({ id }) => id !== last || state !== 'revoked');
+      const result = preflightResumeContent(
+        createInput({
+          appConfig: state === 'inert' ? { ...policy, filters: undefined } : policy,
+          endpointOption: { agent: Promise.resolve(primary) },
+          resolvedAddedAgent: agent('additional', subagents),
+        }),
+        dependencies,
+      );
+      if (state === 'safe' || state === 'inert') {
+        await expect(result).resolves.toBeDefined();
+      } else {
+        await expect(result).rejects.toMatchObject({
+          code: state === 'blocked' ? 'content_filter_block' : 'content_filter_uninspectable',
+        });
+      }
+      expect(dependencies.getAgent).toHaveBeenCalledTimes(
+        state === 'inert' || state === 'over-budget' ? 0 : count,
+      );
+      if (state !== 'inert' && state !== 'over-budget')
+        expect(dependencies.getAgent).toHaveBeenCalledWith({ id: last });
+    },
+  );
+
+  it.each(['safe', 'blocked', 'missing', 'revoked', 'over-budget'])(
+    'classifies discovered handoffs before validating the member budget: %s',
+    async (state) => {
+      const count = MAX_SUBAGENT_GRAPH_NODES + (state === 'over-budget' ? 1 : 0);
+      const ids = Array.from({ length: count }, (_, index) => `member-${index}`);
+      const graphs: AgentSubagentGraph[] = [];
+      for (let start = 0; start < count; start += 25) {
+        const members = ids.slice(start, start + 25);
+        graphs.push({
+          ...graph(members[0]),
+          type: `team-${start}`,
+          agent_ids: members,
+          result_agent_id: members[members.length - 1],
+          edges: members
+            .slice(1)
+            .map((id, index) => ({ from: members[index], to: id, edgeType: 'direct' })),
+        });
+      }
+      const primary = {
+        ...agent('primary', { enabled: false, graphsEnabled: true, graphs }),
+        edges: [{ from: 'primary', to: 'handoff', edgeType: 'handoff' as const }],
+      };
+      const dependencies = createDependencies();
+      const last = ids[count - 1];
+      dependencies.getAgent = jest.fn(async ({ id }) =>
+        id === last && state === 'missing'
+          ? null
+          : {
+              ...agent(id),
+              instructions:
+                id === last && state === 'blocked' ? 'Use sk-boundary-member-secret' : '',
+            },
+      );
+      dependencies.canAccessAgent = jest.fn(async ({ id }) => id !== last || state !== 'revoked');
+      const result = preflightResumeContent(
+        createInput({ appConfig: policy, endpointOption: { agent: Promise.resolve(primary) } }),
+        dependencies,
+      );
+      if (state === 'safe') await expect(result).resolves.toBeDefined();
+      else
+        await expect(result).rejects.toMatchObject({
+          code: state === 'blocked' ? 'content_filter_block' : 'content_filter_uninspectable',
+        });
+      expect(dependencies.getAgent).toHaveBeenCalledWith({ id: 'handoff' });
+      if (state !== 'over-budget') expect(dependencies.getAgent).toHaveBeenCalledWith({ id: last });
+      expect(dependencies.getAgent).toHaveBeenCalledTimes(state === 'over-budget' ? 1 : count + 1);
+    },
+  );
+
+  it.each(['missing', 'revoked', 'required-missing', 'required-revoked', 'extra-allowed'])(
+    'counts admitted ordinary members at the real preflight boundary: %s',
+    async (state) => {
+      const ids = Array.from({ length: 49 }, (_, index) => `member-${index}`);
+      const graphs: AgentSubagentGraph[] = [0, 25].map((start) => {
+        const members = ids.slice(start, start + 25);
+        return {
+          ...graph(members[0]),
+          type: `team-${start}`,
+          agent_ids: members,
+          result_agent_id: members[members.length - 1],
+          edges: members
+            .slice(1)
+            .map((id, index) => ({ from: members[index], to: id, edgeType: 'direct' as const })),
+        };
+      });
+      const primary = agent('primary', {
+        enabled: true,
+        graphsEnabled: true,
+        agent_ids: ['child'],
+        graphs,
+      });
+      const child = agent('child', {
+        enabled: true,
+        agent_ids: ['stale', ...(state === 'extra-allowed' ? ['extra'] : [])],
+        ...(state.startsWith('required') ? { graphsEnabled: true, graphs: [graph('stale')] } : {}),
+      });
+      const dependencies = createDependencies();
+      dependencies.getAgent = jest.fn(async ({ id }) => {
+        if (id === 'stale' && !state.endsWith('revoked')) return null;
+        return id === 'child' ? child : agent(id);
+      });
+      dependencies.canAccessAgent = jest.fn(async ({ id }) => id !== 'stale');
+      const result = preflightResumeContent(
+        createInput({ appConfig: policy, endpointOption: { agent: Promise.resolve(primary) } }),
+        dependencies,
+      );
+      if (state === 'missing' || state === 'revoked') await expect(result).resolves.toBeDefined();
+      else await expect(result).rejects.toMatchObject({ code: 'content_filter_uninspectable' });
+      expect(dependencies.getAgent).toHaveBeenCalledWith({ id: 'stale' });
+      if (state === 'extra-allowed')
+        expect(dependencies.getAgent).toHaveBeenCalledWith({ id: 'extra' });
+    },
+  );
+
+  it('inspects current active members through the real preflight API', async () => {
+    const dependencies = createDependencies();
+    const member = { ...agent('member'), instructions: 'Use sk-edited-graph-member-secret' };
+    dependencies.getAgent = jest.fn().mockResolvedValue(member);
+    const primary = agent('primary', {
+      enabled: false,
+      graphsEnabled: true,
+      graphs: [graph('member')],
+    });
+    await expect(
+      preflightResumeContent(
+        createInput({
+          appConfig: policy,
+          endpointOption: { agent: Promise.resolve(primary) },
+        }),
+        dependencies,
+      ),
+    ).rejects.toMatchObject({ code: 'content_filter_block' });
+    expect(dependencies.getAgent).toHaveBeenCalledTimes(1);
+    expect(dependencies.canAccessAgent).toHaveBeenCalledWith(member, user);
+  });
+
+  it.each([false, true])(
+    'fails closed on unavailable active members, revoked=%s',
+    async (revoked) => {
+      const dependencies = createDependencies();
+      dependencies.getAgent = jest.fn().mockResolvedValue(revoked ? agent('member') : null);
+      dependencies.canAccessAgent = jest.fn().mockResolvedValue(!revoked);
+      await expect(
+        preflightResumeContent(
+          createInput({
+            appConfig: policy,
+            endpointOption: {
+              agent: Promise.resolve(
+                agent('primary', {
+                  enabled: false,
+                  graphsEnabled: true,
+                  graphs: [graph('member')],
+                }),
+              ),
+            },
+          }),
+          dependencies,
+        ),
+      ).rejects.toMatchObject({ code: 'content_filter_uninspectable' });
+    },
+  );
+
+  it.each([false, true])(
+    'upgrades shared terminal members without repeated loads, ordinary=%s',
+    async (ordinary) => {
+      const dependencies = createDependencies();
+      const member = agent('member', { enabled: true, agent_ids: ['leaf'] });
+      const leaf = { ...agent('leaf'), instructions: 'Use sk-nested-member-secret' };
+      const bridge = agent('bridge', { enabled: true, agent_ids: ['member'] });
+      const saved = new Map([member, leaf, bridge].map((value) => [value.id, value]));
+      dependencies.getAgent = jest.fn(async ({ id }) => saved.get(id));
+      const primary = agent('primary', {
+        enabled: true,
+        agent_ids: ordinary ? ['bridge'] : [],
+        graphsEnabled: true,
+        graphs: [graph('member')],
+      });
+      const result = preflightResumeContent(
+        createInput({
+          appConfig: policy,
+          endpointOption: { agent: Promise.resolve(primary) },
+        }),
+        dependencies,
+      );
+      if (ordinary) {
+        await expect(result).rejects.toMatchObject({ code: 'content_filter_block' });
+        expect(dependencies.getAgent).toHaveBeenCalledTimes(3);
+      } else {
+        await expect(result).resolves.toBeDefined();
+        expect(dependencies.getAgent).toHaveBeenCalledTimes(1);
+      }
+      expect(dependencies.getAgent).toHaveBeenCalledWith({ id: 'member' });
+    },
+  );
 });

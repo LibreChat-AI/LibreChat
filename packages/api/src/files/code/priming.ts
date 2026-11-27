@@ -7,7 +7,12 @@ import {
   getCodeEnvRefForProfile,
   resolveSandboxFilename,
 } from 'librechat-data-provider';
-import type { CodeEnvRef, CodeEnvRefContent, TFile } from 'librechat-data-provider';
+import type {
+  TFile,
+  CodeEnvRef,
+  CodeEnvRefContent,
+  AgentToolResources,
+} from 'librechat-data-provider';
 import type { AxiosInstance } from 'axios';
 import type { CodeExecutionRoute } from '../provision/service';
 import type { CodeExecutionContext } from '~/agents/execution';
@@ -28,6 +33,7 @@ import {
   withCodeApiUploadSlot,
 } from '~/utils/code';
 import { checkCodeFileActive, getSnapshotReceipt, provesStoredContent } from './receipt';
+import { getAgentResourceFileIds, getCodeEnvScope, isCodeRefInScope } from './scope';
 import { getCodeEnvUploadFilename, getUploadedCodeEnvFilename } from './form';
 import { isStorageNotFoundError } from '~/files/encode/utils';
 import { codeExecutionHeaders } from '~/agents/execution';
@@ -123,7 +129,7 @@ export async function getCodeFileInfo({
 }
 
 interface SnapshotCodeOwner {
-  kind: 'user';
+  kind: 'agent' | 'user';
   id: string;
   storage_session_id?: undefined;
   file_id?: undefined;
@@ -139,11 +145,41 @@ interface PrimedCodeFile {
   getUploadTime: () => Promise<string | undefined>;
 }
 
+/** Who a turn runs as: the requesting user, and the agent executing for them. */
+export interface CodeTurnIdentity {
+  userId?: string;
+  agentId?: string;
+  /** The agent's resources as the turn loads them. Files its own lists name belong to it. */
+  agentResources?: AgentToolResources | null;
+}
+
+/**
+ * The scope a snapshot's upload is filed under this turn, by the rule resource priming queues
+ * it with, or nothing when the turn's identity for that scope is unknown. Membership in the
+ * agent's own resources decides it, never a pointer that happens to name the executing agent.
+ */
+function getSnapshotScope(
+  file: TFile,
+  agentFileIds: ReadonlySet<string> | undefined,
+  identity: CodeTurnIdentity | undefined,
+): SnapshotCodeOwner | undefined {
+  if (!identity) {
+    return undefined;
+  }
+  const { kind, id } = getCodeEnvScope({
+    agentScoped: agentFileIds?.has(file.file_id) === true,
+    agentId: identity.agentId,
+    userId: identity.userId,
+  });
+  return id ? { kind, id } : undefined;
+}
+
 /** Reserve actual storage destinations before recovery so a failed winner never revives stale content. */
 export async function selectCodeFiles({
   files,
   privateFileIds,
   routeKey,
+  identity,
   getFileInfo,
   concurrency,
   signal,
@@ -151,6 +187,9 @@ export async function selectCodeFiles({
   files: Array<TFile | null | undefined>;
   privateFileIds?: ReadonlySet<string>;
   routeKey: string;
+  /** With it, a snapshot is mounted from, and uploaded under, only the identity this turn
+   *  files it under: the agent for its own resource files, the requesting user otherwise. */
+  identity?: CodeTurnIdentity;
   getFileInfo: (ref: CodeEnvRef) => Promise<CodeFileInfo | null>;
   concurrency?: number;
   signal?: AbortSignal;
@@ -161,18 +200,30 @@ export async function selectCodeFiles({
   const snapshotMounts = planCodeSnapshotMounts(generations.files, privateFileIds, routeKey);
   const candidates = [];
   const registry = createCodeApiUploadRegistry();
+  const agentFileIds = identity
+    ? getAgentResourceFileIds(identity.agentResources, privateFileIds)
+    : undefined;
   for (const file of generations.files) {
     if (!file) {
       continue;
     }
     const snapshot = file.context === FileContext.execute_code_snapshot;
-    const ownedRef = getCodeEnvRefForProfile(file.metadata, routeKey);
+    const routeRef = getCodeEnvRefForProfile(file.metadata, routeKey);
+    /* A pointer filed under another identity names a storage session this turn does not run
+     * as, whatever the Code API would answer for it. The snapshot is then uploaded under this
+     * turn's identity, as resource priming queues it, instead of mounted or re-filed there.
+     * The same scope addresses the upload when this route holds no pointer at all, so one
+     * left by another route never decides whose storage the bytes go to. */
+    const scope = snapshot ? getSnapshotScope(file, agentFileIds, identity) : undefined;
+    const foreign = scope != null && routeRef != null && !isCodeRefInScope(routeRef, scope);
+    const ownedRef = foreign ? undefined : routeRef;
     /* A snapshot pointer names a mount. Only a receipt for this content version, matched
      * against the stored object below, stands in for uploading the bytes again. */
-    const receipt = snapshot ? getSnapshotReceipt(file, routeKey) : undefined;
+    const receipt = snapshot && !foreign ? getSnapshotReceipt(file, routeKey) : undefined;
     const probeRef = snapshot ? receipt : ownedRef;
     const sourceRef =
       ownedRef ??
+      scope ??
       getCodeEnvRefs(file.metadata)[0]?.[1] ??
       (snapshot
         ? {

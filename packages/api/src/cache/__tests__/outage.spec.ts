@@ -6,6 +6,8 @@ import fs from 'node:fs/promises';
 import childProcess from 'node:child_process';
 import { startRedis } from './outage.helper';
 
+const { spawn } = childProcess;
+
 describe.each([false, true])('Redis outage fixture startup (cluster=%s)', (cluster) => {
   let env: NodeJS.ProcessEnv;
   let dir: string;
@@ -16,16 +18,6 @@ describe.each([false, true])('Redis outage fixture startup (cluster=%s)', (clust
 
   beforeAll(async () => {
     dir = await fs.mkdtemp(join(tmpdir(), 'redis-fixture-test-'));
-    await fs.writeFile(
-      join(dir, 'exits'),
-      `#!${process.execPath}\nprocess.stderr.write('fixture startup refused\\n', () => process.exit(23));\n`,
-      { mode: 0o755 },
-    );
-    await fs.writeFile(
-      join(dir, 'idle'),
-      `#!${process.execPath}\nsetInterval(() => undefined, 1000);\n`,
-      { mode: 0o755 },
-    );
   });
 
   beforeEach(() => {
@@ -72,7 +64,13 @@ describe.each([false, true])('Redis outage fixture startup (cluster=%s)', (clust
   }, 3000);
 
   it('reports an early exit with its code and stderr, then cleans up', async () => {
-    process.env.REDIS_SERVER_BIN = join(dir, 'exits');
+    spawned.mockImplementationOnce((_file, _args, options) =>
+      spawn(
+        process.execPath,
+        ['-e', 'process.stderr.write("fixture startup refused", () => process.exit(23))'],
+        options,
+      ),
+    );
     await expect(startRedis(cluster)).rejects.toThrow(
       'Redis exited before becoming ready (code=23, signal=null): fixture startup refused',
     );
@@ -80,7 +78,9 @@ describe.each([false, true])('Redis outage fixture startup (cluster=%s)', (clust
   }, 3000);
 
   it('terminates a live child and removes its resources when readiness times out', async () => {
-    process.env.REDIS_SERVER_BIN = join(dir, 'idle');
+    spawned.mockImplementationOnce((_file, _args, options) =>
+      spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], options),
+    );
     await expect(startRedis(cluster)).rejects.toThrow('Timed out waiting for Redis state');
     expect(spawned).toHaveBeenCalledTimes(1);
     expect(spawned.mock.results[0].value.signalCode).toBe('SIGTERM');

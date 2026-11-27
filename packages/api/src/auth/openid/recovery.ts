@@ -84,6 +84,12 @@ interface RevokeOpenIDRefreshTokenChainInput {
 interface SendOpenIDAuthResponseInput {
   tokenset: OpenIDTokenSet;
   user: BridgeUser;
+  /**
+   * The refresh token this publication replaces. Concurrent refreshes of one token share the
+   * publication keyed on it. A sign-in replaces none and omits it: keyed on the token it issued,
+   * that publication would be joined by the first refresh of the token, which would then answer
+   * with the sign-in tokens and drop the grant it had already spent.
+   */
   existingRefreshToken?: string;
   openidSubject?: string;
   openidIssuer?: string;
@@ -189,6 +195,7 @@ export interface OpenIDRefreshRecoveryDeps {
     userId: string;
     tenantId?: string;
     openidIssuer?: string;
+    signIn?: boolean;
   }) => string | null;
   createOpenIDRefreshFlightKey: (args: {
     req: OpenIDRequest;
@@ -305,15 +312,20 @@ export function createOpenIDRefreshRecoveryService(
       }
       const keys = [
         ...directPublicationKeys,
-        ...frontier.flatMap(({ refreshToken, identity }) => [
-          createOpenIDRefreshFlightKey({ req, user, refreshToken, identityContext: identity }),
-          createRefreshTokenBridgeFlightKey({
+        ...frontier.flatMap(({ refreshToken, identity }) => {
+          const publication = {
             oldRefreshToken: refreshToken,
             userId: identity.appUserId ?? userId,
             tenantId: identity.tenantId,
             openidIssuer: identity.openidIssuer,
-          }),
-        ]),
+          };
+          /** A sign-in publishes under its own key, which a session may still name. */
+          return [
+            createOpenIDRefreshFlightKey({ req, user, refreshToken, identityContext: identity }),
+            createRefreshTokenBridgeFlightKey(publication),
+            createRefreshTokenBridgeFlightKey({ ...publication, signIn: true }),
+          ];
+        }),
       ];
       directPublicationKeys = [];
       const revoked = await revokeOpenIDRefreshFlights({ keys, ttl });
@@ -739,12 +751,14 @@ export function createOpenIDRefreshRecoveryService(
       tenantId: user.tenantId,
       openidIssuer: user.openidIssuer,
     };
-    if (!commitPublication && existingRefreshToken) {
+    const publicationRefreshToken = existingRefreshToken || tokenset.refresh_token;
+    if (!commitPublication && publicationRefreshToken) {
       const key = createRefreshTokenBridgeFlightKey({
-        oldRefreshToken: existingRefreshToken,
+        oldRefreshToken: publicationRefreshToken,
         userId: publicationIdentity.userId,
         tenantId: publicationIdentity.tenantId,
         openidIssuer: publicationIdentity.openidIssuer,
+        ...(existingRefreshToken ? {} : { signIn: true }),
       });
       if (key) {
         const flight = await acquireOpenIDRefreshFlight({ key });

@@ -4,6 +4,7 @@ import type { TConversation } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { SerializableJobData } from '~/stream/interfaces/IJobStore';
+import type { ConversationTarget, ResolvedSpecTarget } from './target';
 import { getSafeErrorMetadata } from '../utils/errors';
 
 type ConversationRequest = {
@@ -11,10 +12,15 @@ type ConversationRequest = {
   user?: { id: string; tenantId?: string };
 };
 
-type StoredConversation = Pick<TConversation, 'conversationId' | 'subagentThread'>;
+type StoredConversation = Pick<TConversation, 'conversationId' | 'subagentThread'> &
+  ConversationTarget;
 
 interface ConversationDependencies {
   getConvo: (userId: string, conversationId: string) => Promise<StoredConversation | null>;
+  resolveTarget?: (
+    req: ConversationRequest,
+    stored: StoredConversation,
+  ) => Promise<ResolvedSpecTarget | undefined>;
   jobs: Pick<GenerationJobManagerClass, 'getResumeState'>;
   logger: { error: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void };
   now?: () => number;
@@ -29,8 +35,22 @@ export function createGetConversationHandler(deps: ConversationDependencies) {
     if (!conversationId) return res.status(404).end();
     try {
       const stored = await deps.getConvo(req.user.id, conversationId);
-      if (stored != null)
-        return stored.subagentThread == null ? res.status(200).json(stored) : res.status(404).end();
+      if (stored != null) {
+        if (stored.subagentThread != null) return res.status(404).end();
+        let view = stored;
+        try {
+          const target = await deps.resolveTarget?.(req, stored);
+          if (target) view = { ...stored, ...target };
+        } catch (error) {
+          deps.logger.error(
+            '[conversations] Saved target lookup failed',
+            getSafeErrorMetadata(error),
+          );
+          res.set('Cache-Control', 'no-store');
+          return res.status(200).json({ ...stored, targetResolutionFailed: true });
+        }
+        return res.status(200).json(view);
+      }
       if (!isUUID(conversationId)) return res.status(404).end();
 
       const user = req.user;

@@ -1,5 +1,6 @@
 const {
   createAgentTriggerService,
+  createDeadLetters,
   createCheckpointDeletionReclaimer,
   createAgentContinuationResolver,
   createAgentEventContinueResolver,
@@ -92,6 +93,7 @@ const initializeAgentTriggerService = async (options) => {
   await service.initialize(options);
   await queuedTurnLifecycle.initialize({
     maxIdleIntervalMs: options?.idlePolling?.queuedTurnMaxIntervalMs,
+    idleCeilingMs: options?.idleCeilingMs,
   });
 };
 
@@ -113,6 +115,7 @@ module.exports = {
   getAgentTriggerDelivery: service.getDelivery,
   getAgentTriggerDeliveryStatus: service.getDeliveryStatus,
   getAgentTriggerDeadLetters: service.getDeadLetters,
+  agentTriggerDeadLetters: createDeadLetters({ methods, requeue: service.requeue }),
   requeueAgentTrigger: service.requeue,
   retireAgentTrigger: service.retire,
   renewAgentTriggerProducerLease: service.renewProducerLease,

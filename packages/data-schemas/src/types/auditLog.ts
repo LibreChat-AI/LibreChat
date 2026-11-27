@@ -161,7 +161,7 @@ export interface AuditCheckpoint {
 export interface PurgeAuditLogResult {
   deletedCount: number;
   /** The boundary the verifier must be given to accept the now-shorter chain.
-   * Absent when the chain is now empty or nothing was purged. */
+   * Absent when nothing was purged. */
   checkpoint?: AuditCheckpoint;
 }
 

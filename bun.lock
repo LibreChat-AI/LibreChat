@@ -55,7 +55,7 @@
         "@azure/storage-blob": "^12.30.0",
         "@google/genai": "^2.8.0",
         "@keyv/redis": "5.1.6",
-        "@librechat/agents": "^4.2.12",
+        "@librechat/agents": "^4.2.13",
         "@librechat/api": "*",
         "@librechat/data-schemas": "*",
         "@microsoft/microsoft-graph-client": "^3.0.7",
@@ -215,7 +215,7 @@
         "framer-motion": "^12.40.0",
         "heic-to": "^1.1.14",
         "html-to-image": "^1.11.11",
-        "i18next": "^24.2.2",
+        "i18next": "^26.3.4",
         "i18next-browser-languagedetector": "^8.0.3",
         "input-otp": "^1.4.2",
         "jotai": "^2.12.5",
@@ -378,7 +378,7 @@
         "@azure/identity": "^4.14.0",
         "@azure/storage-blob": "^12.30.0",
         "@keyv/redis": "5.1.6",
-        "@librechat/agents": "^4.2.12",
+        "@librechat/agents": "^4.2.13",
         "@librechat/data-schemas": "*",
         "@modelcontextprotocol/sdk": "^1.32.1",
         "@opentelemetry/api": "^1.9.0",
@@ -456,7 +456,7 @@
         "@types/react": "^18.2.11",
         "babel-plugin-replace-ts-export-assignment": "^0.0.2",
         "framer-motion": "^12.40.0",
-        "i18next": "^24.2.2",
+        "i18next": ">=26.3.4",
         "jest": "^30.2.0",
         "jest-environment-jsdom": "^30.2.0",
         "jotai": "^2.12.5",
@@ -522,7 +522,7 @@
         "@types/react-dom": "^18.2.4",
         "babel-jest": "^30.2.0",
         "caniuse-lite": "^1.0.30001741",
-        "i18next": "^24.2.3",
+        "i18next": ">=26.3.4",
         "identity-obj-proxy": "^3.0.0",
         "jest": "^30.2.0",
         "jest-environment-jsdom": "^30.2.0",
@@ -576,7 +576,7 @@
         "clsx": "^2.1.1",
         "dompurify": "^3.4.17",
         "framer-motion": "^12.40.0",
-        "i18next": "^24.2.2 || ^25.3.2",
+        "i18next": "^24.2.2 || ^25.3.2 || ^26.3.4",
         "i18next-browser-languagedetector": "^8.2.0",
         "input-otp": "^1.4.2",
         "jotai": "^2.12.5",
@@ -1603,7 +1603,7 @@
 
     "@lezer/lr": ["@lezer/lr@1.4.2", "", { "dependencies": { "@lezer/common": "^1.0.0" } }, "sha512-pu0K1jCIdnQ12aWNaAVU5bzi7Bd1w54J3ECgANPmYLtQKP0HBj2cE/5coBD66MT10xbtIuUr7tg0Shbsvk0mDA=="],
 
-    "@librechat/agents": ["@librechat/agents@4.2.12", "", { "dependencies": { "@anthropic-ai/sdk": "^0.115.0", "@aws-sdk/client-bedrock-runtime": "^3.1075.0", "@langchain/anthropic": "1.5.2", "@langchain/aws": "^1.4.2", "@langchain/core": "1.2.8", "@langchain/deepseek": "^1.1.3", "@langchain/google-common": "2.2.0", "@langchain/google-gauth": "2.2.0", "@langchain/google-genai": "2.2.0", "@langchain/google-vertexai": "2.2.0", "@langchain/langgraph": "1.4.8", "@langchain/mistralai": "^1.2.0", "@langchain/openai": "1.5.8", "@langchain/textsplitters": "^1.0.1", "@langchain/xai": "^1.4.3", "@langfuse/core": "^6.1.1", "@langfuse/langchain": "^6.1.1", "@langfuse/otel": "^6.1.1", "@langfuse/tracing": "^6.1.1", "@opentelemetry/api": "~1.9.0", "@opentelemetry/context-async-hooks": "^2.12.1", "@opentelemetry/exporter-trace-otlp-http": "^0.223.2", "@opentelemetry/otlp-exporter-base": "^0.223.2", "@opentelemetry/sdk-node": "^0.223.2", "@opentelemetry/sdk-trace-base": "^2.12.1", "@types/diff": "^7.0.2", "@types/ws": "^8.18.1", "ai-tokenizer": "^1.0.6", "axios": "^1.20.0", "cheerio": "^1.2.0", "diff": "^9.0.0", "dotenv": "^16.4.7", "eventsource-parser": "^3.1.1", "https-proxy-agent": "^7.0.6", "jsonwebtoken": "^9.0.0", "lodash": "^4.17.23", "mathjs": "^15.2.0", "nanoid": "^3.3.18", "okapibm25": "^1.4.1", "openai": "^6.46.0", "reova": "^0.4.1", "socks-proxy-agent": "^8.0.5", "uuid": "^11.1.1", "ws": "^8.21.0", "zod": "4.6.7", "zod-to-json-schema": "3.25.2" }, "peerDependencies": { "@anthropic-ai/sandbox-runtime": "^0.0.78" }, "optionalPeers": ["@anthropic-ai/sandbox-runtime"] }, "sha512-fiDQGXcOGvXq1kCl/R5CyiPmA66hkFJ2Q8wVjTzfHM6A3x8S5HGITldml/352QBoiBEKUwOF+SALmoGiSL9wKQ=="],
+    "@librechat/agents": ["@librechat/agents@4.2.13", "", { "dependencies": { "@anthropic-ai/sdk": "^0.115.0", "@aws-sdk/client-bedrock-runtime": "^3.1075.0", "@langchain/anthropic": "1.5.2", "@langchain/aws": "^1.4.2", "@langchain/core": "1.2.8", "@langchain/deepseek": "^1.1.3", "@langchain/google-common": "2.2.0", "@langchain/google-gauth": "2.2.0", "@langchain/google-genai": "2.2.0", "@langchain/google-vertexai": "2.2.0", "@langchain/langgraph": "1.4.8", "@langchain/mistralai": "^1.2.0", "@langchain/openai": "1.5.8", "@langchain/textsplitters": "^1.0.1", "@langchain/xai": "^1.4.3", "@langfuse/core": "^6.1.1", "@langfuse/langchain": "^6.1.1", "@langfuse/otel": "^6.1.1", "@langfuse/tracing": "^6.1.1", "@opentelemetry/api": "~1.9.0", "@opentelemetry/context-async-hooks": "^2.12.1", "@opentelemetry/exporter-trace-otlp-http": "^0.223.2", "@opentelemetry/otlp-exporter-base": "^0.223.2", "@opentelemetry/sdk-node": "^0.223.2", "@opentelemetry/sdk-trace-base": "^2.12.1", "@types/diff": "^7.0.2", "@types/ws": "^8.18.1", "ai-tokenizer": "^1.0.6", "axios": "^1.20.0", "cheerio": "^1.2.0", "diff": "^9.0.0", "dotenv": "^16.4.7", "eventsource-parser": "^3.1.1", "https-proxy-agent": "^7.0.6", "jsonwebtoken": "^9.0.0", "lodash": "^4.17.23", "mathjs": "^15.2.0", "nanoid": "^3.3.18", "okapibm25": "^1.4.1", "openai": "^6.46.0", "reova": "^0.4.1", "socks-proxy-agent": "^8.0.5", "uuid": "^11.1.1", "ws": "^8.21.0", "zod": "4.6.7", "zod-to-json-schema": "3.25.2" }, "peerDependencies": { "@anthropic-ai/sandbox-runtime": "^0.0.78" }, "optionalPeers": ["@anthropic-ai/sandbox-runtime"] }, "sha512-6O/f+I6Hn7OtYKBVykqNMkOQ1k/L4gJNSKN7jklhHHVURUwc4APmSwqVUeXwQuoDh0KwVCacfcHEenOmNoc19g=="],
 
     "@librechat/api": ["@librechat/api@workspace:packages/api"],
 
@@ -3599,7 +3599,7 @@
 
     "husky": ["husky@9.1.7", "", { "bin": "bin.js" }, "sha512-5gs5ytaNjBrh5Ow3zrvdUUY+0VxIuWVL4i9irt6friV+BqdCfmV11CQTWMiBYWHbXhco+J1kHfTOUkePhCDvMA=="],
 
-    "i18next": ["i18next@24.2.3", "", { "dependencies": { "@babel/runtime": "^7.26.10" }, "peerDependencies": { "typescript": "^5" }, "optionalPeers": ["typescript"] }, "sha512-lfbf80OzkocvX7nmZtu7nSTNbrTYR52sLWxPtlXX1zAhVw8WEnFk4puUkCR4B1dNQwbSpEHHHemcZu//7EcB7A=="],
+    "i18next": ["i18next@26.3.4", "", { "peerDependencies": { "typescript": "^5 || ^6" }, "optionalPeers": ["typescript"] }, "sha512-pa7m0d7pBDqGHZxljT+WPFeyFgQ7P7SciPPo1tTqYuO0z4sqADYhwnBESmmGp/wEof1inwdls/k8ZgTg8rxFHA=="],
 
     "i18next-browser-languagedetector": ["i18next-browser-languagedetector@8.2.0", "", { "dependencies": { "@babel/runtime": "^7.23.2" } }, "sha512-P+3zEKLnOF0qmiesW383vsLdtQVyKtCNA9cjSoKCppTKPQVfKd2W8hbVo5ZhNJKDqeM7BOcvNoKJOjpHh4Js9g=="],
 
@@ -5408,8 +5408,6 @@
     "@librechat/frontend/@tanstack/react-table": ["@tanstack/react-table@8.11.7", "", { "dependencies": { "@tanstack/table-core": "8.11.7" }, "peerDependencies": { "react": ">=16", "react-dom": ">=16" } }, "sha512-ZbzfMkLjxUTzNPBXJYH38pv2VpC9WUA+Qe5USSHEBz0dysDTv4z/ARI3csOed/5gmlmrPzVUN3UXGuUMbod3Jg=="],
 
     "@librechat/frontend/@types/jest": ["@types/jest@29.5.14", "", { "dependencies": { "expect": "^29.0.0", "pretty-format": "^29.0.0" } }, "sha512-ZN+4sdnLUbo8EVvVc2ao0GFW6oVrQRPn4K2lglySj7APvSrgzxHiNNK99us4WDMi57xxA2yggblIAMNhXOotLQ=="],
-
-    "@librechat/frontend/i18next": ["i18next@24.2.2", "", { "dependencies": { "@babel/runtime": "^7.23.2" }, "peerDependencies": { "typescript": "^5" }, "optionalPeers": ["typescript"] }, "sha512-NE6i86lBCKRYZa5TaUDkU5S4HFgLIEJRLr3Whf2psgaxBleQ2LC1YW1Vc+SCgkAW7VEzndT6al6+CzegSUHcTQ=="],
 
     "@librechat/frontend/react-hook-form": ["react-hook-form@7.50.0", "", { "peerDependencies": { "react": "^16.8.0 || ^17 || ^18" } }, "sha512-AOhuzM3RdP09ZCnq+Z0yvKGHK25yiOX5phwxjV9L7U6HMla10ezkBnvQ+Pk4GTuDfsC5P2zza3k8mawFwFLVuQ=="],
 

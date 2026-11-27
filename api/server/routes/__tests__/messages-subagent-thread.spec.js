@@ -11,7 +11,7 @@ jest.mock('@librechat/api', () => ({
   createSubagentAttachmentCallsHandler: jest.fn(() => (_req, res) => res.status(404).end()),
   rejectToolCallPreviewWrites: (_req, _res, next) => next(),
   withMessageToolCallPreviews: (_req, message) => message,
-  withoutTraceRefs: jest.fn((message) => message),
+  withoutServerRecords: jest.fn((message) => message),
   createPrivateTextView: jest.fn(() => (_req, _res, next) => next()),
   createContentFilter: jest.fn(() => (_req, _res, next) => next()),
   unescapeLaTeX: jest.fn((value) => value),

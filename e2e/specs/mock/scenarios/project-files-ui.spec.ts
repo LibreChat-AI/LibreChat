@@ -382,6 +382,57 @@ test.describe('project file workspace UI', () => {
     }
   });
 
+  test('an existing-file picker card shows the date the file was last updated @scenario:file-picker-card-shows-file-date', async ({
+    page,
+    request,
+  }) => {
+    let projectId: string | undefined;
+    const fileIds: string[] = [];
+    const filenames: string[] = [];
+    try {
+      await enableProjectFiles(page);
+      projectId = await createProject(page, uniqueName('File date project'));
+      const seeded = await seedProjectFiles(
+        projectId,
+        1,
+        uniqueName('picker-dated'),
+        undefined,
+        false,
+      );
+      fileIds.push(...seeded.fileIds);
+      filenames.push(...seeded.filenames);
+      /* Midday UTC, so the calendar day is the same in any test timezone. */
+      const updatedAt = new Date('2026-03-14T12:00:00.000Z');
+      await withMongo(async (db) => {
+        await db
+          .collection('files')
+          .updateOne(
+            { file_id: seeded.fileIds[0] },
+            { $set: { createdAt: new Date('2026-03-01T12:00:00.000Z'), updatedAt } },
+          );
+      });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+
+      const expected = await page.evaluate(
+        (iso) =>
+          new Date(iso).toLocaleDateString(undefined, {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+          }),
+        updatedAt.toISOString(),
+      );
+      const picker = await openExistingFilePicker(page);
+      const results = picker.getByRole('list', { name: 'Your files', exact: true });
+      const row = results.getByRole('listitem').filter({ hasText: seeded.filenames[0] });
+      await expect(row.getByRole('button').first()).toHaveAccessibleName(
+        new RegExp(`${escapeRegExp(expected)}$`),
+      );
+    } finally {
+      await cleanupProjectAndFiles(page, request, projectId, fileIds, filenames);
+    }
+  });
+
   test('a rejected file association shows a localized reason and a retry succeeds @scenario:rejected-file-association-shows-reason-and-retry-succeeds', async ({
     page,
     request,

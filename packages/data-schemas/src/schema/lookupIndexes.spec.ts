@@ -54,6 +54,40 @@ describe('single-field lookups use an index', () => {
     expect(scan).toBe('refreshTokenHash_1');
   });
 
+  it('session by user and a refresh token that a rotation may have replaced', async () => {
+    const user = new mongoose.Types.ObjectId();
+    const expiration = new Date(Date.now() + 60_000);
+    const scan = await winningScan(
+      'Session',
+      {
+        user,
+        $or: [
+          { refreshTokenHash: 'abc' },
+          {
+            previousRefreshTokens: {
+              $elemMatch: { hash: 'abc', rotatedAt: { $gt: new Date(Date.now() - 60_000) } },
+            },
+          },
+        ],
+        expiration: { $gt: new Date() },
+      },
+      [
+        ...filler(50, (i) => ({
+          user: new mongoose.Types.ObjectId(),
+          refreshTokenHash: `other-${i}`,
+          expiration,
+        })),
+        {
+          user,
+          refreshTokenHash: 'def',
+          previousRefreshTokens: [{ hash: 'abc', rotatedAt: new Date() }],
+          expiration,
+        },
+      ],
+    );
+    expect(scan).toBe('user_1_refreshTokenHash_1');
+  });
+
   it('tool calls by user alone', async () => {
     const user = new mongoose.Types.ObjectId();
     const scan = await winningScan('ToolCall', { user }, [

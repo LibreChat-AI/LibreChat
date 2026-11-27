@@ -1,4 +1,4 @@
-import { oaiToolkit, IMAGE_SIZE_PATTERN } from './oai';
+import { oaiToolkit, getImageData, IMAGE_SIZE_PATTERN } from './oai';
 
 const sizeSchemas = [
   ['image_gen_oai', oaiToolkit.image_gen_oai.schema.properties?.size],
@@ -82,5 +82,22 @@ describe('OpenAI image toolkit quality schema', () => {
         expect(tool.schema.properties?.output_format).toBeUndefined();
       }
     });
+  });
+});
+
+describe('getImageData', () => {
+  it('returns the first base64 image', () => {
+    expect(getImageData({ data: [{ b64_json: 'first' }, { b64_json: 'second' }] })).toBe('first');
+  });
+
+  it.each([
+    ['an empty data array', { data: [] }],
+    ['a null data field', { data: null }],
+    ['no data field', {}],
+    ['an entry without b64_json', { data: [{}] }],
+    ['a null b64_json', { data: [{ b64_json: null }] }],
+    ['no response', undefined],
+  ])('returns undefined for %s', (_label, response) => {
+    expect(getImageData(response)).toBeUndefined();
   });
 });

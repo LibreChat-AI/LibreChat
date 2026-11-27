@@ -5,12 +5,10 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import type { MessagePartsHost } from '../../react/host';
 import { setDefaultMessagePartsHost } from '../../react/host';
+import { initEnglish } from '../../__fixtures__/i18n';
 import Summary from '../Summary';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 const mockMessageContext = { current: { isSubmitting: false, isLatestMessage: false } };
 
@@ -31,22 +29,22 @@ describe('Summary', () => {
      *  the only thing separating it from a success is this flag. */
     render(<Summary content={partialSummary} summarizing={false} failed />);
 
-    expect(screen.getByText('com_ui_summarize_failed')).toBeInTheDocument();
-    expect(screen.queryByText('com_ui_conversation_summarized')).not.toBeInTheDocument();
+    expect(screen.getByText('Summarization failed')).toBeInTheDocument();
+    expect(screen.queryByText('Conversation summarized')).not.toBeInTheDocument();
   });
 
   it('labels a settled round with partial text as summarized when it did not fail', () => {
     render(<Summary content={partialSummary} summarizing={false} />);
 
-    expect(screen.getByText('com_ui_conversation_summarized')).toBeInTheDocument();
-    expect(screen.queryByText('com_ui_summarize_failed')).not.toBeInTheDocument();
+    expect(screen.getByText('Conversation summarized')).toBeInTheDocument();
+    expect(screen.queryByText('Summarization failed')).not.toBeInTheDocument();
   });
 
   it('keeps the in-flight label while the round is still streaming', () => {
     mockMessageContext.current = { isSubmitting: true, isLatestMessage: true };
     render(<Summary content={partialSummary} summarizing />);
 
-    expect(screen.getByText('com_ui_summarizing')).toBeInTheDocument();
+    expect(screen.getByText('Summarizing...')).toBeInTheDocument();
   });
 
   it('renders nothing when a failed round produced no text at all', () => {

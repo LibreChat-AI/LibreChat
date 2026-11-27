@@ -1,5 +1,10 @@
 const mongoose = require('mongoose');
-const { ResourceType, PrincipalType, PrincipalModel } = require('librechat-data-provider');
+const {
+  ErrorTypes,
+  ResourceType,
+  PrincipalType,
+  PrincipalModel,
+} = require('librechat-data-provider');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const { canAccessAgentResource } = require('./canAccessAgentResource');
 const { User, Role, AclEntry } = require('~/db/models');
@@ -153,6 +158,7 @@ describe('canAccessAgentResource middleware', () => {
       expect(res.json).toHaveBeenCalledWith({
         error: 'Forbidden',
         message: 'Insufficient permissions to access this agent',
+        type: ErrorTypes.AGENT_ACCESS,
       });
     });
 
@@ -231,6 +237,7 @@ describe('canAccessAgentResource middleware', () => {
       expect(res.json).toHaveBeenCalledWith({
         error: 'Forbidden',
         message: 'Insufficient permissions to access this agent',
+        type: ErrorTypes.AGENT_ACCESS,
       });
     });
 
@@ -245,6 +252,7 @@ describe('canAccessAgentResource middleware', () => {
       expect(res.json).toHaveBeenCalledWith({
         error: 'Not Found',
         message: 'agent not found',
+        type: ErrorTypes.AGENT_NOT_FOUND,
       });
     });
 

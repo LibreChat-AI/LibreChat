@@ -482,6 +482,8 @@ describe('Button', () => {
     expect(cn(buttonVariants({ size: 'auth-action' }))).toContain('h-theme-auth-action');
     expect(cn(buttonVariants({ shape: 'auth-action' }))).toContain('rounded-theme-auth-action');
     expect(cn(buttonVariants({ shape: 'auth-action' }))).not.toContain('rounded-lg');
+    expect(cn(buttonVariants({ size: 'sm', shape: 'nested' }))).toContain('rounded-md');
+    expect(cn(buttonVariants({ size: 'sm', shape: 'nested' }))).not.toContain('rounded-lg');
     expect(cn(buttonVariants({ size: 'snug' }))).toContain('p-1');
     expect(cn(buttonVariants({ size: 'wide' }))).toContain('px-8');
     expect(cn(buttonVariants({ size: 'bare' }))).toContain('p-0');

@@ -6,12 +6,10 @@ import { Provider, createStore } from 'jotai';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { AskAnswerView, AskPopoverProps } from '../Popover';
 import { composerOverlayCountFamily } from '../../../../react/overlay';
+import { initEnglish } from '../../../../__fixtures__/i18n';
 import AskPopover from '../Popover';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 /**
  * The ask popover's keyboard and focus contract: Escape moves the question to the chat and puts
@@ -99,7 +97,7 @@ describe('AskPopover', () => {
   it('returns focus to the draft after the chevron moves the question too', () => {
     const ask = view();
     render(<Host initial={ask} />);
-    const chevron = screen.getByRole('button', { name: 'com_ui_ask_move_to_chat' });
+    const chevron = screen.getByRole('button', { name: 'Answer later in the chat' });
     chevron.focus();
 
     act(() => {
@@ -128,7 +126,7 @@ describe('AskPopover', () => {
     render(<Host initial={ask} />);
 
     fireEvent.click(screen.getByRole('button', { name: /Production/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_skip' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }));
 
     expect(ask.submitOption).toHaveBeenCalledWith(1);
     expect(ask.skip).toHaveBeenCalledTimes(1);
@@ -141,7 +139,7 @@ describe('AskPopover', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: /Staging/ }));
     expect(ask.toggleChecked).toHaveBeenCalledWith(0);
 
-    const submit = screen.getByRole('button', { name: /com_ui_submit/ });
+    const submit = screen.getByRole('button', { name: /Submit/ });
     expect(submit).toBeEnabled();
     fireEvent.click(submit);
     expect(ask.submit).toHaveBeenCalledWith('  and the canary  ');
@@ -150,9 +148,9 @@ describe('AskPopover', () => {
   it('points the hint at the draft and announces a failed answer', () => {
     render(<Host initial={view({ errored: true })} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_ask_type_below' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Or type your answer below' }));
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Composer' }));
-    expect(screen.getByRole('alert')).toHaveTextContent('com_ui_ask_answer_error');
+    expect(screen.getByRole('alert')).toHaveTextContent("Your answer couldn't be sent. Try again.");
   });
 
   it('renders a batch through the host card, with Escape wired to move it to the chat', () => {
@@ -279,7 +277,7 @@ describe('AskPopover', () => {
     expect(count()).toBe(1);
 
     act(() => {
-      fireEvent.click(screen.getByRole('button', { name: 'com_ui_ask_move_to_chat' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Answer later in the chat' }));
     });
     expect(count()).toBe(0);
 

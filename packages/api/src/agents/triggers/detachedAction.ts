@@ -17,6 +17,7 @@ import type {
 import type { DetachedAgentEventActionStoreMode, SerializableJobData } from '~/stream';
 import type { EventActorDetachedActionLifecycle } from '../handlers';
 import type { AgentEventDetachedTerminalEvidence } from './types';
+import { captureTrigger } from '~/agents/authority/trigger';
 import { matchesExpectedAction } from './expectedAction';
 import { createAgentTriggerEnvelope } from './envelope';
 
@@ -205,6 +206,11 @@ export function createAgentEventDetachedResumeHandler(deps: DetachedResumeDepend
     }
     const target = envelope.target as AgentContinueTriggerEnvelope['target'];
     const receivedAt = now();
+    // What the suspended run's job saved of its trigger. The continuation resumes that run in
+    // a request of its own, which acts for the same subject.
+    const kept =
+      job.trigger &&
+      captureTrigger({ agentId: job.agent_id, source: { type: 'trigger', ...job.trigger } });
     const continuation = createAgentTriggerEnvelope({
       mode: 'continue',
       requestId: nextRequestId(),
@@ -226,6 +232,7 @@ export function createAgentEventDetachedResumeHandler(deps: DetachedResumeDepend
           wakeGenerationCreatedAt: job.createdAt,
           taskId: action.taskId,
           idempotencyKey: action.idempotencyKey,
+          ...(kept && { trigger: kept }),
         },
       },
       target,

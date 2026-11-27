@@ -13,6 +13,7 @@ export * from './permissions';
 export * from './cdn';
 export * from './checks';
 export * from './resolve';
+export { createBannerHandler } from './banner';
 export * from './shutdown';
 export * from './server';
 export * from './readiness';

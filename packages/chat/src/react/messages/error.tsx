@@ -2,16 +2,10 @@ import { createContext, useContext, useMemo } from 'react';
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+import type { ErrorSource } from '../../core/errors/source';
 import { useMessageContext } from '../message';
 
-/** The fields of a message that say who produced a failure and when. */
-export type ErrorSource = Pick<TMessage, 'endpoint' | 'model' | 'createdAt'> & {
-  /**
-   * The agent that ran the failing part: the agent of its own lane in a parallel run, otherwise
-   * the agent a handoff earlier in the row made active.
-   */
-  partAgentId?: string;
-};
+export type { ErrorSource };
 
 /** Where a row's content changes agents, and which error parts name their own. */
 type AgentPositions = {

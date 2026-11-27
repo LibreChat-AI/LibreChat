@@ -625,8 +625,11 @@ function getRelatedTombstones(
   );
 }
 
-/** Whether `result` holds the location `segments` names there other than `stored` does. */
-function isChangedLocation(
+/**
+ * Whether `result` holds the location `segments` names there other than `stored` does: its
+ * value, or the tombstones that decide what it inherits.
+ */
+export function isChangedConfigLocation(
   segments: ConfigPathSegments,
   result: ConfigOverrideState,
   stored: ConfigOverrideState,
@@ -657,7 +660,7 @@ export function getConfigBatchWrittenPaths(
 ): string[][] {
   return changes.flatMap((change) =>
     getConfigChangeWrittenPaths(change, result).filter((segments) =>
-      isChangedLocation(segments, result, stored),
+      isChangedConfigLocation(segments, result, stored),
     ),
   );
 }

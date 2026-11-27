@@ -40,6 +40,7 @@ import {
   getIndexedMergeKeyIssues,
   getLiftedConfigTombstones,
   getConfigBatchWrittenPaths,
+  isChangedConfigLocation,
   isSameConfigValue,
   isConfigRevision,
   isConfigPathError,
@@ -907,15 +908,15 @@ export interface AdminConfigDeps {
   ) => Promise<ConfigRecord>;
   /**
    * Removes every path (dotted, or `{ segments }` for keys that contain dots) in one write,
-   * pruning parents left empty; `null` when there is no document.
+   * pruning parents left empty, and reports whether it changed the document (one that holds
+   * none of the paths is not written); `null` when there is no document.
    */
-  unsetConfigField: (
+  unsetConfigFieldTracked: (
     principalType: PrincipalType,
     principalId: string,
     fieldPaths: ConfigPathInputs,
-    session?: NoSession,
     options?: ConfigWriteOptions,
-  ) => Promise<ConfigRecord | null>;
+  ) => Promise<ConfigWriteOutcome | null>;
   deleteConfig: (
     principalType: PrincipalType,
     principalId: string,
@@ -1458,6 +1459,22 @@ type RemovalStop =
   | { status: 404; missing: 'config' | 'principal' }
   | { status: 400; reentry: SecretReentryIssue[] }
   | { status: 400; mcpReentry: SecretReentry };
+
+/** What a removal plans instead of a write: a stop, or nothing to change (`status: 200`). */
+type RemovalResult = RemovalStop | { status: 200 };
+
+/** Whether a planned document leaves `stored` as it is, so a retry has nothing to write. */
+function isUnchangedDocument(
+  stored: ConfigRecord | null,
+  planned: Pick<ConfigDraft, 'priority' | 'overrides' | 'tombstones'>,
+): boolean {
+  return (
+    stored != null &&
+    planned.priority === stored.priority &&
+    isSameConfigValue(planned.overrides, stored.overrides) &&
+    isSameConfigValue(planned.tombstones, stored.tombstones)
+  );
+}
 
 function removalStopResponse(res: Response, stop: RemovalStop): Response {
   if ('reentry' in stop) {
@@ -2583,7 +2600,7 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
     listAllConfigs,
     findConfigByPrincipal,
     writeConfigDocument,
-    unsetConfigField,
+    unsetConfigFieldTracked,
     deleteConfig,
     toggleConfigActiveTracked,
     setConfigPriority,
@@ -2774,7 +2791,7 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
     expectedRevision: ConfigRevision | undefined,
     scope: WriteScope,
     loadedBase?: AppConfig,
-  ): Promise<ConfigMutationOutcome<RemovalStop>> {
+  ): Promise<ConfigMutationOutcome<RemovalResult>> {
     const paths = getRemovalPaths(target);
     const needsBase =
       MCP_SECTIONS.has(target.segments[0]) ||
@@ -2784,7 +2801,7 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       ? (loadedBase ?? (await getBaseAppConfig(scope.tenantId)))
       : undefined;
     const base: Partial<TCustomConfig> = baseConfig?.config ?? {};
-    return runConfigMutation<RemovalStop>(
+    return runConfigMutation<RemovalResult>(
       {
         read: () => readScopedConfig(principalType, principalId, scope),
         write: (draft, revision) =>
@@ -2819,13 +2836,18 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
           candidate: state,
           entered: NO_ENTERED_SECRETS,
         });
+        const priority =
+          (removal.tombstone ? removal.priority : undefined) ??
+          stored?.priority ??
+          getDefaultConfigPriority({ principalType, principalId });
+        /** A retry that finds the path already removed (or hidden) has nothing to write. */
+        if (isUnchangedDocument(stored, { priority, ...bound })) {
+          return { draft: null, result: { status: 200 } };
+        }
         return {
           draft: {
             principalModel: stored?.principalModel ?? principalModel(principalType),
-            priority:
-              (removal.tombstone ? removal.priority : undefined) ??
-              stored?.priority ??
-              getDefaultConfigPriority({ principalType, principalId }),
+            priority,
             overrides: bound.overrides,
             tombstones: bound.tombstones,
             isActive: stored?.isActive ?? true,
@@ -3914,6 +3936,7 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       const entered = getEnteredConfigSecrets(requestWrites);
 
       type PatchStop =
+        | { status: 200 }
         | { status: 404 }
         | { status: 400; issues: ConfigOverrideIssue[] }
         | { status: 400; renameIssue: string }
@@ -3988,13 +4011,18 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
               baseConfig,
               envPolicy,
             });
+            const priority =
+              requestedPriority ??
+              stored?.priority ??
+              getDefaultConfigPriority({ principalType, principalId });
+            /** A retry that finds every value already stored has nothing to write. */
+            if (isUnchangedDocument(stored, { priority, ...bound })) {
+              return { draft: null, result: { status: 200 } };
+            }
             return {
               draft: {
                 principalModel: principalModel(principalType),
-                priority:
-                  requestedPriority ??
-                  stored?.priority ??
-                  getDefaultConfigPriority({ principalType, principalId }),
+                priority,
                 overrides: bound.overrides,
                 tombstones: bound.tombstones,
                 isActive: stored?.isActive ?? true,
@@ -4007,7 +4035,7 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
         return await writeFailureResponse(res, error, principalType, principalId);
       }
 
-      if (!outcome.written) {
+      if (!outcome.written && outcome.result.status !== 200) {
         const stop = outcome.result;
         if (stop.status === 404) {
           return principalNotFoundResponse(res);
@@ -4023,18 +4051,35 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
         }
         return invalidOverrideResponse(res, stop.issues);
       }
+      const config = outcome.written ? outcome.record : outcome.current;
+      if (!config) {
+        return configNotFoundResponse(res);
+      }
 
-      const { record: config, previous } = outcome;
       await invalidateCaches(user.tenantId, 'patch');
-      await emitAudit(req, {
-        action: previous == null ? 'config.created' : 'config.updated',
-        target: configTarget(principalType, principalId),
-        metadata: {
-          operation: 'patch',
-          fieldPaths: actionable.map(describeFieldTarget).join(','),
-          ...(renames.renames.length > 0 && { renames: describeRenames(renames.renames) }),
-        },
-      });
+      /**
+       * Only the paths whose stored value (or the tombstones deciding it) changed are recorded,
+       * and a retry that finds every value already stored wrote nothing and is not recorded.
+       */
+      if (outcome.written) {
+        const { previous } = outcome;
+        const before = toConfigOverrideState(previous);
+        const after = toConfigOverrideState(config);
+        const changed = actionable.filter((target) =>
+          isChangedConfigLocation(target.segments, after, before),
+        );
+        await emitAudit(req, {
+          action: previous == null ? 'config.created' : 'config.updated',
+          target: configTarget(principalType, principalId),
+          metadata: {
+            operation: 'patch',
+            fieldPaths: changed.map(describeFieldTarget).join(','),
+            ...(previous != null &&
+              previous.priority !== config.priority && { priority: config.priority }),
+            ...(renames.renames.length > 0 && { renames: describeRenames(renames.renames) }),
+          },
+        });
+      }
       return sendWrittenConfig(
         res,
         200,
@@ -4179,7 +4224,7 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       }
       const requestedPriority = hasBroadManage ? priority : undefined;
 
-      let outcome: ConfigMutationOutcome<RemovalStop>;
+      let outcome: ConfigMutationOutcome<RemovalResult>;
       try {
         outcome = await removeConfigPath(
           principalType,
@@ -4193,17 +4238,23 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       } catch (error) {
         return await writeFailureResponse(res, error, principalType, principalId);
       }
-      if (!outcome.written) {
+      if (!outcome.written && outcome.result.status !== 200) {
         return removalStopResponse(res, outcome.result);
       }
+      const config = outcome.written ? outcome.record : outcome.current;
+      if (!config) {
+        return configNotFoundResponse(res);
+      }
 
-      const { record: config, previous } = outcome;
       await invalidateCaches(user.tenantId, 'field tombstone');
-      await emitAudit(req, {
-        action: previous == null ? 'config.created' : 'config.updated',
-        target: configTarget(principalType, principalId),
-        metadata: { operation: 'tombstone', fieldPath },
-      });
+      /** A retry that finds the path already hidden changed nothing and is not recorded. */
+      if (outcome.written) {
+        await emitAudit(req, {
+          action: outcome.previous == null ? 'config.created' : 'config.updated',
+          target: configTarget(principalType, principalId),
+          metadata: { operation: 'tombstone', fieldPath },
+        });
+      }
       const ignored = isBoundSecretSection(parseFieldPath(fieldPath)[0])
         ? await reportIgnored(config, getConfigPartition(config))
         : [];
@@ -4303,6 +4354,7 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       }
 
       let config: ConfigRecord | null;
+      let changed: boolean;
       try {
         if (target.entry || isBoundRemoval(target)) {
           const outcome = await removeConfigPath(
@@ -4313,10 +4365,11 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
             expected.value,
             await resolveWriteScope(principalType, principalId),
           );
-          if (!outcome.written) {
+          if (!outcome.written && outcome.result.status !== 200) {
             return removalStopResponse(res, outcome.result);
           }
-          config = outcome.record;
+          config = outcome.written ? outcome.record : outcome.current;
+          changed = outcome.written;
         } else {
           /**
            * A secret and its preview companion are removed together, in one write. Every path
@@ -4324,13 +4377,14 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
            * so a `segments` key such as `custom["Name"]` would otherwise reach an entry past the
            * guards of the branch above. By segments it names that key as written.
            */
-          config = await unsetConfigField(
+          const unset = await unsetConfigFieldTracked(
             principalType,
             principalId,
             getRemovalPaths(target),
-            undefined,
             { expectedRevision: expected.value },
           );
+          config = unset?.config ?? null;
+          changed = unset?.changed ?? false;
         }
       } catch (error) {
         return await writeFailureResponse(res, error, principalType, principalId);
@@ -4340,11 +4394,14 @@ export function createAdminConfigHandlers(deps: AdminConfigDeps): {
       }
 
       await invalidateCaches(user.tenantId, 'field delete');
-      await emitAudit(req, {
-        action: 'config.updated',
-        target: configTarget(principalType, principalId),
-        metadata: { operation: 'unset', fieldPath: describeFieldTarget(target) },
-      });
+      /** A retry that finds the path already removed changed nothing and is not recorded. */
+      if (changed) {
+        await emitAudit(req, {
+          action: 'config.updated',
+          target: configTarget(principalType, principalId),
+          metadata: { operation: 'unset', fieldPath: describeFieldTarget(target) },
+        });
+      }
       const ignored = isBoundSecretSection(target.segments[0])
         ? await reportIgnored(config, getConfigPartition(config))
         : [];

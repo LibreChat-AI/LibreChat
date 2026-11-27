@@ -15,11 +15,6 @@ import {
   tryLibreOfficePreview,
 } from './libreoffice';
 
-/* Detect whether the host has a LibreOffice binary so the integration
- * tests below can conditionally engage. Most CI runners don't have
- * LibreOffice installed (it's a 500 MB dependency); we still exercise
- * the env-gating, the wrapper builder, and the failure-fallthrough
- * contract in those environments. */
 function hasLibreOfficeOnPath(): boolean {
   for (const candidate of ['soffice', 'libreoffice']) {
     const result = spawnSync(candidate, ['--version'], { stdio: 'ignore' });
@@ -298,11 +293,7 @@ describe('libreoffice (env gating + wrapper)', () => {
  * doesn't realize the `expect`s below are still scoped to a real test
  * block via the alias. Disabling locally is cleaner than restructuring
  * to satisfy a static check that's wrong about this pattern. */
-describe('libreoffice integration (skipped unless LibreOffice is on $PATH)', () => {
-  /* These tests engage only when `soffice` (or `libreoffice`) is
-   * actually installed. Local dev with the binary present runs them;
-   * stock CI runners skip. The skip is per-test rather than describe-
-   * level so a printout makes the gating visible. */
+describe('libreoffice conversion pause', () => {
   const ORIGINAL_FLAG = process.env.OFFICE_PREVIEW_LIBREOFFICE;
 
   beforeEach(() => {
@@ -324,61 +315,27 @@ describe('libreoffice integration (skipped unless LibreOffice is on $PATH)', () 
     expect(probe.versionLine).toMatch(/LibreOffice/i);
   });
 
-  itIfLibreOffice(
-    'convertOfficeToPdf converts a DOCX to PDF bytes',
-    async () => {
-      const buf = readFixture('sample.docx');
-      const pdf = await convertOfficeToPdf(buf, 'docx');
-      /* PDF magic bytes: 25 50 44 46 == "%PDF". */
-      expect(pdf.subarray(0, 4).toString('ascii')).toBe('%PDF');
-      expect(pdf.length).toBeGreaterThan(500);
-    },
-    35_000,
-  );
+  it.each(['docx', 'pptx'])('keeps %s conversion disabled on every host', async (format) => {
+    await expect(convertOfficeToPdf(readFixture(`sample.${format}`), format)).rejects.toMatchObject(
+      {
+        name: 'LibreOfficeUnavailableError',
+        message: 'In-process LibreOffice conversion is temporarily disabled',
+      },
+    );
+  });
 
-  itIfLibreOffice(
-    'convertOfficeToPdf converts a PPTX to PDF bytes',
-    async () => {
-      const buf = readFixture('sample.pptx');
-      const pdf = await convertOfficeToPdf(buf, 'pptx');
-      expect(pdf.subarray(0, 4).toString('ascii')).toBe('%PDF');
-    },
-    35_000,
-  );
-
-  itIfLibreOffice(
-    'tryLibreOfficePreview produces a PDF embed doc when env=true and binary is available',
-    async () => {
-      process.env.OFFICE_PREVIEW_LIBREOFFICE = 'true';
-      _resetLibreOfficeProbeCache();
-      const buf = readFixture('sample.docx');
-      const out = await tryLibreOfficePreview(buf, 'docx', 512 * 1024);
-      expect(out).not.toBeNull();
-      expect(out!).toMatch(/^<!DOCTYPE html>/);
-      /* PDF bytes embedded as a base64 data block; pdf.js renders to
-       * canvas (Chrome blocks both data: and blob: PDF navigations
-       * in sandboxed iframes — the canvas path is the only thing
-       * that works in our context). */
-      expect(out!).toContain('id="lc-pdf-data"');
-      expect(out!).toContain('pdfjsLib.getDocument');
-      expect(Buffer.byteLength(out!, 'utf-8')).toBeLessThanOrEqual(512 * 1024);
-    },
-    35_000,
-  );
-
-  itIfLibreOffice(
-    'returns null when the embedded PDF would exceed the output cap',
-    async () => {
-      /* Force the cap below the smallest possible PDF so the size
-       * check trips. The conversion still runs (verifying the
-       * subprocess works) but `tryLibreOfficePreview` declines to
-       * emit oversized output and the dispatcher falls through. */
-      process.env.OFFICE_PREVIEW_LIBREOFFICE = 'true';
-      _resetLibreOfficeProbeCache();
-      const buf = readFixture('sample.docx');
-      const out = await tryLibreOfficePreview(buf, 'docx', 100);
-      expect(out).toBeNull();
-    },
-    35_000,
-  );
+  it.each([
+    ['true', 'docx'],
+    ['true', 'pptx'],
+    ['docx', 'docx'],
+    ['pptx', 'pptx'],
+    ['pptx,docx', 'docx'],
+    ['pptx,docx', 'pptx'],
+  ])('falls back while conversion is paused (env=%s, format=%s)', async (flag, format) => {
+    process.env.OFFICE_PREVIEW_LIBREOFFICE = flag;
+    expect(isLibreOfficeEnabledFor(format)).toBe(true);
+    await expect(
+      tryLibreOfficePreview(readFixture(`sample.${format}`), format, 512 * 1024),
+    ).resolves.toBeNull();
+  });
 });

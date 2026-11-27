@@ -253,6 +253,31 @@ test('reads rounding and other math functions over angles in a hue triplet', () 
   assert.deepEqual(literals('a { --size: max(calc(1px + 1px), 2px) 0 0; }'), []);
 });
 
+test('@scenario:unit-cancellation reads a channel where division cancels units', () => {
+  assert.deepEqual(literals('a { --brand: 255 calc(10px / 2px) 0; }'), ['255 calc(10px / 2px) 0']);
+  assert.deepEqual(literals('a { --brand: 255 calc(10em / 2rem) 0; }'), [
+    '255 calc(10em / 2rem) 0',
+  ]);
+  assert.deepEqual(literals('a { --brand: 255 calc(10s / 2ms) 0; }'), ['255 calc(10s / 2ms) 0']);
+  assert.deepEqual(literals('a { --brand: 255 calc(10px / (2px)) 0; }'), [
+    '255 calc(10px / (2px)) 0',
+  ]);
+  assert.deepEqual(literals('a { --brand: 255 calc((2px * 3px) / 4px / 5px) 0; }'), [
+    '255 calc((2px * 3px) / 4px / 5px) 0',
+  ]);
+  assert.deepEqual(literals('a { --brand: 255 calc(10px / calc(1px * 2)) 0; }'), [
+    '255 calc(10px / calc(1px * 2)) 0',
+  ]);
+  assert.deepEqual(literals('a { --h: calc(10deg / 2deg * 1turn) 50% 50%; }'), [
+    'calc(10deg / 2deg * 1turn) 50% 50%',
+  ]);
+  assert.deepEqual(literals('a { --size: calc(10px * 2px / 2px) 0 0; }'), []);
+  assert.deepEqual(literals('a { --size: calc(10px / 2s) 0 0; }'), []);
+  assert.deepEqual(literals('a { --size: calc(10px / 2) 0 0; }'), []);
+  assert.deepEqual(literals('a { --size: calc((2px * 3px) / 4px) 0 0; }'), []);
+  assert.deepEqual(literals('a { --orientation: 0 calc(10px / 2px * 1deg) 0; }'), []);
+});
+
 test('a token source exempts its custom properties only', () => {
   const css = ':root { --x: 255 0 0; --y: #fff; }\na { color: #fff; width: calc(1 * 2); }';
   assert.deepEqual(findCssColorLiterals(css, [], true), [{ line: 2, literal: '#fff' }]);

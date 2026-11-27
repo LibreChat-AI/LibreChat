@@ -4,9 +4,9 @@ import { ChevronDown as ChevronDownNode, ChevronUp as ChevronUpNode } from 'luci
 import { Button, MorphIcon, Shimmer, TooltipAnchor, useLocalize } from '@librechat/client';
 import type { FC, FocusEvent, MouseEvent, NamedExoticComponent } from 'react';
 import { useMessagePartsHost } from '../../react/host';
+import { NAV_CLEARANCE, ROW_GLYPH_SLOT } from './rows';
 import useExpandCollapse from './useExpandCollapse';
 import { isRectVisible } from '../../core/viewport';
-import { ROW_GLYPH_SLOT } from './rows';
 import CopyButton from './CopyButton';
 import { classes } from './classes';
 
@@ -123,7 +123,9 @@ export const ThinkingButton: NamedExoticComponent<ThinkingButtonProps> = memo(
     }, [content]);
 
     return (
-      <div className="group/thinking relative flex w-full items-center">
+      <div
+        className={classes('group/thinking relative flex w-full items-center', NAV_CLEARANCE.pad)}
+      >
         <button
           type="button"
           onClick={onClick}
@@ -189,6 +191,7 @@ export const ThinkingButton: NamedExoticComponent<ThinkingButtonProps> = memo(
             copiedLabel={localize('com_ui_copied_to_clipboard')}
             className={classes(
               'absolute inset-e-0 top-1/2 -translate-y-1/2 opacity-0 transition-opacity',
+              NAV_CLEARANCE.edge,
               'group-focus-within/thinking-container:opacity-100 group-hover/thinking-container:opacity-100',
               'focus-visible:opacity-100',
             )}
@@ -258,6 +261,7 @@ export const FloatingThinkingBar: NamedExoticComponent<FloatingThinkingBarProps>
           /* Laid over the text rather than reserved below it, so the box keeps
              even padding; the fill keeps the controls legible over a line. */
           'bg-surface-secondary absolute inset-e-3 bottom-3 flex items-center gap-2 rounded-lg transition-opacity duration-150',
+          NAV_CLEARANCE.edge,
           isVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
       >

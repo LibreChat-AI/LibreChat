@@ -211,6 +211,7 @@ export function getOpenAIConfig(
       modelOptions,
       useOpenRouter,
       requestIdentity: options.requestIdentity,
+      reasoningEfforts: options.reasoningEfforts,
       reasoningFormat: getReasoningFormat({
         customFormat: options.customParams?.reasoningFormat,
         isVercel: Boolean(isVercel),

@@ -18,11 +18,16 @@ import type {
 import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '~/types';
 import type { CacheStore } from '~/types';
 import {
+  scoreSearchMatch,
+  mergeSearchResults,
+  buildUserExactFilter,
+  buildUserSearchFilter,
+} from '~/utils/search';
+import {
   eraseChannelPersistenceForUser,
   resolveChannelErasureConfig,
 } from '~/methods/channelErasure';
 import { closeResponseScopes, eraseResponseRecords } from './responseScope';
-import { scoreSearchMatch, buildUserSearchFilter } from '~/utils/search';
 import { evictAuthUserDocsForUsers } from '~/utils/eviction';
 import { signPayload } from '~/crypto';
 import logger from '~/config/winston';
@@ -1108,14 +1113,21 @@ export function createUserMethods(
       return [];
     }
     const User = mongoose.models.User;
+    const find = (query: Record<string, unknown>, size: number) => {
+      const cursor = User.find(query).limit(size);
+      if (fieldsToSelect) {
+        cursor.select(fieldsToSelect);
+      }
+      return cursor.lean<IUser[]>();
+    };
 
-    const query = User.find(filter).limit(limit * 2); // Get more results to allow for relevance sorting
-
-    if (fieldsToSelect) {
-      query.select(fieldsToSelect);
-    }
-
-    const users = await query.lean<IUser[]>();
+    /** The prefix window is fetched in index order, so exact matches are fetched beside it */
+    const exactFilter = buildUserExactFilter(trimmedPattern);
+    const [exact, matches] = await Promise.all([
+      exactFilter ? find(exactFilter, limit) : [],
+      find(filter, limit * 2),
+    ]);
+    const users = mergeSearchResults(exact, matches);
 
     const scoredUsers = users.map((user) => ({
       ...user,

@@ -1,12 +1,5 @@
-import {
-  CREDITS_PER_USD,
-  parseRefillAnchor,
-  getNextRefillDate,
-  getGrantedAllotment,
-} from 'librechat-data-provider';
+import { parseRefillAnchor, getNextRefillDate, getGrantedAllotment } from 'librechat-data-provider';
 import type { BalanceDisplay, BalanceRefillMode, TBalanceResponse } from 'librechat-data-provider';
-import type { CurrencyConfig } from './tokens';
-import { formatCost } from './tokens';
 
 /** Share of the allotment spent at which the balance reads as running low. */
 export const BALANCE_WARNING_PERCENT = 90;
@@ -89,19 +82,7 @@ export function summarizeBalance(
   };
 }
 
-/** A credit amount in the configured display: money for `currency`, whole credits otherwise. */
-export function formatBalanceAmount(
-  credits: number,
-  display: BalanceDisplay,
-  currency?: CurrencyConfig,
-): string {
-  if (display === 'currency') {
-    return formatCost(credits / CREDITS_PER_USD, currency);
-  }
-  /** Credits are fractional when pricing multipliers are; two places keep a shortfall like
-   *  100.4 against 100.3 visible, and whole amounts still print without decimals */
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(credits);
-}
+export { formatBalanceAmount } from '@librechat/chat';
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;

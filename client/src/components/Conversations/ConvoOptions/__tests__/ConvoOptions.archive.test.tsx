@@ -13,6 +13,7 @@ const mockSetIsPopoverActive = jest.fn();
 const mockAnnouncePolite = jest.fn();
 const mockSetConversation = jest.fn();
 const mockMutationHook = jest.fn();
+const mockDeleteOptions: { current?: { onSuccess?: () => void } } = {};
 
 jest.mock('@ariakit/react', () => ({
   MenuButton: jest
@@ -66,8 +67,9 @@ jest.mock('@librechat/client', () => ({
 jest.mock('~/data-provider', () => ({
   useDuplicateConversationMutation: () => ({ mutate: jest.fn(), isLoading: false }),
   useAssignConversationToProjectMutation: () => ({ mutate: jest.fn(), isLoading: false }),
-  useDeleteConversationMutation: () => {
+  useDeleteConversationMutation: (options: { onSuccess?: () => void }) => {
     mockMutationHook('delete');
+    mockDeleteOptions.current = options;
     return { mutate: jest.fn(), isLoading: false };
   },
   useGetStartupConfig: () => ({ data: { sharedLinksEnabled: false } }),
@@ -101,14 +103,19 @@ jest.mock('~/Providers', () => ({
   useLiveAnnouncer: () => ({ announcePolite: mockAnnouncePolite }),
 }));
 
-let mockOpenRouteConvoId: string | undefined = 'conversation-1';
+/** The chat on screen when a request settles; `useOpenConversationId.spec` covers how it is read. */
+let mockOpenConvoId: string | undefined = 'conversation-1';
+
+jest.mock('~/hooks/Conversations/useOpenConversationId', () => ({
+  __esModule: true,
+  default: () => () => mockOpenConvoId,
+}));
 
 jest.mock('react-router-dom', () => {
   const actual = jest.requireActual('react-router-dom');
   return {
     ...actual,
     useNavigate: () => mockNavigate,
-    useParams: () => ({ conversationId: mockOpenRouteConvoId }),
   };
 });
 
@@ -156,7 +163,8 @@ describe('ConvoOptions archive action', () => {
     mockSetIsPopoverActive.mockReset();
     mockAnnouncePolite.mockReset();
     mockSetConversation.mockReset();
-    mockOpenRouteConvoId = 'conversation-1';
+    mockOpenConvoId = 'conversation-1';
+    mockDeleteOptions.current = undefined;
   });
 
   afterEach(() => {
@@ -218,13 +226,60 @@ describe('ConvoOptions archive action', () => {
     const { openAnotherChat } = renderOptions(false, true);
 
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_archive' }));
-    mockOpenRouteConvoId = 'conversation-2';
+    mockOpenConvoId = 'conversation-2';
     act(() => openAnotherChat());
 
     const [, callbacks] = mockArchiveMutate.mock.calls[0];
     act(() => callbacks.onSuccess());
     expect(mockNewConversation).not.toHaveBeenCalled();
     expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  /** An unsent chat has no id of its own, so no archived conversation is the one on screen:
+   *  replacing it would clear its composer and, without saved drafts, delete its uploads. */
+  it('leaves an unsent chat alone when another conversation is archived', () => {
+    mockOpenConvoId = 'new';
+    renderOptions(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_archive' }));
+    const [, callbacks] = mockArchiveMutate.mock.calls[0];
+    act(() => callbacks.onSuccess());
+
+    expect(mockNewConversation).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockRetainView).toHaveBeenCalled();
+    expect(mockSetIsPopoverActive).toHaveBeenCalledWith(false);
+  });
+});
+
+describe('ConvoOptions delete action', () => {
+  beforeEach(() => {
+    mockNavigate.mockReset();
+    mockNewConversation.mockReset();
+    mockRetainView.mockReset();
+    mockOpenConvoId = 'conversation-1';
+    mockDeleteOptions.current = undefined;
+  });
+
+  it('opens a new chat when the conversation it deleted is the one on screen', () => {
+    renderOptions(false, true);
+
+    act(() => mockDeleteOptions.current?.onSuccess?.());
+
+    expect(mockNewConversation).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('/c/new', { replace: true });
+    expect(mockRetainView).toHaveBeenCalled();
+  });
+
+  it('leaves an unsent chat alone when another conversation is deleted', () => {
+    mockOpenConvoId = 'new';
+    renderOptions(false);
+
+    act(() => mockDeleteOptions.current?.onSuccess?.());
+
+    expect(mockNewConversation).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockRetainView).toHaveBeenCalled();
   });
 });
 

@@ -4,6 +4,7 @@ import {
   getOpenIdRolesForOpenIdSync,
   getLibreChatRolesForOpenIdSync,
   selectOpenIdRole,
+  writeIdpRoleChange,
   recordIdpRoleChange,
 } from './openidRoleSync';
 
@@ -466,5 +467,214 @@ describe('recordIdpRoleChange', () => {
         source: 'openid_login',
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('writeIdpRoleChange', () => {
+  /** A sync of user `u1` from `previous` into `role`, whose role lookup answers with `roles`
+   * (or rejects with it). */
+  function syncInto(
+    role: string,
+    roles: Array<{ name: string }> | Error,
+    previous: string = SystemRoles.USER,
+  ) {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+    const updateUser = jest.fn().mockResolvedValue({ role });
+    const getRolesByNames = jest.fn<
+      Promise<Array<{ name: string }>>,
+      [string[], (string | string[] | null)?]
+    >(async () => {
+      if (roles instanceof Error) {
+        throw roles;
+      }
+      return roles;
+    });
+    const write = () =>
+      writeIdpRoleChange({
+        userId: 'u1',
+        update: { role },
+        observedRole: previous,
+        updateUser,
+        findUser: jest.fn(),
+        getRolesByNames,
+        recordAuditEntry,
+        source: 'openid_login',
+      });
+    return { write, updateUser, getRolesByNames, recordAuditEntry };
+  }
+
+  it('reads back the custom role it assigned and audits the change while the role exists', async () => {
+    const sync = syncInto('BASIC-USER', [{ name: 'BASIC-USER' }]);
+
+    await expect(sync.write()).resolves.toEqual({ role: 'BASIC-USER' });
+
+    expect(sync.getRolesByNames).toHaveBeenCalledWith(['BASIC-USER'], 'name');
+    expect(sync.updateUser).toHaveBeenCalledTimes(1);
+    expect(sync.recordAuditEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: { previousRole: SystemRoles.USER, role: 'BASIC-USER', source: 'openid_login' },
+      }),
+    );
+  });
+
+  it('reads back no system role', async () => {
+    const sync = syncInto(SystemRoles.ADMIN, []);
+
+    await expect(sync.write()).resolves.toEqual({ role: SystemRoles.ADMIN });
+
+    expect(sync.getRolesByNames).not.toHaveBeenCalled();
+    expect(sync.recordAuditEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes back a role deleted before it read the role back, unaudited, and fails as a missing role', async () => {
+    const sync = syncInto('BASIC-USER', []);
+    /** Only a role that differs in case is left: the account would still hold a missing name. */
+    sync.getRolesByNames.mockResolvedValue([{ name: 'basic-user' }]);
+
+    await expect(sync.write()).rejects.toThrow(
+      'OpenID role sync configured roles do not exist: BASIC-USER',
+    );
+
+    expect(sync.updateUser).toHaveBeenLastCalledWith(
+      'u1',
+      { role: SystemRoles.USER, roleToken: expect.any(String) },
+      { role: 'BASIC-USER', roleToken: expect.any(String) },
+    );
+    expect(sync.recordAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('keeps a previous custom role it puts back while that role exists', async () => {
+    const sync = syncInto('BASIC-USER', [], 'STANDARD-USER');
+    sync.getRolesByNames.mockImplementation(async (names: string[]) =>
+      names.includes('STANDARD-USER') ? [{ name: 'STANDARD-USER' }] : [],
+    );
+
+    await expect(sync.write()).rejects.toThrow('configured roles do not exist: BASIC-USER');
+
+    expect(sync.updateUser).toHaveBeenCalledTimes(2);
+    expect(sync.updateUser).toHaveBeenLastCalledWith(
+      'u1',
+      { role: 'STANDARD-USER', roleToken: expect.any(String) },
+      { role: 'BASIC-USER', roleToken: expect.any(String) },
+    );
+    expect(sync.recordAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('moves the account on to USER, audited, when the previous role it puts back is gone too', async () => {
+    const sync = syncInto('BASIC-USER', [], 'STANDARD-USER');
+
+    await expect(sync.write()).rejects.toThrow('configured roles do not exist: BASIC-USER');
+
+    /** Each compensating write matches the token of the write it undoes, and no later one. */
+    const [write, undo, fallback] = sync.updateUser.mock.calls;
+    expect(undo[2]).toEqual({ role: 'BASIC-USER', roleToken: write[1].roleToken });
+    expect(fallback[2]).toEqual({ role: 'STANDARD-USER', roleToken: undo[1].roleToken });
+    expect(undo[1].roleToken).not.toBe(write[1].roleToken);
+
+    expect(sync.getRolesByNames).toHaveBeenLastCalledWith(['STANDARD-USER'], 'name');
+    expect(sync.updateUser).toHaveBeenCalledTimes(3);
+    expect(sync.updateUser).toHaveBeenLastCalledWith(
+      'u1',
+      { role: SystemRoles.USER },
+      { role: 'STANDARD-USER', roleToken: expect.any(String) },
+    );
+    expect(sync.recordAuditEntry).toHaveBeenCalledTimes(1);
+    expect(sync.recordAuditEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: {
+          previousRole: 'STANDARD-USER',
+          role: SystemRoles.USER,
+          source: 'openid_login',
+        },
+      }),
+    );
+  });
+
+  it('moves the account on to USER when a role was recreated under the previous name', async () => {
+    const sync = syncInto('BASIC-USER', [], 'STANDARD-USER');
+    const standard = [
+      [{ _id: 'standard-1', name: 'STANDARD-USER' }],
+      [{ _id: 'standard-2', name: 'STANDARD-USER' }],
+    ];
+    sync.getRolesByNames.mockImplementation(async (names: string[]) =>
+      names.includes('STANDARD-USER') ? (standard.shift() ?? []) : [],
+    );
+
+    await expect(sync.write()).rejects.toThrow('configured roles do not exist: BASIC-USER');
+
+    expect(sync.updateUser).toHaveBeenLastCalledWith(
+      'u1',
+      { role: SystemRoles.USER },
+      { role: 'STANDARD-USER', roleToken: expect.any(String) },
+    );
+    expect(sync.recordAuditEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it('audits the change when another write moved the account out before the take-back', async () => {
+    const sync = syncInto('BASIC-USER', []);
+    sync.updateUser.mockResolvedValueOnce({ role: 'BASIC-USER' }).mockResolvedValueOnce(null);
+
+    await expect(sync.write()).rejects.toThrow('configured roles do not exist');
+
+    expect(sync.recordAuditEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes back the role and fails with the read error when the role cannot be read back', async () => {
+    const sync = syncInto('BASIC-USER', new Error('database unreachable'));
+
+    await expect(sync.write()).rejects.toThrow('database unreachable');
+
+    expect(sync.updateUser).toHaveBeenLastCalledWith(
+      'u1',
+      { role: SystemRoles.USER, roleToken: expect.any(String) },
+      { role: 'BASIC-USER', roleToken: expect.any(String) },
+    );
+    expect(sync.recordAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('audits the change it could not take back', async () => {
+    const sync = syncInto('BASIC-USER', []);
+    sync.updateUser
+      .mockResolvedValueOnce({ role: 'BASIC-USER' })
+      .mockRejectedValueOnce(new Error('database unreachable'));
+
+    await expect(sync.write()).rejects.toThrow('configured roles do not exist');
+
+    expect(sync.recordAuditEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws instead of writing when the stored role changes before every attempt', async () => {
+    const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+    let reads = 0;
+    const updateUser = jest.fn().mockResolvedValue(null);
+    const findUser = jest.fn(async () => ({ role: `ROLE-${++reads}` }));
+
+    await expect(
+      writeIdpRoleChange({
+        userId: 'u1',
+        update: { role: SystemRoles.ADMIN },
+        observedRole: SystemRoles.USER,
+        updateUser,
+        findUser,
+        getRolesByNames: jest.fn(),
+        recordAuditEntry,
+        source: 'openid_login',
+      }),
+    ).rejects.toThrow('kept changing');
+
+    expect(updateUser).toHaveBeenCalledTimes(3);
+    expect(updateUser).toHaveBeenNthCalledWith(
+      1,
+      'u1',
+      { role: SystemRoles.ADMIN, roleToken: expect.any(String) },
+      { role: 'USER' },
+    );
+    expect(updateUser).toHaveBeenNthCalledWith(
+      3,
+      'u1',
+      { role: SystemRoles.ADMIN, roleToken: expect.any(String) },
+      { role: 'ROLE-2' },
+    );
+    expect(recordAuditEntry).not.toHaveBeenCalled();
   });
 });

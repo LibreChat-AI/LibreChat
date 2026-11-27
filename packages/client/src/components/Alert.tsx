@@ -7,7 +7,15 @@ import { cn } from '~/utils';
 const alertVariants: (
   props?:
     | ({
-        variant?: 'info' | 'success' | 'warning' | 'error' | 'neutral' | null | undefined;
+        variant?:
+          | 'info'
+          | 'success'
+          | 'warning'
+          | 'error'
+          | 'error-quiet'
+          | 'neutral'
+          | null
+          | undefined;
         elevation?: 'flat' | 'raised' | null | undefined;
         size?: 'default' | 'roomy' | null | undefined;
       } & ClassProp)
@@ -19,6 +27,9 @@ const alertVariants: (
       success: 'border-status-success-border bg-status-success-subtle text-status-success',
       warning: 'border-status-warning-border bg-status-warning-subtle text-status-warning',
       error: 'border-alert-error-border bg-alert-error-fill text-status-error',
+      /** An error stated among other failures in a transcript, which read in the ordinary copy
+       *  color: the border and fill still mark it as an error. */
+      'error-quiet': 'border-alert-error-border bg-alert-error-fill text-text-secondary',
       neutral: 'border-status-neutral-border bg-status-neutral-subtle text-status-neutral',
     },
     /** `raised` lifts a notice off the surface it sits on with the lightest shadow. */
@@ -46,6 +57,7 @@ const defaultIcons: Record<AlertVariant, React.ComponentType<{ className?: strin
   success: CheckCircle2,
   warning: AlertTriangle,
   error: AlertCircle,
+  'error-quiet': AlertCircle,
   neutral: Info,
 };
 

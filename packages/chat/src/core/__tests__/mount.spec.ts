@@ -1,7 +1,12 @@
 import { Constants } from 'librechat-data-provider';
 import type { TMessage, TSubmission, TConversation } from 'librechat-data-provider';
 import type { ResumableHost, StreamStatusResponse } from '../resumable';
-import { ResumableRun, mountSubmission, releaseSubmission } from '../resumable';
+import {
+  ResumableRun,
+  mountSubmission,
+  releaseSubmission,
+  hydrateSubmissionMessages,
+} from '../resumable';
 import { createHost, createScheduler } from '../__fixtures__/resumable';
 
 const submission = {
@@ -135,6 +140,54 @@ describe('mountSubmission', () => {
     });
     expect(run.stream).toBeNull();
     expect(host.pane.setIsSubmitting).toHaveBeenLastCalledWith(false);
+  });
+
+  describe('a new chat whose first turn the pane leaves', () => {
+    /** Streams a new chat's first turn the way the app's cache names it: under the started id. */
+    const startFirstTurn = async () => {
+      const { host, run } = setup();
+      (host.start as jest.Mock).mockResolvedValue({ streamId: 'c-9', generationCreatedAt: 5 });
+      (host.cache.addOptimisticConversation as jest.Mock).mockImplementation(
+        (conversationId: string, started: TSubmission) =>
+          hydrateSubmissionMessages(started, conversationId),
+      );
+      const cleanup = mountSubmission(run, host, newChat);
+      await flush();
+      expect(run.stream).not.toBeNull();
+      return { host, run, cleanup };
+    };
+    const callOrder = (mock: unknown) => (mock as jest.Mock).mock.invocationCallOrder[0];
+
+    it('is taken out of the new chat once its stream is closed', async () => {
+      const { host, run, cleanup } = await startFirstTurn();
+      cleanup();
+      expect(host.cache.releaseNewConversation).toHaveBeenCalledTimes(1);
+      expect(host.cache.releaseNewConversation).toHaveBeenCalledWith('c-9');
+      expect(run.stream).toBeNull();
+      /** Its last queued frame is dropped first, so nothing of the turn can write it back. */
+      expect(callOrder(host.events.clearStepMaps)).toBeLessThan(
+        callOrder(host.cache.releaseNewConversation),
+      );
+    });
+
+    it('stays in the new chat after it published its end', async () => {
+      const { host, run, cleanup } = await startFirstTurn();
+      run.runEndPublished = true;
+      cleanup();
+      expect(host.cache.releaseNewConversation).not.toHaveBeenCalled();
+    });
+
+    it('is not a turn of a saved conversation', () => {
+      const { host, run } = setup();
+      const cleanup = mountSubmission(run, host, {
+        ...submission,
+        resumeStreamId: 'c-1',
+        resumeGenerationCreatedAt: 2000,
+      } as TSubmission);
+      expect(run.stream).not.toBeNull();
+      cleanup();
+      expect(host.cache.releaseNewConversation).not.toHaveBeenCalled();
+    });
   });
 
   it('keeps the pane busy through a generation handoff', () => {

@@ -21,6 +21,8 @@ const {
   reportLocatorTraversalFailure,
   collectModelBoundHistoricalFileIdState,
   projectModelBoundSourceFiles,
+  scopeHistoricalReplay,
+  withoutUnsentFiles,
   isModelBoundAttachmentFile,
   isToolOwnedAttachment,
   withBalanceReservations,
@@ -47,6 +49,7 @@ const {
   skillMessageFields,
   isTemporaryTurn,
   loadHistoryRows,
+  stampMessageTrigger,
 } = require('@librechat/api');
 const {
   Constants,
@@ -68,28 +71,6 @@ const {
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { logViolation } = require('~/cache');
 const db = require('~/models');
-
-const omitUnreplayedHistoricalFiles = (messages) =>
-  messages.map(({ files: _files, attachments: _attachments, ...message }) => ({
-    ...message,
-    ...(Array.isArray(message.content)
-      ? {
-          content: message.content.map((part) => {
-            if (part == null || typeof part !== 'object') {
-              return part;
-            }
-            const {
-              file: _partFile,
-              files: _partFiles,
-              image_file: _imageFile,
-              file_id: _fileId,
-              ...rest
-            } = part;
-            return rest;
-          }),
-        }
-      : {}),
-  }));
 
 const mergeUserSubmittedPaths = (...pathLists) => [
   ...new Set(
@@ -266,7 +247,10 @@ class BaseClient {
   }
 
   getModelBoundStoredMessages(messages) {
-    return this.options.resendFiles === false ? omitUnreplayedHistoricalFiles(messages) : messages;
+    return withoutUnsentFiles(messages, {
+      resendFiles: this.options.resendFiles,
+      excluded: this.options.excludedFiles,
+    });
   }
 
   /** @param {TMessage[]} messages */
@@ -513,7 +497,7 @@ class BaseClient {
   }
 
   createUserMessage({ messageId, parentMessageId, conversationId, text }) {
-    return {
+    return stampMessageTrigger(this.options?.req, {
       messageId,
       parentMessageId,
       conversationId,
@@ -523,7 +507,7 @@ class BaseClient {
       ...(this.options?.req?._agentEventTriggerProjection != null && {
         subagentTriggerProjection: this.options.req._agentEventTriggerProjection,
       }),
-    };
+    });
   }
 
   /**
@@ -1758,6 +1742,7 @@ class BaseClient {
         endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
         useResponsesApi: this.usesResponsesApi(),
         model: this.modelOptions?.model ?? this.model,
+        recipients: this.agentConfigs?.values(),
         onMissingFile,
       },
       getStrategyFunctions,
@@ -1995,10 +1980,16 @@ class BaseClient {
         authorizedFilesById.set(file.file_id, file);
       }
     }
-    let admittedHistoricalFileIds;
+    /** Files the conversation leaves out are not replayed, and so count toward no limit. */
+    const replay = scopeHistoricalReplay({
+      fileIds: nonSteerReplayFileIds,
+      steerFileIds: steerReplayFileIds,
+      excluded: this.options.excludedFiles,
+    });
+    let admittedHistoricalFileIds = replay.admitted;
     if (typeof this.assertHistoricalAttachmentLimits === 'function') {
       const admittedHistoricalFiles = await this.assertHistoricalAttachmentLimits(
-        [...nonSteerReplayFileIds, ...steerReplayFileIds]
+        [...replay.fileIds, ...replay.steerFileIds]
           .map((fileId) => authorizedFilesById.get(fileId))
           .filter((file) => file != null && isModelBoundAttachmentFile(file)),
       );
@@ -2006,7 +1997,7 @@ class BaseClient {
         (admittedHistoricalFiles ?? []).map((file) => file?.file_id).filter(Boolean),
       );
     }
-    this.modelBoundHistoricalSteerFiles = steerReplayFileIds
+    this.modelBoundHistoricalSteerFiles = replay.steerFileIds
       .map((fileId) => authorizedFilesById.get(fileId))
       .filter(
         (file) =>

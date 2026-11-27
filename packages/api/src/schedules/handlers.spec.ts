@@ -4,7 +4,7 @@ import type { Response } from 'express';
 import type { SchedulesHandlersDeps } from './handlers';
 import type { ServerRequest } from '~/types';
 import { createSchedulesHandlers, toWireSchedule, computeCreateDigest } from './handlers';
-import { ScheduleMCPError } from './mcp';
+import { PreflightError } from '~/agents/authority/preflight';
 
 /** A lean schedule doc carrying both public fields and internal bookkeeping. */
 function fullScheduleDoc(overrides: Partial<ISchedule> = {}): ISchedule {
@@ -1294,17 +1294,58 @@ describe('unattended MCP admission', () => {
     'mcp_configuration_missing',
     'mcp_permission_denied',
     'mcp_unavailable',
-  ] as const)('refuses create before persisting when preflight reports %s', async (status) => {
-    const deps = makeCreateDeps({
-      preflightMCP: async () => {
-        throw new ScheduleMCPError([{ server: 'Notion', status }]);
-      },
-    });
-    const { res, captured } = makeRes();
-    await createSchedulesHandlers(deps).createSchedule(makeCreateReq(), res);
-    expect(captured.status).toBe(status === 'mcp_unavailable' ? 503 : 400);
-    expect(captured.body).toMatchObject({ code: status, mcp: [{ server: 'Notion', status }] });
-    expect(deps.methods.createScheduleWithSlot).not.toHaveBeenCalled();
+  ] as const)(
+    'refuses a strict create before persisting when preflight reports %s',
+    async (status) => {
+      const deps = makeCreateDeps({
+        preflightMCP: async () => {
+          throw new PreflightError([{ server: 'Notion', status }]);
+        },
+      });
+      const req = makeCreateReq();
+      Object.assign(req.body, { mcpStrict: true });
+      const { res, captured } = makeRes();
+      await createSchedulesHandlers(deps).createSchedule(req, res);
+      expect(captured.status).toBe(status === 'mcp_unavailable' ? 503 : 400);
+      expect(captured.body).toMatchObject({ code: status, mcp: [{ server: 'Notion', status }] });
+      expect(deps.methods.createScheduleWithSlot).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    'mcp_reauth_required',
+    'mcp_configuration_missing',
+    'mcp_permission_denied',
+    'mcp_unavailable',
+  ] as const)(
+    'creates a schedule whose owner did not ask for every server when preflight reports %s',
+    async (status) => {
+      const deps = makeCreateDeps({
+        isUserDeleting: async () => false,
+        preflightMCP: async () => {
+          throw new PreflightError([{ server: 'Notion', status }]);
+        },
+      });
+      const { res, captured } = makeRes();
+      await createSchedulesHandlers(deps).createSchedule(makeCreateReq(), res);
+      // Past the readiness check and written: the server does not refuse the schedule.
+      expect([400, 503]).not.toContain(captured.status);
+      expect(deps.methods.createScheduleWithSlot).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('still refuses a create when the check names no server to leave out, or could not be made', async () => {
+    for (const failure of [new PreflightError([]), new Error('registry down')]) {
+      const deps = makeCreateDeps({
+        preflightMCP: async () => {
+          throw failure;
+        },
+      });
+      const { res, captured } = makeRes();
+      await createSchedulesHandlers(deps).createSchedule(makeCreateReq(), res);
+      expect(captured.status).toBeGreaterThanOrEqual(400);
+      expect(deps.methods.createScheduleWithSlot).not.toHaveBeenCalled();
+    }
   });
 
   it('cancels MCP preflight and does not persist after the request closes', async () => {
@@ -1443,15 +1484,17 @@ describe('Run Now MCP failures', () => {
 });
 
 it.each([{ enabled: true }, { prompt: 'Updated prompt' }, { agent_id: 'replacement' }])(
-  'rechecks effective MCP configuration for edits and enable: %j',
+  'rechecks effective MCP configuration for edits and enable of a strict schedule: %j',
   async (body) => {
     const deps = makeCreateDeps({
       isUserDeleting: async () => false,
       preflightMCP: async () => {
-        throw new ScheduleMCPError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
+        throw new PreflightError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
       },
     });
-    jest.mocked(deps.methods.getScheduleById).mockResolvedValue(fullScheduleDoc());
+    jest
+      .mocked(deps.methods.getScheduleById)
+      .mockResolvedValue(fullScheduleDoc({ mcpStrict: true }));
     const req = makeCreateReq();
     req.params = { id: 'sched-1' };
     Object.assign(req, { body });
@@ -1461,6 +1504,43 @@ it.each([{ enabled: true }, { prompt: 'Updated prompt' }, { agent_id: 'replaceme
     expect(deps.methods.updateScheduleById).not.toHaveBeenCalled();
   },
 );
+
+it.each([{ enabled: true }, { prompt: 'Updated prompt' }, { agent_id: 'replacement' }])(
+  'saves an edit of a schedule that runs without a server that is not ready: %j',
+  async (body) => {
+    const deps = makeCreateDeps({
+      isUserDeleting: async () => false,
+      preflightMCP: async () => {
+        throw new PreflightError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
+      },
+    });
+    jest.mocked(deps.methods.getScheduleById).mockResolvedValue(fullScheduleDoc());
+    const req = makeCreateReq();
+    req.params = { id: 'sched-1' };
+    Object.assign(req, { body });
+    const { res, captured } = makeRes();
+    await createSchedulesHandlers(deps).updateSchedule(req, res);
+    expect(captured.status).not.toBe(400);
+    expect(deps.methods.updateScheduleById).toHaveBeenCalledTimes(1);
+  },
+);
+
+it('refuses an edit that asks for every server while one is not ready', async () => {
+  const deps = makeCreateDeps({
+    isUserDeleting: async () => false,
+    preflightMCP: async () => {
+      throw new PreflightError([{ server: 'Notion', status: 'mcp_reauth_required' }]);
+    },
+  });
+  jest.mocked(deps.methods.getScheduleById).mockResolvedValue(fullScheduleDoc());
+  const req = makeCreateReq();
+  req.params = { id: 'sched-1' };
+  Object.assign(req, { body: { mcpStrict: true } });
+  const { res, captured } = makeRes();
+  await createSchedulesHandlers(deps).updateSchedule(req, res);
+  expect(captured.status).toBe(400);
+  expect(deps.methods.updateScheduleById).not.toHaveBeenCalled();
+});
 
 it('allows pausing even when MCP preflight would fail', async () => {
   const preflightMCP = jest.fn(async () => {
@@ -1578,12 +1658,12 @@ describe('createSchedule where the owner authorizes a schedule as it is created'
       expect.objectContaining({ scheduleId: insert!.id, stage: 'activation', grant: stored }),
     );
     // A choice that is turned down is answered as that, with no server probed for it.
-    const { ScheduleMCPConsentError } = jest.requireActual('./authorization/service');
+    const { RunGrantError } = jest.requireActual('~/agents/authority/service');
     preflightMCP.mockClear();
     await create(
       { authorization },
       {
-        grant: jest.fn().mockRejectedValue(new ScheduleMCPConsentError('consent_changed')),
+        grant: jest.fn().mockRejectedValue(new RunGrantError('consent_changed')),
         preflightMCP,
       },
     );
@@ -1606,7 +1686,7 @@ describe('createSchedule where the owner authorizes a schedule as it is created'
   });
 
   it('creates nothing when the choice does not fit what can be offered', async () => {
-    const { ScheduleMCPConsentError } = jest.requireActual('./authorization/service');
+    const { RunGrantError } = jest.requireActual('~/agents/authority/service');
     for (const [code, status] of [
       ['consent_changed', 409],
       ['consent_invalid', 409],
@@ -1614,7 +1694,7 @@ describe('createSchedule where the owner authorizes a schedule as it is created'
     ] as const) {
       const { captured, insert } = await create(
         { authorization },
-        { grant: jest.fn().mockRejectedValue(new ScheduleMCPConsentError(code)) },
+        { grant: jest.fn().mockRejectedValue(new RunGrantError(code)) },
       );
       expect(captured.status).toBe(status);
       expect(captured.body).toMatchObject({ code });
@@ -1764,7 +1844,7 @@ describe('updateSchedule where the owner authorizes the schedule again as they e
   });
 
   it('changes nothing when the choice does not fit what can be offered', async () => {
-    const { ScheduleMCPConsentError } = jest.requireActual('./authorization/service');
+    const { RunGrantError } = jest.requireActual('~/agents/authority/service');
     for (const [code, status] of [
       ['consent_changed', 409],
       ['consent_forbidden', 403],
@@ -1773,7 +1853,7 @@ describe('updateSchedule where the owner authorizes the schedule again as they e
       const { captured, write } = await patch(
         { name: 'renamed', authorization },
         {
-          renew: jest.fn().mockRejectedValue(new ScheduleMCPConsentError(code)),
+          renew: jest.fn().mockRejectedValue(new RunGrantError(code)),
           grant: jest.fn(),
           preflightMCP,
         },

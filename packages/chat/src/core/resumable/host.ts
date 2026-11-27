@@ -199,6 +199,12 @@ export interface ResumableCache {
    * before any stream event names it; returns the submission rewritten onto that id.
    */
   addOptimisticConversation: (conversationId: string, submission: TSubmission) => TSubmission;
+  /**
+   * Called once the stream of a new chat's first turn is closed because the pane left it
+   * mid-reply. Its frames wrote the new chat's messages too, so the host takes the turn out of
+   * them unless the pane still shows it; the turn keeps its own messages under its id.
+   */
+  releaseNewConversation: (conversationId: string) => void;
 }
 
 /** The run markers the queue drain reads for a conversation this pane may leave mid-run. */

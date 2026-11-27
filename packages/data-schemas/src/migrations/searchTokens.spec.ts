@@ -1,7 +1,6 @@
 import mongoose from 'mongoose';
-import { Collection } from 'mongodb';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import type { Document, FindOptions } from 'mongodb';
+import type { CommandStartedEvent, Collection, Document } from 'mongodb';
 import {
   searchTokenIndexes,
   USER_SEARCH_TOKEN_FIELDS,
@@ -21,7 +20,7 @@ let mongoServer: MongoMemoryServer;
 
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
-  await mongoose.connect(mongoServer.getUri());
+  await mongoose.connect(mongoServer.getUri(), { monitorCommands: true });
 });
 
 afterAll(async () => {
@@ -37,6 +36,36 @@ beforeEach(async () => {
 const users = () => mongoose.connection.db!.collection('users');
 const groups = () => mongoose.connection.db!.collection('groups');
 
+/** Records every command the driver sends while `run` executes. */
+const recordCommands = async (run: () => Promise<unknown>): Promise<CommandStartedEvent[]> => {
+  const commands: CommandStartedEvent[] = [];
+  const observe = (event: CommandStartedEvent) => commands.push(event);
+  const client = mongoose.connection.getClient();
+  client.on('commandStarted', observe);
+  try {
+    await run();
+  } finally {
+    client.off('commandStarted', observe);
+  }
+  return commands;
+};
+
+/** The commands addressed to one collection, such as `{ find: 'users' }`. */
+const against = (commands: CommandStartedEvent[], name: string) =>
+  commands.filter((event) => event.command[event.commandName] === name);
+
+/** Sizes of the `update` commands, one per `bulkWrite` flush, sent to one collection. */
+const updateBatches = (commands: CommandStartedEvent[], name: string) =>
+  against(commands, name)
+    .filter((event) => event.commandName === 'update')
+    .map((event) => (event.command.updates as Document[]).length);
+
+/** Every document and index of a collection, in a stable order. */
+const catalog = async (collection: Collection) => ({
+  docs: await collection.find().sort({ _id: 1 }).toArray(),
+  indexes: await collection.indexes(),
+});
+
 describe('backfillSearchTokens', () => {
   it('backfills users and groups across tenants in batches and is idempotent', async () => {
     await users().insertMany([
@@ -50,14 +79,22 @@ describe('backfillSearchTokens', () => {
         emailTokens: ['done@z.io', 'done', 'z', 'io'],
         usernameTokens: [],
       },
+      { name: 'Cy Dee', email: 'cy@y.io' },
+      { name: 'Di Eve', email: 'di@y.io' },
     ]);
     await groups().insertMany([{ name: 'Core Team', source: 'local' }]);
 
-    const result = await backfillSearchTokens(mongoose.connection, { batchSize: 2 });
-    expect(result).toEqual({
-      pending: { users: 3, groups: 1 },
-      updated: { users: 3, groups: 1 },
+    let result: Awaited<ReturnType<typeof backfillSearchTokens>> | undefined;
+    const commands = await recordCommands(async () => {
+      result = await backfillSearchTokens(mongoose.connection, { batchSize: 2 });
     });
+    expect(result).toEqual({
+      pending: { users: 5, groups: 1 },
+      updated: { users: 5, groups: 1 },
+    });
+    /** Five pending users at a batch size of two flush as 2 + 2 + 1; the up-to-date one is never written. */
+    expect(updateBatches(commands, 'users')).toEqual([2, 2, 1]);
+    expect(updateBatches(commands, 'groups')).toEqual([1]);
 
     const ana = await users().findOne({ email: 'ana@x.io' });
     expect(ana).toMatchObject({
@@ -137,13 +174,25 @@ describe('backfillSearchTokens', () => {
     );
   });
 
-  it('writes nothing on a dry run', async () => {
-    await users().insertOne({ name: 'Dry Run', email: 'dry@x.io' });
+  it('changes no document or index on a dry run', async () => {
+    await users().insertMany([
+      { name: 'Dry Run', email: 'dry@x.io', tenantId: 'tenant-a' },
+      {
+        name: 'Renamed User',
+        email: 'renamed@x.io',
+        nameTokens: ['old', 'user'],
+        emailTokens: ['renamed@x.io', 'renamed', 'x', 'io'],
+        usernameTokens: [],
+      },
+    ]);
+    await groups().insertMany([{ name: 'Dry Group', source: 'local' }]);
+    const before = [await catalog(users()), await catalog(groups())];
+
     await expect(backfillSearchTokens(mongoose.connection, { dryRun: true })).resolves.toEqual({
-      pending: { users: 1, groups: 0 },
+      pending: { users: 2, groups: 1 },
       updated: { users: 0, groups: 0 },
     });
-    expect(await users().findOne({ email: 'dry@x.io' })).not.toHaveProperty('nameTokens');
+    expect([await catalog(users()), await catalog(groups())]).toEqual(before);
   });
 });
 
@@ -162,34 +211,21 @@ describe('warnOnMissingSearchTokens', () => {
 
   /** Runs the startup check and explains the `users` probe it actually issued. */
   const explainUserProbe = async () => {
-    const findOne = jest.spyOn(Collection.prototype, 'findOne');
-    try {
-      await warnOnMissingSearchTokens(mongoose.connection);
-      const call = findOne.mock.contexts.findIndex(
-        (collection) => collection.collectionName === 'users',
-      );
-      const [filter, options] = findOne.mock.calls[call] as [Document, FindOptions];
-      expect(options.maxTimeMS).toBeGreaterThan(0);
-      return await users().find(filter).limit(1).explain('executionStats');
-    } finally {
-      findOne.mockRestore();
-    }
+    const commands = await recordCommands(() => warnOnMissingSearchTokens(mongoose.connection));
+    const probes = against(commands, 'users').filter((event) => event.commandName === 'find');
+    expect(probes).toHaveLength(1);
+    const { filter, maxTimeMS } = probes[0].command;
+    expect(maxTimeMS).toBeGreaterThan(0);
+    return await users().find(filter).limit(1).explain('executionStats');
   };
 
   it('warns without probing documents while the token indexes do not exist', async () => {
     await users().insertMany(
       Array.from({ length: 200 }, (_, i) => ({ name: `Old ${i}`, email: `old${i}@x.io` })),
     );
-    const findOne = jest.spyOn(Collection.prototype, 'findOne');
-    try {
-      await warnOnMissingSearchTokens(mongoose.connection);
-      const probed = findOne.mock.contexts.some(
-        (collection) => collection.collectionName === 'users',
-      );
-      expect(probed).toBe(false);
-    } finally {
-      findOne.mockRestore();
-    }
+    const commands = await recordCommands(() => warnOnMissingSearchTokens(mongoose.connection));
+    /** Reading the index catalog is the only command it may send; any document read would scan. */
+    expect(against(commands, 'users').map((event) => event.commandName)).toEqual(['listIndexes']);
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Some users'));
   });
 
