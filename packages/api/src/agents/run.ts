@@ -505,6 +505,8 @@ type RunAgent = Omit<Agent, 'tools'> & {
   baseContextTokens?: number;
   useLegacyContent?: boolean;
   imageDetail?: ImageDetail;
+  /** `false` when the agent's model cannot read images (see `resolveVision`). */
+  vision?: boolean;
   toolContextMap?: Record<string, unknown>;
   dynamicToolContextMap?: Record<string, unknown>;
   toolRegistry?: LCToolRegistry;
@@ -3043,6 +3045,15 @@ export async function createRun({
        * broken). Inline the field in the literal once the dependency is bumped.
        */
       (agentInput as AgentInputs & { graphTools?: GenericTool[] }).graphTools = graphTools;
+    }
+    if (agent.vision != null) {
+      /**
+       * Typed structurally for the same reason as `graphTools`: the per-agent
+       * field ships in `@librechat/agents` after 4.2.13 (LibreChat-AI/agents#AGENTS_PR),
+       * and older SDK versions ignore it (the model then still gets the images).
+       * Inline the field in the literal once the dependency is bumped.
+       */
+      (agentInput as AgentInputs & { vision?: boolean }).vision = agent.vision;
     }
     return agentInput;
   };

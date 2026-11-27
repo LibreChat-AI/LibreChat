@@ -793,6 +793,15 @@ export function getSchemaDefaults<Schema extends z.ZodObject>(
   return Object.fromEntries(entries) as ExtractDefaults<SchemaShape<Schema>>;
 }
 
+/**
+ * Declares whether an agent's model reads images. `false` makes an agent on that model get a
+ * short text note in place of each image (other agents in a chain or handoff still get the
+ * image); `true` overrides a less specific `false`. Precedence, first declaration wins: the
+ * agent's model spec, then the model's entry in its endpoint's models list, then the endpoint.
+ * Nothing declared sends images as before.
+ */
+const visionSchema = z.boolean().optional();
+
 export const modelConfigSchema = z
   .object({
     deploymentName: z.string().optional(),
@@ -803,6 +812,7 @@ export const modelConfigSchema = z
      * its model, so the composer offers an effort control only for a deployment declaring these.
      */
     reasoningEfforts: z.array(eReasoningEffortSchema).min(1).optional(),
+    vision: visionSchema,
   })
   .or(z.boolean());
 
@@ -1017,6 +1027,15 @@ export const baseEndpointSchema = z.object({
 
 export type TBaseEndpoint = z.infer<typeof baseEndpointSchema>;
 
+const modelItemSchema = z.union([
+  z.string(),
+  z.object({
+    name: z.string(),
+    description: z.string().optional(),
+    vision: visionSchema,
+  }),
+]);
+
 export const bedrockGuardrailConfigSchema = z.object({
   guardrailIdentifier: z.string(),
   guardrailVersion: z.string(),
@@ -1027,19 +1046,12 @@ export const bedrockGuardrailConfigSchema = z.object({
 export const bedrockEndpointSchema = baseEndpointSchema.merge(
   z.object({
     availableRegions: z.array(z.string()).optional(),
-    models: z.array(z.string()).optional(),
+    models: z.array(modelItemSchema).optional(),
+    vision: visionSchema,
     guardrailConfig: bedrockGuardrailConfigSchema.optional(),
     inferenceProfiles: z.record(z.string(), z.string()).optional(),
   }),
 );
-
-const modelItemSchema = z.union([
-  z.string(),
-  z.object({
-    name: z.string(),
-    description: z.string().optional(),
-  }),
-]);
 
 export const assistantEndpointSchema = baseEndpointSchema.merge(
   z.object({
@@ -2764,6 +2776,7 @@ export const endpointSchema = baseEndpointSchema.merge(
       fetch: z.boolean().optional(),
       userIdQuery: z.boolean().optional(),
     }),
+    vision: visionSchema,
     iconURL: z.string().optional(),
     modelDisplayLabel: z.string().optional(),
     /**
@@ -2873,6 +2886,7 @@ export const azureEndpointSchema = z
         reasoningLabelUpdateChars: true,
         reasoningLabelUpdateIntervalMs: true,
         reasoningLabelMaxPerRun: true,
+        vision: true,
       })
       .partial(),
   );
@@ -2990,7 +3004,8 @@ export type TVertexAIConfig = TVertexAISchema & {
  */
 export const modelListEndpointSchema = baseEndpointSchema.merge(
   z.object({
-    models: z.array(z.string()).optional(),
+    models: z.array(modelItemSchema).optional(),
+    vision: visionSchema,
   }),
 );
 
@@ -3016,7 +3031,8 @@ export const anthropicEndpointSchema = baseEndpointSchema.merge(
     /** Vertex AI configuration for running Anthropic models on Google Cloud */
     vertex: vertexAISchema.optional(),
     /** Optional: List of available models */
-    models: z.array(z.string()).optional(),
+    models: z.array(modelItemSchema).optional(),
+    vision: visionSchema,
   }),
 );
 

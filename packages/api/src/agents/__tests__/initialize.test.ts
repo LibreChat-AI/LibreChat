@@ -53,7 +53,13 @@ import {
   setFileConfigRegexCompiler,
 } from 'librechat-data-provider';
 import type { AppConfig, IMongoFile } from '@librechat/data-schemas';
-import type { Agent, TFile, FiltersConfig, AgentInstructionsPrompt } from 'librechat-data-provider';
+import type {
+  Agent,
+  TFile,
+  TModelSpec,
+  FiltersConfig,
+  AgentInstructionsPrompt,
+} from 'librechat-data-provider';
 import type { ServerRequest, InitializeResultBase, EndpointTokenConfig } from '~/types';
 import type { ResolveLinkedInstructions } from '../instructions/linked';
 import type { InitializeAgentDbMethods } from '../initialize';
@@ -8161,5 +8167,69 @@ describe('initializeAgent — files the conversation leaves out', () => {
 
     expect(getToolFilesByIds.mock.calls[0][0]).toEqual([kept.file_id, left.file_id]);
     expect(result).not.toHaveProperty('excludedFiles');
+  });
+});
+
+describe('initializeAgent: image input declarations', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  const initializeOn = async (
+    customEndpointConfig: Record<string, unknown>,
+    modelSpec?: TModelSpec,
+  ) => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: 'LiteLLM',
+      overrideProvider: Providers.OPENAI,
+      model: 'qwen3',
+    });
+    mockGetProviderConfig.mockReturnValue({
+      getOptions: jest.fn().mockResolvedValue({ llmConfig: { model: 'qwen3' } }),
+      overrideProvider: Providers.OPENAI,
+      customEndpointConfig,
+    });
+    return initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        modelSpec,
+        allowedProviders: new Set([Providers.OPENAI, 'LiteLLM']),
+        isInitialAgent: true,
+      },
+      db,
+    );
+  };
+
+  it("declares the agent's model text-only from its entry in the custom endpoint", async () => {
+    const result = await initializeOn({
+      name: 'LiteLLM',
+      models: { default: ['gpt-4o', { name: 'qwen3', vision: false }] },
+    });
+
+    expect(result.vision).toBe(false);
+  });
+
+  it('lets the model spec the agent runs under outrank its endpoint', async () => {
+    const result = await initializeOn(
+      { name: 'LiteLLM', vision: false, models: { default: ['qwen3'] } },
+      {
+        name: 'qwen',
+        label: 'Qwen',
+        vision: true,
+        preset: { endpoint: 'LiteLLM', model: 'qwen3' },
+      } as TModelSpec,
+    );
+
+    expect(result.vision).toBe(true);
+  });
+
+  it('declares nothing when the configuration says nothing', async () => {
+    const result = await initializeOn({ name: 'LiteLLM', models: { default: ['qwen3'] } });
+
+    expect(result).not.toHaveProperty('vision');
   });
 });
