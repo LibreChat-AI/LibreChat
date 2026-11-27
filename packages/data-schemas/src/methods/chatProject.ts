@@ -102,7 +102,12 @@ export type ChatProjectLimits = Pick<
   'maxFiles' | 'maxInstructionsLength' | 'maxDescriptionLength' | 'maxProjectsPerUser' | 'files'
 >;
 
-export type ChatProjectErrorCode = 'CHAT_PROJECT_LIMIT';
+export type ChatProjectErrorCode =
+  | 'CHAT_PROJECT_LIMIT'
+  | 'CHAT_PROJECT_FILES_OFF'
+  | 'CHAT_PROJECT_FILE_TOO_LARGE'
+  | 'CHAT_PROJECT_FILE_TYPE'
+  | 'CHAT_PROJECT_STORAGE_LIMIT';
 
 /** A project write refused by a `projects` limit; `code` is the stable contract callers match. */
 export class ChatProjectError extends Error {
@@ -117,14 +122,14 @@ export class ChatProjectError extends Error {
 const projectLimitReached = () =>
   new ChatProjectError('CHAT_PROJECT_LIMIT', 'Project limit reached');
 
-/** Failures `addChatProjectFile` reports for `projects.files` and `maxFiles: 0`. */
-export const ChatProjectFileErrors = {
-  off: 'Project files are turned off',
-  tooLarge: 'Project file too large',
-  type: 'Project file type not allowed',
-  storage: 'Project storage limit reached',
-} as const;
-
+/** Refusals `addChatProjectFile` reports for `projects.files` and `maxFiles: 0`. */
+const projectFileRefusal = {
+  off: () => new ChatProjectError('CHAT_PROJECT_FILES_OFF', 'Project files are turned off'),
+  tooLarge: () => new ChatProjectError('CHAT_PROJECT_FILE_TOO_LARGE', 'Project file too large'),
+  type: () => new ChatProjectError('CHAT_PROJECT_FILE_TYPE', 'Project file type not allowed'),
+  storage: () =>
+    new ChatProjectError('CHAT_PROJECT_STORAGE_LIMIT', 'Project storage limit reached'),
+};
 
 const DUPLICATE_KEY = 11000;
 
@@ -639,7 +644,7 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
   ): Promise<IChatProject | null> {
     const { maxFiles } = resolveChatProjectLimits(limits);
     if (!projectFilesEnabled(limits)) {
-      throw new Error(ChatProjectFileErrors.off);
+      throw projectFileRefusal.off();
     }
     const project = await getChatProject(user, projectId);
     if (!project) {
@@ -671,7 +676,7 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
     }
     const fileLimits = limits?.files;
     if (fileLimits?.fileSizeLimit != null && file.bytes > mbToBytes(fileLimits.fileSizeLimit)) {
-      throw new Error(ChatProjectFileErrors.tooLarge);
+      throw projectFileRefusal.tooLarge();
     }
     if (
       fileLimits?.supportedMimeTypes != null &&
@@ -679,7 +684,7 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
         pattern.test(file.type ?? ''),
       )
     ) {
-      throw new Error(ChatProjectFileErrors.type);
+      throw projectFileRefusal.type();
     }
     /* A storage cap is checked against the files attached at this revision, and the attach
      * below only lands while the project is still at it, so concurrent attaches cannot pass
@@ -695,7 +700,7 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
         .lean<{ bytes?: number }[]>();
       const used = attached.reduce((sum, entry) => sum + (entry.bytes ?? 0), 0);
       if (used + file.bytes > mbToBytes(fileLimits.totalSizeLimit as number)) {
-        throw new Error(ChatProjectFileErrors.storage);
+        throw projectFileRefusal.storage();
       }
     }
 

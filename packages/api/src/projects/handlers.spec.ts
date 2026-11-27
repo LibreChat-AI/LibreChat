@@ -53,9 +53,9 @@ describe('ChatProject handlers', () => {
     ['Project file too large', 400, 'CHAT_PROJECT_FILE_TOO_LARGE'],
     ['Project file type not allowed', 400, 'CHAT_PROJECT_FILE_TYPE'],
     ['Project storage limit reached', 409, 'CHAT_PROJECT_STORAGE_LIMIT'],
-  ])('maps the attach refusal "%s" to %i %s', async (message, status, code) => {
+  ] as const)('maps the attach refusal "%s" to %i %s', async (message, status, code) => {
     const { handlers } = setup({
-      addChatProjectFile: jest.fn().mockRejectedValue(new Error(message)),
+      addChatProjectFile: jest.fn().mockRejectedValue(new ChatProjectError(code, message)),
     });
     const { res, result } = response();
     await handlers.addProjectFile(request({ params: { projectId }, body: { file_id: 'f' } }), res);
@@ -64,9 +64,9 @@ describe('ChatProject handlers', () => {
     expect(result.body).toEqual({ error: message, code });
   });
 
-  it('does not treat an unrelated error named like an object key as a refusal', async () => {
+  it('answers 500 for an attach failure that is not a typed refusal', async () => {
     const { handlers } = setup({
-      addChatProjectFile: jest.fn().mockRejectedValue(new Error('constructor')),
+      addChatProjectFile: jest.fn().mockRejectedValue(new Error('Project files are turned off')),
     });
     const { res, result } = response();
     await handlers.addProjectFile(request({ params: { projectId }, body: { file_id: 'f' } }), res);

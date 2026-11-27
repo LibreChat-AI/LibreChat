@@ -18,6 +18,7 @@ import type {
   AvailableProjectFilesResult,
   ChatProjectMethods,
   ChatProjectSortBy,
+  ChatProjectErrorCode,
   ChatProjectSortDirection,
   CreateChatProjectInput,
   UpdateChatProjectInput,
@@ -34,13 +35,14 @@ const PROJECT_NOT_FOUND = 'Project not found';
 const CONVERSATION_NOT_FOUND = 'Conversation not found';
 const PROJECT_FILE_UNAVAILABLE = 'Project file unavailable';
 const PROJECT_FILE_LIMIT_REACHED = 'Project file limit reached';
-/** `projects.files` refusals from the attach, each with the status and code the client maps. */
-const PROJECT_FILE_REFUSALS = new Map<string, { status: number; code: string }>([
-  ['Project files are turned off', { status: 403, code: 'CHAT_PROJECT_FILES_OFF' }],
-  ['Project file too large', { status: 400, code: 'CHAT_PROJECT_FILE_TOO_LARGE' }],
-  ['Project file type not allowed', { status: 400, code: 'CHAT_PROJECT_FILE_TYPE' }],
-  ['Project storage limit reached', { status: 409, code: 'CHAT_PROJECT_STORAGE_LIMIT' }],
-]);
+/** The status each `projects` refusal answers with; the client maps the code to its copy. */
+const PROJECT_REFUSAL_STATUS: Record<ChatProjectErrorCode, number> = {
+  CHAT_PROJECT_LIMIT: 409,
+  CHAT_PROJECT_FILES_OFF: 403,
+  CHAT_PROJECT_FILE_TOO_LARGE: 400,
+  CHAT_PROJECT_FILE_TYPE: 400,
+  CHAT_PROJECT_STORAGE_LIMIT: 409,
+};
 
 const PROJECT_SORT_FIELDS = new Set<ChatProjectSortBy>(['name', 'createdAt', 'lastConversationAt']);
 
@@ -430,10 +432,10 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies): {
       if (error instanceof Error && error.message === PROJECT_FILE_LIMIT_REACHED) {
         return res.status(409).json({ error: PROJECT_FILE_LIMIT_REACHED });
       }
-      const message = error instanceof Error ? error.message : '';
-      const refusal = PROJECT_FILE_REFUSALS.get(message);
-      if (refusal) {
-        return res.status(refusal.status).json({ error: message, code: refusal.code });
+      if (error instanceof ChatProjectError) {
+        return res
+          .status(PROJECT_REFUSAL_STATUS[error.code])
+          .json({ error: error.message, code: error.code });
       }
       if (error instanceof Error && error.message === CHAT_PROJECT_CONFLICT) {
         return res.status(409).json({
