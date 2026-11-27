@@ -35,6 +35,21 @@ interface RawSharedLink {
 }
 
 /**
+ * A grant is written for a link read earlier, and a deletion can remove the link and its entries
+ * in between, which would leave the grant on a link that no longer exists. Every deletion removes
+ * the link before its last sweep of the entries, so reading the link again after the write settles
+ * it: a grant written before that sweep is removed by it, and one written after finds the link
+ * gone here. Returns whether the link is gone.
+ */
+async function withdrawIfDeleted(resourceId: string): Promise<boolean> {
+  if (await getMethods().findSharedLinkById(resourceId)) {
+    return false;
+  }
+  await cleanupSharedLinkPermissions(resourceId);
+  return true;
+}
+
+/**
  * The share page reads a link's config and its messages together, so the first view of a legacy
  * link runs this twice at once, in one process or two: both find no grant and both write one.
  * The grants are therefore made as unique entries, which the database refuses to insert twice.
@@ -49,6 +64,8 @@ export async function autoMigrateLegacyLink(share: RawSharedLink): Promise<void>
   let ownerGranted = false;
   let publicGranted = false;
   let existingOwner = false;
+  /** A grant that failed may still have been written, so any attempt is checked afterwards. */
+  let attempted = false;
   if (share.user) {
     existingOwner = await getAclService().checkPermission({
       userId: share.user,
@@ -58,6 +75,7 @@ export async function autoMigrateLegacyLink(share: RawSharedLink): Promise<void>
     });
 
     if (!existingOwner) {
+      attempted = true;
       try {
         await getAclService().grantPermission({
           principalType: PrincipalType.USER,
@@ -87,6 +105,7 @@ export async function autoMigrateLegacyLink(share: RawSharedLink): Promise<void>
     });
 
     if (!hasPublic) {
+      attempted = true;
       try {
         await getAclService().grantPermission({
           principalType: PrincipalType.PUBLIC,
@@ -108,6 +127,10 @@ export async function autoMigrateLegacyLink(share: RawSharedLink): Promise<void>
     } else {
       publicGranted = true;
     }
+  }
+
+  if (attempted && (await withdrawIfDeleted(resourceId))) {
+    return;
   }
 
   const ownerOk = existingOwner || !share.user;
@@ -188,6 +211,8 @@ export async function grantCreationPermissions(
       throw err;
     }
   }
+
+  await withdrawIfDeleted(resourceId);
 }
 
 export async function ensureLinkPermissions(
@@ -239,6 +264,7 @@ export async function ensureLinkPermissions(
       error: err instanceof Error ? err.message : String(err),
     });
   }
+  await withdrawIfDeleted(sharedLinkId.toString());
 }
 
 export async function cleanupSharedLinkPermissions(
@@ -309,6 +335,13 @@ export async function deleteAllSharedLinksWithCleanup(
         }
       : undefined,
   );
+  if (options.awaitCleanup && deletedIds.length > 0) {
+    /**
+     * The cleanup before the delete keeps the links as the retry anchor when it fails, but a
+     * request that read a link before the delete can still grant on it after that cleanup.
+     */
+    await cleanupBulkSharedLinkPermissions(deletedIds);
+  }
   if (!options.awaitCleanup && deletedIds.length > 0) {
     cleanupBulkSharedLinkPermissions(deletedIds).catch((err) => {
       logger.error('[deleteAllSharedLinksWithCleanup] ACL cleanup failed', {

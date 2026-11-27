@@ -55,15 +55,15 @@ async function createTestLink(overrides: Partial<ISharedLink> = {}) {
   });
 }
 
-describe('autoMigrateLegacyLink', () => {
-  async function createLegacyLink(isPublic: boolean) {
-    const link = await createTestLink();
-    await mongoose.connection
-      .db!.collection('sharedlinks')
-      .updateOne({ _id: link._id }, { $set: { isPublic } });
-    return link;
-  }
+async function createLegacyLink(isPublic: boolean) {
+  const link = await createTestLink();
+  await mongoose.connection
+    .db!.collection('sharedlinks')
+    .updateOne({ _id: link._id }, { $set: { isPublic } });
+  return link;
+}
 
+describe('autoMigrateLegacyLink', () => {
   async function createOwnerlessLegacyLink(isPublic: boolean) {
     const link = await SharedLink.create({
       shareId: `share-${Date.now()}-${Math.random()}`,
@@ -509,5 +509,106 @@ describe('persistence failures', () => {
     });
     expect(await SharedLink.findById(link._id)).toBeNull();
     cleanup.mockRestore();
+  });
+});
+
+/**
+ * A request grants on a link it read before a deletion removed the link and swept its entries.
+ * Each writer below reads its link (the access middleware hands the migration a record it read)
+ * and grants after the deletion it is given has run, as when the request and the deletion overlap.
+ */
+describe('grants written while their link is deleted', () => {
+  type Link = Awaited<ReturnType<typeof createTestLink>>;
+  type Write = (link: Link, during: () => Promise<unknown>) => Promise<void>;
+
+  /** Runs a deletion to the end, including the ACL cleanup it does not await. */
+  async function settled(remove: () => Promise<unknown>) {
+    const cleanup = observeAclDeletion();
+    await remove();
+    await cleanup;
+  }
+
+  const deletions: Array<[string, (link: Link) => Promise<unknown>]> = [
+    [
+      'deleting the link',
+      (link) => settled(() => deleteSharedLinkWithCleanup(userId, link.shareId!)),
+    ],
+    [
+      'deleting its conversation',
+      (link) => settled(() => deleteConvoSharedLinksWithCleanup(userId, link.conversationId)),
+    ],
+    ['clearing all chats', () => settled(() => deleteAllSharedLinksWithCleanup(userId))],
+    ['erasing the account', () => deleteAllSharedLinksWithCleanup(userId, { awaitCleanup: true })],
+  ];
+
+  const migrate: Write = async (link, during) => {
+    const record = {
+      _id: link._id,
+      conversationId: link.conversationId,
+      user: userId,
+      shareId: link.shareId,
+      isPublic: true,
+    };
+    await during();
+    await autoMigrateLegacyLink(record);
+  };
+
+  /** The owner's read finds its grant missing only once the deletion's cleanup has run. */
+  const read: Write = async (link, during) => {
+    const check = AccessControlService.prototype.checkPermission;
+    jest
+      .spyOn(AccessControlService.prototype, 'checkPermission')
+      .mockImplementationOnce(async function (this: AccessControlService, params) {
+        await during();
+        return check.call(this, params);
+      });
+    await ensureLinkPermissions(link._id, userId);
+  };
+
+  const create: Write = async (link, during) => {
+    await during();
+    await grantCreationPermissions(link._id, userId, true);
+  };
+
+  const writers: Array<[string, () => Promise<Link>, Write]> = [
+    ['the first view of a legacy link', () => createLegacyLink(true), migrate],
+    [
+      'the owner reading the link',
+      async () => {
+        const link = await createTestLink();
+        await grantCreationPermissions(link._id, userId, true);
+        return link;
+      },
+      read,
+    ],
+    ['creating the link', () => createTestLink(), create],
+  ];
+
+  describe.each(writers)('from %s', (_writer, setup, write) => {
+    test.each(deletions)('leave nothing when written after %s', async (_deletion, remove) => {
+      const link = await setup();
+
+      await write(link, () => remove(link));
+
+      expect(await SharedLink.countDocuments({ _id: link._id })).toBe(0);
+      expect(await AclEntry.countDocuments({ resourceId: link._id })).toBe(0);
+    });
+
+    test('leave nothing when written between the erasure cleanup and the link delete', async () => {
+      const link = await setup();
+      const deleteLinks = SharedLink.collection.deleteMany.bind(SharedLink.collection);
+      let granted = 0;
+      jest.spyOn(SharedLink.collection, 'deleteMany').mockImplementationOnce(async (...args) => {
+        await write(link, async () => undefined);
+        granted = await AclEntry.countDocuments({ resourceId: link._id });
+        return deleteLinks(...args);
+      });
+
+      await deleteAllSharedLinksWithCleanup(userId, { awaitCleanup: true });
+
+      expect(granted).toBeGreaterThan(0);
+      expect(await SharedLink.countDocuments({ _id: link._id })).toBe(0);
+      expect(await AclEntry.countDocuments({ resourceId: link._id })).toBe(0);
+    });
   });
 });
