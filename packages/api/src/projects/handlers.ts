@@ -33,6 +33,7 @@ const PROJECT_NOT_FOUND = 'Project not found';
 const CONVERSATION_NOT_FOUND = 'Conversation not found';
 const PROJECT_FILE_UNAVAILABLE = 'Project file unavailable';
 const PROJECT_FILE_LIMIT_REACHED = 'Project file limit reached';
+const PROJECT_LIMIT_REACHED = 'Project limit reached';
 
 const PROJECT_SORT_FIELDS = new Set<ChatProjectSortBy>(['name', 'createdAt', 'lastConversationAt']);
 
@@ -111,8 +112,24 @@ const instructionValidationError = (
   if (typeof value !== 'string') {
     return 'instructions must be a string';
   }
+  if (maxInstructionsLength === 0 && value.trim() !== '') {
+    return 'project instructions are turned off';
+  }
   if (value.length > maxInstructionsLength) {
     return `instructions must be at most ${maxInstructionsLength} characters`;
+  }
+  return null;
+};
+const descriptionValidationError = (
+  description: string,
+  maxDescriptionLength: number,
+): string | null => {
+  const length = description.trim().length;
+  if (maxDescriptionLength === 0 && length > 0) {
+    return 'project descriptions are turned off';
+  }
+  if (length > maxDescriptionLength) {
+    return `description must be at most ${maxDescriptionLength} characters`;
   }
   return null;
 };
@@ -134,8 +151,9 @@ const createProjectInput = (
   const description = typeof req.body?.description === 'string' ? req.body.description : '';
   /* Refuse an over-long description rather than storing a silently shortened one, the way
    * instructions already answer. */
-  if (description.trim().length > maxDescriptionLength) {
-    return { error: `description must be at most ${maxDescriptionLength} characters` };
+  const descriptionError = descriptionValidationError(description, maxDescriptionLength);
+  if (descriptionError) {
+    return { error: descriptionError };
   }
 
   return {
@@ -193,6 +211,9 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies): {
       );
       return res.status(201).json(project);
     } catch (error) {
+      if (error instanceof Error && error.message === PROJECT_LIMIT_REACHED) {
+        return res.status(409).json({ error: PROJECT_LIMIT_REACHED, code: 'CHAT_PROJECT_LIMIT' });
+      }
       logger.error('[projects] Error creating project', error);
       return res.status(500).json({ error: 'Error creating project' });
     }
@@ -264,10 +285,9 @@ export function createProjectHandlers(deps: ProjectHandlerDependencies): {
       const description = typeof req.body.description === 'string' ? req.body.description : '';
       const maxDescriptionLength =
         req.config?.projects?.maxDescriptionLength ?? MAX_CHAT_PROJECT_DESCRIPTION_LENGTH;
-      if (description.trim().length > maxDescriptionLength) {
-        return res
-          .status(400)
-          .json({ error: `description must be at most ${maxDescriptionLength} characters` });
+      const descriptionError = descriptionValidationError(description, maxDescriptionLength);
+      if (descriptionError) {
+        return res.status(400).json({ error: descriptionError });
       }
       input.description = description;
     }

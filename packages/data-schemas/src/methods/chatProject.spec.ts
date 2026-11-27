@@ -1004,3 +1004,102 @@ describe('persistent Project context', () => {
     );
   });
 });
+
+describe('projects.maxProjectsPerUser', () => {
+  const user = 'capped-user';
+
+  beforeAll(async () => {
+    await ChatProject.createIndexes();
+  });
+
+  it('refuses the project past the cap and keeps the ones under it', async () => {
+    const limits = { maxProjectsPerUser: 2 };
+    await methods.createChatProject(user, { name: 'One' }, limits);
+    await methods.createChatProject(user, { name: 'Two' }, limits);
+
+    await expect(methods.createChatProject(user, { name: 'Three' }, limits)).rejects.toThrow(
+      'Project limit reached',
+    );
+    expect(await ChatProject.countDocuments({ user })).toBe(2);
+  });
+
+  it('lets concurrent creates fill the cap and no further', async () => {
+    const limits = { maxProjectsPerUser: 3 };
+    const results = await Promise.allSettled(
+      Array.from({ length: 8 }, (_, index) =>
+        methods.createChatProject(user, { name: `Racer ${index}` }, limits),
+      ),
+    );
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(3);
+    const refused = results.filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    expect(refused).toHaveLength(5);
+    for (const result of refused) {
+      expect((result.reason as Error).message).toBe('Project limit reached');
+    }
+    expect(await ChatProject.countDocuments({ user })).toBe(3);
+  });
+
+  it('counts projects created before the cap was set', async () => {
+    await methods.createChatProject(user, { name: 'Legacy A' });
+    await methods.createChatProject(user, { name: 'Legacy B' });
+
+    await expect(
+      methods.createChatProject(user, { name: 'New' }, { maxProjectsPerUser: 2 }),
+    ).rejects.toThrow('Project limit reached');
+    const created = await methods.createChatProject(
+      user,
+      { name: 'Under a higher cap' },
+      { maxProjectsPerUser: 3 },
+    );
+    expect(created.slot).toBe(0);
+  });
+
+  it('frees a place when a project is deleted', async () => {
+    const limits = { maxProjectsPerUser: 1 };
+    const first = await methods.createChatProject(user, { name: 'Only' }, limits);
+    await methods.deleteChatProject(user, first._id!.toString());
+
+    const second = await methods.createChatProject(user, { name: 'Replacement' }, limits);
+    expect(second.name).toBe('Replacement');
+  });
+
+  it('gives the same user id its own places in each tenant', async () => {
+    const limits = { maxProjectsPerUser: 1 };
+    const inTenant = (tenantId: string, name: string) =>
+      tenantStorage.run({ tenantId }, () => methods.createChatProject(user, { name }, limits));
+
+    await inTenant('tenant-a', 'A');
+    const other = await inTenant('tenant-b', 'B');
+    expect(other.slot).toBe(0);
+    await expect(inTenant('tenant-a', 'A2')).rejects.toThrow('Project limit reached');
+  });
+
+  it('caps each user separately and leaves uncapped creates as they were', async () => {
+    const limits = { maxProjectsPerUser: 1 };
+    await methods.createChatProject(user, { name: 'Mine' }, limits);
+    await methods.createChatProject('another-user', { name: 'Theirs' }, limits);
+
+    const uncapped = await methods.createChatProject(user, { name: 'No cap' });
+    expect(uncapped.slot).toBeUndefined();
+  });
+});
+
+describe('turned-off project fields', () => {
+  it('refuses instructions and drops the description when their limit is 0', async () => {
+    const limits = { maxInstructionsLength: 0, maxDescriptionLength: 0 };
+    await expect(
+      methods.createChatProject('user-1', { name: 'P', instructions: 'Be terse.' }, limits),
+    ).rejects.toThrow('Invalid project instructions');
+
+    const project = await methods.createChatProject(
+      'user-1',
+      { name: 'P', description: 'Hidden', instructions: '' },
+      limits,
+    );
+    expect(project.description).toBe('');
+    expect(project.instructions).toBe('');
+  });
+});

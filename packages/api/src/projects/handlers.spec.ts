@@ -47,6 +47,55 @@ function setup(overrides: Partial<Parameters<typeof createProjectHandlers>[0]> =
 }
 
 describe('ChatProject handlers', () => {
+  describe('turned-off fields and the project cap', () => {
+    const off = { projects: { maxInstructionsLength: 0, maxDescriptionLength: 0 } };
+
+    it.each([
+      ['create', { name: 'P', instructions: 'Be terse.' }],
+      ['create', { name: 'P', description: 'About' }],
+      ['update', { instructions: 'Be terse.' }],
+      ['update', { description: 'About' }],
+    ])('refuses a turned-off field on %s', async (action, body) => {
+      const { handlers, deps } = setup();
+      const { res, result } = response();
+      const req = request({ body, config: off, params: { projectId } });
+      await (action === 'create'
+        ? handlers.createProject(req, res)
+        : handlers.updateProject(req, res));
+
+      expect(result.statusCode).toBe(400);
+      expect(String((result.body as { error: string }).error)).toMatch(/turned off/);
+      expect(deps.createChatProject).not.toHaveBeenCalled();
+      expect(deps.updateChatProject).not.toHaveBeenCalled();
+    });
+
+    it('still accepts clearing a turned-off field', async () => {
+      const { handlers, deps } = setup();
+      const { res, result } = response();
+      await handlers.updateProject(
+        request({
+          body: { instructions: '', description: '' },
+          config: off,
+          params: { projectId },
+        }),
+        res,
+      );
+      expect(result.statusCode).toBe(200);
+      expect(deps.updateChatProject).toHaveBeenCalled();
+    });
+
+    it('answers 409 with a stable code when the user is at the cap', async () => {
+      const { handlers } = setup({
+        createChatProject: jest.fn().mockRejectedValue(new Error('Project limit reached')),
+      });
+      const { res, result } = response();
+      await handlers.createProject(request({ body: { name: 'P' } }), res);
+
+      expect(result.statusCode).toBe(409);
+      expect(result.body).toEqual({ error: 'Project limit reached', code: 'CHAT_PROJECT_LIMIT' });
+    });
+  });
+
   it.each([
     ['non-string', 42],
     ['oversized', 'x'.repeat(MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH + 1)],

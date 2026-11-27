@@ -543,6 +543,7 @@ const executeResponse = async (envelope, { req, res }) => {
             getChatProject: db.getChatProject,
             getProjectFiles: db.getProjectFiles,
             canUseProjects: projectsAccessFor(principal, db),
+            projectsConfig: req.config?.projects,
             logger,
             logPrefix: '[Responses API]',
           },

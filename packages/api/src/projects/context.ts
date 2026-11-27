@@ -1,5 +1,5 @@
+import type { TEndpointOption, TChatProjectsConfig } from 'librechat-data-provider';
 import type { IChatProject, IConversation } from '@librechat/data-schemas';
-import type { TEndpointOption } from 'librechat-data-provider';
 import type { CanonicalProjectResource, GetProjectFiles } from './resources';
 import { PARTIAL_RESOLVED_CONVERSATION } from '../agents/conversationSymbols';
 import { resolveChatProjectResources } from './resources';
@@ -43,6 +43,9 @@ export interface ResolveChatProjectContextDeps {
    * project is read, so its instructions and files never reach the model.
    */
   canUseProjects?: () => Promise<boolean>;
+  /** The deployment's `projects` limits. `maxInstructionsLength: 0` keeps stored instructions
+   *  out of every turn, however long ago they were saved. */
+  projectsConfig?: Pick<TChatProjectsConfig, 'maxInstructionsLength'>;
 }
 
 export const CHAT_PROJECT_CONTEXT_UNAVAILABLE = 'Project context unavailable';
@@ -115,6 +118,7 @@ export function startAgentProjectContextResolution({
   getChatProject,
   getProjectFiles,
   canUseProjects,
+  projectsConfig,
 }: {
   req: AgentProjectContextRequest;
   endpointOption?: Partial<TEndpointOption>;
@@ -127,6 +131,7 @@ export function startAgentProjectContextResolution({
   getChatProject: ResolveChatProjectContextDeps['getChatProject'];
   getProjectFiles: GetProjectFiles;
   canUseProjects?: ResolveChatProjectContextDeps['canUseProjects'];
+  projectsConfig?: ResolveChatProjectContextDeps['projectsConfig'];
 }): Promise<ResolvedChatProjectContext | null> {
   if (req.chatProjectContext !== undefined) {
     return Promise.resolve(req.chatProjectContext);
@@ -165,6 +170,7 @@ export function startAgentProjectContextResolution({
           getChatProject,
           getProjectFiles,
           canUseProjects,
+          projectsConfig,
         },
       );
     })
@@ -275,7 +281,10 @@ export async function resolveChatProjectContext(
       typeof project.contextRevision === 'number' && Number.isSafeInteger(project.contextRevision)
         ? project.contextRevision
         : 0,
-    instructions: typeof project.instructions === 'string' ? project.instructions : '',
+    instructions:
+      deps.projectsConfig?.maxInstructionsLength !== 0 && typeof project.instructions === 'string'
+        ? project.instructions
+        : '',
     file_ids,
     resources,
   };

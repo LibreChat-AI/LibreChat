@@ -57,6 +57,11 @@ const chatProjectSchema: Schema<IChatProjectDocument> = new Schema<IChatProjectD
       type: String,
       index: true,
     },
+    /** Claimed only while `projects.maxProjectsPerUser` is set; see the index below. */
+    slot: {
+      type: Number,
+      min: 0,
+    },
   },
   { timestamps: true },
 );
@@ -64,5 +69,12 @@ const chatProjectSchema: Schema<IChatProjectDocument> = new Schema<IChatProjectD
 chatProjectSchema.index({ user: 1, name: 1, _id: 1 });
 chatProjectSchema.index({ user: 1, createdAt: -1, _id: -1 });
 chatProjectSchema.index({ user: 1, lastConversationAt: -1, _id: -1 });
+/** Enforces `projects.maxProjectsPerUser` atomically: each capped create claims the lowest free
+ *  slot in [0, max), and two creates racing for the same slot collide here, so one retries.
+ *  Keyed by tenant too, as the reads are, so one id in two tenants holds two sets of slots. */
+chatProjectSchema.index(
+  { user: 1, tenantId: 1, slot: 1 },
+  { unique: true, partialFilterExpression: { slot: { $exists: true } } },
+);
 
 export default chatProjectSchema;

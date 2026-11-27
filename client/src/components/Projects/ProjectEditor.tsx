@@ -47,6 +47,8 @@ export default function ProjectEditor({
   const { data: startupConfig } = useGetStartupConfig();
   const descriptionLimit =
     startupConfig?.projects?.maxDescriptionLength ?? MAX_CHAT_PROJECT_DESCRIPTION_LENGTH;
+  /** `maxDescriptionLength: 0` turns descriptions off: the field is gone and saves leave it be. */
+  const hasDescription = descriptionLimit > 0;
   const { showToast } = useToastContext();
   const ownSavingRef = useRef(false);
   const isSavingRef = savingRef ?? ownSavingRef;
@@ -130,7 +132,8 @@ export default function ProjectEditor({
     }
 
     const isUnchanged =
-      trimmedName === project.name && trimmedDescription === (project.description ?? '').trim();
+      trimmedName === project.name &&
+      (!hasDescription || trimmedDescription === (project.description ?? '').trim());
     if (isUnchanged) {
       onDone();
       return;
@@ -141,7 +144,7 @@ export default function ProjectEditor({
       {
         projectId: project._id,
         name: trimmedName,
-        description: trimmedDescription,
+        ...(hasDescription && { description: trimmedDescription }),
       },
       {
         onSuccess: () => {
@@ -215,7 +218,10 @@ export default function ProjectEditor({
             </p>
           ) : null}
         </div>
-        <div className={cn('w-full min-w-0', isWorkspace ? 'col-span-2' : 'space-y-2')}>
+        <div
+          className={cn('w-full min-w-0', isWorkspace ? 'col-span-2' : 'space-y-2')}
+          hidden={!hasDescription}
+        >
           <Label htmlFor={descriptionId} className={labelClassName}>
             {localize('com_ui_description')}{' '}
             <span className={cn(!isWorkspace && 'text-text-secondary font-normal')}>
