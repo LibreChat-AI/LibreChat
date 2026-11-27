@@ -22,6 +22,10 @@ export type ShimmerProps = Omit<HTMLAttributes<HTMLSpanElement>, 'children'> & {
  * repainted the label every frame instead, and each of those paints walked the
  * transcript.
  *
+ * Firefox does not keep the two transforms in step once the band carries a mask,
+ * so the copy's glyphs lurch away from the ones under them. There the band stays
+ * still and the mask slides over the copy instead (see `parts.css`).
+ *
  * The copy is generated content, so the text exists once in the document: one
  * match for a text query, one string for a reader to select or copy.
  */

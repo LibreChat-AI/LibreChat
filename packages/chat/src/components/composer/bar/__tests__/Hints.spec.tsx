@@ -4,23 +4,10 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import type { ComposerHintState } from '../hint';
+import { initEnglish } from '../../../../__fixtures__/i18n';
 import Hints, { composerHintId } from '../Hints';
 
-/** The hint copy is the app's English, interpolated the way i18next does for these keys. */
-jest.mock('@librechat/client', () => {
-  const english: Record<string, string> = jest.requireActual(
-    '../../../../../../../client/src/locales/en/translation.json',
-  );
-  return {
-    ...jest.requireActual('@librechat/client'),
-    useLocalize: () => (key: string, options?: Record<string, string | number>) => {
-      const count = options?.count;
-      const plural = count == null ? undefined : english[`${key}_${count === 1 ? 'one' : 'other'}`];
-      const template = english[key] ?? plural ?? key;
-      return template.replace(/\{\{(\w+)\}\}/g, (_, name: string) => String(options?.[name] ?? ''));
-    },
-  };
-});
+beforeAll(initEnglish);
 
 const baseState: ComposerHintState = {
   hasText: true,

@@ -3,6 +3,7 @@ import { Button, cn } from '@librechat/client';
 import type { ReactElement, ReactNode, Ref } from 'react';
 import type { RailHover } from '../rail';
 import { FailedRevealPill } from '../reveal';
+import { NAV_CLEARANCE } from '../rows';
 import PhaseLabel from '../PhaseLabel';
 import { RailGlyph } from '../rail';
 
@@ -38,7 +39,11 @@ export default function ToolGroupHeader({
 }: ToolGroupHeaderProps): ReactElement {
   return (
     <div
-      className={cn('relative w-full items-center gap-2 pe-6', hidden ? 'hidden' : 'flex')}
+      className={cn(
+        'relative items-center gap-2 pe-6',
+        NAV_CLEARANCE.edge,
+        hidden ? 'hidden' : 'flex',
+      )}
       hidden={hidden}
       ref={headerRef}
     >
@@ -49,6 +54,7 @@ export default function ToolGroupHeader({
         onClick={onToggle}
         aria-expanded={expanded}
         aria-label={ariaLabel}
+        data-fold-toggle=""
       >
         <RailGlyph hover={hover}>{glyph}</RailGlyph>
         <span className="tool-status-text min-w-0 truncate font-medium" role="status" title={label}>

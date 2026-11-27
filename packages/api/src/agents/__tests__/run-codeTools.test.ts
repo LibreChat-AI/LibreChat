@@ -5,10 +5,10 @@ import type { TFile } from 'librechat-data-provider';
 import type { ProvisionCallbackDeps, ProvisionToolContext } from '~/files/provision/callback';
 import type { HostSubagentTaskConfig } from '~/agents/subagentDelivery';
 import type { ServerRequest } from '~/types';
-import { executionFixture } from '~/schedules/authorization/execution.helper';
 import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
 import { createProvisionFilesCallback } from '~/files/provision/callback';
 import { SUBAGENT_COMPLETION_DELIVERY } from '~/agents/subagentDelivery';
+import { executionFixture } from '~/agents/authority/execution.helper';
 import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
 import { createFileProvisionRecovery } from '../../files/operations';
 import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
@@ -609,7 +609,7 @@ describe('createRun code-tool eager/session wiring', () => {
       streaming: true,
       streamUsage: true,
       subagentTasks,
-      scheduledMCPExecution: execution,
+      grantExecution: execution,
     });
     const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
     // The detached child runs with this run's hooks, the schedule's among them.
@@ -631,7 +631,7 @@ describe('createRun code-tool eager/session wiring', () => {
       streaming: true,
       streamUsage: true,
       subagentTasks,
-      scheduledMCPExecution: bound.execution,
+      grantExecution: bound.execution,
     });
     expect((Run.create as jest.Mock).mock.calls[0][0].subagentTasks).toBeUndefined();
   });
@@ -864,5 +864,138 @@ describe('attached-machine policy for lazily initialized graph members', () => {
     await resolveInputs({ signal: new AbortController().signal } as SubagentResolveContext);
 
     expect(await decide()).toBe('deny');
+  });
+});
+
+describe('an agent that reaches an attached machine after the run was built without one', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const laptop = {
+    environmentType: 'attached',
+    environmentId: 'laptop',
+    codeEnvironmentConfigSchema: {
+      permissions: { commandExecution: { allowed: ['allow', 'ask', 'deny'], default: 'ask' } },
+    },
+    codeEnvironmentSettings: { permissions: { commandExecution: 'deny' } },
+  };
+  const definition = {
+    type: 'review_team',
+    name: 'Review team',
+    description: 'A one-member team',
+    agent_ids: ['member'],
+    edges: [],
+    entry_agent_id: 'member',
+    result_agent_id: 'member',
+  };
+  /** A child whose graph member initializes on the laptop; its descriptor knew of no machine. */
+  const childWithLateMember = () =>
+    makeAgent({
+      id: 'child',
+      subagentGraphConfigs: [
+        {
+          definition,
+          memberConfigs: [makeAgent({ id: 'member', codeExecutionContext: laptop })],
+        },
+      ],
+    });
+  const lateChild = () => makeAgent({ id: 'child', codeExecutionContext: laptop });
+
+  async function build(resolved: ReturnType<typeof makeAgent>, options?: Record<string, unknown>) {
+    const descriptor = {
+      id: 'child',
+      configId: 'child:1',
+      resolve: jest.fn().mockResolvedValue(resolved),
+      subagentGraphMemberMetadata: [{ id: 'member' }],
+    };
+    await createRun({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+          lazySubagentConfigs: [descriptor],
+        }),
+      ] as never,
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+      hitlCapable: true,
+      ...options,
+    });
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    const [parentInput] = (runConfig.graphConfig as { agents: AgentInputs[] }).agents;
+    const resolveInputs = parentInput.subagentConfigs?.[0].resolveAgentInputs;
+    if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+    return {
+      resolve: () =>
+        resolveInputs({ signal: new AbortController().signal } as SubagentResolveContext),
+      /** What the run's hooks decide for a shell call by `agentId`; nothing when none applies. */
+      decide: async (agentId: string) =>
+        (
+          await executeHooks({
+            registry: runConfig.hooks as HookRegistry,
+            input: {
+              hook_event_name: 'PreToolUse',
+              runId: 'run-1',
+              toolName: Constants.BASH_TOOL,
+              toolInput: { command: 'ls' },
+              toolUseId: 'call-1',
+              executingAgentId: agentId,
+            },
+            matchQuery: Constants.BASH_TOOL,
+          })
+        ).decision,
+    };
+  }
+
+  it('refuses a graph member whose machine was unknown when the run was built', async () => {
+    const run = await build(childWithLateMember());
+
+    /** No machine was known, so the run carries no machine policy: nothing would deny this. */
+    expect(await run.decide('member')).toBeUndefined();
+    await expect(run.resolve()).rejects.toMatchObject({
+      code: 'BYOM_TOOL_APPROVAL_UNSUPPORTED',
+    });
+  });
+
+  it('refuses a child that itself lands on a machine unknown when the run was built', async () => {
+    const run = await build(lateChild());
+
+    await expect(run.resolve()).rejects.toMatchObject({
+      code: 'BYOM_TOOL_APPROVAL_UNSUPPORTED',
+    });
+  });
+
+  it('refuses it under an endpoint policy that never installed the machine policy', async () => {
+    const appConfig = {
+      endpoints: { agents: { toolApproval: { enabled: true, mode: 'bypass' } } },
+    };
+    const run = await build(lateChild(), { appConfig });
+
+    /** The endpoint policy alone would let the call through against the machine's `deny`. */
+    expect(await run.decide('child')).not.toBe('deny');
+    await expect(run.resolve()).rejects.toMatchObject({
+      code: 'BYOM_TOOL_APPROVAL_UNSUPPORTED',
+    });
+  });
+
+  it('refuses it for a caller that cannot pause', async () => {
+    const run = await build(lateChild(), { hitlCapable: false });
+
+    await expect(run.resolve()).rejects.toMatchObject({
+      code: 'BYOM_TOOL_APPROVAL_UNSUPPORTED',
+    });
+  });
+
+  it('still resolves it where the administrator turned approval off', async () => {
+    const appConfig = { endpoints: { agents: { toolApproval: { enabled: false } } } };
+    const run = await build(childWithLateMember(), { appConfig });
+
+    await expect(run.resolve()).resolves.toBeDefined();
+    expect(await run.decide('member')).toBeUndefined();
+  });
+
+  it('still resolves a child that lands on managed code', async () => {
+    const run = await build(makeAgent({ id: 'child' }));
+
+    await expect(run.resolve()).resolves.toBeDefined();
   });
 });

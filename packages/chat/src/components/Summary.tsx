@@ -5,6 +5,7 @@ import { cn, Button, MorphIcon, useLocalize, TooltipAnchor } from '@librechat/cl
 import type { MouseEvent, FocusEvent, NamedExoticComponent } from 'react';
 import type { SummaryContentPart } from 'librechat-data-provider';
 import { useMessagePartsHost } from '../react/host';
+import { NAV_CLEARANCE } from './parts/rows';
 
 type SummaryProps = Pick<
   SummaryContentPart,
@@ -73,7 +74,12 @@ const SummaryButton = memo(
     const fontSize = useFontSize();
 
     return (
-      <div className="group/summary flex w-full items-center justify-between gap-2">
+      <div
+        className={cn(
+          'group/summary flex w-full items-center justify-between gap-2',
+          NAV_CLEARANCE.pad,
+        )}
+      >
         <Button
           variant="disclosure-line"
           onClick={onClick}
@@ -154,6 +160,7 @@ const FloatingSummaryBar = memo(
       <div
         className={cn(
           'absolute right-3 bottom-3 flex items-center gap-2 transition-opacity duration-150',
+          NAV_CLEARANCE.edge,
           isVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
       >

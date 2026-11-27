@@ -1,13 +1,15 @@
 import React, { forwardRef, useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { useStore } from 'jotai';
 import debounce from 'lodash/debounce';
 import { useRecoilState } from 'recoil';
 import { Search, X } from 'lucide-react';
 import { buttonVariants } from '@librechat/client';
-import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
+import { isSubmittingFamily } from '@librechat/chat/react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { Constants, QueryKeys } from 'librechat-data-provider';
 import { useShortcutAriaKey, useShortcutDisplay } from '~/hooks/useKeyboardShortcuts';
-import { useLocalize, useNewConvo } from '~/hooks';
+import { useLocalize, useNewConvo, useGetConversation } from '~/hooks';
 import { cn } from '~/utils';
 import store from '~/store';
 
@@ -22,6 +24,8 @@ const SearchBar = forwardRef((props: SearchBarProps, ref: React.Ref<HTMLDivEleme
   const navigate = useNavigate();
   const { isSmallScreen } = props;
 
+  const jotaiStore = useStore();
+  const getConversation = useGetConversation(0);
   const { newConversation: newConvo } = useNewConvo();
   const [search, setSearchState] = useRecoilState(store.search);
 
@@ -40,13 +44,31 @@ const SearchBar = forwardRef((props: SearchBarProps, ref: React.Ref<HTMLDivEleme
 
   const clearSearch = useCallback(
     (pathname?: string) => {
-      if (pathname?.includes('/search') || pathname === '/c/new') {
-        queryClient.removeQueries([QueryKeys.messages]);
+      const onChat = pathname === '/c/new';
+      if (!onChat && pathname?.includes('/search') !== true) {
+        return;
+      }
+      queryClient.removeQueries([QueryKeys.messages]);
+      const conversation = getConversation();
+      const conversationId = conversation?.conversationId;
+      /** The query is not part of the chat. An unsent chat is the one the user left for the
+       *  results, or never left, so it comes back as it was: attachments, model and project. Once
+       *  its first run is in flight it is no longer unsent, and clearing starts a new chat. */
+      const unsent =
+        (!conversationId || conversationId === Constants.NEW_CONVO) &&
+        !jotaiStore.get(isSubmittingFamily(0));
+      if (!unsent) {
         newConvo({ disableFocus: true });
         navigate('/c/new');
+        return;
       }
+      const projectId = conversation?.chatProjectId;
+      const query = projectId ? `?${new URLSearchParams({ projectId })}` : '';
+      /** Navigates even when already on the chat, to supersede a move to the results page that a
+       *  query typed a moment ago may still have in flight; replacing adds no history entry. */
+      navigate(`/c/new${query}`, { replace: onChat });
     },
-    [newConvo, navigate, queryClient],
+    [newConvo, navigate, queryClient, jotaiStore, getConversation],
   );
 
   const sendRequest = useCallback(

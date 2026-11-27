@@ -1,6 +1,8 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { RetentionMode } from 'librechat-data-provider';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ArchiveAllChats } from '../ArchiveAllChats';
+import { initializeI18n } from '~/locales/i18n';
 
 const mockMutate = jest.fn();
 const mockShowToast = jest.fn();
@@ -11,6 +13,7 @@ let mockIsLoading = false;
 let mockPendingArchives = 0;
 let mockOnSuccess: (() => void) | undefined;
 let mockOnError: (() => void | Promise<void>) | undefined;
+let mockStartupConfig: { interface?: { retentionMode?: RetentionMode } } | undefined;
 
 jest.mock('@librechat/client', () => {
   const actual = jest.requireActual('@librechat/client');
@@ -43,6 +46,7 @@ jest.mock('~/data-provider', () => ({
       isLoading: mockIsLoading,
     };
   },
+  useGetStartupConfig: () => ({ data: mockStartupConfig }),
 }));
 
 jest.mock('~/hooks/Conversations/useGetConversation', () => ({
@@ -56,7 +60,7 @@ jest.mock('~/hooks/Conversations/useNewChat', () => ({
 }));
 
 jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
+  useLocalize: jest.requireActual('~/hooks/useLocalize').default,
 }));
 
 jest.mock('@tanstack/react-query', () => {
@@ -68,11 +72,16 @@ jest.mock('@tanstack/react-query', () => {
 });
 
 describe('ArchiveAllChats', () => {
+  beforeAll(async () => {
+    await initializeI18n();
+  });
+
   beforeEach(() => {
     mockIsLoading = false;
     mockPendingArchives = 0;
     mockOnSuccess = undefined;
     mockOnError = undefined;
+    mockStartupConfig = undefined;
     jest.clearAllMocks();
     mockGetConversation.mockReturnValue({
       conversationId: 'conversation-1',
@@ -80,13 +89,45 @@ describe('ArchiveAllChats', () => {
     });
   });
 
+  it.each([undefined, RetentionMode.TEMPORARY, RetentionMode.ALL])(
+    'says archived chats stay under Archived chats when the retention mode is %s',
+    (retentionMode) => {
+      mockStartupConfig = { interface: { retentionMode } };
+      render(<ArchiveAllChats />);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Archive all chats' }));
+
+      expect(
+        within(screen.getByRole('dialog')).getByText(
+          'Are you sure you want to archive all chats? They will be moved out of your chat list and remain available under Archived chats.',
+        ),
+      ).toBeInTheDocument();
+    },
+  );
+
+  /** Archive-all turns every chat temporary then, so none of them stays under Archived chats. */
+  it('warns that archived chats are deleted when the administrator enforces temporary chats', () => {
+    mockStartupConfig = { interface: { retentionMode: RetentionMode.EPHEMERAL } };
+    render(<ArchiveAllChats />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Archive all chats' }));
+
+    const dialog = within(screen.getByRole('dialog'));
+    expect(
+      dialog.getByText(
+        'Are you sure you want to archive all chats? Temporary Chat is enabled for all chats by your administrator, so they will not appear under Archived chats and will be deleted automatically.',
+      ),
+    ).toBeInTheDocument();
+    expect(dialog.queryByText(/remain available under Archived chats/)).not.toBeInTheDocument();
+  });
+
   it('submits through the shared button and closes the confirmation dialog', async () => {
     render(<ArchiveAllChats />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_nav_archive_all_chats' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive all chats' }));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_archive' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
 
     expect(mockMutate).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
@@ -94,13 +135,13 @@ describe('ArchiveAllChats', () => {
 
   it('disables the trigger and submit button while showing the loading spinner', () => {
     const { rerender } = render(<ArchiveAllChats />);
-    const trigger = screen.getByRole('button', { name: 'com_nav_archive_all_chats' });
+    const trigger = screen.getByRole('button', { name: 'Archive all chats' });
     fireEvent.click(trigger);
 
     mockIsLoading = true;
     rerender(<ArchiveAllChats />);
 
-    const submit = screen.getByRole('button', { name: 'com_ui_archive' });
+    const submit = screen.getByRole('button', { name: 'Archive' });
     expect(trigger).toBeDisabled();
     expect(submit).toBeDisabled();
     expect(submit).toHaveAttribute('aria-busy', 'true');
@@ -111,7 +152,7 @@ describe('ArchiveAllChats', () => {
     mockPendingArchives = 1;
     render(<ArchiveAllChats />);
 
-    const trigger = screen.getByRole('button', { name: 'com_nav_archive_all_chats' });
+    const trigger = screen.getByRole('button', { name: 'Archive all chats' });
     expect(trigger).toBeDisabled();
 
     fireEvent.click(trigger);
@@ -120,8 +161,8 @@ describe('ArchiveAllChats', () => {
 
   it('starts a new chat when the archived conversation is still active', () => {
     render(<ArchiveAllChats />);
-    fireEvent.click(screen.getByRole('button', { name: 'com_nav_archive_all_chats' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_archive' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive all chats' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
 
     mockOnSuccess?.();
 
@@ -130,8 +171,8 @@ describe('ArchiveAllChats', () => {
 
   it('keeps a conversation opened while the archive request was pending', () => {
     render(<ArchiveAllChats />);
-    fireEvent.click(screen.getByRole('button', { name: 'com_nav_archive_all_chats' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_archive' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive all chats' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
     mockGetConversation.mockReturnValue({
       conversationId: 'conversation-2',
       isTemporary: false,
@@ -148,8 +189,8 @@ describe('ArchiveAllChats', () => {
       isTemporary: true,
     });
     render(<ArchiveAllChats />);
-    fireEvent.click(screen.getByRole('button', { name: 'com_nav_archive_all_chats' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_archive' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive all chats' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
 
     mockOnSuccess?.();
 
@@ -162,8 +203,8 @@ describe('ArchiveAllChats', () => {
       expiredAt: '2026-08-16T12:00:00.000Z',
     });
     render(<ArchiveAllChats />);
-    fireEvent.click(screen.getByRole('button', { name: 'com_nav_archive_all_chats' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_archive' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive all chats' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
     mockGetConversation.mockReturnValue({
       conversationId: 'legacy-temporary-conversation',
       isTemporary: false,
@@ -181,8 +222,8 @@ describe('ArchiveAllChats', () => {
       isTemporary: false,
     });
     render(<ArchiveAllChats />);
-    fireEvent.click(screen.getByRole('button', { name: 'com_nav_archive_all_chats' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_archive' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive all chats' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
 
     mockOnSuccess?.();
 
@@ -192,8 +233,8 @@ describe('ArchiveAllChats', () => {
   it('keeps a new chat that has no persisted conversation id', () => {
     mockGetConversation.mockReturnValue(null);
     render(<ArchiveAllChats />);
-    fireEvent.click(screen.getByRole('button', { name: 'com_nav_archive_all_chats' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_archive' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive all chats' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
 
     mockOnSuccess?.();
 
@@ -206,15 +247,15 @@ describe('ArchiveAllChats', () => {
       isArchived: true,
     });
     render(<ArchiveAllChats />);
-    fireEvent.click(screen.getByRole('button', { name: 'com_nav_archive_all_chats' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_archive' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive all chats' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
 
     await mockOnError?.();
 
     expect(mockGetConversationById).toHaveBeenCalledWith('conversation-1');
     expect(mockStartNewChat).toHaveBeenCalledTimes(1);
     expect(mockShowToast).toHaveBeenCalledWith(
-      expect.objectContaining({ message: 'com_ui_archive_all_error' }),
+      expect.objectContaining({ message: 'Failed to archive all chats' }),
     );
   });
 
@@ -224,8 +265,8 @@ describe('ArchiveAllChats', () => {
       isArchived: false,
     });
     render(<ArchiveAllChats />);
-    fireEvent.click(screen.getByRole('button', { name: 'com_nav_archive_all_chats' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_archive' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive all chats' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
 
     await mockOnError?.();
 
@@ -236,21 +277,21 @@ describe('ArchiveAllChats', () => {
   it('keeps the active chat when archive state cannot be confirmed after an error', async () => {
     mockGetConversationById.mockRejectedValue(new Error('conversation lookup failed'));
     render(<ArchiveAllChats />);
-    fireEvent.click(screen.getByRole('button', { name: 'com_nav_archive_all_chats' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_archive' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive all chats' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
 
     await mockOnError?.();
 
     expect(mockStartNewChat).not.toHaveBeenCalled();
     expect(mockShowToast).toHaveBeenCalledWith(
-      expect.objectContaining({ message: 'com_ui_archive_all_error' }),
+      expect.objectContaining({ message: 'Failed to archive all chats' }),
     );
   });
 
   it('does not refetch when the user opened another conversation before the error', async () => {
     render(<ArchiveAllChats />);
-    fireEvent.click(screen.getByRole('button', { name: 'com_nav_archive_all_chats' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_archive' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive all chats' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
     mockGetConversation.mockReturnValue({
       conversationId: 'conversation-2',
       isTemporary: false,
@@ -273,8 +314,8 @@ describe('ArchiveAllChats', () => {
         }),
     );
     render(<ArchiveAllChats />);
-    fireEvent.click(screen.getByRole('button', { name: 'com_nav_archive_all_chats' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_archive' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive all chats' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
 
     const errorHandling = mockOnError?.();
     mockGetConversation.mockReturnValue({

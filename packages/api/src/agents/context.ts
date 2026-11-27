@@ -115,7 +115,7 @@ export function buildAgentInstructions({
 }
 
 /** Request-scoped context for the system tail, from `AgentClient.buildMessages`. */
-export interface RunContext {
+export interface AgentRunContext {
   /** Context retrieved for the current message (RAG). */
   rag?: string;
   /** Formatted memory the agent may see. */
@@ -130,7 +130,7 @@ export interface RunContext {
  *
  * @param {Object} params
  * @param {Agent} params.agent - The agent to update
- * @param {RunContext} [params.runContext] - Request-scoped context for the system tail
+ * @param {AgentRunContext} [params.runContext] - Request-scoped context for the system tail
  * @param {MCPManager} params.mcpManager - MCP manager instance
  * @param {Object} [params.ephemeralAgent] - Ephemeral agent config (for MCP override)
  * @param {string} [params.agentId] - Agent ID for logging
@@ -149,7 +149,7 @@ export async function applyContextToAgent({
   user,
 }: {
   agent: AgentWithTools;
-  runContext?: RunContext;
+  runContext?: AgentRunContext;
   mcpManager: MCPManager;
   ephemeralAgent?: TEphemeralAgent;
   agentId?: string;

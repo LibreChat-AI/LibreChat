@@ -110,3 +110,5 @@ export type { GenerationSettledSource, GenerationSettledWaitOptions } from './se
 export type { GenerationSettlementState } from './interfaces/IJobStore';
 
 export { buildGenerationStartedResponse } from './metadata';
+
+export { createChatFinalization } from './chatFinalization';

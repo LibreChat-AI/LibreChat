@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { HumanMessage } from '@librechat/agents/langchain';
+import { resolveSubagents } from 'librechat-data-provider';
 import type { Agent, RunFileProvenance, TFile, TAgentsEndpoint } from 'librechat-data-provider';
 import type { SubagentExecutionContext } from '@librechat/agents';
 import type { BaseMessage } from '@librechat/agents/langchain';
@@ -26,28 +27,29 @@ export interface SharedRunArtifact {
 /** Whether a root agent's run shares files with its subagents under the deployment policy. */
 export function isRunFileSharingRequested({
   policy,
+  capabilities,
   agent,
 }: {
   policy?: TAgentsEndpoint['fileSharing'];
+  capabilities: readonly string[];
   agent: Pick<Agent, 'subagents'>;
 }): boolean {
-  return (
-    policy?.enabled === true &&
-    agent.subagents?.enabled === true &&
-    agent.subagents.shareFiles === true
-  );
+  const subagents = resolveSubagents(agent.subagents, capabilities);
+  return policy?.enabled === true && subagents?.enabled === true && subagents.shareFiles === true;
 }
 
 export function getAuthorizedRunFileSnapshot({
   policy,
+  capabilities,
   agent,
   files,
 }: {
   policy?: TAgentsEndpoint['fileSharing'];
+  capabilities: readonly string[];
   agent: Pick<Agent, 'subagents'>;
   files: readonly TFile[];
 }): readonly TFile[] | undefined {
-  return isRunFileSharingRequested({ policy, agent }) ? files : undefined;
+  return isRunFileSharingRequested({ policy, capabilities, agent }) ? files : undefined;
 }
 
 export interface RunFilePreparation {
@@ -59,6 +61,8 @@ export interface RunFilePreparation {
 
 export interface RunFileSessionDeps {
   policy?: TAgentsEndpoint['fileSharing'];
+  /** Request-scoped deployment gates, applied to stored root and descendant settings. */
+  capabilities: readonly string[];
   userId: string;
   tenantId?: string;
   createdAt: number;
@@ -184,10 +188,11 @@ export function createRunFileSession(deps: RunFileSessionDeps): RunFileSession {
     const allowed = new Set<string>();
     for (const id of agentIds) {
       const agent = deps.getAgent(id);
-      if (!agent?.subagents?.enabled) continue;
-      if (agent.subagents.allowSelf !== false) allowed.add(id);
-      for (const childId of agent.subagents.agent_ids ?? []) allowed.add(childId);
-      for (const graph of agent.subagents.graphs ?? []) {
+      const subagents = resolveSubagents(agent?.subagents, deps.capabilities);
+      if (!subagents?.enabled) continue;
+      if (subagents.allowSelf !== false) allowed.add(id);
+      for (const childId of subagents.agent_ids ?? []) allowed.add(childId);
+      for (const graph of subagents.graphs ?? []) {
         for (const member of graph.agent_ids) allowed.add(member);
       }
     }
@@ -201,10 +206,11 @@ export function createRunFileSession(deps: RunFileSessionDeps): RunFileSession {
     signal?: AbortSignal,
   ): boolean {
     const root = deps.getAgent(agentIds[0]);
+    const rootSubagents = resolveSubagents(root?.subagents, deps.capabilities);
     if (
       deps.policy?.enabled !== true ||
-      root?.subagents?.enabled !== true ||
-      root.subagents.shareFiles !== true
+      rootSubagents?.enabled !== true ||
+      rootSubagents.shareFiles !== true
     )
       return false;
     if (scope != null) {

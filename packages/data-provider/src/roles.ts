@@ -17,6 +17,7 @@ import {
   sharedLinksPermissionsSchema,
   peoplePickerPermissionsSchema,
   remoteAgentsPermissionsSchema,
+  agentEventsPermissionsSchema,
   temporaryChatPermissionsSchema,
   fileCitationsPermissionsSchema,
 } from './permissions';
@@ -122,6 +123,7 @@ const defaultRolesSchema = z.object({
         [Permissions.USE]: z.boolean().default(true),
         [Permissions.CREATE]: z.boolean().default(true),
       }),
+      [PermissionTypes.AGENT_EVENTS]: agentEventsPermissionsSchema,
     }),
   }),
   [SystemRoles.USER]: roleSchema.extend({
@@ -220,6 +222,10 @@ export const roleDefaults = defaultRolesSchema.parse({
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
     },
   },
   [SystemRoles.USER]: {
@@ -280,6 +286,10 @@ export const roleDefaults = defaultRolesSchema.parse({
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.AGENT_EVENTS]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
       },
     },
   },

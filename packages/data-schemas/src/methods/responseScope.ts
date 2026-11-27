@@ -166,29 +166,71 @@ export function responseScopeKeys(owner: ResponseOwner, conversationId: string):
   return [scopeKey(owner), scopeKey(owner, conversationId)];
 }
 
+/** Create once: a delayed nontransactional upsert can replace newer state on some engines. */
+async function seedScopes(
+  mongoose: typeof import('mongoose'),
+  keys: string[],
+  closed: boolean,
+  session?: ClientSession,
+): Promise<void> {
+  const model = createResponseScopeModel(mongoose);
+  if (session?.inTransaction()) {
+    // Preserve the caller's snapshot. Any error belongs to its transaction owner;
+    // recovering a duplicate here could query an already-aborted transaction.
+    for (const key of keys)
+      await model.updateOne(
+        { _id: key },
+        { $setOnInsert: { closed, revision: 0 } },
+        { upsert: true, session },
+      );
+    return;
+  }
+  // A supplied, inactive session retains its causal history but starts no transaction.
+  const existing = await model
+    .find({ _id: { $in: keys } })
+    .select('_id')
+    .read('primary')
+    .session(session ?? null)
+    .lean();
+  const found = new Set(existing.map((row) => row._id));
+  const missing = keys.filter((key) => !found.has(key));
+  if (!missing.length) return;
+  if (mongoose.connection.db?.writeConcern?.w === 0)
+    throw new Error('Response scope creation requires acknowledged writes');
+  try {
+    // eslint-disable-next-line no-restricted-syntax -- payload-free anchors hash the validated owner/tenant; insert-only creation never mutates an existing anchor.
+    const created = await model.bulkWrite(
+      missing.map((key) => ({ insertOne: { document: { _id: key, closed, revision: 0 } } })),
+      { ordered: false, session },
+    );
+    if (created.insertedCount !== missing.length)
+      throw new Error('Response scope creation was not acknowledged');
+  } catch (error) {
+    if (!(error instanceof mongoose.mongo.MongoBulkWriteError)) throw error;
+    const errors = Array.isArray(error.writeErrors) ? error.writeErrors : [error.writeErrors];
+    if (
+      !errors.length ||
+      errors.some((entry) => entry.code !== 11000) ||
+      error.result.getWriteConcernError()
+    )
+      throw error;
+    const present = await model
+      .countDocuments({ _id: { $in: missing } })
+      .read('primary')
+      .session(session ?? null);
+    if (present !== missing.length) throw error;
+  }
+}
+
 /** Initializes only metadata; a late initializer can never reopen an erased scope. */
 export async function initializeResponseScopes(
   mongoose: typeof import('mongoose'),
   keys: string[],
   session?: ClientSession,
 ): Promise<void> {
-  const model = createResponseScopeModel(mongoose);
-  for (const key of keys) {
-    try {
-      await model.updateOne(
-        { _id: key },
-        { $setOnInsert: { closed: false, revision: 0 } },
-        { upsert: true, session },
-      );
-    } catch (error) {
-      if (
-        !(error instanceof mongoose.mongo.MongoServerError) ||
-        error.code !== 11000 ||
-        !(await model.exists({ _id: key }).session(session ?? null))
-      )
-        throw error;
-    }
-  }
+  const unique = [...new Set(keys)];
+  for (let offset = 0; offset < unique.length; offset += 250)
+    await seedScopes(mongoose, unique.slice(offset, offset + 250), false, session);
 }
 
 export async function isResponseScopeClosed(
@@ -211,25 +253,22 @@ export async function closeResponseScopes(
   conversationIds?: string[],
 ): Promise<void> {
   const model = createResponseScopeModel(mongoose);
-  const keys = conversationIds?.map((id) => scopeKey(owner, id)) ?? [scopeKey(owner)];
-  // Bound each command independently of the number of conversations being removed.
+  const keys = [...new Set(conversationIds?.map((id) => scopeKey(owner, id)) ?? [scopeKey(owner)])];
+  // Bound both creation and mutation independently of the number of conversations.
   for (let offset = 0; offset < keys.length; offset += 250) {
-    const operations = keys.slice(offset, offset + 250).map((key) => ({
+    const batch = keys.slice(offset, offset + 250);
+    await seedScopes(mongoose, batch, true);
+    const operations = batch.map((key) => ({
       updateOne: {
         filter: { _id: key },
-        update: { $set: { closed: true }, $setOnInsert: { revision: 0 } },
-        upsert: true,
+        update: { $set: { closed: true } },
+        upsert: false,
       },
     }));
-    // Keys already hash tenant + owner; these payload-free anchors have no tenantId column.
-    // eslint-disable-next-line no-restricted-syntax
-    const close = () => model.bulkWrite(operations, { ordered: false });
-    try {
-      await close();
-    } catch (error) {
-      if (!(error instanceof mongoose.mongo.MongoServerError) || error.code !== 11000) throw error;
-      await close();
-    }
+    // eslint-disable-next-line no-restricted-syntax -- payload-free anchors use the validated tenant/owner scope hash and cannot be recreated by this mutation.
+    const closed = await model.bulkWrite(operations, { ordered: false });
+    if (closed.matchedCount !== batch.length)
+      throw new Error('Response scope closure was not acknowledged');
   }
   await createStoredResponseModel(mongoose).updateMany(
     {

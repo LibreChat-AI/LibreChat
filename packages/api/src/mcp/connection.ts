@@ -34,7 +34,9 @@ import {
   isMCPTransportAuthenticationError,
   MCPTransportAuthenticationError,
   isStandaloneSseConflict,
+  isAuthorizationRequired,
   isMCPInitializationError,
+  MCPOAuthDeferredError,
 } from './errors';
 import {
   withMCPRequestSignal,
@@ -57,6 +59,7 @@ import { runOutsideTracing } from '~/utils/tracing';
 import { MCPRequestQuiescedError } from './request';
 import { isOwnedAbortError } from '~/utils/errors';
 import { mediaTypeEssence } from '~/utils/headers';
+import { getTunnelOptions } from '~/utils/proxy';
 import { isAddressAllowed } from '~/auth/domain';
 import { awaitOboOperation } from './oauth/obo';
 import { withTimeout } from '~/utils/promise';
@@ -967,6 +970,7 @@ function createMCPDispatcher(options: {
     return new ProxyAgent({
       uri: proxyUrl,
       ...baseOptions,
+      ...getTunnelOptions(baseOptions),
     });
   }
 
@@ -2448,10 +2452,12 @@ export class MCPConnection extends EventEmitter {
               `${this.getLogPrefix()} OAuth handled successfully, connection will be retried`,
             );
             return;
-          } catch {
+          } catch (handlingError) {
             // OAuth failed or timed out
             this.oauthRequired = false;
-            logger.error(`${this.getLogPrefix()} OAuth handling failed`);
+            logger[handlingError instanceof MCPOAuthDeferredError ? 'warn' : 'error'](
+              `${this.getLogPrefix()} OAuth handling failed`,
+            );
             // Re-throw the original authentication error
             throw error;
           }
@@ -2568,7 +2574,9 @@ export class MCPConnection extends EventEmitter {
         throw new Error('Connection not established');
       }
     } catch (error) {
-      logger.error(`${this.getLogPrefix()} Connection failed`);
+      logger[isAuthorizationRequired(error) ? 'warn' : 'error'](
+        `${this.getLogPrefix()} Connection failed`,
+      );
       throw error;
     }
   }

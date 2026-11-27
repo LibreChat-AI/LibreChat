@@ -5,12 +5,10 @@ import React from 'react';
 import { render, screen } from '@testing-library/react';
 import type { SteeringControls } from '../../../../react/steering/useSteering';
 import type { ComposerActionsProps } from '../Actions';
+import { initEnglish } from '../../../../__fixtures__/i18n';
 import ComposerActions from '../Actions';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(initEnglish);
 
 jest.mock('@ariakit/react', () => ({
   ...jest.requireActual('@ariakit/react'),
@@ -58,7 +56,7 @@ const renderActions = (props: Partial<ComposerActionsProps> = {}) =>
   );
 
 const sendButton = () => screen.queryByTestId('send-button');
-const stopButton = () => screen.queryByRole('button', { name: /com_nav_stop_generating/ });
+const stopButton = () => screen.queryByRole('button', { name: /Stop generating/ });
 
 describe('ComposerActions', () => {
   it('offers send when idle, and nothing without an endpoint', () => {

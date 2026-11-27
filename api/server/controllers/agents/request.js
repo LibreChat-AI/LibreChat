@@ -15,18 +15,22 @@ const {
   buildMessageFiles,
   getReferencedQuotes,
   resolveTitleTiming,
+  completedOutcome,
   GenerationJobManager,
   getTrustedNewConversationId,
   buildGenerationStartedResponse,
   createConvoPersistenceSignal,
   recoverTurnMessageReference,
   filterPersistableAbortContent,
+  createChatFinalization,
   decrementPendingRequest,
   sanitizeMessageForTransmit,
   checkAndIncrementPendingRequest,
   exemptFromConcurrencyLimiter,
   isScheduleFireRequest,
-  createScheduleExecutionContext,
+  createTriggerExecutionContext,
+  toMessageTrigger,
+  stampMessageTrigger,
   isUnpersistedPreliminaryParent,
   startAgentProjectContextResolution,
   assertChatProjectInstructions,
@@ -84,6 +88,7 @@ const {
 } = require('~/server/services/MCPRequestContext');
 const { logViolation } = require('~/cache');
 const { recordScheduleOutcome, isScheduleLive } = require('~/server/services/Schedules');
+const settleTriggeredRun = require('~/server/services/Events/settle');
 const {
   saveMessage,
   saveConvo,
@@ -404,6 +409,7 @@ async function saveErrorTurn(
     errorText,
     liveUserMessage,
     liveResponseMessageId,
+    receivedContent,
     runCreated = false,
     sender,
     initialAgentId,
@@ -461,7 +467,10 @@ async function saveErrorTurn(
                   alwaysAppliedSkills: req.body.alwaysAppliedSkills,
                 }),
             }
-          : getPreliminaryUserMessage(req.body, conversationId, req._agentEventTriggerProjection);
+          : stampMessageTrigger(
+              req,
+              getPreliminaryUserMessage(req.body, conversationId, req._agentEventTriggerProjection),
+            );
       if (!userMessage) {
         return;
       }
@@ -567,7 +576,7 @@ async function saveErrorTurn(
         error: true,
         unfinished: false,
         isCreatedByUser: false,
-        ...resolveFailedTurnContent(req.body, errorText),
+        ...resolveFailedTurnContent(req.body, errorText, receivedContent),
       },
       { context },
     );
@@ -1619,7 +1628,13 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
   let scheduleTerminalOutcomeRecorded = false;
   const settleScheduledRun = async ({ status, error, clearConversationId = false }) => {
     if (!scheduleId) {
-      return true;
+      return settleTriggeredRun(req, {
+        status,
+        error,
+        conversationId,
+        clearConversationId,
+        checkpointNamespace: client?.checkpointNamespace,
+      });
     }
     if (status !== 'requires_action' && scheduleTerminalOutcomeRecorded) {
       return true;
@@ -1691,14 +1706,19 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
 
     const endpointIconURL = getEndpointIconURL(req, endpointOption);
     const responseModel = getAgentResponseModel(req, endpointOption);
+    const executionContext = createTriggerExecutionContext(req);
+    req._messageTrigger = toMessageTrigger(executionContext, req);
     const preliminaryUserMessage = isCompaction
       ? projectCompactionAnchor({ messageId: parentMessageId, conversationId })
-      : stampPreliminaryPrivateTextMessage(
+      : stampMessageTrigger(
           req,
-          getPreliminaryUserMessage(
-            { ...req.body, messageId: preallocatedUserMessageId },
-            conversationId,
-            req._agentEventTriggerProjection,
+          stampPreliminaryPrivateTextMessage(
+            req,
+            getPreliminaryUserMessage(
+              { ...req.body, messageId: preallocatedUserMessageId },
+              conversationId,
+              req._agentEventTriggerProjection,
+            ),
           ),
         );
     const job = await GenerationJobManager.createJob(streamId, userId, conversationId, {
@@ -1767,6 +1787,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
               ...(req._isManualScheduledFire === true && { scheduleManual: true }),
             }
           : {}),
+        trigger: executionContext?.source,
         responseMessageId: preallocatedResponseMessageId,
         mcpRequestBody,
         userMessage: preliminaryUserMessage,
@@ -1850,19 +1871,15 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         status: 409,
       });
     }
-    if (
-      providerExecutionId &&
-      !(await GenerationJobManager.beginProviderExecution(
-        streamId,
-        jobCreatedAt,
-        providerExecutionId,
-      ))
-    ) {
-      throw Object.assign(new Error('Generation stopped before provider startup'), {
-        code: 'RUN_REPLACED',
-        status: 409,
-      });
-    }
+    const finalization = createChatFinalization({
+      jobs: GenerationJobManager,
+      config: req.config?.endpoints?.agents,
+      streamId,
+      createdAt: jobCreatedAt,
+      provider: providerExecutionId,
+      signal: job.abortController.signal,
+    });
+    await finalization.begin();
     acceptAgentStartupTelemetry(req, streamId);
     startupTelemetry?.mark('metadata_persisted');
     req._resumableStreamId = streamId;
@@ -2077,7 +2094,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       req,
       res,
       endpointOption,
-      executionContext: createScheduleExecutionContext(req),
+      executionContext,
       // Use the job's abort controller signal - allows abort via GenerationJobManager.abortJob()
       signal: job.abortController.signal,
       jobCreatedAt,
@@ -2285,7 +2302,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
      * response write. A lost claim returns false, and BaseClient skips that
      * stale `unfinished:false` write entirely. The fallback invocation below
      * supports test/custom clients that do not derive from BaseClient. */
-    const claimBeforeResponsePersistence = async () => {
+    const claimBeforeResponsePersistence = async (response) => {
       if (terminalPersistenceChecked) {
         return terminalClaim != null;
       }
@@ -2303,13 +2320,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         (preemptStats?.emptyBoundaries ?? 0) > 0 ||
         client?.run?.getHaltReason?.() === 'preempt_incomplete';
       stepLimitReached = client?.stepLimitReached === true;
-      terminalClaim = await GenerationJobManager.claimTerminalJob(
-        streamId,
-        terminalWasAborted ? 'aborted' : 'complete',
-        undefined,
-        jobCreatedAt,
-        { persistencePending: true },
-      );
+      terminalClaim = await finalization.claim(response);
       return terminalClaim != null;
     };
     const disposeBackgroundClient = () => {
@@ -2446,6 +2457,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                 quotes: userMsg.quotes,
                 privacyRevision: userMsg.privacyRevision,
                 reasoningOverride: userMsg.reasoningOverride,
+                trigger: userMsg.trigger,
                 // Persist the turn's uploaded files here (authoritative job metadata) so a
                 // HITL resume sources them from the job, not the user DB row — which the
                 // approval prompt can race (the row save may still be in flight when a fast
@@ -3026,7 +3038,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         // BaseClient invokes this before starting its response write. Custom
         // clients/tests may return a database promise directly, so keep the
         // controller-side fallback before awaiting that promise.
-        await claimBeforeResponsePersistence();
+        await claimBeforeResponsePersistence(response);
 
         const endpoint = endpointOption.endpoint;
         response.endpoint = endpoint;
@@ -3262,18 +3274,14 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           await titleEventPromise;
         }
 
-        let scheduleCompletionError;
-        if (terminalWasAborted) {
-          scheduleCompletionError = 'Scheduled run was stopped';
-        } else if (preemptIncomplete) {
-          scheduleCompletionError = 'Scheduled run was interrupted before completion';
-        } else if (stepLimitReached) {
-          scheduleCompletionError = 'Scheduled run reached its tool call limit before completion';
-        }
-        await settleScheduledRun({
-          status: responseIsUnfinished ? 'interrupted' : 'success',
-          ...(scheduleCompletionError != null && { error: scheduleCompletionError }),
-        });
+        await settleScheduledRun(
+          completedOutcome({
+            stopped: terminalWasAborted,
+            preempted: preemptIncomplete,
+            stepLimit: stepLimitReached,
+            content: response.content,
+          }),
+        );
 
         let terminalPublicationStarted = false;
         try {
@@ -3451,7 +3459,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             error,
           );
           startupTelemetry?.end('error', error);
-        } else if (job.abortController.signal.aborted || error.message?.includes('abort')) {
+        } else if (finalization.stopped(error)) {
           ownsScheduledFailure = true;
           logger.debug(`[ResumableAgentController] Generation aborted for ${streamId}`);
           startupTelemetry?.end('aborted');
@@ -3467,8 +3475,10 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             // completeJob first wins running -> error and atomically parks
             // steers, then publishes. A competing abort/pause emits nothing.
             ownsScheduledFailure =
-              (await GenerationJobManager.completeJob(streamId, generationError, jobCreatedAt, {
-                beforeErrorPublication: () =>
+              (await finalization.fail(
+                generationError,
+                () => client?.contentParts,
+                (receivedContent) =>
                   savePrivateTextErrorTurn(req, error, () =>
                     saveErrorTurn(req, {
                       conversationId,
@@ -3477,13 +3487,14 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                       errorText: generationError,
                       liveUserMessage: userMessage,
                       liveResponseMessageId,
+                      receivedContent,
                       runCreated: client?.run != null,
                       sender: client?.sender,
                       initialAgentId: verifiedInitialAgentId,
                     }),
                   ),
-                beforeTerminalCleanup: disconnectSnapshots.settle,
-              })) === true;
+                disconnectSnapshots.settle,
+              )) === true;
             /** A true completion means this owner won the terminal CAS and
              * the beforeErrorPublication barrier above finished. Only that
              * combination proves the failed-turn rows are durable enough to
@@ -3569,14 +3580,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       })
       .finally(async () => {
         await Promise.allSettled([immediateTitlePromise, trailingWritePromise].filter(Boolean));
-        if (providerExecutionId) {
-          await GenerationJobManager.markProviderExecutionDrained?.(
-            streamId,
-            jobCreatedAt,
-            providerExecutionId,
-          );
-        }
-        await releaseEventChildLease?.();
+        await finalization.drain(releaseEventChildLease);
       })
       .catch((drainError) => {
         logger.warn(

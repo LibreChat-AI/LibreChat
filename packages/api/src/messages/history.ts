@@ -1,7 +1,11 @@
 import { Constants } from 'librechat-data-provider';
 
-/** Fields the history read selects beyond the default projection. */
-const HISTORY_SELECT = '+privateTextTokens';
+/**
+ * Fields the history read selects beyond the default projection. `trigger` is read so a model
+ * is given, on every turn, what the event that started a subscription's turn was about
+ * (`appendEvent`); nothing else of it reaches a model.
+ */
+const HISTORY_SELECT = '+privateTextTokens +trigger';
 
 /**
  * Share of a conversation's rows a branch-only read must skip to be worth issuing. The narrowed

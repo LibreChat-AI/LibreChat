@@ -1,4 +1,17 @@
-import { resolveSubagentAgentId } from '../identity';
+import { resolveSubagentAgentId, resolvePendingSubagentAgentId } from '../identity';
+
+describe('resolvePendingSubagentAgentId', () => {
+  const agents = { 'agent-1': { id: 'agent-1' } };
+  it('names the saved agent a requested type is the id of', () => {
+    expect(resolvePendingSubagentAgentId('agent-1', agents)).toBe('agent-1');
+  });
+  it('names nothing for a self-spawn, an alias, a missing type or a missing map', () => {
+    expect(resolvePendingSubagentAgentId('self', agents)).toBeUndefined();
+    expect(resolvePendingSubagentAgentId('researcher', agents)).toBeUndefined();
+    expect(resolvePendingSubagentAgentId(undefined, agents)).toBeUndefined();
+    expect(resolvePendingSubagentAgentId('agent-1', undefined)).toBeUndefined();
+  });
+});
 
 describe('resolveSubagentAgentId', () => {
   const agent = { subagentKind: 'agent' as const, subagentAgentId: 'agent-1' };

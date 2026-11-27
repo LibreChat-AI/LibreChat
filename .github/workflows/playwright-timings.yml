@@ -10,8 +10,9 @@ name: Playwright Shard Timings
 #
 # On each push to dev this rebuilds the timings from the three most recent green runs of that
 # workflow on dev, with the `record` command e2e/README.md documents for doing it by hand, and
-# saves them as a cache entry. The `Shard timings` job of a later Playwright run hands the
-# newest entry to every shard; a pull request reads dev's entries as its base branch.
+# publishes them as an `e2e-shard-timings` artifact. The `Shard timings` job of a later
+# Playwright run, on any ref, downloads the newest one and hands it to every shard. A cache
+# entry keyed by the newest source run only marks that run as already published.
 #
 # A push records the runs that finished before it, not its own: the suite it starts ends about
 # 18 minutes later, and the next push picks that run up. Only green push runs on dev count.
@@ -19,7 +20,7 @@ name: Playwright Shard Timings
 # has no retried attempt inflating a file. No job reads this workflow's result, and a run with
 # nothing to record ends green: the previous entry, or the committed file, stays in use.
 #
-# A pull request that changes this file or the planner runs everything except the save.
+# A pull request that changes this file or the planner runs everything except the publish.
 
 on:
   push:
@@ -58,15 +59,16 @@ jobs:
           echo "newest=${RUNS%% *}" >> "$GITHUB_OUTPUT"
           echo "green runs on dev: ${RUNS:-none}"
 
-      # The entry is keyed by the newest run it was built from, so a push that finds no newer
-      # green run than the last recording has nothing to do.
-      - name: Check whether the newest run is already recorded
+      # The marker is keyed by the newest run the published timings were built from, so a push
+      # that finds no newer green run than the last recording has nothing to do. An evicted
+      # marker only costs a rebuild that publishes the same timings again.
+      - name: Check whether the newest run is already published
         id: recorded
         if: steps.runs.outputs.newest != ''
         uses: actions/cache/restore@v5
         with:
           path: e2e/.generated/shard-timings.json
-          key: e2e-shard-timings-${{ steps.runs.outputs.newest }}
+          key: e2e-shard-timings-published-${{ steps.runs.outputs.newest }}
           lookup-only: true
 
       # Reports expire after seven days and an upload may have failed, so a run or a shard with
@@ -93,9 +95,18 @@ jobs:
             --out e2e/.generated/shard-timings.json e2e/.generated/reports/*
           echo "built=true" >> "$GITHUB_OUTPUT"
 
-      - name: Save the timings for later runs
+      - name: Publish the timings for later runs
+        if: github.event_name == 'push' && steps.build.outputs.built == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: e2e-shard-timings
+          path: e2e/.generated/shard-timings.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Mark the newest run as published
         if: github.event_name == 'push' && steps.build.outputs.built == 'true'
         uses: actions/cache/save@v5
         with:
           path: e2e/.generated/shard-timings.json
-          key: e2e-shard-timings-${{ steps.runs.outputs.newest }}
+          key: e2e-shard-timings-published-${{ steps.runs.outputs.newest }}

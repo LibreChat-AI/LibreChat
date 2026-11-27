@@ -56,9 +56,23 @@ describe('createArchiveAllHandler', () => {
 
     await handler(mockRequest(), res);
 
-    expect(archiveAllConvos).toHaveBeenCalledWith('user-123');
+    expect(archiveAllConvos).toHaveBeenCalledWith('user-123', undefined);
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ archivedCount: 4 });
+  });
+
+  it('hands the sweep the retention mode the route loaded', async () => {
+    const archiveAllConvos = jest.fn().mockResolvedValue({ archivedCount: 1 });
+    const handler = createArchiveAllHandler({ archiveAllConvos });
+    const interfaceConfig: AppConfig['interfaceConfig'] = {
+      retentionMode: RetentionMode.EPHEMERAL,
+      temporaryChatRetention: 24,
+    };
+    const req = { ...mockRequest(), config: { interfaceConfig } } as ServerRequest;
+
+    await handler(req, mockResponse());
+
+    expect(archiveAllConvos).toHaveBeenCalledWith('user-123', interfaceConfig);
   });
 
   it('logs and returns 500 when archiving fails', async () => {

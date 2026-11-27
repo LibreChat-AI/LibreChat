@@ -7,6 +7,11 @@ jest.mock('@librechat/data-schemas', () => ({
   },
 }));
 
+jest.mock('~/models', () => ({
+  getUserKey: jest.fn(),
+  getUserKeyValues: jest.fn(),
+}));
+
 jest.mock('~/server/services/Config', () => ({
   loadDefaultModels: (...args) => mockLoadDefaultModels(...args),
   loadConfigModels: (...args) => mockLoadConfigModels(...args),

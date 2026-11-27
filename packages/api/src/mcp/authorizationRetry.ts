@@ -1,9 +1,14 @@
 import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
 import type { MCPRecoveryGenerationScope } from './catalog/recovery';
+import { createIdleRecoveryLoop, resolveIdleCeilingMs } from '~/agents/recovery';
 import { registerShutdownTask } from '~/app/shutdown';
 
 const DEFAULT_RETRY_INTERVAL_MS = 30_000;
+/** While no retry is pending the wait doubles up to this multiple of the base interval, the same
+ * four-fold span the durable agent loops use. A pass that finds a record returns to the base. The
+ * deployment-wide `eventDriven.idlePolling.maxIntervalMs` replaces it while set. */
+const IDLE_BACKOFF_FACTOR = 4;
 const DEFAULT_RETRY_BATCH_SIZE = 100;
 const DEFAULT_ATTEMPT_TIMEOUT_MS = 1_000;
 
@@ -45,7 +50,11 @@ export interface MCPAuthorizationFenceRetryServiceDeps {
 }
 
 export interface MCPAuthorizationFenceRetryWorkerPolicy {
+  /** Wait between passes while records are pending. */
   intervalMs?: number;
+  /** The deployment-wide `eventDriven.idlePolling.maxIntervalMs`, when configured: the longest wait while no
+   * record is pending, in place of the default of four times `intervalMs`. */
+  idleCeilingMs?: number;
   batchSize?: number;
   attemptTimeoutMs?: number;
 }
@@ -66,12 +75,14 @@ export function createMCPAuthorizationFenceRetryService(
   deps: MCPAuthorizationFenceRetryServiceDeps,
 ): MCPAuthorizationFenceRetryService {
   type RetryAttemptResult = { succeeded: true } | { succeeded: false; error: unknown };
-  let retryTimer: ReturnType<typeof setInterval> | undefined;
-  let drainPromise: Promise<void> | undefined;
+  let loop: ReturnType<typeof createIdleRecoveryLoop> | undefined;
+  /** Resolves the number of records the pass examined: nothing pending is the idle signal. */
+  let drainPromise: Promise<number> | undefined;
   const activeAttempts = new Map<string, Promise<RetryAttemptResult>>();
   let invalidateRecoveryGeneration:
     | ((scope: MCPRecoveryGenerationScope) => Promise<unknown>)
     | undefined;
+  let retryIntervalMs = DEFAULT_RETRY_INTERVAL_MS;
   let retryBatchSize = DEFAULT_RETRY_BATCH_SIZE;
   let attemptTimeoutMs = DEFAULT_ATTEMPT_TIMEOUT_MS;
 
@@ -120,6 +131,9 @@ export function createMCPAuthorizationFenceRetryService(
       version,
       now: new Date(),
     });
+    /** The publisher normally clears the marker within moments. If it cannot, the replay must not
+     * wait out an idle back-off: look once, one base interval from now. */
+    loop?.hint(new Date(Date.now() + retryIntervalMs));
     return version;
   };
 
@@ -131,7 +145,8 @@ export function createMCPAuthorizationFenceRetryService(
     });
   };
 
-  const drain = async (): Promise<void> => {
+  /** Single flight: a caller that arrives mid-pass shares its result. */
+  const runDrain = (): Promise<number> | undefined => {
     if (drainPromise != null || invalidateRecoveryGeneration == null) {
       return drainPromise;
     }
@@ -200,23 +215,21 @@ export function createMCPAuthorizationFenceRetryService(
           }
         }
       }
+      return retries.length;
     })().finally(() => {
       drainPromise = undefined;
     });
     return drainPromise;
   };
 
-  const scheduleDrain = (): void => {
-    void drain().catch((error) =>
-      logger.warn('[MCP authorization] Could not read durable generation retries', error),
-    );
+  const drain = async (): Promise<void> => {
+    await runDrain();
   };
 
   const stop = async (): Promise<void> => {
-    if (retryTimer != null) {
-      clearInterval(retryTimer);
-      retryTimer = undefined;
-    }
+    const current = loop;
+    loop = undefined;
+    await current?.stop();
     await drainPromise?.catch(() => undefined);
   };
 
@@ -227,13 +240,25 @@ export function createMCPAuthorizationFenceRetryService(
     invalidateRecoveryGeneration = invalidator;
     retryBatchSize = policy.batchSize ?? DEFAULT_RETRY_BATCH_SIZE;
     attemptTimeoutMs = policy.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS;
-    if (retryTimer != null) {
+    if (loop != null) {
       return;
     }
-    retryTimer = setInterval(scheduleDrain, policy.intervalMs ?? DEFAULT_RETRY_INTERVAL_MS);
-    retryTimer.unref?.();
+    retryIntervalMs = policy.intervalMs ?? DEFAULT_RETRY_INTERVAL_MS;
+    loop = createIdleRecoveryLoop({
+      intervalMs: retryIntervalMs,
+      maxIdleIntervalMs: resolveIdleCeilingMs({
+        intervalMs: retryIntervalMs,
+        defaultMs: retryIntervalMs * IDLE_BACKOFF_FACTOR,
+        ceilingMs: policy.idleCeilingMs,
+      }),
+      /** Idle only when the read found nothing pending. A record that was replayed and cleared still
+       * counts as work, so the pass that confirms it gone is the first idle one. */
+      scan: async () => (await runDrain()) === 0,
+      onError: (error) =>
+        logger.warn('[MCP authorization] Could not read durable generation retries', error),
+    });
     (deps.registerShutdown ?? registerShutdownTask)('MCP authorization fence retry worker', stop);
-    scheduleDrain();
+    void loop.start();
   };
 
   return { clear, drain, persist, start, stop };

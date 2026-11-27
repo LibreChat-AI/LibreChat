@@ -1,3 +1,8 @@
 # Force LF line endings for shell scripts and git hooks (required for cross-platform compatibility)
 .husky/* text eol=lf
 *.sh text eol=lf
+
+# Preserve tracked dotenv templates and the vendor protocol checksum.
+.env.example text eol=lf
+.env.test.example text eol=lf
+/vendor/code/browser-enrollment-protocol.ts text eol=lf

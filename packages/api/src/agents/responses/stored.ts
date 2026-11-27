@@ -1,9 +1,8 @@
 import { z } from 'zod';
 import { ContentTypes } from 'librechat-data-provider';
 import type { RequestHandler } from 'express';
-import type { Response, ResponseAccounting, OutputItem } from './types';
-import type { StoredResponseOutputLayout } from './foreground';
-import type { StoredResponseMessage } from './persistence';
+import type { Response, ResponseAccounting, OutputItem, FunctionCallItem } from './types';
+import type { StoredResponseMessage, StoredResponseOutputLayout } from './persistence';
 import {
   createResponseContext,
   buildAggregatedResponse,
@@ -98,14 +97,26 @@ const receiptSchema = z.object({
   completedAt: z.number().nullable(),
 });
 const backgroundReceiptSchema = z.object({ background: z.literal(true) });
+const pendingReceipt = z.object({
+  status: z.literal('completed'),
+  outputLayout: z.array(
+    z.object({
+      id: z.string(),
+      type: z.string(),
+      callId: z.string().optional(),
+      pendingClientTool: z.boolean().optional(),
+    }),
+  ),
+});
 const textPart = z.object({ type: z.literal(ContentTypes.TEXT), text: z.string() });
 const toolPart = z.object({
   type: z.literal(ContentTypes.TOOL_CALL),
   tool_call: z.object({
     id: z.string().min(1),
-    name: z.string(),
+    name: z.unknown(),
     args: z.unknown().optional(),
     output: z.unknown().optional(),
+    clientToolCall: z.unknown().optional(),
   }),
 });
 
@@ -133,7 +144,7 @@ export interface StoredForegroundResponseDependencies {
 }
 
 /** Project canonical message content rather than retaining an unredacted duplicate response body. */
-function output(message: SavedMessage): OutputItem[] {
+function output(message: SavedMessage, pending: ReadonlySet<string>): OutputItem[] {
   const items: OutputItem[] = [];
   for (const [index, part] of (message.content ?? []).entries()) {
     const text = textPart.safeParse(part);
@@ -148,8 +159,10 @@ function output(message: SavedMessage): OutputItem[] {
       continue;
     }
     const parsed = toolPart.safeParse(part);
-    if (!parsed.success || parsed.data.tool_call.output == null) continue;
+    if (!parsed.success) continue;
     const call = parsed.data.tool_call;
+    if (typeof call.name !== 'string') continue;
+    if (call.output == null && !pending.has(call.id)) continue;
     items.push({
       type: 'function_call',
       id: `fc_${message.messageId}_${index}`,
@@ -158,6 +171,7 @@ function output(message: SavedMessage): OutputItem[] {
       arguments: typeof call.args === 'string' ? call.args : JSON.stringify(call.args ?? {}),
       status: 'completed',
     });
+    if (call.output == null) continue;
     items.push({
       type: 'function_call_output',
       id: `fco_${message.messageId}_${index}`,
@@ -175,6 +189,58 @@ function output(message: SavedMessage): OutputItem[] {
       content: [{ type: 'output_text', text: message.text, annotations: [], logprobs: [] }],
     });
   return items;
+}
+
+/** Only server-written terminal receipts can identify a resumable caller-tool batch. */
+export function storedClientToolCalls(message: SavedMessage): FunctionCallItem[] | null {
+  if (message.isCreatedByUser || message.isUserSubmitted) return [];
+  const receipt = pendingReceipt.safeParse(message.metadata?.responseReceipt);
+  if (!receipt.success) return [];
+  if (!receipt.data.outputLayout.some((entry) => entry.pendingClientTool)) return [];
+  const pending = new Map<string, string>();
+  const ids = new Map<string, number>();
+  const callIds = new Map<string, number>();
+  for (const entry of receipt.data.outputLayout) {
+    ids.set(entry.id, (ids.get(entry.id) ?? 0) + 1);
+    if (entry.callId) callIds.set(entry.callId, (callIds.get(entry.callId) ?? 0) + 1);
+    if (!entry.pendingClientTool) continue;
+    if (entry.type !== 'function_call' || !entry.callId || !entry.id || pending.has(entry.callId))
+      return null;
+    pending.set(entry.callId, entry.id);
+  }
+  if (pending.size === 0) return [];
+  const calls = new Map<string, FunctionCallItem>();
+  for (const part of message.content ?? []) {
+    const parsed = toolPart.safeParse(part);
+    if (!parsed.success) continue;
+    const call = parsed.data.tool_call;
+    const id = pending.get(call.id);
+    if (id == null) {
+      if (call.clientToolCall === true && call.output == null) return null;
+      continue;
+    }
+    if (
+      ids.get(id) !== 1 ||
+      callIds.get(call.id) !== 1 ||
+      calls.has(call.id) ||
+      call.clientToolCall !== true ||
+      call.output != null ||
+      typeof call.name !== 'string' ||
+      !call.name ||
+      typeof call.args !== 'string'
+    )
+      return null;
+    calls.set(call.id, {
+      type: 'function_call',
+      id,
+      call_id: call.id,
+      name: call.name,
+      arguments: call.args,
+      status: 'completed',
+    });
+  }
+  if (calls.size !== pending.size) return null;
+  return [...pending.keys()].map((id) => calls.get(id)!);
 }
 
 /** Identity/layout receipts contain no output text; content still comes from the privacy projection. */
@@ -268,7 +334,7 @@ export function createStoredForegroundResponseReader(
       context.stored = true;
       const response: Response = buildAggregatedResponse(context, createResponseAggregator());
       response.output = restoreOutputIdentity(
-        output(message),
+        output(message, new Set(storedClientToolCalls(message)?.map((call) => call.call_id))),
         receipt.success ? receipt.data.outputLayout : undefined,
       );
       const legacyTokens = count.safeParse(message.tokenCount);

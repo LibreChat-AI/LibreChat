@@ -9,6 +9,7 @@ import React, {
   useState,
 } from 'react';
 import { Button } from '@librechat/client';
+import { AppSuppressionContext } from '@librechat/chat/react';
 import type { TAttachment, UIResource } from 'librechat-data-provider';
 import type { MCPAppResourceOccurrence } from '~/utils/mcpApps';
 import { useMCPAppsHost, useMCPAppViewAtCapacity } from '~/Providers/MCPAppsPolicyContext';
@@ -45,12 +46,8 @@ function CapacityNotice() {
   ) : null;
 }
 
-/**
- * Attachments rendered by a stable ancestor. Presentation components may still receive those
- * attachments for files, search rows, and outcome metadata; only their duplicate App view stands
- * down. Object identity keeps independently owned nested attachments visible.
- */
-export const MCPAppSuppressionContext = React.createContext<ReadonlySet<TAttachment> | null>(null);
+/** Attachments a stable ancestor already draws; see the package's `AppSuppressionContext`. */
+export const MCPAppSuppressionContext = AppSuppressionContext;
 
 function ActiveMCPAppView({
   app,

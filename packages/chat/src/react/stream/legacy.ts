@@ -18,6 +18,8 @@ import type { EventHandlers } from './events/handlers';
 import type { StreamChat } from './host';
 import {
   applyPendingAction,
+  hasConcreteConversationId,
+  isInitialNewConversation,
   startedAsNewConversation,
   buildCreatedInitialResponse,
   findPendingActionMessageIndex,
@@ -47,8 +49,13 @@ export function useLegacyStream(
   const jotaiStore = useStore();
   const setActiveRunId = useSetAtom(activeRunFamily(runIndex));
 
-  const { transport, refreshBalance, reopenTermsOnRefusal, clearComposerDrafts } =
-    useStreamHost().useLegacyServices();
+  const {
+    transport,
+    refreshBalance,
+    reopenTermsOnRefusal,
+    clearComposerDrafts,
+    releaseNewConversation,
+  } = useStreamHost().useLegacyServices(runIndex);
   const [completed, setCompleted] = useState(new Set());
   const setAbortScroll = useSetAtom(abortScrollFamily(runIndex));
   const setShowStopButton = useSetAtom(showStopButtonByIndex(runIndex));
@@ -312,7 +319,20 @@ export function useLegacyStream(
     setIsSubmitting(true);
     transport.send({ server: payloadData.server, payload }, { signal: controller.signal, onEvent });
 
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      /** A new chat's first turn the pane leaves wrote the new chat's messages too. The abort
+       *  above flushes its queued frame and the settle it starts finds them empty once released. */
+      const named = currentSubmission.userMessage.conversationId;
+      if (
+        named != null &&
+        hasConcreteConversationId(named) &&
+        isInitialNewConversation(submission)
+      ) {
+        cancelPendingDeltaFlush();
+        releaseNewConversation(named);
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [submission]);
 }

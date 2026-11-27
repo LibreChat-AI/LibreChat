@@ -441,6 +441,8 @@ function submitHost(
  * outside this provider can still resume). A provider host wins when one is present.
  */
 export function useResumeSubmit(host: ApprovalResumeHost | null = null): {
+  /** Whether this view has any way to resume the run: a resume transport or a resume host. */
+  available: boolean;
   submitToolApproval: (actionId: string) => void;
   submitAskAnswer: (
     actionId: string,
@@ -546,5 +548,9 @@ export function useResumeSubmit(host: ApprovalResumeHost | null = null): {
     [jotaiStore, resumeHost, setAskStatus, transport],
   );
 
-  return { submitToolApproval, submitAskAnswer };
+  return {
+    available: transport != null || resumeHost != null,
+    submitToolApproval,
+    submitAskAnswer,
+  };
 }

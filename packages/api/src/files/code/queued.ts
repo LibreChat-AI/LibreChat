@@ -28,6 +28,9 @@ export interface ProvisionToolContext {
   codeExecutionContext?: CodeExecutionRoute;
   /** Successful refs retained while another file in the same batch awaits retry. */
   pendingProvisionedCodeFiles?: CodeEnvFile[];
+  /** Files a tool produced earlier in this run, such as a generated image, possibly still
+   *  being saved. The next code call queues them for upload with the agent's other inputs. */
+  generatedFiles?: Array<Promise<TFile | null | undefined>>;
 }
 
 export interface CodeFileAgent extends ProvisionToolContext {

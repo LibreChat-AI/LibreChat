@@ -90,7 +90,6 @@ function Conversation({
     !isGenerating;
   const projectBadgeProjectId = showProjectBadge ? conversation.chatProjectId : undefined;
   const isUnseen = isConversationUnseen(conversation);
-  const isShiftHeld = useShiftKey();
   const { conversationId, title = '' } = conversation;
   const canRename =
     supportsConversationTitleOwnership(startupConfig) ||
@@ -160,6 +159,8 @@ function Conversation({
       return activeConversationId === conversationId;
     }
   }, [currentConvoId, conversationId, activeConversationId]);
+  /** Only the open conversation's row answers to shift. */
+  const isShiftHeld = useShiftKey(isActiveConvo);
 
   const handleRename = () => {
     if (!canRename) return;

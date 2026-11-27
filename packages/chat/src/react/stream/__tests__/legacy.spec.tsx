@@ -3,6 +3,7 @@
  */
 import React from 'react';
 import { getDefaultStore } from 'jotai';
+import { Constants } from 'librechat-data-provider';
 import { act, renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type {
@@ -70,6 +71,7 @@ const legacyServices: LegacyStreamServices = {
   refreshBalance: jest.fn(),
   reopenTermsOnRefusal: () => null,
   clearComposerDrafts: jest.fn(),
+  releaseNewConversation: jest.fn(),
 };
 const unused = (): never => {
   throw new Error('not used by the legacy stream');
@@ -278,5 +280,52 @@ describe('useLegacyStream', () => {
     expect(legacyServices.refreshBalance).toHaveBeenCalled();
     expect(lastCall(mockErrorHandler)?.[0].data).toEqual({ text: 'Accept the terms' });
     unmount();
+  });
+
+  describe('a new chat whose first turn the pane leaves', () => {
+    const newChat = (): TSubmission => {
+      const submission = buildSubmission('assistants');
+      return {
+        ...submission,
+        conversation: { conversationId: Constants.NEW_CONVO },
+        userMessage: { ...submission.userMessage, conversationId: null },
+        initialResponse: { ...submission.initialResponse, conversationId: null },
+      } as unknown as TSubmission;
+    };
+
+    it('is taken out of the new chat under the id the server named it by', async () => {
+      const submission = newChat();
+      const { unmount } = renderHook(() => useLegacyStream(submission, buildChatHelpers()), {
+        wrapper,
+      });
+      await act(async () => {
+        emitFrame({ created: true, message: { ...submission.userMessage, conversationId: 'c-9' } });
+      });
+      expect(legacyServices.releaseNewConversation).not.toHaveBeenCalled();
+      unmount();
+      expect(legacyServices.releaseNewConversation).toHaveBeenCalledTimes(1);
+      expect(legacyServices.releaseNewConversation).toHaveBeenCalledWith('c-9');
+    });
+
+    it('wrote nothing under an id before the server named it', () => {
+      const submission = newChat();
+      const { unmount } = renderHook(() => useLegacyStream(submission, buildChatHelpers()), {
+        wrapper,
+      });
+      unmount();
+      expect(legacyServices.releaseNewConversation).not.toHaveBeenCalled();
+    });
+
+    it('is not a turn of a saved conversation', async () => {
+      const submission = buildSubmission('assistants');
+      const { unmount } = renderHook(() => useLegacyStream(submission, buildChatHelpers()), {
+        wrapper,
+      });
+      await act(async () => {
+        emitFrame({ created: true, message: submission.userMessage });
+      });
+      unmount();
+      expect(legacyServices.releaseNewConversation).not.toHaveBeenCalled();
+    });
   });
 });

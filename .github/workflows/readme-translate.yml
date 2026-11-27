@@ -84,7 +84,7 @@ jobs:
           README_TRANSLATE_MODEL: ${{ vars.README_TRANSLATE_MODEL }}
           LANGUAGES: ${{ inputs.languages || 'zh,ru' }}
           FORCE: ${{ inputs.force && '--force' || '' }}
-        run: node scripts/readme/index.mjs "--langs=$LANGUAGES" $FORCE
+        run: node scripts/readme/index.mjs "--langs=$LANGUAGES" "--summary=$RUNNER_TEMP/readme-pr.md" $FORCE
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
@@ -98,25 +98,5 @@ jobs:
           base: dev
           branch: i18n/readme-translations
           title: '🌐 i18n: Sync README Translations'
-          body: |
-            ## Summary
-
-            `README.md` changed on `dev`, so the Chinese and Russian READMEs are regenerated from it. Only sections whose English text changed were retranslated; the rest comes from the cache in `.github/readme-i18n.json`. Each section is checked against its source for identical links, image paths, HTML tags and list structure before it is accepted.
-
-            ## Type of change
-
-            * [x] Translation
-
-            ## Testing
-
-            * `node --test scripts/readme/lib.test.mjs` passed in the workflow run.
-            * Every regenerated section kept its source links, image paths, HTML tags and list structure.
-
-            ## Risk / compatibility
-
-            None. Only README files and the translation cache change.
-
-            ## Checklist
-
-            * [x] The change does not introduce new warnings or errors
+          body-path: ${{ runner.temp }}/readme-pr.md
           labels: '🌍 i18n'

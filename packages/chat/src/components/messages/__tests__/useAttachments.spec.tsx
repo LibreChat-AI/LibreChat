@@ -17,18 +17,16 @@ import { renderHook } from '@testing-library/react';
 import { Provider as JotaiProvider, useSetAtom } from 'jotai';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+import useStreamedAttachments from '../../../react/messages/useStreamedAttachments';
+import { messageAttachmentsMapAtom } from '../../../react/stream/atoms';
+import { createMessagesHost } from '../../../__fixtures__/messagesHost';
+import { MessagesHostProvider } from '../../../react/messages/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
+import useAttachments from '../useAttachments';
 
 type AttachmentFixture = TFile & TAttachmentMetadata;
 
-jest.mock('@librechat/client', () => ({
-  useLocalize: () => (key: string) => key,
-}));
-
-import useStreamedAttachments from '../../../react/messages/useStreamedAttachments';
-import { messageAttachmentsMapAtom } from '../../../react/stream/atoms';
-import { MessagesHostProvider } from '../../../react/messages/host';
-import { createMessagesHost } from '../../../__fixtures__/messagesHost';
-import useAttachments from '../useAttachments';
+beforeAll(initEnglish);
 
 const messageId = 'msg-1';
 const host = createMessagesHost({ useStreamedAttachments });

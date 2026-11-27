@@ -7,6 +7,7 @@ import {
   Constants,
   PermissionTypes,
   Permissions,
+  isAssistantsEndpoint,
   isForcedTemporaryRetention,
 } from 'librechat-data-provider';
 import { OpenSidebar, PresetsMenu, NewChat, HeaderMenu } from './Menus';
@@ -143,13 +144,14 @@ function Header({
       <div className={cn('flex shrink-0 items-center gap-2', hiddenBehindNav)}>
         {showTemporaryChat && <TemporaryChatIndicator />}
         {!isNewChat && <NewChat className={isSmallScreen ? undefined : 'hidden'} />}
-        {sessionRail && parentConversationId == null && (
+        {sessionRail && !isNewChat && parentConversationId == null && (
           <Session
-            key={routeConversationId ?? Constants.NEW_CONVO}
-            conversationId={routeConversationId ?? Constants.NEW_CONVO}
+            key={routeConversationId}
+            conversationId={routeConversationId}
             agentId={conversation?.agent_id}
             isSubmitting={isSubmitting}
             autoOpen={interfaceConfig.sessionRailAutoOpen !== false}
+            files={!isAssistantsEndpoint(conversation?.endpoint)}
           />
         )}
         {startupConfig != null && !sessionRail && !isNewChat && parentConversationId == null && (

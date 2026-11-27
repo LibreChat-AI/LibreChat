@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import { render } from '@testing-library/react';
 import { math } from 'micromark-extension-math';
 import { mathFromMarkdown } from 'mdast-util-math';
+import { singleDollarMath } from '@librechat/chat';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import type { Options as ReactMarkdownOptions } from 'react-markdown';
 import {
@@ -13,7 +14,6 @@ import {
   getLoadedRehypeModules,
   loadRehypeModules,
 } from '~/components/Chat/Messages/Content/rehype';
-import { singleDollarMath } from './latex';
 
 /** KaTeX and highlight.js load on first need in the app; load them up front here. */
 beforeAll(() => loadRehypeModules());
@@ -31,7 +31,7 @@ type SpecNode = {
  */
 const parse = (content: string): SpecNode =>
   fromMarkdown(content, {
-    extensions: [math({ singleDollarTextMath: false }), singleDollarMath],
+    extensions: [math({ singleDollarTextMath: false }), singleDollarMath()],
     mdastExtensions: [mathFromMarkdown()],
   }) as SpecNode;
 

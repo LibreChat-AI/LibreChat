@@ -8,6 +8,7 @@ import type { ShortcutBinding } from '../../../../core/shortcuts';
 import type { AskCardMode } from '../Question';
 import { ChatSurfaceProvider } from '../../../../react/subagents/provider';
 import { ASK_USER_DECLINED_ANSWER } from '../../../../core';
+import { initEnglish } from '../../../../__fixtures__/i18n';
 import AskUserQuestion from '../Question';
 
 const mockSubmitAnswer = jest.fn();
@@ -26,18 +27,7 @@ jest.mock('../../../../core/textarea', () => ({
   insertTextAtCursor: (...args: unknown[]) => mockInsertTextAtCursor(...args),
 }));
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => {
-    const labels: Record<string, string> = {
-      com_ui_your_answer: 'Your answer',
-      com_ui_skip: 'Skip',
-      com_ui_submit: 'Submit',
-      com_ui_submitting: 'Submitting',
-    };
-    return labels[key] ?? key;
-  },
-}));
+beforeAll(initEnglish);
 
 const drafts = new Map<string, string>();
 
@@ -113,13 +103,15 @@ describe('AskUserQuestion', () => {
 
   test('restores a typed answer after the card remounts inside the same message', () => {
     const view = render(tree('direct'));
-    fireEvent.change(screen.getByRole('textbox', { name: 'Your answer' }), {
+    fireEvent.change(screen.getByRole('textbox', { name: 'Type your answer…' }), {
       target: { value: 'Use staging first' },
     });
 
     view.rerender(tree('phase-slice'));
 
-    expect(screen.getByRole('textbox', { name: 'Your answer' })).toHaveValue('Use staging first');
+    expect(screen.getByRole('textbox', { name: 'Type your answer…' })).toHaveValue(
+      'Use staging first',
+    );
   });
 
   test('submits checked options together with free text carried from the composer', () => {
@@ -136,7 +128,7 @@ describe('AskUserQuestion', () => {
       }),
     );
 
-    expect(screen.getByRole('textbox', { name: 'Your answer' })).toHaveValue(
+    expect(screen.getByRole('textbox', { name: 'Type your answer…' })).toHaveValue(
       'carried free-form answer',
     );
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
@@ -151,7 +143,7 @@ describe('AskUserQuestion', () => {
       mockAnswerText = answerText;
       return tree('live', { question: 'Which environment?' }, enterToSend);
     };
-    const answerBox = () => screen.getByRole('textbox', { name: 'Your answer' });
+    const answerBox = () => screen.getByRole('textbox', { name: 'Type your answer…' });
 
     test('Enter submits when Enter-to-send is on', () => {
       render(liveTree(true));
@@ -206,7 +198,7 @@ describe('AskUserQuestion', () => {
       mockAnswerText = answerText;
       return tree('live', { question: 'Which environment?' });
     };
-    const answerBox = () => screen.getByRole('textbox', { name: 'Your answer' });
+    const answerBox = () => screen.getByRole('textbox', { name: 'Type your answer…' });
 
     test('skips the question when nothing is entered', () => {
       render(liveTree());
@@ -267,7 +259,7 @@ describe('AskUserQuestion', () => {
     test('puts the user in the answer field when the question has no options', () => {
       mockLiveActionId = 'arrive-field';
       render(tree('arrive', { question: 'Which environment?' }, true, 'arrive-field'));
-      expect(screen.getByRole('textbox', { name: 'Your answer' })).toHaveFocus();
+      expect(screen.getByRole('textbox', { name: 'Type your answer…' })).toHaveFocus();
     });
 
     test('takes focus from the empty composer that sent the turn', () => {

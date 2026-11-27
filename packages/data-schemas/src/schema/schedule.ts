@@ -1,7 +1,7 @@
 import { Schema } from 'mongoose';
 import { SCHEDULE_CRON_MAX_LENGTH } from 'librechat-data-provider';
+import { runGrantFailureReasonSchema } from 'librechat-data-provider';
 import { scheduledMCPEnrollmentSchema } from 'librechat-data-provider';
-import { scheduledMCPFailureReasonSchema } from 'librechat-data-provider';
 import type { IScheduleDocument } from '~/types/schedule';
 
 /** `cadence` is a nested path rather than a subdocument, so a validator on
@@ -124,6 +124,10 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
       default: true,
       required: true,
     },
+    /** Run only while every MCP server the agent uses is ready. Unset, one that is not is left out. */
+    mcpStrict: {
+      type: Boolean,
+    },
     disabledReason: {
       type: String,
       enum: [
@@ -245,12 +249,13 @@ const scheduleSchema: Schema<IScheduleDocument> = new Schema(
               server: { type: String, required: true },
               agentId: { type: String },
               detail: { type: String, enum: ['unattended_auth_required'] },
-              reason: { type: String, enum: scheduledMCPFailureReasonSchema.options },
+              reason: { type: String, enum: runGrantFailureReasonSchema.options },
               recovery: {
                 type: String,
                 enum: ['authorize', 'configure', 'restore_permission', 'retry_later'],
               },
               automaticReplay: { type: Boolean, enum: [false] },
+              skipped: { type: Boolean, enum: [true] },
               status: {
                 type: String,
                 required: true,

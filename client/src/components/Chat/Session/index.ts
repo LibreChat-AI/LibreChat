@@ -1,2 +1,2 @@
 export { default as Session } from './Session';
-export { default as SessionRailSlot } from './Slot';
+export { default as SessionRailLayout } from './Layout';

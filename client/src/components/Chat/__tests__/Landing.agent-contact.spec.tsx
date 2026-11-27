@@ -151,6 +151,30 @@ describe('Landing agent contact', () => {
     expect(screen.getByText('Contact:').parentElement).toHaveClass('items-center');
   });
 
+  it.each([
+    ['no contact fields', {}],
+    ['a blank support contact', { support_contact: { name: '  ', email: '' } }],
+  ])('omits the contact row when the selected agent has %s', (_label, contact) => {
+    mockConversation = {
+      endpoint: 'agents',
+      agent_id: 'agent-1',
+    };
+    mockAgentsMap = {
+      'agent-1': {
+        id: 'agent-1',
+        name: 'Portal Remote Agent',
+        description: 'Remote Agent Showcase',
+        ...contact,
+      },
+    };
+
+    renderLanding();
+
+    expect(screen.getByText('Remote Agent Showcase')).toBeInTheDocument();
+    expect(screen.queryByText('Contact:')).not.toBeInTheDocument();
+    expect(screen.queryByText('No contact available')).not.toBeInTheDocument();
+  });
+
   it('does not show contact when the selected agent is missing from agentsMap', () => {
     mockConversation = {
       endpoint: 'agents',

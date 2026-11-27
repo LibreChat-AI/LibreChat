@@ -82,7 +82,7 @@
     "framer-motion": "^12.40.0",
     "heic-to": "^1.1.14",
     "html-to-image": "^1.11.11",
-    "i18next": "^24.2.2",
+    "i18next": "^26.3.4",
     "i18next-browser-languagedetector": "^8.0.3",
     "input-otp": "^1.4.2",
     "jotai": "^2.12.5",

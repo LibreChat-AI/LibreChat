@@ -261,8 +261,10 @@ describe.each([
   it('keeps the tooltip label and the error alert text at WCAG AA', () => {
     const tooltip = belowAA(theme, ['rgb-text-tooltip'], ['rgb-surface-tooltip']);
     const alert = belowAA(theme, ['rgb-status-error'], ['rgb-alert-error-fill']);
+    /** The quiet error alert states its notice in the copy color on the same fill. */
+    const quiet = belowAA(theme, ['rgb-text-secondary'], ['rgb-alert-error-fill']);
 
-    expect({ tooltip, alert }).toEqual({ tooltip: [], alert: [] });
+    expect({ tooltip, alert, quiet }).toEqual({ tooltip: [], alert: [], quiet: [] });
   });
 
   it('keeps warning and destructive text at WCAG AA on canvas surfaces', () => {
@@ -705,11 +707,10 @@ describe('syntax highlighting palette', () => {
   });
 
   it('leaves no hard-coded syntax hex behind in the stylesheet', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
+    const syntaxStyles = readFileSync(join(__dirname, 'syntax.css'), 'utf8');
+    const hljsRules = [...syntaxStyles.matchAll(/^\.hljs[^{]*\{([^}]*)\}/gm)].map(
+      (match) => match[1],
     );
-    const hljsRules = [...appStyles.matchAll(/^\.hljs[^{]*\{([^}]*)\}/gm)].map((match) => match[1]);
 
     expect(hljsRules.length).toBeGreaterThan(0);
     expect(hljsRules.filter((body) => /#[0-9a-f]{3,8}|hsla?\(/i.test(body))).toEqual([]);

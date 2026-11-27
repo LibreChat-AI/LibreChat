@@ -5,7 +5,8 @@ const path = require('path');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const { keepIdleConnections } = require('./keepalive');
 
-const DEFAULT_BASE_URL = 'http://localhost:3080';
+/** Matches `DEFAULT_BASE_URL` in `env.ts`. */
+const DEFAULT_BASE_URL = 'http://localhost:3180';
 const DEFAULT_RUNTIME_ENV_PATH = path.resolve(__dirname, '../specs/.test-results/runtime-env.json');
 const REPLICA_STARTUP_TIMEOUT_MS = 120_000;
 const serverPath = path.resolve(__dirname, 'start-server.js');
