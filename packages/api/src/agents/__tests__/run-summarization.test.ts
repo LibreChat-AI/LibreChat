@@ -9,6 +9,7 @@ import {
   FileSources,
   PrincipalType,
   MAX_SUBAGENT_DEPTH,
+  validateAzureGroups,
   MAX_SUBAGENT_RUN_CONFIGS,
 } from 'librechat-data-provider';
 import type {
@@ -103,7 +104,7 @@ jest.mock('~/agents/checkpointer', () => ({
   getAgentCheckpointer: jest.fn().mockResolvedValue({}),
 }));
 
-import { ChatOpenAI } from '@librechat/agents/llm/openai';
+import { ChatOpenAI, AzureChatOpenAI } from '@librechat/agents/llm/openai';
 import { ChatOpenRouter } from '@librechat/agents/llm/openrouter';
 import {
   Run,
@@ -871,6 +872,231 @@ describe('summarization reasoning effort', () => {
     expect(request.reasoning_effort).toBe('low');
   });
 
+  it.each(['o3', 'gpt-5-mini'])(
+    "overrides the agent's Chat Completions effort for a summary on %s",
+    async (model) => {
+      /** Initialization replaces the saved parameters with the resolved client options. */
+      const { llmConfig } = getOpenAIConfig(
+        'test-key',
+        { modelOptions: { model: 'o3', reasoning_effort: ReasoningEffort.high } },
+        EModelEndpoint.openAI,
+      );
+      expect(llmConfig.modelKwargs).toEqual({ reasoning_effort: ReasoningEffort.high });
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: EModelEndpoint.openAI,
+            endpoint: EModelEndpoint.openAI,
+            model: 'o3',
+            model_parameters: { ...llmConfig },
+          }),
+        ],
+        summarizationConfig: {
+          provider: EModelEndpoint.openAI,
+          model,
+          parameters: { reasoning_effort: 'low' },
+        },
+      });
+
+      const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+      const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+      const summaryModel = new ChatOpenAI({
+        ...mainClientOptions,
+        ...(summaryConfig.parameters as Record<string, unknown>),
+        apiKey: 'test-key',
+        model,
+      } as never);
+      const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+      /** The client applies `reasoning.effort` after spreading `modelKwargs`. */
+      expect(request).toMatchObject({ model, reasoning_effort: 'low' });
+    },
+  );
+
+  /** The SDK's Azure client ignores `reasoning` for a deployment name without a model family. */
+  it("overrides the agent's effort on a same-deployment Azure summary", async () => {
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      {
+        azure: {
+          azureOpenAIApiKey: 'test-key',
+          azureOpenAIApiInstanceName: 'test-instance',
+          azureOpenAIApiDeploymentName: 'production-deployment',
+          azureOpenAIApiVersion: '2025-04-01-preview',
+        },
+        reasoningEfforts: [ReasoningEffort.low, ReasoningEffort.high],
+        modelOptions: { model: 'production-west', reasoning_effort: ReasoningEffort.high },
+      },
+      EModelEndpoint.azureOpenAI,
+    );
+    expect(llmConfig.modelKwargs).toEqual({ reasoning_effort: ReasoningEffort.high });
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: Providers.AZURE,
+          endpoint: EModelEndpoint.azureOpenAI,
+          model: 'production-west',
+          model_parameters: { ...llmConfig },
+        }),
+      ],
+      summarizationConfig: {
+        provider: EModelEndpoint.azureOpenAI,
+        parameters: { reasoning_effort: 'low' },
+      },
+    });
+
+    const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    const summaryModel = new AzureChatOpenAI({
+      ...mainClientOptions,
+      ...(summaryConfig.parameters as Record<string, unknown>),
+    } as never);
+    const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+    expect(request).toMatchObject({ reasoning_effort: 'low' });
+  });
+
+  /** GPT-5.1 takes sampling controls only at effort `none`. */
+  it('drops inherited sampling controls when a GPT-5.1 summary raises the effort above none', async () => {
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      {
+        modelOptions: {
+          model: 'gpt-5.1',
+          reasoning_effort: ReasoningEffort.none,
+          temperature: 0.7,
+        },
+      },
+      EModelEndpoint.openAI,
+    );
+    expect(llmConfig).toHaveProperty('temperature', 0.7);
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: EModelEndpoint.openAI,
+          endpoint: EModelEndpoint.openAI,
+          model: 'gpt-5.1',
+          model_parameters: { ...llmConfig },
+        }),
+      ],
+      summarizationConfig: {
+        provider: EModelEndpoint.openAI,
+        parameters: { reasoning_effort: 'high' },
+      },
+    });
+
+    const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    const summaryModel = new ChatOpenAI({
+      ...mainClientOptions,
+      ...(summaryConfig.parameters as Record<string, unknown>),
+      apiKey: 'test-key',
+    } as never);
+    const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+    expect(request).toMatchObject({ reasoning_effort: 'high' });
+    expect(request.temperature).toBeUndefined();
+  });
+
+  it("drops a summary's own sampling controls beside the GPT-5.1 effort it inherits", async () => {
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      { modelOptions: { model: 'gpt-5.1', reasoning_effort: ReasoningEffort.high } },
+      EModelEndpoint.openAI,
+    );
+    expect(llmConfig.modelKwargs).toEqual({ reasoning_effort: ReasoningEffort.high });
+    const agents = await callAndCapture({
+      agents: [
+        makeReasoningAgent({
+          provider: EModelEndpoint.openAI,
+          endpoint: EModelEndpoint.openAI,
+          model: 'gpt-5.1',
+          model_parameters: { ...llmConfig },
+        }),
+      ],
+      summarizationConfig: {
+        provider: EModelEndpoint.openAI,
+        parameters: { temperature: 0.7 },
+      },
+    });
+
+    const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    const summaryModel = new ChatOpenAI({
+      ...mainClientOptions,
+      ...(summaryConfig.parameters as Record<string, unknown>),
+      apiKey: 'test-key',
+    } as never);
+    const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+    expect(request).toMatchObject({ reasoning_effort: 'high' });
+    expect(request.temperature).toBeUndefined();
+  });
+
+  it('drops inherited sampling controls when a declared Azure summary raises the effort', async () => {
+    const declared = [ReasoningEffort.none, ReasoningEffort.low, ReasoningEffort.high];
+    const azure = validateAzureGroups([
+      {
+        group: 'test',
+        apiKey: 'test-key',
+        instanceName: 'test-instance',
+        version: '2025-04-01-preview',
+        models: {
+          'production-west': {
+            deploymentName: 'production-deployment',
+            reasoningEfforts: declared,
+          },
+        },
+      },
+    ]);
+    expect(azure.isValid).toBe(true);
+    const { llmConfig } = getOpenAIConfig(
+      'test-key',
+      {
+        azure: {
+          azureOpenAIApiKey: 'test-key',
+          azureOpenAIApiInstanceName: 'test-instance',
+          azureOpenAIApiDeploymentName: 'production-deployment',
+          azureOpenAIApiVersion: '2025-04-01-preview',
+        },
+        reasoningEfforts: declared,
+        modelOptions: {
+          model: 'production-west',
+          reasoning_effort: ReasoningEffort.none,
+          temperature: 0.7,
+        },
+      },
+      EModelEndpoint.azureOpenAI,
+    );
+    expect(llmConfig).toHaveProperty('temperature', 0.7);
+    const agents = await callAndCapture({
+      appConfig: { endpoints: { azureOpenAI: azure } } as AppConfig,
+      agents: [
+        makeReasoningAgent({
+          provider: Providers.AZURE,
+          endpoint: EModelEndpoint.azureOpenAI,
+          model: 'production-west',
+          model_parameters: { ...llmConfig },
+        }),
+      ],
+      summarizationConfig: {
+        provider: EModelEndpoint.azureOpenAI,
+        parameters: { reasoning_effort: 'high' },
+      },
+    });
+
+    const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+    const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+    const summaryModel = new AzureChatOpenAI({
+      ...mainClientOptions,
+      ...(summaryConfig.parameters as Record<string, unknown>),
+    } as never);
+    const request = summaryModel.invocationParams() as Record<string, unknown>;
+
+    expect(request).toMatchObject({ reasoning_effort: 'high' });
+    expect(request.temperature).toBeUndefined();
+  });
+
   it('maps effort to verbosity for OpenRouter adaptive Anthropic models', async () => {
     const agents = await callAndCapture({
       agents: [
@@ -985,6 +1211,67 @@ describe('summarization reasoning effort', () => {
       temperature: 0.2,
       streaming: false,
       reasoning_effort: '',
+    });
+  });
+
+  describe("on another model of the agent's OpenAI endpoint", () => {
+    /** The request the summary client sends, built as the SDK builds it: the summary
+     *  parameters over the client options initialization resolves from the saved ones. */
+    async function summaryRequest(
+      saved: { reasoning_effort: ReasoningEffort; useResponsesApi?: boolean },
+      model: string,
+    ): Promise<Record<string, unknown>> {
+      const { llmConfig } = getOpenAIConfig(
+        'test-key',
+        { modelOptions: { model: 'o3', ...saved } },
+        EModelEndpoint.openAI,
+      );
+      const agents = await callAndCapture({
+        agents: [
+          makeReasoningAgent({
+            provider: EModelEndpoint.openAI,
+            endpoint: EModelEndpoint.openAI,
+            model: 'o3',
+            model_parameters: { ...llmConfig },
+          }),
+        ],
+        summarizationConfig: { provider: EModelEndpoint.openAI, model },
+      });
+      const mainClientOptions = agents[0].clientOptions as Record<string, unknown>;
+      const summaryConfig = agents[0].summarizationConfig as Record<string, unknown>;
+      const summaryModel = new ChatOpenAI({
+        ...mainClientOptions,
+        ...(summaryConfig.parameters as Record<string, unknown>),
+        apiKey: 'test-key',
+        model,
+      } as never);
+      return summaryModel.invocationParams() as Record<string, unknown>;
+    }
+
+    it('leaves the Chat Completions effort behind for a model that takes none', async () => {
+      const request = await summaryRequest({ reasoning_effort: ReasoningEffort.high }, 'gpt-4.1');
+
+      expect(request).toMatchObject({ model: 'gpt-4.1' });
+      expect(request).not.toHaveProperty('reasoning_effort');
+    });
+
+    it('leaves the Responses reasoning object behind for a model that takes none', async () => {
+      const request = await summaryRequest(
+        { reasoning_effort: ReasoningEffort.high, useResponsesApi: true },
+        'gpt-4.1',
+      );
+
+      expect(request).toMatchObject({ model: 'gpt-4.1' });
+      expect(request.reasoning).toBeUndefined();
+    });
+
+    it('keeps the effort for a model that takes one', async () => {
+      const request = await summaryRequest(
+        { reasoning_effort: ReasoningEffort.high },
+        'gpt-5-mini',
+      );
+
+      expect(request).toMatchObject({ model: 'gpt-5-mini', reasoning_effort: 'high' });
     });
   });
 });
@@ -3739,6 +4026,16 @@ describe('built-in provider request shaping', () => {
     });
     const config = agents[0].summarizationConfig as Record<string, unknown>;
     expect(config.parameters).toBeUndefined();
+  });
+
+  it('leaves out sampling controls a GPT-5.1 summarizer rejects beside its effort', async () => {
+    const parameters = await summarizeWith(
+      { reasoning_effort: 'high', temperature: 0.7 },
+      'gpt-5.1',
+    );
+
+    expect(parameters).toMatchObject({ modelKwargs: { reasoning_effort: 'high' } });
+    expect(parameters.temperature).toBeUndefined();
   });
 
   it('routes a reasoning model the way the agent flow would', async () => {

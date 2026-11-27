@@ -33,6 +33,8 @@ export interface OpenAIConfigOptions {
   streaming?: boolean;
   addParams?: Record<string, unknown>;
   dropParams?: string[];
+  /** The efforts an Azure deployment declares it accepts (its group's `reasoningEfforts`). */
+  reasoningEfforts?: readonly string[];
   customParams?: Partial<TConfig['customParams']>;
 }
 

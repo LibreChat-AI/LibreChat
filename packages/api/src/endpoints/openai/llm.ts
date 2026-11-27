@@ -132,15 +132,47 @@ function isOpenAIEndpoint(endpoint?: EModelEndpoint | string | null): boolean {
   return endpoint === EModelEndpoint.openAI || endpoint === EModelEndpoint.azureOpenAI;
 }
 
+const reasoningModelPattern = /(?:^|[/._-])(?:o\d|gpt-(?:[5-9]|\d{2,})|gpt-oss)(?:[-.]|$)/i;
+/** ChatGPT's `-chat` and the `-search` snapshots do not reason, and the o1
+ * previews reason without taking an effort. */
+const effortlessPattern = /-(?:chat|search)(?:[-.]|$)|(?:^|[/._-])o1-(?:mini|preview)(?:[-.]|$)/i;
+/** GPT-5.1 and later GPT-5 releases. */
+const versionedGpt5Pattern = /(?:^|[/._-])gpt-5\.\d/i;
+
+/**
+ * Whether an OpenAI model takes a reasoning effort: the o-series, GPT-5 onward
+ * and gpt-oss. Other models, such as GPT-4o, GPT-4.1, `gpt-5-chat-latest` and
+ * `o1-mini`, reject the parameter, so a stored effort must not reach them.
+ */
+export function takesReasoningEffort(model?: string | null): boolean {
+  return (
+    typeof model === 'string' && reasoningModelPattern.test(model) && !effortlessPattern.test(model)
+  );
+}
+
+/**
+ * Whether a model takes sampling controls only at effort `none` and rejects
+ * them beside any other effort: GPT-5.1 and later, and a deployment known only
+ * by its declared efforts, whose name cannot say which model it runs.
+ */
+export function limitsSamplingToNoEffort(
+  model?: string | null,
+  reasoningEfforts?: readonly string[],
+): boolean {
+  return (
+    versionedGpt5Pattern.test(model ?? '') ||
+    (reasoningEfforts != null && !takesReasoningEffort(model))
+  );
+}
+
 /**
  * GPT-5.6 models reason by default and reject function tools alongside
  * reasoning in `/v1/chat/completions` (400: "To use function tools, use
  * /v1/responses or set reasoning_effort to 'none'"). Tools are bound after
- * config time, and the Chat Completions client never transmits the flat
- * `reasoning_effort` this config sets, so a request there always runs at the
- * provider's default effort, whether the user chose `none`, another effort, or
- * nothing. GPT-5.6 therefore defaults to the Responses API, which carries the
- * selected effort as `reasoning.effort`.
+ * config time, so a Chat Completions request with tools fails unless the
+ * effort is `none`, including when the user chose nothing. GPT-5.6 therefore
+ * defaults to the Responses API, which carries the selected effort as
+ * `reasoning.effort`.
  */
 const responsesApiRequiredPattern = /\bgpt-5\.6\b/;
 
@@ -496,6 +528,32 @@ const sol62SamplingKeys = [
   'top_logprobs',
 ] as const;
 
+/** Clears the sampling controls from request options layered over inherited
+ * ones: an explicit undefined replaces an inherited value, and `modelKwargs`
+ * and `include` are copied without them. */
+export function clearSamplingControls(
+  parameters: Record<string, unknown>,
+  inherited?: Record<string, unknown>,
+): Record<string, unknown> {
+  const effective = { ...inherited, ...parameters };
+  const cleared: Record<string, unknown> = { ...parameters };
+  for (const key of sol62SamplingKeys) {
+    cleared[key] = undefined;
+  }
+  const kwargs = effective.modelKwargs;
+  if (kwargs != null && typeof kwargs === 'object' && !Array.isArray(kwargs)) {
+    const copy = { ...(kwargs as Record<string, unknown>) };
+    for (const key of sol62SamplingKeys) {
+      delete copy[key];
+    }
+    cleared.modelKwargs = copy;
+  }
+  if (Array.isArray(effective.include)) {
+    cleared.include = effective.include.filter((value) => value !== 'message.output_text.logprobs');
+  }
+  return cleared;
+}
+
 /** Mutates request copies; explicit undefined values clear inherited summary options. */
 export function applySol62Constraints(
   parameters: Record<string, unknown>,
@@ -702,12 +760,14 @@ export function getOpenAILLMConfig({
   useOpenRouter,
   directEndpoint,
   requestIdentity,
+  reasoningEfforts,
   reasoningFormat = ReasoningParameterFormat.reasoningEffort,
   modelOptions: _modelOptions,
 }: {
   apiKey: string;
   streaming: boolean;
   requestIdentity?: t.OpenAIConfigOptions['requestIdentity'];
+  reasoningEfforts?: t.OpenAIConfigOptions['reasoningEfforts'];
   baseURL?: string | null;
   endpoint?: EModelEndpoint | string | null;
   modelOptions: Partial<t.OpenAIParameters>;
@@ -1105,6 +1165,9 @@ export function getOpenAILLMConfig({
   const solLunaRulesApply =
     firstPartyEndpoint && (tier === 'sol' || tier === 'terra' || tier === 'luna');
   const sol62 = firstPartyEndpoint && gpt6Release(llmConfig.model)?.toLowerCase() === 'gpt-6.2-sol';
+  /** An Azure deployment name does not identify its model, so its declared
+   * efforts are evidence of taking one too. */
+  const takesEffort = reasoningEfforts != null || takesReasoningEffort(llmConfig.model);
   if (!useOpenRouter) {
     hasModelKwargs =
       applyReasoningConfig({
@@ -1117,17 +1180,6 @@ export function getOpenAILLMConfig({
         reasoningMode,
         reasoningContext,
       }) || hasModelKwargs;
-  }
-
-  /** Flat effort is an ignored constructor field in Chat Completions. Convert
-   * after shaping (including nested defaults), before administrator drops. */
-  if (solLunaRulesApply && llmConfig.useResponsesApi !== true) {
-    const effort = llmConfig.reasoning_effort ?? llmConfig.reasoning?.effort;
-    if (effort != null && effort !== '') {
-      modelKwargs.reasoning_effort = effort;
-      hasModelKwargs = true;
-    }
-    delete llmConfig.reasoning_effort;
   }
 
   /** DeepSeek thinking-mode requires `reasoning_content` replay on tool turns (#13366). */
@@ -1189,6 +1241,26 @@ export function getOpenAILLMConfig({
     dropParams.forEach((param) => deleteConfigParam({ param, llmConfig, modelKwargs }));
   }
 
+  /** Chat Completions never sends the flat `reasoning_effort` shaped above: the
+   * client reads effort from `reasoning`, which Azure also ignores for a
+   * deployment name without a model family, or from `modelKwargs`. The selected
+   * effort therefore goes in `modelKwargs`, ahead of a configured
+   * `reasoning.effort` as on the Responses API, which is aligned so the client
+   * cannot send it instead. Models that take no effort reject the parameter and
+   * never receive it. Runs after administrator drops, so dropping `reasoning`
+   * also drops the effort it carried. */
+  if (isOpenAIEndpoint(endpoint) && !useOpenRouter && llmConfig.useResponsesApi !== true) {
+    const effort = llmConfig.reasoning_effort ?? llmConfig.reasoning?.effort;
+    delete llmConfig.reasoning_effort;
+    if (takesEffort && effort != null && effort !== '') {
+      modelKwargs.reasoning_effort = effort;
+      hasModelKwargs = true;
+      if (llmConfig.reasoning != null) {
+        llmConfig.reasoning = { ...llmConfig.reasoning, effort };
+      }
+    }
+  }
+
   /** Normalize the final effective value in either API, regardless of whether
    * it came from saved settings, flat params, or a nested configured object.
    * Copy nested objects so administrator defaults are never mutated. */
@@ -1213,7 +1285,15 @@ export function getOpenAILLMConfig({
     solLunaRulesApply &&
     llmConfig.useResponsesApi === true &&
     llmConfig.reasoning?.effort !== ReasoningEffort.none;
-  if (!sol62 && solLunaResponsesReasoning) {
+  /** Some models take sampling controls only at effort `none` and reject them
+   * alongside any other effort the request sends, on either API. */
+  const sentEffort =
+    llmConfig.useResponsesApi === true ? llmConfig.reasoning?.effort : modelKwargs.reasoning_effort;
+  const rejectsSampling =
+    limitsSamplingToNoEffort(llmConfig.model, reasoningEfforts) &&
+    sentEffort != null &&
+    sentEffort !== ReasoningEffort.none;
+  if ((!sol62 && solLunaResponsesReasoning) || rejectsSampling) {
     for (const param of [
       'temperature',
       'topP',

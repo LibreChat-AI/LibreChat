@@ -95,18 +95,21 @@ import {
   resolveAttachedCodeApprovalMode,
 } from '~/agents/hitl/byom';
 import {
-  CHECK_BACKGROUND_TASK_NAME,
-  registerBackgroundTaskTool,
-  stripBackgroundFromToolRegistry,
-  stripBackgroundFromToolDefinitions,
-} from '~/agents/background';
-import {
+  takesReasoningEffort,
+  clearSamplingControls,
   extractDefaultParams,
+  limitsSamplingToNoEffort,
   getOpenAILLMConfig,
   isNativeCyberRequest,
   resolveReasoningParams,
   applySol62Constraints,
 } from '~/endpoints/openai/llm';
+import {
+  CHECK_BACKGROUND_TASK_NAME,
+  registerBackgroundTaskTool,
+  stripBackgroundFromToolRegistry,
+  stripBackgroundFromToolDefinitions,
+} from '~/agents/background';
 import {
   createSubagentWakeupHandleHook,
   agentUsesSubagentCompletionWakeups,
@@ -148,6 +151,7 @@ import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm
 import { hasModelBoundContentProtection } from '../middleware/modelBoundContent';
 import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
+import { getOpenAIEndpointParameters } from '~/endpoints/openai/parameters';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
@@ -709,11 +713,13 @@ function agentModelKwargs(
   return isPlainObject(modelParameters.modelKwargs) ? modelParameters.modelKwargs : undefined;
 }
 
-/** The SDK inherits same-provider kwargs. Model switches must drop deployment aliases and Cyber access. */
+/** The SDK inherits same-provider kwargs. Model switches must drop deployment aliases, Cyber
+ *  access, and a reasoning effort the summary model does not take (`dropEffort`). */
 function summarizationModelKwargs(
   agentKwargs: Record<string, unknown> | undefined,
   agentModel: string | undefined,
   summarizationModel: string | undefined,
+  dropEffort = false,
 ): Record<string, unknown> | undefined {
   if (
     agentKwargs == null ||
@@ -723,12 +729,16 @@ function summarizationModelKwargs(
     return undefined;
   }
   const cyberAccess = agentModel === 'gpt-6-cyber' && 'access_programs' in agentKwargs;
-  if (!('model' in agentKwargs) && !cyberAccess) {
+  const effort = dropEffort && 'reasoning_effort' in agentKwargs;
+  if (!('model' in agentKwargs) && !cyberAccess && !effort) {
     return undefined;
   }
   const { model: _alias, ...kwargs } = agentKwargs;
   if (cyberAccess) {
     delete kwargs.access_programs;
+  }
+  if (effort) {
+    delete kwargs.reasoning_effort;
   }
   return kwargs;
 }
@@ -1193,6 +1203,11 @@ function resolveAzureSummarization(
       dropParams: group?.dropParams?.filter(
         (key) => key !== 'useResponsesApi' || typeof parameters?.useResponsesApi !== 'boolean',
       ),
+      reasoningEfforts: getOpenAIEndpointParameters(
+        appConfig,
+        EModelEndpoint.azureOpenAI,
+        source?.model ?? model,
+      ).reasoningEfforts,
       transportTimeouts: resolveModelTransportTimeouts(appConfig?.endpoints?.agents),
     },
     EModelEndpoint.azureOpenAI,
@@ -1548,10 +1563,23 @@ function shapeSummarizationConfig(
           azureOverrides != null || openAIOverrides != null,
         )
       : userParameters;
+  /** A summary on another model of the agent's OpenAI endpoint inherits the agent's client
+   *  options, so an effort that model does not take has to stay behind. */
+  const dropEffort =
+    agentEndpoint === EModelEndpoint.openAI &&
+    provider === fallbackProvider &&
+    isNonEmptyString(model) &&
+    model !== fallbackModel &&
+    !takesReasoningEffort(model);
   /** Placed first so an explicit user `modelKwargs` still replaces the agent's wholesale. */
   const modelKwargs =
     provider === fallbackProvider
-      ? summarizationModelKwargs(agentModelKwargs(agent?.model_parameters), fallbackModel, model)
+      ? summarizationModelKwargs(
+          agentModelKwargs(agent?.model_parameters),
+          fallbackModel,
+          model,
+          dropEffort,
+        )
       : undefined;
   /**
    * A scalar `reasoning_effort` — the only reasoning shape the yaml schema
@@ -1564,6 +1592,65 @@ function shapeSummarizationConfig(
     model,
     parameters: modelKwargs != null ? { modelKwargs, ...mergedParameters } : mergedParameters,
   });
+  if (dropEffort && parameters?.reasoning === undefined) {
+    parameters = { ...parameters, reasoning: undefined };
+  }
+  /** An agent's Chat Completions effort rides in its `modelKwargs`, which the SDK's Azure client
+   *  sends even for a deployment name it cannot classify, where it ignores `reasoning`. A summary
+   *  that sets its own effort replaces the inherited one there too. */
+  const summaryEffort = isPlainObject(parameters?.reasoning)
+    ? parameters.reasoning.effort
+    : undefined;
+  const agentKwargs =
+    provider === fallbackProvider ? agentModelKwargs(agent?.model_parameters) : undefined;
+  const carriedKwargs = isPlainObject(parameters?.modelKwargs)
+    ? parameters.modelKwargs
+    : agentKwargs;
+  if (
+    typeof mergedParameters?.reasoning_effort === 'string' &&
+    typeof summaryEffort === 'string' &&
+    carriedKwargs != null &&
+    'reasoning_effort' in carriedKwargs
+  ) {
+    parameters = {
+      ...parameters,
+      modelKwargs: { ...carriedKwargs, reasoning_effort: summaryEffort },
+    };
+  }
+  /** The summary's effective effort, its own or the agent's it inherits, follows the main
+   *  request's rule on the OpenAI and Azure clients: a model that takes sampling controls only at
+   *  `none` cannot keep them beside another effort, whether the agent or the summary
+   *  configuration supplies them. */
+  const inheritedOptions = provider === fallbackProvider ? agent?.model_parameters : undefined;
+  const effortKwargs = isPlainObject(parameters?.modelKwargs)
+    ? parameters.modelKwargs
+    : agentModelKwargs(inheritedOptions);
+  const effortReasoning =
+    parameters != null && 'reasoning' in parameters
+      ? parameters.reasoning
+      : (inheritedOptions as Record<string, unknown> | undefined)?.reasoning;
+  const effectiveEffort =
+    (isPlainObject(effortReasoning) ? effortReasoning.effort : undefined) ??
+    effortKwargs?.reasoning_effort;
+  const summaryKey =
+    model === fallbackModel ? ((agent?.model as string | undefined) ?? model) : model;
+  if (
+    (provider === Providers.OPENAI || provider === Providers.AZURE) &&
+    typeof effectiveEffort === 'string' &&
+    effectiveEffort !== ReasoningEffort.none &&
+    limitsSamplingToNoEffort(
+      summaryKey,
+      targetsAzure
+        ? getOpenAIEndpointParameters(appConfig, EModelEndpoint.azureOpenAI, summaryKey)
+            .reasoningEfforts
+        : undefined,
+    )
+  ) {
+    parameters = clearSamplingControls(
+      parameters ?? {},
+      inheritedOptions as Record<string, unknown> | undefined,
+    );
+  }
 
   const inheritedParameters: Record<string, unknown> | undefined =
     provider === fallbackProvider ? agent?.model_parameters : undefined;
