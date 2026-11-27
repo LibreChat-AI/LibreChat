@@ -216,6 +216,13 @@ export interface AgentEventActorReconciliationStorageMetrics {
 }
 
 const ARCHIVE_CONVERSATION_BATCH_SIZE = 500;
+/**
+ * How many chats of an archive-all batch take their retention at once. Fixed on purpose, like the
+ * batch size and the project refresh beside it: it paces one request's own writes and changes
+ * nothing about which chats are archived or how they are retained, so there is no behavior to
+ * configure. Database load is already bounded by the connection pool (`MONGO_MAX_POOL_SIZE`, the
+ * driver's 100 by default), and ten keeps one user's sweep from holding most of that pool.
+ */
 const ARCHIVE_RETENTION_CONCURRENCY = 10;
 const PROJECT_STATS_REFRESH_CONCURRENCY = 10;
 const PROJECT_STATS_REFRESH_MAX_PASSES = 2;
