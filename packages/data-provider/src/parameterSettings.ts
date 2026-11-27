@@ -32,10 +32,10 @@ import {
   reasoningOverrideSchema,
   ReasoningParameterFormat,
 } from './schemas';
+import { isGeminiHydrogen, supportsGeminiXHighThinking } from './gemini';
 import { resolveEffectiveUseResponsesApi } from './file-config';
 import { gpt6Tier, gpt6Release } from './families';
 import { clampSettingRange } from './generate';
-import { isGeminiHydrogen } from './gemini';
 
 // Base definitions
 const baseDefinitions: Record<string, SettingDefinition> = {
@@ -1865,7 +1865,7 @@ function applyModelFamilyDefaults(
       ? settings
           .filter(
             (setting) =>
-              !isGeminiHydrogen(model) ||
+              !supportsGeminiXHighThinking(model) ||
               !['thinkingBudget', 'temperature', 'topP', 'topK'].includes(setting.key),
           )
           .map((setting) => {
@@ -1878,7 +1878,7 @@ function applyModelFamilyDefaults(
                   setting.range && { range: { ...setting.range, max, modelSpecific: true } }),
               };
             }
-            if (setting.key === 'thinkingLevel' && isGeminiHydrogen(model)) {
+            if (setting.key === 'thinkingLevel' && supportsGeminiXHighThinking(model)) {
               return {
                 ...setting,
                 options: [

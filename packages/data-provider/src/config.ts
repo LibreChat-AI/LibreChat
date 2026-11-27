@@ -5629,6 +5629,7 @@ export const defaultModels = {
   ],
   [EModelEndpoint.google]: [
     // Gemini 4 Models
+    'gemini-4-neon',
     'gemini-4-hydrogen',
     'gemini-4-argon',
     // Gemini 3.8 Models

@@ -1863,6 +1863,24 @@ describe('Google Model Tests', () => {
     expect(getPremiumRate('gemini-4-argon', 'prompt', 900000)).toBeNull();
   });
 
+  it('should apply the Gemini 4 Neon rates', () => {
+    for (const model of ['gemini-4-neon', 'models/gemini-4-neon']) {
+      expect(getValueKey(model, EModelEndpoint.google)).toBe('gemini-4-neon');
+      expect(getMultiplier({ model, tokenType: 'prompt', endpoint: EModelEndpoint.google })).toBe(
+        3,
+      );
+      expect(
+        getMultiplier({ model, tokenType: 'completion', endpoint: EModelEndpoint.google }),
+      ).toBe(15);
+      expect(getCacheMultiplier({ model, cacheType: 'write' })).toBe(3);
+      expect(getCacheMultiplier({ model, cacheType: 'read' })).toBe(0.15);
+    }
+  });
+
+  it('should not apply a long-context premium tier to Gemini 4 Neon', () => {
+    expect(getPremiumRate('gemini-4-neon', 'prompt', 900000)).toBeNull();
+  });
+
   it('should apply the introductory Flash rates to Gemini 3.6, 3.7 and 3.8 Flash', () => {
     for (const model of ['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash']) {
       expect(getMultiplier({ model, tokenType: 'prompt', endpoint: EModelEndpoint.google })).toBe(

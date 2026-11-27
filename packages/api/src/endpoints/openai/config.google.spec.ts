@@ -154,7 +154,13 @@ describe('getOpenAIConfig - Google Compatibility', () => {
         expect(result.tools).toEqual([]);
       });
 
-      it.each(['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash', 'gemini-4-argon'])(
+      it.each([
+        'gemini-3.6-flash',
+        'gemini-3.7-flash',
+        'gemini-3.8-flash',
+        'gemini-4-argon',
+        'gemini-4-neon',
+      ])(
         'should strip Flash-blocked addParams so the transform cannot re-add them (%s)',
         (model) => {
           const apiKey = JSON.stringify({ GOOGLE_API_KEY: 'test-google-key' });
@@ -191,6 +197,7 @@ describe('getOpenAIConfig - Google Compatibility', () => {
 
       it.each([
         ['gemini-4-argon', false],
+        ['gemini-4-neon', true],
         ['gemini-3.8-flash', true],
       ])(
         'should strip candidate-count addParams only where the model rejects them (%s)',
@@ -631,6 +638,7 @@ describe('getOpenAIConfig - Google Compatibility', () => {
         'gemini-3.8-flash',
         'gemini-4-argon',
         'gemini-4-argon-cyber-permissive',
+        'gemini-4-neon',
       ])('does not forward the default level a Flash model fills in (%s)', (model) => {
         const result = getGeminiConfig({ model });
 
@@ -641,6 +649,8 @@ describe('getOpenAIConfig - Google Compatibility', () => {
         ['gemini-4-argon', 'minimal', 'low'],
         ['gemini-4-argon', 'high', 'high'],
         ['gemini-4-argon-cyber-permissive', 'low', 'low'],
+        ['gemini-4-neon', 'minimal', 'low'],
+        ['gemini-4-neon', 'medium', 'medium'],
         ['gemini-3.8-flash', 'minimal', 'low'],
         ['gemini-3.7-flash', 'minimal', 'low'],
         ['gemini-3.6-flash', 'minimal', 'minimal'],

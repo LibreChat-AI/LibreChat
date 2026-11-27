@@ -263,6 +263,7 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     // Gemini 4 Argon introductory pricing through 2026-11-30; revert to { prompt: 4, completion: 20 } on 2026-12-01.
     'gemini-4-argon': { prompt: 2, completion: 10 },
     'gemini-4-hydrogen': getGeminiHydrogenRates(),
+    'gemini-4-neon': { prompt: 3, completion: 15 },
     'gemini-pro-vision': { prompt: 0.5, completion: 1.5 },
     grok: { prompt: 2.0, completion: 10.0 },
     'grok-beta': { prompt: 5.0, completion: 15.0 },
@@ -490,6 +491,8 @@ export const cacheTokenValues: Record<string, CacheRates> = {
   // Gemini 4 Argon (implicit caching only) introductory pricing through 2026-11-30; revert to { write: 4, read: 0.2 } on 2026-12-01.
   'gemini-4-argon': { write: 2, read: 0.1 },
   'gemini-4-hydrogen': { write: 1.5, read: getGeminiHydrogenRates().read },
+  // Gemini 4 Neon supports implicit caching only.
+  'gemini-4-neon': { write: 3, read: 0.15 },
 };
 
 /**
