@@ -73,6 +73,10 @@ export enum PermissionTypes {
    */
   SCHEDULES = 'SCHEDULES',
   /**
+   * Type for Chat Project Permissions
+   */
+  PROJECTS = 'PROJECTS',
+  /**
    * Type for Agent Event Subscriptions Permissions
    */
   AGENT_EVENTS = 'AGENT_EVENTS',
@@ -101,6 +105,7 @@ export const PERMISSION_TYPE_INTERFACE_FIELDS: Record<PermissionTypes, string> =
   [PermissionTypes.SKILLS]: 'skills',
   [PermissionTypes.SHARED_LINKS]: 'sharedLinks',
   [PermissionTypes.SCHEDULES]: 'schedules',
+  [PermissionTypes.PROJECTS]: 'projects',
   [PermissionTypes.AGENT_EVENTS]: 'agentEvents',
 };
 
@@ -270,6 +275,27 @@ export const schedulesPermissionsSchema = z.object({
 });
 export type TSchedulesPermissions = z.infer<typeof schedulesPermissionsSchema>;
 
+export const projectsPermissionsSchema = z.object({
+  [Permissions.USE]: z.boolean().default(true),
+  [Permissions.CREATE]: z.boolean().default(true),
+});
+export type TProjectsPermissions = z.infer<typeof projectsPermissionsSchema>;
+
+/**
+ * Whether a role's stored permissions allow a Chat Projects action. Projects predate the
+ * permission type, so a role with no `PROJECTS` entry, or one missing the field, holds the
+ * schema default (allowed) instead of losing projects on upgrade. `USE` is required for every
+ * action, so a role that may create but not use projects may do neither.
+ */
+export function hasProjectsPermission(
+  permissions: Partial<Record<string, Partial<Record<string, boolean>> | undefined>> | undefined,
+  permission: Permissions.USE | Permissions.CREATE,
+): boolean {
+  const stored = permissions?.[PermissionTypes.PROJECTS];
+  const allows = (field: Permissions.USE | Permissions.CREATE) => stored?.[field] ?? true;
+  return allows(Permissions.USE) && (permission === Permissions.USE || allows(permission));
+}
+
 /** Off until an operator turns it on: a subscription runs an agent on text outsiders write. */
 export const agentEventsPermissionsSchema = z.object({
   [Permissions.USE]: z.boolean().default(false),
@@ -303,5 +329,6 @@ export const permissionsSchema = z.object({
   [PermissionTypes.SKILLS]: skillPermissionsSchema,
   [PermissionTypes.SHARED_LINKS]: sharedLinksPermissionsSchema,
   [PermissionTypes.SCHEDULES]: schedulesPermissionsSchema,
+  [PermissionTypes.PROJECTS]: projectsPermissionsSchema,
   [PermissionTypes.AGENT_EVENTS]: agentEventsPermissionsSchema,
 });

@@ -5,7 +5,8 @@ import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { useLocalize } from '~/hooks';
 
 type ProjectsNavBarProps = {
-  onCreate: () => void;
+  /** Omitted for a role that may not create projects, which then gets no create button. */
+  onCreate?: () => void;
   search: string;
   onSearchChange: (search: string) => void;
 };
@@ -26,12 +27,20 @@ export default function ProjectsNavBar({ onCreate, search, onSearchChange }: Pro
           label={localize('com_ui_search_projects')}
           containerClassName="order-last w-full min-w-0 md:order-none md:w-auto md:max-w-md md:flex-1"
         />
-        <div className="ms-auto flex shrink-0 items-center gap-2">
-          <Button type="button" variant="default" size="sm" onClick={onCreate} className="shrink-0">
-            <Plus className="size-4" aria-hidden="true" />
-            {localize('com_ui_new_project')}
-          </Button>
-        </div>
+        {onCreate ? (
+          <div className="ms-auto flex shrink-0 items-center gap-2">
+            <Button
+              type="button"
+              variant="default"
+              size="sm"
+              onClick={onCreate}
+              className="shrink-0"
+            >
+              <Plus className="size-4" aria-hidden="true" />
+              {localize('com_ui_new_project')}
+            </Button>
+          </div>
+        ) : null}
       </div>
     </header>
   );

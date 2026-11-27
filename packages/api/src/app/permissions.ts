@@ -64,6 +64,8 @@ function hasExplicitConfig(
       return interfaceConfig?.skills !== undefined;
     case PermissionTypes.SHARED_LINKS:
       return interfaceConfig?.sharedLinks !== undefined;
+    case PermissionTypes.PROJECTS:
+      return interfaceConfig?.projects !== undefined;
     case PermissionTypes.SCHEDULES: {
       // `schedules` is dual-purpose. The BOOLEAN form is the RUNTIME kill switch read
       // by getLimits, NOT a permission config: treating it as explicit would write
@@ -345,6 +347,10 @@ export async function updateInterfacePermissions(
       typeof defaults.agents === 'boolean' ? defaults.agents : defaults.agents?.use;
     const skillsDefaultUse =
       typeof defaults.skills === 'boolean' ? defaults.skills : defaults.skills?.use;
+    const projectsDefaultUse =
+      typeof defaults.projects === 'boolean' ? defaults.projects : defaults.projects?.use;
+    const projectsDefaultCreate =
+      typeof defaults.projects === 'object' ? defaults.projects?.create : undefined;
     const promptsDefaultCreate =
       typeof defaults.prompts === 'object' ? defaults.prompts?.create : undefined;
     const agentsDefaultCreate =
@@ -406,6 +412,24 @@ export async function updateInterfacePermissions(
                 getConfigPublic(loadedInterface.prompts),
                 defaultPerms[PermissionTypes.PROMPTS]?.[Permissions.SHARE_PUBLIC],
                 promptsDefaultPublic,
+              ),
+            }
+          : {}),
+      },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.USE]: getPermissionValue(
+          getConfigUse(loadedInterface.projects),
+          defaultPerms[PermissionTypes.PROJECTS]?.[Permissions.USE],
+          projectsDefaultUse,
+        ),
+        ...((typeof interfaceConfig?.projects === 'object' &&
+          'create' in interfaceConfig.projects) ||
+        !existingPermissions?.[PermissionTypes.PROJECTS]
+          ? {
+              [Permissions.CREATE]: getPermissionValue(
+                getConfigCreate(loadedInterface.projects),
+                defaultPerms[PermissionTypes.PROJECTS]?.[Permissions.CREATE],
+                projectsDefaultCreate ?? true,
               ),
             }
           : {}),

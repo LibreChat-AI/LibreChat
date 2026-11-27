@@ -35,7 +35,13 @@ import {
   useGetPresetsQuery,
   useProjectQuery,
 } from '~/data-provider';
-import { useIdChangeEffect, useAppStartup, useNewConvo, useLocalize } from '~/hooks';
+import {
+  useNewConvo,
+  useLocalize,
+  useAppStartup,
+  useIdChangeEffect,
+  useProjectsAccess,
+} from '~/hooks';
 import { hasRetiredSavedSpec } from '~/utils/convos';
 import { ToolCallsMapProvider } from '~/Providers';
 import ChatView from '~/components/Chat/ChatView';
@@ -67,7 +73,11 @@ export default function ChatRoute() {
   const { key } = useLocation();
   const navigationType = useNavigationType();
   const projectIdParam = searchParams.get('projectId');
-  const chatProjectId = isValidChatProjectId(projectIdParam) ? projectIdParam : null;
+  const projectsAccess = useProjectsAccess();
+  /** A role without Chat Projects starts every chat outside one, whatever the link says. */
+  const projectsOff = projectsAccess.loaded && !projectsAccess.canUse;
+  const chatProjectId =
+    !projectsOff && isValidChatProjectId(projectIdParam) ? projectIdParam : null;
   useIdChangeEffect(conversationId);
   usePrefetchConversationMessages(conversationId, isAuthenticated);
   const { hasSetConversation, conversation } = store.useCreateConversationAtom(index);
@@ -139,9 +149,10 @@ export default function ChatRoute() {
    * stale chip lingers and sends target a dead project.
    */
   const projectScopeMissing =
-    Boolean(chatProjectId) &&
     conversationId === Constants.NEW_CONVO &&
-    (projectNotFound || (projectQuery.isSuccess && projectQuery.data?._id !== chatProjectId));
+    ((projectsOff && projectIdParam != null) ||
+      (Boolean(chatProjectId) &&
+        (projectNotFound || (projectQuery.isSuccess && projectQuery.data?._id !== chatProjectId))));
 
   useEffect(() => {
     if (!projectScopeMissing) {

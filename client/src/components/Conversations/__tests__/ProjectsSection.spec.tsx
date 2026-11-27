@@ -10,13 +10,14 @@ const mockProjects = [
   { _id: 'p1', name: 'Home' },
   { _id: 'p2', name: 'Guardrails' },
 ];
+const mockListed = { current: mockProjects };
 
 jest.mock('~/data-provider', () => {
   const { useInfiniteQuery } = jest.requireActual('@tanstack/react-query');
   return {
     useActiveJobs: () => ({ data: undefined }),
     useProjectsInfiniteQuery: () => ({
-      data: { pages: [{ projects: mockProjects, nextCursor: null }] },
+      data: { pages: [{ projects: mockListed.current, nextCursor: null }] },
       isLoading: false,
     }),
     /** The real observer, so the spec sees what a disabled query actually reports. */
@@ -47,7 +48,9 @@ jest.mock('~/store', () => ({
   default: { conversationIdByIndex: () => null, conversationByIndex: () => null },
 }));
 
+const mockProjectsAccess = { current: { loaded: true, canUse: true, canCreate: true } };
 jest.mock('~/hooks', () => ({
+  useProjectsAccess: () => mockProjectsAccess.current,
   useLocalize: () => (key: string) => key,
   useLocalStorage: () => [true, () => undefined],
   useNewConvo: () => ({ newConversation: () => undefined }),
@@ -266,5 +269,34 @@ describe('ProjectsSection row menus', () => {
 
     expect(triggers()[1]).toBe(placeholder);
     expect(anchors(listen)).toBe(0);
+  });
+});
+
+describe('ProjectsSection without PROJECTS.CREATE', () => {
+  afterEach(() => {
+    mockListed.current = mockProjects;
+    mockProjectsAccess.current = { loaded: true, canUse: true, canCreate: true };
+  });
+
+  it('offers to create the first project only to a role that may', () => {
+    mockListed.current = [];
+    renderSection();
+    expect(screen.getByRole('button', { name: 'com_ui_new_project' })).toBeInTheDocument();
+  });
+
+  it('says there are no projects instead of offering one it would refuse', () => {
+    mockListed.current = [];
+    mockProjectsAccess.current = { loaded: true, canUse: true, canCreate: false };
+    renderSection();
+
+    expect(screen.queryByRole('button', { name: 'com_ui_new_project' })).not.toBeInTheDocument();
+    expect(screen.getByText('com_ui_no_projects')).toBeInTheDocument();
+  });
+
+  it('keeps listing existing projects', () => {
+    mockProjectsAccess.current = { loaded: true, canUse: true, canCreate: false };
+    renderSection();
+
+    expect(screen.getByText('Home')).toBeInTheDocument();
   });
 });

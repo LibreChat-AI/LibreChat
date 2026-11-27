@@ -7,12 +7,12 @@ import type { TChatProject } from 'librechat-data-provider';
 import type { ProjectSort } from './ProjectsSortMenu';
 import type { MenuItemProps } from '~/common';
 import { useProjectsInfiniteQuery } from '~/data-provider';
+import { useLocalize, useProjectsAccess } from '~/hooks';
 import ProjectCreateDialog from './ProjectCreateDialog';
 import ProjectDeleteDialog from './ProjectDeleteDialog';
 import ProjectEditDialog from './ProjectEditDialog';
 import ProjectsSortMenu from './ProjectsSortMenu';
 import ProjectsNavBar from './ProjectsNavBar';
-import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 function formatActivity(project: TChatProject) {
@@ -185,6 +185,7 @@ export default function ProjectsView() {
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<ProjectSort>('lastConversationAt');
   const [isCreating, setIsCreating] = useState(searchParams.get('new') === '1');
+  const { canCreate } = useProjectsAccess();
   const deferredSearch = useDeferredValue(search);
   const scrollRef = useRef<HTMLElement | null>(null);
   const [pageSentinel, setPageSentinel] = useState<HTMLDivElement | null>(null);
@@ -247,7 +248,7 @@ export default function ProjectsView() {
       className="bg-surface-primary-alt text-text-primary flex h-full min-h-0 flex-col overflow-auto"
     >
       <ProjectsNavBar
-        onCreate={() => setIsCreating(true)}
+        onCreate={canCreate ? () => setIsCreating(true) : undefined}
         search={search}
         onSearchChange={setSearch}
       />
@@ -263,7 +264,7 @@ export default function ProjectsView() {
         </div>
 
         <ProjectCreateDialog
-          open={isCreating}
+          open={isCreating && canCreate}
           onOpenChange={handleCreateDialogChange}
           onCreated={(project) => navigate(`/projects/${project._id}`)}
         />
@@ -289,7 +290,7 @@ export default function ProjectsView() {
               <h3 className="text-text-primary mt-4 text-base font-semibold text-balance">
                 {search ? localize('com_ui_no_matching_projects') : localize('com_ui_no_projects')}
               </h3>
-              {!search ? (
+              {!search && canCreate ? (
                 <>
                   <p className="text-text-secondary mt-1 max-w-sm text-sm text-pretty">
                     {localize('com_ui_add_first_project')}

@@ -3677,6 +3677,19 @@ export const interfaceSchema = z
         }),
       ])
       .optional(),
+    /** Seeds the PROJECTS role permissions at startup. `false` (or `use: false`) turns Chat
+     *  Projects off for the seeded roles: no project UI, `/api/projects` answers 403, and chats
+     *  filed under a project run without its instructions and files. `create: false` keeps
+     *  existing projects usable but refuses new ones. */
+    projects: z
+      .union([
+        z.boolean(),
+        z.object({
+          use: z.boolean().optional(),
+          create: z.boolean().optional(),
+        }),
+      ])
+      .optional(),
     agents: z
       .union([
         z.boolean(),
@@ -3952,6 +3965,10 @@ export const interfaceSchema = z
       create: true,
       share: false,
       public: false,
+    },
+    projects: {
+      use: true,
+      create: true,
     },
     agents: {
       use: true,

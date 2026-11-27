@@ -39,10 +39,10 @@ import {
   useActiveJobs,
   useConversationsInfiniteQuery,
 } from '~/data-provider';
+import { useLocalize, useLocalStorage, useNewConvo, useProjectsAccess } from '~/hooks';
 import ProjectCreateDialog from '~/components/Projects/ProjectCreateDialog';
 import ProjectDeleteDialog from '~/components/Projects/ProjectDeleteDialog';
 import ProjectEditDialog from '~/components/Projects/ProjectEditDialog';
-import { useLocalize, useLocalStorage, useNewConvo } from '~/hooks';
 import { clearMessagesCache, cn, rowActionClasses } from '~/utils';
 import { Collapse } from '~/components/ui';
 import Convo from './Convo';
@@ -496,6 +496,7 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
   const location = useLocation();
   const [isExpanded, setIsExpanded] = useLocalStorage('projectsSectionExpanded', true);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const { canCreate } = useProjectsAccess();
   const conversation = useRecoilValue(store.conversationByIndex(0));
   const conversationProjectId = conversation?.chatProjectId ?? null;
   /** A project workspace route wins so a leftover conversation scope cannot
@@ -522,6 +523,12 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
         <div className="flex justify-start py-2 ps-2">
           <Spinner tone="secondary" className="h-4 w-4" />
         </div>
+      );
+    }
+
+    if (projects.length === 0 && !canCreate) {
+      return (
+        <p className="text-text-secondary py-1.5 ps-2 text-sm">{localize('com_ui_no_projects')}</p>
       );
     }
 
@@ -613,14 +620,16 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
         <div className="pt-0.5">{renderProjectsBody()}</div>
       </Collapse>
 
-      <ProjectCreateDialog
-        open={isCreateOpen}
-        onOpenChange={setIsCreateOpen}
-        onCreated={(project) => {
-          navigate(`/projects/${project._id}`);
-          toggleNav();
-        }}
-      />
+      {canCreate && (
+        <ProjectCreateDialog
+          open={isCreateOpen}
+          onOpenChange={setIsCreateOpen}
+          onCreated={(project) => {
+            navigate(`/projects/${project._id}`);
+            toggleNav();
+          }}
+        />
+      )}
     </div>
   );
 };

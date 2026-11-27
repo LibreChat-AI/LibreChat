@@ -47,12 +47,12 @@ const loadInsightsView = () =>
 
 const loadProjectsView = () =>
   importWithRecovery(() => import('~/components/Projects')).then((m) => ({
-    Component: m.ProjectsView,
+    Component: m.ProjectsRoute,
   }));
 
 const loadProjectWorkspace = () =>
   importWithRecovery(() => import('~/components/Projects')).then((m) => ({
-    Component: m.ProjectWorkspace,
+    Component: m.ProjectWorkspaceRoute,
   }));
 
 /** These render messages (search results and reviewed conversations) or the agent marketplace,

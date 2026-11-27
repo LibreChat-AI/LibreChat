@@ -82,7 +82,9 @@ jest.mock('~/store', () => {
   };
 });
 
+const mockProjectsAccess = { current: { loaded: true, canUse: true, canCreate: true } };
 jest.mock('~/hooks', () => ({
+  useProjectsAccess: () => mockProjectsAccess.current,
   __esModule: true,
   useLocalize: () => (key: string) => key,
   useHasAccess: () => true,
@@ -257,6 +259,40 @@ describe('ConversationsSection section order', () => {
       projects.compareDocumentPosition(pinned) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(pinned.compareDocumentPosition(chats) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe('ConversationsSection without PROJECTS.USE', () => {
+  beforeEach(() => {
+    mockListParams.mockClear();
+    mockProjectsAccess.current = { loaded: true, canUse: false, canCreate: false };
+  });
+
+  afterEach(() => {
+    mockProjectsAccess.current = { loaded: true, canUse: true, canCreate: true };
+  });
+
+  it('renders no Projects section', async () => {
+    const { queryByTestId, getByTestId } = renderSection();
+    await settleRenders();
+
+    expect(queryByTestId('projects-stub')).not.toBeInTheDocument();
+    expect(getByTestId('conversations-stub')).toBeInTheDocument();
+  });
+
+  it('lists project chats under Chats, since no section holds them', async () => {
+    renderSection();
+    await settleRenders();
+
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({ projectId: undefined });
+  });
+
+  it('keeps the default list query while the role is still loading', async () => {
+    mockProjectsAccess.current = { loaded: false, canUse: false, canCreate: false };
+    renderSection();
+    await settleRenders();
+
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({ projectId: 'unassigned' });
   });
 });
 

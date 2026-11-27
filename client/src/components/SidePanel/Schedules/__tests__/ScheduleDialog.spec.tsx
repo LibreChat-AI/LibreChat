@@ -13,6 +13,7 @@ const mockUseClockFormat = jest.fn(() => true);
 const mockUseWeekStart = jest.fn(() => 0);
 
 jest.mock('~/hooks', () => ({
+  useProjectsAccess: () => ({ loaded: true, canUse: true, canCreate: true }),
   useLocalize: () => (key: string) => key,
   useClockFormat: () => mockUseClockFormat(),
   useWeekStart: () => mockUseWeekStart(),

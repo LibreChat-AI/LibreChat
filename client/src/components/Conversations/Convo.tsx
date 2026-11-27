@@ -17,9 +17,9 @@ import {
   useUpdateConversationMutation,
 } from '~/data-provider';
 import { cn, logger, setDocumentTitle, isConversationUnseen, hasRealTitle } from '~/utils';
+import { useNavigateToConvo, useLocalize, useShiftKey, useProjectsAccess } from '~/hooks';
 import { isCodeConversation } from '~/components/Chat/PullRequest/code';
 import PullRequestRowMark from '~/components/Chat/PullRequest/RowMark';
-import { useNavigateToConvo, useLocalize, useShiftKey } from '~/hooks';
 import ConversationEndpointIcon from './ConversationEndpointIcon';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { focusableInRow, resolveRowBeside } from './focus';
@@ -88,7 +88,9 @@ function Conversation({
        told apart from an ordinary chat and keeps asking, as before. */
     (conversation.codeDecisionListed !== true || isCodeConversation(conversation)) &&
     !isGenerating;
-  const projectBadgeProjectId = showProjectBadge ? conversation.chatProjectId : undefined;
+  const { canUse: canUseProjects } = useProjectsAccess();
+  const projectBadgeProjectId =
+    showProjectBadge && canUseProjects ? conversation.chatProjectId : undefined;
   const isUnseen = isConversationUnseen(conversation);
   const { conversationId, title = '' } = conversation;
   const canRename =

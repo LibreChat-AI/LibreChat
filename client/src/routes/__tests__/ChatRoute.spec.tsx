@@ -76,6 +76,7 @@ jest.mock('~/data-provider', () => ({
   },
 }));
 jest.mock('~/hooks', () => ({
+  useProjectsAccess: () => ({ loaded: true, canUse: true, canCreate: true }),
   useAssistantListMap: () => mockAssistantListMap,
   useIdChangeEffect: () => {},
   useAppStartup: () => {},

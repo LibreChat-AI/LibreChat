@@ -17,6 +17,7 @@ const {
   preflightAssistantUserMessageContent,
   settleAssistantFinal,
   resolveAssistantProjectTurn,
+  projectsAccessFor,
   joinChatProjectInstructions,
   applyForcedTemporaryRequest,
   getAssistantRun,
@@ -55,6 +56,7 @@ const {
   renewBalanceReservation,
   releaseBalanceReservation,
   getChatProject,
+  getRoleByName,
   getProjectFiles,
   getFiles,
 } = require('~/models');
@@ -165,7 +167,12 @@ const chatV2 = async (req, res) => {
         resolvedConversation: req.resolvedConversation,
         filters: req.config?.filters,
       },
-      { getConvo, getChatProject, getProjectFiles },
+      {
+        getConvo,
+        getChatProject,
+        getProjectFiles,
+        canUseProjects: projectsAccessFor(req.user, { getRoleByName }),
+      },
     );
     if (projectTurn.rejection) {
       contentRejected = true;

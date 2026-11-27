@@ -180,6 +180,7 @@ jest.mock('~/server/services/ApiKeys/grants', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  projectsAccessFor: () => async () => true,
   createChatCompletionToolProjection: (...args) =>
     jest.requireActual('@librechat/api').createChatCompletionToolProjection(...args),
   getModelEndUsage: (...args) => jest.requireActual('@librechat/api').getModelEndUsage(...args),

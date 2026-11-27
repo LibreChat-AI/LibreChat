@@ -74,7 +74,9 @@ jest.mock('@librechat/client', () => ({
   Spinner: () => null,
   useToastContext: () => ({ showToast: jest.fn() }),
 }));
+const mockProjectsAccess = { current: { loaded: true, canUse: true, canCreate: true } };
 jest.mock('~/hooks', () => ({
+  useProjectsAccess: () => mockProjectsAccess.current,
   useLocalize: jest.requireActual('~/hooks/useLocalize').default,
   useCopyToClipboard: jest.requireActual('~/hooks/Messages/useCopyToClipboard').default,
   useNewConvo: () => ({ newConversation: mockNewConversation }),
@@ -507,6 +509,19 @@ describe('useChatOptions', () => {
     expect(find(subItems, 'Alpha').disabled).toBe(true);
     expect(find(subItems, 'Beta').disabled).toBe(true);
     expect(find(subItems, 'Remove from project').disabled).toBe(true);
+  });
+
+  it('offers no project change and fetches no projects without PROJECTS.USE', () => {
+    mockProjectsAccess.current = { loaded: true, canUse: false, canCreate: false };
+    try {
+      const { result } = setup(false, true);
+
+      expect(labels(result.current.items)).not.toContain('Change project');
+      expect(labels(result.current.items)).toContain('Pin');
+      expect(mockProjectsConfig.current?.enabled).toBe(false);
+    } finally {
+      mockProjectsAccess.current = { loaded: true, canUse: true, canCreate: true };
+    }
   });
 
   it('does not fetch projects for a chat whose options group is not shown', () => {

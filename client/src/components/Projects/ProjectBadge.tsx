@@ -1,13 +1,17 @@
 import { memo } from 'react';
 import { Folder } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { useLocalize, useProjectsAccess } from '~/hooks';
 import { useProjectQuery } from '~/data-provider';
-import { useLocalize } from '~/hooks';
 
 function ProjectBadge({ projectId }: { projectId: string }) {
   const localize = useLocalize();
+  const { canUse } = useProjectsAccess();
   const { data: project } = useProjectQuery(projectId);
   const name = project?.name ?? localize('com_ui_project');
+  if (!canUse) {
+    return null;
+  }
 
   return (
     <div className="pointer-events-none absolute inset-x-0 top-12 z-5 flex justify-center px-3 md:top-14">

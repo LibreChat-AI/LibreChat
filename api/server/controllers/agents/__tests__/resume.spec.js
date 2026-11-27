@@ -2717,6 +2717,10 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
   });
 
   describe('project context resume fencing', () => {
+    beforeEach(() => {
+      mockGetRoleByName.mockResolvedValue({ name: 'USER', permissions: {} });
+    });
+
     const projectConversation = {
       conversationId: CONVO_ID,
       chatProjectId: 'project-1',

@@ -1,4 +1,9 @@
-import { Permissions, PermissionTypes, permissionsSchema } from './permissions';
+import {
+  Permissions,
+  PermissionTypes,
+  permissionsSchema,
+  hasProjectsPermission,
+} from './permissions';
 import { SystemRoles, roleDefaults } from './roles';
 
 const RESOURCE_MANAGEMENT_FIELDS: Permissions[] = [
@@ -10,7 +15,7 @@ const RESOURCE_MANAGEMENT_FIELDS: Permissions[] = [
 /**
  * Permission types where CREATE/SHARE/SHARE_PUBLIC must default to false for USER.
  * MEMORIES is excluded: its CREATE/READ/UPDATE apply to the user's own private data.
- * AGENTS/PROMPTS are excluded: CREATE=true is intentional (users own their agents/prompts).
+ * AGENTS/PROMPTS/PROJECTS are excluded: CREATE=true is intentional (users own them).
  * Add new types here if they gate shared/multi-user resources.
  */
 const RESOURCE_PERMISSION_TYPES: PermissionTypes[] = [
@@ -92,7 +97,8 @@ describe('roleDefaults', () => {
           permType === PermissionTypes.AGENTS ||
           permType === PermissionTypes.SKILLS ||
           permType === PermissionTypes.SHARED_LINKS ||
-          permType === PermissionTypes.SCHEDULES;
+          permType === PermissionTypes.SCHEDULES ||
+          permType === PermissionTypes.PROJECTS;
 
         expect({
           permType,
@@ -174,5 +180,41 @@ describe('roleDefaults', () => {
       ] as Record<string, boolean>;
       expect(userMcp[Permissions.CONFIGURE_OBO]).toBe(false);
     });
+  });
+});
+
+describe('hasProjectsPermission', () => {
+  const stored = (PROJECTS?: Record<string, boolean>) => ({ BOOKMARKS: { USE: true }, PROJECTS });
+
+  it('holds the defaults for a role stored before PROJECTS existed', () => {
+    expect(hasProjectsPermission(stored(), Permissions.USE)).toBe(true);
+    expect(hasProjectsPermission(stored(), Permissions.CREATE)).toBe(true);
+    expect(hasProjectsPermission(undefined, Permissions.CREATE)).toBe(true);
+  });
+
+  it('fills a missing field with its default', () => {
+    expect(hasProjectsPermission(stored({ USE: true }), Permissions.CREATE)).toBe(true);
+  });
+
+  it('honors a stored refusal', () => {
+    expect(hasProjectsPermission(stored({ USE: false }), Permissions.USE)).toBe(false);
+    expect(hasProjectsPermission(stored({ USE: true, CREATE: false }), Permissions.CREATE)).toBe(
+      false,
+    );
+  });
+
+  it('refuses CREATE without USE', () => {
+    expect(hasProjectsPermission(stored({ USE: false, CREATE: true }), Permissions.CREATE)).toBe(
+      false,
+    );
+  });
+
+  it('seeds both system roles with projects on', () => {
+    for (const role of [SystemRoles.USER, SystemRoles.ADMIN]) {
+      expect(roleDefaults[role].permissions[PermissionTypes.PROJECTS]).toEqual({
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      });
+    }
   });
 });
