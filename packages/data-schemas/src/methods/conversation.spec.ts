@@ -10440,6 +10440,197 @@ describe('laneGit', () => {
   });
 });
 
+/** A temporary chat is in no bookmark-filtered list and TTL removes it without a decrement, so a
+ * save that turns a bookmarked chat temporary must give its bookmarks up, exactly once. */
+describe('saveConvo turning a bookmarked chat temporary', () => {
+  const ephemeral = { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 24 };
+  const HOUR = 3600000;
+  let userId: string;
+  let conversationId: string;
+
+  /** Each bookmark is shared with another visible chat (count 2), so a second release shows up
+   * as a count of 0 instead of being hidden by the clamp at zero. */
+  const seedBookmarkedChat = async (fields: Record<string, unknown> = {}) => {
+    await Conversation.collection.insertOne({
+      conversationId,
+      user: userId,
+      title: 'Bookmarked before the mode',
+      endpoint: EModelEndpoint.openAI,
+      isArchived: false,
+      expiredAt: null,
+      tags: ['probe-tag'],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...fields,
+    });
+  };
+  const tagCount = async (tag = 'probe-tag') =>
+    (await ConversationTag.findOne({ user: userId, tag }).lean())?.count;
+  const stored = () => Conversation.findOne({ conversationId }).lean<IConversation>();
+  const rename = (ctx: Partial<Parameters<ConversationMethods['saveConvo']>[0]> = {}) =>
+    saveConvo(
+      { userId, isTemporary: false, interfaceConfig: ephemeral, ...ctx },
+      { conversationId, title: 'Renamed' },
+      { context: 'rename', titleSource: 'manual', appendMessageIds: [], noUpsert: true },
+    );
+  const archive = (isArchived: boolean) =>
+    saveConvo(
+      { userId, interfaceConfig: ephemeral },
+      { conversationId, isArchived },
+      { preserveUpdatedAt: true, noUpsert: true, appendMessageIds: [] },
+    );
+  const turn = () =>
+    saveConvo(
+      { userId, interfaceConfig: ephemeral },
+      { conversationId, endpoint: EModelEndpoint.openAI, model: 'gpt-4o' },
+      { context: 'turn', appendMessageIds: [new mongoose.Types.ObjectId()] },
+    );
+  /** A converting save leaves a temporary chat without tags and its bookmark down by one. */
+  const released = { isTemporary: true, expiredAt: expect.any(Date), tags: [], count: 1 };
+  const readState = async () => {
+    const convo = await stored();
+    return {
+      isTemporary: convo?.isTemporary,
+      expiredAt: convo?.expiredAt,
+      tags: convo?.tags,
+      count: await tagCount(),
+    };
+  };
+
+  beforeEach(async () => {
+    userId = `bookmarks-${uuidv4()}`;
+    conversationId = uuidv4();
+    await ConversationTag.create({ user: userId, tag: 'probe-tag', count: 2, position: 0 });
+  });
+
+  it('releases the bookmark when a rename converts the chat', async () => {
+    await seedBookmarkedChat();
+
+    await rename();
+
+    expect((await stored())?.title).toBe('Renamed');
+    expect(await readState()).toEqual(released);
+  });
+
+  it.each([true, false])(
+    'releases the bookmark when setting isArchived to %s converts the chat',
+    async (isArchived) => {
+      await seedBookmarkedChat({ isArchived: !isArchived });
+
+      await archive(isArchived);
+
+      expect((await stored())?.isArchived).toBe(isArchived);
+      expect(await readState()).toEqual(released);
+    },
+  );
+
+  it('releases the bookmark when a turn converts the chat', async () => {
+    await seedBookmarkedChat();
+
+    await turn();
+
+    expect(await readState()).toEqual(released);
+  });
+
+  it('keeps the general-chat deadline the chat already holds while releasing', async () => {
+    const held = new Date(Date.now() + 2160 * HOUR);
+    await seedBookmarkedChat({ isTemporary: false, expiredAt: held });
+
+    await rename({ expiredAt: held });
+
+    expect(await readState()).toEqual(released);
+    expect((await stored())?.expiredAt).toEqual(held);
+  });
+
+  it.each([
+    ['the default mode', undefined],
+    [
+      'RetentionMode.ALL',
+      { retentionMode: RetentionMode.ALL, temporaryChatRetention: 1, generalChatRetention: 2160 },
+    ],
+  ] as Array<[string, AppConfig['interfaceConfig']]>)(
+    'releases the bookmark when the request marks a stored chat temporary under %s',
+    async (_name, interfaceConfig) => {
+      await seedBookmarkedChat();
+
+      await rename({ isTemporary: true, interfaceConfig });
+
+      expect(await readState()).toEqual(released);
+    },
+  );
+
+  it('releases the bookmark once across concurrent saves', async () => {
+    await seedBookmarkedChat();
+
+    await Promise.all([rename(), archive(true), turn(), turn()]);
+
+    expect(await readState()).toEqual(released);
+  });
+
+  it('releases each tag once when the chat lists it twice', async () => {
+    await ConversationTag.create({ user: userId, tag: 'second-tag', count: 2, position: 1 });
+    await seedBookmarkedChat({ tags: ['probe-tag', 'probe-tag', 'second-tag'] });
+
+    await rename();
+
+    expect(await readState()).toEqual(released);
+    expect(await tagCount('second-tag')).toBe(1);
+  });
+
+  it('does not release the bookmark again when the converted chat is deleted', async () => {
+    await seedBookmarkedChat();
+
+    await rename();
+    await deleteConvos(userId, { conversationId });
+
+    expect(await tagCount()).toBe(1);
+  });
+
+  it('converts a chat with no bookmarks without writing a count', async () => {
+    await seedBookmarkedChat({ tags: [] });
+
+    await rename();
+
+    expect((await stored())?.isTemporary).toBe(true);
+    expect(await tagCount()).toBe(2);
+  });
+
+  it.each([
+    ['the default mode', undefined],
+    [
+      'RetentionMode.ALL',
+      { retentionMode: RetentionMode.ALL, temporaryChatRetention: 1, generalChatRetention: 2160 },
+    ],
+  ] as Array<[string, AppConfig['interfaceConfig']]>)(
+    'keeps the bookmark of a chat that stays permanent under %s',
+    async (_name, interfaceConfig) => {
+      await seedBookmarkedChat();
+
+      await rename({ interfaceConfig });
+
+      const convo = await stored();
+      expect(convo?.isTemporary ?? false).toBe(false);
+      expect(convo?.tags).toEqual(['probe-tag']);
+      expect(await tagCount()).toBe(2);
+    },
+  );
+
+  it('releases nothing when the save is refused for replacing a persisted conversation id', async () => {
+    await seedBookmarkedChat();
+
+    const refused = await saveConvo(
+      { userId, interfaceConfig: ephemeral },
+      { conversationId, newConversationId: uuidv4() },
+    );
+
+    expect(refused).toEqual({ message: 'Conversation ID cannot be replaced after persistence.' });
+    const convo = await stored();
+    expect(convo?.isTemporary ?? false).toBe(false);
+    expect(convo?.tags).toEqual(['probe-tag']);
+    expect(await tagCount()).toBe(2);
+  });
+});
+
 describe('stampForcedRetention', () => {
   const ephemeral = { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 1 };
   let userId: string;
@@ -10512,15 +10703,25 @@ describe('stampForcedRetention', () => {
 
   it('gives a stamped message the deadline a concurrent stamp stored first', async () => {
     const winningDeadline = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    const originalUpdateOne = Conversation.updateOne.bind(Conversation);
-    const updateOne = jest
-      .spyOn(Conversation, 'updateOne')
-      .mockImplementationOnce(((filter, update, options) =>
-        originalUpdateOne(
+    const originalFindOneAndUpdate = Conversation.findOneAndUpdate.bind(Conversation);
+    const findOneAndUpdate = jest.spyOn(Conversation, 'findOneAndUpdate').mockImplementationOnce(((
+      filter,
+      update,
+      options,
+    ) => {
+      const query = originalFindOneAndUpdate(filter, update, options);
+      const exec = query.exec.bind(query);
+      /** The concurrent stamp converts the chat between this stamp's read and its write. */
+      query.exec = (async () => {
+        await Conversation.updateOne(
           { conversationId },
           { $set: { isTemporary: true, expiredAt: winningDeadline, tags: [] } },
           { timestamps: false },
-        ).then(() => originalUpdateOne(filter, update, options))) as typeof Conversation.updateOne);
+        );
+        return exec();
+      }) as typeof query.exec;
+      return query;
+    }) as typeof Conversation.findOneAndUpdate);
 
     try {
       await methods.stampForcedRetention(
@@ -10528,7 +10729,7 @@ describe('stampForcedRetention', () => {
         { conversationId, messageIds: [messageId] },
       );
     } finally {
-      updateOne.mockRestore();
+      findOneAndUpdate.mockRestore();
     }
 
     const convo = await Conversation.findOne({ conversationId }).lean();

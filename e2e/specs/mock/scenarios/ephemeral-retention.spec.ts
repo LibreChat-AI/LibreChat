@@ -34,6 +34,7 @@ import {
 const userEmail = getE2EUser().email;
 const NO_PARENT = '00000000-0000-0000-0000-000000000000';
 const cleanupConversationIds: string[] = [];
+const cleanupTags: string[] = [];
 
 type StoredConversation = {
   conversationId: string;
@@ -157,7 +158,99 @@ async function startMockChat(page: Page): Promise<void> {
   await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 }
 
+function uniqueTag(): string {
+  const tag = `retention-${randomUUID().slice(0, 8)}`;
+  cleanupTags.push(tag);
+  return tag;
+}
+
+function seedQuestion(text: string): Record<string, unknown>[] {
+  return [{ messageId: randomUUID(), parentMessageId: NO_PARENT, isCreatedByUser: true, text }];
+}
+
+/** Bookmarks through the tags API, which is what counts the chat toward the bookmark. */
+async function bookmark(
+  request: APIRequestContext,
+  token: string,
+  conversationId: string,
+  tag: string,
+): Promise<void> {
+  const result = await requestResult(request, {
+    path: `/api/tags/convo/${encodeURIComponent(conversationId)}`,
+    token,
+    method: 'PUT',
+    data: { tags: [tag] },
+  });
+  expect(result.ok, `Expected the bookmark to be stored: ${result.text}`).toBe(true);
+}
+
+/** The count the bookmark list (and the sidebar's Bookmarks filter) shows. */
+async function bookmarkCount(
+  request: APIRequestContext,
+  token: string,
+  tag: string,
+): Promise<number | undefined> {
+  const result = await requestResult(request, { path: '/api/tags', token });
+  expect(result.ok, `Expected the bookmarks to load: ${result.text}`).toBe(true);
+  return (result.body as Array<{ tag: string; count: number }>).find((row) => row.tag === tag)
+    ?.count;
+}
+
+/** The chats the sidebar lists when filtered by the bookmark. */
+async function bookmarkedChats(
+  request: APIRequestContext,
+  token: string,
+  tag: string,
+): Promise<string[]> {
+  const result = await requestResult(request, {
+    path: `/api/convos?limit=25&tags=${encodeURIComponent(tag)}`,
+    token,
+  });
+  expect(result.ok, `Expected the filtered chats to load: ${result.text}`).toBe(true);
+  const { conversations = [] } = result.body as {
+    conversations?: Array<{ conversationId: string }>;
+  };
+  return conversations.map((conversation) => conversation.conversationId);
+}
+
+/** Two visible chats share the bookmark, so a second release would show as a count of 0. */
+async function seedBookmarkedPair(
+  request: APIRequestContext,
+  token: string,
+  userId: string,
+  tag: string,
+): Promise<{ conversationId: string; otherId: string }> {
+  const conversationId = await seedPermanentConversation(
+    userId,
+    seedQuestion('Bookmarked before ephemeral'),
+  );
+  const otherId = await seedPermanentConversation(userId, seedQuestion('Also bookmarked'));
+  await bookmark(request, token, conversationId, tag);
+  await bookmark(request, token, otherId, tag);
+  expect(await bookmarkCount(request, token, tag)).toBe(2);
+  return { conversationId, otherId };
+}
+
+async function expectBookmarkReleased(
+  request: APIRequestContext,
+  token: string,
+  { conversationId, otherId, tag }: { conversationId: string; otherId: string; tag: string },
+): Promise<void> {
+  const converted = await readConversation(conversationId);
+  expectForcedTemporary(converted);
+  expect(converted?.tags ?? [], 'a hidden chat must not keep its bookmark').toEqual([]);
+  expect(
+    await bookmarkCount(request, token, tag),
+    'the bookmark counts only the chat it still lists',
+  ).toBe(1);
+  expect(await bookmarkedChats(request, token, tag)).toEqual([otherId]);
+}
+
 test.afterEach(async () => {
+  const tags = cleanupTags.splice(0);
+  if (tags.length > 0) {
+    await withMongo((db) => db.collection('conversationtags').deleteMany({ tag: { $in: tags } }));
+  }
   const conversationIds = cleanupConversationIds.splice(0);
   if (conversationIds.length === 0) {
     return;
@@ -596,6 +689,100 @@ test.describe('ephemeral retention', () => {
     await withMongo(async (db) => {
       await db.collection('conversationtags').deleteOne({ user: userId, tag });
     });
+  });
+
+  test('renaming a bookmarked chat releases its bookmark @scenario:renaming-a-bookmarked-chat-under-ephemeral-releases-its-bookmark', async ({
+    request,
+  }) => {
+    const tag = uniqueTag();
+    const { conversationId, otherId } = await seedBookmarkedPair(request, token, userId, tag);
+
+    await setRetentionMode(request, token, userId);
+    const rename = await requestResult(request, {
+      path: '/api/convos/update',
+      token,
+      method: 'POST',
+      data: { arg: { conversationId, title: 'Renamed under ephemeral' } },
+    });
+    expect(rename.ok, `Expected the rename to succeed: ${rename.text}`).toBe(true);
+
+    await expectBookmarkReleased(request, token, { conversationId, otherId, tag });
+  });
+
+  test('archiving a bookmarked chat releases its bookmark @scenario:archiving-a-bookmarked-chat-under-ephemeral-releases-its-bookmark', async ({
+    request,
+  }) => {
+    const tag = uniqueTag();
+    const { conversationId, otherId } = await seedBookmarkedPair(request, token, userId, tag);
+
+    await setRetentionMode(request, token, userId);
+    const archive = await requestResult(request, {
+      path: '/api/convos/archive',
+      token,
+      method: 'POST',
+      data: { arg: { conversationId, isArchived: true } },
+    });
+    expect(archive.ok, `Expected the archive to succeed: ${archive.text}`).toBe(true);
+
+    expect((await readConversation(conversationId))?.isArchived).toBe(true);
+    await expectBookmarkReleased(request, token, { conversationId, otherId, tag });
+  });
+
+  test('sending a message in a bookmarked chat releases its bookmark @scenario:a-turn-in-a-bookmarked-chat-under-ephemeral-releases-its-bookmark', async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(90000);
+    const tag = uniqueTag();
+    await startMockChat(page);
+    const first = await sendMessageAndWaitForCompletion(page, 'Saved before ephemeral');
+    const conversationId = ((await first.json()) as { conversationId?: string }).conversationId;
+    expect(conversationId, 'the turn must identify its conversation').toBeTruthy();
+    cleanupConversationIds.push(conversationId as string);
+    const otherId = await seedPermanentConversation(userId, seedQuestion('Also bookmarked'));
+    await bookmark(request, token, conversationId as string, tag);
+    await bookmark(request, token, otherId, tag);
+    expect(await bookmarkCount(request, token, tag)).toBe(2);
+
+    await setRetentionMode(request, token, userId);
+    await page.reload();
+    await sendMessageAndWaitForCompletion(page, 'Sent under ephemeral');
+
+    await expectBookmarkReleased(request, token, {
+      conversationId: conversationId as string,
+      otherId,
+      tag,
+    });
+  });
+
+  test('deleting a converted chat keeps the count of the chats still bookmarked @scenario:deleting-a-converted-chat-keeps-other-chats-bookmark-count', async ({
+    request,
+  }) => {
+    const tag = uniqueTag();
+    const { conversationId, otherId } = await seedBookmarkedPair(request, token, userId, tag);
+    await setRetentionMode(request, token, userId);
+    const rename = await requestResult(request, {
+      path: '/api/convos/update',
+      token,
+      method: 'POST',
+      data: { arg: { conversationId, title: 'Renamed under ephemeral' } },
+    });
+    expect(rename.ok, `Expected the rename to succeed: ${rename.text}`).toBe(true);
+
+    const removed = await requestResult(request, {
+      path: '/api/convos',
+      token,
+      method: 'DELETE',
+      data: { arg: { conversationId } },
+    });
+    expect(removed.ok, `Expected the delete to succeed: ${removed.text}`).toBe(true);
+
+    expect(await readConversation(conversationId)).toBeNull();
+    expect(
+      await bookmarkCount(request, token, tag),
+      'deleting the converted chat must not take the count of the chat still bookmarked',
+    ).toBe(1);
+    expect(await bookmarkedChats(request, token, tag)).toEqual([otherId]);
   });
 
   test('chats stay permanent under the default retention mode @scenario:chats-stay-permanent-under-the-default-retention-mode', async ({
