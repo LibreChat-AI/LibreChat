@@ -32,6 +32,7 @@ const {
   HOST_FILE_AUTHORING_ARTIFACT_KEY,
   isCodeSessionToolName,
   isCodeArtifactToolOutput,
+  isModelOnlyArtifact,
   getModelRefusalInfo,
   recordModelTruncation,
   shouldSignalSandboxStart,
@@ -1019,6 +1020,9 @@ function createToolEndCallback({
     }
 
     if (output.artifact.content) {
+      if (isModelOnlyArtifact(output.artifact)) {
+        return;
+      }
       /** @type {FormattedContent[]} */
       const content = getImageAttachmentContent(output.artifact);
       for (let i = 0; i < content.length; i++) {
@@ -1394,6 +1398,9 @@ function createResponsesToolEndCallback({
     }
 
     if (output.artifact.content) {
+      if (isModelOnlyArtifact(output.artifact)) {
+        return;
+      }
       /** @type {FormattedContent[]} */
       const content = getImageAttachmentContent(output.artifact);
       for (let i = 0; i < content.length; i++) {
