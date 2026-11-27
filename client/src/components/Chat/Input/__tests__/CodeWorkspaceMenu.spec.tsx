@@ -3,7 +3,7 @@ import { Provider, createStore } from 'jotai';
 import userEvent from '@testing-library/user-event';
 import { dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, within, waitFor, fireEvent, configure } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 import type { AxiosResponse } from 'axios';
 import type { CodeWorkspaceResult } from '~/hooks';
@@ -52,6 +52,12 @@ jest.mock('@librechat/client', () => {
     TooltipAnchor,
   };
 });
+
+/** Each test opens Ariakit menus and waits for them to render and take focus. With the CPU shared
+ *  (a full jest-client lane beside other work), those waits outran Testing Library's 1 s default
+ *  and the slowest tests outran Jest's 5 s, so both budgets leave room for a busy machine. */
+configure({ asyncUtilTimeout: 5000 });
+jest.setTimeout(20000);
 
 const conversation = {
   conversationId: 'new',
