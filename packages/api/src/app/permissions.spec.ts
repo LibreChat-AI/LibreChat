@@ -128,6 +128,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
       [PermissionTypes.AGENT_EVENTS]: {
         [Permissions.USE]: false,
         [Permissions.CREATE]: false,
@@ -192,6 +196,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.SHARE_PUBLIC]: true,
       },
       [PermissionTypes.SCHEDULES]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.PROJECTS]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
@@ -356,6 +364,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
       [PermissionTypes.AGENT_EVENTS]: {
         [Permissions.USE]: false,
         [Permissions.CREATE]: false,
@@ -420,6 +432,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.SHARE_PUBLIC]: true,
       },
       [PermissionTypes.SCHEDULES]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.PROJECTS]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
@@ -540,6 +556,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
       [PermissionTypes.AGENT_EVENTS]: {
         [Permissions.USE]: false,
         [Permissions.CREATE]: false,
@@ -604,6 +624,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.SHARE_PUBLIC]: true,
       },
       [PermissionTypes.SCHEDULES]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.PROJECTS]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
@@ -737,6 +761,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
       [PermissionTypes.AGENT_EVENTS]: {
         [Permissions.USE]: false,
         [Permissions.CREATE]: false,
@@ -801,6 +829,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.SHARE_PUBLIC]: true,
       },
       [PermissionTypes.SCHEDULES]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.PROJECTS]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
@@ -921,6 +953,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
       [PermissionTypes.AGENT_EVENTS]: {
         [Permissions.USE]: false,
         [Permissions.CREATE]: false,
@@ -985,6 +1021,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.SHARE_PUBLIC]: true,
       },
       [PermissionTypes.SCHEDULES]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.PROJECTS]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
@@ -1110,6 +1150,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
       [PermissionTypes.AGENT_EVENTS]: {
         [Permissions.USE]: false,
         [Permissions.CREATE]: false,
@@ -1162,6 +1206,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.SHARE_PUBLIC]: true,
       },
       [PermissionTypes.SCHEDULES]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.PROJECTS]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
@@ -1304,6 +1352,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
       [PermissionTypes.AGENT_EVENTS]: {
         [Permissions.USE]: false,
         [Permissions.CREATE]: false,
@@ -1360,6 +1412,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.SHARE_PUBLIC]: true,
       },
       [PermissionTypes.SCHEDULES]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.PROJECTS]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
@@ -2915,6 +2971,64 @@ describe('updateInterfacePermissions - permissions', () => {
     );
 
     expect(userCall[1][PermissionTypes.MCP_SERVERS][Permissions.CREATE]).toBe(true);
+  });
+
+  describe('PROJECTS seeding', () => {
+    const stored = {
+      permissions: {
+        [PermissionTypes.PROJECTS]: { [Permissions.USE]: true, [Permissions.CREATE]: true },
+      },
+    };
+    const seed = async (projects?: boolean | { use?: boolean; create?: boolean }) => {
+      const config = { interface: projects === undefined ? {} : { projects } };
+      const configDefaults = { interface: {} } as TConfigDefaults;
+      const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
+      const appConfig = { config, interfaceConfig } as unknown as AppConfig;
+      await updateInterfacePermissions({
+        appConfig,
+        getRoleByName: mockGetRoleByName,
+        updateAccessPermissions: mockUpdateAccessPermissions,
+      });
+      return (role: SystemRoles) =>
+        mockUpdateAccessPermissions.mock.calls.find((call) => call[0] === role)?.[1]?.[
+          PermissionTypes.PROJECTS
+        ];
+    };
+
+    it('turns projects off for both seeded roles with projects: false', async () => {
+      mockGetRoleByName.mockResolvedValue(stored);
+      const projects = await seed(false);
+      expect(projects(SystemRoles.USER)).toEqual({ [Permissions.USE]: false });
+      expect(projects(SystemRoles.ADMIN)).toEqual({ [Permissions.USE]: false });
+    });
+
+    it('refuses creation only with create: false', async () => {
+      mockGetRoleByName.mockResolvedValue(stored);
+      const projects = await seed({ use: true, create: false });
+      expect(projects(SystemRoles.USER)).toEqual({
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: false,
+      });
+    });
+
+    it('seeds projects on for a role stored before the permission type existed', async () => {
+      mockGetRoleByName.mockResolvedValue({ permissions: {} });
+      const projects = await seed();
+      expect(projects(SystemRoles.USER)).toEqual({
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      });
+    });
+
+    it('keeps an admin-edited PROJECTS permission when yaml does not set projects', async () => {
+      mockGetRoleByName.mockResolvedValue({
+        permissions: {
+          [PermissionTypes.PROJECTS]: { [Permissions.USE]: false, [Permissions.CREATE]: false },
+        },
+      });
+      const projects = await seed();
+      expect(projects(SystemRoles.USER)).toBeUndefined();
+    });
   });
 
   it('should disable all SHARED_LINKS permissions when sharedLinks: false (boolean)', async () => {

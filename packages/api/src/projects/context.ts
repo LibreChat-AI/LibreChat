@@ -37,6 +37,12 @@ export interface ResolveChatProjectContextDeps {
   getConvo: (userId: string, conversationId: string) => Promise<ConversationSnapshot | null>;
   getChatProject: (userId: string, projectId: string) => Promise<ProjectSnapshot | null>;
   getProjectFiles: GetProjectFiles;
+  /**
+   * Whether the requester's role may use Chat Projects (`projectsAccessFor`). When it answers
+   * false the turn runs outside any project: neither the conversation's nor the requested
+   * project is read, so its instructions and files never reach the model.
+   */
+  canUseProjects?: () => Promise<boolean>;
 }
 
 export const CHAT_PROJECT_CONTEXT_UNAVAILABLE = 'Project context unavailable';
@@ -108,6 +114,7 @@ export function startAgentProjectContextResolution({
   getConvo,
   getChatProject,
   getProjectFiles,
+  canUseProjects,
 }: {
   req: AgentProjectContextRequest;
   endpointOption?: Partial<TEndpointOption>;
@@ -119,6 +126,7 @@ export function startAgentProjectContextResolution({
   getConvo: ResolveChatProjectContextDeps['getConvo'];
   getChatProject: ResolveChatProjectContextDeps['getChatProject'];
   getProjectFiles: GetProjectFiles;
+  canUseProjects?: ResolveChatProjectContextDeps['canUseProjects'];
 }): Promise<ResolvedChatProjectContext | null> {
   if (req.chatProjectContext !== undefined) {
     return Promise.resolve(req.chatProjectContext);
@@ -156,6 +164,7 @@ export function startAgentProjectContextResolution({
           },
           getChatProject,
           getProjectFiles,
+          canUseProjects,
         },
       );
     })
@@ -230,6 +239,9 @@ export async function resolveChatProjectContext(
     typeof rawProjectId === 'string' && rawProjectId.trim() !== '' ? rawProjectId : null;
 
   if (projectId == null) {
+    return null;
+  }
+  if (deps.canUseProjects != null && !(await deps.canUseProjects())) {
     return null;
   }
 

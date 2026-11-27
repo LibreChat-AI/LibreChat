@@ -8,6 +8,7 @@ const {
   createConcurrencyLimiter,
   loadSkillStates,
   resolveInitializationProjectContext,
+  projectsAccessFor,
   initializeAgent,
   primeInvokedSkillsForProfiles,
   createWorkspaceAttachmentPrimer,
@@ -669,6 +670,7 @@ const initializeClientWithProvider = async ({
       getConvo: db.getConvo,
       getChatProject: db.getChatProject,
       getProjectFiles: db.getProjectFiles,
+      canUseProjects: projectsAccessFor(req.user, db),
     },
   );
 

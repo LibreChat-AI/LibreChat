@@ -324,6 +324,13 @@ interface:
     create: true
     share: false
     public: false
+  # Chat Projects for the USER and ADMIN roles (other roles are set in the Admin Panel).
+  # `false` (or `use: false`) hides projects and refuses /api/projects; chats already filed
+  # under a project then run without its instructions and files. `create: false` keeps
+  # existing projects but refuses new ones. Default: use and create on.
+  projects:
+    use: true
+    create: true
   bookmarks: true
   multiConvo: true
   # Allow the artifacts pane to be moved into its own browser window

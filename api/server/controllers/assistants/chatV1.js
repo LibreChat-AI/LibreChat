@@ -18,6 +18,7 @@ const {
   preflightAssistantUserMessageContent,
   settleAssistantFinal,
   resolveAssistantProjectTurn,
+  projectsAccessFor,
   joinChatProjectInstructions,
   applyForcedTemporaryRequest,
   getAssistantRun,
@@ -63,6 +64,7 @@ const {
   getProjectFiles,
   getFiles,
   getChatProject,
+  getRoleByName,
 } = require('~/models');
 const { logViolation, getLogStores } = require('~/cache');
 const { getOpenAIClient } = require('./helpers');
@@ -294,7 +296,12 @@ const chatV1 = async (req, res) => {
         resolvedConversation: req.resolvedConversation,
         filters: req.config?.filters,
       },
-      { getConvo, getChatProject, getProjectFiles },
+      {
+        getConvo,
+        getChatProject,
+        getProjectFiles,
+        canUseProjects: projectsAccessFor(req.user, { getRoleByName }),
+      },
     );
     if (projectTurn.rejection) {
       contentRejected = true;

@@ -24,7 +24,7 @@ const mockCreateProjectHandlers = jest.fn(() => ({
   removeProjectFile: mockHandler,
 }));
 const mockRequireJwtAuth = jest.fn((req, _res, next) => {
-  req.user = { id: 'project-user', tenantId: 'tenant-a' };
+  req.user = { id: 'project-user', tenantId: 'tenant-a', role: 'USER' };
   next();
 });
 const mockConfigMiddleware = jest.fn((req, _res, next) => {
@@ -32,8 +32,14 @@ const mockConfigMiddleware = jest.fn((req, _res, next) => {
   next();
 });
 
-jest.mock('@librechat/api', () => ({ createProjectHandlers: mockCreateProjectHandlers }));
+const mockGetRoleByName = jest.fn(async () => ({ name: 'USER', permissions: {} }));
+
+jest.mock('@librechat/api', () => ({
+  createProjectHandlers: mockCreateProjectHandlers,
+  requireProjectsPermission: jest.requireActual('@librechat/api').requireProjectsPermission,
+}));
 jest.mock('~/models', () => ({
+  getRoleByName: (...args) => mockGetRoleByName(...args),
   listChatProjects: jest.fn(),
   createChatProject: jest.fn(),
   getChatProject: jest.fn(),
@@ -111,6 +117,7 @@ const routeCases = [
 
 describe('Projects route middleware', () => {
   beforeEach(() => {
+    mockGetRoleByName.mockClear();
     mockRequireJwtAuth.mockClear();
     mockConfigMiddleware.mockClear();
     mockHandler.mockClear();
@@ -133,6 +140,7 @@ describe('Projects route middleware', () => {
         expect(mockConfigMiddleware.mock.calls[0][0].user).toEqual({
           id: 'project-user',
           tenantId: 'tenant-a',
+          role: 'USER',
         });
         expect(mockRequireJwtAuth.mock.invocationCallOrder[0]).toBeLessThan(
           mockConfigMiddleware.mock.invocationCallOrder[0],
@@ -148,4 +156,55 @@ describe('Projects route middleware', () => {
       }
     },
   );
+});
+
+describe('Projects route permissions', () => {
+  const projectsRole = (permissions) => ({ name: 'USER', permissions: { PROJECTS: permissions } });
+
+  beforeEach(() => {
+    mockHandler.mockClear();
+    mockGetRoleByName.mockReset();
+  });
+
+  it.each(routeCases)('$name answers 403 without PROJECTS.USE', async ({ method, path }) => {
+    mockGetRoleByName.mockResolvedValue(projectsRole({ USE: false, CREATE: true }));
+
+    const response = await request(app)[method](path);
+
+    expect(response.status).toBe(403);
+    expect(mockHandler).not.toHaveBeenCalled();
+    expect(mockGetRoleByName).toHaveBeenCalledWith('USER');
+  });
+
+  it.each(routeCases)('$name without PROJECTS.CREATE', async ({ method, path, name }) => {
+    mockGetRoleByName.mockResolvedValue(projectsRole({ USE: true, CREATE: false }));
+
+    const response = await request(app)[method](path);
+
+    const isCreate = name === 'create projects';
+    expect(response.status).toBe(isCreate ? 403 : 200);
+    expect(mockHandler).toHaveBeenCalledTimes(isCreate ? 0 : 1);
+  });
+
+  it('keeps projects for a role stored before the PROJECTS permission existed', async () => {
+    mockGetRoleByName.mockResolvedValue({
+      name: 'USER',
+      permissions: { BOOKMARKS: { USE: true } },
+    });
+
+    const response = await request(app).post('/api/projects');
+
+    expect(response.status).toBe(200);
+    expect(mockHandler).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers 500 without reaching the handler when the role read fails', async () => {
+    mockGetRoleByName.mockRejectedValue(new Error('mongo down'));
+
+    const response = await request(app).get('/api/projects');
+
+    expect(response.status).toBe(500);
+    expect(response.body.message).not.toContain('mongo');
+    expect(mockHandler).not.toHaveBeenCalled();
+  });
 });

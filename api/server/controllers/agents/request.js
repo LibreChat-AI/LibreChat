@@ -33,6 +33,7 @@ const {
   stampMessageTrigger,
   isUnpersistedPreliminaryParent,
   startAgentProjectContextResolution,
+  projectsAccessFor,
   assertChatProjectInstructions,
   getChatProjectTurnFailure,
   resolveConversationAnchor,
@@ -93,6 +94,7 @@ const {
   getConvo,
   getChatProject,
   getProjectFiles,
+  getRoleByName,
   getAgentEventActorSnapshot,
   commitAgentEventActorState,
   storeAgentEventActorSuspension,
@@ -977,6 +979,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     getConvo,
     getChatProject,
     getProjectFiles,
+    canUseProjects: projectsAccessFor(req.user, { getRoleByName }),
   });
 
   /** A newly bound actor conversation has no child messages yet, so its first

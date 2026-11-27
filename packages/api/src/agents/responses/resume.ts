@@ -37,6 +37,7 @@ import { getResumeAgentSnapshot } from '../hitl/inspection';
 import { preflightResumeContent } from '../hitl/preflight';
 import { getLookupConcurrency } from '~/utils/concurrency';
 import { resolveResponseReviewDecision } from './decision';
+import { projectsAccessFor } from '~/projects/access';
 import { canonicalResponseJSON } from './background';
 import { isResponseTenantId } from './scope';
 import { responseTenantId } from './scope';
@@ -144,7 +145,10 @@ export function createResponseResumeValidation(deps: ResponseResumeValidationDep
           conversationId: record.conversationId,
           includeResources: true,
         },
-        deps.projects,
+        {
+          ...deps.projects,
+          canUseProjects: projectsAccessFor(user, { getRoleByName: deps.content.getRoleByName }),
+        },
       ),
     ]);
     if (!agent || action.projectContextKey !== getChatProjectContextKey(project)) return;

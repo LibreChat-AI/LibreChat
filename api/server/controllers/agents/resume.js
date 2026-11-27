@@ -51,6 +51,7 @@ const {
   assertCodeExecutionApprovalBinding,
   collectReachableAgents,
   rejectChangedResumeProjectContext,
+  projectsAccessFor,
   PROJECT_CONTEXT_CHANGED_REASON,
   PROJECT_CONTEXT_CHANGED_RESPONSE,
   restoreExecutionContext,
@@ -1826,6 +1827,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           getConvo,
           getChatProject,
           getProjectFiles,
+          canUseProjects: projectsAccessFor(req.user, { getRoleByName }),
           logger,
           finalizeJob: async (reason) =>
             (await GenerationJobManager.completeJob(streamId, reason, job.createdAt)) === true,

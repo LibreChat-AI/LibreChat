@@ -20,6 +20,61 @@ const missingResources = (fileIds: string[]): CanonicalProjectResource[] =>
   }));
 
 describe('resolveChatProjectContext', () => {
+  describe('without PROJECTS.USE', () => {
+    const canUseProjects = jest.fn().mockResolvedValue(false);
+
+    it('runs a filed conversation outside its project without reading it', async () => {
+      const getChatProject = jest.fn().mockResolvedValue(project);
+      const context = await resolveChatProjectContext(
+        {
+          userId: 'user-a',
+          conversationId: 'conversation-a',
+          resolvedConversation: { conversationId: 'conversation-a', chatProjectId: 'project-a' },
+        },
+        { getConvo: jest.fn(), getChatProject, getProjectFiles, canUseProjects },
+      );
+
+      expect(context).toBeNull();
+      expect(getChatProject).not.toHaveBeenCalled();
+    });
+
+    it('drops a requested project on a new chat instead of failing the turn', async () => {
+      const getChatProject = jest.fn().mockResolvedValue(project);
+      const context = await resolveChatProjectContext(
+        { userId: 'user-a', requestedProjectId: 'project-a', resolvedConversation: null },
+        { getConvo: jest.fn(), getChatProject, getProjectFiles, canUseProjects },
+      );
+
+      expect(context).toBeNull();
+      expect(getChatProject).not.toHaveBeenCalled();
+    });
+
+    it('does not read the role for a chat outside any project', async () => {
+      const check = jest.fn().mockResolvedValue(false);
+      await resolveChatProjectContext(
+        { userId: 'user-a', requestedProjectId: null, resolvedConversation: null },
+        { getConvo: jest.fn(), getChatProject: jest.fn(), getProjectFiles, canUseProjects: check },
+      );
+
+      expect(check).not.toHaveBeenCalled();
+    });
+
+    it('keeps the project when the role allows it', async () => {
+      const getChatProject = jest.fn().mockResolvedValue(project);
+      const context = await resolveChatProjectContext(
+        { userId: 'user-a', requestedProjectId: 'project-a', includeResources: false },
+        {
+          getConvo: jest.fn(),
+          getChatProject,
+          getProjectFiles,
+          canUseProjects: jest.fn().mockResolvedValue(true),
+        },
+      );
+
+      expect(context?.instructions).toBe('Use the project policy.');
+    });
+  });
+
   it('uses existing conversation membership over a request project override', async () => {
     const getChatProject = jest.fn().mockResolvedValue(project);
     const context = await resolveChatProjectContext(

@@ -14,6 +14,7 @@ import {
   multiConvoPermissionsSchema,
   mcpServersPermissionsSchema,
   schedulesPermissionsSchema,
+  projectsPermissionsSchema,
   sharedLinksPermissionsSchema,
   peoplePickerPermissionsSchema,
   remoteAgentsPermissionsSchema,
@@ -123,6 +124,10 @@ const defaultRolesSchema = z.object({
         [Permissions.USE]: z.boolean().default(true),
         [Permissions.CREATE]: z.boolean().default(true),
       }),
+      [PermissionTypes.PROJECTS]: projectsPermissionsSchema.extend({
+        [Permissions.USE]: z.boolean().default(true),
+        [Permissions.CREATE]: z.boolean().default(true),
+      }),
       [PermissionTypes.AGENT_EVENTS]: agentEventsPermissionsSchema,
     }),
   }),
@@ -222,6 +227,10 @@ export const roleDefaults = defaultRolesSchema.parse({
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
       [PermissionTypes.AGENT_EVENTS]: {
         [Permissions.USE]: false,
         [Permissions.CREATE]: false,
@@ -284,6 +293,10 @@ export const roleDefaults = defaultRolesSchema.parse({
         [Permissions.SHARE_PUBLIC]: true,
       },
       [PermissionTypes.SCHEDULES]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
+      [PermissionTypes.PROJECTS]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
       },
