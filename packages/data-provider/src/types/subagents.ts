@@ -224,7 +224,8 @@ export type SubagentDigestStatus = 'running' | 'ok' | 'error' | 'cancelled';
  * node positionally (`3` is turn 3, `3.2` its second child, `3.2.1` the first
  * turn of a subagent that child started) and never shifts as the run grows. A
  * `range` folds consecutive turns (`1-14`). Labels are the child's own one-line
- * tool intents; tool arguments, outputs, and reply text are never included.
+ * tool intents: a tool node carries its own, and a folded turn its first call's.
+ * Tool arguments, outputs, and reply text are never included.
  */
 export type SubagentDigestNode = {
   path: string;

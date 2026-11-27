@@ -313,6 +313,19 @@ function createPiiFilterSchema<Field extends z.ZodTypeAny>(fieldSchema: Field) {
     .strict();
 }
 
+/** First output pilot only supports blocking native assistant text. */
+export const assistantTextProtectionSchema = createPiiFilterSchema(messageFilterFieldSchema)
+  .omit({ fields: true })
+  .extend({
+    action: z.literal('block').optional(),
+    timeoutMs: z.number().int().positive().max(300_000),
+  })
+  .refine(hasActivePiiPatterns, { message: 'At least one PII pattern must be selected' });
+
+export const outputProtectionSchema = z
+  .object({ version: z.literal(1), assistantText: assistantTextProtectionSchema })
+  .strict();
+
 function createSourceFilterSchema<Field extends z.ZodTypeAny>(fieldSchema: Field) {
   return z
     .object({

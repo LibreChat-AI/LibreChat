@@ -26,6 +26,7 @@ const createMockModel = (collectionName) => ({
   getSyncProgress: jest.fn(),
   syncWithMeili: jest.fn(),
   cleanupExcludedMeiliIndex: jest.fn(),
+  cleanupOwnerlessMeiliIndex: jest.fn(),
   countDocuments: jest.fn(),
 });
 
@@ -104,7 +105,6 @@ describe('performSync() - syncThreshold logic', () => {
     mockMeiliIndex.mockReturnValue({
       getSettings: jest.fn().mockResolvedValue({ filterableAttributes: ['user'] }),
       updateSettings: jest.fn().mockResolvedValue({}),
-      search: jest.fn().mockResolvedValue({ hits: [] }),
     });
 
     mockBatchResetMeiliFlags.mockResolvedValue(undefined);
@@ -381,7 +381,6 @@ describe('performSync() - syncThreshold logic', () => {
     mockMeiliIndex.mockReturnValue({
       getSettings: jest.fn().mockResolvedValue({ filterableAttributes: [] }), // No user field
       updateSettings: jest.fn().mockResolvedValue({}),
-      search: jest.fn().mockResolvedValue({ hits: [] }),
     });
 
     process.env.MEILI_SYNC_THRESHOLD = '1000';
@@ -424,7 +423,6 @@ describe('performSync() - syncThreshold logic', () => {
     mockMeiliIndex.mockReturnValue({
       getSettings: jest.fn().mockResolvedValue({ filterableAttributes: [] }), // No user field
       updateSettings: jest.fn().mockResolvedValue({}),
-      search: jest.fn().mockResolvedValue({ hits: [] }),
     });
 
     process.env.MEILI_SYNC_THRESHOLD = '1000';
@@ -469,7 +467,6 @@ describe('performSync() - syncThreshold logic', () => {
     mockMeiliIndex.mockReturnValue({
       getSettings: jest.fn().mockResolvedValue({ filterableAttributes: [] }), // No user field
       updateSettings: jest.fn().mockResolvedValue({}),
-      search: jest.fn().mockResolvedValue({ hits: [] }),
     });
 
     // Act
@@ -629,6 +626,80 @@ describe('performSync() - syncThreshold logic', () => {
     expect(mockLogger.error).toHaveBeenCalledWith(
       '[indexSync] Message reconciliation failed; continuing with conversations:',
       cleanupError,
+    );
+  });
+
+  test('reconciles ownerless documents in both indexes when settings are current', async () => {
+    Message.getSyncProgress.mockResolvedValue({
+      totalProcessed: 100,
+      totalDocuments: 100,
+      isComplete: true,
+    });
+    Conversation.getSyncProgress.mockResolvedValue({
+      totalProcessed: 50,
+      totalDocuments: 50,
+      isComplete: true,
+    });
+
+    const indexSync = require('./indexSync');
+    await indexSync();
+
+    expect(Message.cleanupOwnerlessMeiliIndex).toHaveBeenCalledTimes(1);
+    expect(Conversation.cleanupOwnerlessMeiliIndex).toHaveBeenCalledTimes(1);
+    expect(Message.cleanupOwnerlessMeiliIndex.mock.invocationCallOrder[0]).toBeLessThan(
+      Message.getSyncProgress.mock.invocationCallOrder[0],
+    );
+    expect(Conversation.cleanupOwnerlessMeiliIndex.mock.invocationCallOrder[0]).toBeLessThan(
+      Conversation.getSyncProgress.mock.invocationCallOrder[0],
+    );
+    expect(mockBatchResetMeiliFlags).not.toHaveBeenCalled();
+  });
+
+  test('reconciles conversations and reports the failure when message cleanup fails', async () => {
+    const cleanupError = new Error('ownerless cleanup task failed');
+    Message.cleanupOwnerlessMeiliIndex.mockRejectedValueOnce(cleanupError);
+    Conversation.getSyncProgress.mockResolvedValue({
+      totalProcessed: 50,
+      totalDocuments: 50,
+      isComplete: true,
+    });
+
+    const indexSync = require('./indexSync');
+    await expect(indexSync()).rejects.toThrow(cleanupError);
+
+    expect(Message.getSyncProgress).not.toHaveBeenCalled();
+    expect(Conversation.cleanupOwnerlessMeiliIndex).toHaveBeenCalledTimes(1);
+    expect(Conversation.getSyncProgress).toHaveBeenCalledTimes(1);
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      '[indexSync] Message reconciliation failed; continuing with conversations:',
+      cleanupError,
+    );
+  });
+
+  test('reconciles ownerless documents after updated settings reset the sync flags', async () => {
+    Message.getSyncProgress.mockResolvedValue({
+      totalProcessed: 100,
+      totalDocuments: 100,
+      isComplete: true,
+    });
+    Conversation.getSyncProgress.mockResolvedValue({
+      totalProcessed: 50,
+      totalDocuments: 50,
+      isComplete: true,
+    });
+    mockMeiliIndex.mockReturnValue({
+      getSettings: jest.fn().mockResolvedValue({ filterableAttributes: [] }),
+      updateSettings: jest.fn().mockResolvedValue({}),
+    });
+
+    const indexSync = require('./indexSync');
+    await indexSync();
+
+    expect(mockBatchResetMeiliFlags).toHaveBeenCalledTimes(2);
+    expect(Message.cleanupOwnerlessMeiliIndex).toHaveBeenCalledTimes(1);
+    expect(Conversation.cleanupOwnerlessMeiliIndex).toHaveBeenCalledTimes(1);
+    expect(mockBatchResetMeiliFlags.mock.invocationCallOrder[1]).toBeLessThan(
+      Message.cleanupOwnerlessMeiliIndex.mock.invocationCallOrder[0],
     );
   });
 });

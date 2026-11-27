@@ -174,6 +174,58 @@ describe('resolveCodeWorkspace', () => {
     expect(result.canSubmit).toBe(false);
   });
 
+  it.each([
+    { capabilities: ['subagent_graphs'], graphsEnabled: true, enabled: false, active: true },
+    { capabilities: ['subagents'], graphsEnabled: true, enabled: false, active: false },
+    { capabilities: ['subagent_graphs'], graphsEnabled: false, enabled: true, active: false },
+    { capabilities: ['subagents'], graphsEnabled: undefined, enabled: true, active: true },
+    { capabilities: ['subagent_graphs'], graphsEnabled: undefined, enabled: true, active: false },
+  ])(
+    'projects saved graph capabilities at send time: %j',
+    ({ capabilities, graphsEnabled, enabled, active }) => {
+      const result = resolveCodeWorkspace(
+        inputs({
+          capabilities: ['execute_code', 'stateful_code_sessions', ...capabilities],
+          primaryAgent: agent({
+            id: 'agent_primary',
+            stateful_code_sessions: false,
+            tools: [],
+            subagents: {
+              enabled,
+              allowSelf: false,
+              ...(graphsEnabled === undefined ? {} : { graphsEnabled }),
+              graphs: [
+                {
+                  type: 'team',
+                  name: 'Team',
+                  description: 'Work',
+                  agent_ids: ['member'],
+                  entry_agent_id: 'member',
+                  result_agent_id: 'member',
+                  edges: [],
+                },
+              ],
+            },
+          }),
+          agentsMap: {
+            member: agent({
+              id: 'member',
+              code_environment_id: 'personal-vm',
+              subagents: { enabled: true, agent_ids: ['unreachable'] },
+              edges: [{ from: 'member', to: 'unused-handoff', edgeType: 'handoff' }],
+            }),
+          },
+        }),
+      );
+      expect(result.required).toBe(active);
+      expect(result.canSubmit).toBe(true);
+      expect(result.environments.map(({ environment }) => environment.id)).toEqual(
+        active ? ['personal-vm'] : [],
+      );
+      expect(result.resolveSubmission()?.codeWorkspaces).toEqual(active ? [projectA] : undefined);
+    },
+  );
+
   describe('subagent machine inheritance', () => {
     const sealedChoice: CodeWorkspaceSelection[] = [
       { environmentId: 'runtime-vm', workspaceId: 'project-a', agentIds: ['agent_primary'] },
@@ -189,6 +241,7 @@ describe('resolveCodeWorkspace', () => {
     const graph = (startupConfig: Partial<TStartupConfig>) =>
       inputs({
         startupConfig,
+        capabilities: ['execute_code', 'stateful_code_sessions', 'subagents'],
         conversation: conversation({
           conversationId: 'saved',
           codeEnvironmentMode: 'attached',

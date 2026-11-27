@@ -15,6 +15,7 @@ function createDeps(overrides: Partial<ErasureResolverDeps> = {}) {
     getMCPManager: jest.fn(() => ({ disconnectUserConnection })),
     openCheckpointDeletion: jest.fn(),
     deleteSharedLinks: jest.fn(),
+    deleteSubscriptions: jest.fn(),
     withTenant: <T>(tenant: string | undefined, operation: () => Promise<T>) =>
       tenant ? tenantStorage.run({ tenantId: tenant }, operation) : runAsSystem(operation),
     ...overrides,

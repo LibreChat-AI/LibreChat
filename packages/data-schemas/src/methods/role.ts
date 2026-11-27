@@ -26,8 +26,14 @@ function isSystemRoleName(name: string): boolean {
  * - `deleted_elsewhere`: the targeted role vanished while (or after) its members were moved.
  * - `delete_failed`: every member was moved, then the role delete rejected; it may still have
  *   committed (its acknowledgement lost), which only a fresh read can tell.
+ * - `late_reassignment_failed`: the role was deleted, then not every account assigned to it
+ *   while it was deleted could be moved; such an account may still hold the role's name.
  */
-export type RoleDeletionFailure = 'reassignment_failed' | 'deleted_elsewhere' | 'delete_failed';
+export type RoleDeletionFailure =
+  | 'reassignment_failed'
+  | 'deleted_elsewhere'
+  | 'delete_failed'
+  | 'late_reassignment_failed';
 
 /** A role deletion that failed part way. Carries the accounts it already moved to USER, which
  * stay moved and must still be audited, whatever happened to the role. */
@@ -102,6 +108,12 @@ export function createRoleMethods(
     updates: Partial<IRole>,
     options?: { id?: string },
   ) => Promise<IRole>;
+  setRolePermissions: (
+    roleName: string,
+    permissionType: string,
+    flags: Record<string, boolean>,
+    options?: { id?: string; seed?: Record<string, boolean> },
+  ) => Promise<IRole | null>;
   updateAccessPermissions: (
     roleName: string,
     permissionsUpdate: Record<string, Record<string, boolean>>,
@@ -296,12 +308,14 @@ export function createRoleMethods(
    * The role named exactly `roleName` in the caller's tenant partition (`tenantPartitionFilter`),
    * as the admin roles API addresses it: never a tenant's role of the same name outside that
    * tenant. A system role with no document there is created there, as {@link getRoleByName}
-   * creates it. Reads no cache, so an admin read never returns another partition's cached role.
+   * creates it. Reads no cache, so an admin read never returns another partition's cached role,
+   * and reads the primary, so a read after a write returns what the write committed.
    */
   async function getPartitionRole(roleName: string): Promise<IRole | null> {
     const Role = mongoose.models.Role as Model<IRole>;
     const read = () =>
       Role.findOne(roleDocumentFilter(roleName, 'getPartitionRole'))
+        .read('primary')
         .select('-__v')
         .lean<IRole>()
         .exec();
@@ -416,6 +430,45 @@ export function createRoleMethods(
       updateError.cause = error;
       throw updateError;
     }
+  }
+
+  /**
+   * Sets the given flags of one permission type on the role named `roleName`, as
+   * {@link updateRoleByName} matches it, each flag by its own path: a concurrent write to another
+   * permission type or flag of the same role is kept. `options.seed` (a type's legacy flags) is
+   * written as the type's permissions only while the role has none for it, before the flags, so
+   * concurrent seeds never undo each other's flags. Invalidates the cached role. Returns the
+   * updated role, or `null` when no role matches.
+   */
+  async function setRolePermissions(
+    roleName: string,
+    permissionType: string,
+    flags: Record<string, boolean>,
+    options?: { id?: string; seed?: Record<string, boolean> },
+  ): Promise<IRole | null> {
+    const set: Record<string, boolean> = {};
+    for (const [flag, value] of Object.entries(flags)) {
+      set[`permissions.${permissionType}.${flag}`] = value;
+    }
+    const Role = mongoose.models.Role;
+    const filter = roleDocumentFilter(roleName, 'setRolePermissions', options?.id);
+    const path = `permissions.${permissionType}`;
+    if (options?.seed) {
+      await Role.updateOne(
+        { ...filter, [path]: { $exists: false } },
+        { $set: { [path]: options.seed } },
+      );
+    }
+    const query = Object.keys(set).length
+      ? Role.findOneAndUpdate(filter, { $set: set }, { new: true })
+      : Role.findOne(filter);
+    const role = await query.select('-__v').lean<IRole>().exec();
+    const cache = deps.getCache?.(CacheKeys.ROLES);
+    if (cache) {
+      /** Invalidate rather than publish: a slower concurrent write would cache a stale role. */
+      await cache.set(scopedCacheKey(roleName), null);
+    }
+    return role;
   }
 
   /**
@@ -624,22 +677,6 @@ export function createRoleMethods(
   }
 
   /**
-   * Guards against deleting system roles. Reassigns affected users back to USER. Only the role
-   * of the caller's tenant partition and its members there are touched
-   * (`tenantPartitionFilter`).
-   *
-   * No existence pre-check is performed: for a nonexistent role the `updateMany`
-   * is a harmless no-op and `findOneAndDelete` returns null. This makes the
-   * function idempotent — a retry after a partial failure will still clean up
-   * orphaned user references and cache entries.
-   *
-   * Without a MongoDB transaction the two writes are non-atomic — if the delete
-   * fails after the reassignment, users will already have been moved to USER
-   * while the role document still exists. Recovery requires the caller to retry
-   * the delete call, which will succeed since the `updateMany` is a no-op on
-   * the second pass.
-   */
-  /**
    * Moves the members of `roleName` in the caller's partition to USER and returns the ids of
    * exactly the accounts it changed. Each batch is one write, conditional on the account still
    * holding the role, that also tags every account it changes with a nonce of its own: when it
@@ -754,6 +791,44 @@ export function createRoleMethods(
     }
   }
 
+  /**
+   * After the role is deleted, moves to USER the accounts an assignment gave its name between
+   * the deletion's last member read and the delete, which no pass could see, and adds them to
+   * `moved`. An assignment that commits after this read finds the role gone when it reads the
+   * role back after its write, and undoes itself (`addRoleMember` and `writeIdpRoleChange` in
+   * `@librechat/api`), so no account keeps a name its partition no longer has. Holders of a role
+   * recreated under the name since are its members and stay. The deletion already committed, so
+   * a failure here throws `late_reassignment_failed` with every account moved so far.
+   */
+  async function withLateMembers(
+    roleName: string,
+    partitioned: FilterQuery<IRole>,
+    moved: string[],
+  ): Promise<string[]> {
+    const Role = mongoose.models.Role;
+    const nameIsFree = async () => (await Role.exists(partitioned)) == null;
+    try {
+      return [...new Set([...moved, ...(await reassignMembersToUser(roleName, nameIsFree))])];
+    } catch (error) {
+      if (!(error instanceof RoleDeletionError)) {
+        throw error;
+      }
+      const all = [...new Set([...moved, ...error.reassignedUserIds])];
+      /** `deleted_elsewhere` here means a role of the name exists again: nothing failed. */
+      if (error.reason === 'deleted_elsewhere') {
+        return all;
+      }
+      throw new RoleDeletionError('late_reassignment_failed', all, error.cause);
+    }
+  }
+
+  /**
+   * Deletes the role named `roleName` in the caller's tenant partition (`tenantPartitionFilter`),
+   * or with `options.id` only that role document, after moving its members there to USER, and
+   * resolves to the role with every account it moved; `null` when there was no such role.
+   * Without a transaction the moves and the delete are separate writes: a failure part way throws
+   * `RoleDeletionError` with the accounts already moved, and a retry moves only those still left.
+   */
   async function deleteRoleByName(
     roleName: string,
     options?: { id?: string },
@@ -779,10 +854,22 @@ export function createRoleMethods(
       try {
         deleted = await Role.findOneAndDelete(role).lean<IRole>();
       } catch (error) {
-        throw new RoleDeletionError('delete_failed', reassignedUserIds, error);
+        /** The delete may have committed with its acknowledgement lost: once the role is gone,
+         * the accounts assigned to it meanwhile are moved and reported too. */
+        const gone = await Role.exists(role).then(
+          (found) => found == null,
+          () => false,
+        );
+        const moved = gone
+          ? await withLateMembers(roleName, partitioned, reassignedUserIds)
+          : reassignedUserIds;
+        throw new RoleDeletionError('delete_failed', moved, error);
       }
       if (deleted) {
-        return { role: deleted, reassignedUserIds };
+        return {
+          role: deleted,
+          reassignedUserIds: await withLateMembers(roleName, partitioned, reassignedUserIds),
+        };
       }
       if (reassignedUserIds.length > 0) {
         /** Another deletion removed the role after this one moved members: they stay moved. */
@@ -809,7 +896,7 @@ export function createRoleMethods(
     const User = mongoose.models.User as Model<IUser>;
     const affectedUserIds = await findUserIdsByRole(oldRole);
     await User.updateMany(roleMembersFilter(oldRole, 'updateUsersByRole'), {
-      $set: { role: newRole },
+      $set: { role: newRole, roleToken: new mongoose.Types.ObjectId().toString() },
     });
     await invalidateAuthUserDocCache(affectedUserIds);
   }
@@ -841,7 +928,7 @@ export function createRoleMethods(
         _id: { $in: userIds },
         ...(options?.fromRole !== undefined ? { role: options.fromRole } : {}),
       },
-      { $set: { role: newRole } },
+      { $set: { role: newRole, roleToken: new mongoose.Types.ObjectId().toString() } },
     );
     await invalidateAuthUserDocCache(userIds);
   }
@@ -880,6 +967,7 @@ export function createRoleMethods(
     getPartitionRole,
     findRolesByNames,
     updateRoleByName,
+    setRolePermissions,
     updateAccessPermissions,
     createRoleByName,
     deleteRoleByName,

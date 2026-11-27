@@ -408,6 +408,88 @@ describe('marketplace popularity cache', () => {
     });
   });
 
+  it('refreshes popularity on return after favourites reconcile from another tab', async () => {
+    const { result, rerender } = renderMarketplace();
+    await waitFor(() => {
+      expect(result.current.query.data?.pages[0].data.map((agent) => agent.id)).toEqual(['a', 'b']);
+      expect(result.current.favorites.data).toEqual([{ agentId: 'a' }]);
+    });
+
+    favorites = [{ agentId: 'a' }, { agentId: 'b' }];
+    popularOrder = ['b', 'a'];
+    const requestsBeforeReconcile = marketplace.mock.calls.length;
+    await act(async () => {
+      await result.current.favorites.refetch();
+    });
+    await waitFor(() => expect(result.current.favorites.data).toEqual(favorites));
+    expect(marketplace).toHaveBeenCalledTimes(requestsBeforeReconcile);
+    expect(result.current.query.data?.pages[0].data.map((agent) => agent.id)).toEqual(['a', 'b']);
+
+    rerender({ sort: 'newest' });
+    await waitFor(() =>
+      expect(result.current.query.data?.pages[0].data.map((agent) => agent.id)).toEqual(['b', 'a']),
+    );
+    rerender({ sort: 'popular' });
+    await waitFor(() => {
+      expect(result.current.query.isFetching).toBe(false);
+      expect(result.current.query.data?.pages[0].data.map((agent) => agent.id)).toEqual(['b', 'a']);
+    });
+  });
+
+  it('keeps the cached ranking when favourites reconcile to the same agents', async () => {
+    favorites = [{ agentId: 'a' }, { agentId: 'b' }];
+    const { result, rerender } = renderMarketplace();
+    await waitFor(() => {
+      expect(result.current.query.isSuccess).toBe(true);
+      expect(result.current.favorites.data).toEqual(favorites);
+    });
+
+    favorites = [
+      { agentId: 'b' },
+      { model: 'gpt-4o-mini', endpoint: EModelEndpoint.openAI },
+      { agentId: 'a' },
+    ];
+    popularOrder = ['b', 'a'];
+    await act(async () => {
+      await result.current.favorites.refetch();
+    });
+    await waitFor(() => expect(result.current.favorites.data).toEqual(favorites));
+    rerender({ sort: 'newest' });
+    await waitFor(() =>
+      expect(result.current.query.data?.pages[0].data.map((agent) => agent.id)).toEqual(['b', 'a']),
+    );
+    rerender({ sort: 'popular' });
+    await waitFor(() => {
+      expect(result.current.query.isFetching).toBe(false);
+      expect(result.current.query.data?.pages[0].data.map((agent) => agent.id)).toEqual(['a', 'b']);
+    });
+  });
+
+  it('refreshes popularity when favourites first load after a failed read', async () => {
+    getFavorites.mockRejectedValueOnce(new Error('favorites unavailable'));
+    const { result, rerender } = renderMarketplace();
+    await waitFor(() => {
+      expect(result.current.query.isSuccess).toBe(true);
+      expect(result.current.favorites.isError).toBe(true);
+    });
+
+    favorites = [{ agentId: 'a' }, { agentId: 'b' }];
+    popularOrder = ['b', 'a'];
+    await act(async () => {
+      await result.current.favorites.refetch();
+    });
+    await waitFor(() => expect(result.current.favorites.data).toEqual(favorites));
+    rerender({ sort: 'newest' });
+    await waitFor(() =>
+      expect(result.current.query.data?.pages[0].data.map((agent) => agent.id)).toEqual(['b', 'a']),
+    );
+    rerender({ sort: 'popular' });
+    await waitFor(() => {
+      expect(result.current.query.isFetching).toBe(false);
+      expect(result.current.query.data?.pages[0].data.map((agent) => agent.id)).toEqual(['b', 'a']);
+    });
+  });
+
   it('rolls back rejected pins without invalidating the cached ranking', async () => {
     const { result, rerender } = renderMarketplace();
     await waitFor(() => {

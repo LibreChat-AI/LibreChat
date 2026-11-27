@@ -31,10 +31,13 @@ type ArtifactSave = { index: number; original: string; updated: string };
 const isArtifactSave = (response: Response) =>
   response.request().method() === 'POST' && response.url().includes('/api/messages/artifact/');
 
-async function openCode(page: Page) {
-  await messagesView(page)
-    .getByRole('button', { name: new RegExp(HTML_ARTIFACT) })
-    .click();
+/** A reply opens its own artifact as it arrives; a conversation opened again leaves it to the card. */
+async function openCode(page: Page, fromCard = false) {
+  if (fromCard) {
+    await messagesView(page)
+      .getByRole('button', { name: new RegExp(`^Open artifact: ${HTML_ARTIFACT}`) })
+      .click();
+  }
   const panel = page.getByRole('region', { name: HTML_ARTIFACT });
   await expect(panel).toBeVisible();
   await panel.getByRole('radio', { name: 'Code' }).click();
@@ -84,7 +87,7 @@ test('an edit saves after another session changed the artifact @scenario:an-edit
   await page.goBack();
   await expect(page).toHaveURL(new RegExp(escapeRegExp(conversationPath)));
 
-  const second = await openCode(page);
+  const second = await openCode(page, true);
   await expect(second.panel.locator('#artifacts-code')).toContainText('other-session', {
     timeout: 30000,
   });

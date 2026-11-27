@@ -21,3 +21,13 @@ export function isBashProgrammaticToolCall(
 
   return !PYTHON_PROGRAMMATIC_LANGS.has(lang.toLowerCase());
 }
+
+/**
+ * The image tools whose card previews the picture as it is made: a placeholder the size the call
+ * asked for, filling in while the run goes, then the image in its place.
+ */
+export const AGENT_STYLE_TOOLS: ReadonlySet<string> = new Set([
+  'image_gen_oai',
+  'image_edit_oai',
+  'gemini_image_gen',
+]);

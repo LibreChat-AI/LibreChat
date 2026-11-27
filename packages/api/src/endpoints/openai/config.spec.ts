@@ -127,29 +127,29 @@ describe('getOpenAIConfig', () => {
 
   it('should use reasoning_effort for openAI endpoint without useResponsesApi', () => {
     const modelOptions = {
+      model: 'o3',
       reasoning_effort: ReasoningEffort.high,
       reasoning_summary: ReasoningSummary.detailed,
     };
 
     const result = getOpenAIConfig(mockApiKey, { modelOptions }, EModelEndpoint.openAI);
 
-    expect((result.llmConfig as Record<string, unknown>).reasoning_effort).toBe(
-      ReasoningEffort.high,
-    );
+    expect(result.llmConfig.modelKwargs).toEqual({ reasoning_effort: ReasoningEffort.high });
+    expect((result.llmConfig as Record<string, unknown>).reasoning_effort).toBeUndefined();
     expect(result.llmConfig.reasoning).toBeUndefined();
   });
 
   it('should use reasoning_effort for azureOpenAI endpoint without useResponsesApi', () => {
     const modelOptions = {
+      model: 'o3',
       reasoning_effort: ReasoningEffort.high,
       reasoning_summary: ReasoningSummary.detailed,
     };
 
     const result = getOpenAIConfig(mockApiKey, { modelOptions }, EModelEndpoint.azureOpenAI);
 
-    expect((result.llmConfig as Record<string, unknown>).reasoning_effort).toBe(
-      ReasoningEffort.high,
-    );
+    expect(result.llmConfig.modelKwargs).toEqual({ reasoning_effort: ReasoningEffort.high });
+    expect((result.llmConfig as Record<string, unknown>).reasoning_effort).toBeUndefined();
     expect(result.llmConfig.reasoning).toBeUndefined();
   });
 

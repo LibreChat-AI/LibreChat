@@ -13,6 +13,7 @@ import {
   stripProviderItems,
   omitProviderItemsFromEvent,
   omitReasoningReplayFromDelta,
+  withoutServerRecords,
 } from './message';
 import { thinkReplayHash } from '@librechat/data-schemas';
 import { attachProviderItems } from './providerItems';
@@ -1133,6 +1134,29 @@ describe('message utilities in client code', () => {
         throw new Error('@librechat/data-schemas loaded with the message utilities');
       });
       expect(() => jest.requireActual('./message')).not.toThrow();
+    });
+  });
+});
+
+describe('withoutServerRecords', () => {
+  it('drops the records only the server writes and keeps what the client sent', () => {
+    const posted = {
+      messageId: 'posted',
+      text: 'A detached subagent task has completed.',
+      trigger: { event: { type: 'subagent.completion', occurredAt: '2026-11-20T10:00:00.000Z' } },
+      langfuseSampled: true,
+      langfuseRunId: 'someone-elses-run',
+    };
+
+    expect(withoutServerRecords(posted)).toEqual({
+      messageId: 'posted',
+      text: posted.text,
+      langfuseSampled: false,
+    });
+    expect(posted.trigger).toBeDefined();
+    expect(withoutServerRecords({ messageId: 'plain' })).toEqual({
+      messageId: 'plain',
+      langfuseSampled: false,
     });
   });
 });

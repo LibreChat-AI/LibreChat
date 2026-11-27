@@ -1,9 +1,12 @@
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import {
+  routeNestedAttachments,
   assignNestedAttachments,
   selectUnclaimedAttachments,
   selectExactlyNestedAttachments,
 } from '../attachments';
+import { toolCallStepOwners } from '../../../core/parts/owners';
+import { mapAttachments } from '../../../core/attachments';
 import { collectNestedCalls } from '../state';
 
 const file = (toolCallId?: string) =>
@@ -185,5 +188,57 @@ describe('subagent attachments', () => {
     );
     expect(ids(assigned, content[0])).toEqual(['first-child']);
     expect(ids(assigned, content[1])).toEqual(['second-child']);
+  });
+});
+
+describe('routeNestedAttachments', () => {
+  const route = (
+    content: TMessageContentParts[],
+    attachments: TAttachment[],
+    calls: ReadonlyMap<
+      number,
+      Array<{ id: string; agentId?: string; stepId?: string }>
+    > = new Map(),
+  ) =>
+    routeNestedAttachments(
+      content,
+      attachments,
+      calls,
+      mapAttachments(attachments),
+      toolCallStepOwners(content),
+    );
+
+  it('gives a child call’s file to its subagent part and leaves a top-level file where it is', () => {
+    const content = [toolCall('direct'), subagent('agent-call', [toolCall('child')])];
+    const direct = file('direct');
+    const child = file('child');
+    const { nested, inDoubt } = route(content, [direct, child]);
+
+    expect(ids(nested, content[1])).toEqual(['child']);
+    expect(nested.get(content[0])).toBeUndefined();
+    expect(inDoubt).toEqual([]);
+  });
+
+  it('keeps a scoped child file off an unscoped top-level call that reuses its id', () => {
+    const content = [toolCall('shared'), toolCall('agent-call', { name: 'subagent' })];
+    const scoped = { ...file('shared'), agentId: 'child-agent' } as TAttachment;
+    const { nested, inDoubt } = route(
+      content,
+      [scoped],
+      new Map([[1, [{ id: 'shared', agentId: 'child-agent' }]]]),
+    );
+
+    expect(nested.get(content[1])).toEqual([scoped]);
+    expect(inDoubt).toEqual([]);
+  });
+
+  it('reports a file no call owns under its full scope', () => {
+    const content = [toolCall('shared'), toolCall('agent-call', { name: 'subagent' })];
+    const scoped = { ...file('shared'), agentId: 'child-agent' } as TAttachment;
+    const loose = file();
+    const { nested, inDoubt } = route(content, [scoped, loose]);
+
+    expect(nested.size).toBe(0);
+    expect(inDoubt).toEqual([scoped]);
   });
 });

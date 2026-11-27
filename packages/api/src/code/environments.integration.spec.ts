@@ -1495,4 +1495,296 @@ describe('code environment registry', () => {
       ).resolves.not.toBeNull();
     });
   });
+
+  describe('idle passes', () => {
+    const createOwner = (email: string) =>
+      mongoose.models.User.create({ email, provider: 'local' });
+    const createEnvironment = async (
+      ownerId: Types.ObjectId,
+      environmentId: string,
+      fields: Record<string, unknown> = {},
+    ) => {
+      const environment = await createMethods(mongoose).createCodeEnvironment({
+        environmentId,
+        name: environmentId,
+        type: 'attached',
+        baseURL: 'https://code.example.com',
+        controlPlaneId: 'shared-code-api',
+        createdBy: ownerId,
+      });
+      /** A fresh row is mid-registration; only a caller that asks for that marker keeps it. */
+      const { registrationPendingAt, ...rest } = fields;
+      await mongoose.models.CodeEnvironment.updateOne(
+        { _id: environment._id },
+        registrationPendingAt == null
+          ? { $unset: { registrationPendingAt: 1 }, $set: rest }
+          : { $set: fields },
+      );
+      return environment;
+    };
+    const revoked = () =>
+      jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ protocolVersion: 1, revoked: true }),
+      });
+
+    test('is idle while the reference sweep only visits live environments', async () => {
+      const owner = await createOwner('idle-live-owner@example.com');
+      for (const id of ['live-a', 'live-b', 'live-c']) {
+        await createEnvironment(owner._id, id);
+      }
+      const fetchImpl = revoked();
+
+      /** Three pages of one environment, then the pass that completes the sweep: none is work. */
+      for (let pass = 0; pass < 4; pass += 1) {
+        await expect(
+          reconcileCodeEnvironmentLifecycle({ mongoose, limit: 1, fetchImpl }),
+        ).resolves.toBe(true);
+      }
+      expect(fetchImpl).not.toHaveBeenCalled();
+      await expect(mongoose.models.CodeEnvironment.countDocuments({})).resolves.toBe(3);
+    });
+
+    const expiredAt = () => new Date(Date.now() - 1_000);
+    const work: Array<[string, (ownerId: Types.ObjectId) => Promise<unknown>]> = [
+      [
+        'an expired removal lease',
+        (ownerId) =>
+          createEnvironment(ownerId, 'work-removal', {
+            deletionStartedAt: expiredAt(),
+            deletionLeaseId: 'abandoned-removal',
+            deletionLeaseExpiresAt: expiredAt(),
+          }),
+      ],
+      [
+        'an expired agent reference',
+        (ownerId) =>
+          createEnvironment(ownerId, 'work-reference', {
+            pendingAgentReferences: [{ reservationId: 'abandoned', expiresAt: new Date(0) }],
+          }),
+      ],
+      [
+        'a stale registration',
+        (ownerId) =>
+          createEnvironment(ownerId, 'work-registration', {
+            registrationPendingAt: new Date(Date.now() - 10 * 60_000),
+          }),
+      ],
+      [
+        'a committed deletion',
+        (ownerId) =>
+          createEnvironment(ownerId, 'work-committed', { deletionCommittedAt: new Date() }),
+      ],
+      [
+        'a due worker revocation',
+        (ownerId) =>
+          createEnvironment(ownerId, 'work-revocation', {
+            workerId: 'work-revocation',
+            workerPrincipal: { type: 'user', id: ownerId.toString() },
+            revocationTokenEnv: 'CODE_ADMIN_TOKEN',
+            revocationPendingAt: new Date(),
+          }),
+      ],
+      [
+        'an environment whose owner is gone',
+        async (ownerId) => {
+          await createEnvironment(ownerId, 'work-orphan');
+          await mongoose.models.User.deleteOne({ _id: ownerId });
+        },
+      ],
+    ];
+
+    test.each(work)(
+      'is not idle while %s is outstanding, and is idle once it is done',
+      async (name, seed) => {
+        const owner = await createOwner(`idle-work-${name.replace(/\W+/g, '-')}@example.com`);
+        await seed(owner._id);
+        const run = () =>
+          reconcileCodeEnvironmentLifecycle({
+            mongoose,
+            readSecret: () => 'administrator-token',
+            fetchImpl: revoked(),
+          });
+
+        await expect(run()).resolves.toBe(false);
+        await expect(run()).resolves.toBe(true);
+      },
+    );
+
+    test('is not idle when another replica moves the sweep checkpoint first', async () => {
+      const owner = await createOwner('idle-contention-owner@example.com');
+      await createEnvironment(owner._id, 'contended');
+      const db = mongoose.connection.db!;
+      const collection = db.collection.bind(db);
+      const spy = jest.spyOn(db, 'collection').mockImplementation(((name: string) => {
+        const real = collection(name);
+        if (name !== 'code_environment_reconciliation') return real;
+        return new Proxy(real, {
+          get(target, property) {
+            if (property !== 'updateOne') return Reflect.get(target, property);
+            /** The competing replica wins the capture of the sweep's upper bound. */
+            return (filter: Record<string, unknown>, ...rest: unknown[]) =>
+              filter.upperId === null
+                ? Promise.resolve({ matchedCount: 0, modifiedCount: 0 })
+                : (target.updateOne as (...args: unknown[]) => unknown)(filter, ...rest);
+          },
+        });
+      }) as typeof db.collection);
+      try {
+        await expect(reconcileCodeEnvironmentLifecycle({ mongoose })).resolves.toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+      await expect(reconcileCodeEnvironmentLifecycle({ mongoose })).resolves.toBe(true);
+    });
+
+    describe('retries the pass defers itself', () => {
+      type Deferred = {
+        name: string;
+        field: 'revocationReconcileAfter' | 'registrationReconcileAfter' | 'deletionLeaseExpiresAt';
+        fields: (ownerId: Types.ObjectId) => Record<string, unknown>;
+        readSecret: () => string | undefined;
+        fetchImpl: () => jest.Mock;
+      };
+      const userWorker = (ownerId: Types.ObjectId, id: string): Record<string, unknown> => ({
+        workerId: id,
+        workerPrincipal: { type: 'user', id: ownerId.toString() },
+        revocationTokenEnv: 'CODE_ADMIN_TOKEN',
+      });
+      const deferred: Deferred[] = [
+        {
+          name: 'a revocation that failed',
+          field: 'revocationReconcileAfter',
+          fields: (ownerId) => ({
+            ...userWorker(ownerId, 'defer-revocation'),
+            revocationPendingAt: new Date(),
+          }),
+          readSecret: () => 'administrator-token',
+          fetchImpl: () => jest.fn().mockRejectedValue(new Error('control plane unavailable')),
+        },
+        {
+          name: 'a stale registration that could not be compensated',
+          field: 'registrationReconcileAfter',
+          fields: (ownerId) => ({
+            ...userWorker(ownerId, 'defer-registration'),
+            registrationPendingAt: new Date(Date.now() - 10 * 60_000),
+          }),
+          readSecret: () => undefined,
+          fetchImpl: revoked,
+        },
+        {
+          name: 'a removal that could not finish',
+          field: 'deletionLeaseExpiresAt',
+          fields: (ownerId) => ({
+            ...userWorker(ownerId, 'defer-removal'),
+            deletionStartedAt: new Date(Date.now() - 10 * 60_000),
+            deletionLeaseId: 'abandoned-removal',
+            deletionLeaseExpiresAt: new Date(Date.now() - 1_000),
+          }),
+          readSecret: () => undefined,
+          fetchImpl: revoked,
+        },
+      ];
+
+      test.each(deferred)(
+        'reports when $name is due again',
+        async ({ field, fields, readSecret, fetchImpl }) => {
+          const owner = await createOwner(`defer-${field}@example.com`);
+          const environment = await createEnvironment(
+            owner._id,
+            `defer-${field}`,
+            fields(owner._id),
+          );
+          const onRetryAt = jest.fn();
+          const startedAt = Date.now();
+
+          await expect(
+            reconcileCodeEnvironmentLifecycle({
+              mongoose,
+              readSecret,
+              fetchImpl: fetchImpl(),
+              onRetryAt,
+            }),
+          ).resolves.toBe(false);
+
+          const stored = await mongoose.models.CodeEnvironment.findById(environment._id).lean<
+            Record<string, Date>
+          >();
+          const due = stored?.[field];
+          expect(due).toBeInstanceOf(Date);
+          expect(onRetryAt).toHaveBeenCalledTimes(1);
+          expect(onRetryAt).toHaveBeenCalledWith(due);
+          expect(due?.getTime()).toBeGreaterThan(startedAt);
+        },
+      );
+
+      test('defers every revocation of one pass to the same time', async () => {
+        const owner = await createOwner('defer-shared-owner@example.com');
+        const ids = ['shared-a', 'shared-b', 'shared-c'];
+        for (const id of ids) {
+          await createEnvironment(owner._id, id, {
+            ...userWorker(owner._id, id),
+            revocationPendingAt: new Date(),
+          });
+        }
+        const onRetryAt = jest.fn();
+
+        await reconcileCodeEnvironmentLifecycle({
+          mongoose,
+          readSecret: () => 'administrator-token',
+          fetchImpl: jest.fn().mockRejectedValue(new Error('control plane unavailable')),
+          onRetryAt,
+        });
+
+        const stored = await mongoose.models.CodeEnvironment.find({
+          environmentId: { $in: ids },
+        }).lean<Array<Record<string, Date>>>();
+        const times = new Set(stored.map((item) => item.revocationReconcileAfter.getTime()));
+        expect(stored).toHaveLength(3);
+        expect(times.size).toBe(1);
+        expect(onRetryAt).toHaveBeenCalledTimes(3);
+        for (const [at] of onRetryAt.mock.calls) {
+          expect((at as Date).getTime()).toBe([...times][0]);
+        }
+      });
+
+      test('reports the latest lease expiry once for the removals a pass leaves held', async () => {
+        const owner = await createOwner('defer-removals-owner@example.com');
+        for (const id of ['removal-a', 'removal-b']) {
+          await createEnvironment(owner._id, id, {
+            ...userWorker(owner._id, id),
+            deletionStartedAt: new Date(Date.now() - 10 * 60_000),
+            deletionLeaseId: 'abandoned-removal',
+            deletionLeaseExpiresAt: new Date(Date.now() - 1_000),
+          });
+        }
+        const onRetryAt = jest.fn();
+
+        await reconcileCodeEnvironmentLifecycle({
+          mongoose,
+          readSecret: () => undefined,
+          fetchImpl: revoked(),
+          onRetryAt,
+        });
+
+        const stored = await mongoose.models.CodeEnvironment.find({
+          environmentId: { $in: ['removal-a', 'removal-b'] },
+        }).lean<Array<Record<string, Date>>>();
+        const latest = Math.max(...stored.map((item) => item.deletionLeaseExpiresAt.getTime()));
+        expect(onRetryAt).toHaveBeenCalledTimes(1);
+        expect(onRetryAt).toHaveBeenCalledWith(new Date(latest));
+      });
+
+      test('reports nothing when there is nothing to retry', async () => {
+        const owner = await createOwner('defer-none-owner@example.com');
+        await createEnvironment(owner._id, 'defer-none');
+        const onRetryAt = jest.fn();
+
+        await expect(reconcileCodeEnvironmentLifecycle({ mongoose, onRetryAt })).resolves.toBe(
+          true,
+        );
+        expect(onRetryAt).not.toHaveBeenCalled();
+      });
+    });
+  });
 });

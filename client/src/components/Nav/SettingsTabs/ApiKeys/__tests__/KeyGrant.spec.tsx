@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { dataService } from 'librechat-data-provider';
 import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { ScheduleMCPConsentView } from 'librechat-data-provider';
+import type { RunGrantView } from 'librechat-data-provider';
 import KeyGrant from '../KeyGrant';
 
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
@@ -28,7 +28,7 @@ jest.mock('librechat-data-provider', () => {
   };
 });
 
-const view = (tools: string[]): ScheduleMCPConsentView => ({
+const view = (tools: string[]): RunGrantView => ({
   state: 'missing',
   revision: null,
   expiresAtMs: null,

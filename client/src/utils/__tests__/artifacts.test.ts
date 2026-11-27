@@ -16,6 +16,7 @@ import {
   languageForFilename,
   normalizeArtifactType,
   TOOL_ARTIFACT_TYPES,
+  TAILWIND_ORDER,
 } from '../artifacts';
 
 const TAILWIND_CDN = 'https://cdn.tailwindcss.com/3.4.17#tailwind.js';
@@ -102,7 +103,8 @@ describe('SVG artifact template mapping (#16087)', () => {
 describe('buildSandpackOptions', () => {
   it('includes externalResources with .js fragment hint for static template', () => {
     const options = buildSandpackOptions('static');
-    expect(options?.externalResources).toEqual([TAILWIND_CDN]);
+    expect(options?.externalResources).toEqual([TAILWIND_CDN, TAILWIND_ORDER]);
+    expect(TAILWIND_ORDER).toMatch(/^data:text\/javascript,[^#]*#tailwind-order\.js$/);
   });
 
   it('includes externalResources for react-ts template', () => {
@@ -116,7 +118,7 @@ describe('buildSandpackOptions', () => {
     >[1];
     const options = buildSandpackOptions('static', config);
     expect(options?.bundlerURL).toBe('https://static.example.com');
-    expect(options?.externalResources).toEqual([TAILWIND_CDN]);
+    expect(options?.externalResources).toEqual([TAILWIND_CDN, TAILWIND_ORDER]);
   });
 
   it('uses bundlerURL when template is react-ts and config is provided', () => {
@@ -133,14 +135,77 @@ describe('buildSandpackOptions', () => {
     expect(options?.bundlerURL).toBeUndefined();
   });
 
-  it.each(['static', 'react-ts'] as const)(
-    'treats an empty bundler URL as unset for the %s template',
-    (template) => {
-      const options = buildSandpackOptions(template, { bundlerURL: '', staticBundlerURL: '' });
-      expect(options?.bundlerURL).toBeUndefined();
-      expect(options?.externalResources).toEqual([TAILWIND_CDN]);
-    },
+  it.each([
+    ['static', [TAILWIND_CDN, TAILWIND_ORDER]],
+    ['react-ts', [TAILWIND_CDN]],
+  ] as const)('treats an empty bundler URL as unset for the %s template', (template, resources) => {
+    const options = buildSandpackOptions(template, { bundlerURL: '', staticBundlerURL: '' });
+    expect(options?.bundlerURL).toBeUndefined();
+    expect(options?.externalResources).toEqual(resources);
+  });
+});
+
+describe('Tailwind style order in static previews (#16841)', () => {
+  const prefix = 'data:text/javascript,';
+  const script = decodeURIComponent(
+    TAILWIND_ORDER.slice(prefix.length, TAILWIND_ORDER.lastIndexOf('#')),
   );
+
+  /** Mirrors the Play CDN: an attribute-less `<style>` appended to the end of `<head>`. */
+  const appendTailwind = (doc: Document) => {
+    const style = doc.createElement('style');
+    doc.head.append(style);
+    style.textContent = '*, ::before, ::after{--tw-ring-inset: }/* ! tailwindcss v3.4.17 */h1{}';
+    return style;
+  };
+
+  const setup = (head: string) => {
+    const doc = document.implementation.createHTMLDocument('preview');
+    doc.head.innerHTML = `<script src="${TAILWIND_CDN}"></script><script src="${TAILWIND_ORDER}"></script>${head}`;
+    new Function('document', script)(doc);
+    return doc;
+  };
+
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('moves the generated Tailwind style in front of the page stylesheets', async () => {
+    const doc = setup('<title>Test</title><style id="page">h1{font-size:64px}</style>');
+    const tailwind = appendTailwind(doc);
+    await flush();
+    expect(tailwind.nextElementSibling).toBe(doc.getElementById('page'));
+  });
+
+  it('treats a page stylesheet link as the first page stylesheet', async () => {
+    const doc = setup('<link id="sheet" rel="stylesheet" href="page.css"><style>h1{}</style>');
+    const tailwind = appendTailwind(doc);
+    await flush();
+    expect(tailwind.nextElementSibling).toBe(doc.getElementById('sheet'));
+  });
+
+  it('skips text/tailwindcss source blocks, which the browser does not apply', async () => {
+    const doc = setup('<style type="text/tailwindcss">@apply x;</style><style id="page"></style>');
+    const tailwind = appendTailwind(doc);
+    await flush();
+    expect(tailwind.nextElementSibling).toBe(doc.getElementById('page'));
+  });
+
+  it('leaves the order alone when the page loads the Tailwind CDN itself', async () => {
+    const doc = setup('<script src="https://cdn.tailwindcss.com"></script><style></style>');
+    const tailwind = appendTailwind(doc);
+    await flush();
+    expect(doc.head.lastElementChild).toBe(tailwind);
+  });
+
+  it('only moves the attribute-less style the CDN generates', async () => {
+    const doc = setup('<style id="a"></style>');
+    const page = doc.createElement('style');
+    page.id = 'b';
+    page.textContent = '/* ! tailwindcss v3.4.17 */';
+    page.setAttribute('data-page', '');
+    doc.head.append(page);
+    await flush();
+    expect(doc.head.lastElementChild).toBe(page);
+  });
 });
 
 describe('detectArtifactTypeFromFile', () => {

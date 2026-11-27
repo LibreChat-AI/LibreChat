@@ -80,7 +80,6 @@ function createOAuthHandler(redirectUri = domains.client) {
         await sendOpenIDAuthResponse({
           tokenset: req.user.tokenset,
           user: req.user,
-          existingRefreshToken: req.user.tokenset.refresh_token,
           openidSubject: req.user.openidId,
           openidIssuer: req.user.openidIssuer,
           discardSessionTokens: true,

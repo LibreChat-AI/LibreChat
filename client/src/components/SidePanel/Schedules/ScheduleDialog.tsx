@@ -5,10 +5,20 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useForm, Controller } from 'react-hook-form';
 import {
+  PermissionBits,
+  isCronCadence,
+  nextRunInstants,
+  scheduleFrequencies,
+  isValidCronExpression,
+  cadenceIntervalMinutes,
+  SCHEDULE_CRON_MAX_LENGTH,
+} from 'librechat-data-provider';
+import {
   Input,
   Label,
   Radio,
   Button,
+  Checkbox,
   TimePicker,
   MinutePicker,
   FieldMessage,
@@ -18,15 +28,6 @@ import {
   OGDialogTemplate,
   useToastContext,
 } from '@librechat/client';
-import {
-  PermissionBits,
-  isCronCadence,
-  nextRunInstants,
-  scheduleFrequencies,
-  isValidCronExpression,
-  cadenceIntervalMinutes,
-  SCHEDULE_CRON_MAX_LENGTH,
-} from 'librechat-data-provider';
 import type {
   TSchedule,
   TCreateSchedule,
@@ -89,6 +90,8 @@ type ScheduleFormValues = {
    *  user who tries a preset does not lose the expression they typed. */
   expression: string;
   timezone: string;
+  /** Run only while every MCP server the agent uses is ready. */
+  mcpStrict: boolean;
 };
 
 const FREQUENCY_LABELS: Record<ScheduleFrequency, TranslationKeys> = {
@@ -128,6 +131,7 @@ const getDefaultValues = (schedule?: TSchedule): ScheduleFormValues => {
       daysOfWeek: DEFAULT_WEEKLY_DAYS,
       expression: DEFAULT_CRON,
       timezone: localTimezone,
+      mcpStrict: false,
     };
   }
   const identity = {
@@ -138,6 +142,7 @@ const getDefaultValues = (schedule?: TSchedule): ScheduleFormValues => {
     // A stored row always has one; the fallback only covers a legacy row written
     // before the field existed, which would otherwise render an empty picker.
     timezone: schedule.timezone || localTimezone,
+    mcpStrict: schedule.mcpStrict === true,
   };
   const cadence = schedule.cadence;
   if (isCronCadence(cadence)) {
@@ -438,6 +443,7 @@ export default function ScheduleDialog({
           : {}),
         ...(cadenceTouched ? { cadence } : {}),
         ...(dirtyFields.timezone === true ? { timezone: values.timezone } : {}),
+        ...(dirtyFields.mcpStrict === true ? { mcpStrict: values.mcpStrict } : {}),
       };
       // No field touched: a field-less PATCH is refused server-side (it would rotate
       // the schedule's fencing for a request that changes nothing). A choice that is not the
@@ -482,6 +488,7 @@ export default function ScheduleDialog({
       timezone: values.timezone,
       target: 'new' as const,
       enabled: true,
+      ...(values.mcpStrict && { mcpStrict: true }),
       ...(authorizes && authorization.value && { authorization: authorization.value }),
     };
     // STABLE across retries of the SAME intent, which is the whole point: the server
@@ -1022,6 +1029,33 @@ export default function ScheduleDialog({
                 </div>
               )}
             </div>
+            <Controller
+              name="mcpStrict"
+              control={control}
+              render={({ field }) => (
+                <div className="flex items-start gap-2">
+                  <Checkbox
+                    id={`${FORM_ID}-mcp-strict`}
+                    checked={field.value}
+                    aria-labelledby={`${FORM_ID}-mcp-strict-label`}
+                    aria-describedby={`${FORM_ID}-mcp-strict-note`}
+                    onCheckedChange={(checked) => field.onChange(checked === true)}
+                  />
+                  <div className="space-y-1">
+                    <Label
+                      id={`${FORM_ID}-mcp-strict-label`}
+                      htmlFor={`${FORM_ID}-mcp-strict`}
+                      className="text-sm font-medium"
+                    >
+                      {localize('com_ui_schedule_mcp_strict')}
+                    </Label>
+                    <p id={`${FORM_ID}-mcp-strict-note`} className="text-text-secondary text-xs">
+                      {localize('com_ui_schedule_mcp_strict_note')}
+                    </p>
+                  </div>
+                </div>
+              )}
+            />
             {authorizes && selectedAgentId !== '' && (
               <Authorize
                 key={selectedAgentId}

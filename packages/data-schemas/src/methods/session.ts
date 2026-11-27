@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type * as t from '~/types/session';
 import { createIndexesWithRetry } from '~/utils/retry';
 import { signPayload, hashToken } from '~/crypto';
@@ -15,6 +16,16 @@ export class SessionError extends Error {
 
 /** Default refresh token expiry: 7 days in milliseconds */
 export const DEFAULT_REFRESH_TOKEN_EXPIRY: number = 1000 * 60 * 60 * 24 * 7;
+
+/** `SessionError` code for a rotation that another request completed first. */
+export const REFRESH_TOKEN_ROTATED = 'REFRESH_TOKEN_ROTATED';
+
+/**
+ * How many replaced tokens a session keeps for `findSession`'s grace window. A session rotates once
+ * per refresh round, so more rounds than this inside one window are not expected; the cap only
+ * bounds the document.
+ */
+const MAX_PREVIOUS_REFRESH_TOKENS = 10;
 
 // Factory function that takes mongoose instance and returns the methods
 export function createSessionMethods(mongoose: typeof import('mongoose')): {
@@ -135,7 +146,19 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
 
       if (params.refreshToken) {
         const tokenHash = await hashToken(params.refreshToken);
-        query.refreshTokenHash = tokenHash;
+        if (options.graceMs) {
+          const rotatedAfter = new Date(Date.now() - options.graceMs);
+          query.$or = [
+            { refreshTokenHash: tokenHash },
+            {
+              previousRefreshTokens: {
+                $elemMatch: { hash: tokenHash, rotatedAt: { $gt: rotatedAfter } },
+              },
+            },
+          ];
+        } else {
+          query.refreshTokenHash = tokenHash;
+        }
       }
 
       if (params.userId) {
@@ -272,16 +295,49 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
           /** `iat` is whole seconds, too coarse to order this token against a password reset that
            * lands in the same second. `isTokenRetired` reads this claim to settle that exactly. */
           issuedAtMs: Date.now(),
+          /** Tokens minted in the same millisecond would otherwise be identical, and a rotation
+           * that reproduced the current token would leave its hash, and so the race, open. */
+          jti: randomUUID(),
         },
         secret: process.env.JWT_REFRESH_SECRET!,
         expirationTime: Math.floor((expiresIn - Date.now()) / 1000),
       });
 
-      session.refreshTokenHash = await hashToken(refreshToken);
-      await session.save();
+      const refreshTokenHash = await hashToken(refreshToken);
+      const replaced = session.isNew ? undefined : session.refreshTokenHash;
+      if (!replaced) {
+        session.refreshTokenHash = refreshTokenHash;
+        await session.save();
+        return refreshToken;
+      }
+
+      /**
+       * Two refreshes can read the session before either rotates it. Only the first may replace the
+       * hash: if both did, the stored hash and the cookie the browser keeps could name different
+       * tokens, and every later refresh would be refused.
+       */
+      const { matchedCount } = await mongoose.models.Session.updateOne(
+        { _id: session._id, refreshTokenHash: replaced },
+        {
+          $set: { refreshTokenHash },
+          $push: {
+            previousRefreshTokens: {
+              $each: [{ hash: replaced, rotatedAt: new Date() }],
+              $slice: -MAX_PREVIOUS_REFRESH_TOKENS,
+            },
+          },
+        },
+      );
+      if (!matchedCount) {
+        throw new SessionError('Refresh token was already rotated', REFRESH_TOKEN_ROTATED);
+      }
+      session.refreshTokenHash = refreshTokenHash;
 
       return refreshToken;
     } catch (error) {
+      if (error instanceof SessionError) {
+        throw error;
+      }
       logger.error('[generateRefreshToken] Error generating refresh token:', error);
       throw new SessionError('Failed to generate refresh token', 'GENERATE_TOKEN_FAILED');
     }

@@ -210,7 +210,7 @@ test.describe('run-scoped subagent files', () => {
     }
   });
 
-  test('retains private versions across inspection and overwrite and downloads both after reload', async ({
+  test('retains private versions across inspection and overwrite and downloads both after reload @scenario:run-file-versions-download-after-reload', async ({
     page,
   }) => {
     test.setTimeout(180_000);
@@ -315,34 +315,41 @@ test.describe('run-scoped subagent files', () => {
       expect(await overwrittenSource.text()).toBe(expectedSecond);
 
       await page.reload();
-      const downloadButtons = messagesView(page).getByRole('button', {
-        name: `Download ${outputName}`,
-        exact: true,
-      });
-      await expect(downloadButtons).toHaveCount(2, { timeout: 30_000 });
-      const expectedIds = new Set([firstFileId, secondFileId]);
-      const downloaded = new Map<string, string>();
-      for (let index = 0; index < 2; index++) {
+      await expect(
+        messagesView(page).getByRole('button', { name: `Download ${outputName}`, exact: true }),
+      ).toHaveCount(2, { timeout: 30_000 });
+      /* After a reload both versions first render as pending placeholders and
+         are swapped for artifact rows as their previews resolve, so a button
+         picked by position can be replaced under the click. Each version is
+         addressed by its own row once that row has settled. */
+      const versions = [
+        [firstFileId, expectedFirst],
+        [secondFileId, expectedSecond],
+      ];
+      const rowOf = (fileId: string) =>
+        messagesView(page).locator(`[data-artifact-trigger="tool-artifact-${fileId}"]`);
+      for (const [fileId] of versions) {
+        await expect(rowOf(fileId)).toBeVisible({ timeout: 30_000 });
+      }
+      for (const [fileId, expected] of versions) {
+        const downloadButton = rowOf(fileId).locator('xpath=following-sibling::button[1]');
+        await expect(downloadButton).toHaveAccessibleName(`Download ${outputName}`);
         const downloadPromise = page.waitForEvent('download');
-        const responsePromise = page.waitForResponse((response) => {
-          const pathname = new URL(response.url()).pathname;
-          return (
+        const responsePromise = page.waitForResponse(
+          (response) =>
             response.request().method() === 'GET' &&
-            pathname.startsWith('/api/files/download/') &&
-            expectedIds.has(decodeURIComponent(pathname.split('/').pop() ?? ''))
-          );
-        });
-        await downloadButtons.nth(index).click();
+            new URL(response.url()).pathname.startsWith('/api/files/download/'),
+        );
+        await downloadButton.click();
         const [download, response] = await Promise.all([downloadPromise, responsePromise]);
         expect(response.ok()).toBeTruthy();
+        expect(decodeURIComponent(new URL(response.url()).pathname.split('/').pop() ?? '')).toBe(
+          fileId,
+        );
         expect(download.suggestedFilename()).toBe(outputName);
         expect(await download.failure()).toBeNull();
-        const fileId = decodeURIComponent(new URL(response.url()).pathname.split('/').pop() ?? '');
-        downloaded.set(fileId, await readFile(await download.path(), 'utf8'));
+        expect(await readFile(await download.path(), 'utf8')).toBe(expected);
       }
-      expect(downloaded.size).toBe(2);
-      expect(downloaded.get(firstFileId)).toBe(expectedFirst);
-      expect(downloaded.get(secondFileId)).toBe(expectedSecond);
     } finally {
       if (cleanupFiles.length > 0) {
         await requestJson(page, {

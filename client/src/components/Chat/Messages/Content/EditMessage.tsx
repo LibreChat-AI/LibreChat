@@ -1,8 +1,8 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { findRerunParent } from '@librechat/chat';
-import { Container } from '@librechat/chat/components';
 import { Alert, Button, TextareaAutosize } from '@librechat/client';
+import { Container, NAV_CLEARANCE } from '@librechat/chat/components';
 import { useUpdateMessageMutation } from 'librechat-data-provider/react-query';
 import type { TEditProps } from '~/common';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
@@ -250,7 +250,7 @@ const EditMessage = ({
     <Container message={message}>
       <section
         aria-label={localize('com_ui_edit_message')}
-        className="mt-2 flex w-full flex-col gap-2"
+        className={cn('mt-2 flex w-full flex-col gap-2', NAV_CLEARANCE.pad)}
       >
         {saveError && <Alert variant="error">{localize('com_ui_save_message_error')}</Alert>}
         {isUserTurn && (

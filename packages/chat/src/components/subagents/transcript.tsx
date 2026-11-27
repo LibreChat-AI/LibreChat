@@ -15,12 +15,14 @@ import {
   subagentStatusIcon,
   subagentStatusLabelKey,
 } from '../../react/subagents/status';
+import { renderMarkdown as defaultRenderMarkdown } from '../renderers';
 import { ToolContentQueryContext } from '../../react/parts/disclosure';
 import { TaskContentScopeContext } from '../../react/subagents/scope';
 import { useChatSurface } from '../../react/subagents/surface';
 import { useSubagentsHost } from '../../react/subagents/host';
 import MessageTimestamp from '../messages/MessageTimestamp';
 import ScrollToBottom from '../messages/ScrollToBottom';
+import { renderContentParts } from '../contentRenderer';
 import { useMessagePartsHost } from '../../react/host';
 import EmptyText from '../EmptyText';
 
@@ -383,7 +385,7 @@ export const getActivityContent = (activity: ChildActivity): TMessageContentPart
 
 function SubagentPrompt({ prompt }: { prompt: string }) {
   const localize = useLocalize();
-  const { renderMarkdown } = useMessagePartsHost();
+  const { renderMarkdown = defaultRenderMarkdown } = useMessagePartsHost();
   const [expanded, setExpanded] = useState(false);
   const headingId = useId();
   const contentId = useId();
@@ -485,7 +487,7 @@ export function SubagentActivityContent({
   } else {
     body = (
       <ToolContentQueryContext.Provider value={toolContentQuery ?? null}>
-        {host.renderContentParts({
+        {(host.renderContentParts ?? renderContentParts)({
           content: parts,
           messageId: activity.messageId ?? activityId ?? 'subagent-activity-panel',
           conversationId,

@@ -5,16 +5,16 @@ import { HumanMessage } from '@librechat/agents/langchain/messages';
 import { Run, Providers, HookRegistry, FakeChatModel } from '@librechat/agents';
 import type { TToolApprovalPolicy } from 'librechat-data-provider';
 import type { ToolApprovalDecisionMap } from '@librechat/agents';
-import type { ScheduleMCPExecution } from './execution';
+import type { RunGrantExecution } from '~/agents/authority/execution';
 import { createAgentToolApprovalSession, bindRunToolApprovalSession } from '~/agents/hitl/modes';
 import { buildHITLRunWiring, buildToolApprovalExecutionConfig } from '~/agents/hitl/runtime';
+import { executionFixture, readTool } from '~/agents/authority/execution.helper';
+import { collectApprovedToolCalls } from '~/agents/authority/execution';
 import { getToolApprovalTransportCallId } from '~/tools/approval';
 import { resolveToolApprovalPolicy } from '~/agents/hitl/policy';
-import { executionFixture, readTool } from './execution.helper';
 import { createToolExecuteHandler } from '~/agents/handlers';
-import { collectApprovedToolCalls } from './execution';
+import { createRunPolicy } from '~/agents/authority/run';
 import { createMCPStructuredTool } from '~/mcp/tools';
-import { createScheduledMCPRunPolicy } from './run';
 import { formatToolContent } from '~/mcp/parsers';
 
 /**
@@ -47,7 +47,7 @@ async function scenario(choice: Parameters<typeof executionFixture>[3] = { ask: 
     scheduleHook = true,
     callId = 'call-1',
   }: {
-    execution?: ScheduleMCPExecution;
+    execution?: RunGrantExecution;
     endpoint?: TToolApprovalPolicy;
     /** False stands for a hook the SDK discarded: it timed out, so it said nothing. */
     scheduleHook?: boolean;
@@ -94,7 +94,7 @@ async function scenario(choice: Parameters<typeof executionFixture>[3] = { ask: 
       [],
       [{ hook: session.hook }],
     );
-    const policy = createScheduledMCPRunPolicy(execution, [agent]);
+    const policy = createRunPolicy(execution, [agent]);
     // Also as `createRun` does: with no approval wiring the schedule hook gets its own registry.
     const hooks = wiring?.hooks ?? new HookRegistry();
     if (scheduleHook) hooks.register('PreToolUse', { hooks: [policy.hook, policy.receipt] });

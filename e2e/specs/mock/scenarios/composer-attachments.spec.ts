@@ -1,6 +1,17 @@
 import { expect, test } from '@playwright/test';
 import type { Page, Response } from '@playwright/test';
-import { MOCK_ENDPOINTS, NEW_CHAT_PATH, selectMockEndpoint } from '../helpers';
+import type { UploadedFile } from '../helpers';
+import {
+  MOCK_ENDPOINTS,
+  NEW_CHAT_PATH,
+  replyText,
+  uniqueName,
+  replyPrompt,
+  messagesView,
+  isAgentsStream,
+  selectMockEndpoint,
+  uploadViaUnifiedButton,
+} from '../helpers';
 
 /** Past the composer's paste-as-file threshold, so the paste lands as a chip. */
 const LONG_PASTE = Array.from(
@@ -113,5 +124,54 @@ test.describe('composer attachments', () => {
     );
     await expect(chip).toHaveCount(0);
     await expect(replacement).toBeVisible();
+  });
+
+  test('an unsent chat keeps its attachment through a model switch and sends it @scenario:an-unsent-chat-keeps-its-attachment-through-a-model-switch', async ({
+    page,
+  }) => {
+    test.setTimeout(90000);
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[1]);
+
+    const fileName = `${uniqueName('switch')}.md`;
+    const upload = await uploadViaUnifiedButton(page, {
+      name: fileName,
+      mimeType: 'text/markdown',
+      content: '# Attached before the model switch\n',
+    });
+    expect(upload.ok()).toBe(true);
+    const { file_id: fileId } = (await upload.json()) as UploadedFile;
+    expect(fileId).toBeTruthy();
+    const chip = page
+      .getByTestId('composer-tray')
+      .getByRole('button', { name: fileName, exact: true });
+    await expect(chip).toBeVisible({ timeout: 15000 });
+
+    /** Picking another model changes what the unsent chat is sent to, not which chat it is, so
+     * the chip stays and nothing asks the server to delete the upload. */
+    const deletions: string[] = [];
+    page.on('request', (request) => {
+      if (request.method() === 'DELETE' && new URL(request.url()).pathname === '/api/files') {
+        deletions.push(request.url());
+      }
+    });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    await expect(chip).toBeVisible();
+
+    await page.getByRole('textbox', { name: 'Message input' }).fill(replyPrompt('kept-attachment'));
+    const sent = page.waitForRequest(
+      (request) => request.method() === 'POST' && request.url().includes('/api/agents/chat'),
+    );
+    const [stream] = await Promise.all([
+      page.waitForResponse(isAgentsStream, { timeout: 30000 }),
+      page.getByTestId('send-button').click(),
+    ]);
+    expect(stream.ok()).toBe(true);
+    const payload = (await sent).postDataJSON() as { files?: Array<{ file_id?: string }> };
+    expect((payload.files ?? []).map((file) => file.file_id)).toEqual([fileId]);
+    await expect(messagesView(page).getByText(replyText('kept-attachment'))).toBeVisible({
+      timeout: 20000,
+    });
+    expect(deletions).toEqual([]);
   });
 });

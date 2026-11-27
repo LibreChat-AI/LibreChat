@@ -14,7 +14,8 @@
  *  - 4-in-6 mappings: IPv4-mapped (::ffff:0:0/96), compatible (::/96), and
  *    translated (::ffff:0:0:0/96), in dotted or hex form.
  *  - Embedded private IPv4 in 6to4 (2002::/16), NAT64 (64:ff9b::/96), and
- *    Teredo (2001::/32) addresses.
+ *    Teredo (2001::/32), and ISATAP addresses.
+ *  - Local-use IPv4/IPv6 translation prefix (64:ff9b:1::/48).
  */
 
 /** Checks if IPv4 octets fall within private, reserved, or non-routable ranges */
@@ -66,44 +67,40 @@ function isIPv6LinkLocal(ipv6: string): boolean {
   return (hextet & 0xffc0) === 0xfe80;
 }
 
-/** Checks if an IPv6 address embeds a private IPv4 via 6to4, NAT64, or Teredo */
-function hasPrivateEmbeddedIPv4(ipv6: string): boolean {
-  if (!ipv6.startsWith('2002:') && !ipv6.startsWith('64:ff9b::') && !ipv6.startsWith('2001::')) {
-    return false;
-  }
-  const segments = ipv6.split(':').filter((s) => s !== '');
+/** Classifies transition addresses using the word positions of a URL-normalized IPv6 literal. */
+function isPrivateTransition(ipv6: string): boolean {
+  const [prefix, suffix] = ipv6.split('::');
+  const left = prefix ? prefix.split(':') : [];
+  const right = suffix ? suffix.split(':') : [];
+  const words = [...left, ...Array<string>(8 - left.length - right.length).fill('0'), ...right];
+  const [first, second, third, fourth, fifth, sixth, high, low] = words.map((word) =>
+    Number.parseInt(word, 16),
+  );
 
-  if (ipv6.startsWith('2002:') && segments.length >= 3) {
-    const hi = parseInt(segments[1], 16);
-    const lo = parseInt(segments[2], 16);
-    if (!isNaN(hi) && !isNaN(lo)) {
-      return isPrivateIPv4((hi >> 8) & 0xff, hi & 0xff, (lo >> 8) & 0xff);
+  // RFC 5214 allows both settings of the interface identifier's universal/local bit.
+  if (
+    (fifth === 0 || fifth === 0x0200) &&
+    sixth === 0x5efe &&
+    isPrivateIPv4(high >> 8, high & 0xff, low >> 8)
+  ) {
+    return true;
+  }
+  if (first === 0x2002) {
+    return isPrivateIPv4(second >> 8, second & 0xff, third >> 8);
+  }
+  if (first === 0x64 && second === 0xff9b) {
+    if (third === 1) {
+      // RFC 8215 reserves the entire /48 for local translation using variable prefix lengths.
+      return true;
+    }
+    if (third === 0 && fourth === 0 && fifth === 0 && sixth === 0) {
+      return isPrivateIPv4(high >> 8, high & 0xff, low >> 8);
     }
   }
-
-  if (ipv6.startsWith('64:ff9b::')) {
-    const lastTwo = segments.slice(-2);
-    if (lastTwo.length === 2) {
-      const hi = parseInt(lastTwo[0], 16);
-      const lo = parseInt(lastTwo[1], 16);
-      if (!isNaN(hi) && !isNaN(lo)) {
-        return isPrivateIPv4((hi >> 8) & 0xff, hi & 0xff, (lo >> 8) & 0xff);
-      }
-    }
+  if (first === 0x2001 && second === 0) {
+    // RFC 4380 complements the client's embedded IPv4 address.
+    return isPrivateIPv4((~high >> 8) & 0xff, ~high & 0xff, (~low >> 8) & 0xff);
   }
-
-  // RFC 4380: Teredo stores external IPv4 as bitwise complement in last 32 bits
-  if (ipv6.startsWith('2001::')) {
-    const lastTwo = segments.slice(-2);
-    if (lastTwo.length === 2) {
-      const hi = parseInt(lastTwo[0], 16);
-      const lo = parseInt(lastTwo[1], 16);
-      if (!isNaN(hi) && !isNaN(lo)) {
-        return isPrivateIPv4((~hi >> 8) & 0xff, ~hi & 0xff, (~lo >> 8) & 0xff);
-      }
-    }
-  }
-
   return false;
 }
 
@@ -161,9 +158,5 @@ export function isPrivateIP(ip: string): boolean {
     return true;
   }
 
-  if (hasPrivateEmbeddedIPv4(normalized)) {
-    return true;
-  }
-
-  return false;
+  return normalized.includes(':') && isPrivateTransition(normalized);
 }

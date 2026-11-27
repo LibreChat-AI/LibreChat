@@ -80,6 +80,27 @@ function createDeps(overrides = {}) {
 
 describe('createAppConfigService', () => {
   describe('getAppConfig', () => {
+    it('reuses the base output policy object after loading a serialized principal config', async () => {
+      const outputProtection = { version: 1, assistantText: { timeoutMs: 5000 } };
+      const deps = createDeps();
+      deps.loadBaseConfig.mockResolvedValue({ ...deps._baseConfig, config: { outputProtection } });
+      deps.getApplicableConfigs.mockResolvedValue([{ configs: { version: '1.3.5' } }]);
+      const cache = deps._cache;
+      cache.get.mockImplementation(async (key) => {
+        const value = cache._store.get(`app_config:${key}`);
+        return value == null ? value : JSON.parse(JSON.stringify(value));
+      });
+      const { getAppConfig } = createAppConfigService(deps);
+      const base = await getAppConfig({ baseOnly: true });
+      const read = () => getAppConfig({ userId: 'uid1', role: 'USER' });
+      const first = await read();
+      const cached = await read();
+      expect(base.config?.outputProtection).toBeDefined();
+      expect(first.config?.outputProtection).toBe(base.config.outputProtection);
+      expect(cached.config?.outputProtection).toBe(base.config.outputProtection);
+      expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
+    });
+
     it('loads base config on first call', async () => {
       const deps = createDeps();
       const { getAppConfig } = createAppConfigService(deps);

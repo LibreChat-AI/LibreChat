@@ -33,6 +33,7 @@ const {
   isCodeSessionToolName,
   isCodeArtifactToolOutput,
   getModelRefusalInfo,
+  recordModelTruncation,
   shouldSignalSandboxStart,
   getToolInputValidationDetails,
   captureSubagentIdentity,
@@ -43,6 +44,7 @@ const {
   createToolTimingAdapter,
   stampCommandExecutor,
   omitReasoningReplayFromDelta,
+  stampSkillId,
   writeGuarded,
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
@@ -101,14 +103,22 @@ class ModelEndHandler {
    *   Provider replay metadata accumulated across model calls and saved with the assistant row.
    * @param {(data: Record<string, unknown>) => Promise<void> | void} [emitUsage] Optional
    *   callback to stream per-call token usage to the client.
+   * @param {import('@librechat/api').OutputTruncationSink | null} [truncationSink] Whether the
+   *   latest answer call hit its output limit; the client settles it after the run.
    */
-  constructor(collectedUsage, collectedThoughtSignatures = null, emitUsage = null) {
+  constructor(
+    collectedUsage,
+    collectedThoughtSignatures = null,
+    emitUsage = null,
+    truncationSink = null,
+  ) {
     if (!Array.isArray(collectedUsage)) {
       throw new Error('collectedUsage must be an array');
     }
     this.collectedUsage = collectedUsage;
     this.collectedThoughtSignatures = collectedThoughtSignatures;
     this.emitUsage = emitUsage;
+    this.truncationSink = truncationSink;
   }
 
   finalize(errorMessage) {
@@ -148,6 +158,7 @@ class ModelEndHandler {
           conversationId: metadata.thread_id,
         });
       }
+      recordModelTruncation(this.truncationSink, data?.output, metadata);
 
       collectGoogleThoughtSignatures(this.collectedThoughtSignatures, data?.output);
       const usage = getModelEndUsage(data?.output);
@@ -307,6 +318,8 @@ async function maybeEmitSandboxStarting(emitForJob, data, metadata) {
  *   which usage events and which content parts came after it.
  * @param {Array<TTokenUsageEvent>} [options.usageEmitSink] - Array collecting each emitted
  *   `on_token_usage` payload (incl. cost) so the response's usage rollup can be persisted.
+ * @param {import('@librechat/api').OutputTruncationSink} [options.truncationSink] - Whether the
+ *   latest answer call hit its output limit, settled into the response by the client.
  * @param {(toolName: string, agentId?: string) => string | undefined} [options.resolveMcpServerName]
  * @returns {Record<string, t.EventHandler>} The default handlers.
  * @throws {Error} If the request is not found.
@@ -328,6 +341,7 @@ function getDefaultHandlers({
   usageCost = null,
   contextUsageSink = null,
   usageEmitSink = null,
+  truncationSink = null,
   eventChildActivity = null,
   resolveMcpServerName = null,
   toolTimingReplayEvents = [],
@@ -441,6 +455,7 @@ function getDefaultHandlers({
       collectedUsage,
       collectedThoughtSignatures,
       emitTokenUsage,
+      truncationSink,
     ),
     [GraphEvents.TOOL_END]: createOwnedToolEndHandler(toolEndCallback, logger),
     [GraphEvents.ON_RUN_STEP]: {
@@ -595,6 +610,7 @@ function getDefaultHandlers({
           }
         }
         stampCommandExecutor(toolExecuteOptions?.attachedCommandStepIds, data?.result, toolCall);
+        stampSkillId(toolExecuteOptions?.skillCalls, data?.result, contentParts, runStep?.index);
         if (data?.result != null) {
           await emitForJob({ event, data });
         } else if (checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node)) {
@@ -709,7 +725,7 @@ function getDefaultHandlers({
         }
         try {
           captureSubagentIdentity(aggregator, data);
-          feedSubagentAggregator(aggregator, data, toolTiming.child);
+          feedSubagentAggregator(aggregator, data, toolTiming.child, toolExecuteOptions);
         } catch (err) {
           logger.warn(
             `[ON_SUBAGENT_UPDATE] Failed to aggregate phase "${data?.phase}" for tool_call ${key}: ${err?.message ?? err}`,
@@ -898,9 +914,17 @@ function writeAttachmentUpdate(res, streamId, attachment, expectedCreatedAt) {
  * @param {Promise<MongoFile | { filename: string; filepath: string; expires: number;} | null>[]} params.artifactPromises
  * @param {string | null} [params.streamId] - The stream ID for resumable mode, or null for standard mode.
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted attachments.
+ * @param {ReturnType<import('@librechat/api').createGeneratedFileQueue>} [params.queueGeneratedFile] - Hands each generated image to the code queue of the agent that produced it.
  * @returns {ToolEndCallback} The tool end callback.
  */
-function createToolEndCallback({ req, res, artifactPromises, streamId = null, jobCreatedAt }) {
+function createToolEndCallback({
+  req,
+  res,
+  artifactPromises,
+  streamId = null,
+  jobCreatedAt,
+  queueGeneratedFile,
+}) {
   /**
    * @type {ToolEndCallback}
    */
@@ -1025,13 +1049,15 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
           (async () => {
             const filename = `${output.name}_img_${nanoid()}`;
             const file_id = output.artifact.file_ids?.[i];
-            const file = await saveBase64Image(url, {
+            const saving = saveBase64Image(url, {
               req,
               file_id,
               filename,
               endpoint: metadata.provider,
               context: FileContext.image_generation,
             });
+            queueGeneratedFile?.(saving, metadata);
+            const file = await saving;
             const fileMetadata = Object.assign(file, {
               messageId: metadata.run_id,
               toolCallId: output.tool_call_id,
@@ -1271,9 +1297,16 @@ function writeResponsesAttachment(res, tracker, attachment, metadata) {
  * @param {ServerResponse} params.res
  * @param {Object} params.tracker - Response tracker with sequence number
  * @param {Promise<MongoFile | { filename: string; filepath: string; expires: number;} | null>[]} params.artifactPromises
+ * @param {ReturnType<import('@librechat/api').createGeneratedFileQueue>} [params.queueGeneratedFile] - Hands each generated image to the code queue of the agent that produced it.
  * @returns {ToolEndCallback} The tool end callback.
  */
-function createResponsesToolEndCallback({ req, res, tracker, artifactPromises }) {
+function createResponsesToolEndCallback({
+  req,
+  res,
+  tracker,
+  artifactPromises,
+  queueGeneratedFile,
+}) {
   /**
    * @type {ToolEndCallback}
    */
@@ -1391,13 +1424,15 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
           (async () => {
             const filename = `${output.name}_img_${nanoid()}`;
             const file_id = output.artifact.file_ids?.[i];
-            const file = await saveBase64Image(url, {
+            const saving = saveBase64Image(url, {
               req,
               file_id,
               filename,
               endpoint: metadata.provider,
               context: FileContext.image_generation,
             });
+            queueGeneratedFile?.(saving, metadata);
+            const file = await saving;
             const fileMetadata = Object.assign(file, {
               toolCallId: output.tool_call_id,
             });

@@ -2,23 +2,23 @@ import {
   Permissions,
   EModelEndpoint,
   PermissionTypes,
-  DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
+  DEFAULT_RUN_GRANT_LIFETIME_HOURS,
   scheduleOfferRequestSchema,
 } from 'librechat-data-provider';
 import type { ScheduleMCPConsentStorage, AppConfig, IUser } from '@librechat/data-schemas';
 import type { ScheduledMCPIdentity, TCheckpointerConfig } from 'librechat-data-provider';
 import type {
-  ScheduleToolsResolver,
-  ScheduleServersResolver,
-  ScheduleMCPConsentService,
-  ScheduleMCPEnrollmentResolver,
-} from './service';
-import type { ScheduleMCPConsentHandlers } from './handlers';
+  RunGrantToolsResolver,
+  RunGrantServersResolver,
+  RunGrantService,
+  RunGrantTargetResolver,
+} from '~/agents/authority/service';
+import type { RunGrantHandlers } from '~/agents/authority/handlers';
 import type { CheckAccessParams } from '~/middleware/access';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { SchedulesHandlersDeps } from '../handlers';
-import { createScheduleMCPConsentHandlers } from './handlers';
-import { createScheduleMCPConsentService } from './service';
+import { createRunGrantHandlers } from '~/agents/authority/handlers';
+import { createRunGrantService } from '~/agents/authority/service';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 import { checkAccess } from '~/middleware/access';
 
@@ -55,17 +55,19 @@ export function createMCPUseCheck(
 }
 
 export function createScheduleMCPConsentHost(deps: {
-  methods: ScheduleMCPConsentStorage & Pick<SchedulesHandlersDeps['methods'], 'getScheduleById'>;
+  /** Where a schedule's grant is kept: its own object, as an API key's is. */
+  storage: ScheduleMCPConsentStorage;
+  methods: Pick<SchedulesHandlersDeps['methods'], 'getScheduleById'>;
   getLimits: SchedulesHandlersDeps['getLimits'];
   findUser: (id: string) => Promise<IUser | null>;
   getRoleByName: CheckAccessParams['getRoleByName'];
   canViewAgent: (agentId: string, user: IUser) => Promise<boolean>;
-  resolveEnrollment?: ScheduleMCPEnrollmentResolver;
-  resolveTools?: ScheduleToolsResolver;
-  resolveServers?: ScheduleServersResolver;
+  resolveEnrollment?: RunGrantTargetResolver;
+  resolveTools?: RunGrantToolsResolver;
+  resolveServers?: RunGrantServersResolver;
   /** Whether a scheduled run of this owner can pause for approval. Absent, it cannot. */
   canPauseRuns?: (user: IUser) => Promise<boolean>;
-}): { service: ScheduleMCPConsentService; handlers: ScheduleMCPConsentHandlers } {
+}): { service: RunGrantService; handlers: RunGrantHandlers } {
   const pendingPrincipals = new Map<string, Promise<IUser | null>>();
   const loadPrincipal = (identity: ScheduledMCPIdentity): Promise<IUser | null> => {
     const key = JSON.stringify([identity.ownerId, identity.tenantId]);
@@ -85,17 +87,15 @@ export function createScheduleMCPConsentHost(deps: {
     return lookup;
   };
   const canUseMCP = createMCPUseCheck(deps.getRoleByName);
-  const service = createScheduleMCPConsentService({
-    storage: deps.methods,
+  const service = createRunGrantService({
+    storage: deps.storage,
     getLimits: async (identity) => {
       const user = await loadPrincipal(identity);
-      if (!user)
-        return { enabled: false, maxLifetimeHours: DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS };
+      if (!user) return { enabled: false, maxLifetimeHours: DEFAULT_RUN_GRANT_LIFETIME_HOURS };
       const limits = await deps.getLimits(user);
       return {
         enabled: limits.enabled && limits.mcpConsent?.enabled === true,
-        maxLifetimeHours:
-          limits.mcpConsent?.maxLifetimeHours ?? DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
+        maxLifetimeHours: limits.mcpConsent?.maxLifetimeHours ?? DEFAULT_RUN_GRANT_LIFETIME_HOURS,
         ...(limits.mcpConsent?.requireAfterMs != null && {
           requireAfterMs: limits.mcpConsent.requireAfterMs,
         }),
@@ -126,7 +126,7 @@ export function createScheduleMCPConsentHost(deps: {
       return user != null && (await deps.canPauseRuns?.(user)) === true;
     },
   });
-  const handlers = createScheduleMCPConsentHandlers({
+  const handlers = createRunGrantHandlers({
     service,
     // A schedule being created has no id yet. The offer is bound to its owner and agent.
     resolveDraft: async (req): Promise<ScheduledMCPIdentity | null> => {

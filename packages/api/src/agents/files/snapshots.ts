@@ -6,6 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createWriteStream, promises as fs } from 'node:fs';
 import type { Readable, TransformCallback } from 'node:stream';
 import type { RunArtifactDescriptor } from '~/files/code/publication';
+import { makeWindowsPrivateDirectory } from '~/utils/windowsPrivate';
 
 export interface RunFileSnapshot {
   snapshotId: string;
@@ -85,7 +86,9 @@ export function createRunFileSnapshotStore({
 
   function getDirectory(): Promise<string> {
     directory ??= (async () => {
-      const created = await fs.mkdtemp(join(tmpdir(), 'librechat-run-files-'));
+      const prefix = join(tmpdir(), 'librechat-run-files-');
+      if (process.platform === 'win32') return makeWindowsPrivateDirectory(prefix);
+      const created = await fs.mkdtemp(prefix);
       try {
         await fs.chmod(created, 0o700);
         return created;

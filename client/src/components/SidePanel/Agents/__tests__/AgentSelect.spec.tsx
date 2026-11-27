@@ -1,6 +1,6 @@
 import React from 'react';
-import { useForm, FormProvider } from 'react-hook-form';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useForm, useWatch, Controller, FormProvider } from 'react-hook-form';
 import type { UseMutationResult, QueryObserverResult } from '@tanstack/react-query';
 import type { Agent, AgentCreateParams } from 'librechat-data-provider';
 import type { UseFormReturn } from 'react-hook-form';
@@ -51,17 +51,20 @@ jest.mock('@librechat/client', () => ({
 function Harness({
   agent,
   onMethods,
-  instructionsPromptReady,
+  formReady,
   defaultValues,
   selectedAgentId = null,
+  showInstructions = false,
 }: {
   selectedAgentId?: string | null;
   agent: Agent;
   onMethods: (methods: UseFormReturn<AgentForm>) => void;
-  instructionsPromptReady?: boolean;
+  formReady?: boolean;
   defaultValues?: Partial<AgentForm>;
+  showInstructions?: boolean;
 }) {
   const methods = useForm<AgentForm>({ defaultValues });
+  const id = useWatch({ control: methods.control, name: 'id' });
   onMethods(methods);
 
   return (
@@ -75,8 +78,17 @@ function Harness({
           { reset: jest.fn() } as unknown as UseMutationResult<Agent, Error, AgentCreateParams>
         }
         defaultStatefulCodeEnvironment="user"
-        instructionsPromptReady={instructionsPromptReady}
+        formReady={formReady}
       />
+      {showInstructions && id === agent.id && (
+        <Controller
+          name="instructions"
+          control={methods.control}
+          render={({ field }) => (
+            <textarea {...field} value={field.value ?? ''} aria-label="Instructions" />
+          )}
+        />
+      )}
     </FormProvider>
   );
 }
@@ -139,33 +151,43 @@ describe('AgentSelect resetAgentForm', () => {
     expect(methods?.getValues('instructionsPrompt')).toBeNull();
   });
 
-  it('keeps the form instructions-source/prompt untouched when the data is the basic projection', async () => {
+  it('hydrates the editor only after the expanded response arrives', async () => {
     let methods: UseFormReturn<AgentForm> | undefined;
+    const onMethods = (value: UseFormReturn<AgentForm>) => (methods = value);
+    const { rerender } = render(
+      <Harness agent={createAgent()} formReady={false} onMethods={onMethods} showInstructions />,
+    );
 
-    render(
+    expect(methods?.getValues('name')).toBeUndefined();
+    expect(screen.queryByRole('textbox', { name: 'Instructions' })).toBeNull();
+
+    rerender(
       <Harness
-        /** No `instructionsPrompt` key at all, as the basic agent projection sends it. */
-        agent={createAgent()}
-        instructionsPromptReady={false}
-        defaultValues={{
-          instructionsSource: 'prompt',
-          instructionsPrompt: {
-            source: 'native',
-            groupId: 'group_1',
-            selection: { type: 'production' },
-          },
-        }}
-        onMethods={(m) => (methods = m)}
+        agent={createAgent({ instructions: 'Saved instructions', tools: ['mock_tool'] })}
+        onMethods={onMethods}
+        showInstructions
       />,
     );
 
-    await waitFor(() => expect(methods?.getValues('name')).toBe('Agent'));
-    expect(methods?.getValues('instructionsSource')).toBe('prompt');
-    expect(methods?.getValues('instructionsPrompt')).toEqual({
-      source: 'native',
-      groupId: 'group_1',
-      selection: { type: 'production' },
-    });
+    expect(await screen.findByRole('textbox', { name: 'Instructions' })).toHaveValue(
+      'Saved instructions',
+    );
+    expect(methods?.getValues('tools')).toEqual(['mock_tool']);
+  });
+
+  it('hydrates watched fields when the editor remounts with cached expanded data', async () => {
+    render(
+      <Harness
+        agent={createAgent({ instructions: 'Restored instructions' })}
+        defaultValues={{ id: '', instructions: '' }}
+        onMethods={() => undefined}
+        showInstructions
+      />,
+    );
+
+    expect(await screen.findByRole('textbox', { name: 'Instructions' })).toHaveValue(
+      'Restored instructions',
+    );
   });
 });
 

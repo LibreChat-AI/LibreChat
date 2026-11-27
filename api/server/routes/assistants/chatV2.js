@@ -3,6 +3,7 @@ const {
   createMessageFilterPii,
   reportLocatorTraversalFailure,
   validateAssistantId,
+  rejectLegacyAssistantOutput,
 } = require('@librechat/api');
 
 const router = express.Router();
@@ -33,6 +34,7 @@ const filterMessageContent = createMessageFilterPii({
  */
 router.post(
   '/',
+  rejectLegacyAssistantOutput,
   filterMessageContent,
   validateAssistantId,
   validateModel,

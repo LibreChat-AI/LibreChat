@@ -1,0 +1,36 @@
+name: Windows Private Files
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/windows-private-files.yml'
+      - 'packages/api/src/credentials*'
+      - 'packages/api/src/agents/files/snapshots*'
+      - 'packages/api/src/utils/windowsPrivate.ts'
+      - 'packages/api/src/utils/windowsAcl.helper.ts'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  acl:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify native credential and snapshot ACLs
+        working-directory: packages/api
+        run: npx --no-install jest --runInBand --coverage=false --runTestsByPath src/credentials.spec.ts src/agents/files/snapshots.spec.ts

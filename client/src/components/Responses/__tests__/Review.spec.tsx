@@ -13,6 +13,9 @@ jest.mock('~/hooks', () => ({
     jest.requireActual('~/locales/en/translation.json')[key] ?? key,
 }));
 
+/** What the review's batch Submit button says for two paused calls. */
+const submitTwo = translation.com_ui_submit_decisions.replace('{{0}}', '2');
+
 const actionId = 'action-review';
 function question(): ResponseReviewView {
   return {
@@ -184,9 +187,9 @@ it('requires all tool decisions and joins review configuration by tool call id',
   mount(review);
   const [first, second] = screen.getAllByTestId('tool-approval');
   await userEvent.click(within(first).getByRole('button', { name: translation.com_ui_approve }));
-  expect(screen.getByRole('button', { name: translation.com_ui_submit_decisions })).toBeDisabled();
+  expect(screen.getByRole('button', { name: submitTwo })).toBeDisabled();
   await userEvent.click(within(second).getByRole('button', { name: translation.com_ui_reject }));
-  await userEvent.click(screen.getByRole('button', { name: translation.com_ui_submit_decisions }));
+  await userEvent.click(screen.getByRole('button', { name: submitTwo }));
   expect(post).toHaveBeenCalledWith('/api/agents/responses/resp_review/review', {
     actionId,
     decisions: [
@@ -219,7 +222,7 @@ it('retains a rich multi-tool batch through pending and uncertain acknowledgemen
   fireEvent.change(within(second).getByRole('textbox', { name: translation.com_ui_respond }), {
     target: { value: 'Use the existing output.' },
   });
-  await userEvent.click(screen.getByRole('button', { name: translation.com_ui_submit_decisions }));
+  await userEvent.click(screen.getByRole('button', { name: submitTwo }));
   const decision = {
     actionId,
     decisions: [

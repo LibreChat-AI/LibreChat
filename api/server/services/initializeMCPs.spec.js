@@ -403,6 +403,7 @@ describe('initializeMCPs', () => {
             authorizationFenceTimeoutMs: 750,
           },
         },
+        endpoints: { agents: { eventDriven: { idlePolling: { maxIntervalMs: 900_000 } } } },
       });
 
       await initializeMCPs();
@@ -417,7 +418,7 @@ describe('initializeMCPs', () => {
       );
       expect(mockStartMCPAuthorizationFenceRetryWorker).toHaveBeenCalledWith(
         mockInvalidateCachedTools,
-        { intervalMs: 15_000, batchSize: 250, attemptTimeoutMs: 750 },
+        { intervalMs: 15_000, batchSize: 250, attemptTimeoutMs: 750, idleCeilingMs: 900_000 },
       );
     });
 

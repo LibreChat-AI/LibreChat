@@ -47,7 +47,7 @@ jest.mock('@librechat/api', () => ({
   isAgentTriggerRequest: jest.fn(() => false),
   captureScheduleFireContext: jest.fn(),
   exemptAgentTriggerFromIpLimiter: (...args) => mockExemptAgentTrigger(...args),
-  exemptFromUserLimiter: (...args) => mockExemptSchedule(...args),
+  exemptTriggerFromUserLimiter: (...args) => mockExemptSchedule(...args),
   createMessageFilterPii: jest.fn(() => (_req, _res, next) => next()),
   createPrivateTextIngress: jest.fn(
     () =>

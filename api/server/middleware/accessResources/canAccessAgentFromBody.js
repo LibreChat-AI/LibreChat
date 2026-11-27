@@ -8,7 +8,7 @@ const {
   isAgentsEndpoint,
   isEphemeralAgentId,
 } = require('librechat-data-provider');
-const { resolveModelSpecForEndpoint } = require('@librechat/api');
+const { notFound, accessDenied, resolveModelSpecForEndpoint } = require('@librechat/api');
 const { checkPermission } = require('~/server/services/PermissionService');
 const { canAccessResource } = require('./canAccessResource');
 const db = require('~/models');
@@ -114,10 +114,7 @@ const checkAddedConvoAccess = (requiredPermission) => async (req, res, next) => 
 
     const agent = await resolveAgentIdFromBody(addedAgentId);
     if (!agent) {
-      return res.status(404).json({
-        error: 'Not Found',
-        message: `${ResourceType.AGENT} not found`,
-      });
+      return res.status(404).json(notFound(ResourceType.AGENT));
     }
 
     const hasPermission = await checkPermission({
@@ -129,10 +126,7 @@ const checkAddedConvoAccess = (requiredPermission) => async (req, res, next) => 
     });
 
     if (!hasPermission) {
-      return res.status(403).json({
-        error: 'Forbidden',
-        message: `Insufficient permissions to access this ${ResourceType.AGENT}`,
-      });
+      return res.status(403).json(accessDenied(ResourceType.AGENT));
     }
 
     req.resolvedAddedAgent = agent;

@@ -1,6 +1,6 @@
 import type { FiltersConfig, FilterPiiAction, FilterPiiCategory } from '../filters';
 
-/** A1 contract only. No output policy is parsed or enforced by these types. */
+/** Shared vocabulary; the runtime schema admits only implemented policy options. */
 export type OutputTextProtectionPolicy = Omit<
   NonNullable<NonNullable<FiltersConfig['messages']>['pii']>,
   'fields'
@@ -9,7 +9,7 @@ export type OutputTextProtectionPolicy = Omit<
   readonly timeoutMs: number;
 };
 
-/** Reserved config vocabulary, not yet a supported librechat.yaml field. */
+/** Shared vocabulary includes planned sources that the runtime schema may not yet support. */
 export interface OutputProtectionConfig {
   readonly version: 1;
   readonly assistantText?: OutputTextProtectionPolicy;

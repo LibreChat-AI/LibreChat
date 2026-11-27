@@ -625,6 +625,70 @@ describe('RedisJobStore', () => {
     });
   });
 
+  describe('the trigger that started a run', () => {
+    const trigger = {
+      subject: { kind: 'key' as const, id: 'key-1' },
+      delivery: {
+        key: 'trigger_abc',
+        event: { id: 'event-1', type: 'review.submitted', occurredAt: 1_000 },
+      },
+    };
+    const stored = (fields: Record<string, string>) =>
+      new RedisJobStore({
+        isCluster: true,
+        hgetall: jest.fn().mockResolvedValue({
+          streamId: 'stream-trigger',
+          userId: 'user-1',
+          status: 'requires_action',
+          createdAt: '100',
+          syncSent: '0',
+          ...fields,
+        }),
+      } as unknown as Cluster);
+
+    test('is written as one hash field and read back', async () => {
+      const evalJobCreation = jest
+        .fn()
+        .mockImplementation((...args: unknown[]) => ['', '', args[Number(args[1]) + 3]]);
+      const store = new RedisJobStore({
+        isCluster: true,
+        eval: evalJobCreation,
+        hgetall: jest.fn(() => jobHashFromCreationCall(evalJobCreation.mock.calls[0])),
+        sadd: jest.fn().mockResolvedValue(1),
+        srem: jest.fn().mockResolvedValue(1),
+        expire: jest.fn().mockResolvedValue(1),
+      } as unknown as Cluster);
+
+      const job = await store.createJob('stream-trigger', 'user-1', 'conversation-1', undefined, {
+        trigger,
+      });
+
+      expect(jobHashFromCreationCall(evalJobCreation.mock.calls[0]).trigger).toBe(
+        JSON.stringify(trigger),
+      );
+      expect(job.trigger).toEqual(trigger);
+      await expect(store.getJob('stream-trigger')).resolves.toMatchObject({ trigger });
+    });
+
+    test('is absent on a job saved without it, whose schedule fields read as before', async () => {
+      const job = await stored({ scheduleId: 'schedule-1', scheduleManual: '1' }).getJob(
+        'stream-trigger',
+      );
+
+      expect(job).toMatchObject({ scheduleId: 'schedule-1', scheduleManual: true });
+      expect(job?.trigger).toBeUndefined();
+    });
+
+    test.each(['null', '"key-1"', '{', '{"subject":{"kind":"user","id":"owner"}}'])(
+      'is never read as an ordinary job when it is malformed: %s',
+      async (value) => {
+        await expect(stored({ trigger: value }).getJob('stream-trigger')).rejects.toThrow(
+          'run_trigger_invalid',
+        );
+      },
+    );
+  });
+
   test('atomically resets predecessor state when creating a replacement', async () => {
     const evalJobCreation = jest
       .fn()

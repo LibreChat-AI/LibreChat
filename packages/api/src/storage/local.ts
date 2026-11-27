@@ -76,9 +76,11 @@ export function createLocalFileDeleter({ deleteRagFile, logger }: LocalFileDelet
       return;
     }
 
-    const parts = cleanFilepath.split(path.sep);
-    const subfolder = parts[1];
-    if (!subfolder && parts[0] === EModelEndpoint.agents) {
+    // Image URLs use forward slashes. Keep native parsing for legacy records.
+    const separator =
+      cleanFilepath.startsWith('/images/') && !cleanFilepath.includes('\\') ? '/' : path.sep;
+    const [base, subfolder] = cleanFilepath.split(separator, 2);
+    if (!subfolder && base === EModelEndpoint.agents) {
       if ((await deleteRagFile(ragParams)) === false) {
         throw new Error('Vector deletion was not confirmed');
       }

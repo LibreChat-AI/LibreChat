@@ -41,6 +41,10 @@ jest.mock('~/server/services/Agents/triggers', () => ({
   initializeAgentTriggerService: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('~/server/services/Events/reconcile', () => ({
+  initialize: jest.fn(),
+  stop: jest.fn().mockResolvedValue(undefined),
+}));
 jest.mock('~/server/services/Schedules', () => ({
   initializeScheduleEngine: jest.fn().mockResolvedValue(undefined),
 }));
@@ -125,15 +129,36 @@ describe('Startup readiness wiring', () => {
 
   it('starts code-environment lifecycle reconciliation only after Mongo connects', () => {
     const connectIndex = source.indexOf('await connectDb();');
-    const reconcileIndex = source.indexOf('startCodeEnvironmentLifecycleReconciler({ mongoose });');
+    const reconcileIndex = source.indexOf(
+      'startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });',
+    );
     const listenIndex = source.indexOf('const server = app.listen');
 
     expect(connectIndex).toBeGreaterThan(-1);
     expect(reconcileIndex).toBeGreaterThan(connectIndex);
     expect(listenIndex).toBeGreaterThan(reconcileIndex);
     expect(
-      source.match(/startCodeEnvironmentLifecycleReconciler\(\{ mongoose \}\);/g),
+      source.match(/startCodeEnvironmentLifecycleReconciler\(\{ mongoose, idleCeilingMs \}\);/g),
     ).toHaveLength(1);
+  });
+
+  it('reads the deployment-wide idle ceiling from the base config before it starts an idle loop', () => {
+    const configIndex = source.indexOf('const appConfig = await getAppConfig({ baseOnly: true });');
+    const ceilingIndex = source.indexOf(
+      'const idleCeilingMs = appConfig?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs;',
+    );
+    const reconcileIndex = source.indexOf(
+      'startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });',
+    );
+    const triggerStart = source.indexOf('await initializeAgentTriggerService({');
+
+    expect(configIndex).toBeGreaterThan(-1);
+    expect(ceilingIndex).toBeGreaterThan(configIndex);
+    expect(reconcileIndex).toBeGreaterThan(ceilingIndex);
+    expect(source.slice(triggerStart, source.indexOf('});', triggerStart))).toContain(
+      'idleCeilingMs,',
+    );
+    expect(source).toContain('await initializeScheduleEngine({ idleCeilingMs })');
   });
 
   it('configures social logins with the app config loaded at startup in both server entries', () => {

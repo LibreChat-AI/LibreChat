@@ -129,12 +129,17 @@ function createContextValue(overrides: Partial<ScrollingInputs> = {}): Scrolling
 /** Stands in for the message list, which feeds the hook from the chat context. */
 const ScrollingInputsContext = createContext<ScrollingInputs>(createContextValue());
 
+/** The hook's report of content added above the reader, as the mounting thread makes it. */
+let insertAbove: (height: number) => void = () => undefined;
+
 function ScrollingHarness({ messagesTree }: { messagesTree?: TMessage[] | null }) {
   const inputs = useContext(ScrollingInputsContext);
-  const { contentRef, scrollableRef, messagesEndRef, debouncedHandleScroll } = useMessageScrolling({
-    ...inputs,
-    messagesTree,
-  });
+  const { contentRef, scrollableRef, messagesEndRef, debouncedHandleScroll, handleInsertAbove } =
+    useMessageScrolling({
+      ...inputs,
+      messagesTree,
+    });
+  insertAbove = handleInsertAbove;
 
   return (
     <div ref={scrollableRef} onScroll={debouncedHandleScroll} data-testid="scrollable">
@@ -310,6 +315,38 @@ describe('useMessageScrolling resize reconciliation', () => {
     });
 
     expect(scrollable.scrollTop).toBe(300);
+  });
+
+  /**
+   * A long thread goes on mounting rows above the reader after it opens. Each step moves the
+   * scroll position down by what it added, to hold them in place, and a reader who has just
+   * begun to scroll up has moved less than that: read as a move towards the end, it handed
+   * them back to the stream they were leaving.
+   */
+  it('does not take rows mounting above a reader for the reader heading to the end', () => {
+    renderScrolling();
+
+    const scrollable = screen.getByTestId('scrollable');
+    Object.defineProperty(scrollable, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(scrollable, 'clientHeight', { value: 200, configurable: true });
+    scrollable.scrollTop = 800;
+    act(() => {
+      mockScrollCallback?.();
+    });
+
+    /** A step adds 500px above while the reader's wheel has taken them 60px up. */
+    fireEvent.wheel(scrollable, { deltaY: -60 });
+    Object.defineProperty(scrollable, 'scrollHeight', { value: 1500, configurable: true });
+    scrollable.scrollTop = 800 + 500 - 60;
+    act(() => insertAbove(500));
+    fireEvent.scroll(scrollable);
+
+    /** The reply grows: a reader still riding it would be taken to its new end. */
+    act(() => {
+      MockResizeObserver.last()?.trigger();
+      MockResizeObserver.last()?.trigger();
+    });
+    expect(scrollable.scrollTop).toBe(1240);
   });
 
   it('does not follow the next resize after user interaction inside message content', () => {

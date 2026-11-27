@@ -583,6 +583,17 @@ export type TForkConvoRequest = {
   excludeFiles?: boolean;
 };
 
+/** The files a conversation leaves out of later turns: not sent to the model or its tools. */
+export type TFileExclusion = {
+  excludedFiles: string[];
+};
+
+/** Leaves `fileIds` out (`excluded: true`) or takes them back in, one direction per request. */
+export type TFileExclusionRequest = {
+  fileIds: string[];
+  excluded: boolean;
+};
+
 export type TForkConvoResponse = {
   conversation: TConversation;
   messages: TMessage[];
@@ -1353,7 +1364,7 @@ export type TAcceptTermsResponse = {
   termsAcceptedAt: Date | string;
 };
 
-export type TBannerResponse = TBanner | null;
+export type TBannerResponse = Pick<TBanner, 'bannerId' | 'message' | 'persistable'> | null;
 
 export type TUpdateFeedbackRequest = {
   feedback?: TMinimalFeedback;

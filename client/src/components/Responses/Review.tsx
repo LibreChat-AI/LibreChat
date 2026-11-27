@@ -2,13 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Provider } from 'jotai';
 import { isAxiosError } from 'axios';
 import { Button } from '@librechat/client';
+import { ToolApproval } from '@librechat/chat/components';
 import type { ResponseReviewDecision, ResponseReviewView } from 'librechat-data-provider';
 import type { ResumeSubmitTransport } from '~/components/Chat/Messages/Content/ApprovalContext';
 import ApprovalProvider, {
   ResumeSubmitContext,
 } from '~/components/Chat/Messages/Content/ApprovalContext';
 import AskUserQuestion from '~/components/Chat/Messages/Content/AskUserQuestion';
-import ToolApproval from '~/components/Chat/Messages/Content/ToolApproval';
 import { useResponseReviewDecision } from '~/data-provider/Responses';
 import { useResponseInteraction } from './Controls';
 import useDeadline from './useDeadline';

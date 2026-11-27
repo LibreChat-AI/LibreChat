@@ -72,6 +72,13 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
     };
   }, [debouncedOnQueryChange]);
 
+  /**
+   * A modal Radix dialog cancels every wheel and touchmove that reaches the document from outside
+   * its content, and this list is portaled out of it. Stopping them here keeps the list scrollable;
+   * `overscroll-behavior: contain` on `.popover-ui` still keeps the page behind it from scrolling.
+   */
+  const keepScroll = (event: React.SyntheticEvent) => event.stopPropagation();
+
   const onPickHandler = (option: TOption) => {
     debouncedOnQueryChange.cancel();
     setLocalQuery('');
@@ -141,6 +148,8 @@ export function SearchPicker<TOption extends { key: string; value: string }>({
         autoFocusOnHide={false}
         // Shared modal depth determines portal stacking and pointer interaction.
         style={popoverStyle}
+        onWheel={keepScroll}
+        onTouchMove={keepScroll}
         data-variant="field"
         className="popover-ui pointer-events-auto z-50"
       >

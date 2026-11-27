@@ -632,6 +632,16 @@ describe('Redis generation protocol rollout bridge', () => {
         }),
       },
       {
+        name: 'fractional completion time',
+        fields: () => ({
+          __replacedGenerations: JSON.stringify([
+            { createdAt: 1, status: 'complete', completedAt: 1.5 },
+          ]),
+          __replacedCreatedAt: '1',
+          __replacedStatus: 'complete',
+        }),
+      },
+      {
         name: 'invalid legacy scalar status',
         fields: () => ({
           __replacedCreatedAt: '1',

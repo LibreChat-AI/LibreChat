@@ -301,6 +301,14 @@ export const preserveStreamedContentIdentity = (
   return stamped ?? finalContent;
 };
 
+/** An empty TEXT part: the placeholder some endpoints seed in a response's content before the
+ * model produces anything. */
+export const isEmptyTextPart = (part: TMessageContentParts | undefined): boolean =>
+  part != null && part.type === ContentTypes.TEXT && getPartTextValue(part.text).length === 0;
+
+/** A content part with its position in the message's content array. */
+export type PartWithIndex = { part: TMessageContentParts; idx: number };
+
 /** Render-identity index for content-part keys: the streamed position stamped
  * by the final handler survives the sparse→compact swap; everything else keys
  * by the live index. Coordinate logic (edit indexes, phase bounds, cursor)

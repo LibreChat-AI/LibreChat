@@ -1,6 +1,11 @@
 import { redactMessage } from '@librechat/data-schemas';
-import { ErrorTypes, ViolationTypes } from 'librechat-data-provider';
+import {
+  ErrorTypes,
+  ViolationTypes,
+  stripLangChainTroubleshootingUrl,
+} from 'librechat-data-provider';
 import type { FiltersConfig, MessageFilterPiiConfig } from 'librechat-data-provider';
+import type { AssistantConfig } from '../../protection/assistant';
 import type { SafeErrorMetadata } from '../../utils/errors';
 import type { ModelErrorTrackerCallback } from './tracker';
 import type { LangChainErrorOptions } from '../errors';
@@ -10,6 +15,10 @@ import {
   resolveModelStreamError,
   getProviderErrorMessage,
 } from '../errors';
+import {
+  requiresAssistantProtection,
+  isAssistantProtectionError,
+} from '../../protection/assistant';
 import { getSafeErrorText, getSafeErrorMetadata, isOwnedAbortError } from '../../utils/errors';
 import { hasModelBoundContentProtection } from '../../middleware/modelBoundContent';
 import { getContentFilterError } from '../../middleware/contentFilter';
@@ -20,6 +29,12 @@ const UPSTREAM_MODEL_ERROR_CODE = 'UPSTREAM_MODEL_ERROR';
 const UPSTREAM_MODEL_ERROR_ORIGIN = 'model_provider';
 const UNKNOWN_UPSTREAM_MODEL_ERROR_TYPE = '_OTHER';
 const UPSTREAM_MODEL_ERROR_FALLBACK = 'The model provider could not complete this request.';
+
+export function getAssistantProtectionFailure(error: unknown): string | undefined {
+  if (isAssistantProtectionError(error)) {
+    return JSON.stringify({ type: ErrorTypes.ASSISTANT_OUTPUT_WITHHELD });
+  }
+}
 
 function safelyResolveLangChainError(
   error: unknown,
@@ -109,6 +124,9 @@ export function createTerminalRunErrorObserver({
     modelCallback: modelErrorTracker.callback,
     getUserFacingError(error: unknown, fallback: () => string) {
       const upstreamModelError = modelErrorTracker.getUpstreamModelError(error);
+      const withheld =
+        getAssistantProtectionFailure(error) ?? getAssistantProtectionFailure(upstreamModelError);
+      if (withheld != null) return withheld;
       if (upstreamModelError == null) {
         return fallback();
       }
@@ -148,7 +166,11 @@ export function createTerminalRunErrorObserver({
       }
 
       const upstreamModelError = modelErrorTracker.getUpstreamModelError(error);
-      if (upstreamModelError == null) {
+      if (
+        upstreamModelError == null ||
+        isAssistantProtectionError(error) ||
+        isAssistantProtectionError(upstreamModelError)
+      ) {
         logger.error(genericMessage, getSafeErrorMetadata(error));
         return;
       }
@@ -210,12 +232,38 @@ function getSafeTypedErrorText(
 }
 
 /** The deployment config that decides whether a failure may show its own text. */
-export interface GenerationErrorConfig {
+export interface GenerationErrorConfig extends AssistantConfig {
   readonly filters?: FiltersConfig | null;
   readonly messageFilter?: { readonly pii?: MessageFilterPiiConfig | null } | null;
   readonly endpoints?: {
     readonly agents?: { readonly maxProviderErrorChars?: number } | null;
   } | null;
+}
+
+export function hasGenerationContentProtection(appConfig?: GenerationErrorConfig | null): boolean {
+  return (
+    requiresAssistantProtection(appConfig) ||
+    hasModelBoundContentProtection(appConfig?.filters, appConfig?.messageFilter?.pii)
+  );
+}
+
+/** User-facing fallback for an Agent chat run that failed outside the provider. */
+export function getUserFacingRequestError(
+  baseMessage: string,
+  error: Error | undefined,
+  appConfig?: GenerationErrorConfig | null,
+): string {
+  if (error?.name === 'ManualSummarizationSkippedError') {
+    const { reason } = error as Error & { reason?: string };
+    return JSON.stringify({ type: ErrorTypes.COMPACTION_SKIPPED, reason });
+  }
+  const withheld = getAssistantProtectionFailure(error);
+  if (withheld != null) return withheld;
+  if (hasGenerationContentProtection(appConfig) || !error?.message) return baseMessage;
+  const classified = resolveClassifiedProviderError(error, appConfig);
+  if (classified != null) return classified;
+  const message = stripLangChainTroubleshootingUrl(error.message);
+  return message ? `${baseMessage}: ${message}` : baseMessage;
 }
 
 /**
@@ -229,10 +277,7 @@ export function resolveClassifiedProviderError(
   formatProviderMessage?: (message: string) => string,
 ): string | undefined {
   return safelyResolveLangChainError(error, {
-    includeProviderMessage: !hasModelBoundContentProtection(
-      appConfig?.filters,
-      appConfig?.messageFilter?.pii,
-    ),
+    includeProviderMessage: !hasGenerationContentProtection(appConfig),
     maxProviderErrorChars: appConfig?.endpoints?.agents?.maxProviderErrorChars,
     formatProviderMessage,
   });
@@ -253,15 +298,14 @@ export function getUserFacingGenerationError(
   appConfig: GenerationErrorConfig | null | undefined,
   fallback: string,
 ): string {
+  const withheld = getAssistantProtectionFailure(error);
+  if (withheld != null) return withheld;
   const policyError = getContentFilterError(error);
   if (policyError != null) {
     return policyError.message;
   }
   const message = error instanceof Error ? error.message : undefined;
-  const protectionEnabled = hasModelBoundContentProtection(
-    appConfig?.filters,
-    appConfig?.messageFilter?.pii,
-  );
+  const protectionEnabled = hasGenerationContentProtection(appConfig);
   const typed = message != null ? parseTypedErrorMessage(message) : undefined;
   if (message != null && typed != null) {
     return getSafeTypedErrorText(message, typed, protectionEnabled);

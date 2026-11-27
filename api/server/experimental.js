@@ -102,6 +102,7 @@ const { jwtLogin, ldapLogin, passportLogin } = require('~/strategies');
 const { updateInterfacePermissions: updateInterfacePerms } = require('@librechat/api');
 const {
   getRoleByName,
+  getPartitionRole,
   updateAccessPermissions,
   seedDatabase,
   initializeFavorites,
@@ -485,19 +486,11 @@ if (cluster.isMaster) {
     /** Connect to MongoDB */
     await connectDb();
     logger.info(`Worker ${process.pid}: Connected to MongoDB`);
-    startCodeEnvironmentLifecycleReconciler({ mongoose });
 
     /** Background index sync (non-blocking) */
     indexSync().catch((err) => {
       logger.error(`[Worker ${process.pid}][indexSync] Background sync failed:`, err);
     });
-
-    // This entrypoint deliberately does not arm the schedule engine, but DELETE stays
-    // open — so soft-deleted rows still accrue with no reconciler to erase them. Start
-    // the erasure-ONLY sweep (Mongo is up, GenerationJobManager was initialized above):
-    // it never claims, fires, advances, or infers owner death from a process-local
-    // missing job, and its idempotent guard makes this safe once per worker.
-    initializeScheduleErasureSweep();
 
     app.disable('x-powered-by');
     app.set('trust proxy', trusted_proxy);
@@ -536,6 +529,15 @@ if (cluster.isMaster) {
     await initializeFavorites(await loadCustomConfig(false, { storageSelection: true }));
     registerShutdownTask('favorites persistence', closeFavorites, { priority: -100 });
     const appConfig = await getAppConfig({ baseOnly: true });
+    /** One ceiling for every idle recovery loop below; each keeps its own default while it is unset. */
+    const idleCeilingMs = appConfig?.endpoints?.agents?.eventDriven?.idlePolling?.maxIntervalMs;
+    startCodeEnvironmentLifecycleReconciler({ mongoose, idleCeilingMs });
+    // This entrypoint deliberately does not arm the schedule engine, but DELETE stays
+    // open, so soft-deleted rows still accrue with no reconciler to erase them. Start
+    // the erasure-ONLY sweep (Mongo is up, GenerationJobManager was initialized above):
+    // it never claims, fires, advances, or infers owner death from a process-local
+    // missing job, and its idempotent guard makes this safe once per worker.
+    initializeScheduleErasureSweep({ idleCeilingMs });
     registerShutdownTask(
       'role cache invalidation',
       await startRoleCacheInvalidation({
@@ -572,6 +574,7 @@ if (cluster.isMaster) {
         getRoleByName,
         updateAccessPermissions,
         recordAuditEntry,
+        getPartitionRole,
       });
     });
 
@@ -793,6 +796,7 @@ if (cluster.isMaster) {
           deadLetterRetentionDays:
             appConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays,
           idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
+          idleCeilingMs,
         });
         await initializeChannelFeedback();
         registerShutdownTask('channel feedback export', stopChannelFeedback, { priority: 100 });

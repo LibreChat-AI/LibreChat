@@ -4,6 +4,7 @@ import { JSX } from 'react/jsx-runtime';
 import { cx } from 'class-variance-authority';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import type { FocusOutline } from './Focus';
+import { usePortalContainer } from '../Providers/PortalContext';
 import { focusOutlineVariants } from './Focus';
 import { cn } from '~/utils';
 
@@ -103,6 +104,66 @@ const frontmostDialog = (ownerDocument: Document): HTMLElement | null => {
   );
 };
 
+/**
+ * Radix routes Escape to the highest dismissable layer only, and a toast
+ * registers one *above* whatever dialog is already open — so a status toast
+ * on screen swallows the Escape that should have closed the dialog under
+ * it, and the reader has to press it twice.
+ *
+ * A toast is transient status, not something the reader is working in, so
+ * the frontmost dialog takes Escape back while one is up. This listener handles
+ * only the toast case; native dialog callbacks also verify visual ownership.
+ */
+const takeEscape = (event: KeyboardEvent): void => {
+  if (event.key !== 'Escape' || event.isComposing) {
+    return;
+  }
+  /** Another layer already answered this Escape — a select inside the
+   *  dialog closing its own listbox, say. Forcing the dialog shut on top
+   *  of that would take the reader's work with it. */
+  if (event.defaultPrevented) {
+    return;
+  }
+  if (escapeBelongsToPopup(document)) {
+    return;
+  }
+  /** Radix Toast's own `li`. Matched whatever its `data-state`, because a
+   *  toast that has begun closing keeps its dismissable layer registered
+   *  until the exit animation ends — and that layer is what takes the
+   *  Escape. */
+  if (document.querySelector('li[data-radix-collection-item]') == null) {
+    return;
+  }
+  const frontmost = frontmostDialog(document);
+  if (frontmost != null) dialogEscapeHandlers.get(frontmost)?.(event);
+};
+
+/** Dialog contents mounted on the page, open or closed. */
+let mounted = 0;
+
+/**
+ * Keeps `takeEscape` on the document from the first dialog content to mount until the last
+ * unmounts: one listener for the page. One per dialog ran on every key press for each dialog
+ * mounted, and a thread mounts a closed dialog in every reply's toolbar.
+ *
+ * It is held while any dialog is mounted, not only while one is open, which keeps it ahead of
+ * the listeners the page adds later. Radix answers a dialog's Escape in the capture phase,
+ * before any of them, and this stands in for that answer: a listener that leaves an answered
+ * Escape alone, as the mobile drawer's does, has to find it answered here too, or one key press
+ * closes the dialog and the drawer under it.
+ *
+ * The count is the listener's own bookkeeping and nothing renders from it. It belongs to the
+ * document, so it is kept here rather than in an atom, which would hold a listener per store.
+ */
+const listen = (): (() => void) => {
+  if (mounted === 0) document.addEventListener('keydown', takeEscape);
+  mounted += 1;
+  return () => {
+    mounted -= 1;
+    if (mounted === 0) document.removeEventListener('keydown', takeEscape);
+  };
+};
+
 interface OGDialogProps extends DialogPrimitive.DialogProps {
   triggerRef?: React.RefObject<HTMLElement | null>;
   triggerRefs?: React.RefObject<HTMLElement | null>[];
@@ -147,7 +208,11 @@ const DialogTrigger: React.ForwardRefExoticComponent<
   DialogPrimitive.DialogTriggerProps & React.RefAttributes<HTMLButtonElement>
 > = DialogPrimitive.Trigger;
 
-const DialogPortal: React.FC<DialogPrimitive.DialogPortalProps> = DialogPrimitive.Portal;
+/** Radix's portal, into the element a `PortalProvider` names where the caller names none. */
+const DialogPortal: React.FC<DialogPrimitive.DialogPortalProps> = ({ container, ...props }) => {
+  const fallback = usePortalContainer();
+  return <DialogPrimitive.Portal container={container ?? fallback} {...props} />;
+};
 
 const DialogClose: React.ForwardRefExoticComponent<
   DialogPrimitive.DialogCloseProps & {
@@ -289,17 +354,9 @@ const DialogContent: React.ForwardRefExoticComponent<
     );
 
     /**
-     * Radix routes Escape to the highest dismissable layer only, and a toast
-     * registers one *above* whatever dialog is already open — so a status toast
-     * on screen swallows the Escape that should have closed the dialog under
-     * it, and the reader has to press it twice.
-     *
-     * A toast is transient status, not something the reader is working in, so
-     * the dialog takes Escape back while one is up. This listener handles
-     * only the toast case; native dialog callbacks also verify visual ownership.
-     * Closing goes through a hidden `Dialog.Close`, which drives Radix's own
-     * close path and therefore works for controlled and uncontrolled dialogs
-     * alike.
+     * What `takeEscape` runs for this dialog when it is the one in front. Closing
+     * goes through a hidden `Dialog.Close`, which drives Radix's own close path
+     * and therefore works for controlled and uncontrolled dialogs alike.
      */
     const escapeFallbackRef = React.useRef<HTMLButtonElement>(null);
     closeOnEscapeRef.current = (event) => {
@@ -308,36 +365,7 @@ const DialogContent: React.ForwardRefExoticComponent<
       event.preventDefault();
       escapeFallbackRef.current?.click();
     };
-    React.useEffect(() => {
-      const handleKeyDown = (event: KeyboardEvent) => {
-        const content = contentRef.current;
-        if (content == null || event.key !== 'Escape' || event.isComposing) {
-          return;
-        }
-        /** Another layer already answered this Escape — a select inside the
-         *  dialog closing its own listbox, say. Forcing the dialog shut on top
-         *  of that would take the reader's work with it. */
-        if (event.defaultPrevented) {
-          return;
-        }
-        const ownerDocument = content.ownerDocument;
-        if (escapeBelongsToPopup(ownerDocument)) {
-          return;
-        }
-        /** Radix Toast's own `li`. Matched whatever its `data-state`, because a
-         *  toast that has begun closing keeps its dismissable layer registered
-         *  until the exit animation ends — and that layer is what takes the
-         *  Escape. */
-        const toast = ownerDocument.querySelector('li[data-radix-collection-item]');
-        if (toast == null) {
-          return;
-        }
-        if (frontmostDialog(ownerDocument) !== content) return;
-        closeOnEscapeRef.current(event);
-      };
-      document.addEventListener('keydown', handleKeyDown);
-      return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [propsOnEscapeKeyDown]);
+    React.useEffect(listen, []);
 
     /* Handle Escape key to prevent closing dialog if a tooltip or dropdown has focus
     (this is a workaround in order to achieve WCAG compliance which requires

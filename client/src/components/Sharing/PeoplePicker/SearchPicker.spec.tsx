@@ -1,6 +1,6 @@
 import React from 'react';
 import userEvent from '@testing-library/user-event';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { OGDialog, OGDialogContent, OGDialogTitle } from '@librechat/client';
 import { SearchPicker } from './SearchPicker';
 
@@ -54,6 +54,17 @@ test('portals outside the clipping container and selects with the mouse without 
   await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
   expect(screen.getByRole('dialog')).toBeInTheDocument();
 });
+
+test.each(['wheel', 'touchMove'] as const)(
+  'lets %s scroll the portaled list instead of the modal scroll lock cancelling it',
+  async (gesture) => {
+    const { user } = page();
+    await user.click(screen.getByRole('combobox'));
+    await screen.findByRole('option', { name: 'Alice' });
+    const list = screen.getByRole('listbox');
+    expect(fireEvent[gesture](list)).toBe(true);
+  },
+);
 
 test('selects a portaled option with the keyboard while keeping virtual focus in the input', async () => {
   const { user, pick } = page();
