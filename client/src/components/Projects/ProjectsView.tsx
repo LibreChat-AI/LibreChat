@@ -6,7 +6,7 @@ import { Button, Spinner, Skeleton, DropdownPopup, buttonVariants } from '@libre
 import type { TChatProject } from 'librechat-data-provider';
 import type { ProjectSort } from './ProjectsSortMenu';
 import type { MenuItemProps } from '~/common';
-import { useProjectsInfiniteQuery } from '~/data-provider';
+import { useGetStartupConfig, useProjectsInfiniteQuery } from '~/data-provider';
 import { useLocalize, useProjectsAccess } from '~/hooks';
 import ProjectCreateDialog from './ProjectCreateDialog';
 import ProjectDeleteDialog from './ProjectDeleteDialog';
@@ -30,9 +30,11 @@ function formatActivity(project: TChatProject) {
 function ProjectCard({
   project,
   onOpen,
+  showDescription,
 }: {
   project: TChatProject;
   onOpen: (projectId: string) => void;
+  showDescription: boolean;
 }) {
   const localize = useLocalize();
   const menuId = useId();
@@ -95,7 +97,7 @@ function ProjectCard({
         <span className="text-text-primary mt-2.5 line-clamp-2 max-w-full min-w-0 text-sm font-semibold tracking-tight wrap-anywhere md:line-clamp-1">
           {project.name}
         </span>
-        {project.description ? (
+        {showDescription && project.description ? (
           <span className="text-text-secondary mt-1 line-clamp-2 max-w-full min-w-0 text-sm leading-relaxed text-pretty wrap-anywhere">
             {project.description}
           </span>
@@ -186,6 +188,8 @@ export default function ProjectsView() {
   const [sortBy, setSortBy] = useState<ProjectSort>('lastConversationAt');
   const [isCreating, setIsCreating] = useState(searchParams.get('new') === '1');
   const { canCreate } = useProjectsAccess();
+  const { data: startupConfig } = useGetStartupConfig();
+  const showDescription = startupConfig?.projects?.maxDescriptionLength !== 0;
   const deferredSearch = useDeferredValue(search);
   const scrollRef = useRef<HTMLElement | null>(null);
   const [pageSentinel, setPageSentinel] = useState<HTMLDivElement | null>(null);
@@ -278,6 +282,7 @@ export default function ProjectsView() {
                   key={project._id}
                   project={project}
                   onOpen={(projectId) => navigate(`/projects/${projectId}`)}
+                  showDescription={showDescription}
                 />
               ))}
             </div>

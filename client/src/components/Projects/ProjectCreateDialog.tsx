@@ -23,6 +23,7 @@ import {
 } from '@librechat/client';
 import type { TChatProject } from 'librechat-data-provider';
 import { useCreateProjectMutation, useGetStartupConfig } from '~/data-provider';
+import { getResponseErrorCode } from '~/utils/errors';
 import { useLocalize } from '~/hooks';
 
 type ProjectCreateDialogProps = {
@@ -49,6 +50,7 @@ export default function ProjectCreateDialog({
   const { data: startupConfig } = useGetStartupConfig();
   const descriptionLimit =
     startupConfig?.projects?.maxDescriptionLength ?? MAX_CHAT_PROJECT_DESCRIPTION_LENGTH;
+  const hasDescription = descriptionLimit > 0;
   const { showToast } = useToastContext();
 
   useEffect(() => {
@@ -79,7 +81,7 @@ export default function ProjectCreateDialog({
     }
 
     try {
-      const trimmedDescription = description.trim();
+      const trimmedDescription = hasDescription ? description.trim() : '';
       const project = await createProject.mutateAsync({
         name: trimmedName,
         ...(trimmedDescription ? { description: trimmedDescription } : {}),
@@ -87,9 +89,13 @@ export default function ProjectCreateDialog({
       resetForm();
       onOpenChange(false);
       onCreated?.(project);
-    } catch {
+    } catch (error) {
       showToast({
-        message: localize('com_ui_project_create_error'),
+        message: localize(
+          getResponseErrorCode(error) === 'CHAT_PROJECT_LIMIT'
+            ? 'com_ui_project_limit_reached'
+            : 'com_ui_project_create_error',
+        ),
         status: 'error',
       });
     }
@@ -118,7 +124,7 @@ export default function ProjectCreateDialog({
                 className="w-full"
               />
             </div>
-            <div className="space-y-2">
+            <div className="space-y-2" hidden={!hasDescription}>
               <Label htmlFor={`${formId}-description`} className="text-sm font-medium">
                 {localize('com_ui_description')}{' '}
                 <span className="text-text-secondary font-normal">

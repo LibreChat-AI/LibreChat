@@ -31,6 +31,7 @@ export const MAX_CHAT_PROJECT_FILES = 50;
 export const MAX_CHAT_PROJECT_DESCRIPTION_LENGTH_CEILING = 10000;
 export const MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH_CEILING = 200000;
 export const MAX_CHAT_PROJECT_FILES_CEILING = 500;
+export const MAX_CHAT_PROJECTS_PER_USER_CEILING = 10000;
 
 /** Mirrors the bounded graph-child member limit in `@librechat/agents`. */
 export const MAX_GRAPH_SUBAGENT_MEMBERS = 32;

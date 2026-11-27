@@ -51,6 +51,7 @@ const WORKSPACE_PANEL_IDS_RTL = ['project-chats', 'project-details'];
 const WORKSPACE_PANEL_IDS = ['project-details', 'project-chats'];
 const DETAILS_PANEL_IDS_WITH_FILES = ['project-instructions', 'project-files'];
 const DETAILS_PANEL_IDS = ['project-instructions'];
+const DETAILS_PANEL_IDS_FILES_ONLY = ['project-files'];
 
 /** Both separators grab from a band this wide, and the junction that moves all three
  *  panels is where the two bands cross: at the library's 10px default the crossing is
@@ -90,6 +91,9 @@ export default function ProjectWorkspace() {
   const { data: project, isLoading: isProjectLoading } = useProjectQuery(projectId);
   const { data: startupConfig } = useGetStartupConfig();
   const isRagEnabled = startupConfig?.ragEnabled === true;
+  /** A limit of 0 turns the field off for the deployment: no editor, and nothing shown. */
+  const hasInstructions = startupConfig?.projects?.maxInstructionsLength !== 0;
+  const hasDescription = startupConfig?.projects?.maxDescriptionLength !== 0;
   const conversation = useRecoilValue(store.conversationByIndex(0));
   const { newConversation } = useNewConvo();
   const activeProjectId = project?._id;
@@ -105,9 +109,13 @@ export default function ProjectWorkspace() {
     panelIds: reversed ? WORKSPACE_PANEL_IDS_RTL : WORKSPACE_PANEL_IDS,
     storage: localStorage,
   });
+  let detailsPanelIds = isRagEnabled ? DETAILS_PANEL_IDS_WITH_FILES : DETAILS_PANEL_IDS;
+  if (!hasInstructions) {
+    detailsPanelIds = DETAILS_PANEL_IDS_FILES_ONLY;
+  }
   const detailsLayout = useDefaultLayout({
     id: 'project-details-layout',
-    panelIds: isRagEnabled ? DETAILS_PANEL_IDS_WITH_FILES : DETAILS_PANEL_IDS,
+    panelIds: detailsPanelIds,
     storage: localStorage,
   });
   const { ref: detailsGroupRef, height: detailsGroupHeight } = useElementSize<HTMLDivElement>();
@@ -240,6 +248,7 @@ export default function ProjectWorkspace() {
         variant="inline-edit"
         onClick={() => startEditing('description')}
         className="mt-1 min-h-10 w-full min-w-0"
+        hidden={!hasDescription}
       >
         <span className="text-text-secondary line-clamp-3 min-w-0 text-sm leading-relaxed font-normal wrap-anywhere">
           {project.description || localize('com_ui_add_description')}
@@ -394,20 +403,22 @@ export default function ProjectWorkspace() {
             resizeTargetMinimumSize={RESIZE_TARGET_SIZE}
             className="h-full"
           >
-            <ResizablePanel
-              id="project-instructions"
-              defaultSize="55"
-              minSize={detailsPanelMinSize}
-              className="min-h-0"
-            >
-              <div className="h-full pe-3 pb-3">{instructionsSection}</div>
-            </ResizablePanel>
+            {hasInstructions && (
+              <ResizablePanel
+                id="project-instructions"
+                defaultSize="55"
+                minSize={detailsPanelMinSize}
+                className="min-h-0"
+              >
+                <div className="h-full pe-3 pb-3">{instructionsSection}</div>
+              </ResizablePanel>
+            )}
             {filesSection != null && (
               <>
-                <ResizableHandleAlt withHandle />
+                {hasInstructions && <ResizableHandleAlt withHandle />}
                 <ResizablePanel
                   id="project-files"
-                  defaultSize="45"
+                  defaultSize={hasInstructions ? '45' : '100'}
                   minSize={detailsPanelMinSize}
                   className="min-h-0"
                 >
@@ -499,19 +510,21 @@ export default function ProjectWorkspace() {
         project={project}
         triggerRef={deleteMenuRef}
       />
-      <ProjectInstructionsDialog
-        open={isInstructionsOpen}
-        onOpenChange={setIsInstructionsOpen}
-        project={project}
-        triggerRef={instructionsButtonRef}
-      />
+      {hasInstructions && (
+        <ProjectInstructionsDialog
+          open={isInstructionsOpen}
+          onOpenChange={setIsInstructionsOpen}
+          project={project}
+          triggerRef={instructionsButtonRef}
+        />
+      )}
 
       {isSmallScreen ? (
         /** Panels need a bounded height to resize against, which a stacked phone
          *  layout cannot give them; scroll the column instead. */
         <div className="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-6">
           {detailsHeader}
-          <div className="h-72 shrink-0">{instructionsSection}</div>
+          {hasInstructions && <div className="h-72 shrink-0">{instructionsSection}</div>}
           {filesSection != null && <div className="h-72 shrink-0">{filesSection}</div>}
           <div className="flex min-h-[26.25rem] flex-col">{chatsSection}</div>
         </div>

@@ -148,6 +148,7 @@ export function createResponseResumeValidation(deps: ResponseResumeValidationDep
         {
           ...deps.projects,
           canUseProjects: projectsAccessFor(user, { getRoleByName: deps.content.getRoleByName }),
+          projectsConfig: config.projects,
         },
       ),
     ]);

@@ -172,6 +172,7 @@ const chatV2 = async (req, res) => {
         getChatProject,
         getProjectFiles,
         canUseProjects: projectsAccessFor(req.user, { getRoleByName }),
+        projectsConfig: req.config?.projects,
       },
     );
     if (projectTurn.rejection) {

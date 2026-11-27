@@ -16,6 +16,8 @@ export interface IChatProject {
   createdAt?: Date;
   updatedAt?: Date;
   tenantId?: string;
+  /** Per-user occupancy slot under `projects.maxProjectsPerUser`; absent when created uncapped. */
+  slot?: number;
 }
 
 export interface IChatProjectDocument extends Omit<IChatProject, '_id'>, Document {}

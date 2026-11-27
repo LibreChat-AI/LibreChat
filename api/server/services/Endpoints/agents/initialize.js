@@ -671,6 +671,7 @@ const initializeClientWithProvider = async ({
       getChatProject: db.getChatProject,
       getProjectFiles: db.getProjectFiles,
       canUseProjects: projectsAccessFor(req.user, db),
+      projectsConfig: req.config?.projects,
     },
   );
 

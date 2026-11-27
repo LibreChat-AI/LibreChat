@@ -20,6 +20,22 @@ const missingResources = (fileIds: string[]): CanonicalProjectResource[] =>
   }));
 
 describe('resolveChatProjectContext', () => {
+  it('keeps stored instructions out of the turn when projects.maxInstructionsLength is 0', async () => {
+    const getChatProject = jest.fn().mockResolvedValue(project);
+    const context = await resolveChatProjectContext(
+      { userId: 'user-a', requestedProjectId: 'project-a', includeResources: false },
+      {
+        getConvo: jest.fn(),
+        getChatProject,
+        getProjectFiles,
+        projectsConfig: { maxInstructionsLength: 0 },
+      },
+    );
+
+    expect(context).toEqual(expect.objectContaining({ projectId: 'project-a', instructions: '' }));
+    expect(context?.file_ids).toEqual(['file-a']);
+  });
+
   describe('without PROJECTS.USE', () => {
     const canUseProjects = jest.fn().mockResolvedValue(false);
 

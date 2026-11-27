@@ -980,6 +980,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     getChatProject,
     getProjectFiles,
     canUseProjects: projectsAccessFor(req.user, { getRoleByName }),
+    projectsConfig: req.config?.projects,
   });
 
   /** A newly bound actor conversation has no child messages yet, so its first

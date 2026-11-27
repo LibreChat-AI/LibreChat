@@ -1828,6 +1828,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           getChatProject,
           getProjectFiles,
           canUseProjects: projectsAccessFor(req.user, { getRoleByName }),
+          projectsConfig: req.config?.projects,
           logger,
           finalizeJob: async (reason) =>
             (await GenerationJobManager.completeJob(streamId, reason, job.createdAt)) === true,

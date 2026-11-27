@@ -8,6 +8,7 @@ import {
   MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH,
   MAX_CHAT_PROJECT_FILES,
   MAX_CHAT_PROJECT_FILES_CEILING,
+  MAX_CHAT_PROJECTS_PER_USER_CEILING,
   MAX_CHAT_PROJECT_DESCRIPTION_LENGTH_CEILING,
   MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH_CEILING,
   DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS,
@@ -4953,22 +4954,32 @@ export const chatProjectsConfigSchema = z
       .max(MAX_CHAT_PROJECT_FILES_CEILING)
       .optional()
       .default(MAX_CHAT_PROJECT_FILES),
-    /** Maximum instruction characters stored for one Chat Project. Defaults to 16000. */
+    /** Maximum instruction characters stored for one Chat Project. Defaults to 16000. `0` turns
+     *  project instructions off: none can be saved, and stored ones never reach the model. */
     maxInstructionsLength: z
       .number()
       .int()
-      .positive()
+      .min(0)
       .max(MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH_CEILING)
       .optional()
       .default(MAX_CHAT_PROJECT_INSTRUCTIONS_LENGTH),
-    /** Maximum description characters stored for one Chat Project. Defaults to 1000. */
+    /** Maximum description characters stored for one Chat Project. Defaults to 1000. `0` turns
+     *  project descriptions off: none can be saved, and stored ones are not shown. */
     maxDescriptionLength: z
       .number()
       .int()
-      .positive()
+      .min(0)
       .max(MAX_CHAT_PROJECT_DESCRIPTION_LENGTH_CEILING)
       .optional()
       .default(MAX_CHAT_PROJECT_DESCRIPTION_LENGTH),
+    /** Most projects one user may own. Unset, there is no cap. Lowering it never removes
+     *  projects; it only refuses new ones until the user is under the cap. */
+    maxProjectsPerUser: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_CHAT_PROJECTS_PER_USER_CEILING)
+      .optional(),
   })
   .strict()
   .prefault({});

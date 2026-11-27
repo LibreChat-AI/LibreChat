@@ -125,6 +125,7 @@ export {
   createMCPAuthorizationFenceRetryStorage,
   MAX_MCP_AUTHORITY_TARGETS,
   InvalidAvailableProjectFilesCursorError,
+  ChatProjectError,
   parseAvailableProjectFilesCursor,
   MAX_AVAILABLE_PROJECT_FILES_LIMIT,
   DEFAULT_AVAILABLE_PROJECT_FILES_LIMIT,

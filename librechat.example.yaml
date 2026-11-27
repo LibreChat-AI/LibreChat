@@ -50,9 +50,13 @@ projects:
   # Reference files that may be attached to one project (maximum 500).
   maxFiles: 50
   # Characters of project instructions stored and sent as guidance (maximum 200000).
+  # 0 turns project instructions off: none can be saved, and stored ones never reach the model.
   maxInstructionsLength: 16000
   # Characters of the project description shown in the workspace and sidebar (maximum 10000).
+  # 0 turns project descriptions off.
   maxDescriptionLength: 1000
+  # Most projects one user may own (maximum 10000). Unset, there is no cap.
+  # maxProjectsPerUser: 20
 
 # Tool-call previews: a long conversation's tool outputs, arguments and subagent transcripts
 # can run to megabytes, though their cards render collapsed. The web client asks for bounded

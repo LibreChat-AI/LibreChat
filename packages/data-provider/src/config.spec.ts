@@ -3069,6 +3069,24 @@ describe('interface theme config', () => {
     );
     expect(chatProjectsConfigSchema.safeParse({ maxDescriptionLength: 10001 }).success).toBe(false);
   });
+
+  it('accepts 0 to turn instructions or descriptions off, and nothing below it', () => {
+    const off = chatProjectsConfigSchema.parse({
+      maxInstructionsLength: 0,
+      maxDescriptionLength: 0,
+    });
+    expect(off).toMatchObject({ maxInstructionsLength: 0, maxDescriptionLength: 0 });
+    expect(chatProjectsConfigSchema.safeParse({ maxInstructionsLength: -1 }).success).toBe(false);
+    expect(chatProjectsConfigSchema.safeParse({ maxDescriptionLength: -1 }).success).toBe(false);
+    expect(chatProjectsConfigSchema.safeParse({ maxFiles: 0 }).success).toBe(false);
+  });
+
+  it('leaves maxProjectsPerUser unset by default and bounds it when set', () => {
+    expect(chatProjectsConfigSchema.parse({}).maxProjectsPerUser).toBeUndefined();
+    expect(chatProjectsConfigSchema.parse({ maxProjectsPerUser: 20 }).maxProjectsPerUser).toBe(20);
+    expect(chatProjectsConfigSchema.safeParse({ maxProjectsPerUser: 0 }).success).toBe(false);
+    expect(chatProjectsConfigSchema.safeParse({ maxProjectsPerUser: 10001 }).success).toBe(false);
+  });
 });
 
 describe('policy link URLs', () => {
